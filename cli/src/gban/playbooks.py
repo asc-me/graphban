@@ -19,6 +19,28 @@ from gban.client import Client, NoSession, Refused, Unreachable, authenticated
 
 RECEIPT = Path(".graphban") / "playbooks.json"
 INTERVAL = 3600
+#: A `skill` entry is published once, under `.claude/skills/<slug>/SKILL.md`; every harness
+#: reads its own directory (`gbagent` reads all three), so the client writes it to each.
+SKILL_DIRS = (".claude/skills", ".grok/skills", ".agents/skills")
+
+
+def targets(entry: dict) -> list[str]:
+    """Every checkout path one pack entry is written to."""
+    rel = entry.get("path")
+    if entry.get("kind") == "skill" and isinstance(rel, str):
+        for base in SKILL_DIRS:
+            if rel.startswith(base + "/"):
+                tail = rel[len(base) + 1:]
+                return [f"{b}/{tail}" for b in SKILL_DIRS]
+    return [rel]
+
+
+def _write(dest: Path, data: bytes) -> None:
+    """Whole file or nothing: a `gbagent` child spawned mid-apply never reads half a body."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".gban-tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, dest)
 
 
 def _read(repo: Path) -> dict:
@@ -91,8 +113,11 @@ def poll(url: str, repo: Path, *, force: bool = False, client: Client | None = N
     polled_at = receipt.get("polled_at")
     if (not force and isinstance(polled_at, (int, float)) and receipt.get("server") == url
             and 0 <= now - polled_at < INTERVAL):
-        return {"polled": False, "polled_at": polled_at, "git_sha": receipt.get("git_sha", ""),
-                "note": f"last poll {when(polled_at)}; not checked again within the hour"}
+        stored = receipt.get("git_sha") or ""
+        at = f" at {stored[:12]}" if stored else (" (no pack applied)")
+        return {"polled": False, "skipped": True, "polled_at": polled_at, "git_sha": stored,
+                "note": f"last poll {when(polled_at)}{at}; not checked against the server "
+                        "again within the hour"}
     if auth is None:
         auth = lambda: credentialed(url, project)  # noqa: E731
     client = client or Client(url)
@@ -131,34 +156,24 @@ def poll(url: str, repo: Path, *, force: bool = False, client: Client | None = N
     if not isinstance(files, list) or pack.get("git_sha") != sha:
         return {"polled": False, "failed": True,
                 "note": "deployment identity is split or the pack is unreadable; wrote nothing"}
-    plan, kept = [], []
-    owned = dict(base.get("files", {}))
+    # Validate the whole pack before touching a file: a partial or unreadable payload
+    # writes nothing.
+    plan: dict[str, bytes] = {}
     for entry in files:
-        rel, body = entry.get("path"), entry.get("body")
-        if not isinstance(rel, str) or not isinstance(body, str) or rel.startswith(("/", "..")) \
-                or ".." in Path(rel).parts:
+        if not isinstance(entry, dict):
             return {"polled": False, "failed": True, "note": "unreadable pack; wrote nothing"}
-        data = body.encode("utf-8")
-        plan.append((rel, data))
-    written = []
-    for rel, data in plan:
-        dest, digest = repo / rel, _sha(data)
-        if not dest.exists():
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(data)
-            written.append(rel)
-        else:
-            have = _sha(dest.read_bytes())
-            if have == digest:
-                pass
-            elif owned.get(rel) == have:
-                dest.write_bytes(data)
-                written.append(rel)
-            else:
-                kept.append(rel)
-                continue
-        owned[rel] = digest
-    gone = [r for r in owned if r not in {p for p, _ in plan}]
+        body = entry.get("body")
+        if not isinstance(body, str):
+            return {"polled": False, "failed": True, "note": "unreadable pack; wrote nothing"}
+        for rel in targets(entry):
+            if not isinstance(rel, str) or not rel or rel.startswith(("/", "\\")) \
+                    or ".." in Path(rel).parts or Path(rel).is_absolute():
+                return {"polled": False, "failed": True,
+                        "note": "unreadable pack; wrote nothing"}
+            plan[rel] = body.encode("utf-8")
+    applied = apply(repo, plan, dict(base.get("files", {})))
+    owned, written, kept = applied["files"], applied["written"], applied["kept"]
+    gone = applied["gone"]
     new.update(git_sha=sha, files=owned)
     _save(repo, new)
     note = f"applied {sha[:12]}: {len(written)} file(s) written"
@@ -166,4 +181,37 @@ def poll(url: str, repo: Path, *, force: bool = False, client: Client | None = N
         note += "; local edits left in place: " + ", ".join(kept)
     if gone:
         note += "; no longer in the pack: " + ", ".join(gone)
-    return {"polled": True, "polled_at": now, "git_sha": sha, "note": note}
+    return {"polled": True, "polled_at": now, "git_sha": sha, "note": note,
+            "written": written, "kept": kept, "gone": gone}
+
+
+def apply(repo: Path, plan: dict[str, bytes], owned: dict[str, str]) -> dict:
+    """Write `plan` (path -> bytes) into `repo` by the ownership rules of GRPH-P65.
+
+    - receipt says we wrote it and the new body differs: replace it;
+    - bytes already match: leave the file, record the hash (this adopts a committed copy);
+    - missing: write it, record the hash;
+    - matches neither the receipt nor the pack: a local edit, left and named;
+    - in the receipt but no longer in the pack: left on disk and named.
+    """
+    owned = dict(owned)
+    written, kept = [], []
+    for rel, data in plan.items():
+        dest, digest = repo / rel, _sha(data)
+        if dest.is_file():
+            have = _sha(dest.read_bytes())
+            if have != digest:
+                if owned.get(rel) != have:
+                    kept.append(rel)
+                    continue
+                _write(dest, data)
+                written.append(rel)
+        elif dest.exists():  # a directory where a file belongs: not ours to remove
+            kept.append(rel)
+            continue
+        else:
+            _write(dest, data)
+            written.append(rel)
+        owned[rel] = digest
+    gone = sorted(r for r in owned if r not in plan)
+    return {"files": owned, "written": written, "kept": kept, "gone": gone}

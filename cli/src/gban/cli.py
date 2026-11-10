@@ -371,6 +371,9 @@ def cmd_doctor(args) -> int:
     project = config.resolve(args.project, config.PROJECT_ENV, "project")
     api_key = doctor_mod.resolve_supervisor_key(project, url=url)
     lines, code = doctor_mod.run(url, project, api_key)
+    poll_line = doctor_mod.playbooks_line(getattr(args, "poll_result", None))
+    if poll_line:
+        lines.append(poll_line)
     if not getattr(args, "no_report", False):
         lines += machine_mod.send(url, project, lines)  # UNKNOWN when undelivered: exit unchanged
     _out({"lines": lines, "ok": code == 0}, doctor_mod.render(lines), args.as_json)
@@ -732,6 +735,9 @@ def _poll(args) -> None:
             result = playbooks.poll(url, repo, force=args.command == "update", project=project)
     except Exception as exc:  # a poll must not break the verb the person typed
         result = {"note": f"poll skipped: {exc}"}
+    args.poll_result = result
+    if args.command == "doctor":
+        return  # doctor reports it as its own line, saying whether it looked just now
     if "polled" not in result and args.command != "update":
         return  # nothing was checked; a non-update verb stays quiet about it
     if args.command == "update" or not args.as_json:

@@ -160,3 +160,133 @@ def test_command_from_a_subdirectory_polls_the_checkout_root(tmp_path, monkeypat
     monkeypatch.setattr(playbooks, "poll", fake_poll)
     assert cli.main(["--server", URL, "update"]) == 0
     assert seen["repo"].resolve() == root and seen["force"] is True
+
+
+# --- GRPH-1493: applying the pack to the checkout -------------------------------------------
+
+SKILL = ".claude/skills/graphban-work/SKILL.md"
+COPIES = [SKILL, ".grok/skills/graphban-work/SKILL.md", ".agents/skills/graphban-work/SKILL.md"]
+LOOP = ".claude/agents/gb-worker.md"
+PLAYBOOK = ".cursor/plugins/graphban/skills/why-graphban/SKILL.md"
+
+
+def _pack(sha_, skill="S1", loop="L1", playbook="P1", extra=()):
+    files = [{"path": SKILL, "kind": "skill", "body": skill},
+             {"path": LOOP, "kind": "loop", "body": loop},
+             {"path": PLAYBOOK, "kind": "playbook", "body": playbook}, *extra]
+    return {"git_sha": sha_, "files": files}
+
+
+def _apply(tmp_path, sha_, now, **kw):
+    return poll(URL, tmp_path, client=Fake({"git_sha": sha_}, _pack(sha_, **kw)), now=now)
+
+
+def test_a_skill_is_written_to_all_three_skill_directories(tmp_path):
+    _apply(tmp_path, "1", 0)
+    for rel in COPIES:
+        assert (tmp_path / rel).read_text() == "S1"
+        assert receipt(tmp_path)["files"][rel] == sha("S1")
+
+
+def test_changed_skill_loop_and_playbook_are_replaced(tmp_path):
+    _apply(tmp_path, "1", 0)
+    r = _apply(tmp_path, "2", 5000, skill="S2", loop="L2", playbook="P2")
+    for rel in COPIES:
+        assert (tmp_path / rel).read_text() == "S2"
+    assert (tmp_path / LOOP).read_text() == "L2"
+    assert (tmp_path / PLAYBOOK).read_text() == "P2"
+    assert sorted(r["written"]) == sorted([*COPIES, LOOP, PLAYBOOK])
+    assert receipt(tmp_path)["git_sha"] == "2"
+
+
+def test_matching_bytes_are_not_rewritten(tmp_path):
+    _apply(tmp_path, "1", 0)
+    before = {rel: (tmp_path / rel).stat().st_mtime_ns for rel in COPIES}
+    r = _apply(tmp_path, "2", 5000, loop="L2")
+    assert r["written"] == [LOOP]
+    assert {rel: (tmp_path / rel).stat().st_mtime_ns for rel in COPIES} == before
+
+
+def test_a_committed_matching_copy_is_adopted_not_rewritten(tmp_path):
+    (tmp_path / SKILL).parent.mkdir(parents=True)
+    (tmp_path / SKILL).write_text("S1")
+    mtime = (tmp_path / SKILL).stat().st_mtime_ns
+    r = _apply(tmp_path, "1", 0)
+    assert SKILL not in r["written"] and (tmp_path / SKILL).stat().st_mtime_ns == mtime
+    assert receipt(tmp_path)["files"][SKILL] == sha("S1")
+    # Adopted, so the next pack replaces it.
+    _apply(tmp_path, "2", 5000, skill="S2")
+    assert (tmp_path / SKILL).read_text() == "S2"
+
+
+def test_a_local_edit_is_left_and_named_while_the_rest_update(tmp_path):
+    _apply(tmp_path, "1", 0)
+    (tmp_path / LOOP).write_text("mine")
+    r = _apply(tmp_path, "2", 5000, skill="S2", loop="L2")
+    assert (tmp_path / LOOP).read_text() == "mine"
+    assert r["kept"] == [LOOP] and LOOP in r["note"]
+    assert (tmp_path / SKILL).read_text() == "S2"
+    # The edit stays the person's: the receipt still holds what we wrote, not their bytes.
+    assert receipt(tmp_path)["files"][LOOP] == sha("L1")
+    r = _apply(tmp_path, "3", 10000, skill="S3", loop="L3")
+    assert (tmp_path / LOOP).read_text() == "mine" and r["kept"] == [LOOP]
+
+
+def test_an_uncommitted_differing_file_without_receipt_is_a_local_edit(tmp_path):
+    (tmp_path / LOOP).parent.mkdir(parents=True)
+    (tmp_path / LOOP).write_text("theirs")
+    r = _apply(tmp_path, "1", 0)
+    assert (tmp_path / LOOP).read_text() == "theirs" and LOOP in r["kept"]
+    assert LOOP not in receipt(tmp_path)["files"]
+
+
+def test_restoring_an_edit_is_delete_and_update(tmp_path):
+    _apply(tmp_path, "1", 0)
+    (tmp_path / LOOP).write_text("mine")
+    (tmp_path / LOOP).unlink()
+    r = _apply(tmp_path, "2", 5000)
+    assert (tmp_path / LOOP).read_text() == "L1" and LOOP in r["written"]
+
+
+def test_a_path_the_pack_dropped_is_left_on_disk_and_named(tmp_path):
+    extra = [{"path": ".claude/agents/gb-old.md", "kind": "loop", "body": "old"}]
+    _apply(tmp_path, "1", 0, extra=extra)
+    r = _apply(tmp_path, "2", 5000)
+    assert (tmp_path / ".claude/agents/gb-old.md").read_text() == "old"
+    assert r["gone"] == [".claude/agents/gb-old.md"] and "gb-old.md" in r["note"]
+
+
+def test_an_unreadable_entry_writes_nothing(tmp_path):
+    pack = _pack("1")
+    pack["files"].append({"path": "../escape.md", "kind": "loop", "body": "x"})
+    r = poll(URL, tmp_path, client=Fake({"git_sha": "1"}, pack), now=0)
+    assert r.get("failed")
+    assert not any(p.is_file() for p in tmp_path.rglob("*"))
+
+
+def test_doctor_with_a_fresh_stamp_reports_the_stored_poll_not_a_check(tmp_path):
+    from gban import doctor
+    _apply(tmp_path, "abcdef1234567890", 1000)
+    c = Fake({"git_sha": "other"})
+    r = poll(URL, tmp_path, client=c, now=1500)
+    assert c.calls == []
+    line = doctor.playbooks_line(r)
+    assert line["status"] == doctor.UNKNOWN
+    assert playbooks.when(1000) in line["detail"] and "abcdef123456" in line["detail"]
+    assert "not checked" in line["detail"] and "just now" not in line["detail"]
+    fresh = doctor.playbooks_line(_apply(tmp_path, "b", 9000))
+    assert fresh["status"] == doctor.PASS and "just now" in fresh["detail"]
+
+
+def test_gban_doctor_prints_the_playbooks_line(tmp_path, monkeypatch, capsys):
+    root = _git_repo(tmp_path)
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(playbooks, "poll", lambda url, repo, **kw: {
+        "polled": False, "skipped": True, "polled_at": 1000, "git_sha": "abc",
+        "note": "last poll 1970-01-01 00:16:40Z at abc; not checked against the server"})
+    monkeypatch.setattr(cli.doctor_mod, "resolve_supervisor_key", lambda *a, **k: "")
+    monkeypatch.setattr(cli.doctor_mod, "run", lambda *a, **k: ([], 0))
+    assert cli.main(["--server", URL, "doctor", "--no-report"]) == 0
+    out = capsys.readouterr()
+    assert "playbooks" in out.out and "at abc" in out.out and "just now" not in out.out
+    assert "last poll" not in out.err
