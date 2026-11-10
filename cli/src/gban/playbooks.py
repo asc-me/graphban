@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import subprocess  # nosec B404 - fixed argv, no shell
+import subprocess  # nosec B404
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -50,7 +50,7 @@ def checkout(start: Path) -> Path | None:
     from `cli/` must not plant `.graphban/` and the skills under `cli/`.
     """
     try:
-        proc = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+        proc = subprocess.run(  # nosec B603 B607
             ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
             capture_output=True, text=True, timeout=30, check=False)
     except (OSError, subprocess.TimeoutExpired):
