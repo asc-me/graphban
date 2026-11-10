@@ -23,7 +23,10 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ActivityView } from "@/features/activity/ActivityView";
+import { CodeGraphView } from "@/features/code/CodeGraphView";
 import { OutpostsView } from "@/features/fleet/OutpostsView";
+import { LinksGraphView } from "@/features/links/LinksGraphView";
+import { McpToolsView } from "@/features/mcp/McpToolsView";
 import { HarnessView } from "@/features/harness/HarnessView";
 import { ProjectHome } from "@/features/projecthome/ProjectHome";
 import { ProjectProvider } from "@/features/ProjectContext";
@@ -101,6 +104,7 @@ const STALE_BANNER = /stale — last good counts/i;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  Element.prototype.scrollTo = Element.prototype.scrollTo ?? (() => {});
   const { api } = await import("@/lib/api");
   for (const key of FAILING_ENDPOINTS) {
     const fn = api[key as keyof typeof api] as ReturnType<typeof vi.fn>;
@@ -207,5 +211,28 @@ describe("Plan pages: a failed fetch shows the error card and no zero counts", (
     // No view tabs, no chip row, so no zero count anywhere.
     expect(screen.queryByRole("tablist", { name: "Views" })).not.toBeInTheDocument();
     expect(screen.queryByText("0")).not.toBeInTheDocument();
+  });
+});
+
+describe("Build surfaces: a failed fetch is not an empty graph or catalog", () => {
+  it("Code graph names the failure instead of 'No code described yet'", async () => {
+    show(<CodeGraphView />);
+    expect(await screen.findByText(FAILED_COPY)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+    expect(screen.queryByText(/no code described yet/i)).not.toBeInTheDocument();
+  });
+
+  it("Links names the failure instead of an empty canvas", async () => {
+    show(<LinksGraphView />);
+    expect(await screen.findByText(FAILED_COPY)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+    expect(screen.queryByRole("application", { name: /links graph: 0 nodes/i })).not.toBeInTheDocument();
+  });
+
+  it("MCP Tools names the failure instead of 'No tools are registered'", async () => {
+    show(<McpToolsView />);
+    expect(await screen.findByText(FAILED_COPY)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+    expect(screen.queryByText(/no tools are registered/i)).not.toBeInTheDocument();
   });
 });
