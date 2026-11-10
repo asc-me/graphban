@@ -1381,6 +1381,41 @@ def test_the_old_subcommand_flag_order_is_still_rejected():
             _parser().parse_args(argv)
 
 
+def test_graphban_unstick_names_the_stuck_drain(tmp_path):
+    """The unstick skill names the item, the review row outside --prd, the lease
+    timer and the empty-holdings child, and never starts a second until or signs off."""
+    import subprocess
+    import sys
+    import zipfile
+
+    body = " ".join(setup_mod.skill_source("graphban-unstick").read_text(encoding="utf-8").split())
+    assert "review-unsigned" in body
+    assert "review row outside `--prd`" in body
+    assert "Dropped lease" in body
+    assert "empty holdings" in body
+    assert "Do not start a second `until` on the same repo" in body
+    assert "Do not `sign_off` the item" in body
+    for slug in ("graphban-wave", "watch-wave"):
+        other = " ".join(setup_mod.skill_source(slug).read_text(encoding="utf-8").split())
+        assert "graphban-unstick" in other, slug
+
+    root = Path(__file__).resolve().parents[1]
+    out = tmp_path / "dist"
+    done = None
+    for argv in ([sys.executable, "-m", "build", "--wheel", "--outdir", str(out), str(root)],
+                 ["uv", "build", "--wheel", "--out-dir", str(out), str(root)]):
+        try:
+            done = subprocess.run(argv, capture_output=True, text=True, timeout=300)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if done.returncode == 0:
+            break
+    if done is None or done.returncode != 0:
+        pytest.skip("no wheel builder available")
+    names = zipfile.ZipFile(next(out.glob("*.whl"))).namelist()
+    assert any(n.endswith("skills/graphban-unstick/SKILL.md") for n in names), names[:20]
+
+
 def test_graphban_work_names_the_lease_the_graph_and_prove():
     """The work skill must warn that a silent long command drops the lease, send
     changed paths to describe_code, call a receipt a test line, and hand

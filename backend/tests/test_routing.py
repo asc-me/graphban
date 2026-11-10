@@ -160,6 +160,34 @@ def test_an_item_is_held_for_the_runner_with_headroom_then_lapses_to_the_ladder(
     assert _claim(b, item) == item
 
 
+def test_a_lapsed_reservation_is_not_created_again_for_the_same_entitlement(client, world):
+    held = _ent(client, world, "anthropic")
+    b = _runner(client, world, [held])
+    _report(client, world, held, b, "registered")
+    broke = _ent(client, world, "openai")
+    x = _runner(client, world, [broke], vendor="openai")
+    _report(client, world, broke, x, "spawn_failed", vendor_text="boom")
+    _ent(client, world, "google")  # reviewer reserve; no runner declares it
+    item = _item()
+    assert _claim(x, item) is None
+    res_rows = [d for d in _decisions(item) if d["kind"] == "reservation"]
+    assert len(res_rows) == 1
+    assert res_rows[0]["entitlement_id"] == held
+    from app.db import SessionLocal
+    from app.models import RoutingDecision
+    db = SessionLocal()
+    row = db.query(RoutingDecision).filter_by(kind="reservation").one()
+    row.reserved_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+    db.commit()
+    db.close()
+    assert len([d for d in _decisions(item) if d["kind"] == "reservation"]) == 1
+    # the headroomless runner, not the reserved entitlement's holder, may claim normally
+    assert _claim(x, item) == item
+    assert len([d for d in _decisions(item) if d["kind"] == "reservation"]) == 1
+    (x_claim,) = [d for d in _decisions(item) if d["kind"] == "claim" and d["agent_id"] == x]
+    assert x_claim["entitlement_id"] is None
+
+
 def test_a_reserved_claim_that_fails_ends_its_reservation_at_once(client, world):
     held = _ent(client, world, "anthropic")
     b = _runner(client, world, [held])
@@ -446,6 +474,26 @@ def test_custom_hierarchy_gate_chooses_policy_order_over_soonest_reset(client, w
     assert _claim(a, item_id) == item_id
     (rec,) = [d for d in _decisions(item_id) if d["kind"] == "claim"]
     assert rec["entitlement_id"] == late
+    assert f"chosen over {soon} by subscription policy order" in rec["reason"]
+    assert "not usable" not in rec["reason"]
+
+
+def test_default_hierarchy_still_records_soonest_reset_for_same_pair(client, world):
+    """Without custom hierarchy, the sooner reset wins and the reason says so."""
+    soon = _ent(client, world, "anthropic", kind="subscription",
+                reset=datetime.now(timezone.utc) + timedelta(hours=1))
+    late = _ent(client, world, "openai", kind="subscription",
+                reset=datetime.now(timezone.utc) + timedelta(days=3))
+    a = _runner(client, world, [soon, late])
+    for e in (soon, late):
+        _report(client, world, e, a, "registered")
+    _runner(client, world, [_ent(client, world, "google")], vendor="google")
+    item_id = _item()
+    assert _claim(a, item_id) == item_id
+    (rec,) = [d for d in _decisions(item_id) if d["kind"] == "claim"]
+    assert rec["entitlement_id"] == soon
+    assert f"chosen over {late} by soonest reset" in rec["reason"]
+    assert "subscription policy order" not in rec["reason"]
 
 
 def test_unreachable_local_entitlement_refuses_spawn_start(client, world):
