@@ -105,6 +105,16 @@ GENERATED_FILES_DEFAULT: list[str] = [
     ".cursor/agents/", ".cursor/plugins/graphban/", ".cursor/rules/graphban.mdc",
     "AGENTS.md", "backend/tests/shard_weights.json",
 ]
+#: GRPH-1496: the globs the delegation brief reads for its lane and task class. Level
+#: `checked`: the brief states what matched and nothing is refused. Defaults are Graphban's
+#: own layout, which is what `delegation.PATH_CLASSES_DEFAULT` has always meant.
+PATH_CLASSES_RULE = "plan.path_classes"
+PATH_CLASSES_DEFAULT: dict[str, list[str]] = {
+    "frontend": ["web", "web/**"],
+    "migration": ["*alembic/versions*", "*models/__init__*"],
+    "mcp_tool": ["*mcp_server.py"],
+    "docs": ["*.md", "docs/**"],
+}
 #: A string param that takes one of a closed set: rule id -> param -> allowed values.
 PARAM_CHOICES: dict[str, dict[str, tuple[str, ...]]] = {
     TEST_SCOPE_RULE: {"mode": tuple(TEST_SCOPE_MODES)},
@@ -252,6 +262,20 @@ def generated_files(db: Session, project_id: str | None) -> list[str]:
         return list(GENERATED_FILES_DEFAULT)
     paths = resolve(db, GENERATED_FILES_RULE, project_id)["params"]["value"].get("paths")
     return list(paths) if isinstance(paths, list) else list(GENERATED_FILES_DEFAULT)
+
+
+def path_classes(db: Session | None, project_id: str | None) -> dict[str, list[str]]:
+    """The project's glob list per path class. A class never set — or a box whose pack does not
+    carry the rule — reads today's globs; an empty list means that class never matches."""
+    out = {k: list(v) for k, v in PATH_CLASSES_DEFAULT.items()}
+    if PATH_CLASSES_RULE not in LIBRARY or db is None:
+        return out
+    value = resolve(db, PATH_CLASSES_RULE, project_id)["params"]["value"] or {}
+    for k in out:
+        v = value.get(k)
+        if isinstance(v, list) and all(isinstance(g, str) for g in v):
+            out[k] = list(v)
+    return out
 
 
 def done_predicate_list(db: Session, project_id: str | None) -> list[dict]:

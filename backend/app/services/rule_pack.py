@@ -50,7 +50,7 @@ from app.version import __version__
 
 #: The primitive API this server provides. Bump the minor for additive changes, the major for
 #: a removed primitive or a new required param; the pinned fixtures then fail the PR (below).
-PRIMITIVE_API = "1.8.0"
+PRIMITIVE_API = "1.9.0"
 
 #: Raw Ed25519 public keys (hex) whose signatures are trusted. The graphban-rules signing job
 #: holds the matching private key; it never enters this repo. An empty tuple would refuse every pack.
@@ -160,6 +160,13 @@ register_primitive(Primitive(
     "generated_files", "checked",
     Enforcer("supervisor", "gbfleet until"),
     {"paths": Param("list")}))
+# GRPH-1496. `checked`: the delegation brief reads one glob list per path class for its lane
+# and task class and names the glob that matched; the server refuses nothing on it.
+register_primitive(Primitive(
+    "path_classes", "checked",
+    Enforcer("graphban_source", "app/services/delegation.py"),
+    {"frontend": Param("list"), "migration": Param("list"),
+     "mcp_tool": Param("list"), "docs": Param("list")}))
 register_primitive(Primitive(
     "evidence_attached", "checked",
     Enforcer("graphban_source", "app/services/items.py"),
