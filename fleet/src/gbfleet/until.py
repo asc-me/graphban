@@ -487,7 +487,7 @@ def _drain_live(wave, children, persist, planner, supervisor, limits, poll, slee
             observe.emit("drain_retry", detail=str(exc))
         finished = [c for c in children if not c.running]
         if finished:
-            _report_exits(finished, supervisor, wave)
+            _report_exits(finished, supervisor, wave, ledger=planner)
             _reap_all(wave, finished, client=planner, base_branch=base)
             children[:] = [c for c in children if c.running]
             persist()
@@ -924,7 +924,7 @@ def _loop(
             #
             # Idempotent: `child.reported` makes a second pass a no-op, so the common case
             # where `watch_tick` already reported the child costs nothing.
-            _report_exits(finished, supervisor, wave)
+            _report_exits(finished, supervisor, wave, ledger=planner)
             _reap_all(wave, finished, client=planner, base_branch=base)
             _release_delegated(delegated, owners, finished, held)
             children[:] = [c for c in children if c.running]
@@ -3085,7 +3085,7 @@ def _stop_children_holding_nothing(
     gone = [c for c in quitting if not c.running]
     if not gone:
         return
-    _report_exits(gone, supervisor, wave)
+    _report_exits(gone, supervisor, wave, ledger=planner)
     _reap_all(wave, gone, client=planner, base_branch=base)
 
 

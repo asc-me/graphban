@@ -9,8 +9,10 @@ from gbfleet.spawn import VendorLimit
 from gbfleet.supervisor import Limits, Wave
 from gbfleet.until import Report, _skip_exhausted, run
 
-from tests.test_supervisor import KEY
+from tests.test_capacity_ledger import _tap
+from tests.test_supervisor import KEY, _factory
 from tests.test_until import _clients
+from gbfleet.until import run
 
 SAID = "You've hit your limit · resets 12:20pm (America/New_York)"
 
@@ -84,3 +86,36 @@ def test_a_limit_continues_on_the_next_candidate_and_never_returns_to_the_exhaus
     assert len(asked) == 2 and asked[0] != asked[1]
     assert not result.wave.failures
     assert [e["adapter"] for e in result.as_json()["exhausted"]] == [asked[0]]
+
+
+def test_a_child_with_a_spend_record_reports_spend_to_the_headroom_ledger(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1477. Sabotage: drop `_report_child_spend` in `_report_exits` and `spend` is missing."""
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=1, cluster_items=[["GRPH-7"]], workers=0)
+    events, _ = _tap(planner)
+    run(
+        git_repo, _factory(scripts, "reports_its_tokens", adapter="gbagent"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="gbagent",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1), entitlements={"gbagent": ["ent-1"]},
+    )
+    spend = [e for e in events if e["event"] == "spend"]
+    assert spend and spend[0]["id"] == "ent-1" and spend[0]["tokens"] == 1100
+    assert [e["event"] for e in events if e["event"] != "spend"][:2] == ["spawn_start", "registered"]
+
+
+def test_a_child_without_a_spend_record_sends_no_spend_event(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=1, cluster_items=[["GRPH-7"]], workers=0)
+    events, _ = _tap(planner)
+    run(
+        git_repo, _factory(scripts, "works_then_exits", adapter="gbagent"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="gbagent",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+        limits=Limits(max_workers=1), entitlements={"gbagent": ["ent-1"]},
+    )
+    assert "spend" not in [e["event"] for e in events]

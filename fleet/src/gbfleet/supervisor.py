@@ -647,8 +647,28 @@ class NotAdmitted(VendorLimit):
     own reason as the words — nothing was launched, so nothing is reported as a limit hit."""
 
 
+def _spend_tokens(facts: dict) -> int | None:
+    """Total tokens from a vendor result record, or None when it reported none."""
+    if not any(k in facts for k in ("tokens_in", "tokens_out")):
+        return None
+    return int(facts.get("tokens_in") or 0) + int(facts.get("tokens_out") or 0)
+
+
+def _report_child_spend(wave: Wave, ledger: Graphban | None, child: Child,
+                        facts: dict) -> None:
+    """PRD-62 S3: headroom `spend` from the same record `wave.spend` already captured."""
+    tokens = _spend_tokens(facts)
+    if tokens is None or ledger is None or wave.ledger_off:
+        return
+    ents = wave.entitlements.get(child.adapter) or ()
+    if not ents:
+        return
+    seat = Seat(code="", server_url="", api_key="", entitlements=tuple(ents))
+    _report_event(wave, ledger, seat, "spend", tokens=tokens)
+
+
 def _report_event(wave: Wave, ledger: Graphban | None, seat: Seat, event: str,
-                  text: str = "") -> list[str]:
+                  text: str = "", *, tokens: int | None = None) -> list[str]:
     """Report `event` for each entitlement the seat's adapter runs on; return the refusals.
 
     Best effort, except that a `spawn_start` the server refuses (`admitted: false`) is
@@ -663,6 +683,8 @@ def _report_event(wave: Wave, ledger: Graphban | None, seat: Seat, event: str,
         args = {"id": ent, "event": event}
         if text:
             args["vendor_text"] = text
+        if event == "spend" and tokens is not None:
+            args["tokens"] = tokens
         try:
             got = ledger.call("report_entitlement_event", **args)
         except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
@@ -3383,7 +3405,8 @@ def substitution(asked: str | None, answered: str | None) -> tuple[str, str] | N
     return asked, answered
 
 
-def _report_exits(children: list[Child], client: Graphban, wave: "Wave | None" = None) -> None:
+def _report_exits(children: list[Child], client: Graphban, wave: "Wave | None" = None,
+                  *, ledger: Graphban | None = None) -> None:
     """PRD-38 D3, the exit report: what only this process saw about a child that has ended.
 
     Here rather than in `_reap_all` because reaping is the END of a wave and a child that
@@ -3419,6 +3442,7 @@ def _report_exits(children: list[Child], client: Graphban, wave: "Wave | None" =
             # workspace's `logs/` directory and the reap removes the worktree beside it, so
             # the two are ordered by what the POST needs, not by what this reading needs.
             wave.spend[child.branch] = {"adapter": child.adapter, **facts}
+            _report_child_spend(wave, ledger if ledger is not None else client, child, facts)
             # GRPH-982. The model that ANSWERED against the one that was asked for. `-m` is
             # passed through unchecked by at least one vendor and an unknown name is replaced
             # by the configured default with no warning anywhere — so a wave can run a model
