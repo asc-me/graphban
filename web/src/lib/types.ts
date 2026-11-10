@@ -3181,7 +3181,9 @@ export interface RuleFlowRule {
   /** Only on a `checked` rule; null when nothing has been recorded. */
   last_result?: RuleResult | null;
   /** `toggle` on a library rule (PRD-P63 D3); null on every other rule. */
-  control?: "toggle" | null;
+  control?: "toggle" | "select" | null;
+  /** Set when the project's own setting means the rule does not hold here (GRPH-1497). */
+  not_used_reason?: string | null;
   /** Library rules only: the resolved params and where they came from. */
   params?: RuleToggleValue<Record<string, RuleParamValue>> | null;
   /** Library rules only: the org has fixed this rule for every project. */

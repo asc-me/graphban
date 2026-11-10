@@ -21,6 +21,7 @@ import {
   useGitops,
   useRuleToggleLastChange,
   useRuleToggles,
+  useSetMemoryWriteMode,
   useSetRuleToggle,
 } from "@/lib/queries";
 import { relTime } from "@/lib/relTime";
@@ -65,6 +66,68 @@ export function LibraryRuleControls({ rule }: { rule: RuleFlowRule }) {
     );
   }
   return <ToggleBody rule={rule} />;
+}
+
+export const MEMORY_WRITE_MODES: { value: string; label: string; explain: string }[] = [
+  { value: "review", label: "Review", explain: "Every candidate waits for a person or an independent judge." },
+  { value: "auto", label: "Auto", explain: "A candidate the judge scores high enough is published; the rest wait." },
+  { value: "trusted", label: "Trusted", explain: "Candidates are published with no judge and no person assessing them." },
+];
+
+/** `memory.write_mode` (GRPH-1497): the project's mode and what it means; a change needs a reason. */
+export function MemoryWriteModeControl({ rule }: { rule: RuleFlowRule }) {
+  const { activeId } = useProjectCtx();
+  const current = String(rule.value ?? "review");
+  const [pending, setPending] = React.useState<string | null>(null);
+  const [reason, setReason] = React.useState("");
+  const [error, setError] = React.useState<unknown>(null);
+  const mut = useSetMemoryWriteMode(activeId);
+  return (
+    <div className="flex flex-col gap-2 rounded-[8px] border border-[#2a333a] bg-bg p-2.5" data-testid="rules-write-mode">
+      <div role="radiogroup" aria-label="Memory write mode" className="flex flex-col gap-1.5">
+        {MEMORY_WRITE_MODES.map((m) => (
+          <label key={m.value} className="flex items-start gap-2 text-[12px] text-fg-2">
+            <input
+              type="radio"
+              name="memory-write-mode"
+              aria-label={m.label}
+              checked={current === m.value}
+              disabled={mut.isPending}
+              onChange={() => {
+                setPending(m.value);
+                setReason("");
+                setError(null);
+              }}
+            />
+            <span>
+              <span className="text-fg">{m.label}</span> — {m.explain}
+            </span>
+          </label>
+        ))}
+      </div>
+      {pending && (
+        <ReasonForm
+          what={`Set mode to ${pending}`}
+          reason={reason}
+          onReason={setReason}
+          saving={mut.isPending}
+          onSubmit={() =>
+            reason.trim() &&
+            mut.mutate(
+              { mode: pending, reason: reason.trim() },
+              { onSuccess: () => setPending(null), onError: (e) => setError(e) },
+            )
+          }
+          onCancel={() => {
+            setPending(null);
+            setError(null);
+          }}
+        />
+      )}
+      {error !== null && <ToggleError err={error} />}
+      <LastChange ruleId={rule.id} />
+    </div>
+  );
 }
 
 function SourceChip({ source, testId }: { source: RuleToggleSource | string | null | undefined; testId: string }) {

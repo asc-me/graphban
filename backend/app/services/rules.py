@@ -152,6 +152,10 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
     Rule("memory.independent_adjudication", "learn", "Agents do not publish their own memory",
          "An agent may discard its candidate shard; only an independent judge publishes one.",
          "advisory", _src("app/services/memory.py", "agent_publish"), "code", channel="doc"),
+    Rule("memory.write_mode", "learn", "Memory write mode",
+         "Whether a candidate shard waits for review, is published on a judge's score, or is "
+         "published with no assessment at all (trusted). A person sets it, with a reason.",
+         "advisory", _src("app/services/memory.py"), "db", channel="doc"),
     Rule("memory.write_access", "learn", "Changing memory needs write access",
          "Retiring, restoring or applying recommendations to a shard needs write access to its "
          "project, or to at least one project when the shard has none.",
@@ -326,6 +330,16 @@ def _db_value(rule: Rule, view) -> dict:
 
 
 BUDGET_CAP = "plan.budget_cap"
+MEMORY_WRITE_MODE = "memory.write_mode"
+ADJUDICATION = "memory.independent_adjudication"
+
+
+def _write_mode(db: Session, project_id: str | None) -> str:
+    from app.models import Project
+    from app.services import memory
+    p = db.get(Project, project_id) if project_id else None
+    mode = p.memory_write_mode if p else "review"
+    return mode if mode in memory.WRITE_MODES else "review"
 
 
 def _budget_cap_value(db: Session, project_id: str | None) -> dict:
@@ -350,12 +364,18 @@ def registry(db: Session, project_id: str | None, view=None) -> list[dict]:
             "enforcer": _enforcer_out(r.enforcer), "truth": r.truth, "scope": r.scope,
             "models": list(r.models), "value": None, "source": None, "control": None,
         }
-        if r.truth == "db":
+        if r.id == MEMORY_WRITE_MODE:
+            d["value"], d["source"], d["control"] = _write_mode(db, project_id), "project", "select"
+        elif r.truth == "db":
             v = _budget_cap_value(db, project_id) if r.id == BUDGET_CAP else _db_value(r, view)
             d["value"], d["source"] = v["value"], v["source"]
             # Setting a gitops value moves unmeasured -> advisory, never to enforced.
             if v["source"] == "unmeasured" and r.gitops_field and r.id != BUDGET_CAP:
                 d["enforcement"], d["channel"] = "unmeasured", None
+        if r.id == ADJUDICATION and _write_mode(db, project_id) == "trusted":
+            # GRPH-1497: a rule drawn must not read stronger than what holds it.
+            d["not_used_reason"] = ("this project publishes agent memory without adjudication "
+                                    f"({MEMORY_WRITE_MODE} = trusted)")
         out.append(d)
     return out + _library_entries(db, project_id)
 
@@ -440,6 +460,8 @@ def rule_used(rule: dict, model: str | None) -> bool:
     """Per rule, from the registry's `models`: an unknown model (unmeasured) uses everything."""
     if rule.get("control") == "toggle" and rule["value"] is not True:
         return False
+    if rule.get("not_used_reason"):
+        return False
     if model is None:
         return True
     if model not in rule["models"]:
@@ -522,6 +544,7 @@ def flow(db: Session, project_id: str | None, user_id: str | None = None) -> dic
                 continue
             used = rule_used(n, model)
             label = None if used else (
+                n["not_used_reason"] if n.get("not_used_reason") else
                 TOGGLED_OFF_LABEL if n.get("control") == "toggle" and n["value"] is not True
                 else NOT_USED_LABEL)
             on.append(dict(n, used=used, label=label))
