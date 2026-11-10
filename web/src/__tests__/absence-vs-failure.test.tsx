@@ -23,6 +23,7 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ActivityView } from "@/features/activity/ActivityView";
+import { FeedbackKitView } from "@/features/feedback/FeedbackKitView";
 import { CodeGraphView } from "@/features/code/CodeGraphView";
 import { OutpostsView } from "@/features/fleet/OutpostsView";
 import { LinksGraphView } from "@/features/links/LinksGraphView";
@@ -234,5 +235,14 @@ describe("Build surfaces: a failed fetch is not an empty graph or catalog", () =
     expect(await screen.findByText(FAILED_COPY)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
     expect(screen.queryByText(/no tools are registered/i)).not.toBeInTheDocument();
+  });
+
+  it("Feedback Kit names the failure instead of rendering the embed snippet", async () => {
+    show(<FeedbackKitView />);
+    expect(await screen.findByText(FAILED_COPY)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+    expect(screen.queryByText(/embed snippet/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/live preview/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no token minted yet/i)).not.toBeInTheDocument();
   });
 });
