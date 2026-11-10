@@ -70,6 +70,12 @@ function guidanceData(over: Partial<import("@/lib/types").HarnessGuidance> = {})
       window_days: 90, floor: 5, attempts: 12, supervisors_served: 1,
       generated_at: new Date().toISOString(),
     },
+    verdict_rules: [
+      { id: "PREFER", detail: "≥80% signed off with at least 5 finished attempts in the window." },
+      { id: "OK", detail: "65%–79% signed off." },
+      { id: "AVOID", detail: "Under 65%." },
+      { id: "PROBE", detail: "No pick above the floor." },
+    ],
     fleet_status_text: '{"agents":[],"measured":[]}',
     ...over,
   };
@@ -96,6 +102,14 @@ vi.mock("@/lib/queries", async () => {
     useFleet: vi.fn(() => ({ data: { profile: null, policy: null }, refetch: vi.fn() })),
   };
 });
+
+/** The detail panel for the first grid cell — the per-cell facts live there now. */
+async function openFirstCell() {
+  const user = userEvent.setup();
+  const cells = await screen.findAllByTestId("harness-grid-cell");
+  await user.click(cells[0]);
+  return screen.findByTestId("harness-cell-panel");
+}
 
 function show() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -168,9 +182,10 @@ describe("Harness page", () => {
 
   it("shows a rate with the sample count that earns it", async () => {
     show();
-    expect(await screen.findByTestId("harness-rate")).toHaveTextContent("75%");
-    expect(screen.getByText(/9\/12 signed off/)).toBeInTheDocument();
-    expect(screen.getByTestId("harness-sampling")).toHaveTextContent(
+    await openFirstCell();
+    expect(screen.getByTestId("harness-panel-rate")).toHaveTextContent("75%");
+    expect(screen.getByTestId("harness-panel-xy")).toHaveTextContent("9/12 signed off");
+    expect(screen.getByTestId("harness-panel-sampling")).toHaveTextContent(
       "first choice 6 · fallback 4 · explicit 2 · unknown 0",
     );
   });
@@ -181,7 +196,8 @@ describe("Harness page", () => {
                below_floor_count: 1 }),
     );
     show();
-    expect(await screen.findByTestId("harness-below-floor")).toHaveTextContent(
+    await openFirstCell();
+    expect(screen.getByTestId("harness-below-floor")).toHaveTextContent(
       "below the floor — 3 of 5 attempts",
     );
     expect(screen.getByTestId("harness-floor-note")).toHaveTextContent("1 of 1 cells");
@@ -198,16 +214,17 @@ describe("Harness page", () => {
       }),
     );
     show();
-    expect(await screen.findByTestId("harness-skew")).toHaveTextContent(
+    await openFirstCell();
+    expect(screen.getByTestId("harness-skew")).toHaveTextContent(
       "sampled by preference — 90% first choice",
     );
-    expect(screen.getByTestId("harness-rate")).toHaveTextContent("90%");
-    expect(screen.getByText(/9\/10 signed off/)).toBeInTheDocument();
+    expect(screen.getByTestId("harness-panel-rate")).toHaveTextContent("90%");
+    expect(screen.getByTestId("harness-panel-xy")).toHaveTextContent("9/10 signed off");
   });
 
   it("shows no badge when the sampling is mixed", async () => {
     show();
-    expect(await screen.findByTestId("harness-cell")).toBeInTheDocument();
+    await openFirstCell();
     expect(screen.queryByTestId("harness-skew")).not.toBeInTheDocument();
   });
 
@@ -221,19 +238,20 @@ describe("Harness page", () => {
       }),
     );
     show();
-    expect(await screen.findByTestId("harness-cost")).toHaveTextContent(
+    await openFirstCell();
+    expect(screen.getByTestId("harness-panel-cost")).toHaveTextContent(
       "not comparable: 3 of 11 attempts reported tokens",
     );
-    expect(screen.getByTestId("harness-cost")).not.toHaveTextContent("0 tokens");
+    expect(screen.getByTestId("harness-panel-cost")).not.toHaveTextContent("0 tokens");
   });
 
   it("marks a thin week in the series and leaves an unmeasured week absent", async () => {
     show();
-    const series = await screen.findByTestId("harness-series");
-    const points = within(series).getAllByTestId("harness-point");
-    expect(points).toHaveLength(2);
-    expect(points[0]).toHaveAttribute("data-below-floor", "true");
-    expect(points[1]).toHaveAttribute("data-below-floor", "false");
+    await openFirstCell();
+    const bars = screen.getByTestId("harness-panel-weeks").querySelectorAll("[data-thin]");
+    expect(bars).toHaveLength(2);
+    expect(bars[0]).toHaveAttribute("data-thin", "true");
+    expect(bars[1]).toHaveAttribute("data-thin", "false");
   });
 
   it("offers version history and flags a cell that is not the current build", async () => {
@@ -247,10 +265,9 @@ describe("Harness page", () => {
       }),
     );
     show();
-    expect(await screen.findByTestId("harness-old-version")).toHaveTextContent(
-      "not the current version",
-    );
+    await openFirstCell();
     expect(screen.getByTestId("harness-versions-seen")).toHaveTextContent("0.23.0, 0.100.0");
+    expect(screen.getByTestId("harness-versions-seen")).toHaveTextContent("not current");
     expect(screen.getByLabelText("Binary versions")).toBeInTheDocument();
   });
 
@@ -263,7 +280,8 @@ describe("Harness page", () => {
       }),
     );
     show();
-    const overlay = await screen.findByTestId("harness-platform");
+    await openFirstCell();
+    const overlay = screen.getByTestId("harness-platform");
     expect(overlay).toHaveTextContent("platform average 71% across 4 organisations (n 50–199)");
   });
 
@@ -277,7 +295,8 @@ describe("Harness page", () => {
       }),
     );
     show();
-    expect(await screen.findByTestId("harness-platform")).toHaveTextContent(
+    await openFirstCell();
+    expect(screen.getByTestId("harness-platform")).toHaveTextContent(
       "fewer than three organisations contribute here",
     );
   });
@@ -307,7 +326,8 @@ describe("Harness page", () => {
       }),
     );
     show();
-    expect(await screen.findByTestId("harness-by-project")).toHaveTextContent(
+    await openFirstCell();
+    expect(screen.getByTestId("harness-by-project")).toHaveTextContent(
       "p_one 6/6 · p_two 3/6",
     );
   });
@@ -357,11 +377,13 @@ describe("Harness page", () => {
     expect(await screen.findByTestId("harness-coverage")).toHaveTextContent(
       "Coverage 70% — 7/10 attempts tagged a leaf",
     );
-    expect(screen.getByTestId("harness-family-label")).toHaveTextContent("family rollup");
-    const leaf = screen.getByTestId("harness-leaf");
+    const strip = screen.getByTestId("harness-leaf-strip");
+    expect(strip.querySelector("[data-leaf='B5']")).toHaveAttribute("data-clears", "false");
+    await userEvent.setup().click(screen.getByRole("button", { name: /^Expand B into/ }));
+    const leaf = screen.getByRole("button", { name: /^gbagent qwen3\.6 B5:/ });
     expect(leaf).toHaveAttribute("data-below-floor", "true");
-    expect(leaf).toHaveTextContent("B5");
-    expect(leaf).toHaveTextContent("below the floor");
+    expect(leaf).toHaveTextContent("2/4");
+    expect(leaf).toHaveTextContent("floor");
   });
 
   it("shows an other cell with its count rather than hiding it", async () => {
@@ -372,7 +394,10 @@ describe("Harness page", () => {
       }),
     );
     show();
-    expect(await screen.findByTestId("harness-other")).toHaveTextContent("other — 3");
+    const other = await screen.findByRole("button", { name: /^gbagent qwen3\.6 other:/ });
+    // The fixture's counts, as served — the cell is shown, not hidden or zeroed.
+    expect(other).toHaveTextContent("9/3");
+    expect(screen.getAllByTestId("harness-grid-col").at(-1)).toHaveTextContent("Other");
   });
 
   it("shows natural and probe as two numbers, never a sum", async () => {
@@ -388,7 +413,8 @@ describe("Harness page", () => {
       }),
     );
     show();
-    const samples = await screen.findByTestId("harness-samples");
+    await openFirstCell();
+    const samples = screen.getByTestId("harness-samples");
     expect(samples).toHaveTextContent("natural 4/4");
     expect(samples).toHaveTextContent("probe 0/2");
     expect(samples).not.toHaveTextContent("6");
@@ -412,9 +438,10 @@ describe("Harness page", () => {
       }),
     );
     show();
-    expect(await screen.findByTestId("harness-utilization")).toHaveTextContent("median 4 turns");
-    expect(screen.getByTestId("harness-build-review-cost")).toHaveTextContent("cost of build");
-    expect(screen.getByTestId("harness-build-review-cost")).toHaveTextContent("cost of review");
+    await openFirstCell();
+    expect(screen.getByTestId("harness-utilization")).toHaveTextContent("median 4 turns");
+    expect(screen.getByTestId("harness-panel-cost")).toHaveTextContent("1,000 tokens per signed-off item");
+    expect(screen.getByTestId("harness-panel-review-cost")).toHaveTextContent("not comparable: 0 of 3 reviews reported tokens");
   });
 
   it("labels F cells by touchpoint overlap and greys them under five checks", async () => {
@@ -437,7 +464,7 @@ describe("Harness page", () => {
 
   it("composes the profile and policy editors on the performance tab", async () => {
     show();
-    expect(await screen.findByTestId("harness-cell")).toBeInTheDocument();
+    await screen.findAllByTestId("harness-grid-cell");
     expect(screen.getByTestId("fleet-profile")).toBeInTheDocument();
     expect(screen.getByTestId("fleet-policy")).toBeInTheDocument();
     expect(screen.getByLabelText("Per-period token cap")).toBeInTheDocument();
@@ -448,7 +475,7 @@ describe("Harness page", () => {
 describe("Harness tabs", () => {
   it("renders four tabs, Capacity last, and defaults to Performance", async () => {
     show();
-    await screen.findByTestId("harness-cell");
+    await screen.findAllByTestId("harness-grid-cell");
     const tabs = screen.getAllByTestId("harness-tab");
     expect(tabs).toHaveLength(4);
     expect(tabs[0]).toHaveAttribute("data-tab", "performance");
@@ -462,7 +489,7 @@ describe("Harness tabs", () => {
 
   it("shows the SERVED badge on Guidance when routing was served", async () => {
     show();
-    await screen.findByTestId("harness-cell");
+    await screen.findAllByTestId("harness-grid-cell");
     const guidanceTab = screen.getAllByTestId("harness-tab")[1];
     expect(await within(guidanceTab).findByTestId("harness-tab-badge")).toHaveTextContent("SERVED");
   });
@@ -470,7 +497,7 @@ describe("Harness tabs", () => {
   it("shows no SERVED badge on Guidance when nothing has been served", async () => {
     harnessGuidance.mockResolvedValueOnce(guidanceData({ routing: [], fleet_status_text: "" }));
     show();
-    await screen.findByTestId("harness-cell");
+    await screen.findAllByTestId("harness-grid-cell");
     const guidanceTab = screen.getAllByTestId("harness-tab")[1];
     await userEvent.setup().click(guidanceTab);
     // The guidance payload has loaded (empty-state copy is rendered) before asserting absence.
@@ -481,12 +508,14 @@ describe("Harness tabs", () => {
   it("switches to the Guidance tab and shows the routing matrix and grading rules", async () => {
     show();
     const user = userEvent.setup();
-    await screen.findByTestId("harness-cell");
+    await screen.findAllByTestId("harness-grid-cell");
     const tabs = screen.getAllByTestId("harness-tab");
     await user.click(tabs[1]);
     expect(await screen.findByTestId("guidance-matrix")).toBeInTheDocument();
     expect(screen.getByTestId("guidance-grading-rules")).toBeInTheDocument();
-    expect(screen.getAllByTestId("guidance-rule")).toHaveLength(6);
+    expect(screen.getAllByTestId("guidance-rule").map((r) => r.getAttribute("data-rule"))).toEqual([
+      "PREFER", "OK", "AVOID", "PROBE",
+    ]);
   });
 
   it("guidance matrix has one cell per returned function and band with payload verdict", async () => {
@@ -501,7 +530,7 @@ describe("Harness tabs", () => {
     harnessGuidance.mockResolvedValueOnce(guidanceData({ routing }));
     show();
     const user = userEvent.setup();
-    await screen.findByTestId("harness-cell");
+    await screen.findAllByTestId("harness-grid-cell");
     await user.click(screen.getAllByTestId("harness-tab")[1]);
     const cells = await screen.findAllByTestId("guidance-matrix-cell");
     const served = cells.filter((c) => c.getAttribute("data-empty") !== "true");
@@ -523,7 +552,7 @@ describe("Harness tabs", () => {
     }));
     show();
     const user = userEvent.setup();
-    await screen.findByTestId("harness-cell");
+    await screen.findAllByTestId("harness-grid-cell");
     await user.click(screen.getAllByTestId("harness-tab")[1]);
     const cells = await screen.findAllByTestId("guidance-matrix-cell");
     const cell = cells.find((c) => c.getAttribute("data-band") === "M" && c.getAttribute("data-empty") !== "true");
@@ -535,7 +564,24 @@ describe("Harness tabs", () => {
     expect(within(cell!).queryByTestId("guidance-cell-confidence")).toBeNull();
   });
 
-  it("Copy on Guidance writes the fleet_status text", async () => {
+  it("Copy on Guidance writes the served routing text, and shows that text", async () => {
+    const clipSpy = vi.spyOn(
+      await import("@/lib/clipboard"),
+      "copyText",
+    ).mockResolvedValue(true);
+    const served = "# gbfleet routing guidance · GRPH\n[B5 React]\n  M  PREFER gbagent:qwen3.6  80%";
+    harnessGuidance.mockResolvedValueOnce(guidanceData({ served_text: served }));
+    show();
+    const user = userEvent.setup();
+    await screen.findAllByTestId("harness-grid-cell");
+    await user.click(screen.getAllByTestId("harness-tab")[1]);
+    expect(await screen.findByTestId("guidance-fleet-status")).toHaveTextContent("PREFER gbagent:qwen3.6");
+    await user.click(screen.getByTestId("guidance-fleet-status-copy"));
+    expect(clipSpy).toHaveBeenCalledWith(served);
+    clipSpy.mockRestore();
+  });
+
+  it("an older server with no served text falls back to the fleet_status text", async () => {
     const clipSpy = vi.spyOn(
       await import("@/lib/clipboard"),
       "copyText",
@@ -544,7 +590,7 @@ describe("Harness tabs", () => {
     harnessGuidance.mockResolvedValueOnce(guidanceData({ fleet_status_text: body }));
     show();
     const user = userEvent.setup();
-    await screen.findByTestId("harness-cell");
+    await screen.findAllByTestId("harness-grid-cell");
     await user.click(screen.getAllByTestId("harness-tab")[1]);
     await user.click(await screen.findByTestId("guidance-fleet-status-copy"));
     expect(clipSpy).toHaveBeenCalledWith(body);
@@ -567,7 +613,7 @@ describe("Harness tabs", () => {
     });
     show();
     const user = userEvent.setup();
-    await screen.findByTestId("harness-cell");
+    await screen.findAllByTestId("harness-grid-cell");
     const tabs = screen.getAllByTestId("harness-tab");
     await user.click(tabs[2]);
     expect(await screen.findByTestId("harness-cards")).toBeInTheDocument();
@@ -596,7 +642,7 @@ describe("Harness tabs", () => {
       rules: ["R1", "R2", "R3", "R4", "R5", "R6", "R7"], lessons_drafted: [], window_days: 90, floor: 5,
     });
     show();
-    await screen.findByTestId("harness-cell");
+    await screen.findAllByTestId("harness-grid-cell");
     const changesTab = screen.getAllByTestId("harness-tab")[2];
     const badge = await within(changesTab).findByTestId("harness-tab-badge");
     expect(badge).toHaveTextContent(/^2$/);
@@ -656,7 +702,7 @@ describe("Harness tabs", () => {
     const row = (await screen.findAllByTestId("harness-effort-row")).find((r) => r.textContent?.includes("local:qwen"))!;
     const s = within(row).getAllByTestId("harness-effort-band").find((b) => b.querySelector("[data-band='S']"))!;
     expect(s.querySelector("[data-band='S']")).toHaveAttribute("data-below-floor", "true");
-    expect(s).toHaveTextContent("33%");
+    expect(s).toHaveTextContent("33");
     const l = within(row).getAllByTestId("harness-effort-band").find((b) => b.querySelector("[data-band='L']"))!;
     expect(l.querySelector("[data-band='L']")).toHaveAttribute("data-below-floor", "true");
     expect(l).toHaveTextContent("—");
@@ -665,39 +711,60 @@ describe("Harness tabs", () => {
   it("shows the generation stamp and As served on the Guidance tab", async () => {
     show();
     const user = userEvent.setup();
-    await screen.findByTestId("harness-cell");
+    await screen.findAllByTestId("harness-grid-cell");
     const tabs = screen.getAllByTestId("harness-tab");
     await user.click(tabs[1]);
     const asServed = await screen.findByTestId("guidance-as-served");
     expect(asServed).toBeInTheDocument();
     expect(screen.getByTestId("guidance-fleet-status")).toHaveTextContent('{"agents":[],"measured":[]}');
-    expect(within(asServed).getByText("Nothing here is hidden from the agents.")).toBeInTheDocument();
-    expect(screen.getByTestId("guidance-generation-stamp")).toHaveTextContent("window 90d");
+    expect(asServed).toHaveTextContent("Nothing here is hidden from the agents.");
+    expect(screen.getByTestId("guidance-generation-stamp")).toHaveTextContent("90d window · floor 5 · 12 attempts");
+    expect(screen.getByTestId("guidance-generation-stamp")).toHaveTextContent("served to 1 supervisor");
   });
 
-  it("renders grading rule thresholds from the fetched payload", async () => {
+  it("renders the verdict rules from the fetched payload", async () => {
     harnessGuidance.mockResolvedValueOnce(guidanceData({
-      grading_rules: [
-        { id: "R2", title: "Demote a cell", detail: "demote", thresholds: { min_finished: 6, max_rate: 0.25 } },
-      ],
+      verdict_rules: [{ id: "AVOID", detail: "Under 61% on this server." }],
     }));
     show();
     const user = userEvent.setup();
-    await screen.findByTestId("harness-cell");
+    await screen.findAllByTestId("harness-grid-cell");
     await user.click(screen.getAllByTestId("harness-tab")[1]);
     const rule = await screen.findByTestId("guidance-rule");
-    expect(rule).toHaveAttribute("data-rule", "R2");
-    expect(screen.getByTestId("guidance-rule-thresholds")).toHaveTextContent("max_rate: 0.25");
+    expect(rule).toHaveAttribute("data-rule", "AVOID");
+    expect(rule).toHaveTextContent("Under 61% on this server.");
   });
 
-  it("CALL sabotage: empty grading_rules leaves the rules section empty", async () => {
-    harnessGuidance.mockResolvedValueOnce(guidanceData({ grading_rules: [] }));
+  it("CALL sabotage: no verdict_rules leaves the rules section saying so", async () => {
+    harnessGuidance.mockResolvedValueOnce(guidanceData({ verdict_rules: undefined }));
     show();
     const user = userEvent.setup();
-    await screen.findByTestId("harness-cell");
+    await screen.findAllByTestId("harness-grid-cell");
     await user.click(screen.getAllByTestId("harness-tab")[1]);
     expect(await screen.findByTestId("guidance-grading-rules")).toBeInTheDocument();
     expect(screen.queryAllByTestId("guidance-rule")).toHaveLength(0);
+    expect(screen.getByTestId("guidance-grading-rules")).toHaveTextContent("does not send its verdict rules");
+  });
+
+  it("shows the server's verdict, confidence, pick and fallback in a guidance cell", async () => {
+    harnessGuidance.mockResolvedValueOnce(guidanceData({
+      routing: [{
+        function: "B5", label: "React component and state", effort_band: "S", verdict: "PREFER",
+        confidence: "high", attempts: 10, signed_off: 9, rate: 0.9, pick: "gbagent:qwen3.6",
+        evidence: "90% · 9/10", fallback: "cursor:composer", fallback_rate: 0.8, cheaper: false,
+      }],
+    }));
+    show();
+    const user = userEvent.setup();
+    await screen.findAllByTestId("harness-grid-cell");
+    await user.click(screen.getAllByTestId("harness-tab")[1]);
+    const row = await screen.findByTestId("guidance-matrix-row");
+    expect(row).toHaveTextContent("React component and state");
+    const cell = within(row).getAllByTestId("guidance-matrix-cell").find((c) => c.getAttribute("data-band") === "S")!;
+    expect(within(cell).getByTestId("guidance-cell-verdict")).toHaveTextContent("PREFER");
+    expect(within(cell).getByTestId("guidance-cell-confidence")).toHaveTextContent("high");
+    expect(cell).toHaveTextContent("90% · 9/10");
+    expect(cell).toHaveTextContent("then cursor:composer 80%");
   });
 });
 
@@ -730,7 +797,7 @@ describe("Harness probe panel", () => {
     harness.mockResolvedValueOnce(report({}));
     show();
     const user = userEvent.setup();
-    await screen.findByTestId("harness-cell");
+    await screen.findAllByTestId("harness-grid-cell");
     const tabs = screen.getAllByTestId("harness-tab");
     await user.click(tabs[2]);
     const estimate = await screen.findByTestId("harness-probe-estimate");
@@ -743,7 +810,7 @@ describe("Harness probe panel", () => {
     harness.mockResolvedValueOnce(report({}));
     show();
     const user = userEvent.setup();
-    await screen.findByTestId("harness-cell");
+    await screen.findAllByTestId("harness-grid-cell");
     const tabs = screen.getAllByTestId("harness-tab");
     await user.click(tabs[2]);
     const group = await screen.findByTestId("harness-probe-group");
@@ -758,7 +825,7 @@ describe("Harness probe panel", () => {
     harness.mockResolvedValueOnce(report({}));
     show();
     const user = userEvent.setup();
-    await screen.findByTestId("harness-cell");
+    await screen.findAllByTestId("harness-grid-cell");
     const tabs = screen.getAllByTestId("harness-tab");
     await user.click(tabs[2]);
     await screen.findByTestId("harness-probe-panel");
@@ -776,7 +843,7 @@ describe("Harness probe panel", () => {
     }));
     show();
     const user = userEvent.setup();
-    await screen.findByTestId("harness-cell");
+    await screen.findAllByTestId("harness-grid-cell");
     const tabs = screen.getAllByTestId("harness-tab");
     await user.click(tabs[2]);
     await screen.findByTestId("harness-probe-panel");
@@ -797,7 +864,7 @@ describe("Harness probe panel", () => {
     }));
     show();
     const user = userEvent.setup();
-    await screen.findByTestId("harness-cell");
+    await screen.findAllByTestId("harness-grid-cell");
     const tabs = screen.getAllByTestId("harness-tab");
     await user.click(tabs[2]);
     await screen.findByTestId("harness-probe-panel");
@@ -825,7 +892,7 @@ describe("Harness probe panel", () => {
     }));
     show();
     const user = userEvent.setup();
-    await screen.findByTestId("harness-cell");
+    await screen.findAllByTestId("harness-grid-cell");
     const tabs = screen.getAllByTestId("harness-tab");
     await user.click(tabs[2]);
     await screen.findByTestId("harness-probe-panel");
@@ -841,7 +908,7 @@ describe("Harness probe panel", () => {
     harness.mockResolvedValueOnce(report({ probe_suggestions: [] }));
     show();
     const user = userEvent.setup();
-    await screen.findByTestId("harness-cell");
+    await screen.findAllByTestId("harness-grid-cell");
     const tabs = screen.getAllByTestId("harness-tab");
     await user.click(tabs[2]);
     await screen.findByTestId("harness-no-cards");
@@ -857,7 +924,7 @@ describe("Harness probe panel", () => {
     harness.mockResolvedValueOnce(report({}));
     show();
     const user = userEvent.setup();
-    await screen.findByTestId("harness-cell");
+    await screen.findAllByTestId("harness-grid-cell");
     const tabs = screen.getAllByTestId("harness-tab");
     await user.click(tabs[2]);
     const group = await screen.findByTestId("harness-probe-group");
@@ -921,12 +988,15 @@ describe("Harness probe panel", () => {
       show();
       const user = userEvent.setup();
       await screen.findByTestId("harness-grid");
-      await user.click(screen.getByRole("button", { name: /A.*family · expand/ }));
+      await user.click(screen.getByRole("button", { name: /^Expand Change shape/ }));
       expect(screen.getAllByTestId("harness-grid-row")).toHaveLength(3);
+      // The family summary stays, and all five of its functions slide in beside it.
       expect(screen.getAllByTestId("harness-grid-col").map((c) => c.textContent)).toEqual([
-        "A1Localised fix", "A2Feature slice", "A3Behaviour-preserving refactor", "A4Schema and migration",
+        "A · Change shapeA1–A5 · 5 leaves", "Localised fixA1", "Feature sliceA2",
+        "Behaviour-preserving refactorA3", "Schema and migrationA4", "Deletion and cleanupA5",
       ]);
-      expect(screen.getAllByTestId("harness-grid-cell")).toHaveLength(12);
+      // 3 rows × (1 family + 4 functions with attempts); A5 has none, so it is a dash.
+      expect(screen.getAllByTestId("harness-grid-cell")).toHaveLength(15);
       const first = gridCell(/^claude opus A1:/);
       expect(first).toHaveTextContent("90%");
       expect(first).toHaveTextContent("9/10");
@@ -938,7 +1008,7 @@ describe("Harness probe panel", () => {
       show();
       const user = userEvent.setup();
       await screen.findByTestId("harness-grid");
-      await user.click(screen.getByRole("button", { name: /A.*family · expand/ }));
+      await user.click(screen.getByRole("button", { name: /^Expand Change shape/ }));
       const low = gridCell(/^claude sonnet A2:/);
       expect(low.getAttribute("data-below-floor")).toBe("true");
       expect(low).toHaveTextContent("1/3");
@@ -961,19 +1031,21 @@ describe("Harness probe panel", () => {
       show();
       const user = userEvent.setup();
       await screen.findByTestId("harness-grid");
-      await user.click(screen.getByRole("button", { name: /A.*family · expand/ }));
+      await user.click(screen.getByRole("button", { name: /^Expand Change shape/ }));
       expect(screen.getAllByTestId("harness-grid-col").map((c) => c.textContent)).toEqual(
-        expect.arrayContaining(["A1Localised fix", "BLayerfamily · expand", "other"]),
+        expect.arrayContaining(["Localised fixA1", "B · LayerB3–B5 · 2 leaves", "Otherno leaf"]),
       );
       const expandB = screen.getAllByTestId("harness-grid-family-expand").find((b) => b.getAttribute("data-family") === "B");
       await user.click(expandB!);
       expect(screen.getAllByTestId("harness-grid-col").map((c) => c.textContent)).toEqual(
-        expect.arrayContaining(["B5React component and state"]),
+        expect.arrayContaining(["React component and stateB5"]),
       );
       const rollup = gridCell(/^claude haiku B family rollup:/);
       expect(rollup.getAttribute("data-rollup")).toBe("true");
       expect(rollup).toHaveTextContent("2/3");
-      expect(screen.queryByRole("button", { name: /^claude haiku B5:/ })).not.toBeInTheDocument();
+      // A thin function still gets its own cell — dashed, tagged floor, numbers kept.
+      expect(gridCell(/^claude haiku B5:/)).toHaveAttribute("data-below-floor", "true");
+      expect(gridCell(/^claude haiku B5:/)).toHaveTextContent("1/2");
       expect(gridCell(/^claude opus B5:/)).toHaveTextContent("3/6");
       expect(gridCell(/^claude haiku other:/)).toHaveTextContent("2/4");
     });
@@ -983,7 +1055,7 @@ describe("Harness probe panel", () => {
       show();
       const user = userEvent.setup();
       await screen.findByTestId("harness-grid");
-      await user.click(screen.getByRole("button", { name: /A.*family · expand/ }));
+      await user.click(screen.getByRole("button", { name: /^Expand Change shape/ }));
       await user.click(gridCell(/^claude opus A1:/));
       const panel = await screen.findByTestId("harness-cell-panel");
       expect(within(panel).getByTestId("harness-panel-title")).toHaveTextContent("claude:opus");
@@ -1015,7 +1087,7 @@ describe("Harness probe panel", () => {
       show();
       const user = userEvent.setup();
       await screen.findByTestId("harness-grid");
-      await user.click(screen.getByRole("button", { name: /A.*family · expand/ }));
+      await user.click(screen.getByRole("button", { name: /^Expand Change shape/ }));
       await user.click(gridCell(/^alibaba A1:/));
       expect(screen.getByTestId("harness-panel-title").textContent).toBe("alibaba");
     });
@@ -1025,14 +1097,13 @@ describe("Harness probe panel", () => {
       show();
       const user = userEvent.setup();
       await screen.findByTestId("harness-grid");
-      await user.click(screen.getByRole("button", { name: /A.*family · expand/ }));
+      await user.click(screen.getByRole("button", { name: /^Expand Change shape/ }));
       expect(gridCell(/^claude sonnet A1:/)).toHaveTextContent("15/26");
       await user.click(gridCell(/^claude sonnet A1:/));
       expect(screen.getByTestId("harness-panel-bands")).toHaveTextContent("S 5/6 · M 10/20");
-      expect(screen.getByTestId("harness-panel-median")).toHaveTextContent("S 620s");
-      expect(screen.getByTestId("harness-panel-median")).toHaveTextContent("M 620s");
-      expect(screen.getByTestId("harness-panel-cost")).toHaveTextContent("S build");
-      expect(screen.getByTestId("harness-panel-cost")).toHaveTextContent("M build");
+      // Both bands agree, so one value is stated rather than repeated per band.
+      expect(screen.getByTestId("harness-panel-median")).toHaveTextContent(/^median620s per attempt$/);
+      expect(screen.getByTestId("harness-panel-cost")).toHaveTextContent("8,100 tokens per signed-off item");
       await user.click(screen.getByRole("button", { name: "S" }));
       expect(gridCell(/^claude sonnet A1:/)).toHaveTextContent("5/6");
       expect(screen.queryByRole("button", { name: /^claude opus A1:/ })).not.toBeInTheDocument();
@@ -1046,7 +1117,7 @@ describe("Harness probe panel", () => {
         .getAllByTestId("harness-effort-band")
         .find((b) => b.querySelector("[data-band='M']"))!;
       // M leaves on claude:opus: 26 signed off / 31 finished across A1–A4.
-      expect(m).toHaveTextContent("84%");
+      expect(m).toHaveTextContent("84");
     });
 
     it("a collapsed family shows which leaves have cleared the floor", async () => {

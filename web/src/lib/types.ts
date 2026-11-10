@@ -3110,17 +3110,32 @@ export interface HarnessGradingRule {
   thresholds: Record<string, number>;
 }
 
+export type HarnessVerdict = "PREFER" | "OK" | "AVOID" | "PROBE";
+
 export interface HarnessRoutingRow {
   function: string;
+  /** The served catalog label for `function`. Absent on a server that predates it. */
+  label?: string;
   effort_band: string;
-  verdict: string;
+  /** Graded on the server. A server that predates the grading sends measured / below_floor. */
+  verdict: HarnessVerdict | string;
+  confidence?: "high" | "medium" | "low";
   attempts: number;
+  signed_off?: number;
+  /** Null when the verdict is PROBE: nothing above the floor, so no rate is cited. */
+  rate?: number | null;
   pick: string;
   evidence: string;
   fallback: string | null;
+  fallback_rate?: number | null;
+  /** The pick won on cost within the margin, not on rate. */
+  cheaper?: boolean;
   layer?: string;
-  /** When absent, the UI must not invent PREFER/OK/AVOID/PROBE labels. */
-  confidence?: string | null;
+}
+
+export interface HarnessVerdictRule {
+  id: HarnessVerdict;
+  detail: string;
 }
 
 export interface HarnessGuidance {
@@ -3134,6 +3149,10 @@ export interface HarnessGuidance {
     supervisors_served: number;
     generated_at: string;
   };
+  /** How a routing cell becomes a verdict. Absent on a server that predates it. */
+  verdict_rules?: HarnessVerdictRule[];
+  /** The exact `routing_guidance` text fleet_status carries. */
+  served_text?: string;
   fleet_status_text: string;
 }
 

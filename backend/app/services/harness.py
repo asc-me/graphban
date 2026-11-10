@@ -2802,7 +2802,9 @@ def start_probe_run(db: Session, *, project_id: str, user_id: str, vendor: str, 
 def guidance(db: Session, project_id: str, *, caller_user_id: str | None = None,
              window_days: int | None = None) -> dict:
     """PRD-47 S12 — what gbfleet is actually served: routing per function and band, the
-    grading rules, the generation stamp, and the verbatim `fleet_status` text."""
+    verdict rules that grade it, the R-rule catalog, the generation stamp, and the exact
+    `routing_guidance` text `fleet_status` carries. The verdicts are decided here, once, so
+    the page and the supervisor read the same table — the page never re-grades a cell."""
     import json
 
     from app.services import delegation as delegation_svc
@@ -2815,66 +2817,150 @@ def guidance(db: Session, project_id: str, *, caller_user_id: str | None = None,
     status = fleet_svc.fleet_status(db, project_id, caller_user_id=caller_user_id)
     supervisors = sum(1 for a in status.get("agents") or []
                         if a.get("active_role") in ("planner", fleet_svc.ALL_IN_ONE))
+    rows = _routing_from_measured(measured, floor=FLOOR)
+    attempts = (harness_report.get("coverage") or {}).get("attempts") or 0
     return {
         "project_id": project_id,
         "grading_rules": harness_rules.rule_catalog(),
-        "routing": _routing_from_measured(measured, floor=FLOOR),
+        "verdict_rules": verdict_rules(),
+        "routing": rows,
         "generation_stamp": {
             "window_days": window,
             "floor": FLOOR,
-            "attempts": (harness_report.get("coverage") or {}).get("attempts") or 0,
+            "attempts": attempts,
             "supervisors_served": supervisors,
             "generated_at": _now().isoformat(),
         },
+        # The exact text fleet_status carries — read back from the status it built, never
+        # re-rendered here, so a drift between the two would show on the page.
+        "served_text": status.get("routing_guidance") or "",
         "fleet_status_text": json.dumps(status, indent=2, default=str),
     }
 
 
+#: A pick at or above this signed-off rate (above the floor) is PREFER.
+VERDICT_PREFER = 0.80
+#: At or above this, OK; under it, AVOID.
+VERDICT_OK = 0.65
+#: A cheaper measured pick within this many rate points of the best takes the cell.
+VERDICT_CHEAPER_MARGIN = 0.04
+#: Attempts at or above floor × this read as high confidence; above the floor, medium.
+VERDICT_HIGH_CONFIDENCE_MULTIPLE = 2
+
+VERDICT_ORDER = ("PREFER", "OK", "AVOID", "PROBE")
+_BAND_ORDER = {"S": 0, "M": 1, "L": 2}
+
+
+def verdict_rules() -> list[dict]:
+    """How a routing cell becomes a verdict. One place: the page and fleet_status read this."""
+    pct = lambda v: f"{round(v * 100)}%"  # noqa: E731
+    return [
+        {"id": "PREFER", "detail": (f"≥{pct(VERDICT_PREFER)} signed off with at least {FLOOR} "
+                                    "finished attempts in the window.")},
+        {"id": "OK", "detail": (f"{pct(VERDICT_OK)}–{round(VERDICT_PREFER * 100) - 1}% signed off — "
+                                f"or a cheaper pick within {round(VERDICT_CHEAPER_MARGIN * 100)} "
+                                "points of the best, which wins the tie.")},
+        {"id": "AVOID", "detail": (f"Under {pct(VERDICT_OK)}, and nothing measured does better for "
+                                   "the same function and band.")},
+        {"id": "PROBE", "detail": ("No pick above the floor. The most-attempted row is named, and "
+                                   "a spawn on it is a guess.")},
+    ]
+
+
+def _verdict_of(rate: float) -> str:
+    if rate >= VERDICT_PREFER:
+        return "PREFER"
+    if rate >= VERDICT_OK:
+        return "OK"
+    return "AVOID"
+
+
 def _routing_from_measured(measured: list[dict], *, floor: int) -> list[dict]:
-    """Per capability × effort band: the pick the measured layers support."""
+    """Per capability × effort band: the pick the measured project layer supports, graded.
+
+    Above-floor candidates rank by rate; one within `VERDICT_CHEAPER_MARGIN` of the best that
+    costs fewer tokens per sign-off takes the cell (both costs must be comparable). With
+    nothing above the floor the verdict is PROBE and the pick is the most-attempted row.
+    """
     buckets: dict[tuple[str, str], list[dict]] = {}
     for cell in measured:
         if cell.get("layer") != "project":
             continue
         cap = cell.get("capability") or "other"
         pick = f"{cell.get('vendor') or ''}:{cell.get('model') or ''}"
+        cost = cell.get("cost") or {}
+        tokens = cost.get("tokens_to_signoff") if cost.get("comparable") else None
         for band, stats in (cell.get("bands") or {}).items():
             n = int(stats.get("n") or 0)
             if n <= 0:
                 continue
-            rate = stats.get("value")
-            signed = round(float(rate or 0) * n) if rate is not None else None
+            rate = float(stats.get("value") or 0.0)
             buckets.setdefault((cap, band), []).append({
-                "pick": pick,
-                "rate": rate,
-                "n": n,
-                "signed_off": signed,
-                "layer": cell.get("layer"),
-                "below_floor": n < floor,
+                "pick": pick, "rate": rate, "n": n, "signed_off": round(rate * n),
+                "tokens": tokens, "layer": cell.get("layer"), "below_floor": n < floor,
             })
+    labels = CAPABILITY_LABELS
     rows: list[dict] = []
     for (cap, band), candidates in sorted(buckets.items()):
-        # Above-floor candidates outrank below-floor ones regardless of rate — a 1/1 unmeasured
-        # row must not beat a 45/50 measured one just because its rate is higher.
-        ranked = sorted(
-            candidates,
-            key=lambda c: (1 if c["below_floor"] else 0, -(c.get("rate") or 0), -c["n"]),
-        )
-        top = ranked[0]
-        fallback = ranked[1]["pick"] if len(ranked) > 1 else None
-        rate = top.get("rate")
-        signed = top.get("signed_off")
-        evidence = (f"{signed}/{top['n']} @ {rate}" if rate is not None and signed is not None
-                    else "not measured")
+        measured_c = sorted((c for c in candidates if not c["below_floor"]),
+                            key=lambda c: (-c["rate"], -c["n"], c["pick"]))
+        if not measured_c:
+            top = sorted(candidates, key=lambda c: (-c["n"], -c["rate"], c["pick"]))[0]
+            rows.append({
+                "function": cap, "label": labels.get(cap, cap), "effort_band": band,
+                "verdict": "PROBE", "confidence": "low",
+                "attempts": top["n"], "signed_off": top["signed_off"], "rate": None,
+                "pick": top["pick"],
+                "evidence": f"no pick above the floor · best has {top['signed_off']}/{top['n']}",
+                "fallback": None, "fallback_rate": None, "cheaper": False,
+                "layer": top["layer"],
+            })
+            continue
+        best = measured_c[0]
+        cheaper = next((c for c in measured_c[1:]
+                        if best["rate"] - c["rate"] <= VERDICT_CHEAPER_MARGIN
+                        and c["tokens"] is not None and best["tokens"] is not None
+                        and c["tokens"] < best["tokens"]), None)
+        pick = cheaper or best
+        nxt = next((c for c in measured_c if c is not pick), None)
+        verdict = "OK" if cheaper else _verdict_of(pick["rate"])
+        confidence = "high" if pick["n"] >= floor * VERDICT_HIGH_CONFIDENCE_MULTIPLE else "medium"
+        evidence = f"{round(pick['rate'] * 100)}% · {pick['signed_off']}/{pick['n']}"
+        if cheaper:
+            evidence += f" · within {round(VERDICT_CHEAPER_MARGIN * 100)} pts, cheaper"
         rows.append({
-            "function": cap,
-            "effort_band": band,
-            "verdict": "below_floor" if top["below_floor"] else "measured",
-            "attempts": top["n"],
-            "pick": top["pick"],
-            "evidence": evidence,
-            "fallback": fallback,
-            "layer": top.get("layer"),
+            "function": cap, "label": labels.get(cap, cap), "effort_band": band,
+            "verdict": verdict, "confidence": confidence,
+            "attempts": pick["n"], "signed_off": pick["signed_off"], "rate": round(pick["rate"], 3),
+            "pick": pick["pick"], "evidence": evidence,
+            "fallback": nxt["pick"] if nxt else None,
+            "fallback_rate": round(nxt["rate"], 3) if nxt else None,
+            "cheaper": bool(cheaper), "layer": pick["layer"],
         })
     return rows
+
+
+def routing_guidance_text(rows: list[dict], *, project_tag: str, window_days: int, floor: int,
+                          generated_at: str) -> str:
+    """The routing table as a supervisor reads it in fleet_status. Plain text, one line a band."""
+    lines = [
+        f"# gbfleet routing guidance · {project_tag}",
+        f"# generated {generated_at} · window {window_days}d · floor {floor}",
+        "# precedence: policy (filter) > this table > profile weights > matrix order",
+    ]
+    if not rows:
+        lines.append("# no finished attempts in the window — nothing to cite; resolve by matrix order")
+        return "\n".join(lines)
+    lines.append("")
+    by_fn: dict[str, list[dict]] = {}
+    for r in rows:
+        by_fn.setdefault(r["function"], []).append(r)
+    for fn, fn_rows in by_fn.items():
+        lines.append(f"[{fn} {fn_rows[0].get('label') or fn}]")
+        for r in sorted(fn_rows, key=lambda x: (_BAND_ORDER.get(x["effort_band"], 9), x["effort_band"])):
+            rate = "unmeasured" if r["rate"] is None else f"{round(r['rate'] * 100)}%"
+            tail = "  # guess — flag the spawn" if r["verdict"] == "PROBE" else ""
+            lines.append(f"  {r['effort_band']}  {r['verdict']:<6} {r['pick']:<28} {rate}{tail}")
+    lines += ["", "# rules"] + [f"#  {v['id']:<6} {v['detail']}" for v in verdict_rules()]
+    return "\n".join(lines)
 

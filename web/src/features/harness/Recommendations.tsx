@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Check, ChevronRight, X } from "lucide-react";
+import { Check, ChevronRight } from "lucide-react";
 
 import { useHarnessCards, useMarkHarnessCard } from "@/lib/queries";
 import type { HarnessCard, HarnessCardCell } from "@/lib/types";
@@ -232,15 +232,15 @@ function CardRow({
     <div
       data-testid="harness-card"
       data-rule={card.rule}
-      className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-3"
+      className="rounded-[12px] border border-line-2 bg-surface-2 px-[15px] py-[13px]"
     >
       <div className="flex items-start gap-3">
-        <span className="mt-0.5 rounded-full border border-line-2 px-1.5 py-0.5 font-mono text-[10px] text-faint">
+        <span className="mt-px flex-none rounded-full border border-line px-[7px] py-px font-mono text-[10px] text-muted">
           {card.rule}
         </span>
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-medium">{card.title}</div>
-          <p className="mt-0.5 text-body text-muted">{card.detail}</p>
+          <div className="text-[13px] font-medium text-fg">{card.title}</div>
+          <p className="mt-[3px] text-body leading-[1.55] text-muted">{card.detail}</p>
           {Array.isArray(card.draft?.projects) && (card.draft.projects as string[]).length > 0 && (
             <p data-testid="harness-card-projects" className="mt-1 font-mono text-small text-faint">
               projects: {(card.draft.projects as string[]).join(", ")}
@@ -277,7 +277,7 @@ function CardRow({
             aria-label={`Accept ${card.title}`}
             data-testid="harness-accept"
             onClick={() => onMark("accept")}
-            className="inline-flex items-center gap-1 rounded-[8px] border border-control px-2 py-1 text-[11.5px] hover:bg-surface"
+            className="inline-flex h-7 items-center gap-1 rounded-[8px] border border-[rgba(95,208,122,0.35)] bg-[rgba(95,208,122,0.08)] px-2.5 text-[11.5px] text-st-done hover:bg-[rgba(95,208,122,0.14)]"
           >
             <Check size={12} /> Accept
           </button>
@@ -286,9 +286,9 @@ function CardRow({
             aria-label={`Dismiss ${card.title}`}
             data-testid="harness-dismiss"
             onClick={() => onMark("dismiss")}
-            className="inline-flex items-center gap-1 rounded-[8px] border border-control px-2 py-1 text-[11.5px] text-muted hover:bg-surface"
+            className="inline-flex h-7 items-center rounded-[8px] border border-control bg-transparent px-2.5 text-[11.5px] text-muted hover:text-fg-2"
           >
-            <X size={12} /> Dismiss
+            Dismiss
           </button>
         </div>
       </div>
