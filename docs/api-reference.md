@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 344 of the 344. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 345 of the 345. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -28,6 +28,12 @@ Five public surfaces are mounted on the org host: `/{path_id}/feedback`,
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | GET | `/api/config` | none | Hosted mode and whether signup is open. The two switches the SPA needs before login. No secrets |
+
+## Playbook pack (GRPH-1491, PRD GRPH-P65)
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/api/playbooks` | JWT or project API key | The skills, loops and playbooks this deployment publishes, as one payload: `version`, `git_sha` (the same `settings.resolved_git_sha` `/health` reports) and `files`, one `{path, kind, sha256, body}` per entry with `kind` skill\|loop\|playbook. Baked at build time into the image and the native release from `backend/scripts/gban_playbooks.json` (`scripts/gen_playbooks.py`). `AGENTS.md` and `CLAUDE.md` are never entries. 503 when the pack is missing or a body does not hash to its `sha256` — nothing is served rather than a half-trusted pack. Unauthenticated is 401: the bodies are not on the open endpoint |
 
 ## Auth
 
