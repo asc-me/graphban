@@ -67,6 +67,22 @@ def test_default_search_excludes_reference_and_says_so(db, pid):
     opted = docs.search_docs(db, pid, q, include_reference=True)
     hits = [h for h in opted["results"] if h["kind"] == "reference"]
     assert hits and "reference_note" not in opted
+    assert all(h["status"] == "reference" for h in hits)
+    # An empty default result says reference docs were excluded, so a miss is not "none exist".
+    miss = docs.search_docs(db, pid, "quarantine")
+    assert not miss["results"] and "reference documents were excluded" in miss["note"]
+
+
+def test_search_reads_only_the_newest_version(db, pid):
+    v1 = _ref(db, pid, "## Old\nzebrafinch heuristics")
+    _ref(db, pid, "## New\nokapi heuristics")
+    assert not docs.search_docs(db, pid, "zebrafinch", include_reference=True)["results"]
+    assert docs.search_docs(db, pid, "okapi", include_reference=True)["results"]
+    # The older version is kept, readable, and still never governing.
+    old = docs.get_document(db, pid, v1["id"])
+    assert "zebrafinch" in old["chunks"][0]["text"] and old["governing"] is False
+    assert not any(c.governing for d in db.scalars(select(Document).where(
+        Document.kind == "reference")) for c in d.chunks)
 
 
 def test_links_listed_without_touching_the_prd_body(db, pid):
@@ -108,5 +124,20 @@ def test_mcp_agent_key_round_trip(client, auth, db, pid):
     bad = call("put_document", {"kind": "reference", "title": "R", "body": "x",
                                 "item_id": "NOPE-1"}, 3)
     assert "error" in bad or bad["result"].get("isError")
-    pre = call("put_document", {"kind": "preamble", "body": "x", "agent_id": "GRPH-A1"}, 4)
+    # A person's preamble first; the agent's attempt is refused and leaves it unchanged.
+    docs.put_document(db, project_id=pid, kind="preamble", body="person text", prd_id=None,
+                      created_by="user:owner")
+    pre = call("put_document", {"kind": "preamble", "body": "agent text", "agent_id": "GRPH-A1"}, 4)
     assert "person" in str(pre)
+    db.expire_all()
+    preambles = list(db.scalars(select(Document).where(
+        Document.project_id == pid, Document.kind == "preamble")))
+    assert [(p.version, p.governing) for p in preambles] == [(1, True)]
+    assert "person text" in preambles[0].chunks[0].text
+    found = call("search_docs", {"query": "quokka", "include_reference": True}, 5)
+    hits = found["result"]["structuredContent"]["results"]
+    assert hits and hits[0]["kind"] == "reference" and hits[0]["document_id"] == doc["id"]
+    item = items_svc.create_item(db, title="T", project_id=pid)
+    call("put_document", {"kind": "reference", "title": "I", "body": "y", "item_id": item.id}, 6)
+    det = call("get_item_details", {"id": item.id}, 7)["result"]["structuredContent"]
+    assert [r["title"] for r in det["reference_documents"]] == ["I"]

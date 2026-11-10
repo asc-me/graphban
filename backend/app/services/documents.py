@@ -247,16 +247,17 @@ def put_reference(
     if rows and rows[-1].content_hash == digest and rows[-1].prd_id == rid \
             and rows[-1].item_id == iid:
         return to_dict(rows[-1])  # same text, same links: not a new version
-    for r in rows:
-        for c in r.chunks:
-            c.governing = False
-    # `governing` stays False: a reference document is never the spec. The `screen` column
-    # carries the title so the (project, kind, set, screen, version) identity is per title.
+    # `governing` stays False on the row and on every chunk: a reference document is never the
+    # spec, at any version. The newest version is the one search reads; older ones are kept and
+    # read by id. The `screen` column carries the title so the (project, kind, set, screen,
+    # version) unique identity is per title.
     doc = Document(
         id=new_id(), project_id=project_id, kind=REFERENCE, title=title, screen=title,
         prd_id=rid, item_id=iid, version=(rows[-1].version + 1) if rows else 1,
         status="active", content_hash=digest, governing=False, created_by=created_by)
     _chunk(doc, body)
+    for c in doc.chunks:
+        c.governing = False
     db.add(doc)
     db.commit()
     return to_dict(doc)
@@ -491,6 +492,7 @@ def search_docs(
         .outerjoin(Document, DocumentChunk.document_id == Document.id)
         .where(DocumentChunk.project_id == project_id)).all()
     verdicts: dict[str, bool] = {}
+    latest_ref: dict[str, int] = {}
     for c, doc in rows:
         if doc is None:  # PRD baseline chunk
             status = "baseline" if c.governing else "superseded"
@@ -498,9 +500,17 @@ def search_docs(
                 continue
             hit = {"source_id": c.prd_id, "prd_id": c.prd_id, "kind": "prd", "status": status}
         else:
-            if doc.kind == REFERENCE:
-                if not include_reference or not c.governing:
-                    continue  # older versions are read by id, not searched
+            if doc.kind == REFERENCE and not doc.governing:
+                # Never the spec: only on request, only the newest version of each title
+                # (older versions are read by id), and every hit says `kind: "reference"`.
+                if not include_reference:
+                    continue
+                if doc.screen not in latest_ref:
+                    latest_ref[doc.screen] = max(db.scalars(select(Document.version).where(
+                        Document.project_id == project_id, Document.kind == REFERENCE,
+                        Document.set_id == "", Document.screen == doc.screen)))
+                if doc.version != latest_ref[doc.screen]:
+                    continue
                 cands.append(({"source_id": doc.id, "document_id": doc.id, "kind": REFERENCE,
                                "status": "reference", "version": c.version, "heading": c.heading,
                                "text": c.text, "content_hash": c.content_hash}, c.embedding))
@@ -551,7 +561,7 @@ def search_docs(
     if not hits:
         # Empty is not "no draft exists".
         out["note"] = ("no match; draft PRDs were excluded" if not include_drafts
-                       else "no match") + ("; reference documents were excluded"
-                                           if not include_reference else "") + (f" ({unbaselined} PRD(s) have no baseline)"
-                                           if unbaselined and not include_drafts else "")
+                       else "no match") + (
+            "; reference documents were excluded" if not include_reference else "") + (
+            f" ({unbaselined} PRD(s) have no baseline)" if unbaselined and not include_drafts else "")
     return out
