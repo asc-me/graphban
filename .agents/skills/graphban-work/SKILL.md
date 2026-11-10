@@ -15,6 +15,10 @@ Take one item, leave a receipt, hand it to review. Reading the repo is `graphban
 2. Fleet: `claim_cluster`. Solo: `claim_next`. `claimed: false` names who holds the area and when it frees. That is the answer. Take different work.
 3. `get_item_details` once. The `brief` suggests `lane` and `tier` with a basis. You still choose both if you hand it to a child.
 4. `heartbeat(id, status=<one line>, files=[the paths you are in])` on the lease interval. A heartbeat is not a `fleet_status` poll.
+   Heartbeat before any command that can run longer than the lease: a Postgres suite or `pnpm test` prints nothing, and a silent command drops the claim around 150 seconds.
+   After you change paths, `describe_code` those paths so the next child does not grep for them.
+   A review-ready receipt is a test line: an `update_item` evidence entry of kind `test` with passed and failed counts.
+   Finishing the item is `graphban-prove`.
 5. `update_item` as you go. Evidence appends. Touchpoints union: send the files you actually touched. An empty touchpoint list writes nothing. Status goes to `review`.
 6. Stopping unfinished: `release_item`. A blocker that is still true tomorrow is status `blocked` with `blocker` set. `backlog` is claimable and will be handed out again. A build claim released without `to_status` goes back to `next`.
 
@@ -22,7 +26,9 @@ Test scope follows the project's mode, which your delegation brief states. `agen
 
 A product decision the item and its PRD framing do not already state: file a wait and stop. `create_item` with tag `wait:decision`, `status=blocked`, this item's `prd_id`, and a description that is the question plus what each answer would make you do. `link_items` with `a` this item, `b` the wait, `type` `dependency`, `reason` `wait:decision`. Leave this item `blocked`. Leave the wait blocked. Answering it is `graphban-answer`.
 
-A broken build stays a free-text `blocker` on this item. That is not a wait.
+A broken build is either still this item (move it back to `next` with the failure named), or a
+new ticket this item depends on — `create_item`, `link_items` with `type=dependency`, and
+`blocker` set to that item's id. A free-text `blocker` alone is not a wait and is not claimable.
 
 Signing off is `graphban-review`. The builder does not set `done`.
 
