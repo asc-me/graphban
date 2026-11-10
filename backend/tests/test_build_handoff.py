@@ -58,6 +58,23 @@ def test_accepted_gate_cites_revision_and_goes_stale(db, pid, world, be):
     assert items["Spacing"].status == "backlog", (items["Spacing"].blocker, ds_svc.get_design_set(db, pid, sid)["sections"])
 
 
+def test_a_screen_brief_hands_off_without_pasted_headings(db, pid, world):
+    """The brief is the behavior. Decompose files the gated section ready, and does not
+    write the heading-gap block."""
+    prd, sid = world
+    ds_svc.put_set_constraints(
+        db, pid, sid, "Teal only.", sections=["Tokens"],
+        screens=[{"screen": "home", "brief": "The dialog names the org. Next stays enabled."}])
+    assert ds_svc.get_design_set(db, pid, sid)["alignment"]["approved_to_build"] is True
+    prd_svc.decompose(db, prd, create=True)
+    tok = _items(db, prd)["Tokens"]
+    assert tok.status == "backlog", tok.blocker
+    assert tok.blocker == ""
+    assert "not approved to build" not in tok.description
+    assert "aligned to" in tok.description
+    assert db.get(DesignSet, sid).prd_hash in tok.description
+
+
 def test_an_aligned_set_on_a_baselined_prd_hands_off_with_no_accept(db, pid, world):
     """GRPH-1368: nobody accepts the set; its constraints carry every PRD heading, and the
     PRD is baselined, so the gated section files unblocked and pins the hashes."""
