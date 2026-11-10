@@ -1343,14 +1343,15 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "put_document",
         "description": (
-            "Write the project's PREAMBLE (GRPH-1275); other kinds come from design-set ops. "
-            "Person only. prd_id optional: with none it is stored and not approved to build."
+            "Write the PREAMBLE (person only) or a non-governing REFERENCE doc (review, "
+            "analysis; agents may; same title = new version). Other kinds: design-set ops."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "enum": ["preamble"]},
+                "kind": {"type": "string", "enum": ["preamble", "reference"]},
                 "prd_id": {"type": "string"},
+                "item_id": {"type": "string"},
                 "body": {"type": "string"},
                 "title": {"type": "string"},
             },
@@ -1378,6 +1379,7 @@ TOOLS: list[dict[str, Any]] = [
                 "query": {"type": "string"},
                 "include_drafts": {"type": "boolean"},
                 "include_design": {"type": "boolean"},
+                "include_reference": {"type": "boolean"},
                 "top_k": {"type": "integer"},
             },
             "required": ["query"],
@@ -3835,6 +3837,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # only moves on an explicit snapshot and so cannot say whether the body changed.
             "body_hash": prd_svc.body_hash(prd.body or ""),
             "body": prd.body or "",
+            "reference_documents": documents_svc.references_for(db, prd_id=prd.id),
         }
 
     if name == "update_prd":
@@ -4113,14 +4116,16 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         # else the session's single live agent — so a seat that leaves out `agent_id` is still
         # a seat, and any `agent_id` at all is a seat's claim, never a person's.
         seat = _agent_for_call(db, key, args, session_id) or str(args.get("agent_id") or "").strip()
-        if seat:
+        is_reference = str(args["kind"]) == documents_svc.REFERENCE
+        if seat and not is_reference:
             raise errors.Validation(
                 "preamble rows are written by a person, not an agent seat",
                 hint="call put_document with a human credential, outside a registered session")
         return documents_svc.put_document(
             db, project_id=pid, kind=str(args["kind"]), body=str(args["body"]),
             prd_id=str(args.get("prd_id") or "") or None, title=str(args.get("title") or ""),
-            created_by=fleet_svc.caller_identity("", key),
+            item_id=str(args.get("item_id") or "") or None,
+            created_by=fleet_svc.caller_identity(seat if is_reference else "", key),
         )
     if name == "put_preamble":
         seat = _agent_for_call(db, key, args, session_id) or str(args.get("agent_id") or "").strip()
@@ -4180,6 +4185,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             db, pid, str(args["query"]),
             include_drafts=bool(args.get("include_drafts", False)),
             include_design=bool(args.get("include_design", False)),
+            include_reference=bool(args.get("include_reference", False)),
             top_k=int(args.get("top_k") or 10),
         )
     if name == "record_scan":

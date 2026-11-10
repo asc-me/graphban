@@ -2479,8 +2479,11 @@ def get_item_details(db: Session, item_id: str, readable: list[str] | None = Non
     # project, touchpoints and PRD link (GRPH-821) each went missing from the read that calls
     # itself the full record. `test_item_details_full_record` asserts the superset now, so the
     # next field added to `item_dict` cannot skip this read again.
+    from app.services import documents as documents_svc
+
     out = item_dict(item)
     out.update({
+        "reference_documents": documents_svc.references_for(db, item_id=item.id),
         "description": item.description,
         "blocker": item.blocker,
         "pr": item.pr,

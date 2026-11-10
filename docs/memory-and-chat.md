@@ -136,3 +136,21 @@ the suggested next item and cites shards — and tells you how to enable a real 
 
 - Agents call `search_memory` and `add_memory` over [MCP](mcp.md) — the same code path.
 - `extract_lessons` and `generate_digest` MCP tools build on the memory + item services.
+
+## Reference documents (GRPH-1495)
+
+`put_document(kind="reference", title, body, prd_id?, item_id?)` stores a review, analysis or
+audit that is not the spec. A person or any agent key with write on the project may write one;
+`preamble` stays person-only.
+
+| kind      | governing | default `search_docs`       | written by               |
+| --------- | --------- | --------------------------- | ------------------------ |
+| reference | never     | excluded (response says so) | a person or an agent key |
+
+- `search_docs(include_reference=true)` returns reference chunks, each with `kind: "reference"`.
+- A new body for the same title is a new version; earlier versions stay readable by id through
+  `get_document`. Search reads only the newest version of each title.
+- `prd_id` / `item_id` must exist in the project or the write is refused (422). `get_prd` and
+  `get_item_details` list linked documents as `reference_documents` (id, title, version); the
+  PRD's body and `body_hash` do not change.
+
