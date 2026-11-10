@@ -640,6 +640,7 @@ def test_the_skill_ships_in_the_wheel(tmp_path):
     assert any(n.endswith("skills/graphban-grill/SKILL.md") for n in names), names[:20]
     assert any(n.endswith("skills/graphban-wave/SKILL.md") for n in names), names[:20]
     assert any(n.endswith("skills/graphban-answer/SKILL.md") for n in names), names[:20]
+    assert any(n.endswith("skills/graphban-ship/SKILL.md") for n in names), names[:20]
 
 
 def test_graphban_wave_drains_one_prd_and_does_not_file_tasks():
@@ -654,6 +655,17 @@ def test_graphban_wave_drains_one_prd_and_does_not_file_tasks():
     assert "graphban-prd" in body
     assert "graphban-answer" in body
     assert "Do not attach a spawn watcher" in body
+
+
+def test_graphban_ship_names_base_salvage_and_done():
+    body = " ".join(setup_mod.skill_source("graphban-ship").read_text(encoding="utf-8").split())
+    assert "get_context" in body
+    assert "unmeasured" in body
+    assert "whitelist" in body
+    assert "no pull URL" in body
+    assert "is not merged" in body
+    wave = setup_mod.skill_source("graphban-wave").read_text(encoding="utf-8")
+    assert "graphban-ship" in wave
 
 
 def test_watch_wave_names_the_scheduler_and_cancels_on_idle():
