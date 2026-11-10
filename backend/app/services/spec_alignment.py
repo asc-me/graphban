@@ -42,13 +42,13 @@ def _fold(text: str) -> str:
 def _heading_stated(heading: str, hay: str) -> bool:
     """The folded heading appears in `hay` as itself, not inside a longer heading.
 
-    `2. api` is not present just because `12. api` is. A colon or period after the heading
-    still counts: people write `Tokens: teal`.
+    A hyphen or a dotted number is still the same heading (`Non-goals`, `1.2.3`). A colon
+    or a sentence period after it is not (`Tokens:`, `2. API.`).
     """
     needle = _fold(heading)
     if not needle:
         return False
-    return re.search(r"(?<!\w)" + re.escape(needle) + r"(?!\w)", hay) is not None
+    return re.search(r"(?<![\w-])" + re.escape(needle) + r"(?![\w-]|\.\d)", hay) is not None
 
 
 def requirements(body: str) -> list[str]:
@@ -113,8 +113,9 @@ def for_design_set(db: Session, ds: DesignSet) -> dict:
         return align
     prd = prd_svc.get_prd(db, ds.prd_id) if ds.prd_id else None
     base = prd_svc.baseline_of(db, prd.id) if prd is not None else None
-    # Exact titles, the same strings `gating_set` compares with `section in ds.sections`.
-    headings = requirements(base.body) if base is not None else []
+    # parse_sections is the list decompose passes to gating_set. requirements() is not:
+    # it reads a fenced ## line as a heading, and a bare ## swallows the next title.
+    headings = prd_svc.parse_sections(base.body) if base is not None else []
     known = set(headings)
     stated = any((s.brief or "").strip() for s in ds.screens)
     hay = _fold("\n".join(b or "" for b in bodies))

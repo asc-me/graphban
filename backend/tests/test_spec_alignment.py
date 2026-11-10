@@ -153,6 +153,53 @@ def test_a_shorter_heading_is_not_satisfied_by_a_longer_one(db, pid):
     assert got["gaps"] == [] and got["approved_to_build"] is True
 
 
+def test_punctuation_does_not_make_a_shorter_heading_present(db, pid):
+    body = ("## Goals\nYes.\n\n## Non-goals\nNo.\n\n## Login\nForm.\n\n"
+            "## 1.2\nPoint.\n")
+    prd = prd_svc.create_prd(db, title="P", project_id=pid, body=body)
+    approve(db, prd)
+    sid = ds_svc.open_design(db, pid, prd.id)["id"]
+    ds_svc.put_set_constraints(
+        db, pid, sid,
+        "Non-goals: we will not add themes. The pre-login hint stays visible. See 1.2.3.",
+        sections=["Goals", "Login", "1.2"],
+        screens=[{"screen": "home"}])
+    got = ds_svc.get_design_set(db, pid, sid)["alignment"]
+    assert got["gaps"] == ["Goals", "Login", "1.2"] and got["approved_to_build"] is False
+    ds_svc.put_set_constraints(
+        db, pid, sid, "Goals. Login is the form. 1.2 is the point.",
+        sections=["Goals", "Login", "1.2"],
+        screens=[{"screen": "home"}])
+    got = ds_svc.get_design_set(db, pid, sid)["alignment"]
+    assert got["gaps"] == [] and got["approved_to_build"] is True
+
+
+def test_a_fenced_heading_is_not_a_section_a_brief_can_clear(db, pid):
+    body = "## Tokens\nUse teal.\n\n```\n## Overview\nnot a heading\n```\n\n## Spacing\nEight.\n"
+    prd = prd_svc.create_prd(db, title="P", project_id=pid, body=body)
+    approve(db, prd)
+    sid = ds_svc.open_design(db, pid, prd.id)["id"]
+    ds_svc.put_set_constraints(
+        db, pid, sid, "Unrelated nonsense.", sections=["Overview"],
+        screens=[{"screen": "home", "brief": "Name the organization."}])
+    got = ds_svc.get_design_set(db, pid, sid)["alignment"]
+    assert "Overview" not in prd_svc.parse_sections(body)
+    assert got["gaps"] == ["Overview"] and got["approved_to_build"] is False
+
+
+def test_a_blank_heading_line_does_not_hide_the_next_title(db, pid):
+    body = "##\n\n## Tokens\nUse the teal accent.\n\n## Spacing\nEight point grid.\n"
+    prd = prd_svc.create_prd(db, title="P", project_id=pid, body=body)
+    approve(db, prd)
+    sid = ds_svc.open_design(db, pid, prd.id)["id"]
+    ds_svc.put_set_constraints(
+        db, pid, sid, "Unrelated nonsense.", sections=["Tokens"],
+        screens=[{"screen": "home", "brief": "Name the organization."}])
+    assert ds_svc.gating_set(db, prd.id, "Tokens") is not None
+    got = ds_svc.get_design_set(db, pid, sid)["alignment"]
+    assert got["gaps"] == [] and got["approved_to_build"] is True
+
+
 def test_a_gated_set_without_a_brief_still_needs_its_heading(db, pid):
     """No brief, and the set's own text never says the section it gates. Compiling quotes
     the PRD, and that quote still does not approve it."""
