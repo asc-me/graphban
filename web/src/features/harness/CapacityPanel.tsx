@@ -1,6 +1,7 @@
 import { useHarnessCapacity, useMe } from "@/lib/queries";
 import { consoleHref } from "@/lib/routes";
 import { Ladder } from "./Ladder";
+import { RoutingMode } from "./RoutingMode";
 import { RoutingReason } from "./RoutingReason";
 import { ReviewReserve } from "./ReviewReserve";
 import { RoutingDecisions } from "./RoutingDecisions";
@@ -202,6 +203,7 @@ export function CapacityPanel({ projectId }: { projectId?: string }) {
       )}
       <RoutingDecisions decisions={data.routing_decisions} />
       <ReviewReserve reserve={data.review_reserve} />
+      <RoutingMode projectId={projectId} entitlements={data.entitlements} />
       <Ladder projectId={projectId} name={me?.name || me?.email || undefined} />
       <RoutingReason defaultItem={latestRoutedClaim(data.routing_decisions)} />
     </section>

@@ -346,6 +346,8 @@ class PolicyIn(BaseModel):
     caps: dict | None = None
     cluster_ceiling: dict | None = None
     ladder: list[str] | None = None
+    routing_mode: str = "next_available"
+    subscription_order: list[str] | None = None
 
 
 @router.get("/profile")

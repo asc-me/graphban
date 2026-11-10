@@ -74,7 +74,7 @@ export function HarnessView() {
     <div className="flex h-full min-h-0 flex-col" data-testid="harness-view">
       <PlaceHeader
         viewName="Harness"
-        purpose={`How each model has turned out, per capability and size band, over the last ${data.window_days} days. A rate under ${data.floor} finished attempts is shown grey because it is not yet a measurement. Family rollups speak until a leaf clears the floor.`}
+        purpose={`How each model has turned out, per function and effort band, over the last ${data.window_days} days. A rate under ${data.floor} finished attempts is shown grey because it is not yet a measurement. Family rollups speak until a leaf clears the floor.`}
         action={
           <div className="flex items-center gap-2">
             <label className="font-mono text-[10.5px] text-faint" htmlFor="harness-versions">
@@ -171,9 +171,10 @@ function PerformanceTab({
     return (
       <div className="mx-auto flex max-w-4xl flex-col gap-3">
         <SurfaceReport surface={data.surface} />
-        <div className="mx-auto mt-16 max-w-md text-center text-[13px] text-muted">
+        <div className="mx-auto mt-16 max-w-md text-center text-[13px] text-muted" data-testid="harness-empty">
           Nothing measured yet. A cell appears here once a delegation finishes — one row per
-          vendor, model, capability and size band.
+          vendor, model, capability and size band. Until then, gbfleet gets no guidance and
+          resolves every tier by matrix order and policy alone.
         </div>
       </div>
     );
@@ -181,41 +182,27 @@ function PerformanceTab({
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-3">
-      <details data-testid="harness-notices" className="rounded-[10px] border border-line-2 bg-surface-2">
-        <summary data-testid="harness-notices-summary" className="cursor-pointer px-3.5 py-2 text-body text-muted">
-          {[
-            data.coverage && data.coverage.attempts > 0
-              ? `Coverage ${data.coverage.rate === null ? "—" : `${Math.round(data.coverage.rate * 100)}%`}`
-              : null,
-            data.platform === null && data.platform_reason ? "no platform average" : null,
-            data.below_floor_count > 0 ? `${data.below_floor_count} of ${data.cells.length} cells below the floor` : null,
-          ]
-            .filter(Boolean)
-            .join(" · ") || "Notes on this grid"}
-        </summary>
-        <div className="flex flex-col gap-2 px-3.5 pb-2.5 text-body text-muted">
-          {data.coverage && data.coverage.attempts > 0 && (
-            <div data-testid="harness-coverage">
-              Coverage {data.coverage.rate === null ? "—" : `${Math.round(data.coverage.rate * 100)}%`}
-              {" — "}
-              {data.coverage.with_leaf}/{data.coverage.attempts} attempts tagged a leaf.
-              Attempts that match none land in <span className="font-mono">other</span>.
-            </div>
-          )}
-          {data.platform === null && data.platform_reason && (
-            <div data-testid="harness-no-platform">{data.platform_reason}</div>
-          )}
-          {data.below_floor_count > 0 && (
-            <div data-testid="harness-floor-note">
-              {data.below_floor_count} of {data.cells.length} cells are below the{" "}
-              {data.floor}-attempt floor. Their rates are shown because hiding them would read
-              as having none, not as having too few.
-            </div>
-          )}
-        </div>
-      </details>
+      <div className="flex flex-col gap-1.5 rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-body text-muted">
+        {data.coverage && data.coverage.attempts > 0 && (
+          <div data-testid="harness-coverage">
+            Coverage {data.coverage.rate === null ? "—" : `${Math.round(data.coverage.rate * 100)}%`}
+            {" — "}
+            {data.coverage.with_leaf}/{data.coverage.attempts} attempts tagged a leaf.
+            Attempts that match none land in <span className="font-mono">other</span>.
+          </div>
+        )}
+        {data.below_floor_count > 0 && (
+          <div data-testid="harness-floor-note">
+            {data.below_floor_count} of {data.cells.length} cells are below the {data.floor}-attempt
+            floor.
+          </div>
+        )}
+        {data.platform === null && data.platform_reason && (
+          <div data-testid="harness-no-platform">{data.platform_reason}</div>
+        )}
+      </div>
       <PerformanceGrid data={data} routing={routing} projectId={activeId} />
-      <EffortCurve cells={data.cells} />
+      <EffortCurves cells={data.cells} floor={data.floor} />
       <SurfaceReport surface={data.surface} />
       <details className="rounded-[10px] border border-line-2" data-testid="harness-detail-cards">
         <summary className="cursor-pointer px-3.5 py-2 text-body text-muted">
@@ -289,68 +276,79 @@ function ChangesTab({
   );
 }
 
-/**
- * The effort curve: signed-off rate by size band, for above-floor non-family cells.
- * Aggregates all cells that share a size band, excluding family rollups and below-floor
- * cells, to show how sign-off rate changes as items get bigger.
- */
-function EffortCurve({ cells }: { cells: HarnessCell[] }) {
-  const bands = ["XS", "S", "M", "L", "XL"] as const;
-  const agg = new Map<string, { finished: number; signed_off: number }>();
-  for (const band of bands) agg.set(band, { finished: 0, signed_off: 0 });
+const EFFORT_CURVE_BANDS = ["S", "M", "L"] as const;
 
-  // Leaves out of each family rollup: the rollups themselves would count every leaf twice.
+/**
+ * One S / M / L effort curve per harness row, above-floor cells only (Nov 9 canvas).
+ */
+function EffortCurves({ cells, floor }: { cells: HarnessCell[]; floor: number }) {
+  const bands = EFFORT_CURVE_BANDS;
+  const rowAgg = new Map<string, { vendor: string; model: string; bands: Map<string, { finished: number; signed_off: number }> }>();
+
+  const rowKey = (c: HarnessCell) => `${c.key.vendor}\0${c.key.model}`;
   for (const cell of leafCells(cells)) {
     if (cell.kind === "family") continue;
-    if (cell.below_floor) continue;
-    const band = cell.key.size_band;
-    const entry = agg.get(band);
-    if (entry) {
-      entry.finished += cell.finished;
-      entry.signed_off += cell.signed_off;
-    }
+    if (cell.finished < floor) continue;
+    if (!bands.includes(cell.key.size_band as (typeof bands)[number])) continue;
+    const rk = rowKey(cell);
+    const row = rowAgg.get(rk) ?? {
+      vendor: cell.key.vendor,
+      model: cell.key.model,
+      bands: new Map(bands.map((b) => [b, { finished: 0, signed_off: 0 }])),
+    };
+    const entry = row.bands.get(cell.key.size_band)!;
+    entry.finished += cell.finished;
+    entry.signed_off += cell.signed_off;
+    rowAgg.set(rk, row);
   }
 
-  const rows = bands.map((band) => {
-    const e = agg.get(band)!;
-    const rate = e.finished > 0 ? e.signed_off / e.finished : null;
-    return { band, finished: e.finished, signed_off: e.signed_off, rate };
-  });
+  const rows = [...rowAgg.values()].filter((r) => [...r.bands.values()].some((b) => b.finished > 0));
+  if (rows.length === 0) return null;
 
-  const hasData = rows.some((r) => r.finished > 0);
-  if (!hasData) return null;
+  const rowName = (r: { vendor: string; model: string }) =>
+    !r.vendor && !r.model ? "Unattributed" : r.model ? (r.vendor ? `${r.vendor}:${r.model}` : r.model) : r.vendor;
 
   return (
-    <div data-testid="harness-effort-curve" className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-3">
-      <div className="mb-2 text-[13px] font-semibold">Effort curve</div>
-      <p className="mb-3 text-[12px] text-muted">
-        Signed-off rate by size band for above-floor non-family cells. Shows how sign-off
-        rate changes as items get bigger.
-      </p>
-      <div className="flex items-end gap-2" data-testid="harness-effort-bars">
-        {rows.map((r) => {
-          const height = r.rate === null ? 0 : Math.round(r.rate * 40);
-          return (
-            <div key={r.band} className="flex flex-1 flex-col items-center" data-testid="harness-effort-band">
-              <div className="flex w-full flex-col items-center">
-                <span className="mb-1 font-mono text-[10px] text-faint">
-                  {r.rate === null ? "—" : `${Math.round(r.rate * 100)}%`}
-                </span>
-                <div
-                  className="w-full max-w-[40px] rounded-t-[3px] bg-st-done"
-                  style={{ height: `${4 + height}px` }}
-                  data-band={r.band}
-                />
-              </div>
-              <span className="mt-1 font-mono text-[10px] text-muted">{r.band}</span>
-              <span className="font-mono text-[9px] text-faint">
-                {r.signed_off}/{r.finished}
-              </span>
+    <section data-testid="harness-effort-curves" className="flex flex-col gap-3">
+      <div className="text-[13px] font-semibold">Effort curve</div>
+      {rows.map((r) => {
+        const key = `${r.vendor}:${r.model}`;
+        return (
+          <div
+            key={key}
+            data-testid="harness-effort-row"
+            className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-3"
+          >
+            <div className="mb-2 font-mono text-small text-muted">{rowName(r)}</div>
+            <div className="flex items-end gap-2" data-testid="harness-effort-bars">
+              {bands.map((band) => {
+                const e = r.bands.get(band)!;
+                const rate = e.finished > 0 ? e.signed_off / e.finished : null;
+                const height = rate === null ? 0 : Math.round(rate * 40);
+                return (
+                  <div key={band} className="flex flex-1 flex-col items-center" data-testid="harness-effort-band">
+                    <div className="flex w-full flex-col items-center">
+                      <span className="mb-1 font-mono text-[10px] text-faint">
+                        {rate === null ? "—" : `${Math.round(rate * 100)}%`}
+                      </span>
+                      <div
+                        className="w-full max-w-[40px] rounded-t-[3px] bg-st-done"
+                        style={{ height: `${4 + height}px` }}
+                        data-band={band}
+                      />
+                    </div>
+                    <span className="mt-1 font-mono text-[10px] text-muted">{band}</span>
+                    <span className="font-mono text-[9px] text-faint">
+                      {e.signed_off}/{e.finished}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
-      </div>
-    </div>
+          </div>
+        );
+      })}
+    </section>
   );
 }
 

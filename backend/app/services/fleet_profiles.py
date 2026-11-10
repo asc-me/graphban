@@ -18,7 +18,8 @@ from app.models import FleetProfile, Project, utcnow
 
 AXES: tuple[str, ...] = ("cost", "quality", "latency", "locality")
 POLICY_KEYS: tuple[str, ...] = ("local_only", "reviewer_cross_vendor", "allowed_harnesses", "caps",
-                                 "cluster_ceiling", "ladder")
+                                 "cluster_ceiling", "ladder", "routing_mode", "subscription_order")
+ROUTING_MODES: tuple[str, ...] = ("next_available", "custom_hierarchy")
 #: Capacity-routing rungs (PRD-62 D6), in the default order: a subscription with headroom, then
 #: an org API key within its stated budget, then a local model. `cloud` entitlements ride the
 #: `api_key` rung (both are metered by a handle the runner resolves).
@@ -175,7 +176,10 @@ def normalise_policy(raw: Any) -> dict | None:
     caps = _caps(raw.get("caps"))
     ceiling = _ceiling(raw.get("cluster_ceiling"))
     ladder = _ladder(raw.get("ladder"))
-    if not local_only and not cross and not allowed and not caps and not ceiling and not ladder:
+    routing_mode = _routing_mode(raw.get("routing_mode"))
+    subscription_order = _subscription_order(raw.get("subscription_order"))
+    if (not local_only and not cross and not allowed and not caps and not ceiling and not ladder
+            and routing_mode == "next_available" and not subscription_order):
         return None
     out = {"local_only": local_only, "reviewer_cross_vendor": cross, "allowed_harnesses": allowed}
     if caps:
@@ -184,7 +188,32 @@ def normalise_policy(raw: Any) -> dict | None:
         out["cluster_ceiling"] = ceiling
     if ladder:
         out["ladder"] = ladder
+    if routing_mode == "custom_hierarchy":
+        out["routing_mode"] = routing_mode
+        if subscription_order:
+            out["subscription_order"] = subscription_order
     return out
+
+
+def _routing_mode(value: Any) -> str:
+    if value is None or value == "":
+        return "next_available"
+    if value not in ROUTING_MODES:
+        raise ProfileInvalid(f"routing_mode must be one of {list(ROUTING_MODES)}")
+    return value
+
+
+def routing_mode_of(db: Session, project_id: str | None) -> str:
+    policy = policy_of(db, project_id) or {}
+    return policy.get("routing_mode") or "next_available"
+
+
+def _subscription_order(value: Any) -> list[str] | None:
+    if value is None or value == "" or value == []:
+        return None
+    if not isinstance(value, list):
+        raise ProfileInvalid("subscription_order must be a list of entitlement ids")
+    return _names(value, "subscription_order")
 
 
 def _ladder(value: Any) -> list[str] | None:
