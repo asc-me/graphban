@@ -9,6 +9,12 @@ test("harness grid scrolls inside its container, not the page, at 1280px", async
   await page.setViewportSize({ width: 1280, height: 1000 });
   await page.goto("http://127.0.0.1:5198/e2e/layout/?view=harness-grid");
 
+  // Families start collapsed at every width. The leaf strip is what a collapsed column shows.
+  await expect(page.getByTestId("harness-grid-col")).toHaveCount(5);
+  await expect(page.getByTestId("harness-leaf-strip").first()).toBeVisible();
+  while ((await page.getByTestId("harness-grid-family-expand").count()) > 0) {
+    await page.getByTestId("harness-grid-family-expand").first().click();
+  }
   await expect(page.getByTestId("harness-grid-col")).toHaveCount(25);
   await page.getByTestId("harness-grid-cell").first().click();
   await expect(page.getByTestId("harness-cell-panel")).toBeVisible();

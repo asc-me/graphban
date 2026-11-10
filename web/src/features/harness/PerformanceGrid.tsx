@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { CardList, filterCards, useCardFilter } from "@/features/harness/Recommendations";
 import { useHarnessCards } from "@/lib/queries";
@@ -29,6 +29,8 @@ interface Agg {
   probe: number;
   /** The family rollup is speaking because no leaf of that family clears the floor. */
   rollup: boolean;
+  /** Catalog leaves behind a collapsed family column. A leaf with too few attempts stays in the list. */
+  leafTicks: { capability: string; finished: number; clears: boolean }[] | null;
 }
 
 interface Row {
@@ -54,7 +56,28 @@ export function leafCells(cells: HarnessCell[]): HarnessCell[] {
   return cells.flatMap((c) => (c.kind === "family" && c.leaves && c.leaves.length > 0 ? c.leaves : [c]));
 }
 
-function aggregate(cells: HarnessCell[], floor: number, rollup = false): Agg {
+function leafMeasure(
+  leaves: HarnessCell[],
+  order: string[],
+  floor: number,
+): { capability: string; finished: number; clears: boolean }[] {
+  const finished = new Map<string, number>();
+  for (const leaf of leaves) {
+    finished.set(leaf.key.capability, (finished.get(leaf.key.capability) ?? 0) + leaf.finished);
+  }
+  const caps = order.length > 0 ? order : [...finished.keys()];
+  return caps.map((capability) => {
+    const n = finished.get(capability) ?? 0;
+    return { capability, finished: n, clears: n >= floor };
+  });
+}
+
+function aggregate(
+  cells: HarnessCell[],
+  floor: number,
+  rollup = false,
+  leafTicks: Agg["leafTicks"] = null,
+): Agg {
   const finished = cells.reduce((s, c) => s + c.finished, 0);
   const signed_off = cells.reduce((s, c) => s + c.signed_off, 0);
   return {
@@ -65,11 +88,28 @@ function aggregate(cells: HarnessCell[], floor: number, rollup = false): Agg {
     skew: cells.some((c) => c.skew !== null),
     probe: cells.reduce((s, c) => s + (c.sampling.probe ?? 0), 0),
     rollup,
+    leafTicks,
   };
 }
 
 function tokensLabel(cost: HarnessCost): string {
   return cost.comparable ? `${cost.tokens_per_signed_off} tokens per signed-off item` : cost.reason;
+}
+
+/** A median does not add across cells. One cell states its own; several state each band. */
+function medianLine(cells: HarnessCell[]): string {
+  const one = (c: HarnessCell) => (c.median_seconds !== null ? `${c.median_seconds}s` : "not reported");
+  if (cells.length === 1) return `median time ${one(cells[0])}`;
+  return `median ${cells.map((c) => `${c.key.size_band} ${one(c)}`).join(" · ")}`;
+}
+
+function costLine(cells: HarnessCell[]): string {
+  const build = (c: HarnessCell) => tokensLabel(c.build_cost ?? c.cost);
+  const review = (c: HarnessCell) => (c.review_cost ? tokensLabel(c.review_cost) : "not reported");
+  if (cells.length === 1) return `build ${build(cells[0])} · review ${review(cells[0])}`;
+  return cells
+    .map((c) => `${c.key.size_band} build ${build(c)} · review ${review(c)}`)
+    .join(" · ");
 }
 
 const SEP = "\u0000";
@@ -80,26 +120,11 @@ const rowKeyOf = (c: HarnessCell) => `${c.key.vendor}${SEP}${c.key.model}`;
  * them (no merging). Columns are capability leaves in the served catalog's order. The payload
  * nests leaves under family rollups; a row shows a family's leaves once any of them clears the
  * floor, and the family rollup in that family's column until then. `other` gets its own column.
- * Below-floor cells keep their numbers.
+ * Below-floor cells keep their numbers. Family columns stay collapsed until the reader expands
+ * them; a collapsed cell shows which of its leaves have cleared the floor.
  */
-/** GRPH-1232: at ≥1280px every above-floor leaf is its own column so the grid scrolls inside its box. */
-function useWideHarnessGrid() {
-  const [wide, setWide] = useState(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
-    return window.matchMedia("(min-width: 1280px)").matches;
-  });
-  useEffect(() => {
-    if (typeof window.matchMedia !== "function") return;
-    const mq = window.matchMedia("(min-width: 1280px)");
-    const onChange = () => setWide(mq.matches);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
-  return wide;
-}
 
 export function PerformanceGrid({ data, routing, projectId }: { data: HarnessReport; routing: Routing[]; projectId?: string }) {
-  const wideGrid = useWideHarnessGrid();
   const [effort, setEffort] = useState<Effort>("All");
   const [vendor, setVendor] = useState("");
   const [harness, setHarness] = useState("");
@@ -123,8 +148,13 @@ export function PerformanceGrid({ data, routing, projectId }: { data: HarnessRep
     }
 
     const grid = new Map<string, Agg>();
-    const add = (rk: string, col: string, cells: HarnessCell[], rollup = false) =>
-      grid.set(`${rk}${SEP}${col}`, aggregate(cells, data.floor, rollup));
+    const add = (
+      rk: string,
+      col: string,
+      cells: HarnessCell[],
+      rollup = false,
+      leafTicks: Agg["leafTicks"] = null,
+    ) => grid.set(`${rk}${SEP}${col}`, aggregate(cells, data.floor, rollup, leafTicks));
     const loose = new Map<string, HarnessCell[]>();
     const families = new Map<string, { rollups: HarnessCell[]; leaves: HarnessCell[] }>();
     for (const c of data.cells) {
@@ -153,10 +183,11 @@ export function PerformanceGrid({ data, routing, projectId }: { data: HarnessRep
         byLeaf.set(leaf.key.capability, [...(byLeaf.get(leaf.key.capability) ?? []), leaf]);
       }
       const leafClears = [...byLeaf.values()].some((cells) => cells.reduce((s, c) => s + c.finished, 0) >= data.floor);
-      if (leafClears && (expandedFamilies.has(family) || wideGrid)) {
+      if (leafClears && expandedFamilies.has(family)) {
         for (const [cap, cells] of byLeaf) add(rk, cap, cells);
       } else {
-        add(rk, family, f.rollups, true);
+        const order = data.capability_set?.families[family] ?? [];
+        add(rk, family, f.rollups, true, leafMeasure(f.leaves, order, data.floor));
       }
     }
 
@@ -176,7 +207,7 @@ export function PerformanceGrid({ data, routing, projectId }: { data: HarnessRep
     const columns = family ? allColumns.filter((c) => inFamily.has(c)) : allColumns;
     const allRows = [...rowMap.values()].sort((a, b) => Number(isUnattributed(a)) - Number(isUnattributed(b)));
     return { rows: allRows, columns, grid };
-  }, [data.cells, data.capability_set, data.floor, effort, family, expandedFamilies, wideGrid]);
+  }, [data.cells, data.capability_set, data.floor, effort, family, expandedFamilies]);
 
   const vendorOptions = [...new Set(rows.map((r) => r.vendor).filter(Boolean))].sort();
   const shownRows = rows.filter((r) => {
@@ -210,6 +241,21 @@ export function PerformanceGrid({ data, routing, projectId }: { data: HarnessRep
     });
   const sel = selected ? grid.get(`${selected.row}${SEP}${selected.col}`) : undefined;
   const selRow = selected ? rows.find((r) => r.key === selected.row) : undefined;
+  const cellSlots = shownRows.length * columns.length;
+  const belowCount = shownRows.reduce(
+    (n, row) => n + columns.filter((cap) => grid.get(`${row.key}${SEP}${cap}`)?.below_floor).length,
+    0,
+  );
+  const visibleRows = hideUnder
+    ? shownRows.filter((row) => columns.some((cap) => {
+        const a = grid.get(`${row.key}${SEP}${cap}`);
+        return !!a && !a.below_floor;
+      }))
+    : shownRows;
+  const hiddenRows = shownRows.length - visibleRows.length;
+  const hiddenPairs = hiddenRows > 0
+    ? ` — ${hiddenRows} pair${hiddenRows > 1 ? "s" : ""} with nothing above it removed`
+    : "";
 
   return (
     <section data-testid="harness-grid-section" className="flex flex-col gap-2">
@@ -292,9 +338,15 @@ export function PerformanceGrid({ data, routing, projectId }: { data: HarnessRep
         </div>
       </div>
 
+      {!hideUnder && (
+        <p className="text-[12px] text-muted" data-testid="harness-floor-note">
+          {belowCount} of {cellSlots} cells are below the {data.floor}-attempt floor. Their rates
+          are shown because hiding them would read as having none, not as having too few.
+        </p>
+      )}
       {hideUnder && (
         <p className="text-[12px] text-muted" data-testid="harness-hide-below-floor-note">
-          A blank cell means too few attempts, not none.
+          {`${belowCount} of ${cellSlots} cells are below the ${data.floor}-attempt floor and hidden${hiddenPairs}. A blank cell means too few attempts, not none.`}
         </p>
       )}
 
@@ -348,7 +400,7 @@ export function PerformanceGrid({ data, routing, projectId }: { data: HarnessRep
               </tr>
             </thead>
             <tbody>
-              {shownRows.map((row) => {
+              {visibleRows.map((row) => {
                 return (
                   <tr key={row.key} data-testid="harness-grid-row" className="border-b border-line-2 last:border-b-0">
                     <th scope="row" className="px-3 py-2 font-normal">
@@ -400,6 +452,26 @@ export function PerformanceGrid({ data, routing, projectId }: { data: HarnessRep
                                 {a.below_floor && <span>floor {data.floor}</span>}
                                 {a.skew && <span>skew</span>}
                                 {a.probe > 0 && <span>probe</span>}
+                              </span>
+                            )}
+                            {a.leafTicks && a.leafTicks.length > 0 && (
+                              <span data-testid="harness-leaf-strip" className="mt-1 flex items-center gap-1">
+                                <span className="flex gap-0.5" aria-hidden="true">
+                                  {a.leafTicks.map((tick) => (
+                                    <span
+                                      key={tick.capability}
+                                      data-leaf={tick.capability}
+                                      data-clears={tick.clears ? "true" : "false"}
+                                      title={`${tick.capability} · ${tick.finished} attempts${tick.clears ? "" : " — below floor"}`}
+                                      className={`inline-block h-1.5 w-2 rounded-[1px] border ${
+                                        tick.clears ? "border-muted bg-muted" : "border-dashed border-control bg-transparent"
+                                      }`}
+                                    />
+                                  ))}
+                                </span>
+                                <span className="font-mono text-[9px] text-faint">
+                                  {a.leafTicks.filter((tick) => tick.clears).length}/{a.leafTicks.length} leaves measured
+                                </span>
                               </span>
                             )}
                           </button>
@@ -486,8 +558,6 @@ function CellPanel({
     mix.unknown += c.sampling.unknown;
     mix.probe = (mix.probe ?? 0) + (c.sampling.probe ?? 0);
   }
-  // A median or a cost cannot be summed across cells; show it only when one cell carries it.
-  const only = agg.cells.length === 1 ? agg.cells[0] : null;
   const weekRows = [...weeks.entries()].sort(([a], [b]) => a.localeCompare(b));
 
   return (
@@ -536,13 +606,8 @@ function CellPanel({
           first choice {mix.first_choice} · fallback {mix.fallback} · explicit {mix.explicit} · unknown {mix.unknown}
           {mix.probe ? ` · probe ${mix.probe}` : ""}
         </div>
-        {only && only.median_seconds !== null && <div>median time {only.median_seconds}s</div>}
-        {only && (
-          <div data-testid="harness-panel-cost">
-            build {tokensLabel(only.build_cost ?? only.cost)}
-            {" · "}review {only.review_cost ? tokensLabel(only.review_cost) : "not reported"}
-          </div>
-        )}
+        <div data-testid="harness-panel-median">{medianLine(agg.cells)}</div>
+        <div data-testid="harness-panel-cost">{costLine(agg.cells)}</div>
       </dl>
 
       <div className="mt-3" data-testid="harness-panel-change">

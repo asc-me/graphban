@@ -577,6 +577,8 @@ describe("Harness tabs", () => {
     });
     expect(screen.getByTestId("harness-probe-panel")).toBeInTheDocument();
     expect(screen.getByText(/This page changes nothing/)).toBeInTheDocument();
+    expect(screen.getByText(/R1 and R2 hand you evidence text/)).toBeInTheDocument();
+    expect(screen.getByTestId("harness-probe-purpose")).toHaveTextContent(/one model and one leaf at a time/i);
   });
 
   it("badges the Changes tab with the default-filter count and gives the total in its tooltip", async () => {
@@ -633,6 +635,31 @@ describe("Harness tabs", () => {
       .filter(Boolean);
     expect(bandNames).toEqual(expect.arrayContaining(["S", "M", "L"]));
     expect(bandNames).not.toEqual(expect.arrayContaining(["XS", "XL"]));
+  });
+
+  it("draws a below-floor effort band as a dashed bar and still lists that harness", async () => {
+    harness.mockResolvedValueOnce(
+      report({
+        cells: [
+          cell({
+            key: { ...cell().key, vendor: "local", model: "qwen", size_band: "S" },
+            finished: 3, signed_off: 1, rate: 0.333, below_floor: true,
+          }),
+          cell({
+            key: { ...cell().key, vendor: "local", model: "qwen", size_band: "M" },
+            finished: 2, signed_off: 1, rate: 0.5, below_floor: true,
+          }),
+        ],
+      }),
+    );
+    show();
+    const row = (await screen.findAllByTestId("harness-effort-row")).find((r) => r.textContent?.includes("local:qwen"))!;
+    const s = within(row).getAllByTestId("harness-effort-band").find((b) => b.querySelector("[data-band='S']"))!;
+    expect(s.querySelector("[data-band='S']")).toHaveAttribute("data-below-floor", "true");
+    expect(s).toHaveTextContent("33%");
+    const l = within(row).getAllByTestId("harness-effort-band").find((b) => b.querySelector("[data-band='L']"))!;
+    expect(l.querySelector("[data-band='L']")).toHaveAttribute("data-below-floor", "true");
+    expect(l).toHaveTextContent("—");
   });
 
   it("shows the generation stamp and As served on the Guidance tab", async () => {
@@ -1000,6 +1027,10 @@ describe("Harness probe panel", () => {
       expect(gridCell(/^claude sonnet A1:/)).toHaveTextContent("15/26");
       await user.click(gridCell(/^claude sonnet A1:/));
       expect(screen.getByTestId("harness-panel-bands")).toHaveTextContent("S 5/6 · M 10/20");
+      expect(screen.getByTestId("harness-panel-median")).toHaveTextContent("S 620s");
+      expect(screen.getByTestId("harness-panel-median")).toHaveTextContent("M 620s");
+      expect(screen.getByTestId("harness-panel-cost")).toHaveTextContent("S build");
+      expect(screen.getByTestId("harness-panel-cost")).toHaveTextContent("M build");
       await user.click(screen.getByRole("button", { name: "S" }));
       expect(gridCell(/^claude sonnet A1:/)).toHaveTextContent("5/6");
       expect(screen.queryByRole("button", { name: /^claude opus A1:/ })).not.toBeInTheDocument();
@@ -1012,8 +1043,42 @@ describe("Harness probe panel", () => {
       const m = within(opusRow)
         .getAllByTestId("harness-effort-band")
         .find((b) => b.querySelector("[data-band='M']"))!;
-      // Above-floor M leaves on claude:opus: 26 signed off / 31 finished across A1–A4 (A2 is under the floor).
+      // M leaves on claude:opus: 26 signed off / 31 finished across A1–A4.
       expect(m).toHaveTextContent("84%");
+    });
+
+    it("a collapsed family shows which leaves have cleared the floor", async () => {
+      harness.mockResolvedValueOnce(gridReport());
+      show();
+      await screen.findByTestId("harness-grid");
+      const strip = screen.getAllByTestId("harness-leaf-strip")[0];
+      expect(strip).toHaveTextContent("4/5 leaves measured");
+      expect(strip.querySelector("[data-leaf='A5']")).toHaveAttribute("data-clears", "false");
+      expect(strip.querySelector("[data-leaf='A1']")).toHaveAttribute("data-clears", "true");
+    });
+
+    it("says rates stay visible until hide-below-floor removes a row with nothing above the floor", async () => {
+      harness.mockResolvedValueOnce(
+        report({
+          capability_set: catalog,
+          cells: [
+            fam([leaf("opus", "A1", 10, 9)]),
+            fam([leaf("haiku", "A1", 2, 1)]),
+          ],
+          below_floor_count: 1,
+        }),
+      );
+      show();
+      const user = userEvent.setup();
+      await screen.findByTestId("harness-grid");
+      expect(screen.getByTestId("harness-floor-note")).toHaveTextContent(
+        /their rates are shown because hiding them would read as having none/i,
+      );
+      expect(screen.getAllByTestId("harness-grid-row")).toHaveLength(2);
+      await user.click(screen.getByTestId("harness-hide-below-floor"));
+      expect(screen.getByTestId("harness-hide-below-floor-note")).toHaveTextContent("1 pair with nothing above it removed");
+      expect(screen.getByTestId("harness-hide-below-floor-note")).toHaveTextContent(/too few attempts, not none/);
+      expect(screen.getAllByTestId("harness-grid-row")).toHaveLength(1);
     });
   });
 });

@@ -191,12 +191,6 @@ function PerformanceTab({
             Attempts that match none land in <span className="font-mono">other</span>.
           </div>
         )}
-        {data.below_floor_count > 0 && (
-          <div data-testid="harness-floor-note">
-            {data.below_floor_count} of {data.cells.length} cells are below the {data.floor}-attempt
-            floor.
-          </div>
-        )}
         {data.platform === null && data.platform_reason && (
           <div data-testid="harness-no-platform">{data.platform_reason}</div>
         )}
@@ -263,8 +257,9 @@ function ChangesTab({
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-3">
       <div className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-body text-muted">
-        This page changes nothing. Each card below is a draft — accepting one records that
-        you have seen it, not that anything was applied.
+        Recommended changes are drafts. Accepting one records that you have seen it — R1 and R2
+        hand you evidence text for a commit, R3 and R4 send you to the profile or policy screen.
+        This page changes nothing.
       </div>
       <Recommendations projectId={activeId} />
       <ProbePanel
@@ -279,7 +274,8 @@ function ChangesTab({
 const EFFORT_CURVE_BANDS = ["S", "M", "L"] as const;
 
 /**
- * One S / M / L effort curve per harness row, above-floor cells only (Nov 9 canvas).
+ * One S / M / L effort curve per harness row. A band under the floor is a dashed empty bar
+ * that still shows its rate. Attempts under the floor stay in the sum.
  */
 function EffortCurves({ cells, floor }: { cells: HarnessCell[]; floor: number }) {
   const bands = EFFORT_CURVE_BANDS;
@@ -288,7 +284,6 @@ function EffortCurves({ cells, floor }: { cells: HarnessCell[]; floor: number })
   const rowKey = (c: HarnessCell) => `${c.key.vendor}\0${c.key.model}`;
   for (const cell of leafCells(cells)) {
     if (cell.kind === "family") continue;
-    if (cell.finished < floor) continue;
     if (!bands.includes(cell.key.size_band as (typeof bands)[number])) continue;
     const rk = rowKey(cell);
     const row = rowAgg.get(rk) ?? {
@@ -323,18 +318,22 @@ function EffortCurves({ cells, floor }: { cells: HarnessCell[]; floor: number })
             <div className="flex items-end gap-2" data-testid="harness-effort-bars">
               {bands.map((band) => {
                 const e = r.bands.get(band)!;
+                const below = e.finished < floor;
                 const rate = e.finished > 0 ? e.signed_off / e.finished : null;
                 const height = rate === null ? 0 : Math.round(rate * 40);
                 return (
                   <div key={band} className="flex flex-1 flex-col items-center" data-testid="harness-effort-band">
                     <div className="flex w-full flex-col items-center">
-                      <span className="mb-1 font-mono text-[10px] text-faint">
+                      <span className={`mb-1 font-mono text-[10px] ${below ? "text-faint" : "text-muted"}`}>
                         {rate === null ? "—" : `${Math.round(rate * 100)}%`}
                       </span>
                       <div
-                        className="w-full max-w-[40px] rounded-t-[3px] bg-st-done"
-                        style={{ height: `${4 + height}px` }}
+                        className={`w-full max-w-[40px] rounded-t-[3px] ${
+                          below ? "border border-dashed border-control bg-transparent" : "bg-st-done"
+                        }`}
+                        style={{ height: below ? "18px" : `${4 + height}px` }}
                         data-band={band}
+                        data-below-floor={below ? "true" : "false"}
                       />
                     </div>
                     <span className="mt-1 font-mono text-[10px] text-muted">{band}</span>
@@ -695,6 +694,9 @@ function ProbePanel({
           {estimateLabel}
         </span>
       </div>
+      <p className="mt-1 text-[12px] text-muted" data-testid="harness-probe-purpose">
+        Lift a below-floor cell into a measurement. One model and one leaf at a time, three items at most.
+      </p>
 
       {suggestions.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1.5" data-testid="harness-probe-suggestions">
