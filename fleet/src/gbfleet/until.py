@@ -901,7 +901,7 @@ def _loop(
     # scopes candidates: an item outside this PRD is not merged unless a GRPH-798 hold
     # names it.
     merger = Merger(repo, planner, enabled=bool(merge), remote=remote, base=base,
-                    prd_id=prd or "")
+                    prd_id=prd or "", agent_id=agent_id)
     # Items the GRPH-798 check HELD, with the finished dependencies they wait on. A merge
     # changes the answer, so these are lifted out of `delegated` when one lands.
     held: dict[str, list[str]] = {}

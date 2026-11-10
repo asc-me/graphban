@@ -178,21 +178,48 @@ class _BounceLedger:
 
 
 def test_THE_CALL_the_merger_bounces_a_rebase_conflict_naming_the_files(gh, monkeypatch):
-    """Sabotage: delete `if got.conflicts: self._bounce(...)` in Merger._attempt -> fails."""
+    """Sabotage: delete the `_bounce` call in Merger._attempt -> fails. Drop `agent_id`
+    from that call and the assertion on it fails — the server then refuses the bounce
+    and the item stays `done`."""
     from gbfleet.supervisor import Merger, Wave
 
     monkeypatch.setattr(propose_mod, "rebase_conflicts", lambda *a: ["a.txt", "b.txt"])
     gh(_Behind(update_ok=False))
     ledger = _BounceLedger("SA-1389")
-    merger = Merger(REPO, ledger, enabled=True)
+    merger = Merger(REPO, ledger, enabled=True, agent_id="GRPH-A1")
     wave = Wave()
 
     assert merger.tick(wave) is False
 
     assert [b["id"] for b in ledger.bounces] == ["SA-1389"]
+    assert ledger.bounces[0]["agent_id"] == "GRPH-A1"
     reason = ledger.bounces[0]["reason"]
     assert "a.txt" in reason and "b.txt" in reason
     assert "SA-1389" not in merger.watching
+    assert not wave.failures
+
+
+def test_a_head_that_moved_after_sign_off_is_bounced_with_the_planner(gh):
+    """The sign-off names REVIEWED. The PR head is MOVED. Leaving the item `done` is how
+    that head gets merged and then recorded.
+
+    Sabotage: bounce only when `got.conflicts` is set. This stays `done` and unbounced.
+    """
+    from gbfleet.supervisor import Merger, Wave
+    from tests.test_propose import MOVED, _Forge
+
+    gh(_Forge(draft=False, head=MOVED))
+    ledger = _BounceLedger("SA-1505")
+    merger = Merger(REPO, ledger, enabled=True, agent_id="GRPH-A1")
+    wave = Wave()
+
+    assert merger.tick(wave) is False
+
+    assert [b["id"] for b in ledger.bounces] == ["SA-1505"]
+    assert ledger.bounces[0]["agent_id"] == "GRPH-A1"
+    assert "reviewed commit" in ledger.bounces[0]["reason"]
+    assert ledger.item["status"] == "next"
+    assert "SA-1505" not in merger.watching
     assert not wave.failures
 
 
