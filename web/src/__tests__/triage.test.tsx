@@ -201,10 +201,10 @@ describe("Triage inbox", () => {
     box.remove();
   });
 
-  it("shows a loading line, never 'Triage clear', while the feed is in flight", async () => {
+  it("shows the queue skeleton, never 'Triage clear', while the feed is in flight", async () => {
     m.projectTriage.mockReturnValue(new Promise(() => {}));
     renderTriage();
-    expect(await screen.findByText(/Loading the triage queue/)).toBeInTheDocument();
+    expect(await screen.findByLabelText("Loading the triage queue")).toBeInTheDocument();
     expect(screen.queryByText("Triage clear")).not.toBeInTheDocument();
   });
 
@@ -219,7 +219,20 @@ describe("Triage inbox", () => {
     m.projectTriage.mockResolvedValue(feed([]));
     renderTriage();
     expect(await screen.findByText("Triage clear")).toBeInTheDocument();
-    expect(screen.getByText(/Nothing waiting\. Everything reported has been triaged/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Not the same as nothing having been reported/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/nothing to collide/i)).not.toBeInTheDocument();
+  });
+
+  it("shows the clusters empty copy on an empty Collisions tab", async () => {
+    m.projectTriage.mockResolvedValue(feed([bug]));
+    renderTriage();
+    await screen.findByText("Crash on empty project", { selector: "[role=option] span" });
+    const user = userEvent.setup();
+    await user.keyboard("5");
+    expect(await screen.findByText(/the check found no work rather than no conflict/)).toBeInTheDocument();
+    expect(screen.queryByText("Triage clear")).not.toBeInTheDocument();
   });
 
   it("renders the empty queue as a card outside the list, with no 'Nothing selected.' pane", async () => {

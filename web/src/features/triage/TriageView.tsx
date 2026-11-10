@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
-import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
+import { FETCH_FAILED, PlannerError, TriageQueueSkeleton } from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { useTriageFeed } from "@/lib/queries";
 import type { TriageFeedRow } from "@/lib/types";
@@ -273,9 +273,9 @@ export function TriageView() {
             {failedRead ? (
               <PlannerError message={FETCH_FAILED} onRetry={() => void feedQ.refetch()} />
             ) : loading ? (
-              <p className="px-4 py-6 font-mono text-meta text-muted" aria-busy="true">
-                Loading the triage queue…
-              </p>
+              <div className="p-2">
+                <TriageQueueSkeleton />
+              </div>
             ) : shown.length === 0 ? (
               <EmptyState tab={tab} partial={failedSources.length > 0} />
             ) : (
@@ -337,7 +337,20 @@ export function TriageView() {
   );
 }
 
+const TRIAGE_QUEUE_EMPTY =
+  "Everything reported has been triaged. Not the same as nothing having been reported — history lives in the tracker.";
+const TRIAGE_CLUSTERS_EMPTY =
+  "Nothing is claimed, so there is nothing to collide. This is an idle project, not a cleared one — the check found no work rather than no conflict.";
+
 function EmptyState({ tab, partial }: { tab: string; partial: boolean }) {
+  if (tab === "collisions") {
+    return (
+      <div className="px-4 py-8 text-center">
+        <div className="text-[13px] font-semibold text-fg-2">No collision clusters</div>
+        <p className="mx-auto mt-1.5 max-w-[44ch] text-[11.5px] leading-relaxed text-muted">{TRIAGE_CLUSTERS_EMPTY}</p>
+      </div>
+    );
+  }
   if (tab !== "all") {
     const name = TABS.find((t) => t.id === tab)?.label.toLowerCase();
     return <p className="px-4 py-6 text-small text-muted">No {name} waiting.</p>;
@@ -366,7 +379,7 @@ function ClearCard({ processed }: { processed: number }) {
         <p className="mt-1 text-[11.5px] leading-relaxed text-st-done/80">
           {processed
             ? `You processed ${processed} this session. Nothing else is waiting.`
-            : "Nothing waiting. Everything reported has been triaged and nothing in flight overlaps — history lives in the tracker."}
+            : TRIAGE_QUEUE_EMPTY}
         </p>
       </div>
     </div>
