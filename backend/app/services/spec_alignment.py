@@ -40,9 +40,9 @@ def _fold(text: str) -> str:
 
 
 # A dot, a slash, an ASCII hyphen, or a dash in U+2010–U+2015 joins a longer heading.
-# A bare "." does not: people write `2. API.`
+# A period ends the heading only at the end of the text or before whitespace (`2. API.`).
 _HEADING_BEFORE = "(?<![\\w./\u2010-\u2015-])"
-_HEADING_AFTER = "(?![\\w/\u2010-\u2015-]|\\.\\d)"
+_HEADING_AFTER = "(?![\\w/\u2010-\u2015-]|\\.(?=\\w))"
 
 
 def _heading_stated(heading: str, hay: str, headings: list[str] | None = None) -> bool:
@@ -58,9 +58,23 @@ def _heading_stated(heading: str, hay: str, headings: list[str] | None = None) -
               if _fold(other) != needle and _fold(other).startswith(needle)]
     pattern = re.compile(_HEADING_BEFORE + re.escape(needle) + _HEADING_AFTER)
     for match in pattern.finditer(hay):
-        if any(hay.startswith(item, match.start()) for item in longer):
+        if _covered_by_longer(hay, match.start(), longer):
             continue
         return True
+    return False
+
+
+def _covered_by_longer(hay: str, at: int, longer: list[str]) -> bool:
+    """True when a longer baseline heading occupies `hay` at `at` and ends on a boundary.
+
+    `1.2. Overview` covers `1.2`. `1.2. Overviews` does not: the next letter is still
+    part of the word.
+    """
+    for item in longer:
+        if not hay.startswith(item, at):
+            continue
+        if re.match(_HEADING_AFTER, hay[at + len(item):]):
+            return True
     return False
 
 

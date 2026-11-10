@@ -199,6 +199,39 @@ def test_a_dot_slash_or_dash_does_not_join_a_shorter_heading(db, pid):
     assert got["gaps"] == [] and got["approved_to_build"] is True
 
 
+def test_a_dot_glued_to_a_word_does_not_end_the_heading(db, pid):
+    body = ("## Goals\nYes.\n\n## Login\nForm.\n\n## 2. API\nShort.\n\n"
+            "## 1.2\nPoint.\n\n## 1.2. Overview\nLonger.\n")
+    prd = prd_svc.create_prd(db, title="P", project_id=pid, body=body)
+    approve(db, prd)
+    sid = ds_svc.open_design(db, pid, prd.id)["id"]
+    ds_svc.put_set_constraints(
+        db, pid, sid, "Goals.extra. Login.form. 2. API.Next. 1.2.Overview stays one token.",
+        sections=["Goals", "Login", "2. API", "1.2"],
+        screens=[{"screen": "home"}])
+    got = ds_svc.get_design_set(db, pid, sid)["alignment"]
+    assert got["gaps"] == ["Goals", "Login", "2. API", "1.2"]
+    assert got["approved_to_build"] is False
+
+
+def test_a_longer_heading_must_end_on_a_boundary(db, pid):
+    body = "## 1.2\nPoint.\n\n## 1.2. Overview\nLonger.\n\n## 1.2. API\nRows.\n"
+    prd = prd_svc.create_prd(db, title="P", project_id=pid, body=body)
+    approve(db, prd)
+    sid = ds_svc.open_design(db, pid, prd.id)["id"]
+    ds_svc.put_set_constraints(
+        db, pid, sid, "1.2. Overviews of settings stay old. 1.2. APIs are stable.",
+        sections=["1.2"],
+        screens=[{"screen": "home"}])
+    got = ds_svc.get_design_set(db, pid, sid)["alignment"]
+    assert got["gaps"] == [] and got["approved_to_build"] is True
+    ds_svc.put_set_constraints(
+        db, pid, sid, "1.2. Overview is longer.", sections=["1.2"],
+        screens=[{"screen": "home"}])
+    got = ds_svc.get_design_set(db, pid, sid)["alignment"]
+    assert got["gaps"] == ["1.2"] and got["approved_to_build"] is False
+
+
 def test_a_sentence_period_counts_unless_it_begins_a_longer_heading(db, pid):
     body = "## 1.2\nPoint.\n\n## 1.2. Overview\nLonger.\n"
     prd = prd_svc.create_prd(db, title="P", project_id=pid, body=body)
