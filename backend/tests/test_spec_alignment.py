@@ -109,6 +109,50 @@ def test_a_brief_approves_gated_sections_without_pasted_headings(db, pid):
     assert got["gaps"] == [] and got["approved_to_build"] is True
 
 
+def test_a_brief_does_not_approve_a_name_decompose_will_not_attach(db, pid):
+    """`Overview` is not the heading `1. Overview`. A brief must not clear it."""
+    body = "## 1. Overview\nThe product.\n\n## Spacing\nEight point grid.\n"
+    prd = prd_svc.create_prd(db, title="P", project_id=pid, body=body)
+    approve(db, prd)
+    sid = ds_svc.open_design(db, pid, prd.id)["id"]
+    ds_svc.put_set_constraints(
+        db, pid, sid, "Unrelated nonsense.", sections=["Overview"],
+        screens=[{"screen": "home", "brief": "Name the organization."}])
+    got = ds_svc.get_design_set(db, pid, sid)["alignment"]
+    assert got["gaps"] == ["Overview"] and got["approved_to_build"] is False
+    assert ds_svc.gating_set(db, prd.id, "1. Overview") is None
+
+
+def test_a_padded_section_is_stored_as_the_heading_decompose_matches(db, pid):
+    prd = prd_svc.create_prd(db, title="P", project_id=pid, body=BODY)
+    approve(db, prd)
+    sid = ds_svc.open_design(db, pid, prd.id)["id"]
+    ds_svc.put_set_constraints(
+        db, pid, sid, "Unrelated nonsense.", sections=[" Tokens "],
+        screens=[{"screen": "home", "brief": "Name the organization."}])
+    assert db.get(DesignSet, sid).sections == ["Tokens"]
+    assert ds_svc.gating_set(db, prd.id, "Tokens") is not None
+    got = ds_svc.get_design_set(db, pid, sid)["alignment"]
+    assert got["gaps"] == [] and got["approved_to_build"] is True
+
+
+def test_a_shorter_heading_is_not_satisfied_by_a_longer_one(db, pid):
+    body = "## 2. API\nShort.\n\n## 12. API\nLong.\n"
+    prd = prd_svc.create_prd(db, title="P", project_id=pid, body=body)
+    approve(db, prd)
+    sid = ds_svc.open_design(db, pid, prd.id)["id"]
+    ds_svc.put_set_constraints(
+        db, pid, sid, "See 12. API for the long one.", sections=["2. API"],
+        screens=[{"screen": "home"}])
+    got = ds_svc.get_design_set(db, pid, sid)["alignment"]
+    assert got["gaps"] == ["2. API"] and got["approved_to_build"] is False
+    ds_svc.put_set_constraints(
+        db, pid, sid, "2. API is the short one.", sections=["2. API"],
+        screens=[{"screen": "home"}])
+    got = ds_svc.get_design_set(db, pid, sid)["alignment"]
+    assert got["gaps"] == [] and got["approved_to_build"] is True
+
+
 def test_a_gated_set_without_a_brief_still_needs_its_heading(db, pid):
     """No brief, and the set's own text never says the section it gates. Compiling quotes
     the PRD, and that quote still does not approve it."""

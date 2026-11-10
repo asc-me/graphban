@@ -142,7 +142,7 @@ def put_set_constraints(db: Session, project_id: str, set_id: str, body: str,
     ds.constraints_body, ds.constraints_hash = body, content_hash(body)
     ds.constraints_accepted = False
     if sections is not None:
-        ds.sections = [str(s) for s in sections]
+        ds.sections = _section_names(sections)
     for s in screens or []:
         row = _screen(db, ds, str(s["screen"]), s.get("routes"))
         if "brief" in s:
@@ -182,9 +182,23 @@ def accept_set_constraints(db: Session, project_id: str, set_id: str, actor: str
     }
 
 
+def _section_names(sections: list[str]) -> list[str]:
+    """The titles `gating_set` will compare, stripped once at the write.
+
+    Alignment reads this list as stored. Stripping only at read would approve `Tokens `
+    while decompose, which matches the stored string, never attaches `Tokens`.
+    """
+    out: list[str] = []
+    for raw in sections:
+        name = str(raw).strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
 def _edit_sections(db: Session, ds: DesignSet, sections: list[str] | None) -> dict:
     old = list(ds.sections or [])
-    new = [str(x) for x in sections] if sections is not None else old
+    new = _section_names(sections) if sections is not None else old
     removed = set(old) - set(new)
     ds.sections = new
     if removed:
