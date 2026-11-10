@@ -50,7 +50,7 @@ from app.version import __version__
 
 #: The primitive API this server provides. Bump the minor for additive changes, the major for
 #: a removed primitive or a new required param; the pinned fixtures then fail the PR (below).
-PRIMITIVE_API = "1.7.0"
+PRIMITIVE_API = "1.8.0"
 
 #: Raw Ed25519 public keys (hex) whose signatures are trusted. The graphban-rules signing job
 #: holds the matching private key; it never enters this repo. An empty tuple would refuse every pack.
@@ -133,7 +133,9 @@ register_primitive(Primitive(
 register_primitive(Primitive(
     "test_scope", "checked",
     Enforcer("doc", "docs/rules.md"),
-    {"mode": Param("str")}))
+    # GRPH-1429/GRPH-1494: `engines` (a list) applies only under `agent_full`. Without it here
+    # the loader refused any template that carried it, and `_check_params` refused every write.
+    {"mode": Param("str"), "engines": Param("list")}))
 # GRPH-1425. `checked`: the supervisor reads `mode` (`hold` | `warn`) when it decides whether to
 # open a PR; the merge-time `covering` check refuses an uncovered file in either mode.
 register_primitive(Primitive(
@@ -152,6 +154,12 @@ register_primitive(Primitive(
     "done_predicates", "enforced",
     Enforcer("graphban_source", "app/services/items.py"),
     {"predicates": Param("list")}))
+# GRPH-1424/GRPH-1494. `checked`: the supervisor reads `paths` at reap time and lets an
+# undeclared file that matches one through the hold; the server refuses nothing on it.
+register_primitive(Primitive(
+    "generated_files", "checked",
+    Enforcer("supervisor", "gbfleet until"),
+    {"paths": Param("list")}))
 register_primitive(Primitive(
     "evidence_attached", "checked",
     Enforcer("graphban_source", "app/services/items.py"),
