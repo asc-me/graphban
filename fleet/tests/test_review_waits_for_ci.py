@@ -63,17 +63,20 @@ def test_green_ci_spawns(monkeypatch):
     assert seen == []
 
 
-def test_red_ci_blocks_the_item_on_the_failing_job(monkeypatch):
+def test_red_ci_reopens_the_item_with_the_failing_job_named(monkeypatch):
     _verdict(monkeypatch, "red", job="fleet-tests")
     seen = _events(monkeypatch)
     planner = _Planner()
     got = _ci_attested([ROW], Path("."), set(), planner=planner, agent_id="GRPH-P1")
     assert got == ([], [], [ROW])  # no reviewer for it
-    assert [e for e, _ in seen] == ["review_ci_red", "review_ci_red_blocked"]
+    assert [e for e, _ in seen] == ["review_ci_red", "review_ci_red_reopened"]
     assert seen[0][1]["job"] == "fleet-tests"
     (tool, args), = planner.calls
-    assert tool == "update_item" and args["id"] == "GRPH-1" and args["status"] == "blocked"
-    assert "fleet-tests" in args["blocker"] and HEAD[:12] in args["blocker"]
+    assert tool == "update_item" and args["id"] == "GRPH-1" and args["status"] == "next"
+    assert args["blocker"] == ""
+    note = args["evidence"][0]["detail"]
+    assert "fleet-tests" in note and HEAD[:12] in note
+    assert until.REVIEW_CI_RED in note
     assert args["agent_id"] == "GRPH-P1"
 
 

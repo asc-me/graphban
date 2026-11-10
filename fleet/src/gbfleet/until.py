@@ -2658,11 +2658,11 @@ def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
     CI is wasted: those rows are held back, logged once per head as `review_waits_on_ci`, and
     returned second so the loop keeps polling for them instead of reading them as unsigned.
 
-    A red row is blocked with the failing job named (`review_ci_red`), and no reviewer is
-    spawned for it. The supervisor may not bounce (PRD-22 §4); the planner may write a
-    blocker, as the GRPH-950 hold does. If that write is refused the row stays spawnable, so
-    the reviewer — who can bounce — is still the fallback, never a wedged row. A blocked row
-    has left `review`, so the loop drops it rather than reading it as unsigned work.
+    A red row is sent back to its builder with the failing tests named (`review_ci_red`), and
+    no reviewer is spawned for it (GRPH-1471). The supervisor may not bounce (PRD-22 §4); the
+    planner reopens the item to `next` with evidence. If that write is refused the row stays
+    spawnable, so the reviewer — who can bounce — is still the fallback, never a wedged row. A
+    reopened row has left `review`, so the loop drops it rather than reading it as unsigned work.
     """
     ready: list[dict] = []
     waiting: list[dict] = []
@@ -2810,18 +2810,39 @@ def name_red_tests(planner: Graphban, repo: Path, item_id: str, agent_id: str = 
     return note
 
 
+REVIEW_CI_RED = "gbfleet.review_ci_red"
+
+
+def ci_red_reopen_note(head: str, job: str, tests: str = "") -> str:
+    """Evidence on a review row whose CI failed, sent back to its builder (GRPH-1471)."""
+    lead = (f"{REVIEW_CI_RED}: CI red at {head[:12]} — failing check: {job}. "
+            "gbfleet held review until the branch is green; fix on the branch, then move "
+            "back to review.")
+    if tests:
+        return f"{lead}\nFailing tests:\n{tests}"
+    return lead
+
+
 def ci_red_blocker(head: str, job: str, tests: str = "") -> str:
-    """The blocker written on a review row whose CI failed (GRPH-1392)."""
-    text = (f"CI red at {head[:12]}: {job} failed. Fix it on the branch, then move the "
-            f"item back to next (gbfleet held review: a reviewer could not sign off).")
-    return f"{text}\nFailing tests:\n{tests}" if tests else text
+    """Legacy name for the prose in a red-CI reopen note (GRPH-1392, GRPH-1471)."""
+    return ci_red_reopen_note(head, job, tests)
 
 
 def _block_ci_red(planner: Graphban, item: str, head: str, job: str, agent_id: str,
                   *, repo: Path | None = None, branch: str = "") -> bool:
-    """Block a review row on its failing CI job. False when the write was refused."""
+    """Reopen a review row to `next` when its CI is red. False when the write was refused.
+
+    GRPH-1471: a free-text `blocked` blocker is not claimable — the builder must get the item
+    back with the failing tests named, not a sentence that nothing hands out.
+    """
     tests = failed_test_summary(repo, branch) if repo is not None and branch else ""
-    args: dict = {"id": item, "status": "blocked", "blocker": ci_red_blocker(head, job, tests)}
+    note = ci_red_reopen_note(head, job, tests)
+    args: dict = {
+        "id": item,
+        "status": "next",
+        "blocker": "",
+        "evidence": [{"kind": "note", "detail": note}],
+    }
     if agent_id:
         args["agent_id"] = agent_id
     try:
@@ -2829,8 +2850,8 @@ def _block_ci_red(planner: Graphban, item: str, head: str, job: str, agent_id: s
     except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
         observe.emit("review_ci_red_unrecorded", item=item, detail=str(exc))
         return False
-    observe.emit("review_ci_red_blocked", item=item, commit=head, job=job,
-                 detail=f"{item}: blocked on {job} at {head[:12]}")
+    observe.emit("review_ci_red_reopened", item=item, commit=head, job=job,
+                 detail=f"{item}: reopened on {job} at {head[:12]}")
     return True
 
 
