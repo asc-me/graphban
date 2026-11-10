@@ -613,9 +613,8 @@ def test_the_skill_hands_the_person_a_runnable_line_and_carries_the_rest(tmp_pat
     assert "do not retry" in body.lower()
 
 
-def test_the_skill_ships_in_the_wheel(tmp_path):
-    """Package DATA, not a .py file — the one class of file a packaging config silently drops.
-    A skill that exists in the repo and not in the wheel installs nothing for anyone."""
+def _built_wheel_names(tmp_path):
+    """Build the CLI wheel into tmp_path and return its member names (skips with no builder)."""
     import subprocess
     import sys
     import zipfile
@@ -634,7 +633,13 @@ def test_the_skill_ships_in_the_wheel(tmp_path):
     if done is None or done.returncode != 0:
         pytest.skip("no wheel builder available")
     wheel = next(out.glob("*.whl"))
-    names = zipfile.ZipFile(wheel).namelist()
+    return zipfile.ZipFile(wheel).namelist()
+
+
+def test_the_skill_ships_in_the_wheel(tmp_path):
+    """Package DATA, not a .py file — the one class of file a packaging config silently drops.
+    A skill that exists in the repo and not in the wheel installs nothing for anyone."""
+    names = _built_wheel_names(tmp_path)
     assert any(n.endswith("skills/graphban-delegation/SKILL.md") for n in names), names[:20]
     assert any(n.endswith("skills/watch-wave/SKILL.md") for n in names), names[:20]
     assert any(n.endswith("skills/graphban-grill/SKILL.md") for n in names), names[:20]
@@ -1364,7 +1369,7 @@ def test_the_old_subcommand_flag_order_is_still_rejected():
             _parser().parse_args(argv)
 
 
-def test_graphban_prove_states_the_finish_bar():
+def test_graphban_prove_states_the_finish_bar(tmp_path):
     """The finish bar lives in the shipped skill: heartbeat around the long suite, both
     engines, a sabotage receipt that failed a test, a quoted live read, no builder `done`."""
     body = " ".join(setup_mod.skill_source("graphban-prove").read_text(encoding="utf-8").split())
@@ -1378,3 +1383,5 @@ def test_graphban_prove_states_the_finish_bar():
     assert "Quote the sentence" in body
     assert "An empty list is a finding" in body
     assert "The builder does not set `done`" in body
+    names = _built_wheel_names(tmp_path)
+    assert any(n.endswith("skills/graphban-prove/SKILL.md") for n in names), names[:20]
