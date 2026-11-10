@@ -350,6 +350,7 @@ def test_a_head_that_moved_after_review_is_left_alone(gh):
     got = _merge(forge, gh)
 
     assert not got.ok and not got.skipped and not got.pending
+    assert got.rereview
     assert "reviewed commit" in got.reason and REVIEWED[:12] in got.reason
     assert forge.verbs() == ["pr view"], "touched the PR after the head check failed"
     assert "head=reviewed" not in got.checked
@@ -433,7 +434,7 @@ def test_a_real_edit_of_the_item_still_needs_review(gh, git_repo: Path):
     got = propose_mod.merge(git_repo, "SA-417", "gb/w-1", reviewed=reviewed,
                             green={reviewed}, paths=["item.py"])
 
-    assert not got.ok and "reviewed commit" in got.reason
+    assert not got.ok and got.rereview and "reviewed commit" in got.reason
     assert "pr merge" not in forge.verbs()
 
 
@@ -454,6 +455,44 @@ def test_a_merged_pr_is_found_when_view_of_the_branch_misses(gh):
     assert got.ok and got.commit == MERGE_OID
     assert "state=MERGED" in got.checked
     assert "pr list" in forge.verbs()
+
+
+def test_a_pr_merged_at_an_unreviewed_head_is_not_recorded(gh):
+    """state=MERGED is not the sign-off. #1505 was squash-merged at a later head and the
+    next tick wrote a merge receipt for it.
+
+    Sabotage: return ok for every MERGED PR without reading headRefOid. This passes.
+    """
+    forge = _Forge(state="MERGED", draft=False, head=MOVED)
+
+    got = _merge(forge, gh)
+
+    assert not got.ok and got.skipped
+    assert MOVED[:12] in got.reason and REVIEWED[:12] in got.reason
+    assert "pr merge" not in forge.verbs()
+
+
+def test_a_merged_pr_whose_item_files_did_not_change_is_still_recorded(gh, git_repo: Path):
+    """GRPH-1032 still holds after the PR has landed. A main-merge moves the head; the
+    item's files do not, so the sign-off still covers what merged."""
+    (git_repo / "item.py").write_text("mine\n", encoding="utf-8")
+    subprocess.run(["git", "add", "item.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "item"], cwd=git_repo, check=True)
+    reviewed = subprocess.run(["git", "rev-parse", "HEAD"], cwd=git_repo,
+                              capture_output=True, text=True, check=True).stdout.strip()
+    (git_repo / "other.py").write_text("from-main\n", encoding="utf-8")
+    subprocess.run(["git", "add", "other.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "main moved"], cwd=git_repo, check=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=git_repo,
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+    forge = _Forge(state="MERGED", draft=False, head=head)
+    gh(_only_gh(forge))
+    got = propose_mod.merge(git_repo, "SA-417", "gb/w-1", reviewed=reviewed,
+                            green={head}, paths=["item.py"])
+
+    assert got.ok and got.commit == MERGE_OID
+    assert "state=MERGED" in got.checked and "paths-unchanged" in got.checked
 
 
 def test_no_ci_attestation_on_the_reviewed_commit_holds_it(gh):

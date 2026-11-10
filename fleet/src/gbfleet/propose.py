@@ -532,6 +532,9 @@ class Merged:
     #: Files a rebase onto the base could not reconcile (GRPH-1389). Non-empty means the item
     #: is to be bounced, naming these, rather than left as a PR that can never run CI.
     conflicts: tuple[str, ...] = ()
+    #: The PR head is a different commit from the sign-off, and the item's own files changed.
+    #: The Merger bounces it. Leaving it `done` is how an unreviewed head gets merged.
+    rereview: bool = False
 
     @property
     def final(self) -> bool:
@@ -1053,7 +1056,7 @@ def _close_superseded(repo: Path, got: Merged, siblings) -> tuple[str, ...]:
 
 
 def _sibling_at(repo: Path, item_id: str, selector: str, url: str, head: str, reviewed: str,
-                siblings) -> tuple[str, str]:
+                siblings) -> tuple[str, str, bool]:
     """`(sibling, hold)`: the one other PR of the item whose head is `reviewed` — merged
     first, else open — or the reason none can stand in, naming every PR checked with its
     head (GRPH-1219).
@@ -1081,18 +1084,18 @@ def _sibling_at(repo: Path, item_id: str, selector: str, url: str, head: str, re
     # A sibling the forge already merged at the reviewed commit is the answer, not a hold:
     # its own auto-merge armed on an earlier tick landed, and the ledger still needs it.
     if len(merged) == 1:
-        return merged[0], ""
+        return merged[0], "", False
     if not merged and len(hits) == 1:
-        return hits[0], ""
+        return hits[0], "", False
     hits += merged
     checked_prs = "; ".join(seen)
     if hits:
         return "", (f"no single PR to merge: {len(hits)} PRs of {item_id} are at the "
-                    f"reviewed commit {reviewed[:12]} (checked {checked_prs})")
+                    f"reviewed commit {reviewed[:12]} (checked {checked_prs})"), False
     return "", (f"PR head {head[:12] or '?'} is not the reviewed commit {reviewed[:12]}, and "
                 f"no other open or merged PR of {item_id} is (checked {checked_prs}) — the branch "
                 "moved after sign-off or the reviewed PR is gone; it needs review again, "
-                "not a merge")
+                "not a merge"), True
 
 
 def _via_sibling(repo: Path, item_id: str, selector: str, pr: dict, *, reviewed: str,
@@ -1105,12 +1108,12 @@ def _via_sibling(repo: Path, item_id: str, selector: str, pr: dict, *, reviewed:
     so it cannot loop (GRPH-1219)."""
     url = str(pr.get("url") or "")
     head = str(pr.get("headRefOid") or "")
-    sibling, hold = _sibling_at(repo, item_id, selector, url, head, reviewed, siblings)
+    sibling, hold, rereview = _sibling_at(repo, item_id, selector, url, head, reviewed, siblings)
     if not sibling:
         if miss is not None:
             return miss
         return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
-                      reason=hold)
+                      rereview=rereview, reason=hold)
     got = _merge(repo, item_id, sibling, reviewed=reviewed, green=green, paths=paths,
                  covering=covering, local_full=local_full, red=red,
                  release=release, scans=scans, method=method)
@@ -1166,13 +1169,37 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
         return Merged(item=item_id, selector=selector, skipped=True, reason=err)
     url = str(pr.get("url") or "")
     state = str(pr.get("state") or "").upper()
+    from .worktree import paths_unchanged
+
     if state == "MERGED":
-        # Merged by somebody, or by the auto-merge this armed on an earlier tick. Either
-        # way the trunk now carries the work and the ledger should say so.
+        # Merged by somebody, or by the auto-merge this armed on an earlier tick.
+        # A squash rewrites the merge commit, so the commit the sign-off can cover is the
+        # PR head, not the squash SHA. Recording every MERGED PR is how #1505 landed: the
+        # head had moved after sign-off, a person merged that head, and the next tick wrote
+        # a merge receipt for a commit the review never saw.
         commit = _merge_commit(pr)
-        return Merged(item=item_id, selector=selector, url=url, commit=commit,
-                      ok=bool(commit), checked=("state=MERGED",),
-                      reason="" if commit else "merged, but gh reported no merge commit")
+        head = str(pr.get("headRefOid") or "")
+        if same_commit(head, reviewed) or paths_unchanged(repo, reviewed, head, paths):
+            checked_merged = ["state=MERGED"]
+            if head and not same_commit(head, reviewed):
+                checked_merged.append("paths-unchanged")
+            return Merged(item=item_id, selector=selector, url=url, commit=commit,
+                          ok=bool(commit), checked=tuple(checked_merged),
+                          reason="" if commit else "merged, but gh reported no merge commit")
+        uncovered = (f"PR merged at head {head[:12] or '?'} which is not the reviewed "
+                     f"commit {reviewed[:12]} — the sign-off does not cover it")
+        if siblings:
+            # A sibling still at the reviewed commit can be merged or recorded. Anything
+            # else already landed at the wrong head: do not bounce it back onto the trunk.
+            got = _via_sibling(repo, item_id, selector, pr, reviewed=reviewed, green=green,
+                               paths=paths, release=release, scans=scans, method=method,
+                               siblings=siblings, covering=covering, checked=checked,
+                               local_full=local_full, red=red)
+            if got.ok or got.pending:
+                return got
+            return replace(got, rereview=False, skipped=True, ok=False, reason=uncovered)
+        return Merged(item=item_id, selector=selector, url=url, commit=commit, skipped=True,
+                      checked=("state=MERGED",), reason=uncovered)
     if state != "OPEN":
         not_open = Merged(item=item_id, selector=selector, url=url, skipped=True,
                           reason=f"PR is {state or 'in an unknown state'}, not open")
@@ -1199,8 +1226,6 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
     # own files byte-identical. That is not a new review — the attested tree is still there.
     # A real edit of those paths still needs review again. Empty `paths` cannot prove the
     # first case, so it stays the refusal.
-    from .worktree import paths_unchanged
-
     head = str(pr.get("headRefOid") or "")
     if not same_commit(head, reviewed):
         if paths_unchanged(repo, reviewed, head, paths):
@@ -1215,6 +1240,7 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
                                 local_full=local_full, red=red)
         else:
             return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                          rereview=True,
                           reason=f"PR head {head[:12] or '?'} is not the reviewed commit "
                                  f"{reviewed[:12]} — the branch moved after sign-off; it needs "
                                  "review again, not a merge")

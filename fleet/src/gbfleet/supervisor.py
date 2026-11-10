@@ -3044,9 +3044,11 @@ class Merger:
     without the receipt the dependency check would hold every dependant forever on a
     merge that happened.
 
-    WHAT IT NEVER DOES. Decide. Every precondition miss leaves the item alone and says
-    which check failed; a merge the forge refuses is `skipped`. Branch protection is the
-    backstop and this does not go around it.
+    WHAT IT NEVER DOES. Decide that an unreviewed head may land. A head that moved after
+    sign-off, or a rebase conflict, is bounced back to its author — left `done`, that PR
+    stays mergeable and the next tick records whatever a person merged. Every other
+    precondition miss leaves the item alone and says which check failed. A merge the forge
+    refuses is `skipped`. Branch protection is the backstop and this does not go around it.
     """
 
     repo: Path
@@ -3055,6 +3057,9 @@ class Merger:
     #: The PRD this wave is scoped to (if any). Candidates outside this scope are not merged
     #: unless a GRPH-798 hold names them.
     prd_id: str = ""
+    #: The planner this wave registered. `bounce` on a fleet credential refuses an
+    #: unidentified caller, which is what left a conflicted `done` item unbounced.
+    agent_id: str = ""
     #: Candidates: item id -> the branch it was last seen on (a selector hint; the item's
     #: own PR and receipts are preferred once it is read).
     watching: dict[str, str] = field(default_factory=dict)
@@ -3233,7 +3238,7 @@ class Merger:
         got = propose_mod.close_after_merge(self.repo, got)
         if got.ok and got.commit:
             got = self._record(wave, got)
-        if got.conflicts:
+        if got.conflicts or got.rereview:
             self._bounce(wave, item_id, got)
         return got
 
@@ -3315,9 +3320,14 @@ class Merger:
         return "agent_and_pr", default
 
     def _bounce(self, wave: Wave, item_id: str, got: "propose_mod.Merged") -> None:
-        """A rebase conflict sends the item back naming the files (GRPH-1389)."""
+        """Send the item back to its author (GRPH-1389).
+
+        A rebase conflict, or a head that is no longer the signed-off commit. The fleet
+        credential cannot bounce without `agent_id`: the server refuses an unidentified
+        caller, the item stays `done`, and the PR remains mergeable.
+        """
         try:
-            self.client.call("bounce", id=item_id, reason=got.reason)
+            self.client.call("bounce", id=item_id, reason=got.reason, agent_id=self.agent_id)
             self.watching.pop(item_id, None)
         except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
             wave.failures.append(f"{item_id}: {got.reason} (could not bounce: {exc})")

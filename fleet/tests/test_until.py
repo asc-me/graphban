@@ -511,6 +511,33 @@ def test_idle_when_there_is_no_work_no_review_and_no_lease(
     assert result.as_json()["reason"] == "idle"
 
 
+def test_the_merger_carries_the_planner_that_registered(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch,
+):
+    """A fleet credential cannot bounce without agent_id. The loop must hand the planner
+    it just registered to the Merger, or a conflicted review stays `done`.
+
+    Sabotage: build the Merger without `agent_id`. This fails.
+    """
+    from gbfleet.supervisor import Merger as Real
+
+    seen: dict = {}
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return Real(*args, **kwargs)
+
+    monkeypatch.setattr("gbfleet.until.Merger", spy)
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=0)
+    run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+    )
+    assert seen.get("agent_id") == "GRPH-P1"
+
+
 def test_only_typed_waits_is_idle_with_waits(
     git_repo: Path, tmp_path: Path, scripts, state: Path,
 ):
