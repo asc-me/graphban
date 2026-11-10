@@ -518,6 +518,8 @@ app.add_middleware(RequestIdMiddleware)
 API = "/api"
 app.include_router(auth.router, prefix=API)
 app.include_router(cli_pair.router, prefix=API)
+from app.routers import playbooks as playbooks_routes  # noqa: E402
+app.include_router(playbooks_routes.router, prefix=API)
 from app.routers import setup as setup_routes  # noqa: E402
 app.include_router(setup_routes.router, prefix=API)
 from app.routers import machines as machines_routes  # noqa: E402

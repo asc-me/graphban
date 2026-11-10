@@ -30,6 +30,7 @@ fleet/.pytest_cache/
 # never committed: a CI push to protected main is refused and turns main red (GRPH-1185).
 backend/app/data/refusal_coverage.json
 backend/app/data/gban_skills.json
+backend/app/data/playbooks.json
 
 # Node
 web/node_modules/
