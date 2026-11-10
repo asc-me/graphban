@@ -80,6 +80,9 @@ jobs:
               # The Cursor hooks are Python that test_cursor_hooks runs; a hook-only PR
               # must run it, and scripts/scan_ci.py maps them to backend/ to match.
               - '.cursor/hooks/**'
+              # The hook wiring test_cursor_hooks reads (Cursor events, Grok matcher groups).
+              - '.cursor/hooks.json'
+              - '.grok/hooks/**'
               # The skills manifest guard (test_pack_release) reads cli/: a gban version bump
               # or a new skill must fail it until backend/scripts/gban_skills.json is regenerated.
               - 'cli/pyproject.toml'

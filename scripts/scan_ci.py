@@ -77,6 +77,9 @@ MAPPED: tuple[tuple[str, str], ...] = (
     ("AGENTS.md", "backend/"),
     # Cursor hook scripts: Python the backend suite runs (test_cursor_hooks).
     (".cursor/hooks/**", "backend/"),
+    # The hook wiring test_cursor_hooks reads: Cursor's event map and Grok's matcher groups.
+    (".cursor/hooks.json", "backend/"),
+    (".grok/hooks/**", "backend/"),
 )
 
 #: Files that touch nothing. Anything else outside the prefixes is never-run "no component

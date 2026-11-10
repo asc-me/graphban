@@ -205,3 +205,50 @@ def test_no_hook_or_agent_file_kept_the_old_prefix():
         for p in (REPO / d).glob("al[-_]*")
     )
     assert not stale, f"stale al-prefixed tooling left behind: {stale}"
+
+
+# --- GRPH-1499: a claim writes the manifest afterFileEdit reads -------------------------
+
+def _mcp(tool, result):
+    return {"hook_event_name": "afterMCPExecution", "tool_name": tool,
+            "result_json": json.dumps(result), "workspace_roots": [str(REPO)]}
+
+
+def test_claim_manifest_written_unioned_kept_and_released(tmp_path):
+    claim = tmp_path / "claim.json"
+    env = {"GRAPHBAN_CLAIM_FILE": str(claim)}
+    script = ".cursor/hooks/gb_claim_manifest.py"
+    _run(script, _mcp("claim_next", {"claimed": True, "item": {
+        "id": "AL-1", "touchpoints": ["a/*"], "claimed_by": "w1"}}), env)
+    assert json.loads(claim.read_text()) == {
+        "item_id": "AL-1", "touchpoints": ["a/*"], "agent_id": "w1"}
+    _run(script, _mcp("mcp__graphban__claim_cluster", {"claimed": True, "items": [
+        {"id": "AL-2", "touchpoints": ["b", "a/*"]}, {"id": "AL-3", "touchpoints": ["c"]}]}), env)
+    got = json.loads(claim.read_text())
+    assert got["item_id"] == "AL-2" and got["touchpoints"] == ["b", "a/*", "c"]
+    before = claim.read_text()
+    _run(script, _mcp("claim_next", {"claimed": False, "item": None}), env)
+    _run(script, _mcp("claim_cluster", {"claimed": False, "items": []}), env)
+    _run(script, _mcp("heartbeat", {"ok": True}), env)
+    assert claim.read_text() == before
+    _run(script, _mcp("release_item", {"error": "nope"}), env)
+    assert claim.exists()
+    _run(script, _mcp("release_item", {"id": "AL-2", "status": "next"}), env)
+    assert not claim.exists()
+
+
+def test_claim_manifest_wired_in_cursor_and_grok():
+    cfg = json.loads(HOOKS_JSON.read_text())
+    cmds = [e["command"] for e in cfg["hooks"]["afterMCPExecution"]]
+    assert "python3 .cursor/hooks/gb_claim_manifest.py" in cmds
+    grok = json.loads((REPO / ".grok/hooks/graphban-claim-manifest.json").read_text())
+    group = grok["hooks"]["PostToolUse"][0]
+    for tool in ("claim_next", "claim_cluster", "release_item"):
+        assert tool in group["matcher"]
+    assert group["hooks"][0]["command"].endswith("gb_claim_manifest.py")
+
+
+def test_after_file_edit_handler_stays_local():
+    src = (REPO / ".cursor/hooks/gb_after_file_edit.py").read_text().lower()
+    for banned in ("http", "urllib", "requests", "graphban_mcp_url"):
+        assert banned not in src
