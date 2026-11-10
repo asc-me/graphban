@@ -1256,7 +1256,9 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     # so merging the roles costs no invariant that is keyed on authorship.
     "claim_review": ("worker",),
     "sign_off": ("worker",),
-    "bounce": ("worker",),
+    # GRPH-1472: the planner (until) returns a red-CI review to its author once. It may not
+    # `sign_off`: that stays worker-only, so a planner still cannot approve anything.
+    "bounce": ("worker", "planner"),
     # Allocation is the planner's whole job. `propose_allocation` is a read and ungated so a
     # worker can see the shape of the fleet; committing it is not.
     "assign_role": ("planner",),
