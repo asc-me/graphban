@@ -2470,6 +2470,10 @@ export interface FleetPolicy {
   caps?: FleetPolicyCaps | null;
   /** Stored by `normalise_policy`; PUT replaces the whole policy, so it must be sent back. */
   cluster_ceiling?: Record<string, unknown> | null;
+  ladder?: string[] | null;
+  /** GRPH-P76: next available (S4) or stack-ranked subscriptions on the policy. */
+  routing_mode?: "next_available" | "custom_hierarchy" | null;
+  subscription_order?: string[] | null;
 }
 
 export interface FleetProfileRead {
