@@ -68,5 +68,13 @@ describe("ConsoleRedirect", () => {
     vi.stubEnv("MODE", "production");
     vi.stubEnv("VITE_CONSOLE_URL", "");
     expect(() => consoleOrigin()).toThrow(/localhost/);
+    expect(consoleHref("/admin")).toBeNull();
+  });
+
+  it("does not leave the page when a production build omits VITE_CONSOLE_URL", () => {
+    vi.stubEnv("MODE", "production");
+    vi.stubEnv("VITE_CONSOLE_URL", "");
+    renderAt("/admin/users");
+    expect(replace).not.toHaveBeenCalled();
   });
 });

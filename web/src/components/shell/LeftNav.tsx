@@ -246,6 +246,11 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
     pages: s.pages.filter((p) => hosted || !p.hostedOnly),
   }));
   const onMenu = (open: boolean) => setMenus((n) => Math.max(0, n + (open ? 1 : -1)));
+  // A missing console URL drops these links. Passing an empty href would make
+  // NavItem fall through to an in-app route that does not exist.
+  const adminConsole = consoleHref(adminPath());
+  const orgConsole = consoleHref(orgPath());
+  const operatorConsole = consoleHref("/operator");
 
   const tipProps = (t: Omit<Tip, "top">) => {
     const show = (e: React.SyntheticEvent<HTMLElement>) => {
@@ -327,8 +332,8 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
             ),
           )}
           <div className="mt-auto" />
-          {canAdminister && (
-            <RailLink href={consoleHref(adminPath())} label="Admin" icon={<UsersRound size={16} />} tipProps={tipProps({ label: "Admin" })} />
+          {canAdminister && adminConsole && (
+            <RailLink href={adminConsole} label="Admin" icon={<UsersRound size={16} />} tipProps={tipProps({ label: "Admin" })} />
           )}
           <RailLink to="/usage" label="Usage" icon={<ChartLine size={16} />} tipProps={tipProps({ label: "Usage" })} />
           <RailLink to={viewPath("feedback-kit")} label="Feedback Kit" icon={<MessageSquare size={16} />} tipProps={tipProps({ label: "Feedback Kit" })} />
@@ -411,15 +416,15 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
 
           <div className="mt-auto flex flex-col gap-0.5 border-t border-line pt-2.5">
             {hosted ? (
-              <NavItem href={consoleHref(orgPath())} icon={<Building2 size={15} />} label="Organization" utility tour="org" />
+              orgConsole && <NavItem href={orgConsole} icon={<Building2 size={15} />} label="Organization" utility tour="org" />
             ) : (
               <OrgRailItem projectId={activeId} onOpenDialog={(linked) => { setOrgDialogLinked(linked); setOrgDialogOpen(true); }} />
             )}
-            {canAdminister && (
-              <NavItem href={consoleHref(adminPath())} icon={<UsersRound size={15} />} label="Admin" utility />
+            {canAdminister && adminConsole && (
+              <NavItem href={adminConsole} icon={<UsersRound size={15} />} label="Admin" utility />
             )}
             <NavItem to="/usage" icon={<ChartLine size={15} />} label="Usage" utility />
-            {isPlatformAdmin && <NavItem href={consoleHref("/operator")} icon={<ShieldCheck size={15} />} label="Operator" utility />}
+            {isPlatformAdmin && operatorConsole && <NavItem href={operatorConsole} icon={<ShieldCheck size={15} />} label="Operator" utility />}
             <NavItem to={viewPath("feedback-kit")} icon={<MessageSquare size={15} />} label="Feedback Kit" utility />
             <NavItem to="/settings" icon={<Settings size={15} />} label="Settings" utility />
             <div className="my-1.5 border-t border-line" />

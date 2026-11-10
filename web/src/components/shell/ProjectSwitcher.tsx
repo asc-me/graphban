@@ -282,7 +282,7 @@ export function ProjectSwitcher({
             <div className="flex items-center gap-2 border-t border-line px-2.5 py-2">
               {hosted && (
                 <a
-                  href={consoleHref(orgPath())}
+                  href={consoleHref(orgPath()) ?? undefined}
                   onClick={() => close(false)}
                   className="flex h-7 items-center rounded-[7px] px-2.5 text-[12px] text-muted hover:bg-surface-3 hover:text-fg"
                 >

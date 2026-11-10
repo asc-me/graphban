@@ -33,7 +33,7 @@ export function ProjectBar() {
       <span className="w-1 self-stretch" style={{ background: active.accent }} />
       <div className="flex items-center gap-2.5 py-2 pl-2.5">
         <a
-          href={consoleHref(orgPath())}
+          href={consoleHref(orgPath()) ?? undefined}
           className="font-mono text-meta uppercase tracking-[0.06em] text-faint hover:text-accent"
         >
           org

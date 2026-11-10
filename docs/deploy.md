@@ -438,7 +438,7 @@ instance — inside the backend container is simplest:
 # run this where DATABASE_URL points at the instance, or the command exits non-zero
 # rather than reporting a link the server can't see.
 docker compose exec backend graphban link \
-  --cloud-url https://cloud.example/ --api-key gb_sk_… --project core
+  --cloud-url https://graphban-console-console-production-ascme-labs.unkey.app --api-key gb_sk_… --project core
 
 docker compose exec backend graphban status   # link + last-synced state
 docker compose exec backend graphban sync      # incremental push (only changed paths ship)
@@ -453,7 +453,8 @@ docker compose exec backend graphban export --project core --out graph.json
 docker compose exec backend graphban import --in graph.json --prune
 ```
 
-`sync` is incremental and resumable (content-hash manifest per path); a project with
-its privacy toggle off (`sync_graph=false`) is skipped. The push respects the same
-server-side tenant boundary as the API — the cloud stamps `org_id` from the credential,
-never the payload.
+`sync` is incremental and resumable (content-hash manifest per path). The privacy
+toggle (`sync_graph=false`) skips that project's code graph only. The box still
+posts its org view — rule state, counts, adoption, and effect — for every project
+on the box. The push respects the same server-side tenant boundary as the API —
+the cloud stamps `org_id` from the credential, never the payload.

@@ -120,6 +120,22 @@ describe("SyncLinkPanel", () => {
     await waitFor(() => expect(api.syncSetGraph).toHaveBeenCalledWith("core", false));
   });
 
+  it("says the code graph stays local when the privacy toggle is off", async () => {
+    api.syncStatus.mockResolvedValue({
+      ...linked,
+      projects: [
+        ...linked.projects,
+        {
+          project_id: "north", name: "North", writable: true, sync_graph: false,
+          total_nodes: 10, synced_nodes: 0, pending: 0, last_synced_at: null, status: "paused",
+        },
+      ],
+    });
+    renderPanel();
+    expect(await screen.findByText("graph kept local")).toBeInTheDocument();
+    expect(screen.queryByText(/^kept local$/)).not.toBeInTheDocument();
+  });
+
   it("unlink drops the gitops cache and notes a pre-link restore", async () => {
     const user = userEvent.setup();
     api.syncStatus.mockResolvedValue(linked);

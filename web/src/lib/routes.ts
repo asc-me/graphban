@@ -209,10 +209,22 @@ export function consolePathFromProduct(pathname: string): string {
   return pathname;
 }
 
-/** Absolute URL for a path on the cloud console (`/org`, `/operator`, …). */
-export function consoleHref(path: string): string {
+/**
+ * Absolute URL for a path on the cloud console (`/org`, `/operator`, …).
+ *
+ * Returns null when `consoleOrigin()` refuses — a production build with
+ * `VITE_CONSOLE_URL` unset — so the shell drops the link instead of throwing
+ * during render. `consoleOrigin()` itself still throws.
+ */
+export function consoleHref(path: string): string | null {
+  let origin: string;
+  try {
+    origin = consoleOrigin();
+  } catch {
+    return null;
+  }
   const p = path.startsWith("/") ? path : `/${path}`;
-  return `${consoleOrigin()}${consolePathFromProduct(p)}`;
+  return `${origin}${consolePathFromProduct(p)}`;
 }
 
 /**

@@ -617,7 +617,7 @@ function Dependencies({
     <section className="mt-5 rounded-[13px] border border-line bg-surface-2 p-4">
       <div className="flex items-center gap-2.5">
         <h2 className="flex-1 text-lead font-semibold">Cross-project dependencies</h2>
-        <a href={consoleHref(orgPath("galaxy"))} className="text-[12px] text-st-next transition-colors hover:text-fg">
+        <a href={consoleHref(orgPath("galaxy")) ?? undefined} className="text-[12px] text-st-next transition-colors hover:text-fg">
           Open in galaxy →
         </a>
       </div>

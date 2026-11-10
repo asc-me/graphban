@@ -147,8 +147,10 @@ The dev server proxies `/api` to the backend; override the target with `VITE_API
 the `api` service.
 
 Org-plane links use `VITE_CONSOLE_URL`. The web image sets it at build time
-(`web/Dockerfile`) to the console. A production build without it refuses to emit a
-localhost console link. `pnpm dev` falls back to `http://localhost:5174`.
+(`web/Dockerfile`) to the console. A production build without it makes
+`consoleOrigin()` throw rather than fall back to localhost; `consoleHref()`
+returns null and the shell leaves those links off. `pnpm dev` falls back to
+`http://localhost:5174`.
 
 ## Wire names during the Graphban rename
 

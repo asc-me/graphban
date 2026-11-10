@@ -84,7 +84,9 @@ export function AdminGitopsLink({ className }: { className?: string }) {
   if (config?.hosted_mode) {
     return <Link to={adminPath("gitops")} className={cls}>Admin → Gitops</Link>;
   }
-  return <a href={consoleHref(adminPath("gitops"))} className={cls}>Admin → Gitops</a>;
+  const href = consoleHref(adminPath("gitops"));
+  if (!href) return <span className={cls}>Admin → Gitops</span>;
+  return <a href={href} className={cls}>Admin → Gitops</a>;
 }
 
 /** The org's display name for a linked row: the sync link's `org`, else the id the view carries. */

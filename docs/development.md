@@ -43,7 +43,7 @@ pnpm install
 pnpm dev          # http://localhost:5173, proxies /api -> :8000
 pnpm test         # Vitest + Testing Library
 pnpm typecheck    # tsc -b --noEmit
-pnpm build        # tsc + vite build. The Docker image sets VITE_CONSOLE_URL; a production build without it does not fall back to localhost.
+pnpm build        # tsc + vite build. The Docker image sets VITE_CONSOLE_URL. Without it, consoleOrigin() throws (no localhost fallback) and consoleHref() returns null so the shell still renders.
 ```
 
 ## Migrations (Alembic)

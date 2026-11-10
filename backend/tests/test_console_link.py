@@ -16,6 +16,13 @@ def test_link_help_and_the_image_build_name_the_console():
     cli = (root / "backend" / "app" / "cli.py").read_text()
     assert CONSOLE in cli
     assert "cloud.example" not in cli
+    routes = (root / "web" / "src" / "lib" / "routes.ts").read_text()
+    assert CONSOLE in routes
+    deploy = (root / "docs" / "deploy.md").read_text()
+    assert f"--cloud-url {CONSOLE}" in deploy
+    assert "cloud.example" not in deploy
+    config = (root / "backend" / "app" / "config.py").read_text()
+    assert "cloud.example" not in config
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         with contextlib.suppress(SystemExit):

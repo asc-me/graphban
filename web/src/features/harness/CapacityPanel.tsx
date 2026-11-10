@@ -133,7 +133,7 @@ export function CapacityPanel({ projectId }: { projectId?: string }) {
         <div className="text-[13px] font-medium">Capacity</div>
         <p data-testid="capacity-refusal-message" className="mt-1 text-body">{message}</p>
         {hint && <p data-testid="capacity-refusal-hint" className="mt-1 text-body text-muted">{hint}</p>}
-        <a data-testid="capacity-attach" href={consoleHref("/orgs")} className="mt-2 inline-block text-body text-accent">
+        <a data-testid="capacity-attach" href={consoleHref("/orgs") ?? undefined} className="mt-2 inline-block text-body text-accent">
           Attach to an org
         </a>
       </section>
@@ -154,7 +154,7 @@ export function CapacityPanel({ projectId }: { projectId?: string }) {
               {data.org.name} · {data.org.entitlement_count} entitlements
             </span>
           </div>
-          <a data-testid="capacity-manage" href={href} className="text-body text-accent">Manage entitlements →</a>
+          <a data-testid="capacity-manage" href={href ?? undefined} className="text-body text-accent">Manage entitlements →</a>
         </div>
         <p className="mt-1 text-body text-muted">
           Headroom on every entitlement the org has declared. Credentials stay on their runners. Graphban sends the work, never the credential.
@@ -189,7 +189,7 @@ export function CapacityPanel({ projectId }: { projectId?: string }) {
         <div data-testid="capacity-empty" className="text-body text-muted">
           <div className="font-mono text-small">○ NO ENTITLEMENTS DECLARED</div>
           No work is routed by capacity until an entitlement is declared on a runner.{" "}
-          <a data-testid="capacity-declare" href={href} className="text-accent">Declare one</a>
+          <a data-testid="capacity-declare" href={href ?? undefined} className="text-accent">Declare one</a>
         </div>
       ) : (
         <table className="w-full text-left text-body">

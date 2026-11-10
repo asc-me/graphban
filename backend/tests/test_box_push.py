@@ -183,6 +183,7 @@ def test_a_refusal_is_logged_and_not_retried_until_the_payload_changes(client, m
     assert first["pushed"] is False and first["refused"] is True
     assert first["failures"][0]["project"] == "North"
     assert "North" in caplog.text
+    assert "rules.0.effect.reason" in caplog.text
     again = box_push.push_box_view(db, cloud_url="https://c", api_key="k")
     assert again["repeated"] is True
     assert len(sent) == 1

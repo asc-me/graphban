@@ -377,8 +377,8 @@ function ProjectsTable({
                   </span>
                 )}
               </span>
-              <span className="w-24 font-mono text-[10.5px] tracking-wide text-muted">
-                {p.sync_graph ? `${p.total_nodes} nodes` : "kept local"}
+              <span className="w-32 whitespace-nowrap font-mono text-[10.5px] tracking-wide text-muted">
+                {p.sync_graph ? `${p.total_nodes} nodes` : "graph kept local"}
               </span>
               <span className="flex w-32 items-center gap-1.5">
                 <span className={cn("h-1.5 w-1.5 flex-none rounded-full", meta.dot)} />
