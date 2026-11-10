@@ -32,6 +32,8 @@ class _Rec:
 def _doctor(monkeypatch, lines, code, extra=()):
     monkeypatch.setattr("gban.cli.doctor_mod.run", lambda *a, **k: (list(lines), code))
     monkeypatch.setattr("gban.cli.doctor_mod.resolve_supervisor_key", lambda *a, **k: "")
+    # The hourly pack poll is its own line (test_playbooks); these tests are about the report.
+    monkeypatch.setattr("gban.cli._poll", lambda args: None)
     return main(["doctor", *extra])
 
 

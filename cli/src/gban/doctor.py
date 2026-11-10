@@ -392,6 +392,22 @@ def child_environment(api_key: str) -> dict:
     return env
 
 
+def playbooks_line(result: dict | None) -> dict | None:
+    """The hourly poll as one finding (GRPH-P65).
+
+    A fresh stamp means nothing was asked of the server: the line gives the stored poll time
+    and sha and is UNKNOWN, never a PASS — a skipped poll reported as a clean check is the bug.
+    """
+    if not result:
+        return None
+    note = result.get("note", "")
+    if result.get("skipped"):
+        return _line("local", UNKNOWN, "playbooks", f"not checked now — {note}")
+    if result.get("failed") or "polled" not in result:
+        return _line("local", UNKNOWN, "playbooks", note)
+    return _line("local", PASS, "playbooks", f"polled just now — {note}")
+
+
 def run(url: str, project: str, api_key: str = "",
         repo: Path | None = None) -> tuple[list[dict], int]:
     lines = (ledger(url, project) + local(url, project, api_key)
