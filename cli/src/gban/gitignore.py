@@ -36,6 +36,7 @@ PATTERNS = (
     ".gbfleet-*",
     ".swamp/",
     "graphban-swamp/",
+    ".graphban/playbooks.json",
 )
 
 #: What we ASK git about. A glob is not a path; these are the files that would be
