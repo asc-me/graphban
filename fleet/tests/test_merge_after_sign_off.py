@@ -90,6 +90,8 @@ class _Ledger:
         if tool == "update_item":
             self.items[kw["id"]].setdefault("evidence", []).extend(_stored(kw.get("evidence")))
             return {"id": kw["id"]}
+        if tool == "bounce":
+            return {"id": kw["id"]}
         if tool == "fleet_status":
             if isinstance(self.release, Exception):
                 raise self.release
@@ -190,30 +192,50 @@ def test_a_held_dependency_is_a_candidate(forge):
     assert "pr merge" in [" ".join(c[1:3]) for c in gh.calls]
 
 
-def test_a_precondition_miss_leaves_the_item_alone_and_is_re_asked_later(forge):
-    """Head moved: nothing touched, the reason names it, and the item stays watched — the
-    reviewer may re-sign — but is not asked again inside the recheck interval."""
+def test_a_moved_head_is_bounced_with_the_planner_agent_id(forge):
+    """Head moved after sign-off: the item goes back to its author, carrying the planner
+    agent_id (the server refuses an unidentified bounce), and leaves watching."""
     gh = forge(_Forge(draft=True, head="b" * 40))
     ledger = _Ledger({"SA-417": _done_item("SA-417")})
-    merger = Merger(REPO, ledger, enabled=True)
+    merger = Merger(REPO, ledger, enabled=True, agent_id="GRPH-PLANNER")
+    wave = Wave()
+
+    merger.note_hold([{"id": "SA-417", "commits": [REVIEWED]}])
+    merger.tick(wave, now=lambda: 1000.0)
+    got = wave.merged["SA-417"]
+    assert not got.ok and not got.skipped and "reviewed commit" in got.reason
+    assert [" ".join(c[1:3]) for c in gh.calls] == ["pr view"]
+    bounces = ledger.wrote("bounce")
+    assert len(bounces) == 1
+    assert bounces[0]["id"] == "SA-417" and bounces[0]["agent_id"] == "GRPH-PLANNER"
+    assert ledger.wrote("update_item") == []
+    assert "SA-417" not in merger.watching
+
+
+def test_a_non_conflict_miss_leaves_the_item_watched_and_is_re_asked_later(forge):
+    """A miss that is neither a conflict nor a moved head (no PR yet) is a hold: nothing is
+    bounced, the item stays watched, and it is not re-asked inside the recheck interval."""
+    gh = forge(_Forge(draft=True, has_pr=False))
+    ledger = _Ledger({"SA-417": _done_item("SA-417")})
+    merger = Merger(REPO, ledger, enabled=True, agent_id="GRPH-PLANNER")
     wave = Wave()
     clock = {"t": 1000.0}
 
     merger.note_hold([{"id": "SA-417", "commits": [REVIEWED]}])
     merger.tick(wave, now=lambda: clock["t"])
     got = wave.merged["SA-417"]
-    assert not got.ok and not got.skipped and "reviewed commit" in got.reason
-    assert [" ".join(c[1:3]) for c in gh.calls] == ["pr view"]
-    assert ledger.wrote("update_item") == []
+    assert not got.ok and not got.skipped
+    assert ledger.wrote("bounce") == [] and ledger.wrote("update_item") == []
     assert "SA-417" in merger.watching
+    n = len(gh.calls)
 
     clock["t"] += MERGE_RECHECK_S / 2
     merger.tick(wave, now=lambda: clock["t"])
-    assert len(gh.calls) == 1, "re-asked the forge inside the recheck interval"
+    assert len(gh.calls) == n, "re-asked the forge inside the recheck interval"
 
     clock["t"] += MERGE_RECHECK_S
     merger.tick(wave, now=lambda: clock["t"])
-    assert len(gh.calls) == 2, "never re-asked after the interval"
+    assert len(gh.calls) > n, "never re-asked after the interval"
 
 
 def test_skipped_is_final_and_pending_is_not(forge):
