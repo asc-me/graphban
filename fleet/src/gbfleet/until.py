@@ -21,6 +21,7 @@ import subprocess
 import json
 import time
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -63,6 +64,8 @@ PLANNER_TOOLS: frozenset[str] = frozenset({
     # PRD-62 S1↔S3 (GRPH-1258). The wave's own ledger events for the entitlements it declared
     # at `register_agent`; the server refuses a reporter that did not declare the id.
     "report_entitlement_event",
+    # PRD-62 S4 (GRPH-1479). Headroom and stated reset for choosing the next local record.
+    "list_entitlements",
     "search_items",
     # GRPH-1012: the base this wave cuts children from. Step 2 of the three is the
     # project's MEASURED `gitops.base_branch`, and `get_context` is the only way to ask
@@ -403,6 +406,7 @@ def run(
             except (ent_mod.EntitlementError, ValueError) as exc:
                 raise ConfigError(f"the entitlement registry could not be read: {exc}") from exc
             identity = _identify(planner, repo, adapter, wave)
+            _refresh_entitlement_registry(planner, wave)
             _preflight_observations(supervisor)
             try:
               result = _loop(
@@ -619,16 +623,127 @@ def _records_for(wave: Wave, adapter: str, matrix) -> list:
     return [r for r in wave.records if r.vendor in names]
 
 
+#: Capacity-routing rungs (PRD-62 D6), aligned with `routing.rank` — not the matrix score.
+_ENTITLEMENT_LADDER = ("subscription", "api_key", "local")
+_ENTITLEMENT_USABLE = frozenset({"available", "unknown"})
+
+
+def _aware(dt: datetime) -> datetime:
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _rung_of(kind: str) -> str:
+    return "api_key" if kind == "cloud" else kind
+
+
+def _adapter_vendors(adapter: str, matrix) -> set[str]:
+    names = {adapter}
+    if matrix is not None:
+        names |= {r.vendor for r in matrix.rows if r.harness == adapter}
+    return names
+
+
+def _refresh_entitlement_registry(planner: Graphban, wave: Wave) -> None:
+    """Read org headroom once when the wave declared entitlements (GRPH-1479)."""
+    if wave.ledger_off or not wave.entitlements:
+        wave.entitlement_registry = {}
+        return
+    try:
+        got = planner.call("list_entitlements")
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        wave.entitlement_registry = {}
+        observe.emit("ledger_off", detail=f"entitlement registry unreadable: {exc}")
+        return
+    rows = got.get("entitlements") if isinstance(got, dict) else None
+    wave.entitlement_registry = ({r["id"]: r for r in rows} if isinstance(rows, list) else {})
+
+
+def _ledger_row_for_record(record, adapter: str, matrix, wave: Wave) -> dict | None:
+    """The org entitlement a local record launches on, when the registry can name one."""
+    registry = wave.entitlement_registry
+    if not registry:
+        return None
+    declared = set(wave.entitlements.get(adapter, ()))
+    vendors = _adapter_vendors(adapter, matrix)
+    vendors.add(record.vendor)
+    best: tuple[int, str, dict] | None = None
+    for eid, row in registry.items():
+        if declared and eid not in declared:
+            continue
+        kind = _rung_of(row.get("kind") or "")
+        if kind != record.kind:
+            continue
+        vendor = row.get("vendor") or ""
+        if vendor not in vendors and record.vendor not in (vendor, adapter):
+            continue
+        if record.kind == "api_key" and row.get("secret_ref") and row["secret_ref"] != record.handle:
+            continue
+        rank = 0 if eid == record.name else 1
+        pick = (rank, eid, row)
+        if best is None or pick[:2] < best[:2]:
+            best = pick
+    return best[2] if best else None
+
+
+def _budget_spent_row(row: dict) -> bool:
+    """An api_key whose stated token_budget is met by spend the registry reports."""
+    budget = row.get("token_budget")
+    if budget is None or row.get("kind") not in ("api_key", "cloud"):
+        return False
+    spend = ((row.get("headroom") or {}).get("spend") or {}).get("tokens")
+    return isinstance(spend, int) and spend >= budget
+
+
+def _record_sort_key(record, adapter: str, matrix, wave: Wave, file_index: int):
+    """Sort key mirroring `routing.rank` among local records: available, rung, reset, file."""
+    row = _ledger_row_for_record(record, adapter, matrix, wave)
+    far = datetime.max.replace(tzinfo=timezone.utc)
+    if row is None:
+        return (1, len(_ENTITLEMENT_LADDER), far, file_index)
+    state = (row.get("headroom") or {}).get("state") or "unknown"
+    if state not in _ENTITLEMENT_USABLE or _budget_spent_row(row):
+        return None
+    rung = _rung_of(row.get("kind") or "")
+    rung_rank = (_ENTITLEMENT_LADDER.index(rung) if rung in _ENTITLEMENT_LADDER
+                 else len(_ENTITLEMENT_LADDER))
+    raw = row.get("next_reset_at")
+    reset = far
+    if raw:
+        try:
+            reset = _aware(datetime.fromisoformat(str(raw).replace("Z", "+00:00")))
+        except ValueError:
+            reset = far
+    return (state != "available", rung_rank, reset, file_index)
+
+
+def _ordered_records(candidates: list, adapter: str, matrix, wave: Wave) -> list:
+    """Records not exhausted this wave, best headroom first; file order when the registry is off."""
+    if not wave.entitlement_registry or wave.ledger_off:
+        return list(candidates)
+    file_at = {rec.name: i for i, rec in enumerate(candidates)}
+    keyed = []
+    for rec in candidates:
+        key = _record_sort_key(rec, adapter, matrix, wave, file_at[rec.name])
+        if key is not None:
+            keyed.append((key, rec))
+    keyed.sort(key=lambda pair: pair[0])
+    return [rec for _, rec in keyed]
+
+
 def _next_record(wave: Wave, adapter: str, matrix):
-    """(record, registered): the first record for `adapter` not yet exhausted this wave.
+    """(record, registered): the next record for `adapter` not yet exhausted this wave.
+
+    With capacity routing on, prefers an available entitlement whose stated reset is soonest,
+    then unknown, then the next ladder rung (`routing.rank`). Without a registry, file order.
 
     `registered` False means this machine holds no record for the adapter, and the launch is
     the default login as it always was. True with no record means every one is spent.
     """
     held = _records_for(wave, adapter, matrix)
-    for rec in held:
-        if rec.name not in wave.exhausted:
-            return rec, True
+    candidates = [rec for rec in held if rec.name not in wave.exhausted]
+    ordered = _ordered_records(candidates, adapter, matrix, wave)
+    if ordered:
+        return ordered[0], True
     return None, bool(held)
 
 

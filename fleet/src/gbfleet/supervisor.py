@@ -402,6 +402,10 @@ class Wave:
     #: refusal — a plan without capacity routing answers every event with 402 — so one
     #: refusal ends the attempts instead of repeating on every spawn.
     ledger_off: str = ""
+    #: PRD-62 S4 (GRPH-1479). Org entitlements from `list_entitlements`, keyed by id. Empty
+    #: when capacity routing is off or the registry could not be read — `_next_record` then
+    #: keeps file order.
+    entitlement_registry: dict = field(default_factory=dict)
     #: Child exit 75 — stuck, evidence written, item released. Visible, not a
     #: supervisor failure (P30 D6). Exit 70 is a failure and lives in `failures`.
     give_ups: list[str] = field(default_factory=list)
