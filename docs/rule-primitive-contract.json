@@ -1,5 +1,5 @@
 {
-  "api_version": "1.7.0",
+  "api_version": "1.8.0",
   "primitives": [
     {
       "id": "done_predicates",
@@ -56,6 +56,17 @@
       "params": []
     },
     {
+      "id": "generated_files",
+      "level": "checked",
+      "params": [
+        {
+          "name": "paths",
+          "required": false,
+          "type": "list"
+        }
+      ]
+    },
+    {
       "id": "human_only_clause",
       "level": "enforced",
       "params": []
@@ -101,6 +112,11 @@
       "id": "test_scope",
       "level": "checked",
       "params": [
+        {
+          "name": "engines",
+          "required": false,
+          "type": "list"
+        },
         {
           "name": "mode",
           "required": false,

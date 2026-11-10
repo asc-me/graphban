@@ -62,7 +62,9 @@ builder's runs only when the item carries a full passing `test` receipt for each
 (e.g. `["mysql"]` is met by one full passing `engine: mysql` run; a SQLite-only run is not).
 The supervisor reads the resolved list in place of its fixed pair, and the brief's `Test scope:`
 line names the engines under `agent_full`. A value that is not a non-empty list of strings is
-refused (422). The rule-pack template must carry `engines` in its default params.
+refused (422). The rule-pack template carries `engines` in its default params, which the
+`test_scope` primitive declares from primitive API 1.8.0 (GRPH-1494). Before that, a template
+with `engines` was refused whole, and one without it refused every write of `engines`.
 
 ## `build.undeclared_files` — undeclared files hold the PR or only warn (GRPH-1425)
 
@@ -114,8 +116,10 @@ and does not hold the PR; any other undeclared file does. The default is the lis
 always had (`AGENTS.md`, `.claude/agents/`, `.agents/skills/`, `backend/tests/shard_weights.json`, …),
 so nothing changes on upgrade. The supervisor reads the resolved rule at reap time; when it cannot
 (server down, rule absent from the pack, a client not allowed `get_rule_toggles`) it uses that list and emits `generated_files_rule_unread`
-with the reason. The rule-pack feed (outside this repo) needs the template `build.generated_files`
-added, as for `build.test_scope`.
+with the reason. The rule reaches a box through the signed rule-pack feed (primitive
+`generated_files`, level `checked`, enforcer the supervisor; template `build.generated_files`,
+stage Build, default `on`, `paths` = the list above). The primitive exists from primitive API
+1.8.0 (GRPH-1494).
 
 ## `merge.done_predicates` — predicates `done` requires (GRPH-1426)
 
@@ -142,3 +146,19 @@ cloud's rule; the supervisor passes the matching `gh pr merge` flag. A branch th
 is behind is updated with `gh pr update-branch --rebase` under `squash` or `rebase`, and with a
 plain merge update under `merge`. The PR head must still be the reviewed commit, whatever the
 method. A server that predates the field, or an unreadable value, reads as `squash`.
+
+## Which pack version carries each rule (GRPH-1430)
+
+A rule absent from a box's pack reads as its default, never as off (`backend/tests/test_rule_pack_p74.py`).
+A project can only *change* a rule once the box's pack carries it.
+
+| Rule | First pack | Needs primitive API | Needs server |
+| --- | --- | --- | --- |
+| `build.test_scope` (`mode`) | 0.2.0 | 1.6.0 | 2026.11.11 |
+| `plan.exclusive_areas` | 0.3.0 | 1.7.0 | 2026.11.12 |
+| `build.undeclared_files` | 0.3.0 | 1.7.0 | 2026.11.12 |
+| `merge.done_predicates` | 0.3.0 | 1.7.0 | 2026.11.12 |
+| `build.generated_files` | 0.4.0 | 1.8.0 | the first release carrying GRPH-1494 |
+| `build.test_scope` `engines` | 0.4.0 | 1.8.0 | the first release carrying GRPH-1494 |
+
+`gitops.merge_method` is a gitops field, not a library rule, and needs no template.
