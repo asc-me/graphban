@@ -1372,3 +1372,11 @@ def test_graphban_work_names_the_lease_the_graph_and_prove():
     assert "`describe_code` those paths" in body
     assert "A review-ready receipt is a test line" in body
     assert "Finishing the item is `graphban-prove`" in body
+
+
+def test_the_image_manifest_lists_the_shipped_skills():
+    """backend/scripts/gban_skills.json is a checked-in copy (the image has no cli/)."""
+    root = Path(__file__).resolve().parents[2]
+    manifest = json.loads((root / "backend/scripts/gban_skills.json").read_text())
+    shipped = {p.name for p in (root / "cli/src/gban/skills").iterdir() if p.is_dir()}
+    assert set(manifest["skills"]) == shipped

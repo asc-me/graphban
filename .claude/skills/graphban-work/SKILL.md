@@ -26,7 +26,9 @@ Test scope follows the project's mode, which your delegation brief states. `agen
 
 A product decision the item and its PRD framing do not already state: file a wait and stop. `create_item` with tag `wait:decision`, `status=blocked`, this item's `prd_id`, and a description that is the question plus what each answer would make you do. `link_items` with `a` this item, `b` the wait, `type` `dependency`, `reason` `wait:decision`. Leave this item `blocked`. Leave the wait blocked. Answering it is `graphban-answer`.
 
-A broken build stays a free-text `blocker` on this item. That is not a wait.
+A broken build is either still this item (move it back to `next` with the failure named), or a
+new ticket this item depends on — `create_item`, `link_items` with `type=dependency`, and
+`blocker` set to that item's id. A free-text `blocker` alone is not a wait and is not claimable.
 
 Signing off is `graphban-review`. The builder does not set `done`.
 

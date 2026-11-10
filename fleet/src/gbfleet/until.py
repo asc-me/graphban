@@ -91,6 +91,10 @@ PLANNER_TOOLS: frozenset[str] = frozenset({
     # cut from main and lost the work. The planner has the standing (it minted the seat);
     # the server bounds what `release_item` may do by role, not this set.
     "release_item",
+    # GRPH-1472: a red review is returned to its author ONCE with `bounce`. A later red head
+    # is reopened to `next` with the blocker cleared (GRPH-1471), not parked `blocked`.
+    # The planner may bounce, never `sign_off` (the server's TOOL_ROLES decides).
+    "bounce",
     # GRPH-1190: `--prd` is resolved ONCE to the PRD's canonical key. A read, like the rest.
     "get_prd",
     # GRPH-1273: `review.staff_every_row`, read at the start of each cycle. A read.
@@ -2658,11 +2662,13 @@ def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
     CI is wasted: those rows are held back, logged once per head as `review_waits_on_ci`, and
     returned second so the loop keeps polling for them instead of reading them as unsigned.
 
-    A red row is sent back to its builder with the failing tests named (`review_ci_red`), and
-    no reviewer is spawned for it (GRPH-1471). The supervisor may not bounce (PRD-22 §4); the
-    planner reopens the item to `next` with evidence. If that write is refused the row stays
-    spawnable, so the reviewer — who can bounce — is still the fallback, never a wedged row. A
-    reopened row has left `review`, so the loop drops it rather than reading it as unsigned work.
+    A red row is bounced to its author ONCE (GRPH-1472), the reason naming the failing job
+    and tests, and no reviewer is spawned for it. A later red head on a row already bounced
+    by this path is reopened to `next` with the blocker cleared (GRPH-1471): parking
+    `blocked` with a prose blocker is not claimable, which is how a red review sits until a
+    person moves it. If either write is refused the row stays spawnable, so a reviewer is
+    still the fallback, never a wedged row. A returned or reopened row has left `review`,
+    so the loop drops it rather than reading it as unsigned work.
     """
     ready: list[dict] = []
     waiting: list[dict] = []
@@ -2684,8 +2690,8 @@ def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
                 logged.add(key)
                 observe.emit("review_ci_red", item=item, commit=head, job=job,
                              detail=f"{item}: CI failed at {head[:12]}: {job}")
-            if planner is not None and _block_ci_red(
-                    planner, item, head, job, agent_id,
+            if planner is not None and _return_or_block_ci_red(
+                    planner, row, head, job, agent_id,
                     repo=repo, branch=str(row.get("branch") or "")):
                 blocked.append(row)
                 continue
@@ -2826,6 +2832,41 @@ def ci_red_reopen_note(head: str, job: str, tests: str = "") -> str:
 def ci_red_blocker(head: str, job: str, tests: str = "") -> str:
     """Legacy name for the prose in a red-CI reopen note (GRPH-1392, GRPH-1471)."""
     return ci_red_reopen_note(head, job, tests)
+
+
+#: The prefix `bounce_reason` carries when `_return_or_block_ci_red` sent the row back.
+CI_RED_BOUNCE = "gbfleet CI red:"
+
+
+def _return_or_block_ci_red(planner: Graphban, row: dict, head: str, job: str, agent_id: str,
+                            *, repo: Path | None = None, branch: str = "") -> bool:
+    """Bounce a red review row to its author once; reopen a later red head to `next`.
+
+    False when the write was refused (the row then falls back to a reviewer).
+    A second red head is not parked `blocked`: that status is not claimable.
+    """
+    item = str(row.get("id") or "")
+    reason = row.get("bounce_reason")
+    if reason is None:
+        try:
+            details = planner.call("get_item_details", id=item)
+        except (ToolFailed, NotPermitted, ServerUnreachable):
+            details = None
+        reason = details.get("bounce_reason") if isinstance(details, dict) else ""
+    if str(reason or "").startswith(CI_RED_BOUNCE):
+        return _block_ci_red(planner, item, head, job, agent_id, repo=repo, branch=branch)
+    tests = failed_test_summary(repo, branch) if repo is not None and branch else ""
+    args: dict = {"id": item, "reason": f"{CI_RED_BOUNCE} {ci_red_blocker(head, job, tests)}"}
+    if agent_id:
+        args["agent_id"] = agent_id
+    try:
+        planner.call("bounce", **args)
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("review_ci_red_unrecorded", item=item, detail=str(exc))
+        return False
+    observe.emit("review_ci_red_bounced", item=item, commit=head, job=job,
+                 detail=f"{item}: returned to its author on {job} at {head[:12]}")
+    return True
 
 
 def _block_ci_red(planner: Graphban, item: str, head: str, job: str, agent_id: str,
