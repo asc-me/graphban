@@ -408,7 +408,8 @@ CORE_TOKENS = 8921  # GRPH-1358: +kind on the item writes, -6 net (see test_mcp_
 # CORE_TOKENS does not move.
 # prd 4143 -> 4143 (GRPH-1305): `canvas_check` on file_finding, paid by shorter descriptions.
 # prd 4140 -> 3731 (GRPH-1368): the three accept tools are removed.
-TIER_TOKENS = {"prd": 3731, "codegraph": 1795, "fleet": 1559, "misc": 1346}
+# fleet 1559 -> 1733 (GRPH-1480): report_utilization in the fleet tier.
+TIER_TOKENS = {"prd": 3731, "codegraph": 1795, "fleet": 1733, "misc": 1346}
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.
 # codegraph 1786 -> 1789 (GRPH-1060): record_scan's category enum gains "deadcode".
 # codegraph -> 1791 with both: measured when GRPH-1060 and GRPH-1061 met on main.

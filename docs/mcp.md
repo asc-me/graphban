@@ -115,7 +115,7 @@ Settings → API keys. `fleet.mint` gives a planner credential the `fleet` tier 
 operator can restore the pre-tiering manifest for a whole deployment with
 `MCP_DEFAULT_TOOL_TIERS=prd,codegraph,fleet,misc` — see [configuration.md](configuration.md).
 
-## The 76 tools
+## The 77 tools
 
 The manifest you receive is gated twice. **By scope** (AL-78): a key without `write` is not
 shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b): a key whose
@@ -146,7 +146,7 @@ that stops once the four dimensions are answered or deferred. The tool still wri
 The one-shot editor command (`POST /api/prds/{id}/ai` with `command=grill`) stays on the
 body-only prompt, which has no transcript and cannot know when to stop.
 
-**Every tool argues its role gate** (GRPH-516). 27 of the 76 tools are role-gated; the other
+**Every tool argues its role gate** (GRPH-516). 27 of the 77 tools are role-gated; the other
 49 are callable by every role. That was a *default* rather than a decision — `TOOLS` has had a
 completeness guard forcing each new tool to be classified as a quality gate or an authority
 one, and `TOOL_ROLES` had no equivalent, so forty tools arrived at "open to everyone" without

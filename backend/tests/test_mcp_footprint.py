@@ -216,7 +216,8 @@ CEILING = 17775
 # fields (`status` "Defaults to backlog.", `prd_id`, `prd_section`). CEILING does not move.
 # Headroom 10.
 # 17765 -> 17356 (GRPH-1368): accept_set_constraints, accept_prompt and accept_design are removed.
-MEASURED_TOKENS = 17356
+# 17356 -> 17530 (GRPH-1480): report_utilization lands in the fleet tier. Headroom 245.
+MEASURED_TOKENS = 17530
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.
