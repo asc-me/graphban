@@ -1,0 +1,12 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "claim_next|claim_cluster|release_item",
+        "hooks": [
+          { "type": "command", "command": "python3 .cursor/hooks/gb_claim_manifest.py" }
+        ]
+      }
+    ]
+  }
+}

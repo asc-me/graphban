@@ -165,6 +165,8 @@ class Orientation:
             return ToolResult(id=call.id, content=f"{call.name}: {exc}", is_error=True)
         if call.name in ("claim_next", "claim_cluster"):
             self._remember_claim(payload)
+        if call.name in ("claim_next", "claim_cluster", "release_item"):
+            _write_claim_manifest(call.name, payload)
         return ToolResult(id=call.id, content=_render(payload))
 
     def _remember_claim(self, payload: dict) -> None:
@@ -189,6 +191,26 @@ class Orientation:
     def _schema(self, name: str) -> dict:
         spec = next((s for s in self.specs if s.name == name), None)
         return (spec.input_schema.get("properties") or {}) if spec else {}
+
+
+def _write_claim_manifest(tool: str, payload: dict) -> None:
+    """Run the shared `.cursor/hooks/gb_claim_manifest.py` writer; never fails the call."""
+    import importlib.util
+    from pathlib import Path
+
+    try:
+        for base in (Path.cwd(), *Path(__file__).resolve().parents):
+            script = base / ".cursor" / "hooks" / "gb_claim_manifest.py"
+            if script.exists():
+                break
+        else:
+            return
+        spec = importlib.util.spec_from_file_location("gb_claim_manifest", script)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod.apply_tool_result(tool, payload, root=base)
+    except Exception:  # noqa: BLE001 — a warning aid must not break a claim
+        return
 
 
 def _render(payload: dict) -> str:
