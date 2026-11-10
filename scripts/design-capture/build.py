@@ -113,21 +113,20 @@ P("pages/plan-requests", "Plan", "Requests",
 P("pages/plan-triage", "Plan", "Triage",
   "Incoming queue beside collision clusters — what came in, beside the in-flight work it would collide with.",
   [V(POP, SH("triage")), V(EMP, HO("h-triage")),
-   V(LOAD, EX("triage--loading"), flag="GRPH-942 — defect as captured: while clusters are still loading the panel already says <b>Nothing in flight</b> in green — absence reads as clean."),
-   V(ERR, EX("triage--error"), flag="GRPH-942 — defect as captured: on a 500 the queue says <b>Queue is empty</b> and clusters say <b>Nothing in flight</b>. Should say the data could not be loaded.")])
+   V(LOAD, EX("triage--loading")), V(ERR, EX("triage--error"))])
 P("pages/plan-prds", "Plan", "PRDs",
   "Product specs with version history, linked items and AI drafting. List → editor (markdown + preview, Expand / Generate risks / Summarize / Grill, coverage, acceptance).",
   [V(POP, SH("prds")), V("PRD editor — CP-P1 Graphban Core MVP", EX("prd-editor")), V(EMP, HO("h-prds")), V(LOAD, EX("prds--loading")), V(ERR, EX("prds--error"))])
 P("pages/plan-roadmap", "Plan", "Roadmap",
   "MVP → Post-MVP → Later. Progress rolls up from milestones; Copy public link.",
   [V(POP, SH("roadmap")), V(EMP, HO("h-roadmap")), V(LOAD, EX("roadmap--loading")),
-   V(ERR, EX("roadmap--error"), flag="GRPH-943 — defect as captured: <code>/api/roadmap</code> 500 renders <b>No milestones in this project</b> — the same copy as a genuinely empty board (GRPH-924).")])
+   V(ERR, EX("roadmap--error"))])
 
 # ---------------- Build ----------------
 P("pages/build-code-graph", "Build", "Code graph",
   "The codebase as agents described it — modules, files, symbols with typed relations; Ask-the-codebase panel.",
   [V("Self-host — nothing described yet", SH("code")), V("Hosted — nothing described yet", HO("h-code")), V(LOAD, EX("code--loading")),
-   V(ERR, EX("code--error"), flag="GRPH-944 — defect as captured: <code>/api/agent/code/map</code> 500 renders <b>No code described yet</b> — “empty because nothing has been described”, which is not what happened.")])
+   V(ERR, EX("code--error"))])
 P("pages/build-links", "Build", "Links",
   "Typed relationships between items and requests — dependency / code / semantic / tag edges; click a node or edge to inspect.",
   [V(POP, SH("links")), V(EMP, HO("h-links"))])
