@@ -64,3 +64,5 @@ Attach `graphban-answer` when the service reports running. It answers a `wait:de
 `review-unsigned` can be a review row outside this PRD. Say which item. Do not start another drain over it, and do not `sign_off` it yourself.
 
 `--merge` lands the pull requests this wave opened. Leave every other open pull request. A salvage branch can be the only copy of the work.
+
+Before opening a pull request for a wave's work, read `graphban-ship`: it names the base rule, the touchpoint whitelist, and what a salvage is.
