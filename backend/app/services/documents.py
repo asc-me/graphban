@@ -9,6 +9,11 @@ Ledger rows for the non-PRD governing documents. A PRD stays a PRD: the index re
 | design_prompt   | only once approved to build       | design-set operations     |
 | design_review   | only once approved to build       | design-set operations     |
 | canvas          | never (blob only)                 | design-set operations     |
+| reference       | only with `include_reference`     | a person or an agent key  |
+
+A `reference` row (GRPH-1495) is a review, analysis or audit. It is never governing: default
+search excludes it and says so, and an opted-in hit carries `kind: "reference"`. A new body for
+the same title is a new version; older versions stay readable through `get_document`.
 
 Absence is never reported as clean: an empty default search says drafts were excluded.
 """
@@ -27,16 +32,18 @@ from app.models import Document, DocumentChunk, Prd, Project
 from app.services import prds as prd_svc
 from app.services import spec_alignment
 
-KINDS = ("preamble", "set_constraints", "design_prompt", "design_review", "canvas")
+KINDS = ("preamble", "set_constraints", "design_prompt", "design_review", "canvas", "reference")
 # Only these may be written through `put_document`; the rest belong to the design-set
 # operations, so a general ingest can never mint a governing prompt or review.
-PUT_KINDS = ("preamble",)
+PUT_KINDS = ("preamble", "reference")
 # Nothing is accepted by a person any more (GRPH-1368). A non-PRD document is searchable only
 # when `spec_alignment` says its set (or it) is approved to build.
 ACCEPT_GATED: tuple[str, ...] = ()
 DESIGN_DOCS = ("design_prompt", "design_review")
 # Stored with chunks for `get_document`, but outside the searchable corpus and never embedded.
 NEVER_INDEXED = ("canvas", "preamble", "set_constraints")
+# Chunked and searchable, but only on request and never as the spec.
+REFERENCE = "reference"
 BLOB_STATUSES = ("none", "pending", "stored")
 # Bumped when chunking changes. Stored on every chunk; re-extraction is explicit.
 EXTRACTOR_VERSION = "1"
@@ -208,12 +215,75 @@ def _may_cite(db: Session, project_id: str, prd_project_id: str) -> bool:
     return bool(mine and theirs and mine.org_id and mine.org_id == theirs.org_id)
 
 
+def put_reference(
+    db: Session, *, project_id: str, body: str, title: str, prd_id: str | None = None,
+    item_id: str | None = None, created_by: str = "",
+) -> dict:
+    """Write a non-governing reference document. Same title in the project = next version."""
+    from app.models import Item
+    from app.services import keys
+
+    title = (title or "").strip()
+    if not title:
+        raise errors.Validation("title is empty", hint="a reference document is versioned by title")
+    if not (body or "").strip():
+        raise errors.Validation("body is empty", hint="a reference document needs text")
+    rid = None
+    if prd_id:
+        rid = keys.resolve_prd(db, prd_id) or prd_id
+        prd = prd_svc.get_prd(db, rid)
+        if prd is None or prd.project_id != project_id:
+            raise errors.Validation(f"prd not found in this project: {prd_id}")
+    iid = None
+    if item_id:
+        iid = keys.resolve_item(db, item_id) or item_id
+        item = db.get(Item, iid)
+        if item is None or item.project_id != project_id:
+            raise errors.Validation(f"item not found in this project: {item_id}")
+    digest = content_hash(body)
+    rows = list(db.scalars(select(Document).where(
+        Document.project_id == project_id, Document.kind == REFERENCE,
+        Document.set_id == "", Document.screen == title).order_by(Document.version)))
+    if rows and rows[-1].content_hash == digest and rows[-1].prd_id == rid \
+            and rows[-1].item_id == iid:
+        return to_dict(rows[-1])  # same text, same links: not a new version
+    for r in rows:
+        for c in r.chunks:
+            c.governing = False
+    # `governing` stays False: a reference document is never the spec. The `screen` column
+    # carries the title so the (project, kind, set, screen, version) identity is per title.
+    doc = Document(
+        id=new_id(), project_id=project_id, kind=REFERENCE, title=title, screen=title,
+        prd_id=rid, item_id=iid, version=(rows[-1].version + 1) if rows else 1,
+        status="active", content_hash=digest, governing=False, created_by=created_by)
+    _chunk(doc, body)
+    db.add(doc)
+    db.commit()
+    return to_dict(doc)
+
+
+def references_for(db: Session, *, prd_id: str | None = None, item_id: str | None = None) -> list[dict]:
+    """Latest version of each reference document linked to a PRD or item: id and title only."""
+    col = Document.prd_id if prd_id else Document.item_id
+    rows = db.scalars(select(Document).where(
+        Document.kind == REFERENCE, col == (prd_id or item_id)).order_by(Document.version))
+    latest: dict[tuple[str, str], Document] = {}
+    for r in rows:
+        latest[(r.project_id, r.title)] = r
+    return [{"id": r.id, "title": r.title, "version": r.version} for r in latest.values()]
+
+
 def put_document(
     db: Session, *, project_id: str, kind: str, body: str, prd_id: str | None,
-    title: str = "", created_by: str = "",
+    title: str = "", created_by: str = "", item_id: str | None = None,
 ) -> dict:
     if kind not in KINDS:
         raise errors.Validation(f"unknown kind {kind!r}", hint=f"one of {', '.join(KINDS)}")
+    if kind == REFERENCE:
+        if not created_by:
+            raise errors.Validation("a reference document needs a writer")
+        return put_reference(db, project_id=project_id, body=body, title=title, prd_id=prd_id,
+                             item_id=item_id, created_by=created_by)
     if kind not in PUT_KINDS:
         raise errors.Validation(
             f"put_document does not write {kind!r} rows",
@@ -270,13 +340,13 @@ def put_document(
 def to_dict(doc: Document) -> dict:
     out = {
         "id": doc.id, "project_id": doc.project_id, "kind": doc.kind, "title": doc.title,
-        "prd_id": doc.prd_id, "prd_hash": doc.prd_hash, "set_id": doc.set_id,
+        "prd_id": doc.prd_id, "item_id": doc.item_id, "prd_hash": doc.prd_hash, "set_id": doc.set_id,
         "screen": doc.screen, "version": doc.version, "status": doc.status,
         "content_hash": doc.content_hash, "governing": doc.governing,
         "accepted": doc.accepted, "blob_status": doc.blob_status,
         "chunks": [{"heading": c.heading, "text": c.text, "content_hash": c.content_hash,
                     "extractor_version": c.extractor_version}
-                   for c in doc.chunks if c.governing],
+                   for c in doc.chunks if c.governing or doc.kind == REFERENCE],
     }
     if doc.stale_reason:
         out["stale_reason"] = doc.stale_reason
@@ -375,7 +445,7 @@ def _doc_status(doc: Document, chunk: DocumentChunk, approved: bool) -> str:
 
 def search_docs(
     db: Session, project_id: str, query: str, *, top_k: int = 10, include_drafts: bool = False,
-    include_design: bool = False,
+    include_design: bool = False, include_reference: bool = False,
 ) -> dict:
     """Search the governing text: baselined PRD chunks, plus design chunks on request.
 
@@ -428,6 +498,13 @@ def search_docs(
                 continue
             hit = {"source_id": c.prd_id, "prd_id": c.prd_id, "kind": "prd", "status": status}
         else:
+            if doc.kind == REFERENCE:
+                if not include_reference or not c.governing:
+                    continue  # older versions are read by id, not searched
+                cands.append(({"source_id": doc.id, "document_id": doc.id, "kind": REFERENCE,
+                               "status": "reference", "version": c.version, "heading": c.heading,
+                               "text": c.text, "content_hash": c.content_hash}, c.embedding))
+                continue
             if doc.kind in NEVER_INDEXED or (not doc.governing and not include_drafts):
                 continue
             if doc.id not in verdicts:
@@ -461,7 +538,11 @@ def search_docs(
     hits = (semantic + lexical_hits)[:max(1, int(top_k))]
     ranking = ("lexical" if not semantic else "semantic" if not lexical_hits else "mixed")
     out = {"results": hits, "ranking": ranking,
-           "include_drafts": include_drafts, "include_design": include_design}
+           "include_drafts": include_drafts, "include_design": include_design,
+           "include_reference": include_reference}
+    if not include_reference:
+        out["reference_note"] = ("reference documents were excluded; pass include_reference "
+                                 "to search reviews, analyses and audits")
     if ranking != "semantic":
         out["ranking_note"] = ("ranking is lexical (substring match over stored text)"
                                if ranking == "lexical" else
@@ -470,6 +551,7 @@ def search_docs(
     if not hits:
         # Empty is not "no draft exists".
         out["note"] = ("no match; draft PRDs were excluded" if not include_drafts
-                       else "no match") + (f" ({unbaselined} PRD(s) have no baseline)"
+                       else "no match") + ("; reference documents were excluded"
+                                           if not include_reference else "") + (f" ({unbaselined} PRD(s) have no baseline)"
                                            if unbaselined and not include_drafts else "")
     return out

@@ -3781,11 +3781,13 @@ class Document(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"))
-    # preamble | set_constraints | design_prompt | design_review | canvas (services/documents.py)
+    # preamble | set_constraints | design_prompt | design_review | canvas | reference (services/documents.py)
     kind: Mapped[str] = mapped_column(String)
     title: Mapped[str] = mapped_column(String, default="", server_default="")
     # The PRD that owns the design set (or, for a preamble, the visual system).
     prd_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # A `reference` document may also link to an item (GRPH-1495); empty for every other kind.
+    item_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     # The PRD's baseline body hash this row cites. A citation, never a copy of its tokens.
     prd_hash: Mapped[str] = mapped_column(String, default="", server_default="")
     set_id: Mapped[str] = mapped_column(String, default="", server_default="")
