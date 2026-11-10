@@ -132,6 +132,37 @@ describe("Capacity routing mode", () => {
     expect(body.subscription_order[0]).toBe("s-second");
   });
 
+  it("shows a subscription missing from saved order, can reorder it, and Apply persists it", async () => {
+    const user = userEvent.setup();
+    policyRead.mockResolvedValue({
+      project_id: "p",
+      policy: {
+        local_only: false,
+        reviewer_cross_vendor: false,
+        allowed_harnesses: [],
+        routing_mode: "custom_hierarchy",
+        subscription_order: ["s-a"],
+      },
+      writable: true,
+    });
+    policySave.mockImplementation(async (body: unknown) => ({ project_id: "p", policy: body }));
+    wrap(
+      <RoutingMode
+        projectId="p"
+        entitlements={[sub("s-a", "a"), sub("s-new", "b")]}
+      />,
+    );
+    const rows = await screen.findAllByTestId("routing-subscription-row");
+    expect(rows).toHaveLength(2);
+    expect(rows[0].getAttribute("data-entitlement")).toBe("s-a");
+    expect(rows[1].getAttribute("data-entitlement")).toBe("s-new");
+    await user.click(within(rows[1]).getByLabelText("Move up"));
+    await user.click(screen.getByTestId("routing-apply"));
+    await waitFor(() => expect(policySave).toHaveBeenCalledTimes(1));
+    const body = policySave.mock.calls[0][0] as { subscription_order: string[] };
+    expect(body.subscription_order).toEqual(["s-new", "s-a"]);
+  });
+
   it("Discard leaves saved policy unchanged", async () => {
     const user = userEvent.setup();
     policyRead.mockResolvedValue({
