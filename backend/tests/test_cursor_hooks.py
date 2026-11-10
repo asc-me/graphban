@@ -7,6 +7,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -49,6 +51,68 @@ def test_session_start_injects_the_loop_primer():
                {"hook_event_name": "sessionStart", "workspace_roots": [str(REPO)]})
     assert "additional_context" in out
     assert "get_context" in out["additional_context"]
+
+
+_NO_CREDS = {"GRAPHBAN_MCP_URL": "", "GRAPHBAN_API_KEY": "",
+             "AGENTLEDGER_MCP_URL": "", "AGENTLEDGER_API_KEY": ""}
+_EVENT = {"hook_event_name": "sessionStart", "workspace_roots": [str(REPO)]}
+
+
+def _serve(handler_body):
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            handler_body(self)
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def test_session_start_primer_skips_get_context_when_fetched():
+    def ok(h):
+        body = json.dumps({"result": {"structuredContent": {"project": "demo"}}}).encode()
+        h.send_response(200)
+        h.send_header("Content-Length", str(len(body)))
+        h.end_headers()
+        h.wfile.write(body)
+
+    srv = _serve(ok)
+    try:
+        out = _run(".cursor/hooks/gb_session_start.py", _EVENT, env={
+            **_NO_CREDS, "GRAPHBAN_MCP_URL": f"http://127.0.0.1:{srv.server_port}/",
+            "GRAPHBAN_API_KEY": "k"})
+    finally:
+        srv.shutdown()
+    ctx = out["additional_context"]
+    assert "Live get_context:" in ctx
+    assert "Call it FIRST" not in ctx
+    assert "do not call it again" in ctx
+
+
+def test_session_start_primer_still_says_call_get_context_when_fetch_raises():
+    def boom(h):
+        h.send_response(500)
+        h.send_header("Content-Length", "0")
+        h.end_headers()
+
+    srv = _serve(boom)
+    try:
+        out = _run(".cursor/hooks/gb_session_start.py", _EVENT, env={
+            **_NO_CREDS, "GRAPHBAN_MCP_URL": f"http://127.0.0.1:{srv.server_port}/",
+            "GRAPHBAN_API_KEY": "k"})
+    finally:
+        srv.shutdown()
+    assert "Call it FIRST" in out["additional_context"]
+    assert "Live get_context:" not in out["additional_context"]
+
+
+def test_session_start_primer_still_says_call_get_context_when_unset():
+    out = _run(".cursor/hooks/gb_session_start.py", _EVENT, env=_NO_CREDS)
+    assert "Call it FIRST" in out["additional_context"]
 
 
 def test_after_file_edit_silent_in_cluster(tmp_path):
