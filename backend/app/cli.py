@@ -11,7 +11,7 @@ Run it where `DATABASE_URL` points at your instance — inside the backend conta
 existing `~/.agentledger/config.json` is still read if the new one is absent (override
 either with `GRAPHBAN_CONFIG`, or the older `AGENTLEDGER_CONFIG`).
 
-    graphban link --cloud-url https://cloud.example/ --api-key gb_sk_… --project core
+    graphban link --cloud-url https://graphban-console-console-production-ascme-labs.unkey.app --api-key gb_sk_… --project core
     graphban status          # link + last-synced state
     graphban sync            # incremental push of the linked project's code graph
     graphban purge --yes     # delete this project's graph from the cloud
@@ -518,10 +518,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     lk = sub.add_parser(
         "link",
-        help="store the cloud sync target (URL + org-issued link key)",
-        description="store the cloud sync target (URL + org-issued link key)",
+        help="store the console sync target (URL + org-issued link key)",
+        description="store the console sync target (URL + org-issued link key). "
+                    "Until cloud.graphban.dev is the console, --cloud-url is "
+                    "https://graphban-console-console-production-ascme-labs.unkey.app",
     )
-    lk.add_argument("--cloud-url")
+    lk.add_argument("--cloud-url",
+                    help="console origin. Until DNS cutover that is "
+                         "https://graphban-console-console-production-ascme-labs.unkey.app")
     lk.add_argument("--api-key")
     lk.add_argument("--project")
     lk.add_argument("--org", help="optional label for the linked org (shown in the UI); "

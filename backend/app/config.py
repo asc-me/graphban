@@ -272,7 +272,7 @@ class Settings(BaseSettings):
     # Local↔cloud hybrid (AL-137/139): where a LINKED local instance pushes its code graph,
     # and the org-minted 'sync'-scoped key it authenticates with. Blank = not linked — a pure
     # local-only tool that never reaches out to a cloud (the D2 default).
-    sync_cloud_url: str = ""  # e.g. https://cloud.example.com
+    sync_cloud_url: str = ""  # e.g. https://graphban-console-console-production-ascme-labs.unkey.app
     sync_api_key: str = ""    # gb_sk_… with the 'sync' scope, minted org-side
 
     # How often (seconds) a linked box checks whether its plan grant needs refreshing from the

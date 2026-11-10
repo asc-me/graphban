@@ -74,7 +74,7 @@ export function CloudOrgLinkPanel() {
         </div>
         <p className="mb-3 max-w-[62ch] text-body leading-relaxed text-muted">
           The name is the deployment&rsquo;s identity on{" "}
-          <a href={consoleHref(adminPath("deployments"))} className="text-fg-2 underline-offset-2 hover:underline">
+          <a href={consoleHref(adminPath("deployments")) ?? undefined} className="text-fg-2 underline-offset-2 hover:underline">
             Deployments
           </a>
           . Pin the project the box will push — a key handed to a fleet can only ever push

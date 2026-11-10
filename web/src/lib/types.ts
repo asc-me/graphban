@@ -3227,15 +3227,6 @@ export interface RuleToggleWrite {
   reason: string;
 }
 
-export interface OrgRuleToggle {
-  rule_id: string;
-  org_id: string;
-  on: boolean | null;
-  params: Record<string, RuleParamValue> | null;
-  locked: boolean;
-  projects_changed: string[];
-}
-
 export interface RuleStage {
   id: string;
   title: string;

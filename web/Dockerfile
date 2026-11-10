@@ -7,6 +7,9 @@ RUN corepack enable
 COPY package.json pnpm-lock.yaml* ./
 RUN pnpm install --frozen-lockfile || pnpm install
 COPY . .
+# Org-plane links. A production build without this variable must not fall back to localhost.
+ARG VITE_CONSOLE_URL=https://graphban-console-console-production-ascme-labs.unkey.app
+ENV VITE_CONSOLE_URL=$VITE_CONSOLE_URL
 RUN pnpm build
 
 # --- serve stage ---

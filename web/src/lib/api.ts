@@ -78,7 +78,6 @@ import type {
   RuleToggle,
   RuleToggles,
   RuleToggleWrite,
-  OrgRuleToggle,
   UnmappedRefusals,
   StackTopology,
   Prd,
@@ -1185,12 +1184,6 @@ export const api = {
   /** A project's own value. A person's write: refused naming `rules.org_lock_holds` when locked. */
   setRuleToggle: (projectId: string, ruleId: string, body: RuleToggleWrite) =>
     request<RuleToggle>(`/rules/toggles/${encodeURIComponent(ruleId)}${projectQuery(projectId)}`, {
-      method: "PUT",
-      body: JSON.stringify(body),
-    }),
-  /** The org's value and lock for every project in it. `team`/`enterprise` only (402 otherwise). */
-  setOrgRuleToggle: (orgId: string, ruleId: string, body: RuleToggleWrite) =>
-    request<OrgRuleToggle>(`/orgs/${orgId}/rule-toggles/${encodeURIComponent(ruleId)}`, {
       method: "PUT",
       body: JSON.stringify(body),
     }),

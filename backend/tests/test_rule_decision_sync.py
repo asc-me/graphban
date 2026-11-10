@@ -135,6 +135,32 @@ def test_pull_applies_then_reports_and_skips_when_current(client, org, monkeypat
     assert T.resolve(db, RULE, pid)["locked"] is False
 
 
+def _console_v1(version="4"):
+    """What the console's rule-decisions route actually returns (S6 v1).
+
+    `version` is the integer rendered as a decimal string. `profile.version` is null
+    because the console has no rule pack. `published_at` is present and ignored.
+    `params: null` means inherit. The contract sample uses `tests_first`; this box's
+    library rule is `review.sabotage_required`, which is what apply can write.
+    """
+    return {"org_id": "org_cloud", "org_name": "Acme", "version": version,
+            "published_at": "2026-11-09T00:00:00Z",
+            "toggles": [{"rule_id": RULE, "on": True, "params": None, "locked": True}],
+            "profile": {"id": "standard", "version": None}}
+
+
+def _spy_apply(monkeypatch):
+    applied = []
+    real = RO.apply_decisions
+
+    def spy(db, record):
+        applied.append(record.get("version"))
+        return real(db, record)
+
+    monkeypatch.setattr(RO, "apply_decisions", spy)
+    return applied
+
+
 def test_a_failed_report_is_retried_not_claimed(client, org, monkeypatch):  # noqa: F811
     import httpx
 
@@ -150,6 +176,78 @@ def test_a_failed_report_is_retried_not_claimed(client, org, monkeypatch):  # no
     monkeypatch.setattr(code_sync.httpx, "post", boom)
     db = _db()
     assert code_sync.pull_rule_decisions(db, cloud_url="https://c", api_key="k")["reported"] is False
+
+
+def test_console_v1_record_applies_and_a_repeat_does_not(client, org, monkeypatch):  # noqa: F811
+    pid = _box_project(client, org["owner"])
+    reports = []
+    applied = _spy_apply(monkeypatch)
+
+    class Resp:
+        def __init__(self, body):
+            self.status_code, self._b = 200, body
+        def json(self): return self._b
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr(code_sync.httpx, "get", lambda *a, **k: Resp(_console_v1()))
+    monkeypatch.setattr(code_sync.httpx, "post", lambda url, **k: reports.append(k["json"]) or Resp({}))
+    db = _db()
+    out = code_sync.pull_rule_decisions(db, cloud_url="https://c", api_key="k")
+    assert out == {"pulled": True, "version": "4", "changed": True, "reported": True}
+    assert reports == [{"org_id": "org_cloud", "version": "4"}]
+    assert applied == ["4"]
+    assert T.resolve(db, RULE, pid)["locked"] is True
+    again = code_sync.pull_rule_decisions(db, cloud_url="https://c", api_key="k")
+    assert again["changed"] is False and again["reported"] is True
+    assert applied == ["4"]
+
+
+def test_nothing_published_does_not_apply_or_report(client, org, monkeypatch):  # noqa: F811
+    reports = []
+    applied = _spy_apply(monkeypatch)
+    record = _console_v1(version=None)
+    record["published_at"] = None
+
+    class Resp:
+        status_code = 200
+        def json(self): return record
+        def raise_for_status(self): pass
+
+    monkeypatch.setattr(code_sync.httpx, "get", lambda *a, **k: Resp())
+    monkeypatch.setattr(code_sync.httpx, "post", lambda *a, **k: reports.append(k.get("json")))
+    out = code_sync.pull_rule_decisions(_db(), cloud_url="https://c", api_key="k")
+    assert out == {"pulled": False, "reason": "nothing published"}
+    assert reports == [] and applied == []
+
+
+def test_a_crash_before_the_report_reports_next_pull_without_reapplying(client, org, monkeypatch):  # noqa: F811
+    import httpx
+
+    reports = []
+    applied = _spy_apply(monkeypatch)
+    posts = {"n": 0}
+
+    class Resp:
+        status_code = 200
+        def json(self): return _console_v1()
+        def raise_for_status(self): pass
+
+    def post(*a, **k):
+        posts["n"] += 1
+        if posts["n"] == 1:
+            raise httpx.ConnectError("down")
+        reports.append(k["json"])
+        return Resp()
+
+    monkeypatch.setattr(code_sync.httpx, "get", lambda *a, **k: Resp())
+    monkeypatch.setattr(code_sync.httpx, "post", post)
+    db = _db()
+    first = code_sync.pull_rule_decisions(db, cloud_url="https://c", api_key="k")
+    assert first["reported"] is False and applied == ["4"]
+    second = code_sync.pull_rule_decisions(db, cloud_url="https://c", api_key="k")
+    assert second["changed"] is False and second["reported"] is True
+    assert applied == ["4"]
+    assert reports == [{"org_id": "org_cloud", "version": "4"}]
 
 
 # ---- the pull rides the box's sync cadence (bounce on 33583cc1) --------------------------
@@ -275,21 +373,23 @@ def test_an_unchanged_record_keeps_its_changed_at_so_overdue_fires(client, org):
     assert st["pending"] is True and st["overdue"] is True
 
 
+def _sync_view(db, org_id):
+    """The console serves this view. The product keeps the service."""
+    return RO.org_box_states(db, _user(db), org_id)
+
+
 def test_org_admin_route_serves_each_boxes_sync_state(client, org, monkeypatch):  # noqa: F811
     db = _db()
     key = _key(db, org)
-    r = client.get(f"/api/orgs/{org['id']}/rules/sync", headers=org["owner"])
-    assert r.status_code == 200, r.text
-    box = [b for b in r.json()["boxes"] if b["name"] == "box-1"][0]
+    body = _sync_view(db, org["id"])
+    box = [b for b in body["boxes"] if b["name"] == "box-1"][0]
     assert box["applied_version"] is None and box["pending"] is True
     RO.record_box_applied(db, key, org["id"], "old")
-    box = [b for b in client.get(f"/api/orgs/{org['id']}/rules/sync",
-                                 headers=org["owner"]).json()["boxes"] if b["name"] == "box-1"][0]
+    box = [b for b in _sync_view(db, org["id"])["boxes"] if b["name"] == "box-1"][0]
     assert box["applied_version"] == "old" and box["pending"] is True
     pub = RO.published_decisions(db, org["id"])
     RO.record_box_applied(db, key, org["id"], pub["version"])
-    box = [b for b in client.get(f"/api/orgs/{org['id']}/rules/sync",
-                                 headers=org["owner"]).json()["boxes"] if b["name"] == "box-1"][0]
+    box = [b for b in _sync_view(db, org["id"])["boxes"] if b["name"] == "box-1"][0]
     assert box["pending"] is False and box["applied_version"] == pub["version"]
 
 
@@ -298,42 +398,55 @@ def test_org_sync_route_reports_published_and_overdue(client, org):  # noqa: F81
     key = _key(db, org)
     RO.record_box_applied(db, key, org["id"], "old")
     pub = RO.published_decisions(db, org["id"])
-    r = client.get(f"/api/orgs/{org['id']}/rules/sync", headers=org["owner"]).json()
+    r = _sync_view(db, org["id"])
     assert r["published_version"] == pub["version"] and r["published_at"] is not None
     box = [b for b in r["boxes"] if b["name"] == "box-1"][0]
     assert box["published_version"] == pub["version"]
     assert box["pending"] is True and box["overdue"] is False   # just published: not overdue yet
     _age(db, org["id"])
-    box = [b for b in client.get(f"/api/orgs/{org['id']}/rules/sync",
-                                 headers=org["owner"]).json()["boxes"] if b["name"] == "box-1"][0]
+    db.expire_all()
+    box = [b for b in _sync_view(db, org["id"])["boxes"] if b["name"] == "box-1"][0]
     assert box["pending"] is True and box["overdue"] is True
 
 
 def test_org_sync_route_refuses_a_plain_member_with_403(client, org):  # noqa: F811
-    from app.models import OrgMembership
+    from fastapi import HTTPException
+    from app.models import OrgMembership, User
+    from sqlalchemy import select
     db = _db()
     try:
-        db.add(OrgMembership(org_id=org["id"], user_id="u2", role="member"))
+        dana = db.scalar(select(User).where(User.email == "dana@ascme-labs.com"))
+        db.add(OrgMembership(org_id=org["id"], user_id=dana.id, role="member"))
         db.commit()
+        with pytest.raises(HTTPException) as e:
+            RO.org_box_states(db, dana, org["id"])
+        assert e.value.status_code == 403
     finally:
         db.close()
-    member = _login(client, "dana@ascme-labs.com")
-    r = client.get(f"/api/orgs/{org['id']}/rules/sync", headers=member)
-    assert r.status_code == 403, r.text
 
 
 def test_org_sync_route_is_404_for_a_real_org_the_caller_is_not_in(client, org):  # noqa: F811
+    from fastapi import HTTPException
     dana = _login(client, "dana@ascme-labs.com")
     other = client.post("/api/orgs", json={"name": "Elsewhere"}, headers=dana)
     assert other.status_code in (200, 201), other.text
     _set_plan(other.json()["id"], "team")
-    r = client.get(f"/api/orgs/{other.json()['id']}/rules/sync", headers=org["owner"])
-    assert r.status_code == 404, r.text
+    db = _db()
+    try:
+        with pytest.raises(HTTPException) as e:
+            RO.org_box_states(db, _user(db), other.json()["id"])
+        assert e.value.status_code == 404
+    finally:
+        db.close()
 
 
 def test_org_sync_route_needs_team_or_enterprise(client, org):  # noqa: F811
+    from app.errors import QuotaExceeded
+    db = _db()
     _set_plan(org["id"], "free")
-    r = client.get(f"/api/orgs/{org['id']}/rules/sync", headers=org["owner"])
-    assert r.status_code == 402, r.text
+    db.expire_all()
+    with pytest.raises(QuotaExceeded):
+        _sync_view(db, org["id"])
     _set_plan(org["id"], "enterprise")
-    assert client.get(f"/api/orgs/{org['id']}/rules/sync", headers=org["owner"]).status_code == 200
+    db.expire_all()
+    assert _sync_view(db, org["id"])["org_id"] == org["id"]

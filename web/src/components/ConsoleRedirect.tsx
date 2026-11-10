@@ -11,8 +11,17 @@ import { consoleHref } from "@/lib/routes";
  */
 export function ConsoleRedirect() {
   const { pathname, search, hash } = useLocation();
+  const href = consoleHref(pathname);
   useEffect(() => {
-    window.location.replace(consoleHref(pathname) + search + hash);
-  }, [pathname, search, hash]);
+    if (!href) return;
+    window.location.replace(href + search + hash);
+  }, [href, search, hash]);
+  if (!href) {
+    return (
+      <p className="p-6 text-body text-muted">
+        This page lives on the console, and this build has no console URL.
+      </p>
+    );
+  }
   return null;
 }

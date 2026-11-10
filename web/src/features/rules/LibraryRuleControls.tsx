@@ -6,8 +6,8 @@
  * already draws; an off rule stays listed as NOT USED. Every change is a person's and needs a
  * reason, which is the audit record (D10), so the row asks for one before it writes and then
  * says who changed it and when. There is deliberately no bulk "enable all": adopting a rule is
- * one decision per rule. Writes go through `PUT /api/rules/toggles/{id}` and, for an org, the
- * org route — whose 402 on `free`/`pro` is shown as the API sends it.
+ * one decision per rule. Writes go through `PUT /api/rules/toggles/{id}`. An org lock is set
+ * on the console, not here.
  */
 import * as React from "react";
 
@@ -21,7 +21,6 @@ import {
   useGitops,
   useRuleToggleLastChange,
   useRuleToggles,
-  useSetOrgRuleToggle,
   useSetRuleToggle,
 } from "@/lib/queries";
 import { relTime } from "@/lib/relTime";
@@ -46,7 +45,7 @@ const MONO = "font-mono";
 const note = "text-[11.5px] leading-snug text-muted";
 
 type Params = Record<string, RuleParamValue>;
-type Pending = { scope: "project" | "org"; body: Omit<RuleToggleWrite, "reason">; what: string };
+type Pending = { body: Omit<RuleToggleWrite, "reason">; what: string };
 
 export function LibraryRuleControls({ rule }: { rule: RuleFlowRule }) {
   if (rule.unmeasured_reason) {
@@ -90,7 +89,6 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
   const { data: toggles } = useRuleToggles(activeId);
   const toggle = toggles?.toggles.find((t) => t.rule_id === rule.id);
   const syncName = useOrgName(gitops);
-  const orgId = gitops?.org_id ?? toggle?.locked_by ?? null;
   const orgName = syncName === "your org" && toggle?.locked_by ? toggle.locked_by : syncName;
 
   const on = rule.value === true;
@@ -100,10 +98,8 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
   const [draftParams, setDraftParams] = React.useState<Record<string, string>>(() => paramDrafts(params));
   const [pending, setPending] = React.useState<Pending | null>(null);
   const [reason, setReason] = React.useState("");
-  const [orgOpen, setOrgOpen] = React.useState(false);
   const setProject = useSetRuleToggle(activeId);
-  const setOrg = useSetOrgRuleToggle(orgId ?? "");
-  const saving = setProject.isPending || setOrg.isPending;
+  const saving = setProject.isPending;
   const [error, setError] = React.useState<unknown>(null);
 
   // A refetched flow (another person's change, or ours) resets the param inputs to what holds.
@@ -128,8 +124,7 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
       },
       onError: (err: unknown) => setError(err),
     };
-    if (pending.scope === "org") setOrg.mutate({ ruleId: rule.id, body }, opts);
-    else setProject.mutate({ ruleId: rule.id, body }, opts);
+    setProject.mutate({ ruleId: rule.id, body }, opts);
   }
 
   const parsed = parseParams(params, draftParams);
@@ -154,7 +149,7 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
           aria-checked={on}
           aria-label={`${rule.title}: ${on ? "on" : "off"}`}
           disabled={saving}
-          onClick={() => ask({ scope: "project", body: { on: !on }, what: on ? "Turn off" : "Turn on" })}
+          onClick={() => ask({ body: { on: !on }, what: on ? "Turn off" : "Turn on" })}
           data-testid="rules-toggle-switch"
           className={cn(
             "flex h-[22px] w-[40px] items-center rounded-full border px-[2px] transition-colors",
@@ -224,7 +219,7 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
               size="sm"
               variant="outline"
               className="self-start"
-              onClick={() => parsed.ok && ask({ scope: "project", body: { params: parsed.value }, what: "Change params" })}
+              onClick={() => parsed.ok && ask({ body: { params: parsed.value }, what: "Change params" })}
             >
               Change params
             </Button>
@@ -249,38 +244,6 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
       {error !== null && <ToggleError err={error} />}
 
       <LastChange ruleId={rule.id} />
-
-      {orgId && (
-        <div className="flex flex-col gap-1.5 border-t border-line pt-2">
-          {!orgOpen ? (
-            <button
-              type="button"
-              onClick={() => setOrgOpen(true)}
-              className="self-start text-[11.5px] text-accent hover:underline"
-              data-testid="rules-toggle-org-open"
-            >
-              Set for every project in {orgName}…
-            </button>
-          ) : (
-            <div className="flex flex-wrap gap-1.5" role="group" aria-label={`${orgName} setting`} data-testid="rules-toggle-org">
-              <Button size="sm" variant="outline" disabled={saving} onClick={() => ask({ scope: "org", body: { on: true }, what: `Turn on for ${orgName}` })}>
-                On for the org
-              </Button>
-              <Button size="sm" variant="outline" disabled={saving} onClick={() => ask({ scope: "org", body: { on: false }, what: `Turn off for ${orgName}` })}>
-                Off for the org
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={saving}
-                onClick={() => ask({ scope: "org", body: { locked: !locked }, what: locked ? `Unlock for ${orgName}` : `Lock for ${orgName}` })}
-              >
-                {locked ? "Unlock" : "Lock"}
-              </Button>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }

@@ -80,9 +80,51 @@ def _put_project(client, org, pid, body):
                       headers=org["owner"])
 
 
-def _put_org(client, org, body):
-    return client.put(f"/api/orgs/{org['id']}/rule-toggles/{RULE}", json=body,
-                      headers=org["owner"])
+class _Svc:
+    """What a removed org route used to return. Behavior tests call the service."""
+
+    def __init__(self, status, body=None, text=""):
+        self.status_code = status
+        self._body = {} if body is None else body
+        self.text = text or (body if isinstance(body, str) else str(body))
+
+    def json(self):
+        return self._body if isinstance(self._body, dict) else {"detail": self.text}
+
+
+def _owner(db):
+    from sqlalchemy import select
+    from app.models import User
+    user = db.scalar(select(User).where(User.email == "alex@ascme-labs.com"))
+    assert user is not None
+    return user
+
+
+def _as_http(fn):
+    from app.errors import NotFound, QuotaExceeded, Validation
+    try:
+        return _Svc(200, fn())
+    except QuotaExceeded as e:
+        detail = str(e) + (f" — {e.hint}" if e.hint else "")
+        return _Svc(402, {"detail": detail}, detail)
+    except Validation as e:
+        detail = str(e) + (f" — {e.hint}" if e.hint else "")
+        return _Svc(422, {"detail": detail}, detail)
+    except NotFound as e:
+        detail = str(e) + (f" — {e.hint}" if e.hint else "")
+        return _Svc(404, {"detail": detail}, detail)
+
+
+def _put_org(client, org, body, rule_id=RULE, dry_run=False):
+    """Org toggle write through the service. The product route is the console's."""
+    db = _db()
+    try:
+        changes = dict(body)
+        reason = changes.pop("reason", "")
+        return _as_http(lambda: T.set_org_toggle(
+            db, org["id"], rule_id, changes, actor=_owner(db), reason=reason, dry_run=dry_run))
+    finally:
+        db.close()
 
 
 def _toggle_events():
@@ -402,7 +444,16 @@ def _org_rows():
 
 
 def _get_org(client, org):
-    return client.get(f"/api/orgs/{org['id']}/rule-toggles", headers=org["owner"])
+    """Org toggle read through the service, still plan-gated. The route is the console's."""
+    from app.services import quotas
+    db = _db()
+    try:
+        def read():
+            quotas.require_org_rules(db, org["id"])
+            return T.org_view(db, org["id"])
+        return _as_http(read)
+    finally:
+        db.close()
 
 
 def test_org_read_inherited_adopted_and_locked(client, org):
@@ -442,8 +493,7 @@ def test_org_read_with_no_projects_and_plan_gate(client, org):
 def test_preview_writes_nothing(client, org):
     _put_project(client, org, org["a"], {"on": True, "reason": "ours"})
     rows, events = _org_rows(), len(_toggle_events())
-    r = client.put(f"/api/orgs/{org['id']}/rule-toggles/{RULE}", params={"dry_run": "true"},
-                   json={"on": True, "locked": True, "reason": "preview"}, headers=org["owner"])
+    r = _put_org(client, org, {"on": True, "locked": True, "reason": "preview"}, dry_run=True)
     assert r.status_code == 200, r.text
     assert _org_rows() == rows and len(_toggle_events()) == events
     assert _get_org(client, org).json()["rules"][0]["locked"] is False
@@ -452,8 +502,7 @@ def test_preview_writes_nothing(client, org):
 def test_preview_agrees_with_the_write(client, org):
     _put_project(client, org, org["a"], {"on": False, "reason": "ours"})
     body = {"on": True, "locked": True, "reason": "regulated"}
-    prev = client.put(f"/api/orgs/{org['id']}/rule-toggles/{RULE}", params={"dry_run": "true"},
-                      json=body, headers=org["owner"]).json()
+    prev = _put_org(client, org, body, dry_run=True).json()
     real = _put_org(client, org, body).json()
     assert prev["projects_changed"] and sorted(prev["projects_changed"]) == sorted(
         real["projects_changed"])

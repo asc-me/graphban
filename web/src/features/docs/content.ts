@@ -382,7 +382,7 @@ const CONTENT: Record<string, DocEntry> = {
     tagline: "A link key from your cloud org is what a local box pastes.",
     sections: [
       { num: 1, h: "Mint the key in the cloud org", b: "On the hosted org: Settings → Sync / Link, or API keys → Link key. Scope is sync, pinned to one project — that is the only project the box can push. The name field is Link key name, not Key name — the deployment's identity on Deployments. Shown once." },
-      { num: 2, h: "Paste it on the local box", b: "Self-host Settings → Cloud / Sync takes the cloud URL (the org origin) and the Link key — the paste field is not a credential. The intro and placeholder name the link key, not paste key. The link key is stored encrypted — the same handling as provider keys. Tenant/org is a label. graphban link --cloud-url --api-key --project is the same hand-off; --api-key is the flag, not a second name." },
+      { num: 2, h: "Paste it on the local box", b: "Self-host Settings → Sync / Link takes the console URL (https://graphban-console-console-production-ascme-labs.unkey.app until cloud.graphban.dev is the console) and the Link key — the paste field is not a credential. The intro and placeholder name the link key, not paste key. The link key is stored encrypted — the same handling as provider keys. Tenant/org is a label. graphban link --cloud-url --api-key --project is the same hand-off; --api-key is the flag, not a second name." },
       { num: 3, h: "The box pushes; the org does not reach in", b: "The local box builds the graph and pushes summaries. Vectors stay on the box; the cloud re-embeds. Nothing is linked until that paste happens." },
     ],
     related: [{ label: "API keys", to: settingsPath("project/api-keys") }],

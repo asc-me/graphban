@@ -12,7 +12,7 @@ import type { GitopsView, RuleFlowRule, RulesFlow, RuleToggles } from "@/lib/typ
 vi.mock("@/lib/api", () => ({
   api: {
     rulesFlow: vi.fn(), gitops: vi.fn(), config: vi.fn(), syncStatus: vi.fn(), events: vi.fn(),
-    ruleToggles: vi.fn(), setRuleToggle: vi.fn(), setOrgRuleToggle: vi.fn(),
+    ruleToggles: vi.fn(), setRuleToggle: vi.fn(),
   },
 }));
 vi.mock("@/features/ProjectContext", () => ({

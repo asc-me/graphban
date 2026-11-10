@@ -175,13 +175,24 @@ export function lastProjectTag(): string | null {
   }
 }
 
+/** Production console until cloud.graphban.dev serves it (GBC-P8 S9). */
+export const CONSOLE_URL =
+  "https://graphban-console-console-production-ascme-labs.unkey.app";
+
 /**
  * Cloud console origin. The org plane and the operator UI render there.
  * Set `VITE_CONSOLE_URL` when this app and the console are not on the dev defaults.
+ * A production build with the variable unset throws: it must not link to localhost.
  */
 export function consoleOrigin(): string {
   const raw = (import.meta.env.VITE_CONSOLE_URL as string | undefined)?.trim();
-  return (raw || "http://localhost:5174").replace(/\/+$/, "");
+  if (raw) return raw.replace(/\/+$/, "");
+  if (import.meta.env.MODE === "production") {
+    throw new Error(
+      "VITE_CONSOLE_URL is unset in a production build; the product must not link to localhost",
+    );
+  }
+  return "http://localhost:5174";
 }
 
 /**
@@ -198,10 +209,22 @@ export function consolePathFromProduct(pathname: string): string {
   return pathname;
 }
 
-/** Absolute URL for a path on the cloud console (`/org`, `/operator`, …). */
-export function consoleHref(path: string): string {
+/**
+ * Absolute URL for a path on the cloud console (`/org`, `/operator`, …).
+ *
+ * Returns null when `consoleOrigin()` refuses — a production build with
+ * `VITE_CONSOLE_URL` unset — so the shell drops the link instead of throwing
+ * during render. `consoleOrigin()` itself still throws.
+ */
+export function consoleHref(path: string): string | null {
+  let origin: string;
+  try {
+    origin = consoleOrigin();
+  } catch {
+    return null;
+  }
   const p = path.startsWith("/") ? path : `/${path}`;
-  return `${consoleOrigin()}${consolePathFromProduct(p)}`;
+  return `${origin}${consolePathFromProduct(p)}`;
 }
 
 /**

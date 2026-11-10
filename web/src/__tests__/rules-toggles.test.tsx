@@ -1,6 +1,6 @@
 /**
  * Library rule toggles on the Rules inspector (GRPH-1268 / PRD-P63 §8, S2c): on, off as NOT
- * USED, locked by the org, a refused template as UNMEASURED, and the org route's 402.
+ * USED, locked by the org, and a refused template as UNMEASURED. Org locks live on the console.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
@@ -15,7 +15,7 @@ import type { Event, GitopsView, RuleFlowRule, RulesFlow, RuleToggles } from "@/
 vi.mock("@/lib/api", () => ({
   api: {
     rulesFlow: vi.fn(), gitops: vi.fn(), config: vi.fn(), syncStatus: vi.fn(), events: vi.fn(),
-    ruleToggles: vi.fn(), setRuleToggle: vi.fn(), setOrgRuleToggle: vi.fn(),
+    ruleToggles: vi.fn(), setRuleToggle: vi.fn(),
   },
 }));
 vi.mock("@/features/ProjectContext", () => ({
@@ -187,22 +187,11 @@ describe("library rule toggles", () => {
     expect(within(row).queryByTestId("rules-row-not-used")).toBeNull();
   });
 
-  it("an org-level change on free/pro shows the API's 402 message", async () => {
-    const user = userEvent.setup();
+  it("does not offer an org-wide lock; that is set on the console", async () => {
     vi.mocked(api.gitops).mockResolvedValue(gitops("acme"));
-    vi.mocked(api.setOrgRuleToggle).mockRejectedValue(apiError(402, {
-      detail: "org-level rules need one of: team, enterprise; this org is on 'free' — upgrade the org's plan, or set the rule per project, which every plan can",
-    }));
     const ins = await openReview([lib("review.sabotage_required")]);
-    await user.click(await within(ins).findByTestId("rules-toggle-org-open"));
-    await user.click(within(ins).getByRole("button", { name: "Lock" }));
-    await user.type(within(ins).getByLabelText("Reason"), "every project");
-    await user.click(within(ins).getByRole("button", { name: "Lock for acme" }));
-    await waitFor(() =>
-      expect(api.setOrgRuleToggle).toHaveBeenCalledWith("acme", "review.sabotage_required", { locked: true, reason: "every project" }),
-    );
-    const alert = await within(ins).findByTestId("rules-toggle-error");
-    expect(alert).toHaveTextContent("org-level rules need one of: team, enterprise; this org is on 'free'");
-    expect(within(alert).queryByRole("link", { name: "see rule" })).toBeNull();
+    expect(within(ins).queryByTestId("rules-toggle-org-open")).not.toBeInTheDocument();
+    expect(within(ins).queryByTestId("rules-toggle-org")).not.toBeInTheDocument();
+    expect(within(ins).queryByRole("button", { name: "Lock" })).not.toBeInTheDocument();
   });
 });
