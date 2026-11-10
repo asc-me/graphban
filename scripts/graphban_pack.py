@@ -53,6 +53,8 @@ BACKEND_DROP = frozenset({
 #: Package data written here, never committed (GRPH-1185). `services/rules` reads it.
 COVERAGE = pathlib.Path("backend/app/data/refusal_coverage.json")
 GBAN_SKILLS = pathlib.Path("backend/app/data/gban_skills.json")
+PLAYBOOKS_SRC = pathlib.Path("backend/scripts/gban_playbooks.json")
+PLAYBOOKS = pathlib.Path("backend/app/data/playbooks.json")
 _VERSION_RE = re.compile(r'^__version__\s*=\s*"([^"]+)"', re.M)
 
 
@@ -189,6 +191,17 @@ def publish_skills(src: pathlib.Path, dest: pathlib.Path) -> str | None:
     return write_skills_manifest(src / "cli", dest / GBAN_SKILLS)
 
 
+def publish_playbooks(src: pathlib.Path, dest: pathlib.Path) -> str | None:
+    """Ship the checked-in playbook pack as package data (GRPH-1491); the failure, or None."""
+    source = src / PLAYBOOKS_SRC
+    if not source.is_file() or source.stat().st_size == 0:
+        return f"{PLAYBOOKS_SRC} is missing — the release could not serve /api/playbooks"
+    out = dest / PLAYBOOKS
+    out.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, out)
+    return None
+
+
 def _fail(dest: pathlib.Path | None, msg: str) -> tuple[int, None]:
     if dest is not None and dest.exists():
         shutil.rmtree(dest, ignore_errors=True)
@@ -243,7 +256,8 @@ def pack(src: pathlib.Path, out: pathlib.Path, *, sha: str, version: str,
 
     (dest / "GIT_SHA").write_text(sha + "\n", encoding="utf-8")
 
-    problem = publish_coverage(src, dest, sha) or publish_skills(src, dest)
+    problem = publish_coverage(src, dest, sha) or publish_skills(src, dest) \
+        or publish_playbooks(src, dest)
     if problem:
         return _fail(dest, problem)
 

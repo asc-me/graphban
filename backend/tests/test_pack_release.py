@@ -62,6 +62,9 @@ def make_src(tmp_path: pathlib.Path, *, version: str = VER) -> pathlib.Path:
     (src / "LICENSE.md").write_text("FSL\n", encoding="utf-8")
     (src / ".env.example").write_text("JWT_SECRET=\n", encoding="utf-8")
     _host_scripts(src)
+    (src / "backend" / "scripts").mkdir(exist_ok=True)
+    (src / "backend" / "scripts" / "gban_playbooks.json").write_text(
+        '{"files": []}\n', encoding="utf-8")
     return src
 
 
@@ -344,3 +347,20 @@ def test_THE_CALL_ci_runs_backend_when_scripts_change():
     """A packer-only PR that skips the suite is the deploy.sh hole in CI clothes."""
     wf = pathlib.Path(__file__).resolve().parents[2] / ".github" / "workflows" / "ci.yml"
     assert "- 'scripts/**'" in wf.read_text()
+
+
+def test_pack_ships_the_playbook_pack(tmp_path):
+    """GRPH-1491: the native release carries the manifest as package data."""
+    src = make_src(tmp_path)
+    rc, tree = gp.pack(src, tmp_path / "out", sha=SHA, version=VER, api_only=True)
+    assert rc == 0
+    assert (tree / gp.PLAYBOOKS).read_text(encoding="utf-8") == '{"files": []}\n'
+    with tarfile.open(tmp_path / "out" / f"graphban-{VER}.tar.gz") as tf:
+        assert f"graphban-{VER}/{gp.PLAYBOOKS}" in tf.getnames()
+
+
+def test_a_tree_without_the_playbook_pack_is_not_packed(tmp_path):
+    src = make_src(tmp_path)
+    (src / "backend" / "scripts" / "gban_playbooks.json").unlink()
+    rc, tree = gp.pack(src, tmp_path / "out", sha=SHA, version=VER, api_only=True)
+    assert rc == 1 and tree is None
