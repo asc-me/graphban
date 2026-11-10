@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { CardList, filterCards, useCardFilter } from "@/features/harness/Recommendations";
 import { useHarnessCards } from "@/lib/queries";
@@ -82,7 +82,22 @@ const rowKeyOf = (c: HarnessCell) => `${c.key.vendor}${SEP}${c.key.model}`;
  * floor, and the family rollup in that family's column until then. `other` gets its own column.
  * Below-floor cells keep their numbers.
  */
+/** GRPH-1232: at ≥1280px every above-floor leaf is its own column so the grid scrolls inside its box. */
+function useWideHarnessGrid() {
+  const [wide, setWide] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(min-width: 1280px)").matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1280px)");
+    const onChange = () => setWide(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return wide;
+}
+
 export function PerformanceGrid({ data, routing, projectId }: { data: HarnessReport; routing: Routing[]; projectId?: string }) {
+  const wideGrid = useWideHarnessGrid();
   const [effort, setEffort] = useState<Effort>("All");
   const [vendor, setVendor] = useState("");
   const [harness, setHarness] = useState("");
@@ -136,7 +151,7 @@ export function PerformanceGrid({ data, routing, projectId }: { data: HarnessRep
         byLeaf.set(leaf.key.capability, [...(byLeaf.get(leaf.key.capability) ?? []), leaf]);
       }
       const leafClears = [...byLeaf.values()].some((cells) => cells.reduce((s, c) => s + c.finished, 0) >= data.floor);
-      if (leafClears && expandedFamilies.has(family)) {
+      if (leafClears && (expandedFamilies.has(family) || wideGrid)) {
         for (const [cap, cells] of byLeaf) add(rk, cap, cells);
       } else {
         add(rk, family, f.rollups, true);
@@ -159,7 +174,7 @@ export function PerformanceGrid({ data, routing, projectId }: { data: HarnessRep
     const columns = family ? allColumns.filter((c) => inFamily.has(c)) : allColumns;
     const allRows = [...rowMap.values()].sort((a, b) => Number(isUnattributed(a)) - Number(isUnattributed(b)));
     return { rows: allRows, columns, grid };
-  }, [data.cells, data.capability_set, data.floor, effort, family, expandedFamilies]);
+  }, [data.cells, data.capability_set, data.floor, effort, family, expandedFamilies, wideGrid]);
 
   const vendorOptions = [...new Set(rows.map((r) => r.vendor).filter(Boolean))].sort();
   const shownRows = rows.filter((r) => {
