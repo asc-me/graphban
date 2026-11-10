@@ -196,6 +196,71 @@ def test_api_key_gets_401_on_install(client, box):
     assert r.status_code == 401
 
 
+def test_a_lapsed_grant_stores_runner_declarations_but_does_not_route_until_renewed(client, box):
+    """GRPH-1476 / D8: declarations persist through a lapsed grant; routing waits for a valid one."""
+    from app.db import SessionLocal
+    from app.models import Agent
+    from app.services import items, routing
+
+    owner, org_id, proj_id = box["owner"], box["org"], box["project"]
+    user_id = client.get("/api/auth/me", headers=owner).json()["id"]
+    key = client.post(
+        "/api/api-keys",
+        json={"name": "runner", "project_id": proj_id, "tool_tiers": ["fleet"]},
+        headers=owner,
+    ).json()["plaintext"]
+
+    def mcp(tool, args=None):
+        r = client.post(
+            "/api/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                  "params": {"name": tool, "arguments": args or {}}},
+            headers={"X-API-Key": key},
+        ).json()["result"]
+        assert not r.get("isError"), r
+        return r["structuredContent"]
+
+    assert _install(client, box, *_grant(org_id)).json()["ok"] is True
+    ent_id = mcp("set_entitlement",
+                 {"vendor": "anthropic", "kind": "subscription", "owner_user_id": user_id})["id"]
+
+    G._state["expires_at"] = int(time.time()) - 1
+    assert _list(client, box).status_code == 402
+    denied = client.post(
+        "/api/mcp",
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+              "params": {"name": "set_entitlement",
+                         "arguments": {"vendor": "ollama", "kind": "local"}}},
+        headers={"X-API-Key": key},
+    ).json()["result"]
+    assert denied.get("isError")
+    assert denied["structuredContent"]["error"]["code"] == "quota_exceeded"
+
+    reg = mcp("register_agent", {"label": "runner", "entitlements": [ent_id],
+                                   "capabilities": {"vendor": "anthropic", "model": "m"}})
+    assert reg["entitlements"]["declared"] == [ent_id]
+
+    db = SessionLocal()
+    try:
+        agent = db.get(Agent, reg["agent_id"])
+        assert agent.entitlement_ids == [ent_id]
+        item = items.create_item(db, title="w", status="next", project_id=proj_id)
+        assert routing.gate(db, item, reg["agent_id"]) is None
+    finally:
+        db.close()
+
+    renewed = _install(client, box, *_grant(org_id, issued=int(time.time())))
+    assert renewed.json()["ok"] is True, renewed.text
+    db = SessionLocal()
+    try:
+        agent = db.get(Agent, reg["agent_id"])
+        assert agent.entitlement_ids == [ent_id]
+        item = items.create_item(db, title="w2", status="next", project_id=proj_id)
+        assert routing.gate(db, item, reg["agent_id"]) is not None
+    finally:
+        db.close()
+
+
 def test_a_deleted_grant_reads_missing_at_next_start_and_ends_reservations(client, box):
     from app.db import SessionLocal
     from app.models import InstalledPlanGrant, Item, RoutingDecision

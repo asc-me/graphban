@@ -25,6 +25,7 @@ from secrets import token_urlsafe
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.errors import NotFound, Validation
 from app.models import Agent, Entitlement, OrgMembership, Project, utcnow
 from app.services import headroom as headroom_svc
@@ -239,15 +240,24 @@ def to_dict(db: Session, row: Entitlement, *, declared: dict[str, list[dict]] | 
 
 def validate_declaration(db: Session, project_id: str | None, ids) -> list[str]:
     """The entitlement ids a registering runner may declare: every one must exist in the
-    project's org, and the org must be on a capacity-routing plan. Checked BEFORE the agent
-    row is written, so a refused declaration mints no agent. Existence is all that is checked —
+    project's org. Checked BEFORE the agent row is written, so a refused declaration mints no
+    agent. On self-host, unlike list/set entitlements, this skips the plan-grant gate so ids are
+    stored while the grant is lapsed and resume after renewal; hosted still requires
+    capacity routing. Existence is all that is checked —
     whether the runner really holds it is unverifiable and said so (`DECLARATION_TRUST`)."""
     if not isinstance(ids, list) or not all(isinstance(i, str) and i for i in ids):
         raise Validation("entitlements must be a list of entitlement ids")
     ids = list(dict.fromkeys(ids))
     if not ids:
         return []
-    org_id = org_for_project(db, project_id)
+    org_id = quotas.org_id_for_project(db, project_id)
+    if org_id is None:
+        raise Validation("this project has no org",
+                         hint="attach the project to an org before declaring entitlements")
+    # Hosted free/pro still refuse declarations (D8 acceptance 7). Self-host skips the grant
+    # gate here so ids are stored while the grant is lapsed and resume after renewal.
+    if settings.hosted_mode:
+        quotas.require_capacity_routing(db, org_id)
     known = set(db.scalars(
         select(Entitlement.id).where(Entitlement.org_id == org_id, Entitlement.id.in_(ids))
     ).all())
