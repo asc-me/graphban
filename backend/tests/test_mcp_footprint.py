@@ -733,16 +733,18 @@ def test_a_worker_session_narrows_nothing_a_core_key_had_not_already(client, aut
 
 
 def test_a_planner_session_still_narrows(client, auth):
-    """The E9 mechanism is not gone with the reviewer: a planner never claims, so its
-    session drops every worker-gated tool. This is the number that still says the
-    session-scoped manifest is real. Floor, not a figure — the manifest grows."""
+    """The E9 mechanism is not gone with the reviewer: a planner never claims and never
+    signs off, so its session drops those worker-gated tools. GRPH-1472 gives it
+    `bounce`, so a red review can go back to its author without a reviewer. Floor, not
+    a figure — the manifest grows."""
     full, narrowed = _session_manifest(client, auth, "planner")
     saved = len(json.dumps(full)) - len(json.dumps(narrowed))
     assert saved > 0, "a planner session narrowed nothing — the E9 mechanism is idle"
     assert len(json.dumps(narrowed)) < len(json.dumps(full))
     names = {t["name"] for t in narrowed}
+    assert "bounce" in names
     assert not names & {"claim_next", "claim_cluster", "next_cluster", "claim_review",
-                        "sign_off", "bounce"}, names
+                        "sign_off"}, names
 
 def _dispatch_blocks() -> dict[str, str]:
     """Each tool's dispatch branch, from its `if name == "x"` to the next one."""
