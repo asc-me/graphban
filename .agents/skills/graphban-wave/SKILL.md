@@ -64,3 +64,5 @@ Attach `graphban-answer` when the service reports running. It answers a `wait:de
 `review-unsigned` can be a review row outside this PRD. Say which item. Do not start another drain over it, and do not `sign_off` it yourself.
 
 `--merge` lands the pull requests this wave opened. Leave every other open pull request. A salvage branch can be the only copy of the work.
+
+A drain that exits `review-unsigned`, or sits idle with items still `next`, is `graphban-unstick`.
