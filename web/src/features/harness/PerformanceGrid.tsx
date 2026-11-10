@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { CardList, filterCards, useCardFilter } from "@/features/harness/Recommendations";
 import { useHarnessCards } from "@/lib/queries";
@@ -6,8 +6,18 @@ import type { HarnessCard, HarnessCell, HarnessCost, HarnessReport, HarnessSampl
 
 type Routing = { function: string; effort_band: string; verdict: string; attempts: number; pick: string | null; evidence: string; fallback: string | null };
 
-const EFFORTS = ["All", "XS", "S", "M", "L", "XL"] as const;
+const EFFORTS = ["All", "S", "M", "L"] as const;
 type Effort = (typeof EFFORTS)[number];
+
+/** Signed-off rate band colours from the Nov 9 canvas (above-floor cells only). */
+function cellTone(rate: number | null, belowFloor: boolean): string {
+  if (belowFloor) return "border-dashed border-control text-faint bg-surface";
+  if (rate === null) return "border-control bg-surface-2";
+  if (rate > 0.95) return "border-[rgba(95,208,122,0.45)] bg-[rgba(95,208,122,0.18)]";
+  if (rate >= 0.8) return "border-[rgba(95,208,122,0.28)] bg-[rgba(95,208,122,0.1)]";
+  if (rate >= 0.65) return "border-[rgba(224,179,74,0.35)] bg-[rgba(224,179,74,0.1)]";
+  return "border-[rgba(255,107,107,0.35)] bg-[rgba(255,107,107,0.08)]";
+}
 
 /** One grid cell: every measured cell for a harness row and column, summed over the bands kept. */
 interface Agg {
@@ -72,10 +82,29 @@ const rowKeyOf = (c: HarnessCell) => `${c.key.vendor}${SEP}${c.key.model}`;
  * floor, and the family rollup in that family's column until then. `other` gets its own column.
  * Below-floor cells keep their numbers.
  */
+/** GRPH-1232: at ≥1280px every above-floor leaf is its own column so the grid scrolls inside its box. */
+function useWideHarnessGrid() {
+  const [wide, setWide] = useState(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+    return window.matchMedia("(min-width: 1280px)").matches;
+  });
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia("(min-width: 1280px)");
+    const onChange = () => setWide(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return wide;
+}
+
 export function PerformanceGrid({ data, routing, projectId }: { data: HarnessReport; routing: Routing[]; projectId?: string }) {
+  const wideGrid = useWideHarnessGrid();
   const [effort, setEffort] = useState<Effort>("All");
+  const [vendor, setVendor] = useState("");
   const [harness, setHarness] = useState("");
   const [family, setFamily] = useState("");
+  const [expandedFamilies, setExpandedFamilies] = useState<Set<string>>(() => new Set());
   const [hideUnder, setHideUnder] = useState(false);
   const [showCards, setShowCards] = useState(false);
   const { data: cardData } = useHarnessCards(projectId);
@@ -99,27 +128,32 @@ export function PerformanceGrid({ data, routing, projectId }: { data: HarnessRep
     const loose = new Map<string, HarnessCell[]>();
     const families = new Map<string, { rollups: HarnessCell[]; leaves: HarnessCell[] }>();
     for (const c of data.cells) {
-      if (!keep(c)) continue;
       const rk = rowKeyOf(c);
       if (c.kind === "family" && c.leaves && c.leaves.length > 0) {
+        const matching = c.leaves.filter(keep);
+        if (effort !== "All" && matching.length === 0) continue;
         const fk = `${rk}${SEP}${c.family ?? c.key.capability}`;
         const f = families.get(fk) ?? { rollups: [], leaves: [] };
         f.rollups.push(c);
-        f.leaves.push(...c.leaves);
+        f.leaves.push(...matching);
         families.set(fk, f);
-      } else {
-        const lk = `${rk}${SEP}${c.kind === "other" ? "other" : c.key.capability}`;
-        loose.set(lk, [...(loose.get(lk) ?? []), c]);
+        continue;
       }
+      if (!keep(c)) continue;
+      const lk = `${rk}${SEP}${c.kind === "other" ? "other" : c.key.capability}`;
+      loose.set(lk, [...(loose.get(lk) ?? []), c]);
     }
     for (const [lk, cells] of loose) grid.set(lk, aggregate(cells, data.floor));
     for (const [fk, f] of families) {
       const [vendor, model, family] = fk.split(SEP);
       const rk = `${vendor}${SEP}${model}`;
       const byLeaf = new Map<string, HarnessCell[]>();
-      for (const leaf of f.leaves) byLeaf.set(leaf.key.capability, [...(byLeaf.get(leaf.key.capability) ?? []), leaf]);
+      for (const leaf of f.leaves) {
+        if (!keep(leaf)) continue;
+        byLeaf.set(leaf.key.capability, [...(byLeaf.get(leaf.key.capability) ?? []), leaf]);
+      }
       const leafClears = [...byLeaf.values()].some((cells) => cells.reduce((s, c) => s + c.finished, 0) >= data.floor);
-      if (leafClears) {
+      if (leafClears && (expandedFamilies.has(family) || wideGrid)) {
         for (const [cap, cells] of byLeaf) add(rk, cap, cells);
       } else {
         add(rk, family, f.rollups, true);
@@ -142,9 +176,14 @@ export function PerformanceGrid({ data, routing, projectId }: { data: HarnessRep
     const columns = family ? allColumns.filter((c) => inFamily.has(c)) : allColumns;
     const allRows = [...rowMap.values()].sort((a, b) => Number(isUnattributed(a)) - Number(isUnattributed(b)));
     return { rows: allRows, columns, grid };
-  }, [data.cells, data.capability_set, data.floor, effort, family]);
+  }, [data.cells, data.capability_set, data.floor, effort, family, expandedFamilies, wideGrid]);
 
-  const shownRows = harness ? rows.filter((r) => r.key === harness) : rows;
+  const vendorOptions = [...new Set(rows.map((r) => r.vendor).filter(Boolean))].sort();
+  const shownRows = rows.filter((r) => {
+    if (vendor && r.vendor !== vendor) return false;
+    if (harness && r.key !== harness) return false;
+    return true;
+  });
   const familyNames = Object.keys(data.capability_set?.families ?? {}).filter((f) => f !== "other");
   const familyCols = new Set(family ? [family, ...(data.capability_set?.families[family] ?? [])] : []);
   // The grid's own harness/family/effort filter, applied to the cards (rules and state come from the card filter).
@@ -156,9 +195,19 @@ export function PerformanceGrid({ data, routing, projectId }: { data: HarnessRep
         (effort === "All" || c.cell.size_band === effort),
     ),
   );
-  const harnessOptions = rows.map((r) => ({ value: r.key, label: rowName(r) }));
+  const harnessOptions = rows
+    .filter((r) => !vendor || r.vendor === vendor)
+    .map((r) => ({ value: r.key, label: rowName(r) }));
 
   const label = (cap: string) => data.capability_set?.labels[cap];
+  const familyLeaves = (fam: string) => data.capability_set?.families[fam] ?? [];
+  const toggleFamily = (fam: string) =>
+    setExpandedFamilies((prev) => {
+      const next = new Set(prev);
+      if (next.has(fam)) next.delete(fam);
+      else next.add(fam);
+      return next;
+    });
   const sel = selected ? grid.get(`${selected.row}${SEP}${selected.col}`) : undefined;
   const selRow = selected ? rows.find((r) => r.key === selected.row) : undefined;
 
@@ -166,6 +215,23 @@ export function PerformanceGrid({ data, routing, projectId }: { data: HarnessRep
     <section data-testid="harness-grid-section" className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
         <span className="text-[13px] font-semibold">Harness × function</span>
+        <select
+          aria-label="Vendor"
+          data-testid="harness-grid-vendor"
+          value={vendor}
+          onChange={(e) => {
+            setVendor(e.target.value);
+            setHarness("");
+          }}
+          className="rounded-[8px] border border-control bg-surface px-1.5 py-0.5 text-[11.5px]"
+        >
+          <option value="">All vendors</option>
+          {vendorOptions.map((v) => (
+            <option key={v} value={v}>
+              {v}
+            </option>
+          ))}
+        </select>
         <select
           aria-label="Harness"
           data-testid="harness-grid-harness"
@@ -195,8 +261,8 @@ export function PerformanceGrid({ data, routing, projectId }: { data: HarnessRep
           ))}
         </select>
         <label className="flex items-center gap-1 text-[11.5px] text-muted">
-          <input type="checkbox" data-testid="harness-hide-under-floor" checked={hideUnder} onChange={(e) => setHideUnder(e.target.checked)} />
-          Hide under-floor
+          <input type="checkbox" data-testid="harness-hide-below-floor" checked={hideUnder} onChange={(e) => setHideUnder(e.target.checked)} />
+          Hide below-floor
         </label>
         <button
           type="button"
@@ -226,6 +292,14 @@ export function PerformanceGrid({ data, routing, projectId }: { data: HarnessRep
         </div>
       </div>
 
+      {hideUnder && (
+        <p className="text-[12px] text-muted" data-testid="harness-hide-below-floor-note">
+          A blank cell means too few attempts, not none.
+        </p>
+      )}
+
+      <SelectionGridLegend />
+
       {showCards && (
         <div data-testid="harness-grid-cards">
           {gridCards.length === 0 ? (
@@ -244,13 +318,33 @@ export function PerformanceGrid({ data, routing, projectId }: { data: HarnessRep
             <thead>
               <tr className="border-b border-line-2 bg-surface-2">
                 <th className="px-3 py-2 font-mono text-[10.5px] font-normal text-faint">Harness · model</th>
-                {columns.map((cap) => (
-                  <th key={cap} data-testid="harness-grid-col" scope="col" className="min-w-[96px] px-2 py-2 font-mono text-[10.5px] font-normal text-faint">
-                    {cap}
-                    {label(cap) && label(cap) !== cap && <div className="text-muted">{label(cap)}</div>}
-                    {data.capability_set?.families[cap] && cap !== "other" && <div className="text-faint">family</div>}
-                  </th>
-                ))}
+                {columns.map((cap) => {
+                  const isFamily = !!(data.capability_set?.families[cap] && cap !== "other" && familyLeaves(cap).length > 0);
+                  const expanded = expandedFamilies.has(cap);
+                  return (
+                    <th key={cap} data-testid="harness-grid-col" data-family={isFamily ? cap : undefined} scope="col" className="min-w-[96px] px-2 py-2 font-mono text-[10.5px] font-normal text-faint">
+                      {isFamily ? (
+                        <button
+                          type="button"
+                          data-testid="harness-grid-family-expand"
+                          data-family={cap}
+                          aria-expanded={expanded}
+                          onClick={() => toggleFamily(cap)}
+                          className="text-left hover:text-fg-2"
+                        >
+                          {cap}
+                          {label(cap) && label(cap) !== cap && <div className="text-muted">{label(cap)}</div>}
+                          <div className="text-faint">{expanded ? "expanded" : "family · expand"}</div>
+                        </button>
+                      ) : (
+                        <>
+                          {cap}
+                          {label(cap) && label(cap) !== cap && <div className="text-muted">{label(cap)}</div>}
+                        </>
+                      )}
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
@@ -292,9 +386,9 @@ export function PerformanceGrid({ data, routing, projectId }: { data: HarnessRep
                               a.below_floor ? ", below the floor" : ""
                             }`}
                             onClick={() => setSelected(isSel ? null : { row: row.key, col: cap })}
-                            className={`w-full rounded-[8px] border px-2 py-1.5 text-left ${
-                              a.below_floor ? "border-dashed border-control text-faint" : "border-control bg-surface-2"
-                            } ${isSel ? "ring-1 ring-accent" : ""}`}
+                            className={`w-full rounded-[8px] border px-2 py-1.5 text-left ${cellTone(a.finished ? a.signed_off / a.finished : null, a.below_floor)} ${
+                              isSel ? "ring-1 ring-accent" : ""
+                            }`}
                           >
                             <span className="block text-body font-semibold">{pct(a.finished ? a.signed_off / a.finished : null)}</span>
                             <span className="block font-mono text-[10.5px]">
@@ -341,6 +435,28 @@ export function PerformanceGrid({ data, routing, projectId }: { data: HarnessRep
         )}
       </div>
     </section>
+  );
+}
+
+function SelectionGridLegend() {
+  return (
+    <div data-testid="harness-grid-legend" className="flex flex-wrap gap-x-3 gap-y-1 text-[10.5px] text-muted">
+      <span className="inline-flex items-center gap-1">
+        <span className="h-2.5 w-4 rounded border border-[rgba(95,208,122,0.45)] bg-[rgba(95,208,122,0.18)]" /> &gt;95%
+      </span>
+      <span className="inline-flex items-center gap-1">
+        <span className="h-2.5 w-4 rounded border border-[rgba(95,208,122,0.28)] bg-[rgba(95,208,122,0.1)]" /> 80–95%
+      </span>
+      <span className="inline-flex items-center gap-1">
+        <span className="h-2.5 w-4 rounded border border-[rgba(224,179,74,0.35)] bg-[rgba(224,179,74,0.1)]" /> 65–79%
+      </span>
+      <span className="inline-flex items-center gap-1">
+        <span className="h-2.5 w-4 rounded border border-[rgba(255,107,107,0.35)] bg-[rgba(255,107,107,0.08)]" /> &lt;65%
+      </span>
+      <span className="inline-flex items-center gap-1">
+        <span className="h-2.5 w-4 rounded border border-dashed border-control bg-surface" /> below floor
+      </span>
+    </div>
   );
 }
 
