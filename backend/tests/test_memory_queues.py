@@ -118,6 +118,23 @@ def test_retire_then_restore_within_window(client, auth):
     assert r.status_code == 200 and r.json()["status"] == "published"
 
 
+def test_retire_into_records_keeper_on_event(client, auth):
+    """S9 overlap sweep: retiring carries which lesson was kept."""
+    from app.models import Event
+
+    pid = _proj(client, auth, "RetireInto")
+    keep = _published(client, auth, pid)
+    drop = _published(client, auth, pid, text="a near-duplicate lesson")
+    r = client.post(f"/api/memory/shards/{drop}/retire", json={"into_shard_id": keep}, headers=auth)
+    assert r.status_code == 200 and r.json()["status"] == "retired"
+    db = SessionLocal()
+    try:
+        ev = db.query(Event).filter(Event.action == "retire_shard", Event.target_id == drop).one()
+        assert ev.meta and ev.meta.get("retired_into") == keep
+    finally:
+        db.close()
+
+
 def test_restore_refused_after_14_days(client, auth):
     pid = _proj(client, auth, "RetireFinal")
     sid = _published(client, auth, pid)

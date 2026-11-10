@@ -475,16 +475,31 @@ def _writable_shard(db: Session, user: User, shard_id: str) -> MemoryShard:
     return existing
 
 
+class RetireIn(BaseModel):
+    into_shard_id: str | None = None
+
+
 @router.post("/shards/{shard_id}/retire", response_model=ShardOut)
-def retire_shard(shard_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def retire_shard(
+    shard_id: str,
+    body: RetireIn | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """Retire a published shard. Out of search at once; restorable for 14 days, then final."""
     existing = _writable_shard(db, user, shard_id)
+    into_id = (body or RetireIn()).into_shard_id
+    if into_id:
+        keeper = db.get(MemoryShard, into_id)
+        if keeper is None or keeper.status != "published":
+            raise HTTPException(422, f"keeper lesson not found: {into_id}")
     try:
         shard = mem_svc.retire_shard(db, shard_id)
     except mem_svc.RetireRefused as exc:
         raise Refused(409, str(exc), rule_id="memory.retire_window") from exc
+    meta = {"retired_into": into_id} if into_id else None
     events_svc.record_user(db, user, action="retire_shard", target_type="shard",
-                           target_id=shard_id, project_id=existing.project_id)
+                           target_id=shard_id, project_id=existing.project_id, meta=meta)
     return shard
 
 

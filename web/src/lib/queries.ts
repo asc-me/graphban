@@ -1406,6 +1406,17 @@ export function usePromoteOrgLesson(projectId: string) {
   });
 }
 
+/** Retire a published lesson into a keeper (overlap sweep). Records `retired_into` on the event. */
+export function useRetireLessonInto(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: string; intoId: string }) => api.retireShard(v.id, v.intoId),
+    onSuccess: (_row, v) => {
+      invalidateLessons(qc, projectId, v.id);
+    },
+  });
+}
+
 export function useRequests(projectId?: string) {
   return useQuery({ queryKey: [...keys.requests, projectId], queryFn: () => api.requests(projectId), enabled: !!projectId });
 }

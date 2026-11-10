@@ -478,23 +478,12 @@ export function MemoryReviewView() {
             </div>
 
             {sweep && (
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line-2 bg-accent/[0.035] px-3 py-2.5" data-testid="memory-sweep">
-                <span className="rounded border border-accent/35 px-1.5 py-px font-mono text-micro tracking-wide text-accent">CLEANUP</span>
-                <span className="min-w-0 flex-[1_1_260px] text-[12px] leading-relaxed text-fg-2">{sweep.text}</span>
-                <button
-                  onClick={() => setSel(new Set(sweep.rows.map((r) => r.id)))}
-                  title="Check the rows this would act on"
-                  className="h-7 rounded-[7px] border border-control px-2.5 text-small text-muted hover:border-control-hover hover:text-fg"
-                >
-                  Preview
-                </button>
-                <button
-                  onClick={() => void run(sweep.id, sweep.rows)}
-                  className="h-7 rounded-[7px] border border-accent/45 bg-accent/10 px-3 text-small font-semibold text-accent hover:bg-accent/15"
-                >
-                  {sweep.action}
-                </button>
-              </div>
+              <MemorySweepBar
+                text={sweep.text}
+                actionLabel={sweep.action}
+                onPreview={() => setSel(new Set(sweep.rows.map((r) => r.id)))}
+                onAction={() => void run(sweep.id, sweep.rows)}
+              />
             )}
 
             {selected.length > 0 && (
@@ -756,6 +745,48 @@ function PolicyStrip({ judgeStatus }: { judgeStatus?: JudgeStatus }) {
  *  then failed every `decide()` leaves rows that look merely unasked, so the page used to
  *  show nothing at all — and the reassuring reading of a quiet queue is always that nothing
  *  is wrong with it. The copy states what IS grading these candidates, not only what is not. */
+/** Shared CLEANUP sweep bar (S8 Memory, S9 Lessons overlap). */
+export function MemorySweepBar({
+  text,
+  actionLabel,
+  onPreview,
+  onAction,
+  testId = "memory-sweep",
+}: {
+  text: string;
+  actionLabel: string;
+  onPreview: () => void;
+  onAction: () => void;
+  testId?: string;
+}) {
+  return (
+    <div
+      className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line-2 bg-accent/[0.035] px-3 py-2.5"
+      data-testid={testId}
+    >
+      <span className="rounded border border-accent/35 px-1.5 py-px font-mono text-micro tracking-wide text-accent">
+        CLEANUP
+      </span>
+      <span className="min-w-0 flex-[1_1_260px] text-[12px] leading-relaxed text-fg-2">{text}</span>
+      <button
+        type="button"
+        onClick={onPreview}
+        title="Check the rows this would act on"
+        className="h-7 rounded-[7px] border border-control px-2.5 text-small text-muted hover:border-control-hover hover:text-fg"
+      >
+        Preview
+      </button>
+      <button
+        type="button"
+        onClick={onAction}
+        className="h-7 rounded-[7px] border border-accent/45 bg-accent/10 px-3 text-small font-semibold text-accent hover:bg-accent/15"
+      >
+        {actionLabel}
+      </button>
+    </div>
+  );
+}
+
 function JudgeFallbackBanner({ status }: { status: JudgeStatus }) {
   return (
     <div
