@@ -26,6 +26,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ActivityView } from "@/features/activity/ActivityView";
 import { ProjectProvider } from "@/features/ProjectContext";
+import { settingsPath } from "@/lib/routes";
 import type {
   ActivityFacets,
   ActivityHistogram,
@@ -33,6 +34,8 @@ import type {
   Event,
   EventPage,
   HistogramBucket,
+  LogExportStatus,
+  LogExportView,
 } from "@/lib/types";
 
 const REFUSALS = ["sign_off_refused", "role_refused", "agent_reject_shard"];
@@ -127,12 +130,74 @@ function page(over: Partial<EventPage> = {}): EventPage {
 
 /** Read at CALL time, so each test can swap the payload without re-mocking. */
 let served: EventPage = page();
+let hosted = false;
+
+function logExportPayload(over: Partial<LogExportView> = {}): LogExportView {
+  const status = (st: Partial<LogExportStatus> = {}): LogExportStatus => ({
+    enabled: true,
+    state: "exporting",
+    state_note: "",
+    exporter_running: true,
+    last_batch: null,
+    last_batch_state: "never",
+    sent_24h: 5,
+    dropped_24h: 0,
+    queue_depth: 0,
+    queue_state: "draining",
+    coverage: "full",
+    note: "",
+    ...st,
+  });
+  return {
+    config: {
+      enabled: true,
+      endpoint: "http://localhost:4318",
+      protocol: "http/protobuf",
+      compression: "none",
+      headers: [],
+      send_events: true,
+      send_tool_calls: true,
+      send_heartbeats: false,
+      event_types: [],
+      redact_summaries: true,
+      redact_client_ips: true,
+      mask_api_keys: true,
+      updated_at: "2026-09-29T12:00:00+00:00",
+    },
+    status: status(),
+    sample: {
+      kind: "log",
+      source: "event",
+      note: "",
+      timestamp: "2026-09-29T12:00:00+00:00",
+      severity: "INFO",
+      body: "create_item",
+      attributes: {},
+      redaction: { summaries: true, client_ips: true, api_keys: true },
+    },
+    protocols: [],
+    compressions: [],
+    event_type_options: [],
+    event_types_all: true,
+    retention_note: "",
+    catch_up_note: "",
+    endpoint_problem: null,
+    hosted: false,
+    writable: true,
+    ...over,
+  };
+}
+
+const configSpy = vi.hoisted(() => vi.fn(async () => ({ hosted_mode: false, signup_mode: "closed" })));
+const logExportSpy = vi.hoisted(() => vi.fn(async () => logExportPayload()));
 
 vi.mock("@/lib/api", () => ({
   setActiveProjectId: vi.fn(),
   api: {
     projects: vi.fn(async () => []),
     events: vi.fn(async () => served),
+    config: configSpy,
+    logExport: logExportSpy,
   },
 }));
 
@@ -172,6 +237,10 @@ function lastQuery(events: { mock: { calls: unknown[][] } }): Record<string, unk
 
 beforeEach(() => {
   served = page();
+  hosted = false;
+  configSpy.mockImplementation(async () => ({ hosted_mode: hosted, signup_mode: "closed" }));
+  logExportSpy.mockImplementation(async () => logExportPayload());
+  logExportSpy.mockClear();
 });
 
 describe("the ledger rows", () => {
@@ -378,6 +447,29 @@ describe("keyboard navigation", () => {
 
     fireEvent.keyDown(window, { key: "Enter" });
     await screen.findByRole("complementary", { name: /Event 2/ });
+  });
+});
+
+describe("OTLP status strip (GRPH-1486)", () => {
+  it("on self-host links to log export and does not say it is not built", async () => {
+    hosted = false;
+    configSpy.mockResolvedValue({ hosted_mode: false, signup_mode: "closed" });
+    await show();
+    const link = await screen.findByRole("link", { name: /log export/i });
+    expect(link).toHaveAttribute("href", settingsPath("deployment/log-export"));
+    expect(screen.queryByText(/not built/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Exporting/)).toBeInTheDocument();
+    expect(logExportSpy).toHaveBeenCalled();
+  });
+
+  it("on hosted says export is unavailable and does not link away", async () => {
+    hosted = true;
+    configSpy.mockResolvedValue({ hosted_mode: true, signup_mode: "closed" });
+    await show();
+    expect(await screen.findByText(/not available on a hosted instance/i)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /log export/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/not built/i)).not.toBeInTheDocument();
+    expect(logExportSpy).not.toHaveBeenCalled();
   });
 });
 
