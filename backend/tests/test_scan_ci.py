@@ -358,7 +358,9 @@ def test_tests_only_touches_backend(repo, fakes):
 
 @pytest.mark.parametrize("path", [".github/workflows/ci.yml", "scripts/foo.py",
                                   "docs/guide.md", "AGENTS.md",
-                                  ".cursor/hooks/gb_session_start.py"])
+                                  ".cursor/hooks/gb_session_start.py",
+                                  ".cursor/hooks.json",
+                                  ".grok/hooks/graphban-claim-manifest.json"])
 def test_paths_filter_mappings_touch_backend_and_say_why(repo, fakes, path):
     head = _pr(repo, {path: "changed\n"})
     v = _eval(repo, head)
