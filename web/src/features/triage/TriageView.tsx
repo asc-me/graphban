@@ -7,7 +7,7 @@ import { useProjectCtx } from "@/features/ProjectContext";
 import { useTriageFeed } from "@/lib/queries";
 import type { TriageFeedRow } from "@/lib/types";
 
-import { TABS, actionsFor, formatAge, inTab, type TriageAction, type Undo } from "./actions";
+import { TABS, actionsFor, duplicateHintCopy, formatAge, inTab, type TriageAction, type Undo } from "./actions";
 import { TriageDetail } from "./TriageDetail";
 
 /**
@@ -42,7 +42,7 @@ function metaOf(r: TriageFeedRow): string {
   if (r.kind === "blocker")
     return `${r.owner ?? "unclaimed"} · ${r.decision ? "needs a decision" : r.waiting_on ? `waiting on ${r.waiting_on.id}` : "blocked"}`;
   if (r.kind === "collision") return `${r.members.length} items · ${r.risk}`;
-  return `↑ ${r.votes} · ${r.by || "anonymous"}${r.duplicate ? " · dup?" : ""}`;
+  return `↑ ${r.votes} · ${r.by || "anonymous"}${r.duplicate ? ` · ${duplicateHintCopy(r.duplicate.id, r.duplicate.score)}` : ""}`;
 }
 
 export function TriageView() {
@@ -195,7 +195,7 @@ export function TriageView() {
         viewName="Triage"
         purpose={
           <span className="flex items-center gap-2.5">
-            What is waiting on a person. Clustering reasons over this project's code graph only — overlaps across repos are not computed.
+            What is waiting on a person. Clustering reasons over this project's code graph only — overlaps across repos are not computed — a shared package name is a galaxy edge, not a collision.
             <span className="rounded-full border border-st-next/30 bg-st-next/[0.07] px-2 py-0.5 font-mono text-meta uppercase tracking-[0.06em] text-st-next">
               per-project · {active?.tag ?? "—"}
             </span>

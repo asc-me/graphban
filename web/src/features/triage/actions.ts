@@ -38,6 +38,11 @@ export function formatAge(seconds: number): string {
   return `${Math.round(seconds / 86400)}d`;
 }
 
+/** PRD-47 S3: duplicate hint on the queue and in the detail callout. */
+export function duplicateHintCopy(id: string, score: number): string {
+  return `looks like ${id} — ${Math.round(score * 100)}% similar`;
+}
+
 const iso = (ms: number) => new Date(Date.now() + ms).toISOString();
 const HOUR = 3_600_000;
 
