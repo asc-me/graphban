@@ -27,6 +27,7 @@ vi.mock("@/lib/api", () => ({
   api: {
     config: vi.fn(async () => ({ hosted_mode: srv.hosted })),
     orgs: vi.fn(async () => srv.orgs),
+    syncStatus: vi.fn(async () => ({ linked: false, org: "", cloud_url: "" })),
     onboarding: vi.fn(async () => ({ onboarding: srv.onboarding })),
     requestOrg: vi.fn(async (body: unknown) => {
       if (srv.fail) throw new Error("no operator address");
