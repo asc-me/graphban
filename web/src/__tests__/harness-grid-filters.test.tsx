@@ -1,10 +1,9 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { PerformanceGrid } from "@/features/harness/PerformanceGrid";
-import type { HarnessCard, HarnessCell, HarnessReport } from "@/lib/types";
+import type { HarnessCell, HarnessReport } from "@/lib/types";
 
 const leaf = (
   vendor: string,
@@ -71,60 +70,29 @@ const data = {
   },
 } as unknown as HarnessReport;
 
-const card = (rule: string, vendor: string, model: string, capability: string, size_band: string): HarnessCard =>
-  ({
-    rule,
-    key: `${rule}:${model}:${capability}`,
-    evidence_hash: "h",
-    title: `${rule} title ${model}`,
-    detail: "d",
-    cells: [
-      {
-        cell: { vendor, model, binary_version: "1", capability, size_band },
-        finished: 10,
-        signed_off: 9,
-        rate: 0.9,
-      },
-    ],
-    siblings: [],
-    draft: { where: "matrix.toml", evidence_line: "line" },
-    replay: { considered: 0, changed: 0, skipped_no_resolution: 0, truncated: false, moves: [], summary: "" },
-    thresholds: {},
-    state: "new",
-    previously: null,
-  }) as unknown as HarnessCard;
-
-const cards = [
-  card("R1", "claude", "opus", "A1", "S"),
-  card("R2", "anthropic", "sonnet", "A1", "M"),
-  card("R1", "claude", "opus", "B1", "M"),
+const routing = [
+  { function: "A1", label: "Localised fix", effort_band: "S", verdict: "PREFER", confidence: "high" as const,
+    attempts: 10, signed_off: 9, rate: 0.9, pick: "claude:opus", evidence: "90% · 9/10",
+    fallback: null, fallback_rate: null, cheaper: false },
+  { function: "A1", label: "Localised fix", effort_band: "M", verdict: "AVOID", confidence: "high" as const,
+    attempts: 12, signed_off: 6, rate: 0.5, pick: "anthropic:sonnet", evidence: "50% · 6/12",
+    fallback: null, fallback_rate: null, cheaper: false },
 ];
 
-vi.mock("@/lib/api", () => ({
-  setActiveProjectId: vi.fn(),
-  api: {
-    harnessRecommendations: async () => ({
-      project_id: "core",
-      cards,
-      rules: ["R1", "R2"],
-      lessons_drafted: [],
-      window_days: 90,
-      floor: 5,
-    }),
-  },
-}));
-
 function show() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={qc}>
-      <PerformanceGrid data={data} routing={[]} projectId="core" />
-    </QueryClientProvider>,
-  );
+  return render(<PerformanceGrid data={data} routing={routing} />);
 }
 
 const effortBtn = (band: string) =>
   screen.getAllByTestId("harness-effort-filter").find((b) => b.getAttribute("data-effort") === band)!;
+
+/** Open a facet's popover and toggle one option. */
+async function pick(user: ReturnType<typeof userEvent.setup>, facet: string, option: string) {
+  await user.click(screen.getByTestId(`harness-filter-${facet}`));
+  const group = screen.getByRole("group", { name: facet[0].toUpperCase() + facet.slice(1) });
+  await user.click(within(group).getByRole("menuitemcheckbox", { name: new RegExp(option) }));
+  await user.click(screen.getByTestId(`harness-filter-${facet}`));
+}
 
 describe("Harness grid filters", () => {
   it("hide below-floor blanks cells and explains a dash", async () => {
@@ -137,61 +105,67 @@ describe("Harness grid filters", () => {
     expect(screen.getAllByTestId("harness-grid-row")).toHaveLength(2);
   });
 
-  it("a vendor filter narrows the rows", async () => {
+  it("the harness filter is multi-select and Clear restores every pair", async () => {
     show();
     const user = userEvent.setup();
     expect(screen.getAllByTestId("harness-grid-row")).toHaveLength(2);
-    await user.selectOptions(screen.getByTestId("harness-grid-vendor"), "anthropic");
+    await pick(user, "harness", "anthropic");
     expect(screen.getAllByTestId("harness-grid-row")).toHaveLength(1);
     expect(screen.getByTestId("harness-grid-row")).toHaveTextContent("sonnet");
-    await user.selectOptions(screen.getByTestId("harness-grid-vendor"), "claude");
+    expect(screen.getByTestId("harness-filter-harness")).toHaveTextContent("anthropic");
+    await pick(user, "harness", "claude");
+    expect(screen.getAllByTestId("harness-grid-row")).toHaveLength(2);
+    expect(screen.getByTestId("harness-filter-harness")).toHaveTextContent("2 selected");
+    await user.click(screen.getByTestId("harness-filter-clear"));
+    expect(screen.getByTestId("harness-filter-harness")).toHaveTextContent("All");
+  });
+
+  it("filters by model family and by vendor, derived from the model name", async () => {
+    show();
+    const user = userEvent.setup();
+    await pick(user, "family", "opus");
     expect(screen.getAllByTestId("harness-grid-row")).toHaveLength(1);
-    await user.selectOptions(screen.getByTestId("harness-grid-harness"), "claude\u0000opus");
     expect(screen.getByTestId("harness-grid-row")).toHaveTextContent("opus");
+    expect(screen.getByTestId("harness-filter-clear")).toHaveTextContent("1 of 2 pairs");
+    await user.click(screen.getByTestId("harness-filter-clear"));
+    // sonnet and opus are both Anthropic models, whatever harness ran them.
+    await pick(user, "vendor", "Anthropic");
+    expect(screen.getAllByTestId("harness-grid-row")).toHaveLength(2);
   });
 
-  it("a family column expands to its leaves and shows the served leaf label", async () => {
+  it("a family keeps its summary column and slides its functions in beside it", async () => {
     show();
     const user = userEvent.setup();
-    expect(screen.getAllByTestId("harness-grid-col").map((c) => c.textContent)).toEqual(
-      expect.arrayContaining(["Afamily · expand"]),
-    );
-    await user.click(screen.getByRole("button", { name: /A.*family · expand/ }));
-    expect(screen.getAllByTestId("harness-grid-col").some((c) => c.textContent?.includes("A1Localised fix"))).toBe(true);
-    await user.selectOptions(screen.getByTestId("harness-grid-family"), "B");
-    expect(screen.getAllByTestId("harness-grid-col").map((c) => c.textContent)).toEqual(["Bfamily · expand"]);
-    await user.selectOptions(screen.getByTestId("harness-grid-family"), "");
+    expect(screen.getAllByTestId("harness-grid-col").map((c) => c.getAttribute("data-family") ?? c.getAttribute("data-leaf"))).toEqual(["A", "B"]);
+    await user.click(screen.getByRole("button", { name: /^Expand A into 1 leaf/ }));
+    expect(screen.getAllByTestId("harness-grid-col").map((c) => c.getAttribute("data-family") ?? c.getAttribute("data-leaf"))).toEqual(["A", "A1", "B"]);
+    expect(screen.getAllByTestId("harness-grid-col")[1]).toHaveTextContent("Localised fix");
+    await user.click(screen.getByRole("button", { name: /^Collapse A/ }));
+    expect(screen.getAllByTestId("harness-grid-col")).toHaveLength(2);
   });
 
-  it("the Recommendations count equals the cards it opens, and the cell panel lists matching cards", async () => {
+  it("the panel says what gbfleet is told, per band, from the served routing", async () => {
     show();
     const user = userEvent.setup();
-    const btn = await screen.findByRole("button", { name: /^Recommendations \(3\)$/ });
-    await user.click(btn);
-    expect(within(screen.getByTestId("harness-grid-cards")).getAllByTestId("harness-card")).toHaveLength(3);
-    await user.selectOptions(screen.getByTestId("harness-grid-family"), "B");
-    expect(screen.getByRole("button", { name: "Recommendations (1)" })).toBeInTheDocument();
-    expect(screen.getAllByTestId("harness-card")).toHaveLength(1);
-    await user.selectOptions(screen.getByTestId("harness-grid-family"), "");
-
-    await user.click(screen.getByRole("button", { name: /A.*family · expand/ }));
-    const sonnetA1 = await screen.findByRole("button", { name: /^anthropic sonnet A1:/i });
-    await user.click(sonnetA1);
-    const panel = await screen.findByTestId("harness-panel-change");
-    expect(within(panel).getAllByTestId("harness-panel-change-card")).toHaveLength(1);
-    expect(panel).toHaveTextContent("R2");
-    expect(panel).toHaveTextContent("apply by hand: matrix.toml");
+    await user.click(screen.getByRole("button", { name: /^Expand A into/ }));
     await user.click(screen.getByRole("button", { name: /^claude opus A1:/ }));
-    expect(screen.getByTestId("harness-panel-change")).toHaveTextContent("R1");
+    const told = screen.getByTestId("harness-panel-told");
+    expect(told).toHaveTextContent("Cited as PREFER for Localised fix · S — 90% · 9/10.");
+    expect(told).toHaveTextContent("Not the pick for Localised fix · M: gbfleet is told AVOID anthropic:sonnet (50% · 6/12).");
+    // S before M, whatever order the rows arrive in.
+    expect(told.textContent!.indexOf("· S")).toBeLessThan(told.textContent!.indexOf("· M"));
+    await user.click(effortBtn("M"));
+    await user.click(screen.getByRole("button", { name: /^anthropic sonnet A1:/ }));
+    expect(screen.getByTestId("harness-panel-told")).toHaveTextContent("Cited as AVOID for Localised fix · M");
+    expect(screen.getByTestId("harness-panel-told")).not.toHaveTextContent("· S");
   });
 
-  it("says when no rule fired on a cell", async () => {
+  it("a family cell's panel says gbfleet routes by function, not by family", async () => {
     show();
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /A.*family · expand/ }));
-    await user.click(effortBtn("L"));
-    const lCell = screen.getAllByTestId("harness-grid-cell").find((c) => c.textContent?.includes("4/8"));
-    await user.click(lCell!);
-    expect(screen.getByTestId("harness-panel-change")).toHaveTextContent("No rule fired on this cell");
+    await user.click(screen.getByRole("button", { name: /^claude opus A family rollup:/ }));
+    expect(screen.getByTestId("harness-panel-told")).toHaveTextContent(/Not cited as a family.*its one function\./);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByTestId("harness-cell-panel")).not.toBeInTheDocument();
   });
 });

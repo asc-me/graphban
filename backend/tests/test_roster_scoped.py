@@ -182,7 +182,7 @@ def _payloads(client, auth, db, proj):
     get = lambda path, **p: client.get(path, params={"project_id": proj, **p}, headers=auth).json()  # noqa: E731
     fleet = get("/api/fleet")
     drop = ("matrix", "mix", "measured", "probe_suggestions", "tier_map", "credentials",
-            "release_ref", "waves", "profile", "policy")
+            "release_ref", "waves", "profile", "policy", "routing_guidance")
     fleet = {k: v for k, v in fleet.items() if k not in drop}
     return _norm({
         "fleet": fleet,

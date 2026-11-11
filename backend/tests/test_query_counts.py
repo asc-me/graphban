@@ -342,6 +342,10 @@ def _snapshot(client, auth, db, seeded):
         names[i.id] = f"item:{i.key}"
     names[db.get(Project, proj).id] = "PROJECT"
     status = fleet_svc.fleet_status(db, proj)
+    # Added after the snapshot was written; it is graded from `measured` (compared below) and
+    # carries a wall-clock stamp, so it is checked for presence here and covered in
+    # test_harness_guidance.py.
+    assert status.pop("routing_guidance").startswith("# gbfleet routing guidance")
     return _normalise({
         "measured": dsvc.measured(db, proj, window_days=10_000),
         "finished_by_model": {f"{v}/{m}": c for (v, m), c in sorted(
@@ -405,6 +409,9 @@ def test_real_path_outputs_match_the_pre_batching_snapshot(client, auth, db, see
         "minted_by": fleet_svc.fleet_status(db, proj, minted_by=minter),
         "route": route,
     }, names)
+    for part in ("caller_user", "minted_by", "route"):
+        # Added after this snapshot; see _snapshot above.
+        assert got[part].pop("routing_guidance").startswith("# gbfleet routing guidance")
     got["minted_by"]["seats"] = _seat_rows(got["minted_by"]["seats"])
     got["route"]["seats"] = _seat_rows(got["route"]["seats"])
     got["route"]["credentials"] = sorted(

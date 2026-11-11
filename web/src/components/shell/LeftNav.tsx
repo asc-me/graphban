@@ -332,10 +332,24 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
             ),
           )}
           <div className="mt-auto" />
+          {hosted ? (
+            orgConsole && (
+              <RailLink href={orgConsole} label="Organization" icon={<Building2 size={16} />} tipProps={tipProps({ label: "Organization" })} />
+            )
+          ) : (
+            <OrgRailIcon
+              projectId={activeId}
+              onOpenDialog={(linked) => { setOrgDialogLinked(linked); setOrgDialogOpen(true); }}
+              tipProps={tipProps({ label: "Organization" })}
+            />
+          )}
           {canAdminister && adminConsole && (
             <RailLink href={adminConsole} label="Admin" icon={<UsersRound size={16} />} tipProps={tipProps({ label: "Admin" })} />
           )}
           <RailLink to="/usage" label="Usage" icon={<ChartLine size={16} />} tipProps={tipProps({ label: "Usage" })} />
+          {isPlatformAdmin && operatorConsole && (
+            <RailLink href={operatorConsole} label="Operator" icon={<ShieldCheck size={16} />} tipProps={tipProps({ label: "Operator" })} />
+          )}
           <RailLink to={viewPath("feedback-kit")} label="Feedback Kit" icon={<MessageSquare size={16} />} tipProps={tipProps({ label: "Feedback Kit" })} />
           <RailLink to="/settings" label="Settings" icon={<Settings size={16} />} tipProps={tipProps({ label: "Settings" })} />
           <RailDivider />
@@ -718,14 +732,12 @@ const ORG_DOT: Record<Exclude<OrgState, "unlinked">, { color: string; word: stri
  * unreachable it opens the org overview (GRPH-1225) — never an external tab to `cloud_url`. Reachability is the
  * same live probe Rules reads (`linked_unreachable`), asked only once the box is linked.
  */
-function OrgRailItem({ projectId, onOpenDialog }: { projectId: string; onOpenDialog: (linked: boolean) => void }) {
+function useOrgEntry(projectId: string, onOpenDialog: (linked: boolean) => void) {
   const { data: status, isLoading } = useSyncStatus();
   const navigate = useNavigate();
   const isLinked = !!usableHttpUrl(status?.cloud_url);
   const { data: gitops } = useGitops(isLinked ? projectId : "");
-  if (isLoading && !status) {
-    return <NavItem to={settingsPath("deployment/sync")} icon={<Building2 size={15} />} label="Organization" utility tour="org" />;
-  }
+  const loading = isLoading && !status;
   const isMalformed = !isLinked && !!(status && status.cloud_url.trim());
   const state: OrgState = !isLinked
     ? "unlinked"
@@ -735,6 +747,52 @@ function OrgRailItem({ projectId, onOpenDialog }: { projectId: string; onOpenDia
     if (isMalformed) navigate(`${settingsPath("deployment/sync")}?reason=malformed`);
     else onOpenDialog(!!dot);
   };
+  return { loading, isMalformed, state, dot, onClick };
+}
+
+/**
+ * The same entry on the collapsed rail: the building icon with its state dot in the corner.
+ * The rail used to have no Organization entry at all, so collapsing the sidebar hid it.
+ * No `data-tour` here — the tour anchors on the expanded row, and the rail renders first.
+ */
+function OrgRailIcon({ projectId, onOpenDialog, tipProps }: {
+  projectId: string;
+  onOpenDialog: (linked: boolean) => void;
+  tipProps: TipHandlers;
+}) {
+  const { loading, state, dot, onClick } = useOrgEntry(projectId, onOpenDialog);
+  if (loading) {
+    return (
+      <RailLink to={settingsPath("deployment/sync")} label="Organization" icon={<Building2 size={16} />} tipProps={tipProps} />
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={dot ? `Organization, ${dot.word.toLowerCase()}` : "Organization"}
+      data-org-state={state}
+      {...tipProps}
+      className={RAIL_BTN}
+    >
+      <Building2 size={16} />
+      {dot && (
+        <span
+          data-org-dot
+          aria-hidden
+          className="absolute right-2 top-2 size-[6px] rounded-full ring-2 ring-bg"
+          style={{ background: dot.color }}
+        />
+      )}
+    </button>
+  );
+}
+
+function OrgRailItem({ projectId, onOpenDialog }: { projectId: string; onOpenDialog: (linked: boolean) => void }) {
+  const { loading, isMalformed, state, dot, onClick } = useOrgEntry(projectId, onOpenDialog);
+  if (loading) {
+    return <NavItem to={settingsPath("deployment/sync")} icon={<Building2 size={15} />} label="Organization" utility tour="org" />;
+  }
   return (
     <button
       type="button"

@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { AlertTriangle, Play, Scale } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Play } from "lucide-react";
 
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Preferences } from "@/features/harness/Preferences";
@@ -7,17 +7,14 @@ import { PlannerError, TableSkeleton } from "@/components/planner/PlannerStates"
 import { CapacityPanel } from "@/features/harness/CapacityPanel";
 import { Recommendations, defaultVisibleCount } from "@/features/harness/Recommendations";
 import { GuidanceTab } from "@/features/harness/GuidanceTab";
-import { PerformanceGrid, leafCells } from "@/features/harness/PerformanceGrid";
+import { PerformanceGrid } from "@/features/harness/PerformanceGrid";
+import { EffortCurve } from "@/features/harness/EffortCurve";
 import { SurfaceReport } from "@/features/harness/Surface";
+import { accentMap, pairKey } from "@/features/harness/look";
 import { useProjectCtx } from "@/features/ProjectContext";
+import { cn } from "@/lib/cn";
 import { useFleet, useHarness, useHarnessCards, useHarnessGuidance, useHarnessProbeCandidates, useStartHarnessProbeRun } from "@/lib/queries";
-import type {
-  HarnessCell,
-  HarnessCost,
-  HarnessPoint,
-  HarnessReviewCell,
-  HarnessSampling,
-} from "@/lib/types";
+import type { HarnessReport, HarnessReviewCell } from "@/lib/types";
 
 type TabId = "performance" | "guidance" | "changes" | "capacity";
 
@@ -28,10 +25,13 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "capacity", label: "Capacity" },
 ];
 
+const PURPOSE = (windowDays: number | string, floor: number | string) =>
+  `How each model has turned out, per function and effort band, over the last ${windowDays} days. A rate under ${floor} finished attempts is shown grey because it is not yet a measurement — and gbfleet is told the same.`;
+
 /**
- * PRD-47 S12 — three tabs, plus Capacity (PRD-62 D8). Performance keeps the grid and probe panel and adds the effort
- * curve. Guidance shows what was served: the routing table, grading rules, and raw
- * fleet_status. Changes & probes holds the recommendation cards and the probe panel.
+ * PRD-47 S12 — four tabs (Capacity is PRD-62 D8). Performance is the harness : model ×
+ * function grid and the effort curve; Guidance shows the routing table gbfleet is served,
+ * graded on the server; Changes & probes holds the recommendation cards and the probe panel.
  * Nothing on any tab applies anything — that is what the cards themselves say.
  */
 export function HarnessView() {
@@ -43,14 +43,22 @@ export function HarnessView() {
   const { data, isLoading } = harnessQ;
   const { data: guidance } = useHarnessGuidance(activeId);
   // SERVED is a status claim: only show it when routing or fleet_status text was served.
-  const guidanceServed = !!guidance && (guidance.routing.length > 0 || !!guidance.fleet_status_text);
+  const guidanceServed = !!guidance && (guidance.routing.length > 0 || !!guidance.served_text || !!guidance.fleet_status_text);
   const { data: cards } = useHarnessCards(activeId);
   const { data: fleetData, refetch: refetchFleet } = useFleet(activeId);
+  // One colour per harness : model on every tab — the grid, the curve and the guidance picks.
+  const accents = useMemo(
+    () => accentMap([
+      ...(data?.cells ?? []).map((c) => pairKey(c.key.vendor, c.key.model)),
+      ...(guidance?.routing ?? []).map((r) => r.pick),
+    ]),
+    [data?.cells, guidance?.routing],
+  );
 
   if (harnessQ.isError && !data) {
     return (
       <div className="flex h-full min-h-0 flex-col" data-testid="harness-error">
-        <PlaceHeader viewName="Harness" purpose="How each model has turned out, per capability and size band." />
+        <PlaceHeader viewName="Harness" purpose="How each model has turned out, per function and effort band." />
         <PlannerError
           message="The catalog has not been served. That is not an empty matrix."
           onRetry={() => void harnessQ.refetch()}
@@ -62,8 +70,8 @@ export function HarnessView() {
   if (isLoading || !data) {
     return (
       <div className="flex h-full min-h-0 flex-col" data-testid="harness-loading">
-        <PlaceHeader viewName="Harness" purpose="How each model has turned out, per capability and size band." />
-        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+        <PlaceHeader viewName="Harness" purpose="How each model has turned out, per function and effort band." />
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
           <TableSkeleton rows={8} columns={5} />
         </div>
       </div>
@@ -74,7 +82,7 @@ export function HarnessView() {
     <div className="flex h-full min-h-0 flex-col" data-testid="harness-view">
       <PlaceHeader
         viewName="Harness"
-        purpose={`How each model has turned out, per function and effort band, over the last ${data.window_days} days. A rate under ${data.floor} finished attempts is shown grey because it is not yet a measurement. Family rollups speak until a leaf clears the floor.`}
+        purpose={PURPOSE(data.window_days, data.floor)}
         action={
           <div className="flex items-center gap-2">
             <label className="font-mono text-[10.5px] text-faint" htmlFor="harness-versions">
@@ -84,7 +92,7 @@ export function HarnessView() {
               id="harness-versions"
               aria-label="Binary versions"
               data-testid="harness-versions"
-              className="rounded-[8px] border border-control bg-surface-2 px-2 py-1 text-[12px]"
+              className="h-[30px] rounded-[8px] border border-control bg-surface-2 px-2 text-[12px]"
               value={versions}
               onChange={(e) => setVersions(e.target.value as "current" | "all")}
             >
@@ -95,37 +103,44 @@ export function HarnessView() {
         }
       />
 
-      <div className="flex border-b border-line-2 px-5" data-testid="harness-tabs">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            data-testid="harness-tab"
-            data-tab={t.id}
-            aria-selected={tab === t.id}
-            onClick={() => setTab(t.id)}
-            className={`border-b-2 px-3 py-2 text-body transition-colors ${
-              tab === t.id
-                ? "border-accent text-fg-2"
-                : "border-transparent text-muted hover:text-fg-2"
-            }`}
-          >
-            {t.label}
-            {t.id === "guidance" && guidanceServed && (
-              <span className="ml-1.5 rounded-md border border-line-2 px-1 font-mono text-meta text-muted" data-testid="harness-tab-badge">
-                SERVED
-              </span>
-            )}
-            {t.id === "changes" && cards && (
-              <span className="ml-1.5 rounded-md border border-line-2 px-1 font-mono text-meta text-muted" title={`${cards.cards.length} cards in total`} data-testid="harness-tab-badge">
-                {defaultVisibleCount(cards.cards)}
-              </span>
-            )}
-          </button>
-        ))}
+      <div role="tablist" aria-label="Harness" className="flex gap-0.5 border-b border-line-2 px-6 pt-3.5" data-testid="harness-tabs">
+        {TABS.map((t) => {
+          const on = tab === t.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              data-testid="harness-tab"
+              data-tab={t.id}
+              aria-selected={on}
+              onClick={() => setTab(t.id)}
+              className={cn(
+                "-mb-px inline-flex items-center gap-[7px] border-b-2 px-3.5 py-[9px] text-[13px] transition-colors hover:text-fg",
+                on ? "border-accent text-fg" : "border-transparent text-muted",
+              )}
+            >
+              {t.label}
+              {t.id === "guidance" && guidanceServed && (
+                <span className="rounded-[4px] border border-purple/35 px-[5px] font-mono text-meta text-purple" data-testid="harness-tab-badge">
+                  SERVED
+                </span>
+              )}
+              {t.id === "changes" && cards && (
+                <span
+                  className="rounded-[4px] border border-line-2 px-[5px] font-mono text-meta text-muted"
+                  title={`${cards.cards.length} cards in total`}
+                  data-testid="harness-tab-badge"
+                >
+                  {defaultVisibleCount(cards.cards)}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-5">
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-12 pt-[18px]">
         {tab === "performance" && (
           <PerformanceTab
             data={data}
@@ -137,13 +152,15 @@ export function HarnessView() {
           />
         )}
         {tab === "guidance" && (
-          <GuidanceTab guidance={guidance} />
+          <GuidanceTab
+            guidance={guidance}
+            order={data.capability_set?.leaves ?? []}
+            accent={(pick) => accents.get(pick) ?? "#8b949e"}
+          />
         )}
-        {tab === "changes" && (
-          <ChangesTab activeId={activeId} data={data} />
-        )}
+        {tab === "changes" && <ChangesTab activeId={activeId} data={data} />}
         {tab === "capacity" && (
-          <div className="mx-auto max-w-6xl">
+          <div className="max-w-6xl">
             <CapacityPanel projectId={activeId} />
           </div>
         )}
@@ -160,7 +177,7 @@ function PerformanceTab({
   activeId,
   onRefetchFleet,
 }: {
-  data: import("@/lib/types").HarnessReport;
+  data: HarnessReport;
   fleetData?: import("@/lib/types").FleetOverview;
   routing: import("@/lib/types").HarnessGuidance["routing"];
   scope: string;
@@ -169,72 +186,33 @@ function PerformanceTab({
 }) {
   if (data.cells.length === 0 && !(data.unavailable ?? []).length) {
     return (
-      <div className="mx-auto flex max-w-4xl flex-col gap-3">
-        <SurfaceReport surface={data.surface} />
-        <div className="mx-auto mt-16 max-w-md text-center text-[13px] text-muted" data-testid="harness-empty">
-          Nothing measured yet. A cell appears here once a delegation finishes — one row per
-          vendor, model, capability and size band. Until then, gbfleet gets no guidance and
-          resolves every tier by matrix order and policy alone.
+      <div className="flex flex-col gap-6">
+        <div className="mx-auto mt-14 flex max-w-[460px] flex-col items-center gap-3 text-center" data-testid="harness-empty">
+          <div className="flex size-10 items-center justify-center rounded-[12px] border border-dashed border-line">
+            <span className="size-2 rounded-[3px] bg-purple" />
+          </div>
+          <p className="text-[13px] leading-[1.65] text-muted">
+            Nothing measured yet. A cell appears here once a delegation finishes — one row per
+            vendor, model, capability and size band.
+          </p>
+          <p className="text-[12px] leading-[1.6] text-faint">
+            Until then, gbfleet gets no guidance and resolves every tier by matrix order and policy alone.
+          </p>
+        </div>
+        <div className="mx-auto w-full max-w-4xl">
+          <SurfaceReport surface={data.surface} />
         </div>
       </div>
     );
   }
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-3">
-      <div className="flex flex-col gap-1.5 rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-body text-muted">
-        {data.coverage && data.coverage.attempts > 0 && (
-          <div data-testid="harness-coverage">
-            Coverage {data.coverage.rate === null ? "—" : `${Math.round(data.coverage.rate * 100)}%`}
-            {" — "}
-            {data.coverage.with_leaf}/{data.coverage.attempts} attempts tagged a leaf.
-            Attempts that match none land in <span className="font-mono">other</span>.
-          </div>
-        )}
-        {data.platform === null && data.platform_reason && (
-          <div data-testid="harness-no-platform">{data.platform_reason}</div>
-        )}
-      </div>
-      <PerformanceGrid data={data} routing={routing} projectId={activeId} />
-      <EffortCurves cells={data.cells} floor={data.floor} />
+    <div className="flex min-w-0 flex-col gap-3">
+      <PerformanceGrid data={data} routing={routing} />
+      <EffortCurve cells={data.cells} floor={data.floor} />
+      {(data.review_cells ?? []).length > 0 && <ReviewQuality cells={data.review_cells ?? []} floor={data.floor} />}
       <SurfaceReport surface={data.surface} />
-      <details className="rounded-[10px] border border-line-2" data-testid="harness-detail-cards">
-        <summary className="cursor-pointer px-3.5 py-2 text-body text-muted">
-          Every measured cell and verdict-quality detail ({data.cells.length} cells)
-        </summary>
-        <div className="flex flex-col gap-3 p-3">
-          {(data.review_cells ?? []).map((cell) => (
-            <ReviewRow key={`f:${cell.key.vendor}:${cell.key.model}:${cell.key.capability}`} cell={cell} floor={data.floor} />
-          ))}
-          {(data.unavailable ?? []).map((row) => (
-            <div
-              key={`${row.vendor}:${row.model}:${row.capability}:${row.reason}`}
-              data-testid="harness-unavailable"
-              className="rounded-[10px] border border-dashed border-line-2 bg-surface-2 px-3.5 py-3 text-faint"
-            >
-              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                <span className="font-mono text-body">
-                  {row.vendor}{row.model ? `:${row.model}` : ""}
-                </span>
-                <span className="font-mono text-[10.5px]">{row.capability}</span>
-                <span data-testid="harness-unavailable-reason" className="font-mono text-[10.5px]">
-                  {row.label || row.reason}
-                </span>
-              </div>
-              <p className="mt-1 text-[12px]">
-                Greyed because it is {row.reason}, not because it is unmeasured.
-                Control: <span className="font-mono">{row.control}</span>
-                {row.drops ? ` · dropped ${row.drops} times` : ""}
-              </p>
-            </div>
-          ))}
-          {data.cells.map((cell) => (
-            <CellRow key={cellId(cell)} cell={cell} floor={data.floor} />
-          ))}
-        </div>
-      </details>
-
-      <div className="mt-6">
+      <div className="mt-3">
         <Preferences
           projectId={activeId}
           scope={scope}
@@ -247,20 +225,14 @@ function PerformanceTab({
   );
 }
 
-function ChangesTab({
-  activeId,
-  data,
-}: {
-  activeId: string;
-  data: import("@/lib/types").HarnessReport;
-}) {
+function ChangesTab({ activeId, data }: { activeId: string; data: HarnessReport }) {
   return (
-    <div className="mx-auto flex max-w-4xl flex-col gap-3">
-      <div className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-body text-muted">
+    <div className="flex max-w-[900px] flex-col gap-3">
+      <p className="text-body leading-[1.6] text-muted">
         Recommended changes are drafts. Accepting one records that you have seen it — R1 and R2
         hand you evidence text for a commit, R3 and R4 send you to the profile or policy screen.
         This page changes nothing.
-      </div>
+      </p>
       <Recommendations projectId={activeId} />
       <ProbePanel
         projectId={activeId}
@@ -271,320 +243,48 @@ function ChangesTab({
   );
 }
 
-const EFFORT_CURVE_BANDS = ["S", "M", "L"] as const;
-
 /**
- * One S / M / L effort curve per harness row. A band under the floor is a dashed empty bar
- * that still shows its rate. Attempts under the floor stay in the sum.
+ * Review competence (F1–F3) is measured on CHECKED VERDICTS, not finished builds, so it is a
+ * different count and stays out of the build grid. One line per reviewer : model.
  */
-function EffortCurves({ cells, floor }: { cells: HarnessCell[]; floor: number }) {
-  const bands = EFFORT_CURVE_BANDS;
-  const rowAgg = new Map<string, { vendor: string; model: string; bands: Map<string, { finished: number; signed_off: number }> }>();
-
-  const rowKey = (c: HarnessCell) => `${c.key.vendor}\0${c.key.model}`;
-  for (const cell of leafCells(cells)) {
-    if (cell.kind === "family") continue;
-    if (!bands.includes(cell.key.size_band as (typeof bands)[number])) continue;
-    const rk = rowKey(cell);
-    const row = rowAgg.get(rk) ?? {
-      vendor: cell.key.vendor,
-      model: cell.key.model,
-      bands: new Map(bands.map((b) => [b, { finished: 0, signed_off: 0 }])),
-    };
-    const entry = row.bands.get(cell.key.size_band)!;
-    entry.finished += cell.finished;
-    entry.signed_off += cell.signed_off;
-    rowAgg.set(rk, row);
-  }
-
-  const rows = [...rowAgg.values()].filter((r) => [...r.bands.values()].some((b) => b.finished > 0));
-  if (rows.length === 0) return null;
-
-  const rowName = (r: { vendor: string; model: string }) =>
-    !r.vendor && !r.model ? "Unattributed" : r.model ? (r.vendor ? `${r.vendor}:${r.model}` : r.model) : r.vendor;
-
+function ReviewQuality({ cells, floor }: { cells: HarnessReviewCell[]; floor: number }) {
   return (
-    <section data-testid="harness-effort-curves" className="flex flex-col gap-3">
-      <div className="text-[13px] font-semibold">Effort curve</div>
-      {rows.map((r) => {
-        const key = `${r.vendor}:${r.model}`;
-        return (
+    <section className="rounded-[12px] border border-line-2 bg-surface px-4 py-3.5" data-testid="harness-review-quality">
+      <div className="mb-2.5 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+        <h2 className="text-lead font-semibold">Verdict quality</h2>
+        <span className="text-[12px] text-faint">Review competence, counted on checked verdicts — not on builds.</span>
+      </div>
+      <div className="flex flex-col divide-y divide-line-2/60">
+        {cells.map((cell) => (
           <div
-            key={key}
-            data-testid="harness-effort-row"
-            className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-3"
+            key={`f:${cell.key.vendor}:${cell.key.model}:${cell.key.capability}:${cell.key.size_band}`}
+            data-testid="harness-review-cell"
+            className="flex flex-wrap items-baseline gap-x-4 gap-y-1 py-2 font-mono text-small"
           >
-            <div className="mb-2 font-mono text-small text-muted">{rowName(r)}</div>
-            <div className="flex items-end gap-2" data-testid="harness-effort-bars">
-              {bands.map((band) => {
-                const e = r.bands.get(band)!;
-                const below = e.finished < floor;
-                const rate = e.finished > 0 ? e.signed_off / e.finished : null;
-                const height = rate === null ? 0 : Math.round(rate * 40);
-                return (
-                  <div key={band} className="flex flex-1 flex-col items-center" data-testid="harness-effort-band">
-                    <div className="flex w-full flex-col items-center">
-                      <span className={`mb-1 font-mono text-[10px] ${below ? "text-faint" : "text-muted"}`}>
-                        {rate === null ? "—" : `${Math.round(rate * 100)}%`}
-                      </span>
-                      <div
-                        className={`w-full max-w-[40px] rounded-t-[3px] ${
-                          below ? "border border-dashed border-control bg-transparent" : "bg-st-done"
-                        }`}
-                        style={{ height: below ? "18px" : `${4 + height}px` }}
-                        data-band={band}
-                        data-below-floor={below ? "true" : "false"}
-                      />
-                    </div>
-                    <span className="mt-1 font-mono text-[10px] text-muted">{band}</span>
-                    <span className="font-mono text-[9px] text-faint">
-                      {e.signed_off}/{e.finished}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        );
-      })}
-    </section>
-  );
-}
-
-function cellId(cell: HarnessCell): string {
-  const k = cell.key;
-  return [k.vendor, k.model, k.binary_version, k.capability, k.size_band].join(":");
-}
-
-function CellRow({ cell, floor }: { cell: HarnessCell; floor: number }) {
-  const k = cell.key;
-  const pct = cell.rate === null ? "—" : `${Math.round(cell.rate * 100)}%`;
-  return (
-    <div
-      data-testid="harness-cell"
-      className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-3"
-    >
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="font-mono text-body">
-          {k.vendor}
-          {k.model ? `:${k.model}` : ""}
-        </span>
-        <span className="font-mono text-[10.5px] text-faint">
-          {cell.label ?? k.capability} · {k.size_band}
-          {k.binary_version ? ` · ${k.binary_version}` : ""}
-        </span>
-        {cell.kind === "family" && (
-          <Badge testid="harness-family-label" tone="faint">
-            family rollup
-          </Badge>
-        )}
-        {cell.kind === "other" && (
-          <Badge testid="harness-other" tone="faint">
-            other — {cell.finished}
-          </Badge>
-        )}
-        <span
-          className={`ml-auto text-[15px] font-semibold ${cell.below_floor ? "text-faint" : ""}`}
-          data-testid="harness-rate"
-        >
-          {pct}
-        </span>
-        <span className="font-mono text-[10.5px] text-faint">
-          {cell.signed_off}/{cell.finished} signed off
-        </span>
-      </div>
-
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        {cell.below_floor && (
-          <Badge testid="harness-below-floor" tone="faint">
-            below the floor — {cell.finished} of {floor} attempts
-          </Badge>
-        )}
-        {cell.skew && (
-          <Badge testid="harness-skew" tone="warn" icon={<Scale size={11} />}>
-            sampled by preference — {Math.round(cell.skew.share * 100)}%{" "}
-            {cell.skew.reason.replace("_", " ")}
-          </Badge>
-        )}
-        {!cell.is_current_version && (
-          <Badge testid="harness-old-version" tone="faint">
-            not the current version
-          </Badge>
-        )}
-        {cell.versions_seen.length > 1 && (
-          <Badge testid="harness-versions-seen" tone="faint">
-            versions: {cell.versions_seen.join(", ")}
-          </Badge>
-        )}
-      </div>
-
-      <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 font-mono text-[10.5px] text-faint">
-        <span data-testid="harness-sampling">{samplingLabel(cell.sampling)}</span>
-        {cell.median_seconds !== null && <span>median {cell.median_seconds}s</span>}
-        <span data-testid="harness-cost">
-          {costLabel(cell.build_cost ?? cell.cost)}
-        </span>
-      </div>
-      {cell.samples && (
-        <div className="mt-1.5 font-mono text-[10.5px] text-muted" data-testid="harness-samples">
-          natural {cell.samples.natural.signed_off}/{cell.samples.natural.n}
-          {cell.samples.natural.rate === null ? "" : ` (${Math.round(cell.samples.natural.rate * 100)}%)`}
-          {" · "}
-          probe {cell.samples.probe.signed_off}/{cell.samples.probe.n}
-          {cell.samples.probe.rate === null ? "" : ` (${Math.round(cell.samples.probe.rate * 100)}%)`}
-          {cell.samples.probe.below_floor ? " — probe below the floor" : ""}
-        </div>
-      )}
-      {cell.utilization && (
-        <div className="mt-1.5 font-mono text-[10.5px] text-faint" data-testid="harness-utilization">
-          {costLabel(cell.utilization.tokens)}
-          {" · "}
-          {cell.utilization.turns.reason
-            ? cell.utilization.turns.reason
-            : `median ${cell.utilization.turns.median} turns / budget ${cell.utilization.turns.budget_median} (n ${cell.utilization.turns.reported})`}
-          {" · "}
-          {cell.utilization.budget_hits.reason
-            ? cell.utilization.budget_hits.reason
-            : `budget hit ${Math.round((cell.utilization.budget_hits.share ?? 0) * 100)}% (n ${cell.utilization.budget_hits.reported})`}
-        </div>
-      )}
-      {(cell.build_cost || cell.review_cost) && (
-        <div className="mt-1 font-mono text-[10.5px] text-faint" data-testid="harness-build-review-cost">
-          cost of build {costLabel(cell.build_cost ?? cell.cost)}
-          {" · "}
-          cost of review {cell.review_cost ? costLabel(cell.review_cost) : "not reported"}
-        </div>
-      )}
-
-      {cell.platform && (
-        <div className="mt-2 font-mono text-[10.5px]" data-testid="harness-platform">
-          {cell.platform.rate === null ? (
-            <span className="text-faint">{cell.platform.reason}</span>
-          ) : (
-            <span className="text-muted">
-              platform average {Math.round(cell.platform.rate * 100)}% across{" "}
-              {cell.platform.orgs} organisations (n {cell.platform.n})
+            <span className="text-fg">{cell.key.vendor}{cell.key.model ? `:${cell.key.model}` : ""}</span>
+            <span className="text-faint">{cell.key.capability} · {cell.key.size_band}</span>
+            <span data-testid="harness-f1" className="text-muted">
+              F1 {cell.f1.rate === null ? "—" : `${Math.round(cell.f1.rate * 100)}%`} n={cell.f1.n}
             </span>
-          )}
-        </div>
-      )}
-
-      {cell.by_project && cell.by_project.length > 0 && (
-        <div className="mt-1.5 font-mono text-[10.5px] text-faint" data-testid="harness-by-project">
-          {cell.by_project
-            .map((p) => `${p.project_id} ${p.signed_off}/${p.finished}`)
-            .join(" · ")}
-        </div>
-      )}
-
-      {cell.leaves && cell.leaves.length > 0 && (
-        <div className="mt-2 flex flex-col gap-1" data-testid="harness-leaves">
-          {cell.leaves.map((leaf) => (
-            <div
-              key={cellId(leaf)}
-              data-testid="harness-leaf"
-              data-below-floor={leaf.below_floor ? "true" : "false"}
-              className={`flex items-baseline gap-2 font-mono text-small ${
-                leaf.below_floor ? "text-faint" : "text-muted"
-              }`}
-            >
-              <span>{leaf.label ?? leaf.key.capability}</span>
-              <span>
-                {leaf.rate === null ? "—" : `${Math.round(leaf.rate * 100)}%`}
+            <span data-testid="harness-f2" className="text-muted">
+              F2 miss {cell.f2.miss}/{cell.f2.n} unconfirmed {cell.f2.miss_unconfirmed}
+            </span>
+            <span data-testid="harness-f3" className="text-muted">
+              F3 unclassified {cell.f3.unclassified === null ? "—" : `${Math.round(cell.f3.unclassified * 100)}%`}
+            </span>
+            <span data-testid="harness-f2-label" className="rounded-full border border-line-2 px-2 text-[10px] text-faint">
+              {cell.f2.label}
+            </span>
+            <span className="ml-auto text-faint">{cell.checked} checked verdicts</span>
+            {cell.below_floor && (
+              <span data-testid="harness-review-below-floor" className="w-full rounded-full text-[10px] text-faint">
+                below the floor — {cell.checked} of {floor} checked verdicts
               </span>
-              <span>
-                {leaf.signed_off}/{leaf.finished}
-                {leaf.below_floor ? " — below the floor" : ""}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <Series points={cell.series} />
-    </div>
-  );
-}
-
-function samplingLabel(s: HarnessSampling): string {
-  const probe = s.probe ? ` · probe ${s.probe}` : "";
-  return `first choice ${s.first_choice} · fallback ${s.fallback} · explicit ${s.explicit} · unknown ${s.unknown}${probe}`;
-}
-
-function costLabel(cost: HarnessCost): string {
-  return cost.comparable
-    ? `${cost.tokens_per_signed_off} tokens per signed-off item`
-    : cost.reason;
-}
-
-function ReviewRow({ cell, floor }: { cell: HarnessReviewCell; floor: number }) {
-  return (
-    <div
-      data-testid="harness-review-cell"
-      className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-3"
-    >
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="font-mono text-body">
-          {cell.key.vendor}
-          {cell.key.model ? `:${cell.key.model}` : ""}
-        </span>
-        <span className="font-mono text-[10.5px] text-faint">
-          {cell.key.capability} · {cell.key.size_band}
-        </span>
-        <Badge testid="harness-f2-label" tone="faint">
-          {cell.f2.label}
-        </Badge>
-        <span className="ml-auto font-mono text-[10.5px] text-faint">
-          {cell.checked} checked verdicts
-        </span>
-      </div>
-      {cell.below_floor && (
-        <div className="mt-2">
-          <Badge testid="harness-review-below-floor" tone="faint">
-            below the floor — {cell.checked} of {floor} checked verdicts
-          </Badge>
-        </div>
-      )}
-      <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 font-mono text-[10.5px] text-muted">
-        <span data-testid="harness-f1">
-          F1 {cell.f1.rate === null ? "—" : `${Math.round(cell.f1.rate * 100)}%`} n={cell.f1.n}
-        </span>
-        <span data-testid="harness-f2">
-          F2 miss {cell.f2.miss}/{cell.f2.n} unconfirmed {cell.f2.miss_unconfirmed}
-        </span>
-        <span data-testid="harness-f3">
-          F3 unclassified {cell.f3.unclassified === null ? "—" : `${Math.round(cell.f3.unclassified * 100)}%`}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function Series({ points }: { points: HarnessPoint[] }) {
-  if (points.length === 0) return null;
-  return (
-    <div className="mt-2.5 flex items-end gap-1" data-testid="harness-series">
-      {points.map((p) => (
-        <div
-          key={p.week}
-          data-testid="harness-point"
-          data-week={p.week}
-          data-below-floor={p.below_floor ? "true" : "false"}
-          title={`${p.week}: ${p.signed_off}/${p.finished} signed off${
-            p.below_floor ? " — below the floor" : ""
-          }`}
-          className="flex-1"
-        >
-          <div
-            className={`w-full rounded-[2px] ${p.below_floor ? "bg-line-2" : "bg-st-done"}`}
-            style={{ height: `${4 + Math.round((p.rate ?? 0) * 26)}px` }}
-          />
-          <div className="mt-1 truncate text-center font-mono text-[9px] text-faint">
-            {p.week.slice(-3)}
+            )}
           </div>
-        </div>
-      ))}
-    </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -687,19 +387,19 @@ function ProbePanel({
     : data.estimated_tokens.reason ?? "no estimate";
 
   return (
-    <div data-testid="harness-probe-panel" className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-3">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="text-[13px] font-semibold">Probe</span>
+    <section data-testid="harness-probe-panel" className="mt-2 rounded-[12px] border border-line-2 bg-surface px-4 py-3.5">
+      <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+        <h2 className="text-lead font-semibold">Probe</h2>
         <span className="font-mono text-[10.5px] text-faint" data-testid="harness-probe-estimate">
           {estimateLabel}
         </span>
       </div>
-      <p className="mt-1 text-[12px] text-muted" data-testid="harness-probe-purpose">
+      <p className="mb-2.5 mt-1 text-[12px] text-muted" data-testid="harness-probe-purpose">
         Lift a below-floor cell into a measurement. One model and one leaf at a time, three items at most.
       </p>
 
       {suggestions.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5" data-testid="harness-probe-suggestions">
+        <div className="flex flex-wrap gap-1.5" data-testid="harness-probe-suggestions">
           {suggestions.map((s, i) => {
             const active = pickedSuggestion === i;
             return (
@@ -708,14 +408,16 @@ function ProbePanel({
                 type="button"
                 data-testid="harness-probe-suggestion"
                 onClick={() => { setPickedSuggestion(active ? null : i); setError(null); }}
-                className={`rounded-[6px] border px-2 py-1 font-mono text-small transition-colors ${
+                title={s.binary_version ? `${s.vendor}:${s.model} · version ${s.binary_version}` : undefined}
+                aria-pressed={active}
+                className={cn(
+                  "rounded-[6px] border px-2.5 py-1 font-mono text-small transition-colors",
                   active
-                    ? "border-st-done bg-[rgba(80,200,120,0.12)] text-st-done"
-                    : "border-control bg-surface text-muted hover:border-control"
-                }`}
+                    ? "border-st-done bg-[rgba(95,208,122,0.12)] text-st-done"
+                    : "border-control bg-surface-2 text-muted hover:border-control-hover",
+                )}
               >
                 {s.vendor}:{s.model}
-                {s.binary_version ? `:${s.binary_version}` : ""}
                 <span className="ml-1 text-faint">({s.trigger})</span>
               </button>
             );
@@ -788,32 +490,6 @@ function ProbePanel({
           </span>
         </div>
       )}
-    </div>
-  );
-}
-
-function Badge({
-  children,
-  testid,
-  tone,
-  icon,
-}: {
-  children: React.ReactNode;
-  testid: string;
-  tone: "faint" | "warn";
-  icon?: React.ReactNode;
-}) {
-  const cls =
-    tone === "warn"
-      ? "border-[rgba(240,180,80,0.35)] bg-[rgba(240,180,80,0.1)] text-[#f0b450]"
-      : "border-line-2 bg-surface text-faint";
-  return (
-    <span
-      data-testid={testid}
-      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10.5px] ${cls}`}
-    >
-      {icon ?? (tone === "warn" ? <AlertTriangle size={11} /> : null)}
-      {children}
-    </span>
+    </section>
   );
 }

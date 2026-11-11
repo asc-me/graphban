@@ -1049,6 +1049,10 @@ def fleet_status(db: Session, project_id: str | None = None, *,
         by_role[ALL_IN_ONE] = sum(1 for a in live if a["active_role"] == ALL_IN_ONE)
         online, total = len(live), len(agents)
     seats = list_enrolments(db, project_id, minted_by=minted_by) if minted_by else None
+    measured = delegation_svc.measured(db, project_id)
+    routing_project = db.get(Project, project_id) if project_id else None
+    routing_tag = (getattr(routing_project, "tag", None) or getattr(routing_project, "name", None)
+                   or project_id or "all projects")
     return {
         "agents": agents,
         **({"collapsed": counts["collapsed"]} if collapsed else {}),
@@ -1066,7 +1070,14 @@ def fleet_status(db: Session, project_id: str | None = None, *,
         # this side states counts. `probe_suggestions` is a list, empty when nothing is
         # new — an absence is not a clean "no probes needed" if we never looked, so the
         # key is always present.
-        "measured": delegation_svc.measured(db, project_id),
+        "measured": measured,
+        # The routing table gbfleet is served, graded on the server (PREFER / OK / AVOID /
+        # PROBE) from the same `measured` cells above. The Harness page's Guidance tab shows
+        # this exact string; it does not grade anything itself.
+        "routing_guidance": harness_svc.routing_guidance_text(
+            harness_svc._routing_from_measured(measured, floor=harness_svc.FLOOR),
+            project_tag=routing_tag, window_days=harness_svc.WINDOW_DAYS,
+            floor=harness_svc.FLOOR, generated_at=_routing_stamp()),
         "probe_suggestions": delegation_svc.probe_suggestions(db, project_id),
         # GRPH-950: unstarted work that a blocker keeps out of every claim path — above all
         # the dependents `gbfleet until` holds while their dependency's PR is unmerged
@@ -1092,6 +1103,12 @@ def fleet_status(db: Session, project_id: str | None = None, *,
         # installed, and nothing here infers `main`.
         "release_ref": projects_svc.release_ref_view(db, project_id),
     }
+
+
+def _routing_stamp() -> str:
+    """Minute precision: the table changes when a delegation finishes, not every second."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
 
 
 #: How long an offline agent that holds nothing stays on the roster in full (GRPH-1237). One

@@ -300,6 +300,17 @@ describe("GRPH-1224 the Organization entry", () => {
     expect(row.querySelector("svg.lucide-building2")).not.toBeNull();
     expect(footer.firstElementChild).toBe(row);
   });
+
+  it.each([false, true])("hosted=%s: stays on the collapsed rail, first of the utilities", async (hosted) => {
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, "1");
+    wrap(<LeftNav hosted={hosted} />);
+    const rail = within(layer("rail"));
+    const org = await rail.findByRole(hosted ? "link" : "button", { name: /^Organization/ });
+    expect(org.querySelector("svg.lucide-building2")).not.toBeNull();
+    const usage = rail.getByRole("link", { name: "Usage" });
+    expect(org.compareDocumentPosition(usage) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(org).not.toHaveAttribute("data-tour");
+  });
 });
 
 const VIEWS = [
