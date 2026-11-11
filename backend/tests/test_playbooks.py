@@ -15,7 +15,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 def _check_body(body: dict) -> None:
     assert body["version"]
-    assert {f["kind"] for f in body["files"]} == {"skill", "loop", "playbook"}
+    assert {f["kind"] for f in body["files"]} == {"skill", "loop", "playbook", "hook"}
     for f in body["files"]:
         assert set(f) == {"path", "kind", "sha256", "body"}
         assert hashlib.sha256(f["body"].encode()).hexdigest() == f["sha256"]
