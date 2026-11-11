@@ -290,3 +290,36 @@ def test_gban_doctor_prints_the_playbooks_line(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr()
     assert "playbooks" in out.out and "at abc" in out.out and "just now" not in out.out
     assert "last poll" not in out.err
+
+
+# --- GRPH-1506: hook files ride the pack, each to its own path -------------------------------
+
+HOOK = ".cursor/hooks/gb_stop.py"
+HOOKS_JSON = ".cursor/hooks.json"
+
+
+def _hook_pack(sha_, *extra):
+    files = [{"path": SKILL, "kind": "skill", "body": "S1"},
+             {"path": HOOK, "kind": "hook", "body": "H1"}, *extra]
+    return {"git_sha": sha_, "files": files}
+
+
+def test_a_hook_is_written_once_at_its_own_path_and_a_skill_still_fans_out(tmp_path):
+    poll(URL, tmp_path, client=Fake({"git_sha": "1"}, _hook_pack("1")), now=0)
+    assert (tmp_path / HOOK).read_text() == "H1"
+    assert playbooks.targets({"path": HOOK, "kind": "hook"}) == [HOOK]
+    assert sorted(receipt(tmp_path)["files"]) == sorted([*COPIES, HOOK])
+    for rel in COPIES:
+        assert (tmp_path / rel).read_text() == "S1"
+    assert not (tmp_path / ".claude/hooks").exists()
+
+
+def test_a_foreign_hooks_json_is_left_and_named_while_the_scripts_are_written(tmp_path):
+    (tmp_path / ".cursor").mkdir()
+    (tmp_path / HOOKS_JSON).write_text("theirs")
+    pack = _hook_pack("1", {"path": HOOKS_JSON, "kind": "hook", "body": "{}"})
+    r = poll(URL, tmp_path, client=Fake({"git_sha": "1"}, pack), now=0)
+    assert (tmp_path / HOOKS_JSON).read_text() == "theirs"
+    assert HOOKS_JSON in r["kept"] and HOOKS_JSON in r["note"]
+    assert HOOKS_JSON not in receipt(tmp_path)["files"]
+    assert (tmp_path / HOOK).read_text() == "H1"
