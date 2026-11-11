@@ -752,3 +752,60 @@ describe("Welcome and Sections (GRPH-1510)", () => {
     expect(await screen.findByTestId("app-tour")).toHaveTextContent("Stop 1 / 8");
   });
 });
+
+describe("Graphban concepts (GRPH-1511)", () => {
+  const KICKERS = ["The loop.", "The tracker.", "Specs.", "Memory.", "Code graph.", "Rules."];
+
+  it("walks all six concepts and Go deeper, with no write, and Back/Esc work", async () => {
+    const { api } = await import("@/lib/api");
+    for (const fn of [api.confirmSetup, api.createProject, api.updateProject, api.createApiKey]) vi.mocked(fn).mockClear();
+    srv.projects = [CORE];
+    srv.onboarding = { quickstart_dismissed_at: "2026-11-01T00:00:00Z" };
+    const user = userEvent.setup();
+    renderFrame();
+    await user.click(await screen.findByRole("button", { name: /Finish setup/ }));
+    await screen.findByRole("heading", { name: "Sections" });
+    await user.click(document.querySelector('[data-section="concepts"]') as HTMLElement);
+
+    for (let i = 0; i < 6; i++) {
+      expect(await screen.findByRole("heading", { name: KICKERS[i] })).toBeInTheDocument();
+      expect(screen.getByText(`CONCEPT ${i + 1} OF 6`)).toBeInTheDocument();
+      expect(screen.getByTestId("qs-hero")).toHaveTextContent(`CONCEPTS · ${i + 1}/6`);
+      const art = screen.getByTestId("concept-art");
+      expect(within(art).getByText("EXAMPLE")).toBeInTheDocument();
+      expect(art).not.toHaveTextContent("GRPH-");
+      if (i === 1) {
+        expect(screen.getByText(/Board is the default layout and List is the other/)).toBeInTheDocument();
+      }
+      if (i === 5) {
+        for (const lvl of ["ENFORCED", "CHECKED", "EXTERNAL", "ADVISORY", "UNMEASURED"]) {
+          expect(within(art).getByText(lvl)).toBeInTheDocument();
+        }
+      }
+      if (i === 0) expect(screen.getByRole("button", { name: "← Sections" })).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Next →" }));
+    }
+    expect(await screen.findByRole("heading", { name: "Go deeper." })).toBeInTheDocument();
+    expect(screen.getByText("GO DEEPER", { selector: "p" })).toBeInTheDocument();
+    expect(screen.getByText("graphban.dev/concepts")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "← Back" }));
+    expect(await screen.findByRole("heading", { name: "Rules." })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Next →" }));
+    await user.click(screen.getByRole("button", { name: "Finish concepts" }));
+    expect(await screen.findByRole("heading", { name: "Sections" })).toBeInTheDocument();
+
+    // Nothing above wrote anything.
+    expect(api.confirmSetup).not.toHaveBeenCalled();
+    expect(api.createProject).not.toHaveBeenCalled();
+    expect(api.updateProject).not.toHaveBeenCalled();
+    expect(api.createApiKey).not.toHaveBeenCalled();
+    expect(srv.marks).toEqual([]);
+
+    // Esc is Finish later.
+    await user.click(document.querySelector('[data-section="concepts"]') as HTMLElement);
+    await screen.findByRole("heading", { name: "The loop." });
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+});
