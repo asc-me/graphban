@@ -2834,6 +2834,11 @@ def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
                 logged.add(key)
                 observe.emit("review_ci_red", item=item, commit=head, job=job,
                              detail=f"{item}: CI failed at {head[:12]}: {job}")
+            if planner is not None and _rerun_transport_flake(
+                    repo, str(row.get("branch") or ""), item, head, logged):
+                # GRPH-1501: the check could not run; it was rerun, so wait for it.
+                waiting.append(row)
+                continue
             if planner is not None and _return_or_block_ci_red(
                     planner, row, head, job, agent_id,
                     repo=repo, branch=str(row.get("branch") or "")):
@@ -2841,6 +2846,71 @@ def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
                 continue
         ready.append(row)
     return ready, waiting, blocked
+
+
+_TRANSPORT_ERROR = re.compile(
+    r"ConnectionResetError|ConnectionRefusedError|Connection refused|Connection reset"
+    r"|Errno 104|Errno 111|RemoteDisconnected|Bad Gateway|Service Unavailable"
+    r"|\b50[234]\b.{0,40}(?:Server Error|Gateway|Unavailable)", re.I)
+
+
+def transport_flake_jobs(repo: Path, branch: str) -> list[str]:
+    """Job ids of failed checks whose log shows a transport error and no test failure.
+
+    GRPH-1501: a check that could not talk to the server did not run, which is not a fail.
+    A log with any pytest `FAILED` line is a real failure and is never listed.
+    """
+    from . import propose
+    not_failed = propose._PASSING | propose._RUNNING
+    try:
+        done = propose._gh(repo, "pr", "view", branch, "--json", "statusCheckRollup")
+        if done.returncode != 0:
+            return []
+        rollup = json.loads(done.stdout or "{}").get("statusCheckRollup") or []
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return []
+    jobs: list[str] = []
+    for check in rollup:
+        verdict = str(check.get("conclusion") or check.get("state") or "").upper()
+        if verdict in not_failed:
+            continue
+        m = _JOB_ID.search(str(check.get("detailsUrl") or check.get("targetUrl") or ""))
+        if not m:
+            return []
+        try:
+            got = propose._gh(repo, "api",
+                              f"repos/{{owner}}/{{repo}}/actions/jobs/{m.group(1)}/logs")
+        except (OSError, subprocess.SubprocessError):
+            return []
+        if got.returncode != 0:
+            if not _TRANSPORT_ERROR.search(got.stderr or ""):
+                return []
+        else:
+            log = _ANSI.sub("", got.stdout or "")
+            if _failed_tests_from_log(log) or not _TRANSPORT_ERROR.search(log):
+                return []
+        jobs.append(m.group(1))
+    return jobs
+
+
+def _rerun_transport_flake(repo: Path, branch: str, item: str, head: str, logged: set) -> bool:
+    """Rerun a red head's jobs ONCE when every failure was a transport error (GRPH-1501)."""
+    from . import propose
+    key = ("ci_flake_rerun", item, head)
+    if key in logged or not branch:
+        return False
+    jobs = transport_flake_jobs(repo, branch)
+    if not jobs:
+        return False
+    logged.add(key)
+    for job in jobs:
+        try:
+            propose._gh(repo, "run", "rerun", "--job", job)
+        except (OSError, subprocess.SubprocessError):
+            return False
+    observe.emit("review_ci_flake_rerun", item=item, commit=head,
+                 detail=f"{item}: CI died on a transport error at {head[:12]}; rerun {','.join(jobs)}")
+    return True
 
 
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
@@ -2990,6 +3060,9 @@ def _return_or_block_ci_red(planner: Graphban, row: dict, head: str, job: str, a
     A second red head is not parked `blocked`: that status is not claimable.
     """
     item = str(row.get("id") or "")
+    if review_held(row):
+        # GRPH-1501: a live review claim decides first; a rework would race its sign-off.
+        return False
     reason = row.get("bounce_reason")
     if reason is None:
         try:
