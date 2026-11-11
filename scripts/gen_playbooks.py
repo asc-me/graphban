@@ -20,6 +20,16 @@ import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 MANIFEST = REPO / "backend" / "scripts" / "gban_playbooks.json"
+#: Hook files the repo ships, each written to exactly that one path in a checkout.
+#: Not `.cursor/hooks/README.md` nor `.cursor/graphban-claim.example.json`.
+HOOKS = (
+    ".cursor/hooks/gb_after_file_edit.py",
+    ".cursor/hooks/gb_claim_manifest.py",
+    ".cursor/hooks/gb_session_start.py",
+    ".cursor/hooks/gb_stop.py",
+    ".cursor/hooks.json",
+    ".grok/hooks/graphban-claim-manifest.json",
+)
 sys.path.insert(0, str(REPO / "scripts"))
 
 
@@ -50,6 +60,8 @@ def build() -> list[dict]:
     for rel, body in files.items():
         if rel.startswith(f"{gs.PLUGIN_DIR}/skills/"):
             entries.append(_entry("playbook", rel, body))
+    for rel in HOOKS:
+        entries.append(_entry("hook", rel, (REPO / rel).read_text(encoding="utf-8")))
     if not any(e["kind"] == "skill" for e in entries) or \
             not any(e["kind"] == "playbook" for e in entries):
         raise SystemExit("playbook pack has no skills or no playbooks — a source moved")
