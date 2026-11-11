@@ -71,6 +71,8 @@ def clear_link(db: Session) -> None:
         link.api_key_enc = ""
         link.org = ""
         link.linked_at = None
+        link.console_url = link.linked_email = link.token_enc = ""
+        link.device_code_enc = link.legacy_key = ""
         db.commit()
     _reset_org_cache()
 

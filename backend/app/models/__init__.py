@@ -2255,6 +2255,19 @@ class CodeSyncState(Base):
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class SyncProject(Base):
+    """GRPH-1517: a local project mapped to its cloud project, with the last push result
+    (`ok | refused | unknown`). A project with no row is local only."""
+
+    __tablename__ = "sync_project"
+
+    local_project_id: Mapped[str] = mapped_column(String, primary_key=True)
+    cloud_project_id: Mapped[str] = mapped_column(String, default="", server_default="")
+    last_push_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_push_result: Mapped[str] = mapped_column(String, default="unknown", server_default="unknown")
+    last_push_reason: Mapped[str] = mapped_column(String, default="", server_default="")
+
+
 class SyncLink(Base):
     """Instance-wide link to a cloud tenant (AL-141) — the web-managed counterpart of the
     `graphban link` CLI. A self-hosted box pushes its code graph to `cloud_url`,
@@ -2277,6 +2290,14 @@ class SyncLink(Base):
     telemetry_share: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false(), nullable=False
     )
+    #: GRPH-1517 deployment link (console device-code sign-in). `token_enc` is encrypted
+    #: with SECRET_ENCRYPTION_KEY and never returned; `legacy_key` is non-empty only on a
+    #: migrated key link and is cleared by the first approved poll.
+    console_url: Mapped[str] = mapped_column(String, default="", server_default="")
+    linked_email: Mapped[str] = mapped_column(String, default="", server_default="")
+    token_enc: Mapped[str] = mapped_column(String, default="", server_default="")
+    device_code_enc: Mapped[str] = mapped_column(String, default="", server_default="")
+    legacy_key: Mapped[str] = mapped_column(String, default="", server_default="")
     last_contribution_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
     last_contribution_rows: Mapped[int | None] = mapped_column(Integer, nullable=True)

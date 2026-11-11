@@ -33,6 +33,7 @@ from app.services import code_sync
 from app.services import events as events_svc
 from app.services import galaxy as galaxy_svc
 from app.services import gitops
+from app.services import link_device
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 
@@ -52,7 +53,7 @@ def _status(db: Session, user: User) -> dict:
         {**states[pid], "name": names.get(pid, pid), "writable": pid in writable}
         for pid in order
     ]
-    return {**link, "projects": projects}
+    return {**link, **link_device.status(db), "projects": projects}
 
 
 @router.get("/status", response_model=SyncStatusOut)
@@ -74,6 +75,31 @@ def refuse_unless_box_admin(db: Session, user: User, action: str) -> None:
             hint="ask the box's operator, or an owner/admin of one of their projects",
             target=("instance", "sync_link"),
         )
+
+
+class LinkStartIn(BaseModel):
+    label: str = ""
+    console_url: str = ""
+
+
+@router.post("/link/start")
+def link_start(body: LinkStartIn, db: Session = Depends(get_db),
+               user: User = Depends(get_current_user)):
+    """BOX admin: begin the console device-code sign-in (GRPH-1517)."""
+    refuse_unless_box_admin(db, user, "sign in")
+    try:
+        return link_device.start(db, label=body.label, console=body.console_url)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except link_device.ConsoleUnavailable as e:
+        raise HTTPException(502, str(e))
+
+
+@router.get("/link/poll")
+def link_poll(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """BOX admin: poll the sign-in. Only `approved` stores anything."""
+    refuse_unless_box_admin(db, user, "sign in")
+    return link_device.poll(db)
 
 
 @router.get("/org", response_model=SyncOrgOverviewOut, response_model_exclude_unset=True)

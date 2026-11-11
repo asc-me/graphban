@@ -1155,6 +1155,10 @@ class SyncStatusOut(BaseModel):
     last_floors: dict | None = None
     last_redacted_models: int | None = None
     last_snapshot_at: str | None = None
+    linked_email: str = ""
+    state: str = "unknown"  # ok | refused | unknown (GRPH-1517)
+    legacy: bool = False
+    mapped_projects: list[dict] = []
     projects: list[SyncProjectState] = []
 
 
