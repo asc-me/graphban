@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 346 of the 346. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 348 of the 348. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -104,7 +104,9 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | POST | `/api/sync/link` | JWT (box admin) | Link this box to a cloud org with a `sync` key (encrypted at rest; a blank key on a re-link keeps the stored one) |
-| DELETE | `/api/sync/link` | JWT (box admin) | Unlink — stops all sync; local data untouched |
+| DELETE | `/api/sync/link` | JWT (box admin) | Unlink — stops all sync; deletes the deployment token and every `sync_project` mapping, so each project is local only again; local data untouched |
+| POST | `/api/sync/link/start` | JWT (box admin) | Sign this deployment in (GRPH-1517, P67 L2). Body `{label?, console_url?}` (`SYNC_CLOUD_URL` wins when set). Relays the console's `POST /api/sync/device/start` with `{label, host}`, plus `legacy_key_id` (the migrated key's public prefix, never the secret) only while the link has a `legacy_key`. Returns `started {user_code, verification_url, expires_at, interval}`, `refused {reason}` or `unknown {reason}` (network error, timeout, 5xx). Stores only the sign-in in flight. `422` with no console URL |
+| GET | `/api/sync/link/poll` | JWT (box admin) | The console's answer to the sign-in in flight: exactly one of `approved {org, email}`, `pending`, `refused {reason: declined \| expired \| not_member \| no_seat}` (a code the console does not know is `expired`), `unknown {reason}`. **Only approved writes anything**: the token (encrypted), `org`, `linked_email`, and it clears `legacy_key`; mappings are kept. A network error, timeout or 5xx is unknown, never refused, and stores nothing. `409` when no sign-in is in flight |
 | GET | `/api/sync/org` | JWT | The Organization window: org `name`/`host`/`plan`, the linking credential's org `role`, `counts` (members, teams, org policy rules, deployments) and every deployment with `projects`, `here` and `last_sync_at`. Fetched from the cloud and cached 30 s. Unreachable → `reachable: false`, `unreachable_since` (first failure), the last known identity, **`counts: null`** and null deployment figures — never stale numbers shown as current — except this box's own `last_sync_at`. Linked answers also carry `can_unlink` — whether the *viewer* is a box admin (`role` is the linking credential's, not theirs). Unlinked → `{"linked": false}` and nothing else |
 | GET | `/api/sync/org-overview` | MCP (sync key) | Cloud side of the above. The org is resolved from the credential's project, never the request; `404` for a non-sync key or a project in no org. Deployments are sync keys grouped by name ("one key is one deployment") |
 | GET | `/api/sync/rule-decisions` | MCP (sync key) | Cloud side of the rule pull (GRPH-1297): the org's toggles with params, locks and applied profile as one versioned record (the version is a hash of the decisions). `404` for a non-sync key or a project in no org |
@@ -790,7 +792,7 @@ Pushing and the portable bundle are a JWT on this box.
 
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
-| GET | `/api/sync/status` | JWT | Link state, never the credential, plus per-project sync state |
+| GET | `/api/sync/status` | JWT | Link state, never the credential, plus per-project sync state. The deployment link (GRPH-1517): `org`, `linked_email`, `signed_in`, `sign_in_pending`, `legacy` (true while a migrated key link has not signed in) and `state` — `ok`, `refused` (the latest push was refused for the credential: `seat_removed`, `token_revoked`), `unknown` (the latest push got no answer), or null when the box holds no credential. Each project carries `mapped`, `cloud_project_id`, `last_push_at`, `last_push_result` (`ok \| refused \| unknown`, null = never pushed) and `last_push_reason`. Never the token or the key |
 | POST | `/api/sync/push` | JWT (write) | Push this project's code graph to the linked cloud. Also pulls and applies the org's rule decisions (GRPH-1297) and returns that outcome as `rules` — a failed pull never fails the push. 409 when this box is not linked |
 | POST | `/api/sync/purge` | JWT (write) | Delete this project's graph from the linked cloud and reset the local manifest. 409 when not linked |
 | POST | `/api/sync/code-graph` | MCP (sync scope) | Ingest nodes and edges. The cloud re-embeds. `remove` marks paths stale; `prune` marks everything absent from this batch |

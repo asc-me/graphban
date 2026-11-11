@@ -2255,6 +2255,24 @@ class CodeSyncState(Base):
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class SyncProject(Base):
+    """A local project mapped to a cloud project (GRPH-1517, P67 L4). A project with no row is
+    local only. `last_push_result` is `ok | refused | unknown`, with `last_push_reason`; both
+    are null until the first push, which reads as *pending* (mapped, never pushed)."""
+
+    __tablename__ = "sync_project"
+
+    local_project_id: Mapped[str] = mapped_column(String, primary_key=True)
+    #: "" on a migrated key link: the key was pinned to one cloud project server-side and the
+    #: box never learned its id. The mapping still exists, so the project keeps pushing.
+    cloud_project_id: Mapped[str] = mapped_column(String, default="", server_default="")
+    last_push_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_push_result: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_push_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=True)
+
+
 class SyncLink(Base):
     """Instance-wide link to a cloud tenant (AL-141) — the web-managed counterpart of the
     `graphban link` CLI. A self-hosted box pushes its code graph to `cloud_url`,
@@ -2271,6 +2289,19 @@ class SyncLink(Base):
     api_key_enc: Mapped[str] = mapped_column(String, default="")  # Fernet token; never returned raw
     org: Mapped[str] = mapped_column(String, default="")  # optional label shown in the UI
     linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # ---- the deployment link (GRPH-1517, P67 §6 L2/L6) ----
+    #: The console the engineer signs in to. `cloud_url` stays the push target.
+    console_url: Mapped[str] = mapped_column(String, default="", server_default="")
+    #: The engineer who approved the device code. With `org` it is the link's identity.
+    linked_email: Mapped[str] = mapped_column(String, default="", server_default="")
+    #: The deployment token, encrypted with SECRET_ENCRYPTION_KEY. Never returned.
+    token_enc: Mapped[str] = mapped_column(String, default="", server_default="")
+    #: The sign-in in flight: encrypted JSON `{console_url, device_code}` written by
+    #: `link/start`. Cleared by an approved poll; refused and unknown leave it alone.
+    pending_device_enc: Mapped[str] = mapped_column(String, default="", server_default="")
+    #: Migrated rows only (L6): the old link key, encrypted, as it was in `api_key_enc`.
+    #: Non-empty means `status.legacy`. An approved sign-in clears it.
+    legacy_key: Mapped[str] = mapped_column(String, default="", server_default="")
     #: PRD-41 D11: the same toggle as org `telemetry_share`, worded for a self-hosted
     #: operator. Off by default. The hosted path stays on Organization; this is the
     #: instance that posts rollups over the sync credential.

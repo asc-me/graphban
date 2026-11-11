@@ -33,6 +33,7 @@ from app.services import code_sync
 from app.services import events as events_svc
 from app.services import galaxy as galaxy_svc
 from app.services import gitops
+from app.services import link_device
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 
@@ -43,16 +44,20 @@ def _status(db: Session, user: User) -> dict:
     """Assemble the Sync/Link page payload: instance link state + per-project sync state for
     the projects this user can read, flagged with whether they can also push/purge them."""
     link = code_sync.link_status(db)
+    maps = link_device.mappings(db)
+    deployment = link_device.link_view(db, maps)
+    link["credential_set"] = link["credential_set"] or deployment["signed_in"]
     readable = set(authz.readable_project_ids(db, user.id))
     writable = set(authz.writable_project_ids(db, user.id))
     names = {p.id: p.name for p in db.scalars(select(Project)).all() if p.id in readable}
     order = sorted(readable, key=lambda pid: names.get(pid, pid).lower())
     states = {s["project_id"]: s for s in code_sync.project_states(db, order)}
     projects = [
-        {**states[pid], "name": names.get(pid, pid), "writable": pid in writable}
+        {**states[pid], **link_device.project_view(maps.get(pid)),
+         "name": names.get(pid, pid), "writable": pid in writable}
         for pid in order
     ]
-    return {**link, "projects": projects}
+    return {**link, **deployment, "projects": projects}
 
 
 @router.get("/status", response_model=SyncStatusOut)
@@ -74,6 +79,65 @@ def refuse_unless_box_admin(db: Session, user: User, action: str) -> None:
             hint="ask the box's operator, or an owner/admin of one of their projects",
             target=("instance", "sync_link"),
         )
+
+
+# ---- signing a deployment in (GRPH-1517, P67 §6 L2): relays the console's device code ----
+
+class LinkStartIn(BaseModel):
+    label: str = ""
+    #: The wizard's step 1. Ignored when `SYNC_CLOUD_URL` bakes the console in.
+    console_url: str = ""
+
+
+class LinkStartOut(BaseModel):
+    """`started` carries the code to show; `refused`/`unknown` carry the reason. Never the
+    device code, the token or the key."""
+    status: str  # started | refused | unknown
+    console_url: str | None = None
+    user_code: str | None = None
+    verification_url: str | None = None
+    expires_at: str | None = None
+    interval: int | None = None
+    reason: str | None = None
+
+
+class LinkPollOut(BaseModel):
+    """Exactly one of `approved {org, email}`, `pending`, `refused {reason}`, `unknown {reason}`."""
+    status: str
+    org: str | None = None
+    email: str | None = None
+    reason: str | None = None
+
+
+@router.post("/link/start", response_model=LinkStartOut, response_model_exclude_none=True)
+def link_start(body: LinkStartIn, db: Session = Depends(get_db),
+               user: User = Depends(get_current_user)):
+    """Ask the console for a device code to sign this deployment in (box admin). When the
+    link is a migrated key link, the console is sent the key's public prefix so approval
+    revokes it (L6). Stores only the sign-in in flight."""
+    refuse_unless_box_admin(db, user, "sign in")
+    try:
+        return link_device.start(db, label=body.label, requested_console=body.console_url)
+    except link_device.NoConsole as e:
+        raise HTTPException(422, str(e))
+
+
+@router.get("/link/poll", response_model=LinkPollOut, response_model_exclude_none=True)
+def link_poll(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The console's answer to the sign-in in flight (box admin). Only `approved` writes
+    anything; a network error, timeout or 5xx is `unknown`, never `refused`. `409` when no
+    sign-in is in flight."""
+    refuse_unless_box_admin(db, user, "sign in")
+    try:
+        out = link_device.poll(db)
+    except link_device.NoSignIn as e:
+        raise HTTPException(409, str(e))
+    if out["status"] == "approved":
+        code_sync._reset_org_cache()  # the org overview now reads a different link
+        events_svc.record_user(db, user, action="sign_in_cloud_sync", target_type="instance",
+                               target_id="sync_link",
+                               meta={"org": out["org"], "email": out["email"]})
+    return out
 
 
 @router.get("/org", response_model=SyncOrgOverviewOut, response_model_exclude_unset=True)
@@ -185,6 +249,7 @@ def unlink_instance(db: Session = Depends(get_db), user: User = Depends(get_curr
     """Unlink — stops all sync. Local data is untouched; cloud items remain (AL-141). Box
     admins only (GRPH-1223)."""
     refuse_unless_box_admin(db, user, "unlink")
+    link_device.clear(db)
     code_sync.clear_link(db)
     events_svc.record_user(db, user, action="unlink_cloud_sync", target_type="instance",
                            target_id="sync_link")
