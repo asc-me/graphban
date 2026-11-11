@@ -43,8 +43,7 @@ describe("GRPH-1364 invitee Finish", () => {
     const card = document.querySelector("details[data-link-setup]") as HTMLDetailsElement;
     expect(card).not.toBeNull();
     expect(card.open).toBe(false);
-    fireEvent.change(screen.getByLabelText("Link key from your org"), { target: { value: "k123" } });
-    expect(screen.getByText(/graphban link --cloud-url .* --api-key k123/)).toBeInTheDocument();
+    expect(screen.getByText(/^graphban link --cloud-url \S+$/)).toBeInTheDocument();
 
     const prompts = screen.getByRole("button", { name: "Start-up prompts" });
     expect(screen.queryByRole("list", { name: "Start-up prompts" })).toBeNull();

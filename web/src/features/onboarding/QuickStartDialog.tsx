@@ -20,6 +20,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { Input } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { AGENTS, ConnectStep, ROUTE_LABEL, type Route } from "@/features/onboarding/ConnectStep";
+import { InviteeLinkCard } from "@/features/onboarding/InviteeLinkCard";
 import { StartupPromptRows } from "@/features/onboarding/StartupPrompts";
 import { TagField, useTagField } from "@/features/onboarding/TagField";
 import { postureView, type PostureWarning } from "@/features/onboarding/posture";
@@ -643,7 +644,7 @@ function Choice({
   );
 }
 
-function CopyLine({ text, label }: { text: string; label: string }) {
+export function CopyLine({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = React.useState(false);
   return (
     <div className="flex items-start gap-2 rounded-[8px] border border-line bg-bg p-2.5">
@@ -1403,7 +1404,7 @@ export function FinishScreen({
       {marks.connect?.status === "done" && marks.connect.evidence && (
         <p className="mt-2 text-[12px] text-muted">Agent connection: {marks.connect.evidence}</p>
       )}
-      {invitee && <LinkSetupCard />}
+      {invitee && <InviteeLinkCard />}
       {invitee && promptsOpen && (
         <div className="mt-3">
           <StartupPromptRows />
@@ -1445,27 +1446,5 @@ export function FinishScreen({
         )}
       </div>
     </section>
-  );
-}
-
-/**
- * The invitee's optional link setup (GRPH-1364): collapsed, and nothing here is required. It
- * only builds the `graphban link` command from the org-issued key — the key is never sent
- * anywhere by this card, and no prefix is assumed (`graphban link` decides what it accepts).
- */
-function LinkSetupCard() {
-  const [key, setKey] = React.useState("");
-  const cmd = `graphban link --cloud-url ${window.location.origin} --api-key ${key.trim() || "<link key>"}`;
-  return (
-    <details className="mt-4 rounded-[10px] border border-line bg-surface-2 px-3 py-2" data-link-setup>
-      <summary className="cursor-pointer text-body font-medium">Link a self-host deployment (optional)</summary>
-      <div className="mt-2 flex flex-col gap-2">
-        <label className="flex flex-col gap-1 text-small text-muted">
-          Link key from your org
-          <Input value={key} onChange={(e) => setKey(e.target.value)} autoComplete="off" spellCheck={false} />
-        </label>
-        <CopyLine text={cmd} label="Copy the link command" />
-      </div>
-    </details>
   );
 }
