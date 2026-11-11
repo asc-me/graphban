@@ -1,3 +1,6 @@
+import { ChevronDown, ChevronUp, Lock } from "lucide-react";
+
+import { cn } from "@/lib/cn";
 import { useSaveHarnessLadder, useHarnessLadder } from "@/lib/queries";
 import type { HarnessLadderRung } from "@/lib/types";
 
@@ -13,8 +16,20 @@ export function refusalText(err: unknown): string {
   return raw || "The ladder could not be saved.";
 }
 
-const Num = ({ n }: { n: string }) => <span className="w-5 font-mono text-small text-faint">{n}</span>;
-const btn = "rounded-md border border-control px-2 py-0.5 text-small hover:bg-surface-3 disabled:opacity-50";
+const Num = ({ n }: { n: string }) => <span className="text-center font-mono text-[12px] text-muted">{n}</span>;
+const btn = "inline-flex h-7 items-center justify-center rounded-[7px] border border-control px-[9px] text-[12px] text-fg-2 hover:bg-surface-3 disabled:text-line-3 disabled:hover:bg-transparent";
+const tile = "grid items-center gap-2.5 rounded-[10px] px-3 py-2.5";
+const liveTile = "border border-line bg-surface-2";
+const gone = "border-[1.5px] border-dashed border-line";
+const Tag = ({ children }: { children: React.ReactNode }) => (
+  <span className="font-mono text-meta font-semibold tracking-[0.6px] text-fg-2">{children}</span>
+);
+const Rung = ({ label, description, struck }: { label: string; description?: string; struck?: boolean }) => (
+  <>
+    <span className={cn("font-mono text-[13px] text-fg", struck && "line-through decoration-faint")}>{label}</span>
+    {description && <span className={cn("text-[12px] text-muted", struck && "line-through decoration-faint")}>{description}</span>}
+  </>
+);
 
 /**
  * The Capacity tab's fallback ladder: the project policy (read-only) beside the caller's own
@@ -53,72 +68,96 @@ export function Ladder({ projectId, name }: { projectId?: string; name?: string 
   };
 
   return (
-    <div data-testid="capacity-ladder">
-      <div className="text-[13px] font-medium">Fallback ladder</div>
-      <p className="text-body text-muted">
-        The order Graphban tries when it routes work. The project policy sets the ladder. A profile can reorder or
-        remove rungs, but can't add back a rung the policy removed.
-      </p>
-      <div className="mt-2 grid grid-cols-2 gap-4">
-        <div data-testid="ladder-policy">
-          <div className="text-small text-faint">Project policy · applies to everyone</div>
-          {allowed.map((r, i) => (
-            <div key={r.rung} data-testid="ladder-policy-rung" data-rung={r.rung} className="flex gap-2 py-1">
-              <Num n={String(i + 1)} />
-              <div><div className="font-mono text-small">{r.label}</div><div className="text-small text-muted">{r.description}</div></div>
-            </div>
-          ))}
-          {policyRemoved.map((r) => (
-            <div key={r.rung} data-testid="ladder-policy-rung" data-rung={r.rung} data-removed="true" className="flex gap-2 py-1 opacity-70">
-              <Num n="—" />
-              <div>
-                <div className="font-mono text-small line-through">{r.label}</div>
-                <div className="text-small text-muted line-through">{r.description}</div>
-                <span className="font-mono text-meta text-muted">REMOVED BY PROJECT POLICY</span>
-              </div>
-            </div>
-          ))}
-        </div>
-        <div data-testid="ladder-override">
-          <div className="flex items-baseline justify-between">
-            <span className="text-small text-faint"><span data-testid="ladder-override-heading">{heading}</span> · profile · {claims}</span>
-            <button type="button" data-testid="ladder-match-policy" className={btn} disabled={save.isPending}
-                    onClick={() => write(null)}>Match policy</button>
+    <div data-testid="capacity-ladder" className="flex flex-col gap-3.5">
+      <div className="flex flex-col gap-1">
+        <h2 className="text-[16px] font-semibold tracking-[-0.01em]">Fallback ladder</h2>
+        <p className="max-w-[680px] text-body leading-[1.5] text-muted">
+          The order Graphban tries when it routes work. The project policy sets the ladder. A profile can reorder or
+          remove rungs, but can't add back a rung the policy removed.
+        </p>
+      </div>
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(320px,1fr))] items-start gap-3.5">
+        <div data-testid="ladder-policy" className="flex flex-col rounded-[12px] border border-line-2 bg-surface">
+          <div className="flex flex-wrap items-baseline gap-2.5 border-b border-line-2/70 px-4 py-3">
+            <h3 className="text-[13.5px] font-semibold">Project policy</h3>
+            <span className="font-mono text-[10.5px] text-muted">applies to everyone</span>
           </div>
-          {live.map((rung, i) => {
-            const r = byRung.get(rung);
-            if (!r) return null;
-            return (
-              <div key={rung} data-testid="ladder-override-rung" data-rung={rung} className="flex items-start gap-2 py-1">
+          <ol className="flex flex-col gap-2 p-2.5">
+            {allowed.map((r, i) => (
+              <li key={r.rung} data-testid="ladder-policy-rung" data-rung={r.rung} className={cn(tile, liveTile, "grid-cols-[28px_minmax(0,1fr)]")}>
                 <Num n={String(i + 1)} />
-                <div className="flex-1"><div className="font-mono text-small">{r.label}</div><div className="text-small text-muted">{r.description}</div></div>
-                <button type="button" aria-label={`Move ${r.label} up`} className={btn} disabled={save.isPending || i === 0} onClick={() => move(i, -1)}>↑</button>
-                <button type="button" aria-label={`Move ${r.label} down`} className={btn} disabled={save.isPending || i === live.length - 1} onClick={() => move(i, 1)}>↓</button>
-                <button type="button" data-testid="ladder-remove" className={btn} disabled={save.isPending}
-                        onClick={() => write(live.filter((x) => x !== rung))}>Remove</button>
-              </div>
-            );
-          })}
-          {userRemoved.map((r) => (
-            <div key={r.rung} data-testid="ladder-override-rung" data-rung={r.rung} data-user-removed="true" className="flex items-start gap-2 py-1 opacity-70">
-              <Num n="—" />
-              <div className="flex-1">
-                <div className="font-mono text-small line-through">{r.label}</div>
-                <span className="font-mono text-meta text-muted">REMOVED BY {person ? person.toUpperCase() : "YOU"}</span>
-              </div>
-              <button type="button" data-testid="ladder-restore" className={btn} disabled={save.isPending}
-                      onClick={() => write([...live, r.rung])}>Restore</button>
-            </div>
-          ))}
-          {policyRemoved.map((r) => (
-            <div key={r.rung} data-testid="ladder-override-rung" data-rung={r.rung} data-policy-removed="true" className="flex items-start gap-2 py-1 opacity-70">
-              <Num n="—" />
-              <div className="flex-1"><div className="font-mono text-small line-through">{r.label}</div></div>
-              <span data-testid="ladder-cant-add" className="text-small text-muted">Can't add back</span>
-            </div>
-          ))}
+                <span className="flex min-w-0 flex-col gap-[3px]"><Rung label={r.label} description={r.description} /></span>
+              </li>
+            ))}
+            {policyRemoved.map((r) => (
+              <li key={r.rung} data-testid="ladder-policy-rung" data-rung={r.rung} data-removed="true" className={cn(tile, gone, "grid-cols-[28px_minmax(0,1fr)]")}>
+                <Num n="—" />
+                <span className="flex min-w-0 flex-col gap-[3px]">
+                  <Rung label={r.label} description={r.description} struck />
+                  <Tag>REMOVED BY PROJECT POLICY</Tag>
+                </span>
+              </li>
+            ))}
+          </ol>
+        </div>
+        <div data-testid="ladder-override" className="flex flex-col rounded-[12px] border border-line-2 bg-surface">
+          <div className="flex flex-wrap items-baseline gap-2.5 border-b border-line-2/70 px-4 py-3">
+            <h3 data-testid="ladder-override-heading" className="text-[13.5px] font-semibold">{heading}</h3>
+            <span className="font-mono text-[10.5px] text-muted">profile · {claims}</span>
+            <span className="flex-1" />
+            {data.override && (
+              <button type="button" data-testid="ladder-match-policy" className="text-[12px] text-muted hover:text-fg disabled:opacity-50"
+                      disabled={save.isPending} onClick={() => write(null)}>Match policy</button>
+            )}
+          </div>
+          <ol className="flex flex-col gap-2 p-2.5">
+            {live.map((rung, i) => {
+              const r = byRung.get(rung);
+              if (!r) return null;
+              return (
+                <li key={rung} data-testid="ladder-override-rung" data-rung={rung} className={cn(tile, liveTile, "grid-cols-[28px_minmax(0,1fr)_auto]")}>
+                  <Num n={String(i + 1)} />
+                  <span className="flex min-w-0 flex-col gap-[3px]"><Rung label={r.label} description={r.description} /></span>
+                  <span className="flex gap-1">
+                    <button type="button" aria-label={`Move ${r.label} up`} className={cn(btn, "w-7 px-0")} disabled={save.isPending || i === 0} onClick={() => move(i, -1)}>
+                      <ChevronUp size={12} strokeWidth={2.2} />
+                    </button>
+                    <button type="button" aria-label={`Move ${r.label} down`} className={cn(btn, "w-7 px-0")} disabled={save.isPending || i === live.length - 1} onClick={() => move(i, 1)}>
+                      <ChevronDown size={12} strokeWidth={2.2} />
+                    </button>
+                    <button type="button" data-testid="ladder-remove" aria-label={`Remove ${r.label} rung`} className={btn} disabled={save.isPending}
+                            onClick={() => write(live.filter((x) => x !== rung))}>Remove</button>
+                  </span>
+                </li>
+              );
+            })}
+            {userRemoved.map((r) => (
+              <li key={r.rung} data-testid="ladder-override-rung" data-rung={r.rung} data-user-removed="true" className={cn(tile, gone, "grid-cols-[28px_minmax(0,1fr)_auto]")}>
+                <Num n="—" />
+                <span className="flex min-w-0 flex-col gap-[3px]">
+                  <Rung label={r.label} description={r.description} struck />
+                  <Tag>REMOVED BY {person ? person.toUpperCase() : "YOU"}</Tag>
+                </span>
+                <button type="button" data-testid="ladder-restore" className={btn} disabled={save.isPending}
+                        onClick={() => write([...live, r.rung])}>Restore</button>
+              </li>
+            ))}
+            {policyRemoved.map((r) => (
+              <li key={r.rung} data-testid="ladder-override-rung" data-rung={r.rung} data-policy-removed="true" className={cn(tile, gone, "grid-cols-[28px_minmax(0,1fr)_auto]")}>
+                <Num n="—" />
+                <span className="flex min-w-0 flex-col gap-[3px]">
+                  <Rung label={r.label} description={r.description} struck />
+                  <Tag>REMOVED BY PROJECT POLICY</Tag>
+                </span>
+                <span data-testid="ladder-cant-add" title="Only the project policy can add this rung back"
+                      className="inline-flex h-7 items-center gap-[5px] rounded-[7px] border border-dashed border-line px-[9px] text-[12px] text-muted">
+                  <Lock size={11} />Can't add back
+                </span>
+              </li>
+            ))}
+          </ol>
           {save.isError && (
-            <p role="alert" data-testid="ladder-refusal" className="mt-1 text-body text-muted">{refusalText(save.error)}</p>
+            <p role="alert" data-testid="ladder-refusal" className="mx-4 mb-3 text-body text-muted">{refusalText(save.error)}</p>
           )}
         </div>
       </div>

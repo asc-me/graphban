@@ -67,7 +67,8 @@ describe("Fallback ladder", () => {
     wrap(<Ladder projectId="p" name="Alex Cain" />);
     const ov = await screen.findByTestId("ladder-override");
     expect(within(ov).getByTestId("ladder-override-heading")).toHaveTextContent(/^Alex Cain's override$/);
-    expect(ov).toHaveTextContent("Alex Cain's override · profile · work Alex Cain claims");
+    expect(ov).toHaveTextContent("Alex Cain's override");
+    expect(ov).toHaveTextContent("profile · work Alex Cain claims");
     expect(ov).toHaveTextContent("REMOVED BY ALEX CAIN");
     expect(ov).not.toHaveTextContent("my's");
   });
@@ -76,7 +77,8 @@ describe("Fallback ladder", () => {
     ladderRead.mockResolvedValue(ladder());
     wrap(<Ladder projectId="q" />);
     const anon = await screen.findByTestId("ladder-override");
-    expect(anon).toHaveTextContent("Your override · profile · work you claim");
+    expect(anon).toHaveTextContent("Your override");
+    expect(anon).toHaveTextContent("profile · work you claim");
     expect(anon).not.toHaveTextContent("my's");
   });
 
