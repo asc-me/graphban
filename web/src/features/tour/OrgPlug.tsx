@@ -1,13 +1,13 @@
 import * as React from "react";
 
 import { Input, Textarea } from "@/components/ui/input";
-import { useConfig, useOnboarding, useOrgs, useRequestOrg } from "@/lib/queries";
+import { useConfig, useOnboarding, useOrgs, useRequestOrg, useSyncStatus } from "@/lib/queries";
 import { settingsPath } from "@/lib/routes";
 
 /** "Request again" appears this long after the stored request date — and not before. */
 export const REQUEST_AGAIN_DAYS = 14;
 
-export type PlugKind = "hosted" | "request";
+export type PlugKind = "hosted" | "request" | "linked" | "unknown";
 
 /** The date the card prints, from the stored ISO stamp ("5 Nov"). */
 export function requestedOn(iso: string): string {
@@ -43,12 +43,16 @@ export function OrgPlug({
   const orgs = useOrgs(hosted).data ?? [];
   const requestedAt = useOnboarding().data?.onboarding?.org_requested_at;
   const request = useRequestOrg();
+  const sync = useSyncStatus();
   const [form, setForm] = React.useState(false);
   const [name, setName] = React.useState("");
   const [email, setEmail] = React.useState("");
   const [note, setNote] = React.useState("");
 
-  const kind: PlugKind = hosted && orgs.length ? "hosted" : "request";
+  // Self-host: the link state decides. A failed or pending read is unknown, never unlinked.
+  const linkedOrg = sync.data?.linked ? sync.data : null;
+  const kind: PlugKind =
+    hosted && orgs.length ? "hosted" : hosted ? "request" : linkedOrg ? "linked" : sync.data ? "request" : "unknown";
   const sent = !!requestedAt && !form;
 
   async function send() {
@@ -62,10 +66,36 @@ export function OrgPlug({
 
   let action: { label: string; run: () => void; disabled?: boolean } | null = null;
   if (kind === "hosted") action = { label: "Invite a teammate →", run: () => onNavigate(settingsPath("members")) };
+  else if (kind === "unknown") action = null;
   else if (form)
     action = { label: "Send", run: send, disabled: !name.trim() || !email.trim().includes("@") || request.isPending };
   else if (!requestedAt) action = { label: "Request an org", run: () => setForm(true) };
   else if (canRequestAgain(requestedAt)) action = { label: "Request again", run: () => setForm(true) };
+
+  if (kind === "linked" && linkedOrg) {
+    const orgName = linkedOrg.org || "an org";
+    return (
+      <div className="flex flex-col gap-2.5" data-tour-plug="linked">
+        <p className="text-[13px] leading-normal text-fg-2 [text-wrap:pretty]">
+          This deployment is linked to <strong className="font-semibold text-fg">{orgName}</strong>.
+        </p>
+        <div className="grid grid-cols-2 gap-2">
+          <a
+            className={`${EQUAL} inline-flex items-center justify-center`}
+            href={linkedOrg.cloud_url}
+            target="_blank"
+            rel="noreferrer"
+            onClick={onNotNow}
+          >
+            Open the org →
+          </a>
+          <button type="button" className={EQUAL} onClick={onNotNow}>
+            Not now
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-2.5" data-tour-plug={kind}>
