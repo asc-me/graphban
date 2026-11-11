@@ -14,7 +14,11 @@ jobs:
   # that over-runs — a green tick has to mean the thing was tested.
   changes:
     name: What changed
-    runs-on: ubuntu-latest
+    # Every job but `windows` runs on our own runners (ubuntu-srv, rog-om-01), and this repo is
+    # public. A fork's PR never runs on them: this job is skipped for a fork, so every job that
+    # needs it is skipped too. Outside contributors' runs also need approval (repo setting).
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, graphban-ci]
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
@@ -119,7 +123,7 @@ jobs:
     name: Refusal ratchet
     needs: changes
     if: needs.changes.outputs.backend == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, graphban-ci]
     steps:
       - uses: actions/checkout@v4
       - run: python3 scripts/refusal_ratchet.py check
@@ -128,7 +132,7 @@ jobs:
     name: Backend tests (SQLite)
     needs: changes
     if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.stamp_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, graphban-ci]
     defaults:
       run:
         working-directory: backend
@@ -150,9 +154,9 @@ jobs:
     name: Backend tests (Postgres + pgvector) (${{ matrix.shard }}/3)
     needs: changes
     if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.stamp_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, graphban-ci]
     # Three runners, one third of the test FILES each (tests/sharding.py packs them by measured
-    # time). Public-repo runners are free and parallel, so this is wall clock for nothing. A
+    # time). The three shards run in parallel on separate self-hosted runners. A
     # shard is not a full run, so the every-tool ratchet (GRPH-495) is left to the unsharded
     # SQLite job, which still runs every file. `ci.needs` sees one result for the matrix: any
     # shard failing fails it.
@@ -170,8 +174,10 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: graphban_test
+        # A random host port: several of these run at once on one self-hosted machine, and
+        # ubuntu-srv's own Postgres (the ledger) already holds 5432.
         ports:
-          - 5432:5432
+          - 5432
         # The cluster lives in RAM (GRPH-529). This database is created, migrated and
         # destroyed inside one job. Nothing here needs to survive the job, so nothing
         # here is written to disk. `size` is generous over the seeded dataset; the
@@ -185,7 +191,6 @@ jobs:
           --health-retries 20
           --tmpfs /var/lib/postgresql/data:rw,size=2048m
     env:
-      DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/graphban_test
       GRAPHBAN_TEST_SHARD: ${{ matrix.shard }}/3
     steps:
       - uses: actions/checkout@v4
@@ -198,6 +203,10 @@ jobs:
       # -n auto: one worker per core, each with its own database (see tests/conftest.py).
       # The suite is serial otherwise and the runner has cores going spare.
       - run: .venv/bin/python -m pytest -q -n auto
+        env:
+          # The service's host port is assigned per job (see `ports` above), and the `job`
+          # context is only readable at step level.
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:${{ job.services.db.ports['5432'] }}/graphban_test
 
   backend-packaging:
     # The install backend/Dockerfile runs: `pip install --no-cache-dir .` —
@@ -210,7 +219,7 @@ jobs:
     name: Backend wheel installs (non-editable)
     needs: changes
     if: needs.changes.outputs.backend == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, graphban-ci]
     defaults:
       run:
         working-directory: backend
@@ -273,7 +282,7 @@ jobs:
     name: Frontend tests + typecheck + build
     needs: changes
     if: needs.changes.outputs.frontend == 'true' && needs.changes.outputs.stamp_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, graphban-ci]
     defaults:
       run:
         working-directory: web
@@ -295,7 +304,9 @@ jobs:
       - run: pnpm test
       - name: Canvas perf bench
         run: |
-          pnpm exec playwright install --with-deps chromium
+          # Chromium's system libraries are installed on the runner hosts once (apt on
+          # ubuntu-srv, pacman on rog-om-01), so this only fetches the browser.
+          pnpm exec playwright install chromium
           pnpm bench
       - run: pnpm typecheck
       - run: pnpm build
@@ -304,7 +315,7 @@ jobs:
     name: Fleet supervisor tests
     needs: changes
     if: needs.changes.outputs.fleet == 'true' && needs.changes.outputs.stamp_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, graphban-ci]
     defaults:
       run:
         working-directory: fleet
@@ -324,7 +335,7 @@ jobs:
     name: CLI tests
     needs: changes
     if: needs.changes.outputs.cli == 'true' && needs.changes.outputs.stamp_only != 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, graphban-ci]
     defaults:
       run:
         working-directory: cli
