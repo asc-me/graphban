@@ -20,6 +20,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { Input } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { AGENTS, ConnectStep, ROUTE_LABEL, type Route } from "@/features/onboarding/ConnectStep";
+import { ConceptsPanel, conceptCaption } from "@/features/onboarding/ConceptsPanel";
 import { InviteeLinkCard } from "@/features/onboarding/InviteeLinkCard";
 import { StartupPromptRows } from "@/features/onboarding/StartupPrompts";
 import { TagField, useTagField } from "@/features/onboarding/TagField";
@@ -57,7 +58,7 @@ const ACCENTS = ["#c6f24e", "#a78bfa", "#7ca2ff", "#e0b34a", "#5fd07a", "#ff8f8f
 
 type Where = "this_computer" | "dedicated_server";
 type ModelChoice = "offline" | "ollama" | "claude";
-type Screen = QsStep | "finish" | "welcome" | "sections";
+type Screen = QsStep | "finish" | "welcome" | "sections" | "concepts";
 
 /** Steps, marks and chip count for one project — the dialog and the top-bar chip share it. */
 export function useQuickStart(projectId: string, hosted: boolean, pollMs?: number) {
@@ -132,6 +133,7 @@ export function QuickStartDialog({
     return "sections";
   };
   const [screen, setScreen] = React.useState<Screen>(landing);
+  const [concept, setConcept] = React.useState(0);
   const qs = useQuickStart(projectId, hosted, open && (screen === "first_job" || screen === "connect") ? 3000 : undefined);
   const steps = qs.steps;
 
@@ -141,6 +143,7 @@ export function QuickStartDialog({
       const next = landing();
       if (next === "welcome") welcomed.current = true;
       setScreen(next);
+      setConcept(0);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialStep]);
@@ -173,7 +176,7 @@ export function QuickStartDialog({
         aria-describedby="qs-desc"
       >
         <div className="flex min-h-0">
-        <Hero steps={steps} marks={qs.marks} screen={screen} />
+        <Hero steps={steps} marks={qs.marks} screen={screen} conceptIndex={concept} />
         <div className="min-w-0 flex-1">
         <div className="border-b border-line px-5 pb-3 pt-4">
           <DialogTitle className="font-mono text-small uppercase tracking-[0.08em] text-faint">
@@ -190,7 +193,16 @@ export function QuickStartDialog({
         <div className="px-5 py-4">
           {screen === "welcome" && <WelcomePanel onStart={() => go("sections")} onFinishLater={onFinishLater} />}
           {screen === "sections" && (
-            <SectionsPanel steps={steps} marks={qs.marks} onOpen={go} onTour={takeTour} onFinishLater={onFinishLater} />
+            <SectionsPanel steps={steps} marks={qs.marks} onOpen={go} onTour={takeTour} onConcepts={() => { setConcept(0); go("concepts"); }} onFinishLater={onFinishLater} />
+          )}
+          {screen === "concepts" && (
+            <ConceptsPanel
+              index={concept}
+              onIndex={setConcept}
+              onExit={() => go("sections")}
+              onFinish={() => go("sections")}
+              onFinishLater={onFinishLater}
+            />
           )}
           {screen === "where" && (
             <WhereStep
@@ -293,7 +305,7 @@ export type HeroState = "done" | "pending" | "unknown";
 
 /** The hero shows the same fact as the rail, for the current screen. Finish rolls the steps up. */
 export function heroState(steps: QsStep[], marks: Record<QsStep, StepMark>, screen: Screen): HeroState {
-  if (screen !== "finish" && screen !== "welcome" && screen !== "sections") return marks[screen].status;
+  if (screen !== "finish" && screen !== "welcome" && screen !== "sections" && screen !== "concepts") return marks[screen].status;
   const all = steps.map((s) => marks[s].status);
   if (all.every((x) => x === "done")) return "done";
   return all.includes("unknown") ? "unknown" : "pending";
@@ -314,15 +326,21 @@ export function Hero({
   steps,
   marks,
   screen,
+  conceptIndex = 0,
 }: {
   steps: QsStep[];
   marks: Record<QsStep, StepMark>;
   screen: Screen;
+  conceptIndex?: number;
 }) {
   const state = heroState(steps, marks, screen);
   const flowing = state === "pending" && LIVE_STEPS.includes(screen);
   const caption =
-    screen === "finish" || screen === "welcome" || screen === "sections" ? "Setup" : STEP_META[screen].label;
+    screen === "concepts"
+      ? conceptCaption(conceptIndex)
+      : screen === "finish" || screen === "welcome" || screen === "sections"
+        ? "Setup"
+        : STEP_META[screen].label;
   return (
     <aside
       aria-hidden
@@ -342,7 +360,8 @@ export function Hero({
         />
       </svg>
       <p className="font-mono text-small uppercase tracking-[0.08em] text-faint">
-        {caption} · {state.toUpperCase()}
+        {caption}
+        {screen === "concepts" ? "" : ` · ${state.toUpperCase()}`}
       </p>
     </aside>
   );
@@ -378,11 +397,13 @@ function SectionsPanel({
   marks,
   onOpen,
   onTour,
+  onConcepts,
   onFinishLater,
 }: {
   steps: QsStep[];
   marks: Record<QsStep, StepMark>;
   onOpen: (s: QsStep) => void;
+  onConcepts: () => void;
   /** Absent until a project exists for the tour to point at. */
   onTour?: () => void;
   onFinishLater: () => void;
@@ -437,7 +458,7 @@ function SectionsPanel({
           </button>
         </li>
         <li>
-          <button type="button" data-section="concepts" className={cn(row, "opacity-60")} disabled>
+          <button type="button" data-section="concepts" className={cn(row, "hover:bg-surface-2")} onClick={onConcepts}>
             <span className="flex-1 text-[13px]">
               <span className="font-semibold">Graphban concepts</span>
               <span className="block text-[12px] text-muted">
