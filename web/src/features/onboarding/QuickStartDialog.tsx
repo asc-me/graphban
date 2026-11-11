@@ -303,7 +303,7 @@ export function Hero({
           className={flowing ? "qs-hero-flow" : undefined}
         />
       </svg>
-      <p className="font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+      <p className="font-mono text-small uppercase tracking-[0.08em] text-faint">
         {caption} · {state.toUpperCase()}
       </p>
     </aside>
