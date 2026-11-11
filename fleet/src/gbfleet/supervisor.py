@@ -1739,6 +1739,24 @@ def _shown(paths: list[str]) -> str:
     return ", ".join(paths[:5]) + (f" (+{len(paths) - 5} more)" if len(paths) > 5 else "")
 
 
+def _signed_off_commit(client: Graphban | None, items: list[str]) -> str:
+    """The commit a standing `fleet.sign_off` names on any of `items`, or "" (GRPH-1501)."""
+    call = getattr(client, "call", None)
+    if call is None:
+        # No client, or one that cannot read items: no sign-off is known, which is not a pass.
+        return ""
+    for item_id in items:
+        try:
+            details = call("get_item_details", id=item_id)
+        except (ToolFailed, NotPermitted, ServerUnreachable, ProtocolError):
+            continue
+        if isinstance(details, dict):
+            commit = propose_mod.reviewed_commit(details)
+            if commit:
+                return commit
+    return ""
+
+
 def _merge_behind(wave: Wave, repo: Path, branch: str, base: str, items: list[str], *,
                   client: Graphban | None) -> None:
     """Bring a clean-but-overlapping branch up to date before it is proposed (GRPH-1236).
@@ -1753,6 +1771,15 @@ def _merge_behind(wave: Wave, repo: Path, branch: str, base: str, items: list[st
     if pending is None:
         return
     behind, ref, shared = pending
+    signed = _signed_off_commit(client, items)
+    if signed:
+        # GRPH-1501: a sign-off vouches for `signed`. Merging the base now moves the head the
+        # merge step compares against it, voids the review, and sends the item back to `next`.
+        wave.behind_clean[branch] = (
+            f"{behind} behind {ref}, shares {_shown(shared)}; not merged because the item is "
+            f"signed off at {signed[:12]} — re-review is needed to take the base in"
+        )
+        return
     if len(items) > 1:
         # Split per item (GRPH-1086): each item's commits are replayed onto the current
         # trunk, so no per-item branch is behind. A merge commit here would name no item
