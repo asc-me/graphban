@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { OrgPlug } from "./OrgPlug";
@@ -58,11 +58,29 @@ describe("OrgPlug kinds", () => {
     state.sync = { data: { linked: true, org: "Acme", cloud_url: "https://acme.example.com" } };
     const { container } = view();
     expect(container.textContent).toContain("This deployment is linked to Acme.");
-    expect(screen.getByRole("link", { name: /Open the org/ })).toHaveAttribute("href", "https://acme.example.com");
+    expect(screen.getByRole("link", { name: /Open the org/ })).toHaveAttribute("href", "https://acme.example.com/");
     expect(screen.getByText("Not now")).toBeInTheDocument();
     expect(screen.queryByText("Request an org")).toBeNull();
     expect(screen.queryByText(/Invite a teammate/)).toBeNull();
   });
+
+  it.each(["", "not a url", "javascript:alert(1)"])(
+    "linked with a malformed cloud_url (%j): no href, Open the org goes to Settings › Cloud / Sync",
+    (cloud_url) => {
+      state.sync = { data: { linked: true, org: "Acme", cloud_url } };
+      const onNavigate = vi.fn();
+      const { container } = render(
+        <QueryClientProvider client={new QueryClient()}>
+          <OrgPlug onNotNow={() => {}} onNavigate={onNavigate} />
+        </QueryClientProvider>,
+      );
+      expect(container.textContent).toContain("This deployment is linked to Acme.");
+      expect(screen.queryByRole("link")).toBeNull();
+      expect(container.querySelector("a[href]")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: /Open the org/ }));
+      expect(onNavigate).toHaveBeenCalledWith("/settings/deployment/sync?reason=malformed");
+    },
+  );
 
   it("unknown: an unreadable link state shows neither linked nor a request", () => {
     state.sync = { data: undefined, isError: true };

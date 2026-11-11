@@ -2,7 +2,7 @@ import * as React from "react";
 
 import { Input, Textarea } from "@/components/ui/input";
 import { useConfig, useOnboarding, useOrgs, useRequestOrg, useSyncStatus } from "@/lib/queries";
-import { settingsPath } from "@/lib/routes";
+import { settingsPath, usableHttpUrl } from "@/lib/routes";
 
 /** "Request again" appears this long after the stored request date — and not before. */
 export const REQUEST_AGAIN_DAYS = 14;
@@ -74,21 +74,33 @@ export function OrgPlug({
 
   if (kind === "linked" && linkedOrg) {
     const orgName = linkedOrg.org || "an org";
+    const consoleUrl = usableHttpUrl(linkedOrg.cloud_url);
     return (
       <div className="flex flex-col gap-2.5" data-tour-plug="linked">
         <p className="text-[13px] leading-normal text-fg-2 [text-wrap:pretty]">
           This deployment is linked to <strong className="font-semibold text-fg">{orgName}</strong>.
         </p>
         <div className="grid grid-cols-2 gap-2">
-          <a
-            className={`${EQUAL} inline-flex items-center justify-center`}
-            href={linkedOrg.cloud_url}
-            target="_blank"
-            rel="noreferrer"
-            onClick={onNotNow}
-          >
-            Open the org →
-          </a>
+          {consoleUrl ? (
+            <a
+              className={`${EQUAL} inline-flex items-center justify-center`}
+              href={consoleUrl}
+              target="_blank"
+              rel="noreferrer"
+              onClick={onNotNow}
+            >
+              Open the org →
+            </a>
+          ) : (
+            // A junk or env-baked cloud_url is not a link we open: send them to fix it (as LeftNav does).
+            <button
+              type="button"
+              className={EQUAL}
+              onClick={() => onNavigate(`${settingsPath("deployment/sync")}?reason=malformed`)}
+            >
+              Open the org →
+            </button>
+          )}
           <button type="button" className={EQUAL} onClick={onNotNow}>
             Not now
           </button>
