@@ -271,7 +271,12 @@ export function heroState(steps: QsStep[], marks: Record<QsStep, StepMark>, scre
 // first call, First job counting. Unknown and done never move.
 const LIVE_STEPS: Screen[] = ["connect", "first_job"];
 
-const HERO_STROKE: Record<HeroState, string> = { done: "#c6f24e", pending: "#2a333a", unknown: "#7f8891" };
+// Theme tokens (index.css @theme): lit accent, muted line, static grey. No amber.
+const HERO_STROKE: Record<HeroState, string> = {
+  done: "var(--color-accent)",
+  pending: "var(--color-line)",
+  unknown: "var(--color-faint)",
+};
 
 export function Hero({
   steps,
