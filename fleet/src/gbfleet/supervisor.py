@@ -1741,11 +1741,13 @@ def _shown(paths: list[str]) -> str:
 
 def _signed_off_commit(client: Graphban | None, items: list[str]) -> str:
     """The commit a standing `fleet.sign_off` names on any of `items`, or "" (GRPH-1501)."""
-    if client is None:
+    call = getattr(client, "call", None)
+    if call is None:
+        # No client, or one that cannot read items: no sign-off is known, which is not a pass.
         return ""
     for item_id in items:
         try:
-            details = client.call("get_item_details", id=item_id)
+            details = call("get_item_details", id=item_id)
         except (ToolFailed, NotPermitted, ServerUnreachable, ProtocolError):
             continue
         if isinstance(details, dict):
