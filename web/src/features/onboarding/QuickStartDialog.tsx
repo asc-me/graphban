@@ -141,9 +141,12 @@ export function QuickStartDialog({
     <Dialog open={open} onOpenChange={(o) => !o && onFinishLater()}>
       <DialogContent
         overlayClassName="bg-black/30 backdrop-blur-none"
-        className="max-h-[92vh] max-w-[560px] overflow-y-auto p-0"
+        className="max-h-[92vh] max-w-[960px] overflow-y-auto p-0"
         aria-describedby="qs-desc"
       >
+        <div className="flex min-h-0">
+        <Hero steps={steps} marks={qs.marks} screen={screen} />
+        <div className="min-w-0 flex-1">
         <div className="border-b border-line px-5 pb-3 pt-4">
           <DialogTitle className="font-mono text-small uppercase tracking-[0.08em] text-faint">
             Quick start
@@ -245,8 +248,70 @@ export function QuickStartDialog({
             />
           )}
         </div>
+        </div>
+        </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// ── Hero ───────────────────────────────────────────────────────────────────────────────
+
+export type HeroState = "done" | "pending" | "unknown";
+
+/** The hero shows the same fact as the rail, for the current screen. Finish rolls the steps up. */
+export function heroState(steps: QsStep[], marks: Record<QsStep, StepMark>, screen: Screen): HeroState {
+  if (screen !== "finish") return marks[screen].status;
+  const all = steps.map((s) => marks[s].status);
+  if (all.every((x) => x === "done")) return "done";
+  return all.includes("unknown") ? "unknown" : "pending";
+}
+
+// Only a step that is actively waiting on something live may flow: Connect polling for the
+// first call, First job counting. Unknown and done never move.
+const LIVE_STEPS: Screen[] = ["connect", "first_job"];
+
+// Theme tokens (index.css @theme): lit accent, muted line, static grey. No amber.
+const HERO_STROKE: Record<HeroState, string> = {
+  done: "var(--color-accent)",
+  pending: "var(--color-line)",
+  unknown: "var(--color-faint)",
+};
+
+export function Hero({
+  steps,
+  marks,
+  screen,
+}: {
+  steps: QsStep[];
+  marks: Record<QsStep, StepMark>;
+  screen: Screen;
+}) {
+  const state = heroState(steps, marks, screen);
+  const flowing = state === "pending" && LIVE_STEPS.includes(screen);
+  const caption = screen === "finish" ? "Setup" : STEP_META[screen].label;
+  return (
+    <aside
+      aria-hidden
+      data-testid="qs-hero"
+      data-hero-state={state}
+      data-flowing={flowing ? "true" : "false"}
+      className="hidden w-[380px] flex-none flex-col justify-between border-r border-line bg-surface-2 p-6 min-[1000px]:flex"
+    >
+      <svg viewBox="0 0 320 120" className="w-full" fill="none">
+        <path
+          d="M10 100 C 90 100, 90 20, 160 20 S 230 100, 310 100"
+          stroke={HERO_STROKE[state]}
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeDasharray={state === "pending" ? "4 8" : undefined}
+          className={flowing ? "qs-hero-flow" : undefined}
+        />
+      </svg>
+      <p className="font-mono text-small uppercase tracking-[0.08em] text-faint">
+        {caption} · {state.toUpperCase()}
+      </p>
+    </aside>
   );
 }
 

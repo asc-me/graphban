@@ -391,3 +391,14 @@ details[open] > summary .u-chev { transform: rotate(90deg); }
   .u-dot-live, .u-sweep { animation: none; }
   .u-sweep { width: 50%; }
 }
+
+/* Quick-start hero: only a step waiting on something live flows (GRPH-1509). */
+@keyframes qsHeroFlow {
+  to { stroke-dashoffset: -24; }
+}
+.qs-hero-flow {
+  animation: qsHeroFlow 1.2s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .qs-hero-flow { animation: none; }
+}

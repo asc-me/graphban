@@ -21,6 +21,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppFrame } from "@/components/shell/AppFrame";
 import type { Onboarding, ProjectSetup, SetupStatus } from "@/lib/types";
 
+import { Hero, heroState } from "./QuickStartDialog";
 import {
   chipCount,
   deriveMarks,
@@ -632,5 +633,36 @@ describe("step ① posture check (GRPH-1365)", () => {
       expect(await screen.findByText(/Could not check whether SECRET_ENCRYPTION_KEY is set/)).toBeInTheDocument();
       expect(screen.queryByText(/stored unencrypted/)).not.toBeInTheDocument();
     });
+  });
+});
+
+describe("two-pane hero (GRPH-1509)", () => {
+  const all = stepsFor(false);
+  const marksOf = (status: SetupStatus) =>
+    Object.fromEntries(all.map((s) => [s, { status }])) as Parameters<typeof Hero>[0]["marks"];
+
+  for (const step of all) {
+    for (const status of ["done", "pending", "unknown"] as const) {
+      it(`${step} · ${status} draws the ${status} hero`, () => {
+        const { getByTestId } = render(<Hero steps={all} marks={marksOf(status)} screen={step} />);
+        const hero = getByTestId("qs-hero");
+        expect(hero.getAttribute("data-hero-state")).toBe(status);
+        expect(heroState(all, marksOf(status), step)).toBe(status);
+        // Flow only for a pending step that is waiting on something live; never done/unknown.
+        const live = status === "pending" && (step === "connect" || step === "first_job");
+        expect(hero.getAttribute("data-flowing")).toBe(live ? "true" : "false");
+        expect(hero.querySelector(".qs-hero-flow") !== null).toBe(live);
+        // No amber anywhere in the hero.
+        expect(hero.innerHTML.toLowerCase()).not.toMatch(/e0b34a|amber/);
+      });
+    }
+  }
+
+  it("the dialog is 960px with the hero beside the steps", async () => {
+    renderFrame();
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.className).toContain("max-w-[960px]");
+    expect(within(dialog).getByTestId("qs-hero")).toBeInTheDocument();
+    expect(within(dialog).getByRole("heading", { name: "Where is Graphban running?" })).toBeInTheDocument();
   });
 });
