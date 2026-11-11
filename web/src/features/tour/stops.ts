@@ -36,7 +36,7 @@ export const TOUR_STOPS: TourStop[] = [
   {
     id: "tracker",
     title: "Tracker",
-    body: "One linear stream, six states, no boards. Agents claim from the top, and the files an item names — its touchpoints — keep parallel agents from colliding.",
+    body: "Six states, as a board or a list. Agents claim ready work, and the files an item names — its touchpoints — keep parallel agents from colliding.",
     empty: { count: "items", text: "Your agent's first items will appear here." },
   },
   {
