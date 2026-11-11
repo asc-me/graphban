@@ -132,6 +132,10 @@ vi.mock("@/components/shell/AgentSidebar", () => ({ AgentSidebar: () => null }))
 vi.mock("@/components/shell/CommandPalette", () => ({ CommandPalette: () => null }));
 vi.mock("@/components/shell/ProjectBar", () => ({ ProjectBar: () => null }));
 vi.mock("@/features/docs/DocsReader", () => ({ DocsReader: () => null }));
+// The tour needs the real nav's anchors; here it is a marker for "the tour was started".
+vi.mock("@/features/tour/AppTour", () => ({
+  AppTour: ({ open }: { open: boolean }) => (open ? <div data-testid="app-tour">Stop 1 / 8</div> : null),
+}));
 vi.mock("@/features/reports/ReportIssueDialog", () => ({ ReportIssueDialog: () => null }));
 
 function renderFrame() {
@@ -152,6 +156,23 @@ function rail() {
 }
 function railItem(step: string) {
   return rail().querySelector(`[data-step="${step}"]`) as HTMLElement;
+}
+
+/** Past Welcome (when it is showing) and into one section of the Sections panel. */
+async function enter(user: ReturnType<typeof userEvent.setup>, section: string) {
+  await screen.findByRole("dialog");
+  const start = await waitFor(() => {
+    const welcome = screen.queryByRole("button", { name: "Get started →" });
+    if (!welcome) expect(screen.getByRole("list", { name: "Sections" })).toBeInTheDocument();
+    return welcome;
+  });
+  if (start) await user.click(start);
+  const row = await waitFor(() => {
+    const el = document.querySelector(`[data-section="${section}"]`);
+    expect(el).not.toBeNull();
+    return el as HTMLElement;
+  });
+  await user.click(row);
 }
 
 beforeEach(() => {
@@ -178,7 +199,7 @@ describe("who lands in the dialog", () => {
     renderFrame();
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("Quick start")).toBeInTheDocument();
-    expect(within(dialog).getByRole("heading", { name: "Where is Graphban running?" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("heading", { name: "Welcome to Graphban" })).toBeInTheDocument();
   });
 
   it("a backfilled user does not: no dialog and no chip", async () => {
@@ -205,7 +226,7 @@ describe("every mark comes from GET …/setup", () => {
   it("a new user walks ⓪ → ① creating the project, and the answers are stored by confirm", async () => {
     const user = userEvent.setup();
     renderFrame();
-    await screen.findByRole("dialog");
+    await enter(user, "where");
     // jsdom serves from localhost, so ⓪ pre-selects "this computer" and names its evidence.
     expect(screen.getByRole("radio", { name: /On this computer/ })).toBeChecked();
     expect(screen.getByText(/Pre-selected: you opened Graphban on localhost/)).toBeInTheDocument();
@@ -234,6 +255,7 @@ describe("every mark comes from GET …/setup", () => {
   it("Finish later at ⓪ with no project shows the chip over an empty shell, never the old create form; the chip reopens ⓪", async () => {
     const user = userEvent.setup();
     renderFrame();
+    await enter(user, "where");
     await screen.findByRole("heading", { name: "Where is Graphban running?" });
     await user.click(screen.getByRole("button", { name: "Finish later" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
@@ -243,13 +265,14 @@ describe("every mark comes from GET …/setup", () => {
     const chip = await screen.findByRole("button", { name: /Finish setup/ });
     expect(chip).toHaveTextContent("Finish setup 0/4");
     await user.click(chip);
-    expect(await screen.findByRole("heading", { name: "Where is Graphban running?" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Sections" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Welcome to Graphban" })).not.toBeInTheDocument();
   });
 
   it("the DOM never holds two project-name inputs, and a project made in the dialog records the workspace confirmation", async () => {
     const user = userEvent.setup();
     renderFrame();
-    await screen.findByRole("dialog");
+    await enter(user, "where");
     await user.click(screen.getByRole("button", { name: "Next →" }));
     await screen.findByRole("heading", { name: "Create your project" });
     expect(screen.getAllByPlaceholderText("e.g. Core Platform")).toHaveLength(1);
@@ -265,7 +288,7 @@ describe("every mark comes from GET …/setup", () => {
     srv.confirmIsNoop = true;
     const user = userEvent.setup();
     renderFrame();
-    await screen.findByRole("heading", { name: "Where is Graphban running?" });
+    await enter(user, "where");
     await user.click(screen.getByRole("button", { name: "Next →" }));
     await screen.findByRole("heading", { name: "Confirm your project" });
     expect(srv.confirms).toHaveLength(1);
@@ -284,7 +307,7 @@ describe("every mark comes from GET …/setup", () => {
     const chip = await screen.findByRole("button", { name: /Finish setup/ });
     await waitFor(() => expect(chip).toHaveTextContent("Finish setup 2/4"));
     await user.click(chip);
-    // First unfinished: ③ Connect.
+    await enter(user, "connect");
     expect(await screen.findByRole("heading", { name: "Connect your agent" })).toBeInTheDocument();
     expect(railItem("where").dataset.status).toBe("done");
     expect(railItem("project").dataset.status).toBe("done");
@@ -298,7 +321,9 @@ describe("every mark comes from GET …/setup", () => {
     srv.onboarding = null;
     srv.statuses = { 0: "done", 1: "done" };
     srv.details = { 0: "this_computer" };
+    const user = userEvent.setup();
     renderFrame();
+    await enter(user, "model");
     expect(await screen.findByRole("heading", { name: "Pick a model" })).toBeInTheDocument();
     expect(railItem("model")).toHaveAttribute("aria-current", "step");
   });
@@ -342,6 +367,7 @@ describe("the chip and Finish", () => {
     renderFrame();
     const chip = await screen.findByRole("button", { name: /Finish setup/ });
     await user.click(chip);
+    await enter(user, "project");
     expect(await screen.findByRole("heading", { name: "Confirm your project" })).toBeInTheDocument();
 
     // Walk to Finish without doing anything else: Finish is always reachable.
@@ -375,9 +401,12 @@ describe("hosted", () => {
   it("never shows step ⓪", async () => {
     srv.hosted = true;
     srv.projects = [CORE];
+    const user = userEvent.setup();
     renderFrame();
+    await enter(user, "project");
     expect(await screen.findByRole("heading", { name: "Confirm your project" })).toBeInTheDocument();
     expect(rail().querySelector('[data-step="where"]')).toBeNull();
+    expect(document.querySelector('[data-section="where"]')).toBeNull();
     expect(screen.queryByText("Where is Graphban running?")).not.toBeInTheDocument();
   });
 });
@@ -387,6 +416,7 @@ describe("step ⓪ on a dedicated server", () => {
     srv.projects = [CORE];
     const user = userEvent.setup();
     renderFrame();
+    await enter(user, "where");
     await screen.findByRole("heading", { name: "Where is Graphban running?" });
     await user.click(screen.getByRole("radio", { name: /On a dedicated server/ }));
     const addr = screen.getByLabelText("Server address");
@@ -412,6 +442,7 @@ describe("③ Connect your agent", () => {
   async function open(user: ReturnType<typeof userEvent.setup>) {
     renderFrame();
     await user.click(await screen.findByRole("button", { name: /Finish setup/ }));
+    await enter(user, "connect");
     await screen.findByRole("heading", { name: "Connect your agent" });
   }
 
@@ -475,6 +506,7 @@ describe("③ Connect your agent", () => {
     const user = userEvent.setup();
     renderFrame();
     await user.click(await screen.findByRole("button", { name: /Finish setup/ }));
+    await enter(user, "connect");
     await waitFor(() => expect(railItem("connect").dataset.status).toBe("done"));
     srv.setupFails = true;
     await waitFor(() => expect(railItem("connect").dataset.status).toBe("unknown"), { timeout: 5000 });
@@ -568,7 +600,7 @@ describe("step ① posture check (GRPH-1365)", () => {
     const user = userEvent.setup();
     srv.projects = [CORE];
     renderFrame();
-    await screen.findByRole("dialog");
+    await enter(user, "where");
     await user.click(screen.getByRole("button", { name: "Next →" }));
     await screen.findByRole("heading", { name: "Confirm your project" });
     return user;
@@ -663,6 +695,60 @@ describe("two-pane hero (GRPH-1509)", () => {
     const dialog = await screen.findByRole("dialog");
     expect(dialog.className).toContain("max-w-[960px]");
     expect(within(dialog).getByTestId("qs-hero")).toBeInTheDocument();
-    expect(within(dialog).getByRole("heading", { name: "Where is Graphban running?" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("heading", { name: "Welcome to Graphban" })).toBeInTheDocument();
+  });
+});
+
+describe("Welcome and Sections (GRPH-1510)", () => {
+  it("first open shows Welcome; its primary action leads to Sections listing steps, Tour and Concepts", async () => {
+    srv.projects = [CORE];
+    srv.statuses = { 0: "done", 1: "unknown" };
+    srv.reasons = { 1: "could not check: Timeout" };
+    srv.details = { 0: "this_computer" };
+    const user = userEvent.setup();
+    renderFrame();
+    expect(await screen.findByRole("heading", { name: "Welcome to Graphban" })).toBeInTheDocument();
+    expect(screen.getByText(/or from Help once you're done/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Get started →" }));
+    const list = await screen.findByRole("list", { name: "Sections" });
+    await waitFor(() => expect(list.querySelector('[data-section="where"]')).toHaveAttribute("data-status", "done"));
+    expect(list.querySelector('[data-section="project"]')).toHaveAttribute("data-status", "unknown");
+    expect(list.querySelector('[data-section="model"]')).toHaveAttribute("data-status", "pending");
+    expect(within(list).getByText("Tour")).toBeInTheDocument();
+    expect(within(list).getByText("Graphban concepts")).toBeInTheDocument();
+    expect(within(list).queryByText("NEW")).not.toBeInTheDocument();
+  });
+
+  it("the setup chip reopens on Sections, not Welcome", async () => {
+    srv.projects = [CORE];
+    srv.onboarding = { quickstart_dismissed_at: "2026-11-01T00:00:00Z" };
+    const user = userEvent.setup();
+    renderFrame();
+    await user.click(await screen.findByRole("button", { name: /Finish setup/ }));
+    expect(await screen.findByRole("heading", { name: "Sections" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Welcome to Graphban" })).not.toBeInTheDocument();
+  });
+
+  it("closing from Welcome and reopening from the chip lands on Sections", async () => {
+    srv.projects = [CORE];
+    const user = userEvent.setup();
+    renderFrame();
+    await screen.findByRole("heading", { name: "Welcome to Graphban" });
+    await user.click(screen.getByRole("button", { name: "Finish later" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await user.click(await screen.findByRole("button", { name: /Finish setup/ }));
+    expect(await screen.findByRole("heading", { name: "Sections" })).toBeInTheDocument();
+  });
+
+  it("Tour closes the dialog and starts the app tour at stop 1", async () => {
+    srv.projects = [CORE];
+    srv.onboarding = { quickstart_dismissed_at: "2026-11-01T00:00:00Z" };
+    const user = userEvent.setup();
+    renderFrame();
+    await user.click(await screen.findByRole("button", { name: /Finish setup/ }));
+    await screen.findByRole("heading", { name: "Sections" });
+    await user.click(document.querySelector('[data-section="tour"]') as HTMLElement);
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Sections" })).not.toBeInTheDocument());
+    expect(await screen.findByTestId("app-tour")).toHaveTextContent("Stop 1 / 8");
   });
 });
