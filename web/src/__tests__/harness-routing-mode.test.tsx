@@ -138,7 +138,7 @@ describe("Capacity routing mode", () => {
     expect(rows).toHaveLength(2);
     expect(rows[0]).toHaveAttribute("data-entitlement", "s-a");
     expect(rows[1]).toHaveAttribute("data-entitlement", "s-new");
-    await user.click(within(rows[1]).getByLabelText("Move up"));
+    await user.click(within(rows[1]).getByRole("button", { name: /up$/ }));
     await user.click(screen.getByTestId("routing-apply"));
     await waitFor(() => expect(policySave).toHaveBeenCalledTimes(1));
     const body = policySave.mock.calls[0][0] as { subscription_order: string[] };
@@ -156,7 +156,7 @@ describe("Capacity routing mode", () => {
     wrap(<RoutingMode projectId="p" entitlements={[sub("s-first", "a"), sub("s-second", "b")]} />);
     await user.click(await screen.findByTestId("routing-mode-custom"));
     const rows = await screen.findAllByTestId("routing-subscription-row");
-    await user.click(within(rows[1]).getByLabelText("Move up"));
+    await user.click(within(rows[1]).getByRole("button", { name: /up$/ }));
     await user.click(screen.getByTestId("routing-apply"));
     await waitFor(() => expect(policySave).toHaveBeenCalledTimes(1));
     const body = policySave.mock.calls[0][0] as { routing_mode: string; subscription_order: string[] };
@@ -219,5 +219,32 @@ describe("Capacity routing mode", () => {
     };
     wrap(<RoutingMode projectId="p" entitlements={[local]} />);
     expect(await screen.findByTestId("capacity-local-unreachable")).toHaveTextContent(/local is unreachable/i);
+  });
+
+  it("each ranked subscription says whether it takes work now", async () => {
+    policyRead.mockResolvedValue({ project_id: "p", writable: true,
+      policy: { local_only: false, reviewer_cross_vendor: false, allowed_harnesses: [], routing_mode: "custom_hierarchy", subscription_order: ["s-x", "s-a"] } });
+    wrap(<RoutingMode projectId="p" entitlements={[sub("s-a", "a"), { ...sub("s-x", "b"), state: "exhausted" }, { ...sub("s-u", "c"), state: "unknown" }]} />);
+    const rows = await screen.findAllByTestId("routing-subscription-row");
+    expect(within(rows[0]).getByTestId("routing-row-now")).toHaveTextContent("skipped now · exhausted");
+    expect(within(rows[1]).getByTestId("routing-row-now")).toHaveTextContent("takes work now");
+    expect(within(rows[2]).getByTestId("routing-row-now")).toHaveTextContent("probed one item at a time · unknown");
+    expect(screen.getByTestId("routing-rule-title")).toHaveTextContent("Route by preferred hierarchy · s-a first");
+    expect(screen.getByTestId("routing-rule-state")).toHaveTextContent("active");
+  });
+
+  it("an unapplied change is a draft that survives a look at another view", async () => {
+    const user = userEvent.setup();
+    policyRead.mockResolvedValue({ project_id: "p", policy: null, writable: true });
+    capacity.mockResolvedValue(emptyCapacity([sub("s1", "anthropic")]));
+    wrap(<CapacityPanel projectId="p" />);
+    await user.click(await screen.findByTestId("capacity-view-routing"));
+    await user.click(await screen.findByTestId("routing-mode-custom"));
+    expect(screen.getByTestId("routing-rule-state")).toHaveTextContent("draft · not applied");
+    expect(screen.getByTestId("capacity-view-routing")).toHaveTextContent("draft");
+    await user.click(screen.getByTestId("capacity-view-overview"));
+    await user.click(screen.getByTestId("capacity-view-routing"));
+    expect(screen.getByTestId("routing-mode-custom")).toBeChecked();
+    expect(policySave).not.toHaveBeenCalled();
   });
 });

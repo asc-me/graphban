@@ -3043,7 +3043,41 @@ export interface HarnessCapacityEntitlement {
   /** D4: on a `broken` entitlement, the runner that reported the failure, and who declares it. */
   reported_by: HarnessCapacityRunner | null;
   declared_by: HarnessCapacityRunner[];
+  /** The owner's stated next reset (never parsed from vendor text); null = not stated. Absent on older servers. */
+  next_reset_at?: string | null;
+  /** On an `unreachable` entitlement, the state its events last gave; null otherwise. */
+  last_known_state?: HarnessCapacityEntitlement["state"] | null;
+  /** The current budget period, placed and graded on the server. Absent on older servers. */
+  burn_down?: HarnessBurnDown;
 }
+
+export type HarnessBurnVerdict = "runs_out_early" | "on_track" | "stopped" | "run_out" | "no_spend";
+
+export type HarnessBurnDown =
+  | { available: false; reason: string }
+  | {
+      available: true;
+      period: "daily" | "weekly" | "monthly";
+      /** The series' step: hours for a daily budget, days otherwise. */
+      step: "hour" | "day";
+      start: string;
+      end: string;
+      budget: number;
+      /** Reported tokens this period; `unreported` spawns are counted, never spent as zero. */
+      spent: number;
+      left: number;
+      unreported: number;
+      series: { at: string; left: number }[];
+      forecast: {
+        verdict: HarnessBurnVerdict;
+        recent_steps: number;
+        recent_rate: number;
+        avg_rate: number;
+        runs_out_at: string | null;
+        left_at_reset: number | null;
+        stopped_at: string | null;
+      };
+    };
 
 export interface HarnessCapacityRunner {
   agent_id: string;
@@ -3098,6 +3132,8 @@ export interface HarnessCapacity {
     entitlements_with_budget: number;
     entitlements_without_budget: number;
     unreported_spends: number;
+    /** Distinct items the router claimed in the week. Absent on older servers. */
+    items_routed?: number;
     waves_ended_by_capacity: { count: number | null; note: string };
     items_deferred_to_reset: { count: number | null; note: string };
   };

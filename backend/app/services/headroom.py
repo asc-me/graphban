@@ -89,12 +89,16 @@ def headroom(db: Session, row: Entitlement, *, now: datetime | None = None) -> d
     # only the vendor session working again (a `registered` report) ends `exhausted`.
     if state == "broken" and any(e.event == "declared" and e.id > last.id for e in events):
         state = "unknown"
+    # The state the events alone give, kept when presence overrides it: an unreachable
+    # entitlement still says what it last reported, so the page can say "last known AVAILABLE".
+    settled_state = state
     if _unreachable(db, row):
         state = "unreachable"
     spawns = sum(1 for e in events if e.event == "registered")
     reported = [e for e in events if e.event == "spend" and e.tokens is not None]
     return {
         "state": state,
+        "last_known_state": settled_state if state == "unreachable" else None,
         # Verbatim (D5): never parsed into a time here, so no reset is invented.
         "vendor_text": last.vendor_text if last and state in ("exhausted", "broken") else "",
         "since": _aware(last.created_at).isoformat() if last else None,
@@ -291,12 +295,126 @@ def forecast(db: Session, row: Entitlement, *, now: datetime | None = None) -> d
         # a reset into a time, so there is no countdown to show.
         "reset_cadence": row.reset_cadence or None,
         "token_budget": row.token_budget,
+        # Stated by the owner, never parsed from vendor text (D5). None = not stated.
+        "next_reset_at": _aware(row.next_reset_at).isoformat() if row.next_reset_at else None,
+        "last_known_state": base["last_known_state"],
         "week": week,
         "projected_exhaustion": _projection(row, events, now, week),
+        "burn_down": burn_down(row, events, now, state=base["state"]),
         "reported_by": _runner(reporter) if reporter else None,
         "declared_by": ([_runner(a) for a in _declarers(db, row)]
                         if base["state"] == "broken" else []),
     }
+
+
+# ---- Burn-down: the current budget period, graded here so the page only draws it -------------
+
+#: The owner's cadence words this reads, exactly (case and surrounding space aside). Any other
+#: cadence ("5h rolling", "") leaves the period unplaced and says so: a guessed period would
+#: draw a confident curve over the wrong window.
+BURN_CADENCES: dict[str, str] = {"daily": "daily", "day": "daily", "weekly": "weekly",
+                                 "week": "weekly", "monthly": "monthly", "month": "monthly"}
+#: The forecast reads the burn over this many of the period's steps (hours for a daily budget,
+#: days otherwise) before now.
+BURN_RECENT_STEPS = 3
+
+
+def _add_months(dt: datetime, n: int) -> datetime:
+    import calendar
+
+    m = dt.month - 1 + n
+    y, m = dt.year + m // 12, m % 12 + 1
+    return dt.replace(year=y, month=m, day=min(dt.day, calendar.monthrange(y, m)[1]))
+
+
+def _step(period: str, dt: datetime, n: int) -> datetime:
+    if period == "monthly":
+        return _add_months(dt, n)
+    return dt + n * (timedelta(days=1) if period == "daily" else timedelta(days=7))
+
+
+def _burn_period(row: Entitlement, now: datetime) -> tuple[str, datetime, datetime] | str:
+    """(period, start, end) of the budget period `now` falls in, or the reason it cannot be
+    placed. The end is the owner's stated `next_reset_at`, rolled forward by the cadence while
+    it is in the past — the stated reset is an anchor, not a claim about today."""
+    if row.token_budget is None:
+        return "no token_budget stated"
+    if row.next_reset_at is None:
+        return "no next reset stated"
+    cadence = (row.reset_cadence or "").strip().lower()
+    period = BURN_CADENCES.get(cadence)
+    if period is None:
+        return (f"reset cadence {row.reset_cadence!r} is not daily, weekly or monthly, "
+                "so the period cannot be placed" if cadence else "no reset cadence stated")
+    end = _aware(row.next_reset_at)
+    n = 0
+    while end <= now:
+        n += 1
+        end = _step(period, _aware(row.next_reset_at), n)
+    while _step(period, end, -1) > now:  # a reset stated far ahead: walk back to now's period
+        end = _step(period, end, -1)
+    return period, _step(period, end, -1), end
+
+
+def burn_down(row: Entitlement, events: list[EntitlementEvent], now: datetime, *,
+              state: str) -> dict:
+    """Budget left over the current period: the actual series and the server's forecast.
+
+    The series is budget minus REPORTED tokens; a spawn with no spend report is counted in
+    `unreported` and makes `left` an upper bound (`lower_bound` on the spend), never a zero
+    spend. The forecast reads the last `BURN_RECENT_STEPS` steps; a `broken` entitlement's burn
+    has stopped because spawns are failing, which is said rather than forecast.
+    """
+    placed = _burn_period(row, now)
+    if isinstance(placed, str):
+        return {"available": False, "reason": placed}
+    period, start, end = placed
+    unit = timedelta(hours=1) if period == "daily" else timedelta(days=1)
+    budget = row.token_budget
+    spends = sorted(((_aware(e.created_at), e.tokens) for e in events
+                     if e.event == "spend" and e.tokens is not None
+                     and start <= _aware(e.created_at) <= now), key=lambda t: t[0])
+    spawns = sum(1 for e in events if e.event == "registered" and start <= _aware(e.created_at) <= now)
+    spent = sum(t for _, t in spends)
+
+    def left_at(t: datetime) -> int:
+        return budget - sum(tok for at, tok in spends if at <= t)
+
+    series, t = [], start
+    while t < now:
+        series.append({"at": t.isoformat(), "left": left_at(t)})
+        t += unit
+    series.append({"at": now.isoformat(), "left": left_at(now)})
+
+    elapsed = max((now - start) / unit, 1.0)
+    recent_from = max(start, now - BURN_RECENT_STEPS * unit)
+    recent_steps = max((now - recent_from) / unit, 1.0)
+    recent = sum(tok for at, tok in spends if at >= recent_from) / recent_steps
+    left = budget - spent
+    fc: dict = {"recent_steps": BURN_RECENT_STEPS, "recent_rate": round(recent, 1),
+                "avg_rate": round(spent / elapsed, 1), "runs_out_at": None,
+                "left_at_reset": None, "stopped_at": None}
+    if state == "broken":
+        fc["verdict"] = "stopped"
+        fc["stopped_at"] = spends[-1][0].isoformat() if spends else None
+        stopped_elapsed = max(((spends[-1][0] if spends else now) - start) / unit, 1.0)
+        fc["avg_rate"] = round(spent / stopped_elapsed, 1)
+    elif left <= 0:
+        fc.update(verdict="run_out", runs_out_at=(spends[-1][0] if spends else now).isoformat(),
+                  left_at_reset=0)
+    elif recent <= 0:
+        fc.update(verdict="on_track" if spent else "no_spend", left_at_reset=left)
+    else:
+        out = now + unit * (left / recent)
+        if out < end:
+            fc.update(verdict="runs_out_early", runs_out_at=out.isoformat(), left_at_reset=0)
+        else:
+            fc.update(verdict="on_track",
+                      left_at_reset=max(0, round(left - recent * ((end - now) / unit))))
+    return {"available": True, "period": period, "step": "hour" if period == "daily" else "day",
+            "start": start.isoformat(), "end": end.isoformat(), "budget": budget,
+            "spent": spent, "left": left, "unreported": max(spawns - len(spends), 0),
+            "series": series, "forecast": fc}
 
 
 def _capacity_rows(db: Session, org_id: str) -> list[Entitlement]:
@@ -330,11 +448,23 @@ def utilization(db: Session, org_id: str, *, now: datetime | None = None) -> dic
         "tokens_used": used, "budget": budget or None,
         "entitlements_with_budget": with_budget, "entitlements_without_budget": without_budget,
         "unreported_spends": unreported,
+        "items_routed": _items_routed(db, org_id, start, end),
         "waves_ended_by_capacity": _utilization_count(
             db, org_id, "wave_ended_capacity", start, end),
         "items_deferred_to_reset": _utilization_count(
             db, org_id, "item_deferred_reset", start, end),
     }
+
+
+def _items_routed(db: Session, org_id: str, start: datetime, end: datetime) -> int:
+    """Distinct items the router CLAIMED onto an entitlement or a ladder rung in the window. The
+    router writes a claim row for every routed claim, so this zero is a measured zero."""
+    from app.models import Item, RoutingDecision
+
+    rows = db.scalars(select(RoutingDecision).join(Item, Item.id == RoutingDecision.item_id)
+                      .join(Project, Project.id == Item.project_id)
+                      .where(Project.org_id == org_id, RoutingDecision.kind == "claim")).all()
+    return len({r.item_id for r in rows if start <= _aware(r.created_at) < end})
 
 
 def capacity(db: Session, org_id: str, *, now: datetime | None = None) -> dict:

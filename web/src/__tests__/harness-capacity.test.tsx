@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { CapacityPanel } from "@/features/harness/CapacityPanel";
@@ -38,6 +39,7 @@ function show() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<QueryClientProvider client={qc}><CapacityPanel projectId="p" /></QueryClientProvider>);
 }
+const openEnts = async () => userEvent.click(await screen.findByTestId("capacity-view-ents"));
 const ENT_HREF = consoleHref("/orgs/acme/settings/entitlements");
 
 describe("Capacity tab", () => {
@@ -58,6 +60,7 @@ describe("Capacity tab", () => {
     show();
     expect(await screen.findByTestId("capacity-org")).toHaveTextContent("acme · 0 entitlements");
     expect(screen.getByTestId("capacity-manage")).toHaveAttribute("href", ENT_HREF);
+    await openEnts();
     expect(screen.getByTestId("capacity-empty")).toHaveTextContent("○ NO ENTITLEMENTS DECLARED");
     expect(screen.getByTestId("capacity-declare")).toHaveAttribute("href", ENT_HREF);
   });
@@ -72,6 +75,7 @@ describe("Capacity tab", () => {
   it("exhausted shows the vendor quote and when it was seen", async () => {
     capacity.mockResolvedValueOnce(base([ent({ state: "exhausted", vendor_text: "Limit reached", seen_at: "2026-10-31T13:55:00Z" })]));
     show();
+    await openEnts();
     expect(await screen.findByTestId("capacity-exhausted")).toHaveTextContent("“Limit reached” · seen");
   });
 
@@ -80,38 +84,42 @@ describe("Capacity tab", () => {
     capacity.mockResolvedValueOnce(base([ent({ state: "broken", vendor_text: "401 invalid_api_key",
       reported_by: r("rn-ci-01"), declared_by: [r("rn-ci-01"), r("rn-ci-02")] })]));
     show();
-    expect(await screen.findByTestId("capacity-runner")).toHaveTextContent(
-      "“401 invalid_api_key” reported by rn-ci-01 · declared by rn-ci-01, rn-ci-02");
+    await openEnts();
+    expect(screen.getByTestId("capacity-runner")).toHaveTextContent(
+      "“401 invalid_api_key” · reported by rn-ci-01 · declared by rn-ci-01, rn-ci-02");
   });
 
   it("unknown says it was never measured", async () => {
     capacity.mockResolvedValueOnce(base([ent({ state: "unknown" })]));
     show();
+    await openEnts();
     expect(await screen.findByTestId("capacity-unknown")).toHaveTextContent("Never measured. Ranked below available.");
   });
 
-  it("unreachable names the runner and tags the last-known state as planned", async () => {
-    capacity.mockResolvedValueOnce(base([ent({ state: "unreachable", runner: { label: "rn-priya", owner: null } })]));
+  it("unreachable names the runner and its last known state", async () => {
+    capacity.mockResolvedValueOnce(base([ent({ state: "unreachable", last_known_state: "exhausted", runner: { label: "rn-priya", owner: null } })]));
     show();
-    const el = await screen.findByTestId("capacity-unreachable");
-    expect(el).toHaveTextContent("rn-priya has gone quiet.");
-    expect(el).toHaveTextContent("PLANNED · last-known state");
+    await openEnts();
+    const el = screen.getByTestId("capacity-unreachable");
+    expect(el).toHaveTextContent("rn-priya has gone quiet · last known EXHAUSTED");
+    expect(el).not.toHaveTextContent("PLANNED");
   });
 
-  it("draws a null day as a gap and a not-recorded rollup as not recorded, never 0", async () => {
-    capacity.mockResolvedValueOnce(base([ent({ daily_tokens: [null, 5, 0, 10, null, 2, 1] })]));
+  it("the 7-day column is the reported total, and a not-recorded rollup reads not recorded, never 0", async () => {
+    capacity.mockResolvedValueOnce(base([ent({ week: { tokens: 18_000, reported: 4, unreported: 1, limit_hits: 0 } })]));
     show();
-    const row = await screen.findByTestId("capacity-row");
-    expect(within(row).getAllByTestId("capacity-spark-gap")).toHaveLength(2);
-    expect(within(row).getAllByTestId("capacity-spark-bar")).toHaveLength(5);
-    expect(row).toHaveTextContent("PLANNED · forecast reset");
+    await openEnts();
+    const row = screen.getByTestId("capacity-row");
+    expect(within(row).getByTestId("capacity-week")).toHaveTextContent("18k+1 unreported");
+    expect(row).not.toHaveTextContent("PLANNED");
     expect(screen.getByTestId("capacity-rollup")).toHaveTextContent("Waves ended by capacity: not recorded");
   });
 
   it("shows runs out ~time when projected, else the reason", async () => {
     capacity.mockResolvedValueOnce(base([ent({ token_budget: 100, projected_exhaustion: { at: "2026-11-24T00:00:00Z", reason: "" } })]));
     show();
-    expect(await screen.findByTestId("capacity-row")).toHaveTextContent("runs out ~");
+    await openEnts();
+    expect(screen.getByTestId("capacity-row")).toHaveTextContent("runs out ~");
   });
 
   it("routing decisions show count, verbatim reasons and the no-decisions reason", async () => {
@@ -124,7 +132,7 @@ describe("Capacity tab", () => {
     show();
     expect(await screen.findByTestId("capacity-routing-reason")).toHaveTextContent("no claims routed in window");
     const [held, deferred] = screen.getAllByTestId("capacity-routing-group");
-    expect(within(held).getByTestId("capacity-routing-count")).toHaveTextContent("1");
+    expect(within(held).getByTestId("capacity-routing-count")).toHaveTextContent("1 · 7d");
     expect(within(held).getByTestId("capacity-routing-row")).toHaveTextContent("“reserved for review”");
     expect(within(deferred).getByTestId("capacity-routing-count")).toHaveTextContent("not recorded");
   });
