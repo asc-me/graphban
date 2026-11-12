@@ -54,6 +54,19 @@ mail is simply not sent, so an invite can be "issued" and never arrive.
 | `SMTP_STARTTLS` | `true` | |
 | `APP_BASE_URL` | `http://localhost:5173` | The base of links in outbound mail. Wrong here means invites point at localhost |
 
+## Browser notifications (Web Push)
+
+Response Needed alerts can also reach a person as a browser push (GRPH-1528, P75 D4): standard
+Web Push signed with VAPID keys, no third-party push service. With either key empty the bell says
+browser notifications are not set up on this deployment and offers no button; the in-app alert
+works either way. Generate a pair with `vapid --gen` (from `py-vapid`) or any Web Push tool.
+
+| Var | Default | Notes |
+| --- | --- | --- |
+| `VAPID_PUBLIC_KEY` | *(empty)* | Application server key (base64url) the browser subscribes with |
+| `VAPID_PRIVATE_KEY` | *(empty)* | The matching private key: a PEM path or the base64url key |
+| `VAPID_SUBJECT` | `mailto:admin@localhost` | The `sub` claim: a `mailto:` or `https:` contact the push service can reach |
+
 ## Deployment mode and operations
 
 | Var | Default | Notes |
