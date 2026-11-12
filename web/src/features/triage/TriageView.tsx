@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { FETCH_FAILED, PlannerError, TriageQueueSkeleton } from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
+import { copyText } from "@/lib/clipboard";
 import { useTriageFeed } from "@/lib/queries";
 import type { TriageFeedRow } from "@/lib/types";
 
@@ -25,15 +26,18 @@ interface Processed {
   row: TriageFeedRow;
   result: string;
   undo: Undo;
+  command?: string;
 }
 
 const KIND_TEXT: Record<string, string> = {
   blocker: "text-st-blocked",
   collision: "text-st-review",
+  answered: "text-st-done",
 };
 const KIND_DOT: Record<string, string> = {
   blocker: "bg-st-blocked",
   collision: "bg-st-review",
+  answered: "bg-st-done",
 };
 const kindText = (r: TriageFeedRow) => KIND_TEXT[r.kind] ?? "text-muted";
 const kindDot = (r: TriageFeedRow) => KIND_DOT[r.kind] ?? "bg-faint-2";
@@ -43,6 +47,7 @@ function metaOf(r: TriageFeedRow): string {
   if (r.kind === "blocker")
     return `${r.owner ?? "unclaimed"} · ${r.question_state ? QUESTION_LABEL[r.question_state] : r.decision ? "needs a decision" : r.waiting_on ? `waiting on ${r.waiting_on.id}` : "blocked"}`;
   if (r.kind === "collision") return `${r.members.length} items · ${r.risk}`;
+  if (r.kind === "answered") return r.answered_by;
   return `↑ ${r.votes} · ${r.by || "anonymous"}${r.duplicate ? ` · ${duplicateHintCopy(r.duplicate.id, r.duplicate.score)}` : ""}`;
 }
 
@@ -60,8 +65,9 @@ export function TriageView() {
   const busy = useRef(false);
 
   const hidden = useMemo(() => new Set(processed.map((p) => p.row.id)), [processed]);
+  // An answered decision comes back as its own receipt row, so answering it here does not hide it.
   const live = useMemo(
-    () => (feedQ.data?.rows ?? []).filter((r) => !hidden.has(r.id)),
+    () => (feedQ.data?.rows ?? []).filter((r) => r.kind === "answered" || !hidden.has(r.id)),
     [feedQ.data, hidden],
   );
   const shown = useMemo(() => live.filter((r) => inTab(r, tab)), [live, tab]);
@@ -82,8 +88,8 @@ export function TriageView() {
       const i = shown.indexOf(sel);
       const next = shown[i + 1] ?? shown[i - 1] ?? null;
       try {
-        const { result, undo } = await action.run();
-        setProcessed((p) => [...p, { row: sel, result, undo }]);
+        const { result, undo, command } = await action.run();
+        setProcessed((p) => [...p, { row: sel, result, undo, command }]);
         setSelId(next?.id ?? null);
         void refresh();
       } catch (e) {
@@ -184,6 +190,18 @@ export function TriageView() {
         {processed.slice(-5).reverse().map((p) => (
           <li key={p.row.id} className="truncate text-small text-muted">
             <span className="font-mono text-faint-2">{p.row.id}</span> {p.result}
+            {p.command && (
+              <>
+                {" "}
+                <code className="font-mono text-faint-2">{p.command}</code>{" "}
+                <button
+                  onClick={() => void copyText(p.command!)}
+                  className="rounded border border-control px-1.5 py-px text-muted hover:text-fg"
+                >
+                  Copy
+                </button>
+              </>
+            )}
           </li>
         ))}
       </ul>
