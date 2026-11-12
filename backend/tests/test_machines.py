@@ -96,3 +96,18 @@ def test_report_for_a_project_you_cannot_read_is_refused(client, auth):
 def test_unauthenticated_report_is_refused(client):
     r = client.post("/api/machines/report", json={"machine_id": "x", "lines": []})
     assert r.status_code in (401, 403)
+
+
+
+def test_a_latest_fail_report_outranks_a_used_quickstart_key(client, auth):
+    """GRPH-1548: a FAIL line from the latest report keeps step ③ pending even with a used key."""
+    from tests.test_connect_step import _call, _mint
+    key = _mint(client, auth, "core")
+    assert _call(client, key["plaintext"]).status_code == 200
+    assert _step3(client, auth)["proof"] == "first_call"
+    _report(client, auth, lines=[{"status": "FAIL", "name": "config written"}])
+    s = _step3(client, auth)
+    assert s["status"] == "pending"
+    assert s["reported"]["failing"][0]["name"] == "config written"
+    _report(client, auth)  # a clean latest report: step 3 is done again
+    assert _step3(client, auth)["status"] == "done"
