@@ -1,5 +1,6 @@
 import { Bell } from "lucide-react";
 import * as React from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 
 import { useConfig, useMyAlerts, useProjects, usePushStatus, usePushSubscribe, useReadAlert } from "@/lib/queries";
@@ -89,6 +90,20 @@ export function AlertsBell() {
   };
   const read = useReadAlert();
   const [open, setOpen] = React.useState(false);
+  const btnRef = React.useRef<HTMLButtonElement>(null);
+  // The panel is portaled to <body> with fixed placement (GRPH-1559): inside the top bar its
+  // z-50 is trapped in the header's stacking context, below the page content.
+  const [pos, setPos] = React.useState<{ top: number; right: number } | null>(null);
+  React.useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const r = btnRef.current?.getBoundingClientRect();
+      if (r) setPos({ top: r.bottom + 8, right: Math.max(8, window.innerWidth - r.right) });
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [open]);
   const failed = q.isError && !q.data;
   const unread = q.data?.unread ?? 0;
   const label = failed ? "!" : q.data ? String(unread) : "…";
@@ -96,6 +111,7 @@ export function AlertsBell() {
   return (
     <div className="relative">
       <button
+        ref={btnRef}
         type="button"
         aria-label={failed ? "Alerts: could not load alerts" : q.data ? `Alerts, ${unread} unread` : "Alerts, loading"}
         aria-expanded={open}
@@ -107,11 +123,12 @@ export function AlertsBell() {
           {label}
         </span>
       </button>
-      {open && (
+      {open && createPortal(
         <div
           role="dialog"
           aria-label="Alerts"
-          className="absolute right-0 top-11 z-50 max-h-[420px] w-[360px] overflow-auto rounded-lg border border-line bg-surface p-2 shadow-lg"
+          style={{ top: pos?.top ?? 56, right: pos?.right ?? 8 }}
+          className="fixed z-50 max-h-[420px] w-[360px] overflow-auto rounded-lg border border-line bg-surface p-2 shadow-lg"
         >
           {failed && (
             <div role="alert" className="p-3 text-[13px] text-st-blocked">
@@ -145,7 +162,8 @@ export function AlertsBell() {
             </Link>
           ))}
           <BrowserPush />
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
