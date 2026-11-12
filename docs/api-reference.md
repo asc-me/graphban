@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 349 of the 349. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 351 of the 351. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -54,6 +54,8 @@ Five public surfaces are mounted on the org host: `/{path_id}/feedback`,
 | POST | `/api/auth/me/password` | JWT | Change the caller's password. Bumps `token_version`, so every previously issued token stops working, including the caller's, and returns a fresh pair so the caller stays signed in |
 | GET | `/api/auth/me` | JWT | Current user |
 | GET | `/api/auth/me/memberships` | JWT | Current user's project access |
+| GET | `/api/me/alerts` | JWT | The caller's open alerts (GRPH-1527, P75 D4): `{unread, alerts: [{id, kind, project, question, body, wait, ticket, prd, asked_by, created_at, read}]}`, newest first. The only `kind` is `response_needed`: a decision wait was handed to a person (`needs_person=true`, or unanswered past `QUESTION_GRACE_SECONDS`). Answering the wait clears its alerts, so they drop out of this list and the count |
+| POST | `/api/me/alerts/{alert_id}/read` | JWT | Mark one of the caller's alerts read and return the same body as `GET /api/me/alerts`. 404 for an id that is not the caller's |
 | GET | `/api/auth/me/onboarding` | JWT | `{onboarding}`: the caller's quick-start progress (`quickstart_finished_at`, `quickstart_dismissed_at`, …), readable before any project exists. `null` is a new user, which is what opens the quick-start dialog; existing users were backfilled as finished. UI progress only — no setup step reads it (GRPH-1361) |
 | PATCH | `/api/auth/me/onboarding` | JWT | `{mark: quickstart_finished\|quickstart_dismissed\|tour_completed\|tour_offered}` stamps `<mark>_at` and returns the merged document. Finish clears the top-bar chip; Finish later stops the dialog opening by itself. `tour_completed` (the app tour's Finish) also takes `skipped_stops`, the `data-tour` ids that user's nav had no anchor for, stored as `tour_skipped_stops` (at most 20 ids of 1–40 characters; GRPH-1363). `tour_offered` records that the one-time "Take the tour" toast was shown to a backfilled user (GRPH-1444). Any other mark or field, or `skipped_stops` with another mark, is 422 (GRPH-1361) |
 | POST | `/api/auth/me/org-request` | JWT | `{name, email, note?}` — Request an org from a self-host deployment (GRPH-1364). Emails the operator (`ORG_REQUEST_TO`, else `PLATFORM_ADMIN_EMAILS`), then stamps `org_requested_at` and returns `{onboarding}`; a repeat overwrites the date. 422 for a blank name or an invalid email; 503, with nothing stored, when no operator address is configured or the relay fails |
