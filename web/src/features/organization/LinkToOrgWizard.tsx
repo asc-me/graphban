@@ -217,7 +217,8 @@ export function LinkToOrgWizard({
   else if (step === 3)
     line = {
       text: `PROJECTS · ${synced.length} SYNCED · ${status.projects.length - synced.length} LOCAL`,
-      tone: "ok",
+      // Green only once something syncs; nothing chosen yet is muted, not done.
+      tone: synced.length > 0 ? "ok" : "muted",
     };
   else if (!pushes) line = { text: "PUSH · NOT YET", tone: pushing ? "wait" : "muted" };
   else line = { text: `PUSH · ${done} DONE · ${refused} REFUSED`, tone: refused ? "red" : "ok" };
@@ -246,7 +247,8 @@ export function LinkToOrgWizard({
           line.tone === "red" && "text-st-blocked",
           line.tone === "ok" && "text-st-done",
           (line.tone === "grey" || line.tone === "muted") && "text-faint",
-          line.tone === "wait" && "text-accent",
+          // Waiting is muted (the dot pulses); never lime or amber — Org Link.dc.html.
+          line.tone === "wait" && "text-muted",
         )}
       >
         <span
