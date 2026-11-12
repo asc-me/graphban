@@ -26,7 +26,7 @@ export function AlertsBell() {
         className="flex h-9 items-center gap-1.5 rounded-lg border border-control bg-surface px-2.5 text-muted transition-colors hover:border-control-hover"
       >
         <Bell size={14} />
-        <span data-testid="alerts-count" className="font-mono text-[11px]">
+        <span data-testid="alerts-count" className="font-mono text-small">
           {label}
         </span>
       </button>

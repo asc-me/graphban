@@ -41,6 +41,7 @@ os.environ["PLAN_GRANT_CHECK_SECONDS"] = "0"
 # than a reassuring zero.
 os.environ["LOG_EXPORT_SECONDS"] = "0"
 os.environ["AUTO_UPDATE_TICK_SECONDS"] = "0"
+os.environ["QUESTION_SWEEP_SECONDS"] = "0"
 # bcrypt at its minimum cost. Set before the templates are built so the SEEDED user's hash
 # is cheap too: `checkpw` reads the cost from the stored hash, and at the production 12 every
 # `auth` login cost ~180 ms — the single largest fixture cost in the suite (measured
