@@ -164,7 +164,7 @@ export function OrgPlug({
           onClick={() => onNavigate(settingsPath("deployment/sync"))}
           className="self-start rounded text-body text-faint outline-none hover:text-fg-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
         >
-          Already have a link key? Link to an org → <span className="sr-only">Opens Settings, Cloud / Sync</span>
+          Already in an org? Link to an org → <span className="sr-only">Opens Settings, Cloud / Sync</span>
         </button>
       )}
     </div>

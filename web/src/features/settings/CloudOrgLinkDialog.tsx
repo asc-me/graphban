@@ -94,7 +94,7 @@ export function CloudOrgLinkDialog({
             </div>
           </>
         ) : (
-          <Explainer />
+          <Explainer onClose={close} />
         )}
       </DialogContent>
     </Dialog>
@@ -119,7 +119,7 @@ function Header({ title, lede }: { title: string; lede: string }) {
   );
 }
 
-function Explainer() {
+function Explainer({ onClose }: { onClose: () => void }) {
   return (
     <>
       <Header
@@ -166,7 +166,10 @@ function Explainer() {
       <div className="flex flex-none flex-wrap items-center gap-2.5 border-t border-line-2 bg-surface px-[22px] py-3.5">
         <DialogClose className="text-[12px] text-muted transition-colors hover:text-fg">Not now</DialogClose>
         <span className="flex-1" />
-        <ComingSoonLink label="Link to an existing org" className={cn(ACTION, SECONDARY)} />
+        {/* GRPH-1520: the Link to an org wizard lives on Settings → Sync / Link. */}
+        <Link to={settingsPath("deployment/sync")} onClick={onClose} className={cn(ACTION, SECONDARY)}>
+          Link to an org
+        </Link>
         <ComingSoonLink
           label="Create a cloud org"
           className={cn(ACTION, PRIMARY)}

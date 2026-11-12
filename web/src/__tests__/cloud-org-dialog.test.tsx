@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LeftNav } from "@/components/shell/LeftNav";
 import { CloudOrgLinkDialog } from "@/features/settings/CloudOrgLinkDialog";
 import { ProjectProvider } from "@/features/ProjectContext";
-import { ORG_SIGNUP_URL } from "@/lib/routes";
+import { ORG_SIGNUP_URL, settingsPath } from "@/lib/routes";
 import type { SyncOrgOverview, SyncStatus } from "@/lib/types";
 
 const project = {
@@ -174,7 +174,6 @@ describe("CloudOrgLinkDialog — the not-linked explainer (GRPH-1224)", () => {
   });
 
   it.each([
-    ["Link to an existing org", /border-line /],
     ["Create a cloud org", /bg-accent/],
   ])("%s is a Coming soon link to the waitlist in a new tab", (label, style) => {
     wrapDialog(true);
@@ -187,10 +186,19 @@ describe("CloudOrgLinkDialog — the not-linked explainer (GRPH-1224)", () => {
     expect(link.className).toMatch(style);
   });
 
+  it("Link to an org opens the wizard on Settings → Sync / Link and closes the dialog (GRPH-1520)", async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    wrapDialog(true, onOpenChange);
+    await user.click(screen.getByRole("link", { name: "Link to an org" }));
+    expect(screen.getByTestId("here")).toHaveTextContent(settingsPath("deployment/sync"));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
   it("neither org action links this box: clicking them never calls POST /api/sync/link", async () => {
     const user = userEvent.setup();
     wrapDialog(true);
-    for (const name of [/Link to an existing org/, /Create a cloud org/]) {
+    for (const name of [/Link to an org/, /Create a cloud org/]) {
       const link = screen.getByRole("link", { name });
       link.addEventListener("click", (e) => e.preventDefault());
       await user.click(link);
