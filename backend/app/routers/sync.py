@@ -125,13 +125,13 @@ def link_start(body: LinkStartIn, db: Session = Depends(get_db),
 @router.get("/link/poll", response_model=LinkPollOut, response_model_exclude_none=True)
 def link_poll(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """The console's answer to the sign-in in flight (box admin). Only `approved` writes
-    anything; a network error, timeout or 5xx is `unknown`, never `refused`. `409` when no
-    sign-in is in flight."""
+    anything; a network error, timeout or 5xx is `unknown`, never `refused`. `404` when no
+    sign-in is in flight (nothing to poll — not a policy refusal)."""
     refuse_unless_box_admin(db, user, "sign in")
     try:
         out = link_device.poll(db)
     except link_device.NoSignIn as e:
-        raise HTTPException(409, str(e))
+        raise HTTPException(404, str(e))
     if out["status"] == "approved":
         code_sync._reset_org_cache()  # the org overview now reads a different link
         events_svc.record_user(db, user, action="sign_in_cloud_sync", target_type="instance",

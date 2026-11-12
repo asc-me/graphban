@@ -224,7 +224,7 @@ def test_approval_stores_the_token_and_clears_the_legacy_key(client, auth, conso
     _assert_no_secrets(s1, p1, p2, s)
 
     # The sign-in is spent: polling again has nothing in flight.
-    assert _poll(client, auth).status_code == 409
+    assert _poll(client, auth).status_code == 404
 
 
 def test_the_token_is_encrypted_at_rest_when_a_key_is_configured(client, auth, console,
@@ -288,8 +288,8 @@ def test_a_code_the_console_does_not_know_is_refused_expired(client, auth, conso
     assert _poll(client, auth).json() == {"status": "refused", "reason": "expired"}
 
 
-def test_poll_with_no_sign_in_in_flight_is_409(client, auth, console):
-    assert _poll(client, auth).status_code == 409
+def test_poll_with_no_sign_in_in_flight_is_404(client, auth, console):
+    assert _poll(client, auth).status_code == 404
     assert console.calls == []
 
 
