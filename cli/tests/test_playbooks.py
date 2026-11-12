@@ -248,6 +248,22 @@ def test_restoring_an_edit_is_delete_and_update(tmp_path):
     assert (tmp_path / LOOP).read_text() == "L1" and LOOP in r["written"]
 
 
+def test_update_restores_a_deleted_edit_when_the_sha_is_unchanged(tmp_path):
+    _apply(tmp_path, "1", 0)
+    (tmp_path / LOOP).write_text("mine")
+    r = _apply(tmp_path, "2", 5000, loop="L2")
+    assert r["kept"] == [LOOP] and (tmp_path / LOOP).read_text() == "mine"
+    (tmp_path / LOOP).unlink()
+    # An ordinary poll past the hour at the same sha downloads nothing.
+    fake = Fake({"git_sha": "2"}, _pack("2", loop="L2"))
+    poll(URL, tmp_path, client=fake, now=10000)
+    assert not (tmp_path / LOOP).exists()
+    # `gban update` (force) applies even though the sha is unchanged.
+    r = poll(URL, tmp_path, client=fake, now=10001, force=True)
+    assert (tmp_path / LOOP).read_text() == "L2" and LOOP in r["written"]
+    assert receipt(tmp_path)["files"][LOOP] == sha("L2")
+
+
 def test_a_path_the_pack_dropped_is_left_on_disk_and_named(tmp_path):
     extra = [{"path": ".claude/agents/gb-old.md", "kind": "loop", "body": "old"}]
     _apply(tmp_path, "1", 0, extra=extra)
