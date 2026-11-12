@@ -83,7 +83,7 @@ function OrgWindowBody({ onClose }: { onClose: () => void }) {
               <button
                 type="button"
                 onClick={() => void statusQ.refetch()}
-                className={cn(ACTION, "border border-line bg-surface-2 px-3.5 text-fg-2 hover:text-fg")}
+                className={cn(ACTION, "border border-control bg-surface-2 px-3.5 text-fg-2 hover:text-fg")}
               >
                 {statusQ.isFetching ? "Retrying…" : "Retry now"}
               </button>
@@ -257,7 +257,7 @@ function FlowList({ id, label, items }: { id: string; label: string; items: stri
       <span id={id} className="font-mono text-meta text-faint">{label}</span>
       <ul aria-labelledby={id} className="mt-1.5 space-y-0.5">
         {items.map((s) => (
-          <li key={s} className="text-[12.5px] text-fg-2">{s}</li>
+          <li key={s} className="text-body text-fg-2">{s}</li>
         ))}
       </ul>
     </div>
