@@ -782,6 +782,17 @@ class Item(Base):
     project: Mapped[Project] = relationship()
 
     @property
+    def question_state(self) -> str | None:
+        """`checking` | `response_needed` | None (GRPH-P75 D1); `waits.question_state` decides.
+        None when detached: serialization must not raise over a field absent on most rows."""
+        session = object_session(self)
+        if session is None:
+            return None
+        from app.services import waits
+
+        return waits.question_state(session, self)
+
+    @property
     def key(self) -> str:
         """The user-visible key, rendered from the project's CURRENT tag (PRD-13)."""
         return tagging.render(self.project.tag, "item", self.number)

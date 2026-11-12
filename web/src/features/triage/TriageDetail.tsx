@@ -1,3 +1,4 @@
+import { QUESTION_LABEL } from "@/features/tracker/QuestionStateBadge";
 import type { ReactNode } from "react";
 
 import { CommentThread } from "@/features/requests/CommentThread";
@@ -93,6 +94,11 @@ export function TriageDetail({
             <div className="font-mono text-micro uppercase tracking-[0.07em] text-st-blocked">
               {row.decision ? "AGENT ASKED" : "WHY IT'S BLOCKED"}
             </div>
+            {row.question_state && (
+              <div data-testid="question-state" className="mt-1 font-mono text-micro text-st-blocked">
+                {QUESTION_LABEL[row.question_state]}
+              </div>
+            )}
             <p className="mt-1.5 text-body leading-relaxed text-fg-2">
               {row.decision?.question ?? (row.reason || "No reason was recorded.")}
             </p>

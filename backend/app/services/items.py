@@ -2391,6 +2391,10 @@ def item_dict(item: Item) -> dict:
         # only on a decision wait; `notify` bookkeeping stays server-side. Reply-only.
         from app.services.waits import decision_dict
         out["decision"] = decision_dict(item)
+    qs = item.question_state
+    if qs:
+        # Present only when set (GRPH-P75 D1), like `branch`: one function, every surface.
+        out["question_state"] = qs
     if item.done_at is not None:
         # When it last reached `done` (GRPH-1134), a unix timestamp like `claimed_at`. Shown
         # only when set, like `branch`: every open row would otherwise carry an empty field.
