@@ -181,6 +181,10 @@ export function QuickStartDialog({
         overlayClassName="bg-black/30 backdrop-blur-none"
         className="max-h-[92vh] max-w-[960px] overflow-y-auto p-0"
         aria-describedby="qs-desc"
+        // With no project the page behind is an empty shell, so a stray focus or pointer move
+        // outside must not dismiss the dialog (GRPH-1542); Esc, ✕ and Finish later still do.
+        onFocusOutside={projects.length === 0 ? (e) => e.preventDefault() : undefined}
+        onInteractOutside={projects.length === 0 ? (e) => e.preventDefault() : undefined}
       >
         <div className="flex min-h-0">
         <Hero steps={steps} marks={qs.marks} screen={screen} conceptIndex={concept} />

@@ -719,6 +719,27 @@ describe("Welcome and Sections (GRPH-1510)", () => {
     expect(within(list).queryByText("NEW")).not.toBeInTheDocument();
   });
 
+  it("with zero projects, Get started opens Sections in the same dialog (GRPH-1542)", async () => {
+    srv.projects = [];
+    const user = userEvent.setup();
+    renderFrame();
+    await screen.findByRole("heading", { name: "Welcome to Graphban" });
+    await user.click(screen.getByRole("button", { name: "Get started →" }));
+    expect(await screen.findByRole("list", { name: "Sections" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("with zero projects, closing leaves a Create your project entry that reopens the dialog (GRPH-1542)", async () => {
+    srv.projects = [];
+    const user = userEvent.setup();
+    renderFrame();
+    await screen.findByRole("heading", { name: "Welcome to Graphban" });
+    await user.click(screen.getByRole("button", { name: "Finish later" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Create your project" }));
+    expect(await screen.findByRole("heading", { name: "Sections" })).toBeInTheDocument();
+  });
+
   it("the setup chip reopens on Sections, not Welcome", async () => {
     srv.projects = [CORE];
     srv.onboarding = { quickstart_dismissed_at: "2026-11-01T00:00:00Z" };
