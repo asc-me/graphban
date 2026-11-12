@@ -658,6 +658,11 @@ def install_skill(repo: Path, slug: str = SKILL_SLUG) -> list[tuple[str, Path]]:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(body, encoding="utf-8")
         out.append(("written", dest))
+    # Receipt the files we planted, so the pack refreshes them instead of freezing them as edits.
+    planted = {d.relative_to(repo).as_posix(): d.read_bytes() for st, d in out if st == "written"}
+    if planted:
+        from . import playbooks
+        playbooks.record(repo, planted)
     return out
 
 

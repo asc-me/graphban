@@ -323,3 +323,34 @@ def test_a_foreign_hooks_json_is_left_and_named_while_the_scripts_are_written(tm
     assert HOOKS_JSON in r["kept"] and HOOKS_JSON in r["note"]
     assert HOOKS_JSON not in receipt(tmp_path)["files"]
     assert (tmp_path / HOOK).read_text() == "H1"
+
+
+def _planted(tmp_path, monkeypatch):
+    from gban import setup as setup_mod
+    src = tmp_path / "wheel" / "SKILL.md"
+    src.parent.mkdir()
+    src.write_text("wheel v1")
+    monkeypatch.setattr(setup_mod, "skill_source", lambda slug="graphban-work": src)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    setup_mod.install_skill(repo, "graphban-work")
+    return repo
+
+
+def test_a_skill_setup_planted_is_refreshed_by_the_pack(tmp_path, monkeypatch):
+    repo = _planted(tmp_path, monkeypatch)
+    assert receipt(repo)["files"][SKILL] == sha("wheel v1")
+    r = _apply(repo, "2", 5000, skill="S2")
+    assert r["kept"] == []
+    for rel in COPIES:
+        assert (repo / rel).read_text() == "S2"
+        assert receipt(repo)["files"][rel] == sha("S2")
+
+
+def test_a_skill_setup_planted_then_edited_is_left_and_named(tmp_path, monkeypatch):
+    repo = _planted(tmp_path, monkeypatch)
+    (repo / SKILL).write_text("mine")
+    r = _apply(repo, "2", 5000, skill="S2")
+    assert r["kept"] == [SKILL]
+    assert (repo / SKILL).read_text() == "mine"
+    assert (repo / COPIES[2]).read_text() == "S2"
