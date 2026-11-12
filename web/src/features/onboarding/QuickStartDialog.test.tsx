@@ -21,7 +21,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppFrame } from "@/components/shell/AppFrame";
 import type { Onboarding, ProjectSetup, SetupStatus } from "@/lib/types";
 
-import { Hero, heroState } from "./QuickStartDialog";
+import { AGENT_ACTIVE_WINDOW_MS, agentIsWorking, Hero, heroState } from "./QuickStartDialog";
 import {
   chipCount,
   deriveMarks,
@@ -807,5 +807,15 @@ describe("Graphban concepts (GRPH-1511)", () => {
     await screen.findByRole("heading", { name: "The loop." });
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+});
+
+describe("agent liveness bound (GRPH-1545)", () => {
+  const now = Date.parse("2026-01-01T12:00:00Z");
+  it("is working only within the window of its last call", () => {
+    expect(agentIsWorking({ last_call: new Date(now - 1000).toISOString() }, now)).toBe(true);
+    expect(agentIsWorking({ last_call: new Date(now - AGENT_ACTIVE_WINDOW_MS - 1).toISOString() }, now)).toBe(false);
+    expect(agentIsWorking({}, now)).toBe(false);
+    expect(agentIsWorking(undefined, now)).toBe(false);
   });
 });

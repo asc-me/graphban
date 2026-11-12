@@ -111,6 +111,8 @@ export interface SetupStep {
   proof?: "first_call" | "machine_report";
   /** Step 5 when proven by a machine report: which machine. */
   machine?: string;
+  /** Step 5 proven by a key's first call: ISO time of that key's latest authenticated call. */
+  last_call?: string;
   /** Step 5 pending after a report that was not all-PASS (GRPH-1442): FAIL or UNKNOWN lines. */
   reported?: { machine: string; fails: number; unknowns?: number; failing: ReportLine[]; at: string };
   /** Step 5: every one of this user's machines that reported for this project, freshest first. */
