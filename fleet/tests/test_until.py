@@ -2416,21 +2416,31 @@ def test_a_live_builder_does_not_block_a_review_spawn_for_another_item(
     review-only seat is ever minted."""
     workspace = tmp_path / "ws"
     minted: list = []
-    stamps: list = []
+    builder_exited_at_mint: list = []
+    here = scripts["works_until_released"].parent
+
+    def on_mint(role: str) -> None:
+        # Record whether the builder had already gone, then let it go once the reviewer
+        # exists. Ordering, not elapsed time (GRPH-1536).
+        builder_exited_at_mint.append((here / "builder-exited").exists())
+        if len(builder_exited_at_mint) >= 2:
+            (here / "release").write_text("", encoding="utf-8")
+
     planner, supervisor = _clients(
-        workspace, clusters=1, workers=1, on_mint=lambda role: stamps.append(time.monotonic()),
+        workspace, clusters=1, workers=1, on_mint=on_mint,
         review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1", "review_claimed_by": ""}],
         minted_args=minted,
     )
     run(
-        git_repo, _factory(scripts, "works_then_waits"),
+        git_repo, _factory(scripts, "works_until_released"),
         planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
         state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
         limits=Limits(max_workers=1, max_children=4),
     )
     assert [a.get("review_only") for a in minted[:2]] == [False, True], minted
-    # The builder lives 1.5s; the reviewer must be minted while it is still running.
-    assert stamps[1] - stamps[0] < 1.0, stamps
+    # The builder runs until the reviewer's mint releases it, so the reviewer was minted
+    # while the builder was still live.
+    assert builder_exited_at_mint[:2] == [False, False], builder_exited_at_mint
 
 
 def test_review_waits_and_lapsed_live_reach_the_summary_json():

@@ -316,6 +316,14 @@ describe("P28 Settings (self-host)", () => {
  * mounts one component and never asks the router where a URL lands. The redirect IS the
  * wiring, so the wiring is what has to be rendered.
  */
+/**
+ * The whole app mounts here (lazy routes, auth, config), and on a loaded shared CI host
+ * that takes longer than Testing Library's 1s default, with nothing wrong (GRPH-1536).
+ * The wait is real, so it gets an explicit, longer bound rather than a retry.
+ */
+const APP_MOUNT = { timeout: 10_000 };
+const APP_TEST = { timeout: 20_000 };
+
 function renderAppAt(path: string, hosted: boolean) {
   vi.mocked(api.config).mockResolvedValue({ hosted_mode: hosted, signup_mode: "closed" });
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -331,14 +339,14 @@ function renderAppAt(path: string, hosted: boolean) {
   );
 }
 
-describe("GRPH-1066 /dashboard is project home and the nav entry is current there", () => {
+describe("GRPH-1066 /dashboard is project home and the nav entry is current there", APP_TEST, () => {
   afterEach(() => {
     vi.mocked(api.config).mockResolvedValue({ hosted_mode: false, signup_mode: "closed" });
   });
 
   it("hosted /p/:tag/dashboard lands on project home with Dashboard current", async () => {
     renderAppAt("/p/CORE/dashboard", true);
-    expect(await screen.findByRole("heading", { name: "Core" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Core" }, APP_MOUNT)).toBeInTheDocument();
     expect(screen.getByTestId("here")).toHaveTextContent(/^\/p\/CORE$/);
     const dash = screen.getByRole("link", { name: "Dashboard" });
     expect(dash).toHaveAttribute("href", "/p/CORE");
@@ -350,14 +358,14 @@ describe("GRPH-1066 /dashboard is project home and the nav entry is current ther
 
   it("hosted flat /dashboard resolves to the same home", async () => {
     renderAppAt("/dashboard", true);
-    expect(await screen.findByRole("heading", { name: "Core" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Core" }, APP_MOUNT)).toBeInTheDocument();
     expect(screen.getByTestId("here")).toHaveTextContent(/^\/p\/CORE$/);
     expect(screen.getByRole("link", { name: "Dashboard" })).toHaveAttribute("aria-current", "page");
   });
 
   it("self-host /dashboard still lands on /home and highlights Dashboard", async () => {
     renderAppAt("/dashboard", false);
-    expect(await screen.findByRole("heading", { name: "Core" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Core" }, APP_MOUNT)).toBeInTheDocument();
     expect(screen.getByTestId("here")).toHaveTextContent(/^\/home$/);
     const dash = screen.getByRole("link", { name: "Dashboard" });
     expect(dash).toHaveAttribute("href", "/home");
@@ -365,7 +373,7 @@ describe("GRPH-1066 /dashboard is project home and the nav entry is current ther
   });
 });
 
-describe("GRPH-978 the feedback-kit settings bookmark redirects", () => {
+describe("GRPH-978 the feedback-kit settings bookmark redirects", APP_TEST, () => {
   // `config` is module-scoped, so the hosted test would otherwise leak into every later one.
   afterEach(() => {
     vi.mocked(api.config).mockResolvedValue({ hosted_mode: false, signup_mode: "closed" });
@@ -374,7 +382,7 @@ describe("GRPH-978 the feedback-kit settings bookmark redirects", () => {
   it("self-host: lands on /feedback-kit with the Kit, not the settings pane", async () => {
     renderAppAt("/settings/project/feedback-kit", false);
 
-    expect(await screen.findByRole("heading", { name: "Feedback Kit" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Feedback Kit" }, APP_MOUNT)).toBeInTheDocument();
     // Anchored: "/settings/project/feedback-kit" also CONTAINS "/feedback-kit", so a
     // substring match would pass on the unredirected URL this test exists to catch.
     expect(screen.getByTestId("here")).toHaveTextContent(/^\/feedback-kit$/);
@@ -386,7 +394,7 @@ describe("GRPH-978 the feedback-kit settings bookmark redirects", () => {
   it("hosted: resolves through FlatRedirect to the project's tag URL", async () => {
     renderAppAt("/settings/project/feedback-kit", true);
 
-    expect(await screen.findByRole("heading", { name: "Feedback Kit" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Feedback Kit" }, APP_MOUNT)).toBeInTheDocument();
     // Two hops: the Navigate to /feedback-kit, then the flat hosted resolver into /p/:tag.
     expect(screen.getByTestId("here")).toHaveTextContent(/^\/p\/CORE\/feedback-kit$/);
     expect(screen.queryByText("This box")).not.toBeInTheDocument();

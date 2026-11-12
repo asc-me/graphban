@@ -339,15 +339,21 @@ def test_work_reclaimed_during_a_partition_is_reported_not_replayed(
             elif calls["n"] >= 5:
                 server.reachable = True
                 server.holdings = []
+            if calls["n"] >= 6:
+                # The poll after reconnect has been answered: let the child finish. Until
+                # then it stays alive however slowly a loaded host polls (GRPH-1536).
+                (here / "release").write_text("", encoding="utf-8")
         return original(request)
 
     server._handle = handle
+    here = scripts["works_until_released"].parent
 
     wave = up(
-        git_repo, _seats(1), _factory(scripts, "works_then_waits"), server.client(),
+        git_repo, _seats(1), _factory(scripts, "works_until_released"), server.client(),
         state=state, workspace=workspace, poll=0.05,
     )
 
+    assert calls["n"] >= 6, f"the wave ended after {calls['n']} polls, before reconnect"
     reclaimed = wave.partition.reclaimed
     assert reclaimed, "an item was taken away and nothing said so"
     assert "GRPH-77" in next(iter(reclaimed.values()))
