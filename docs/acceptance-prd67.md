@@ -41,3 +41,49 @@ entry, so it was not a real sabotage.
 - G3, G5 (toast) and G7 (conditional) are real gaps; each is its own item.
 - G6 and G11 ship but nothing would fail if the copy changed; worth a test when someone next
   touches `QuickStartDialog.tsx`. Not filed separately.
+
+# §8.1–8.2 fresh-install walk and sabotages (GRPH-1434)
+
+Walked 2026-11-12 by a planner session against `main` at `2f0d6ea4` (product version 2026.11.17).
+
+- **Box:** a scratch compose stack, `docker compose -p gb-walk-1434 down -v && up --build`, with its own project name and ports (API `:8491`, web `:8492`). `docker-compose.yml` pins `name: agentledger`, so a bare `down -v` from any checkout targets the live project; always pass `-p`.
+- **Agent:** a real Claude Code.
+- **CLI:** `graphban-cli` 0.8.8 and `graphban-fleet` 0.18.20, installed from PyPI under a clean `$HOME`.
+
+## §8.1 the walk, step by step
+
+| # | Step | What was shown | Verdict |
+|---|---|---|---|
+| 1 | `up --build` | API log: four `JWT_SECRET is weak or the built-in default` warnings (one per worker), then `Graphban is ready at http://localhost:8492 - open this to continue setup` | G3 shipped |
+| 2 | First load, zero users | ~3 s skeleton, then **"Sign in · Welcome back"**; no first-run owner prompt | GRPH-1552 (1) |
+| 3 | Create account | An `@example.test` email is refused (reserved TLD, correct), but the error is the raw 422 JSON body | **GRPH-1551** |
+| 4 | Welcome → Get started (zero projects) | Dialog closes; shell is header only, no rail, empty `<main>`; survives reload. Only the "Finish setup" chip reopens it (on Sections, correctly) | **GRPH-1542** |
+| 5 | ⓪ Where | "On this computer" pre-selected ("you opened Graphban on localhost"). ⓪ shows DONE once ① exists | ok |
+| 6 | ① Project | Name, confirmation tick, repo URL under Advanced. Posture box: "4 settings to fix", with JWT_SECRET placeholder, `SIGNUP_MODE`, `SECRET_ENCRYPTION_KEY`, each with a copyable fix. Rail and dashboard appear only now | ok |
+| 7 | ② Model | Offline (stub) default → DONE | ok |
+| 8 | ③ gban route | `uv tool install …` assumes `uv` (GRPH-1552 (2)). `gban login --pair` → code → Approve → "Approved — your terminal is signed in as you"; session stored 0600. `gban setup` in `~/code/walk-app` matched the project by git remote and wrote 78 pack files, then reported **2 UNKNOWN**: `graphban-answer/SKILL.md … differs from the one shipped here` (the PyPI CLI bundles the pre-GRPH-1524 copy). The report is never clean, so **③ never went ✓ on this route**. The dialog said only "Pending — no first call seen yet." | **GRPH-1543**, **GRPH-1544** |
+| 9 | ③ paste-a-key route | "Create a key for Claude Code" → command + `.mcp.json`. Real Claude Code, `claude -p "what's in my backlog?"` → "Your backlog is empty … Walk Project (WP)". Within ~5 s: "✓ Connected — First call from key 'quick start · Claude Code' at 2026-11-12T13:06:41.891806+00:00" | **✓ by itself** |
+| 10 | ④ First job | The dialog's prompt, pasted into real Claude Code: 2 memory candidates (from AGENTS.md) and 3 items. Code graph not built: "needs `describe_code`, which my key doesn't have". ④ stays pending, saying "Your agent is working" after the agent exited | **GRPH-1545** |
+| 11 | Finish → tour | "You're set up" (first job pending; "Finishing doesn't mark them done"). Tour: Dashboard, Tracker, Specs, Agent sidebar, Memory review, Code graph, Fleet, Activity, then the Organization end card (Request an org / Not now / Link to an org) | ok |
+| 12 | Back into setup | Chip gone. Help lists only Concepts / Take the tour / Start-up prompts, though Welcome promises a way back from Help. The only route is the dashboard card's "Verify with a key instead" | **GRPH-1546** |
+
+Clean-`$HOME` Claude Code is "Not logged in · Please run /login" (interactive), so the walk drove the real Claude Code with `--mcp-config <walk config> --strict-mcp-config`.
+
+## §8.2 sabotages
+
+| Sabotage | Observed | Flips? |
+|---|---|---|
+| Revoke the key | Card drops "Agent connection verified" and falls back to the machine-report state; reopened dialog shows ③ PENDING; the revoked key on `/api/mcp` → 401 | **yes** |
+| Rename a nav item | Hosted `tour="org"` (LeftNav.tsx ~433): 4 hosted variants fail. Self-host loading-state anchor (~794): 4 self-host variants fail. Self-host **loaded** `OrgRailItem` button `data-tour="org"` (~801): 18/18 pass | **partly**: GRPH-1549 |
+| Stop the API mid-poll | Fresh key, first call 200, ③ ✓ in the open dialog; `docker stop` the API. After ~20–40 s every step reads "? UNKNOWN", not a stale ✓. But each reason is the raw nginx 502 page, and the dashboard Setup status card and MCP chip kept "✓ Agent connection verified" / "78 tools live" | dialog **yes**; card no: GRPH-1547 |
+| Placeholder `JWT_SECRET` | `/api/setup/instance` `jwt_secret_set`: false (placeholder) → true (`JWT_SECRET=$(openssl rand -hex 32)`) → false (put back). The UI hint is shown at baseline | **yes** |
+| Machine report with a FAIL line | `gban doctor` with graphban removed from `~/.claude.json` reports no FAIL (GRPH-1550), so the report was posted directly to `/api/machines/report` for the same machine. With the quick-start key live: ③ stays ✓ (proof `first_call`). With the key revoked: ③ pending, "vicious-apogee reported 1 FAIL", and the card shows the FAIL line in red | key live **no**: GRPH-1548; key revoked yes |
+
+## Verdict
+
+**Not accepted yet.**
+- ③ went ✓ by itself on the paste-a-key route, but not on the `gban setup` route (GRPH-1543).
+- Two sabotages flip only partly (GRPH-1548, GRPH-1549).
+- Re-walk §8.1 step 8 and those two sabotages once the linked fixes land.
+
+Findings filed and linked to GRPH-1434: GRPH-1542, 1543 (blocks), 1544, 1545, 1546, 1547, 1548, 1549, 1550, 1551, 1552 (seven small issues).
