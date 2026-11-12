@@ -2431,6 +2431,24 @@ class TrackerMirror(Base):
     mirrored_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class Alert(Base):
+    """An inbox row for one user (GRPH-P75 D4). The only kind is `response_needed`: a decision
+    wait was handed to a person. `item_id` is the wait; answering it sets `cleared_at`."""
+
+    __tablename__ = "alerts"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    project_id: Mapped[str] = mapped_column(String)
+    kind: Mapped[str] = mapped_column(String, default="response_needed")
+    item_id: Mapped[str] = mapped_column(String, index=True)
+    title: Mapped[str] = mapped_column(String, default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cleared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class IdempotencyKey(Base):
     """Maps an agent-supplied idempotency key to the resource a create tool produced,
     so a retried call returns the original resource instead of a duplicate."""

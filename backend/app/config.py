@@ -327,6 +327,11 @@ class Settings(BaseSettings):
     # loop — the value the TEST suite runs at, which drives `auto_update.tick` directly.
     auto_update_tick_seconds: int = 300
 
+    # A decision wait nobody has answered after this long is handed to a person (GRPH-1527).
+    # The sweep wakes every `question_sweep_seconds`; `0` disables the loop.
+    question_grace_seconds: int = 600
+    question_sweep_seconds: int = 60
+
     # LLM call spans (GRPH-225). How long `llm_call_spans` rows live; 0 or negative
     # keeps everything. The table is telemetry, not the ledger — unbounded growth of
     # per-call rows is the difference between a cost panel and an ops incident.

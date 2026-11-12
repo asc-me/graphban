@@ -1124,6 +1124,8 @@ export interface TriageBlockerRow extends TriageFeedBase {
   reason: string;
   decision?: { question: string; options: string[] };
   question_state?: QuestionState;
+  /** Handed to a person but no one with access could be alerted (P75 D6). */
+  nobody_alerted?: boolean;
   waiting_on?: { id: string; title: string; status: string };
 }
 
@@ -3434,3 +3436,22 @@ export interface HarnessRoutingReason {
 
 /** GRPH-1405: where the test suites run — the `build.test_scope` rule's `mode` param. */
 export type TestScopeMode = "agent_full" | "agent_and_pr" | "agent_targeted";
+
+/** One row of the bell's panel (GRPH-1527). */
+export interface AlertRow {
+  id: string;
+  kind: "response_needed";
+  question: string;
+  body: string;
+  wait: string;
+  ticket: string | null;
+  prd: string | null;
+  asked_by: string | null;
+  created_at: string | null;
+  read: boolean;
+}
+
+export interface AlertsFeed {
+  unread: number;
+  alerts: AlertRow[];
+}
