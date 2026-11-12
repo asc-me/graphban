@@ -1346,8 +1346,8 @@ function FirstJobStep({
       <CopyLine text={prompt} label="Copy the first-job prompt" />
       <StatusLine status={line.status} text={line.text} />
       <p className="mt-2 text-[12px] text-muted" data-testid="qs-codegraph-note">
-        The key from “Create a key for Claude Code” cannot call <code>describe_code</code>, so the code graph stays at 0
-        on this route. To fill it, run <code>gban setup</code> on the machine with the checkout, or use a key that can describe.
+        The key from “Create a key for Claude Code” does not list <code>describe_code</code>, so your agent will not find
+        it and the code graph stays at 0 on this route. To fill it, run <code>gban setup</code> on the machine with the checkout, or use a key that can describe.
       </p>
       <dl className="mt-3 grid grid-cols-3 gap-2">
         {counters.map(([label, , sub], i) => (

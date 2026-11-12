@@ -50,6 +50,8 @@ const srv = vi.hoisted(() => ({
   repoPatches: [] as unknown[],
   minted: [] as string[],
   setupFails: false,
+  // Extra fields merged into a step (e.g. step 5's last_call).
+  extras: {} as Record<number, Record<string, unknown>>,
 }));
 
 function setupBody(projectId: string): ProjectSetup {
@@ -64,6 +66,7 @@ function setupBody(projectId: string): ProjectSetup {
       detail: srv.details[n] ?? (n >= 2 && n <= 4 ? "0 thing(s)." : "Not answered yet."),
       how: "",
       ...(srv.reasons[n] ? { reason: srv.reasons[n] } : {}),
+      ...(srv.extras[n] ?? {}),
     })),
   };
 }
@@ -190,6 +193,7 @@ beforeEach(() => {
   srv.repoPatches = [];
   srv.minted = [];
   srv.setupFails = false;
+  srv.extras = {};
 });
 
 // ── Trigger (D6) ─────────────────────────────────────────────────────────────────────
@@ -817,5 +821,42 @@ describe("agent liveness bound (GRPH-1545)", () => {
     expect(agentIsWorking({ last_call: new Date(now - AGENT_ACTIVE_WINDOW_MS - 1).toISOString() }, now)).toBe(false);
     expect(agentIsWorking({}, now)).toBe(false);
     expect(agentIsWorking(undefined, now)).toBe(false);
+  });
+});
+
+describe("step ④ on the paste-a-key route (GRPH-1545)", () => {
+  function counted(lastCall: string) {
+    srv.projects = [CORE];
+    srv.statuses = { 0: "done", 1: "done", 5: "done" };
+    srv.details = { 0: "this_computer", 2: "0 thing(s).", 3: "2 thing(s).", 4: "3 thing(s)." };
+    srv.extras = { 5: { proof: "first_call", key_name: "k", last_call: lastCall } };
+  }
+
+  it("says the code graph needs gban setup, with the command", async () => {
+    counted(new Date().toISOString());
+    const user = userEvent.setup();
+    renderFrame();
+    await enter(user, "first_job");
+    await screen.findByRole("heading", { name: "Give it a first job" });
+    const note = screen.getByTestId("qs-codegraph-note");
+    expect(note).toHaveTextContent("describe_code");
+    expect(within(note).getByText("gban setup")).toBeInTheDocument();
+  });
+
+  it("shows 'Your agent is working' only while the last call is fresh", async () => {
+    counted(new Date().toISOString());
+    const user = userEvent.setup();
+    renderFrame();
+    await enter(user, "first_job");
+    expect(await screen.findByText("Your agent is working. Counts are live.")).toBeInTheDocument();
+  });
+
+  it("drops 'Your agent is working' when the last call is older than the window", async () => {
+    counted(new Date(Date.now() - AGENT_ACTIVE_WINDOW_MS - 60_000).toISOString());
+    const user = userEvent.setup();
+    renderFrame();
+    await enter(user, "first_job");
+    expect(await screen.findByText(/no agent call in the last 5 minutes/)).toBeInTheDocument();
+    expect(screen.queryByText("Your agent is working. Counts are live.")).not.toBeInTheDocument();
   });
 });
