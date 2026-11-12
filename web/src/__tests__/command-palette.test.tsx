@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import paletteSrc from "../components/shell/CommandPalette.tsx?raw";
 import { CommandPalette } from "@/components/shell/CommandPalette";
+import { api } from "@/lib/api";
 import { TOP_BAR_JUMP_PLACEHOLDER, TopBar } from "@/components/shell/TopBar";
 import { ProjectProvider } from "@/features/ProjectContext";
 import { onGuideRequested, onTourRequested } from "@/features/tour/replay";
@@ -198,6 +199,32 @@ describe("command palette (GRPH-911)", () => {
     expect(guide).toHaveBeenLastCalledWith("prompts");
     offT();
     offG();
+  });
+
+  it("Help keeps all three guides without a project; Take the tour is disabled with why (GRPH-1512)", async () => {
+    const user = userEvent.setup();
+    const projects = vi.mocked(api.projects);
+    const served = projects.getMockImplementation();
+    projects.mockImplementation(async () => []);
+    const tour = vi.fn();
+    const offT = onTourRequested(tour);
+    try {
+      render(<PaletteHarness />);
+      fireEvent.keyDown(window, { key: "k", metaKey: true });
+      const palette = await screen.findByRole("dialog", { name: "Command palette" });
+      await user.type(within(palette).getByLabelText("Command palette search"), "t");
+      const names = ["Concepts", "Take the tour", "Start-up prompts"];
+      for (const n of names) await within(palette).findByText(n);
+      const tourRow = within(palette).getByText("Take the tour").closest("[role=option]") as HTMLElement;
+      expect(tourRow).toHaveAttribute("aria-disabled", "true");
+      expect(tourRow).toHaveTextContent(/project/i);
+      await user.click(within(palette).getByText("Take the tour"));
+      expect(tour).not.toHaveBeenCalled();
+      expect(screen.getByRole("dialog", { name: "Command palette" })).toBeInTheDocument();
+    } finally {
+      if (served) projects.mockImplementation(served);
+      offT();
+    }
   });
 
   it("does not claim memory search in the top-bar placeholder", () => {

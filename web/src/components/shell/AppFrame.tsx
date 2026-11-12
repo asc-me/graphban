@@ -288,7 +288,7 @@ function FrameBody({ hosted }: { hosted: boolean }) {
             modality={agentMotion}
           />
         </div>
-        <DocsReader agentOpen={agentOpen} />
+        <DocsReader agentOpen={agentOpen} hasProject={hasProject} />
       </div>
       {quickStart}
       <AppTour open={tourOpen} onExit={exitTour} onComplete={finishTour} />

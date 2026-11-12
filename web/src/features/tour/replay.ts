@@ -26,3 +26,6 @@ export function onGuideRequested(fn: (kind: GuideKind) => void): () => void {
   window.addEventListener(GUIDE_EVENT, h);
   return () => window.removeEventListener(GUIDE_EVENT, h);
 }
+
+/** Why Take the tour is unavailable: it points at a project's pages, so it needs one. */
+export const TOUR_NEEDS_PROJECT = "Create a project first — the tour points at its pages.";
