@@ -87,3 +87,20 @@ Clean-`$HOME` Claude Code is "Not logged in · Please run /login" (interactive),
 - Re-walk §8.1 step 8 and those two sabotages once the linked fixes land.
 
 Findings filed and linked to GRPH-1434: GRPH-1542, 1543 (blocks), 1544, 1545, 1546, 1547, 1548, 1549, 1550, 1551, 1552 (seven small issues).
+
+# §8.4 link walk (GRPH-1523), first attempt
+
+Walked 2026-11-12 against a scratch console built from graphban-control `main` (`46030a6`), on `:8493` with its own Postgres, and the GRPH-1434 scratch box. Production was never contacted: the box's Console URL field is pre-filled with the production console, and it was changed to the scratch one.
+
+| Step | Observed | Verdict |
+|---|---|---|
+| Admin grants a seat and one of two projects | Console: org "Walk Org" with Cloud Alpha and Cloud Beta; engineer and second member joined by org invite (member = seat); team Eng holds write on **Cloud Alpha only** | ok |
+| Engineer signs in with the device code | Box Settings → Cloud / Sync: "Get a sign-in code" → `SK2P-6Y9E`; console `/link` as the engineer → Look up (box label, org, "can push only to projects you can reach") → Approve → box shows **LINKED**, "Signed in to Walk Org as walk-eng@example.com" | **pass** |
+| Step ③ shows only the granted project | Each of the three local projects offers "Local only" and **Cloud Alpha**; Cloud Beta is absent | **pass** |
+| Sync one, leave two local | Walk Project → Cloud Alpha; Local Two and Local Three local only; `/api/sync/status` agrees | **pass** |
+| First push | Empty graph: "Pushed 0 nodes and 0 edges to CLOUD ALPHA" (ok), but **no request reached the console** (GRPH-1553). With 2 nodes (`describe_code`): `POST /api/sync/code-graph` → **404**; the console has no such route, although `docs/contract.md` lists it (GBC-82). Console deployment stays `freshness: never` | **fail** |
+| Sabotages (grant removed, seat removed, takeover, console down, expiry, migrated key) | Not run: each push-based check would show the same 404, not the behaviour under test | blocked on GBC-82 |
+
+Also found: `docker-compose.yml` doesn't forward `SYNC_CLOUD_URL`/`SYNC_API_KEY` (GRPH-1554). `describe_code` is callable with an agent key but missing from its `tools/list` (noted on GRPH-1545). The console `/link` page renders browser-default controls, and its expiry is a raw ISO timestamp (polish).
+
+**Verdict: blocked.** Re-walk from the first push once GBC-82 decides where a linked box's code graph goes.
