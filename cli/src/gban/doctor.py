@@ -11,6 +11,7 @@ the same reason: "we could not tell" must never render as "nothing is wrong".
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -408,10 +409,51 @@ def playbooks_line(result: dict | None) -> dict | None:
     return _line("local", PASS, "playbooks", f"polled just now — {note}")
 
 
+def harness_entries(repo: Path) -> list[dict]:
+    """Does each harness config that exists still declare the graphban MCP entry?
+
+    `gban setup` writes the entry and says so once; nothing re-reads it. Remove it and Claude
+    Code can no longer reach the ledger while every server-side check stays PASS. A harness
+    counts as configured when one of its files exists; a missing file is not checked (never
+    set up here), a file without the entry is a FAIL named after the file.
+    """
+    import tomllib
+    from gban import setup  # lazy: setup imports this module
+
+    server = setup.LEDGER_SERVER
+    key = str(repo.resolve())
+
+    def read(path: Path, toml: bool):
+        try:
+            text = path.read_text(encoding="utf-8")
+            return tomllib.loads(text) if toml else json.loads(text)
+        except (OSError, ValueError):
+            return None  # unreadable counts as lacking the entry
+
+    claude = [(setup.claude_home(), lambda b: (((b.get("projects") or {}).get(key) or {})
+                                                .get("mcpServers") or {})),
+              (repo / ".mcp.json", lambda b: b.get("mcpServers") or {})]
+    grok = [(setup.grok_home(), lambda b: b.get("mcp_servers") or {}),
+            (repo / ".grok" / "config.toml", lambda b: b.get("mcp_servers") or {})]
+    out: list[dict] = []
+    for harness, files, toml in (("claude", claude, False), ("grok", grok, True)):
+        present = [(p, pick) for p, pick in files if p.exists()]
+        if not present:
+            continue
+        if any(server in pick(read(p, toml) or {}) for p, pick in present):
+            out.append(_line("local", PASS, f"{harness} mcp", f"{server} entry present"))
+        else:
+            names = ", ".join(str(p) for p, _ in present)
+            out.append(_line("local", FAIL, f"{harness} mcp",
+                             f"no {server} entry for this project in {names} — "
+                             f"{harness} cannot reach the ledger; run `gban setup`"))
+    return out
+
+
 def run(url: str, project: str, api_key: str = "",
         repo: Path | None = None) -> tuple[list[dict], int]:
     lines = (ledger(url, project) + local(url, project, api_key)
-             + gitignore.check(repo or Path.cwd()))
+             + gitignore.check(repo or Path.cwd()) + harness_entries(repo or Path.cwd()))
     worst = max((SEVERITY[l["status"]] for l in lines), default=0)
     # FAIL exits 1, UNKNOWN exits 0: "could not check" is not "broken", and a doctor that
     # failed a script because a laptop lacked `gbfleet` would stop being run.
