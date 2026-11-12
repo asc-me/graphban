@@ -137,4 +137,8 @@ Two fixes were needed. GRPH-1556 (asc-me/graphban#1616, merged `c21e446d`) makes
 | Next push | `done` to Cloud Alpha, row IN SYNC, relink warning gone | **pass** |
 | Old key | A direct push with it gets 401 | **pass** |
 
-**Verdict: pass.** Every §8.4 step has now passed: grant, sign-in, step ③, first push, and all seven sabotages. Two items are still open but don't block this walk: GRPH-1553 (an unchanged push never contacts the console; it was worked around here) and GRPH-1557 (`sign_in_pending` stays set after an expired code).
+**Verdict: pass.** Every §8.4 step has now passed: grant, sign-in, step ③, first push, and all seven sabotages. One item is still open and doesn't block this walk: GRPH-1557 (`sign_in_pending` stays set after an expired code).
+
+**GRPH-1553 is fixed.** The manifest-hash workaround (staling `code_sync_state` before each push) applied only to the 16:29–16:42Z pushes. GRPH-1553 (asc-me/graphban#1615) merged as `c285b507` at 16:59Z, before the 18:14Z confirmation on `c21e446d`, which contains it. The 18:14Z pushes used no workaround.
+
+**Cloud tag (clause 1): not recorded in this walk.** The walks checked `/api/sync/status` and the push results, but nobody wrote down what the cloud tag showed in the UI. From `cloudTagFor` in `web/src/components/shell/CloudTag.tsx`, the expected result is: Walk Project shows `☁ CLOUD ALPHA` in the synced state after a `done` push, and Local Two and Local Three show no tag (an unmapped project returns null). This is read from the code, not observed. Someone needs to look at the Settings Sync/Link view on a linked box and record it.
