@@ -142,27 +142,44 @@ def _parse_mappings(pairs) -> dict[str, str]:
     return out
 
 
-def _choose_mapping(db, console: dict | None) -> dict[str, str]:
-    """Ask which local projects to sync and to which cloud project (blank = local only)."""
+# The answer that makes a project local only at the `graphban link` prompt.
+_LOCAL_ONLY = "-"
+
+
+def _choose_mapping(db, console: dict | None) -> dict[str, str] | None:
+    """Ask which local projects to sync and to which cloud project.
+
+    Each prompt defaults to the project's current cloud project, so a blank answer keeps
+    it; `-` makes it local only. Returns the whole wanted map, or None to leave the stored
+    map untouched — on EOF (a non-interactive re-link) or when nothing changed. A re-link
+    must never wipe the mappings `link_device.poll` promises to keep.
+    """
     from app.models import Project
+    from app.services import link_device
 
     local = [p.id for p in db.query(Project).order_by(Project.id).all()]
     if not local:
-        return {}
+        return None
+    current = {k: row.cloud_project_id for k, row in link_device.mappings(db).items()}
     cloud = (console or {}).get("projects") or []
     if cloud:
         print("Cloud projects you can reach:")
         for c in cloud:
             print(f"  {c['id']}  {c['name']}")
-    chosen: dict[str, str] = {}
+    chosen = dict(current)
     for lp in local:
+        now = current.get(lp)
+        hint = (f"[blank = keep {now}, {_LOCAL_ONLY} = local only]" if now
+                else "[blank = local only]")
         try:
-            answer = input(f"Sync local project {lp!r} to which cloud project? [blank = local only] ")
+            answer = input(f"Sync local project {lp!r} to which cloud project? {hint} ").strip()
         except EOFError:
-            break
-        if answer.strip():
-            chosen[lp] = answer.strip()
-    return chosen
+            return None
+        if answer == _LOCAL_ONLY:
+            chosen.pop(lp, None)
+        elif answer:
+            chosen[lp] = answer
+    return None if chosen == current else chosen
 
 
 def cmd_link(args) -> int:
@@ -187,6 +204,15 @@ def cmd_link(args) -> int:
 
     db = _session()
     try:
+        # A typo in --project must not sign the box in and then store nothing: check the
+        # local ids before the console is asked for a code.
+        from app.models import Project
+        known = set(db.scalars(select(Project.id)).all())
+        missing = sorted(set(wanted) - known)
+        if missing:
+            print(f"graphban link: no local project {', '.join(missing)}; not signing in.",
+                  file=sys.stderr)
+            return 1
         try:
             started = link_device.start(db, label=getattr(args, "org", None) or "",
                                         requested_console=cloud_url)
@@ -211,18 +237,15 @@ def cmd_link(args) -> int:
             return _link_failed(answer, console)
 
         print(f"Linked to {answer['org']} as {answer['email']}.")
+        current = {k: row.cloud_project_id for k, row in link_device.mappings(db).items()}
         if wanted:
-            mapping = wanted
+            # --project sets the named projects; the rest of the stored map is kept.
+            chosen = {**current, **wanted}
         else:
-            mapping = _choose_mapping(db, code_sync.console_projects(db))
-        from app.models import Project
-        known = set(db.scalars(select(Project.id)).all())
-        missing = sorted(set(mapping) - known)
-        if missing:
-            print(f"graphban link: no local project {', '.join(missing)}; mapping not stored.",
-                  file=sys.stderr)
-            return 1
-        code_sync.set_project_map(db, list(mapping.items()))
+            chosen = _choose_mapping(db, code_sync.console_projects(db))
+        if chosen is not None and chosen != current:
+            code_sync.set_project_map(db, list(chosen.items()))
+        mapping = {k: row.cloud_project_id for k, row in link_device.mappings(db).items()}
     finally:
         db.close()
 

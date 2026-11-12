@@ -113,7 +113,58 @@ def test_bad_project_flag_is_a_usage_error(env):
         cli.cmd_link(_args(project=["core"]))
 
 
-def test_unknown_local_project_stores_no_mapping(env, monkeypatch):
+def test_unknown_local_project_refuses_before_signing_in(env, monkeypatch):
     _console(monkeypatch, [APPROVED])
     assert cli.cmd_link(_args(project=["nope=CORE"])) == 1
+    signed_in, mapping = _state()
+    assert not signed_in and mapping == {}
+    assert not env.exists()
+
+
+def _seed_mapping(**pairs):
+    db = SessionLocal()
+    try:
+        code_sync.set_project_map(db, list(pairs.items()))
+    finally:
+        db.close()
+
+
+def test_non_interactive_relink_keeps_the_stored_mapping(env, monkeypatch):
+    _seed_mapping(core="CORE")
+    _console(monkeypatch, [APPROVED])
+    monkeypatch.setattr(code_sync, "console_projects",
+                        lambda db: {"status": "ok", "projects": []})
+
+    def eof(*a):
+        raise EOFError
+    monkeypatch.setattr("builtins.input", eof)
+    assert cli.cmd_link(_args()) == 0
+    assert _state()[1] == {"core": "CORE"}
+
+
+def test_blank_answer_keeps_and_dash_makes_local_only(env, monkeypatch, capsys):
+    _seed_mapping(core="CORE")
+    _console(monkeypatch, [APPROVED])
+    monkeypatch.setattr(code_sync, "console_projects",
+                        lambda db: {"status": "ok", "projects": []})
+    monkeypatch.setattr("builtins.input", lambda *a: "")
+    assert cli.cmd_link(_args()) == 0
+    assert _state()[1] == {"core": "CORE"}
+
+    monkeypatch.setattr("builtins.input", lambda *a: "-")
+    assert cli.cmd_link(_args()) == 0
     assert _state()[1] == {}
+
+
+def test_project_flag_keeps_unnamed_mappings(env, monkeypatch):
+    db = SessionLocal()
+    try:
+        from app.models import Project
+        db.add(Project(id="other", name="Other", tag="OT"))
+        db.commit()
+    finally:
+        db.close()
+    _seed_mapping(core="CORE")
+    _console(monkeypatch, [APPROVED])
+    assert cli.cmd_link(_args(project=["other=OTHER"])) == 0
+    assert _state()[1] == {"core": "CORE", "other": "OTHER"}

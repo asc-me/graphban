@@ -101,6 +101,11 @@ Open that address, enter the code and approve. The command then prints the org a
 email and asks which local projects to sync. Scripts can skip the prompt with
 `--project LOCAL=CLOUD` (repeatable), e.g. `--project core=CORE`.
 
+Signing in again keeps the projects you already mapped: each prompt offers the current
+cloud project, a blank answer keeps it and `-` makes the project local only. `--project`
+changes only the projects it names, and a local project that does not exist is refused
+before the sign-in starts.
+
 It exits **0** when approved, **1** when the console refuses (the reason is printed and
 nothing is stored), and **2** when the console cannot be reached (`UNKNOWN could not reach
 <console>: …`, nothing stored). `graphban sync` then pushes each mapped project and prints one
