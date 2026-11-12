@@ -11,6 +11,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { AlertsBell } from "@/components/shell/AlertsBell";
 import { useAuth } from "@/features/auth/AuthContext";
 import { ReportIssueDialog } from "@/features/reports/ReportIssueDialog";
 import { useApiKeys, useMcpTools } from "@/lib/queries";
@@ -90,6 +91,8 @@ export function TopBar({
         MCP · {liveTools} tools live
         {keys && keys.length > 0 && <span className="text-muted-2">· {keys.length} keys</span>}
       </div>
+
+      {user && <AlertsBell />}
 
       <Button variant="agent" size="sm" onClick={onToggleAgent} aria-pressed={agentOpen} data-tour="agent">
         <BrainIcon />

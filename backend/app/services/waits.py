@@ -15,6 +15,7 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.models import Item
+from app.services import alerts as alerts_svc
 
 WAIT_KINDS = ("merge", "decision", "secret", "access", "deploy")
 WAIT_TAGS = tuple(f"wait:{kind}" for kind in WAIT_KINDS)
@@ -332,6 +333,78 @@ def answered_by_line(answer: dict) -> str:
     return f"answered by {by.get('user') or 'a person'}"
 
 
+def hand_to_person(db: Session, wait: Item) -> dict:
+    """Hand an open decision wait to a person: one transaction (GRPH-1527, P75 D4).
+
+    Re-reads the wait under a row lock. Answered, or already handed: a no-op. Otherwise writes
+    one alert per recipient and stamps `needs_person_at` in the SAME commit, so alerts that
+    fail to write leave the wait unhanded for the next sweep. With no recipient no alert is
+    written and `decision.nobody_alerted` records it for the Triage row.
+    """
+    from sqlalchemy import select
+
+    from app.models import Link, utcnow
+    from app.services.question_recipients import question_recipients
+
+    try:
+        locked = db.execute(select(Item).where(Item.id == wait.id).with_for_update()
+                            .execution_options(populate_existing=True)).scalar_one()
+        d = locked.decision or {}
+        if locked.status == "done" or d.get("answer") or d.get("needs_person_at"):
+            db.rollback()
+            return {"handed": False, "alerts": 0}
+        holder = locked
+        if not locked.prd_id:
+            for dep_id in db.scalars(select(Link.a).where(Link.type == "dependency",
+                                                          Link.b == locked.id)):
+                dep = db.get(Item, dep_id)
+                if dep is not None and dep.prd_id:
+                    holder = dep
+                    break
+        recipients = question_recipients(db, holder)
+        users = list(recipients["users"])
+        rows = alerts_svc.write_for_wait(db, locked, users,
+                                         body=f"{locked.key}: {recipients['reason']}") if users else []
+        new = {**d, "needs_person_at": _iso(utcnow())}
+        if not users:
+            new["nobody_alerted"] = True
+        locked.decision = new
+        db.commit()
+        db.refresh(wait)
+        return {"handed": True, "alerts": len(rows)}
+    except Exception:
+        db.rollback()
+        raise
+
+
+def sweep_questions(db: Session, *, grace_seconds: int | None = None, now=None) -> list[str]:
+    """Hand every open decision wait older than the grace period to a person. Returns the keys
+    handed. One wait failing is rolled back and left for the next pass."""
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from app.config import settings
+    from app.models import utcnow
+
+    grace = settings.question_grace_seconds if grace_seconds is None else grace_seconds
+    cutoff = _aware(now or utcnow()) - timedelta(seconds=grace)
+    rows = db.scalars(select(Item).where(Item.decision.is_not(None), Item.status != "done")).all()
+    due = [w.id for w in rows
+           if "wait:decision" in {str(t).lower() for t in w.tags or []}
+           and not (w.decision or {}).get("answer") and not (w.decision or {}).get("needs_person_at")
+           and _aware(w.created_at) <= cutoff]
+    handed = []
+    for wid in due:
+        try:
+            wait = db.get(Item, wid)
+            if wait is not None and hand_to_person(db, wait)["handed"]:
+                handed.append(wait.key)
+        except Exception:  # noqa: BLE001 - the next sweep retries it
+            db.rollback()
+    return handed
+
+
 def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: str | None = None,
                 actor=None, surface: str = "rest", agent: str | None = None,
                 source: dict | None = None, needs_person: bool = False) -> dict:
@@ -357,10 +430,8 @@ def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: s
             raise OwnWaitRefused(f"{agent} filed the question on {wait.key} and cannot answer it; "
                                 "another agent or a person must")
     if needs_person:
-        wait.decision = {**wait.decision, "needs_person_at": _iso(utcnow())}
-        db.commit()
-        db.refresh(wait)
-        return {"wait": wait.key, "needs_person": True, "released": []}
+        handed = hand_to_person(db, wait)
+        return {"wait": wait.key, "needs_person": True, "released": [], "handed": handed["handed"]}
     src = _resolve_source(db, source) if agent else None
     choice, text = (choice or "").strip(), (text or "").strip()
     if not choice and not text:
@@ -402,6 +473,7 @@ def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: s
                 if d is not wait and b["status"] == "blocked" and d.status != "blocked"]
     eid = _event(db, "answer", touched, actor=actor, surface=surface, primary=wait,
                  meta={"released": released})
+    alerts_svc.clear_for_item(db, wait.id)
     db.commit()
     db.refresh(wait)
     return {"wait": wait.key, "answer": answer, "released": released, "event_id": eid,

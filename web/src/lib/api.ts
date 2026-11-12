@@ -13,6 +13,7 @@ import type {
   Galaxy,
   OrgProjectAccess,
   TriageRow,
+  AlertsFeed,
   TriageFeed,
   DrainNote,
   AdminInvite,
@@ -440,6 +441,10 @@ export const api = {
     request<{ keys_revoked: number; leases_released: number; reservations_released: number }>(
       "/fleet/end-wave", { method: "POST", body: JSON.stringify({ project_id: projectId, wave }) }),
   me: () => request<User>("/auth/me"),
+  /** The signed-in user's open alerts and unread count (GRPH-1527). */
+  myAlerts: () => request<AlertsFeed>("/me/alerts"),
+  readAlert: (id: string) =>
+    request<AlertsFeed>(`/me/alerts/${encodeURIComponent(id)}/read`, { method: "POST" }),
   // Quick-start progress (GRPH-P67 D6/D8). Readable before any project exists, so the
   // dialog can decide to open for a brand-new user.
   onboarding: () => request<{ onboarding: Onboarding | null }>("/auth/me/onboarding"),
