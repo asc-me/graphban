@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CloudTag } from "@/components/shell/CloudTag";
@@ -62,10 +62,20 @@ describe("cloud tag", () => {
   });
 
   it("local only: no tag and no local badge", async () => {
-    vi.mocked(api.syncStatus).mockResolvedValue(status([proj("a", { mapped: false, cloud_project_id: null })]) as never);
-    renderTag("a");
-    await vi.waitFor(() => expect(api.syncStatus).toHaveBeenCalled());
-    expect(screen.queryByTestId("cloud-tag")).toBeNull();
+    vi.mocked(api.syncStatus).mockResolvedValue(
+      status([proj("a", { mapped: false, cloud_project_id: null }), proj("b", { last_push_result: "ok" })]) as never,
+    );
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <div data-testid="slot-a"><CloudTag projectId="a" /></div>
+        <div data-testid="slot-b"><CloudTag projectId="b" /></div>
+      </QueryClientProvider>,
+    );
+    // The mapped sibling's tag proves the status query has resolved, so null for "a" is a real answer.
+    await within(screen.getByTestId("slot-b")).findByTestId("cloud-tag");
+    expect(within(screen.getByTestId("slot-a")).queryByTestId("cloud-tag")).toBeNull();
+    expect(screen.getByTestId("slot-a")).toBeEmptyDOMElement();
     expect(screen.queryByText(/local/i)).toBeNull();
   });
 
