@@ -15,13 +15,7 @@ import * as React from "react";
 import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { Button } from "@/components/ui/button";
 import { LinkedPanel } from "@/features/organization/LinkedPanel";
-import {
-  LinkToOrgWizard,
-  resumeTarget,
-  setLinkFinished,
-  type WizardStep,
-} from "@/features/organization/LinkToOrgWizard";
-import { noteGitopsUnlinked } from "@/features/settings/GitopsPanel";
+import { LinkToOrgWizard, useLinkFlow } from "@/features/organization/LinkToOrgWizard";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { useSyncOrg, useSyncStatus } from "@/lib/queries";
@@ -102,7 +96,7 @@ export function SyncLinkPanel() {
         )}
       </div>
 
-      <CloudLinkCard status={status} onChange={invalidate} scopedId={scopedId} onScope={setScopedId} />
+      <CloudLinkCard status={status} scopedId={scopedId} onScope={setScopedId} />
       <ContributionCard status={status} onChange={invalidate} />
 
       <ScopeBar scoped={scoped} onClear={() => setScopedId(null)} />
@@ -190,50 +184,16 @@ function ContributionCard({
 
 function CloudLinkCard({
   status,
-  onChange,
   scopedId,
   onScope,
 }: {
   status: NonNullable<ReturnType<typeof useSyncStatus>["data"]>;
-  onChange: () => void;
   scopedId: string | null;
   onScope: (id: string) => void;
 }) {
-  const qc = useQueryClient();
-  const [busy, setBusy] = React.useState(false);
-  const [wizardStep, setWizardStep] = React.useState<WizardStep | null>(null);
-  // Done closes the wizard for this visit even before the refetched status lands.
-  const [closed, setClosed] = React.useState(false);
   const { data: orgOverview } = useSyncOrg(status.linked);
-  // Only a box admin may link, re-point or unlink; the wizard is read-only for anyone else.
-  // can_link answers it on a linked AND an unlinked box (GRPH-1537); /sync/org's can_unlink
-  // is the fallback for an older API that does not send it.
-  const readOnly =
-    status.can_link === false ||
-    (status.can_link === undefined && status.linked && orgOverview?.can_unlink === false);
-  // The first unfinished step (design L3 "Resume"); null opens the Linked window.
-  const resume = resumeTarget(status);
-  const wizardNeeded = resume !== null && !(closed && status.signed_in);
-
-  function dropGitopsCache() {
-    // Prefix of keys.gitops(id). Link is instance-wide; do not first-paint a
-    // pre-link (or pre-unlink) GitopsView. Graph-push onChange must not do this.
-    qc.removeQueries({ queryKey: ["gitops"] });
-  }
-
-  async function unlink() {
-    setBusy(true);
-    try {
-      await api.syncUnlink();
-      setLinkFinished(false);
-      setClosed(false);
-      noteGitopsUnlinked();
-      dropGitopsCache();
-      onChange();
-    } finally {
-      setBusy(false);
-    }
-  }
+  // /sync/org's can_unlink is the read-only fallback for an older API without can_link.
+  const flow = useLinkFlow(status, status.linked && orgOverview?.can_unlink === false);
 
   return (
     <div className="rounded-[13px] border border-line-2 bg-surface-2 p-4">
@@ -253,32 +213,25 @@ function CloudLinkCard({
         </span>
       </div>
 
-      {wizardStep !== null || wizardNeeded ? (
+      {flow.wizard ? (
         <LinkToOrgWizard
           status={status}
-          initialStep={wizardStep ?? resume ?? undefined}
-          readOnly={readOnly}
-          onLinked={() => {
-            dropGitopsCache();
-            onChange();
-          }}
-          onDone={() => {
-            setWizardStep(null);
-            setClosed(true);
-            onChange();
-          }}
+          initialStep={flow.initialStep}
+          readOnly={flow.readOnly}
+          onLinked={flow.onLinked}
+          onDone={flow.onDone}
         />
       ) : (
         <>
           <LinkedPanel
             status={status}
-            readOnly={readOnly}
+            readOnly={flow.readOnly}
             unlinkable={status.source !== "env"}
-            busy={busy}
+            busy={flow.busy}
             orgHref={status.cloud_url || undefined}
-            onChooseProjects={() => setWizardStep(3)}
-            onSignIn={() => setWizardStep(2)}
-            onUnlink={unlink}
+            onChooseProjects={() => flow.openAt(3)}
+            onSignIn={() => flow.openAt(2)}
+            onUnlink={() => void flow.unlink()}
           />
           <ProjectsTable projects={status.projects} scopedId={scopedId} onScope={onScope} />
           {status.source === "env" && (

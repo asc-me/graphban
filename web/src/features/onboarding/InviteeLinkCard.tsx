@@ -13,7 +13,12 @@ export function InviteeLinkCard() {
   const cmd = `graphban link --cloud-url ${window.location.origin}`;
   return (
     <details className="mt-4 rounded-[10px] border border-line bg-surface-2 px-3 py-2" data-link-setup>
-      <summary className="cursor-pointer text-body font-medium">Run Graphban locally too? (optional)</summary>
+      <summary className="cursor-pointer text-body font-medium">
+        Run Graphban locally too? (optional)
+        <span className="block text-small font-normal text-muted" data-link-sub>
+          Optional. Link your local box to {org}.
+        </span>
+      </summary>
       <div className="mt-2 flex flex-col gap-2 text-small text-muted">
         <p>
           On your local Graphban, open <strong>Organization → Link to an org</strong> and sign in as yourself. Your
@@ -33,6 +38,9 @@ export function InviteeLinkCard() {
             ))}
           </ul>
         ) : null}
+        <p className="border-t border-line pt-2 text-faint" data-link-footer>
+          Optional. Nothing here waits on it.
+        </p>
       </div>
     </details>
   );

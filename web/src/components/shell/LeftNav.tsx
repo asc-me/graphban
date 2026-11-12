@@ -5,7 +5,7 @@ import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { ProjectSwitcher, ProjectTile } from "@/components/shell/ProjectSwitcher";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { LEVELS } from "@/features/rules/levels";
-import { CloudOrgLinkDialog } from "@/features/settings/CloudOrgLinkDialog";
+import { CloudOrgLinkDialog, onOrgWindowRequested } from "@/features/settings/CloudOrgLinkDialog";
 import { cn } from "@/lib/cn";
 import {
   useCounts,
@@ -141,7 +141,8 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
   const { data: adminMe } = useIsPlatformAdmin();
   const isPlatformAdmin = !!adminMe?.is_platform_admin;
   const [orgDialogOpen, setOrgDialogOpen] = React.useState(false);
-  const [orgDialogLinked, setOrgDialogLinked] = React.useState(false);
+  // The tour's Link to an org → opens this window (GRPH-1564).
+  React.useEffect(() => onOrgWindowRequested(() => setOrgDialogOpen(true)), []);
   const { pathname } = useLocation();
   // The URL is the project, and it is known before the project list answers.
   const homeTag = hosted ? (active?.tag ?? tagFromPath(pathname)) : null;
@@ -339,7 +340,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
           ) : (
             <OrgRailIcon
               projectId={activeId}
-              onOpenDialog={(linked) => { setOrgDialogLinked(linked); setOrgDialogOpen(true); }}
+              onOpenDialog={() => setOrgDialogOpen(true)}
               tipProps={tipProps({ label: "Organization" })}
             />
           )}
@@ -432,7 +433,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
             {hosted ? (
               orgConsole && <NavItem href={orgConsole} icon={<Building2 size={15} />} label="Organization" utility tour="org" />
             ) : (
-              <OrgRailItem projectId={activeId} onOpenDialog={(linked) => { setOrgDialogLinked(linked); setOrgDialogOpen(true); }} />
+              <OrgRailItem projectId={activeId} onOpenDialog={() => setOrgDialogOpen(true)} />
             )}
             {canAdminister && adminConsole && (
               <NavItem href={adminConsole} icon={<UsersRound size={15} />} label="Admin" utility />
@@ -493,7 +494,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
         />
       )}
 
-      {!hosted && <CloudOrgLinkDialog open={orgDialogOpen} onOpenChange={setOrgDialogOpen} linked={orgDialogLinked} />}
+      {!hosted && <CloudOrgLinkDialog open={orgDialogOpen} onOpenChange={setOrgDialogOpen} />}
     </aside>
   );
 }

@@ -30,7 +30,7 @@ describe("OrgPlug pitch", () => {
       "Memory that carries across projects",
       "One roster of everyone's agents",
       "Capacity routing across your team's entitlements",
-      "Your code graph stays local-first",
+      "Your code graph stays local-first, and any project you don't choose to sync stays local only.",
     ])
       expect(screen.getByText(t)).toBeInTheDocument();
     expect(screen.getByText("deployment")).toBeInTheDocument();

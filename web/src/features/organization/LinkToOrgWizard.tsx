@@ -1,8 +1,10 @@
+import { useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { cloudTagText } from "@/components/shell/CloudTag";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { noteGitopsUnlinked } from "@/features/settings/GitopsPanel";
 import { api } from "@/lib/api";
 import { errorDetail } from "@/lib/errors";
 import { CONSOLE_URL } from "@/lib/routes";
@@ -71,6 +73,66 @@ export function resumeTarget(status: SyncStatus, finished = linkFinished()): Wiz
   if (mapped.length === 0) return finished ? null : 3;
   if (mapped.every((p) => !p.last_push_result)) return 4;
   return null;
+}
+
+/**
+ * The one link controller (GRPH-1564). Settings → Sync / Link and the Organization window both
+ * run it off `GET /api/sync/status`, so the two can never disagree on whether the box is linked,
+ * which step is unfinished, or what pushed. `wizard` is true while the wizard should show.
+ */
+export function useLinkFlow(status: SyncStatus | undefined, fallbackReadOnly = false) {
+  const qc = useQueryClient();
+  const [step, setStep] = React.useState<WizardStep | null>(null);
+  // Done closes the wizard for this visit even before the refetched status lands.
+  const [closed, setClosed] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+  const resume = status ? resumeTarget(status) : null;
+  const wizard = !!status && (step !== null || (resume !== null && !(closed && status.signed_in)));
+  // Only a box admin may link, re-point or unlink; can_link answers it on a linked AND an
+  // unlinked box (GRPH-1537). An older API without it falls back to the caller's answer.
+  const readOnly = status?.can_link === false || (status?.can_link === undefined && fallbackReadOnly);
+
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ["sync-status"] });
+    qc.invalidateQueries({ queryKey: ["sync-org"] });
+    qc.invalidateQueries({ queryKey: ["platform"] });
+  };
+  // Prefix of keys.gitops(id). Link is instance-wide; do not first-paint a pre-link (or
+  // pre-unlink) GitopsView.
+  const dropGitops = () => qc.removeQueries({ queryKey: ["gitops"] });
+
+  async function unlink() {
+    setBusy(true);
+    try {
+      await api.syncUnlink();
+      setLinkFinished(false);
+      setClosed(false);
+      setStep(null);
+      noteGitopsUnlinked();
+      dropGitops();
+      refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return {
+    wizard,
+    initialStep: step ?? resume ?? undefined,
+    readOnly,
+    busy,
+    openAt: (s: WizardStep) => setStep(s),
+    onLinked: () => {
+      dropGitops();
+      refresh();
+    },
+    onDone: () => {
+      setStep(null);
+      setClosed(true);
+      refresh();
+    },
+    unlink,
+  };
 }
 
 /** The step the wizard opens at when nobody named one. */
