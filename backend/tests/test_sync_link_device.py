@@ -459,3 +459,27 @@ def test_sabotage_guard_without_the_fill_the_push_is_the_consoles_422(
     assert got["stored"][0] == ""
     assert got["stored"][1] == "refused" and NO_PROJECT in (got["stored"][2] or "")
     assert all("X-Cloud-Project" not in h for h in got["pushes"])
+
+
+# ---- resuming a sign-in in flight (GRPH-1575) --------------------------------------------
+
+def test_status_carries_the_code_in_flight_for_a_box_admin_and_never_the_device_code(
+        client, auth, console):
+    assert _status(client, auth).json()["pending_sign_in"] is None
+    _start(client, auth)
+    s = _status(client, auth)
+    body = s.json()
+    assert body["sign_in_pending"] is True
+    assert body["pending_sign_in"] == {
+        "console_url": CONSOLE, "user_code": "ABCD-EFGH", "verification_url": f"{CONSOLE}/link",
+        "expires_at": "2030-01-01T00:00:00Z", "interval": 5}
+    _assert_no_secrets(s)
+    # A member cannot approve it, so a member is not shown the code.
+    ops = _login(client, "ops@ascme-labs.com")
+    assert _status(client, ops).json()["pending_sign_in"] is None
+    # Approved while no tab was open: the first poll completes it and the code is gone.
+    console.poll_answer = (200, {"status": "approved", "org": {"name": "Acme"},
+                                 "email": "eng@acme.dev", "token": TOKEN})
+    assert _poll(client, auth).json()["status"] == "approved"
+    body = _status(client, auth).json()
+    assert body["signed_in"] is True and body["pending_sign_in"] is None

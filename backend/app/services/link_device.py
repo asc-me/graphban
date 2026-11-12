@@ -135,12 +135,27 @@ def start(db: Session, *, label: str = "", requested_console: str = "") -> dict:
     if link is None:
         link = SyncLink(id=_LINK_ID)
         db.add(link)
-    link.pending_device_enc = secrets.encrypt(json.dumps(
-        {"console_url": base, "device_code": code, "expires_at": data.get("expires_at")}))
+    shown = {"console_url": base, "user_code": data["user_code"],
+             "verification_url": data.get("verification_url") or f"{base}/link",
+             "expires_at": data.get("expires_at"), "interval": data.get("interval")}
+    # The code a person reads is kept with the secret device code, so a wizard reopened after
+    # the tab reloaded resumes this sign-in instead of minting a new code (GRPH-1575).
+    link.pending_device_enc = secrets.encrypt(json.dumps({**shown, "device_code": code}))
     db.commit()
-    return {"status": "started", "console_url": base, "user_code": data["user_code"],
-            "verification_url": data.get("verification_url") or f"{base}/link",
-            "expires_at": data.get("expires_at"), "interval": data.get("interval")}
+    return {"status": "started", **shown}
+
+
+def pending_code(db: Session) -> dict | None:
+    """The sign-in in flight as the wizard shows it — the code a person types into the console,
+    where, and until when. Never the device code. None when no sign-in is in flight. A sign-in
+    started before GRPH-1575 kept no code: `user_code` is then empty, and polling still works."""
+    pending = _pending(_link(db))
+    if pending is None:
+        return None
+    base = pending.get("console_url") or ""
+    return {"console_url": base, "user_code": pending.get("user_code") or "",
+            "verification_url": pending.get("verification_url") or f"{base}/link",
+            "expires_at": pending.get("expires_at"), "interval": pending.get("interval")}
 
 
 def _pending(link: SyncLink | None) -> dict | None:

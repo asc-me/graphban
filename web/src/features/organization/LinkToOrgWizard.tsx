@@ -57,6 +57,7 @@ export function setLinkFinished(on: boolean) {
 }
 
 /** The first unfinished step (design L3 "Resume"), or `null` for the Linked window.
+ *  - a sign-in in flight → ② waiting, even on a linked box signing in again (GRPH-1575)
  *  - no token → ② (① only when no console URL is known and no sign-in is pending)
  *  - signed in, nothing mapped, wizard never finished → ③
  *  - mapped but never pushed → ④
@@ -64,6 +65,7 @@ export function setLinkFinished(on: boolean) {
  *  A key link (`legacy`, or a key baked in by env) is linked and still syncing: it opens the
  *  Linked window, whose relink line offers Sign in again. */
 export function resumeTarget(status: SyncStatus, finished = linkFinished()): WizardStep | null {
+  if (status.sign_in_pending) return 2;
   if (!status.signed_in) {
     // A link that still holds a credential (a migrated key, or one baked in by env) is
     // linked and syncing — that is the Linked window, not a missing token.
@@ -88,6 +90,12 @@ export function useLinkFlow(status: SyncStatus | undefined, fallbackReadOnly = f
   const [closed, setClosed] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const resume = status ? resumeTarget(status) : null;
+  // A sign-in in flight holds the wizard open at ②: once it is approved the status no longer
+  // says pending, and the wizard must stay to move on to ③ rather than vanish (GRPH-1575).
+  const pending = !!status?.sign_in_pending;
+  React.useEffect(() => {
+    if (pending) setStep((s) => s ?? 2);
+  }, [pending]);
   const wizard = !!status && (step !== null || (resume !== null && !(closed && status.signed_in)));
   // Only a box admin may link, re-point or unlink; can_link answers it on a linked AND an
   // unlinked box (GRPH-1537). An older API without it falls back to the caller's answer.
@@ -222,7 +230,21 @@ export function LinkToOrgWizard({
   // The env URL comes from console_url_env, set even on an unlinked box (GRPH-1537).
   const envUrl = status.console_url_env ?? "";
   const [url, setUrl] = React.useState(envUrl || status.cloud_url || CONSOLE_URL);
-  const [start, setStart] = React.useState<LinkStartResult | null>(null);
+  // A sign-in already in flight is resumed, never replaced: its code may already be approved
+  // in the console, and a new code would strand it (GRPH-1575).
+  const resumed = React.useRef(!!status.pending_sign_in && (initialStep ?? resumeStep(status)) === 2);
+  const [start, setStart] = React.useState<LinkStartResult | null>(() => {
+    const p = status.pending_sign_in;
+    if (!resumed.current || !p) return null;
+    return {
+      status: "started",
+      console_url: p.console_url,
+      user_code: p.user_code,
+      verification_url: p.verification_url,
+      expires_at: p.expires_at ?? undefined,
+      interval: p.interval ?? undefined,
+    };
+  });
   const [signIn, setSignIn] = React.useState<
     "waiting" | "approved" | "refused" | "unreachable"
   >("waiting");
@@ -241,6 +263,7 @@ export function LinkToOrgWizard({
     setUnreachable(undefined);
     setCopied("");
     setStep(2);
+    resumed.current = false;
     setStarting(true);
     try {
       const r = await api.syncLinkStart(envUrl || url.trim());
@@ -265,7 +288,7 @@ export function LinkToOrgWizard({
     if (step !== 2 || !start || signIn !== "waiting") return;
     let live = true;
     const ms = Math.max(10, (start.interval ?? 3) * 1000);
-    const t = window.setInterval(async () => {
+    const ask = async () => {
       try {
         const r = await api.syncLinkPoll();
         if (!live) return;
@@ -274,6 +297,8 @@ export function LinkToOrgWizard({
           setEmail(r.email ?? "");
           setSignIn("approved");
           onLinked?.();
+          // A resumed code was approved while no tab watched it: carry on to ③.
+          if (resumed.current) setStep(3);
         } else if (r.status === "refused") {
           setSignIn("refused");
           setRefusal(r.reason);
@@ -287,7 +312,10 @@ export function LinkToOrgWizard({
           setSignIn("unreachable");
         }
       }
-    }, ms);
+    };
+    // A resumed code may have been approved while no tab was open: ask at once.
+    if (resumed.current) void ask();
+    const t = window.setInterval(ask, ms);
     return () => {
       live = false;
       window.clearInterval(t);
