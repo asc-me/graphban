@@ -148,3 +148,77 @@ def test_decision_wait_rows_carry_question_state_and_only_response_needed_counts
     assert rows[wait.key]["question_state"] == "response_needed"
     assert rows[ticket.key]["question_state"] == "response_needed"
     assert f["waiting_on_person"] == 2
+
+
+# --- GRPH-1529: an answered decision shows who answered and whether a drain is live ---------
+
+
+def _answered_pair(db, title="which store?"):
+    from app.services import items as items_svc
+    from app.services import links as links_svc
+    from app.services import prds as prds_svc
+
+    prd = prds_svc.create_prd(db, project_id="core", title="Store", body="## A\n\nx\n")
+    ticket = items_svc.create_item(db, project_id="core", title="needs an answer",
+                                   status="in_progress", prd_id=prd.id)
+    ticket.claimed_by = "core-A1"
+    wait = items_svc.create_item(db, project_id="core", title=title, status="blocked",
+                                 question="Which store?", options=["redis", "postgres"])
+    links_svc.create_link(db, a=ticket.id, b=wait.id, type_="dependency", project_id="core")
+    items_svc.update_item(db, ticket.id, status="blocked")
+    db.refresh(ticket)
+    return prd, ticket, wait
+
+
+def test_agent_answer_shows_source_quote_and_restart_command_on_the_row(client, auth, db):
+    from app.services import waits as waits_svc
+
+    _, ticket, wait = _answered_pair(db)
+    waits_svc.answer_wait(db, wait.id, choice="redis", agent="core-A7",
+                          source={"kind": "session", "quote": "the user said redis"})
+    f = _feed(client, auth)
+    row = next(r for r in f["rows"] if r["id"] == wait.key)
+    assert row["kind"] == "answered" and row["answer"] == "redis"
+    assert row["answered_by"] == "answered from session by core-A7"
+    assert row["by"]["agent"] == "core-A7" and row["source"]["kind"] == "session"
+    assert row["quote"] == "the user said redis"
+    key = ticket.prd_key
+    assert row["drain"] == {"status": "not_live", "prd": key,
+                            "message": f"No drain is running for {key}.",
+                            "command": f"gban fleet until --prd {key}"}
+    # Listed, but not waiting on anyone: it adds to no tab's count.
+    assert f["counts"]["all"] == sum(r["kind"] != "answered" for r in f["rows"])
+    assert f["waiting_on_person"] == 0
+
+
+def test_person_answer_shows_the_person_and_a_live_drain(client, auth, db):
+    from app.models import Agent, Enrolment, utcnow
+    from app.services import waits as waits_svc
+
+    prd, _, wait = _answered_pair(db)
+    db.add(Enrolment(id="enr-tri-live", project_id="core", code_hash="x", role="worker",
+                     prd_id=prd.id, expires_at=utcnow() + timedelta(hours=1)))
+    db.flush()
+    db.add(Agent(id="core-A88", project_id="core", number=88, enrolment_id="enr-tri-live",
+                 state="working", last_seen_at=utcnow()))
+    db.commit()
+    r = client.post(f"/api/items/{wait.key}/answer", headers=auth, json={"option": "postgres"})
+    assert r.status_code == 200, r.text
+    row = next(r for r in _feed(client, auth)["rows"] if r["id"] == wait.key)
+    assert row["answered_by"].startswith("answered by ") and row["by"]["agent"] is None
+    assert row["quote"] is None and row["source"] is None
+    assert row["drain"]["status"] == "live"
+    assert row["drain"]["message"].startswith("A drain is running for ")
+
+
+def test_answered_row_leaves_the_feed_after_the_window(client, auth, db):
+    from app.services import triage as triage_svc
+    from app.services import waits as waits_svc
+
+    _, _, wait = _answered_pair(db)
+    waits_svc.answer_wait(db, wait.id, choice="redis")
+    assert any(r["id"] == wait.key for r in _feed(client, auth)["rows"])
+    db.refresh(wait)
+    wait.done_at = wait.done_at - timedelta(seconds=triage_svc.ANSWERED_WINDOW_SECONDS + 60)
+    db.commit()
+    assert all(r["id"] != wait.key for r in _feed(client, auth)["rows"])

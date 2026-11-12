@@ -324,6 +324,32 @@ def presence_state(agent: Agent, *, lease_seconds: int = DEFAULT_LEASE_SECONDS,
     return agent.state if agent.state in STATES else "idle"
 
 
+def drain_status(db: Session, project_id: str, prd_id: str | None, *,
+                 lease_seconds: int = DEFAULT_LEASE_SECONDS,
+                 now: datetime | None = None) -> str:
+    """`live | not_live | unknown` — is a drain running for this PRD (GRPH-1529, P75 D5).
+
+    Live means an agent on a seat scoped to `prd_id`, or on an unscoped seat in the project,
+    is inside presence (`presence_state`, the one presence rule). A ticket with no PRD uses the
+    project-wide state: any enrolled agent seen in the window. A read that raises is
+    `unknown`, never `not_live`: "no drain" must not be said on a failed check.
+    """
+    now = now or datetime.now(timezone.utc)
+    try:
+        rows = db.execute(
+            select(Agent, Enrolment.prd_id).join(Enrolment, Agent.enrolment_id == Enrolment.id)
+            .where(Agent.project_id == project_id)).all()
+        for agent, seat_prd in rows:
+            if prd_id is not None and seat_prd not in (None, prd_id):
+                continue
+            if presence_state(agent, lease_seconds=lease_seconds, now=now) in (
+                    "idle", "working", "reviewing"):
+                return "live"
+        return "not_live"
+    except Exception:  # noqa: BLE001 — any failed read is "unknown", by contract
+        return "unknown"
+
+
 def held_review(db: Session, agent_id: str, *,
                 lease_seconds: int = DEFAULT_LEASE_SECONDS) -> Item | None:
     """The item this agent is holding a LIVE review claim on, if any.

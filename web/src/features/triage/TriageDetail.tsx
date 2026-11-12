@@ -1,10 +1,12 @@
 import { QUESTION_LABEL } from "@/features/tracker/QuestionStateBadge";
 import type { ReactNode } from "react";
 
+import { copyText } from "@/lib/clipboard";
+
 import { CommentThread } from "@/features/requests/CommentThread";
 import type { TriageFeedRow } from "@/lib/types";
 
-import { duplicateHintCopy, formatAge, type TriageAction } from "./actions";
+import { answeredByCopy, duplicateHintCopy, formatAge, type TriageAction } from "./actions";
 
 const STATUS_TEXT: Record<string, string> = {
   in_progress: "text-st-next", review: "text-st-review", blocked: "text-st-blocked", next: "text-purple",
@@ -15,6 +17,7 @@ const statusText = (s: string) => STATUS_TEXT[s] ?? "text-muted";
 const KIND_PILL: Record<string, string> = {
   blocker: "border-st-blocked/40 text-st-blocked",
   collision: "border-st-review/40 text-st-review",
+  answered: "border-st-done/40 text-st-done",
   feature: "border-accent/40 text-accent",
 };
 const kindPill = (k: string) => KIND_PILL[k] ?? "border-control text-fg-2";
@@ -55,7 +58,9 @@ export function TriageDetail({
       ? `claimed by ${row.owner ?? "nobody"} · blocked ${formatAge(row.blocked_seconds)}`
       : row.kind === "collision"
         ? `detected ${formatAge(row.age_seconds)} ago`
-        : `${row.by || "anonymous"} · ${row.source} · ↑ ${row.votes} · ${formatAge(row.age_seconds)}`;
+        : row.kind === "answered"
+          ? `answered ${formatAge(row.age_seconds)} ago`
+          : `${row.by || "anonymous"} · ${row.source} · ↑ ${row.votes} · ${formatAge(row.age_seconds)}`;
 
   return (
     <div className="px-6 py-5">
@@ -152,7 +157,35 @@ export function TriageDetail({
         </>
       )}
 
-      {row.kind !== "blocker" && row.kind !== "collision" && (
+      {row.kind === "answered" && (
+        <>
+          <div className="mt-5 rounded-lg border border-st-done/30 bg-st-done/[0.07] px-3 py-2.5">
+            <div className="font-mono text-micro uppercase tracking-[0.07em] text-st-done">ANSWERED</div>
+            <p className="mt-1.5 text-body leading-relaxed text-fg-2">{row.question}</p>
+            <p className="mt-1.5 text-body font-semibold text-fg">{row.answer}</p>
+            <p data-testid="answered-by" className="mt-1.5 text-small text-muted">
+              {answeredByCopy(row.answered_by, row.quote)}
+            </p>
+          </div>
+          <Label>DRAIN</Label>
+          <p data-testid="drain-note" className="mt-1.5 text-body text-fg-2">{row.drain.message}</p>
+          {row.drain.command && (
+            <div className="mt-1.5 flex items-center gap-2">
+              <code className="rounded-[5px] border border-line bg-surface px-1.5 py-px font-mono text-meta text-fg-2">
+                {row.drain.command}
+              </code>
+              <button
+                onClick={() => void copyText(row.drain.command!)}
+                className="rounded border border-control px-1.5 py-px text-small text-muted hover:text-fg"
+              >
+                Copy
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {row.kind !== "blocker" && row.kind !== "collision" && row.kind !== "answered" && (
         <>
           {row.body && <p className="mt-5 text-body leading-relaxed text-fg-2">{row.body}</p>}
           {row.duplicate && (

@@ -1,4 +1,4 @@
-import { api } from "@/lib/api";
+import { api, type AnswerWaitResult } from "@/lib/api";
 import type { TriageFeedRow, TriageTab } from "@/lib/types";
 
 /** Reverses one action. Resolves once the server has restored the row. */
@@ -12,7 +12,7 @@ export interface TriageAction {
   primary?: boolean;
   /** Override and Merge only: the actions Undo does not reverse cleanly ask first. */
   confirm?: string;
-  run: () => Promise<{ result: string; undo: Undo }>;
+  run: () => Promise<{ result: string; undo: Undo; command?: string }>;
 }
 
 export const TABS: { id: TriageTab; label: string; key: string; dot: string | null }[] = [
@@ -28,7 +28,7 @@ export function inTab(row: TriageFeedRow, tab: TriageTab): boolean {
   if (tab === "all") return true;
   if (tab === "bugs") return row.kind === "bug";
   if (tab === "requests") return row.kind === "feature" || row.kind === "enhancement";
-  if (tab === "blockers") return row.kind === "blocker";
+  if (tab === "blockers") return row.kind === "blocker" || row.kind === "answered";
   return row.kind === "collision";
 }
 
@@ -43,6 +43,19 @@ export function duplicateHintCopy(id: string, score: number): string {
   return `looks like ${id} — ${Math.round(score * 100)}% similar`;
 }
 
+/** The row line for an answered decision: who answered, with the agent's quote when it gave one. */
+export function answeredByCopy(answeredBy: string, quote: string | null | undefined): string {
+  return answeredBy + (quote ? ` — "${quote}"` : "");
+}
+
+/** The Processed line for an answer: who answered, then whether a drain will pick the ticket up. */
+export function answeredCopy(base: string, a: AnswerWaitResult | undefined): string {
+  const parts = [base];
+  if (a?.answered_by) parts.push(answeredByCopy(a.answered_by, a.quote));
+  if (a?.drain?.message) parts.push(a.drain.message);
+  return parts.join(". ");
+}
+
 const iso = (ms: number) => new Date(Date.now() + ms).toISOString();
 const HOUR = 3_600_000;
 
@@ -53,6 +66,8 @@ const HOUR = 3_600_000;
 const OPTION_KEYS = "abdfgh";
 
 export function actionsFor(row: TriageFeedRow, projectId: string): TriageAction[] {
+  // Already answered: nothing to act on, the row only says who answered and what happens next.
+  if (row.kind === "answered") return [];
   if (row.kind === "blocker") {
     const owner = row.owner ?? "the agent";
     const escalate: TriageAction = {
@@ -74,8 +89,12 @@ export function actionsFor(row: TriageFeedRow, projectId: string): TriageAction[
       const options = row.decision.options.slice(0, OPTION_KEYS.length).map<TriageAction>((o, i) => ({
         key: OPTION_KEYS[i], label: o,
         run: async () => {
-          await api.answerBlocker(row.id, o);
-          return { result: `Answered "${o}" — ${owner} resumed`, undo: () => api.undoBlocker(row.id) };
+          const a = await api.answerBlocker(row.id, o);
+          return {
+            result: answeredCopy(`Answered "${o}" — ${owner} resumed`, a),
+            command: a?.drain?.command,
+            undo: () => api.undoBlocker(row.id),
+          };
         },
       }));
       return [...options, escalate, snooze];

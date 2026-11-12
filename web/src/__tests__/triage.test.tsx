@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ProjectProvider } from "@/features/ProjectContext";
 import { TriageView } from "@/features/triage/TriageView";
-import type { Project, TriageFeed, TriageFeedRow } from "@/lib/types";
+import type { Project, TriageAnsweredRow, TriageFeed, TriageFeedRow } from "@/lib/types";
 
 /**
  * GRPH-1148. The assertions that matter are the ways this screen can lie: "Triage clear"
@@ -161,6 +161,77 @@ describe("Triage inbox", () => {
     expect(m.answerBlocker).not.toHaveBeenCalled();
     await user.keyboard("d");
     await waitFor(() => expect(m.answerBlocker).toHaveBeenCalledWith("GRPH-906", "Both"));
+  });
+
+  it("after a person answers, the Processed line names the person and the restart command", async () => {
+    const decide: TriageFeedRow = {
+      ...blocker, id: "GRPH-906",
+      decision: { question: "Which store?", options: ["Postgres", "SQLite", "Both", "Neither"] },
+    };
+    m.projectTriage.mockResolvedValue(feed([decide, bug]));
+    // A click in Triage is always a person's answer: no source, no quote.
+    m.answerBlocker.mockResolvedValueOnce({
+      answered_by: "answered by alex",
+      quote: null,
+      drain: {
+        status: "not_live", prd: "GRPH-P75", message: "No drain is running for GRPH-P75.",
+        command: "gban fleet until --prd GRPH-P75",
+      },
+    });
+    renderTriage();
+    await screen.findByText("Crash on empty project");
+    const user = userEvent.setup();
+    await user.keyboard("d");
+    await screen.findByText(/No drain is running for GRPH-P75/);
+    expect(screen.getByText(/answered by alex/)).toBeInTheDocument();
+    expect(screen.getByText("gban fleet until --prd GRPH-P75")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+  });
+
+  const answered = (over: Partial<TriageAnsweredRow> = {}): TriageAnsweredRow => ({
+    id: "GRPH-907", kind: "answered", title: "which store?", age_seconds: 120, paths: [],
+    question: "Which store?", answer: "redis",
+    by: { agent: "GRPH-A7", user: null }, source: { kind: "session", ref: null },
+    quote: "the user said redis", answered_by: "answered from session by GRPH-A7",
+    drain: {
+      status: "not_live", prd: "GRPH-P75", message: "No drain is running for GRPH-P75.",
+      command: "gban fleet until --prd GRPH-P75",
+    },
+    ...over,
+  });
+
+  it("an agent's answered row shows its source and quote, and the restart command", async () => {
+    m.projectTriage.mockResolvedValue(feed([answered()]));
+    renderTriage();
+    expect(await screen.findByTestId("answered-by")).toHaveTextContent(
+      'answered from session by GRPH-A7 — "the user said redis"');
+    expect(screen.getByTestId("drain-note")).toHaveTextContent("No drain is running for GRPH-P75.");
+    expect(screen.getByText("gban fleet until --prd GRPH-P75")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    // Nothing to act on: the row carries no action buttons.
+    expect(screen.getByRole("toolbar", { name: "Actions" }).children).toHaveLength(0);
+  });
+
+  it("a person's answered row shows the person; a live drain shows no command", async () => {
+    m.projectTriage.mockResolvedValue(feed([answered({
+      by: { agent: null, user: "alex" }, source: null, quote: null, answered_by: "answered by alex",
+      drain: { status: "live", prd: "GRPH-P75", message: "A drain is running for GRPH-P75. It will pick this ticket up." },
+    })]));
+    renderTriage();
+    expect(await screen.findByTestId("answered-by")).toHaveTextContent(/^answered by alex$/);
+    expect(screen.getByTestId("drain-note")).toHaveTextContent("A drain is running for GRPH-P75.");
+    expect(screen.queryByText(/gban fleet until/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy" })).not.toBeInTheDocument();
+  });
+
+  it("a failed drain read says it could not check, never that no drain is running", async () => {
+    m.projectTriage.mockResolvedValue(feed([answered({
+      drain: { status: "unknown", prd: "GRPH-P75", message: "Could not check for a running drain." },
+    })]));
+    renderTriage();
+    expect(await screen.findByTestId("drain-note")).toHaveTextContent("Could not check for a running drain.");
+    expect(screen.queryByText(/No drain is running/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/gban fleet until/)).not.toBeInTheDocument();
   });
 
   it("asks before Merge and Override, ↵ confirms, and nothing else asks", async () => {

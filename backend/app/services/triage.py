@@ -37,6 +37,10 @@ logger = logging.getLogger("graphban.triage")
 
 TABS = ("all", "bugs", "requests", "blockers", "collisions")
 
+# GRPH-1529 (P75 D5): an answered decision stays on the feed this long, saying who answered
+# and whether a drain will pick its ticket up. After that it is history, in the tracker.
+ANSWERED_WINDOW_SECONDS = 24 * 3600
+
 
 def _aware(dt):
     return req_svc._aware(dt)
@@ -115,6 +119,40 @@ def _blocker_rows(db: Session, project_id: str, now) -> list[dict]:
     return rows
 
 
+def _answered_rows(db: Session, project_id: str, now) -> list[dict]:
+    """Decision waits answered inside the window: who answered (a person, or an agent from a
+    source with its quote) and the drain note for the PRD the answer unblocks."""
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    since = now - timedelta(seconds=ANSWERED_WINDOW_SECONDS)
+    rows = []
+    for wait in db.scalars(select(Item).where(
+            Item.project_id == project_id, Item.status == "done",
+            Item.decision.is_not(None)).order_by(Item.done_at.desc()).limit(200)):
+        answer = (wait.decision or {}).get("answer")
+        if not answer:
+            continue
+        at = _aware(wait.done_at) or now
+        if at < since:
+            continue
+        src = answer.get("source") or None
+        by = answer.get("by") or {}
+        rows.append({
+            "id": wait.key, "kind": "answered", "title": wait.title,
+            "age_seconds": _age(at, now), "paths": [],
+            "question": (wait.decision or {}).get("question") or wait.title,
+            "answer": answer.get("choice") or answer.get("text") or "",
+            "by": {"agent": by.get("agent"), "user": by.get("user") or None},
+            "source": {"kind": src.get("kind"), "ref": src.get("ref")} if src else None,
+            "quote": src.get("quote") if src else None,
+            "answered_by": waits_svc.answered_by_line(answer),
+            "drain": waits_svc.drain_note(db, wait),
+        })
+    return rows
+
+
 def _collision_rows(db: Session, project_id: str, now) -> list[dict]:
     by_id = {it.id: it for it in items_svc.list_items(db, project_id=project_id)}
     rows = []
@@ -151,6 +189,8 @@ def _tab_of(row: dict) -> set[str]:
         return {"all", "blockers"}
     if kind == "collision":
         return {"all", "collisions"}
+    if kind == "answered":
+        return {"all", "blockers"}
     return {"all"}  # feedback: in the inbox, in no typed tab
 
 
@@ -159,18 +199,22 @@ def feed(db: Session, project_id: str) -> dict:
     rows: list[dict] = []
     failed: list[str] = []
     for name, fn in (("requests", _request_rows), ("blockers", _blocker_rows),
-                     ("collisions", _collision_rows)):
+                     ("collisions", _collision_rows), ("answered", _answered_rows)):
         try:
             rows.extend(fn(db, project_id, now))
         except Exception:  # noqa: BLE001 — one source failing must not hide the others
             logger.warning("triage source %s failed", name, exc_info=True)
             db.rollback()
             failed.append(name)
-    # Blockers first (longest blocked first), then everything else oldest first.
+    # Blockers first (longest blocked first), then everything else oldest first; answered
+    # decisions last, newest first — they are a receipt, not work.
     rows.sort(key=lambda r: (0, -r["blocked_seconds"]) if r["kind"] == "blocker"
+              else (2, r["age_seconds"]) if r["kind"] == "answered"
               else (1, -r["age_seconds"]))
     counts = {t: 0 for t in TABS}
     for r in rows:
+        if r["kind"] == "answered":
+            continue  # a receipt, listed but not waiting: it adds to no tab's count
         for t in _tab_of(r):
             counts[t] += 1
     # Only Response Needed is waiting on a person; Checking context is an agent still looking.

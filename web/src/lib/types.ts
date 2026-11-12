@@ -1135,7 +1135,33 @@ export interface TriageCollisionRow extends TriageFeedBase {
   recommendation: string;
 }
 
-export type TriageFeedRow = TriageRequestRow | TriageBlockerRow | TriageCollisionRow;
+/** Whether a drain will pick an answered ticket up (GRPH-1529). `unknown` is a failed read. */
+export interface DrainNote {
+  status: "live" | "not_live" | "unknown";
+  prd: string | null;
+  message: string;
+  /** Only when no drain is running: the command that starts one for this PRD. */
+  command?: string;
+}
+
+/** A decision answered in the last day (GRPH-1529): a receipt, counted in no tab. */
+export interface TriageAnsweredRow extends TriageFeedBase {
+  kind: "answered";
+  question: string;
+  answer: string;
+  by: { agent: string | null; user: string | null };
+  source: { kind: string; ref: string | null } | null;
+  quote: string | null;
+  /** "answered by <person>" or "answered from <source> by <agent>". */
+  answered_by: string;
+  drain: DrainNote;
+}
+
+export type TriageFeedRow =
+  | TriageRequestRow
+  | TriageBlockerRow
+  | TriageCollisionRow
+  | TriageAnsweredRow;
 
 export interface TriageFeed {
   rows: TriageFeedRow[];
