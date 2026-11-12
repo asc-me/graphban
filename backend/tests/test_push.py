@@ -73,7 +73,7 @@ def test_one_push_per_subscription_with_first_line_and_ticket(db, vapid, monkeyp
     assert len(fake.calls) == 2
     payload = fake.calls[0][1]
     assert payload["body"] == "Which store?" and payload["ticket"] == ticket.key
-    assert ticket.key in payload["url"]
+    assert payload["url"] == f"/triage?item={ticket.key}"
     assert all(s.last_ok_at for s in db.query(PushSubscription))
 
 
@@ -141,3 +141,12 @@ def test_rest_unconfigured_says_so_and_refuses_subscribe(client, auth, monkeypat
     assert client.get("/api/me/push", headers=auth).json()["configured"] is False
     body = {"endpoint": "https://push.test/x", "keys": {"p256dh": "k", "auth": "a"}}
     assert client.post("/api/me/push/subscribe", json=body, headers=auth).status_code == 409
+
+
+def test_hosted_push_links_the_triage_row_by_project_tag(db, monkeypatch):
+    from app.models import Project
+
+    tag = db.get(Project, "core").tag
+    assert push_svc._triage_url(db, "core", "GRPH-7") == "/triage?item=GRPH-7"
+    monkeypatch.setattr(settings, "hosted_mode", True)
+    assert push_svc._triage_url(db, "core", "GRPH-7") == f"/p/{tag}/triage?item=GRPH-7"

@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Alert, Item, PushSubscription, utcnow
+from app.models import Alert, Item, Project, PushSubscription, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -57,7 +57,20 @@ def _payload(db: Session, alert: Alert) -> str:
     first = (alert.title or "").strip().splitlines()[0] if (alert.title or "").strip() else key
     return json.dumps({"title": f"{key} needs a response", "body": first, "ticket": key,
                        "project": alert.project_id,
-                       "url": f"/triage?item={key}", "alert": alert.id})
+                       "url": _triage_url(db, alert.project_id, key), "alert": alert.id})
+
+
+def _triage_url(db: Session, project_id: str, key: str) -> str:
+    """The same Triage row the bell links to: hosted routes by project tag, self-host's flat
+    `/triage` resolves the project itself."""
+    from urllib.parse import quote
+
+    base = "/triage"
+    if settings.hosted_mode:
+        project = db.get(Project, project_id)
+        if project is not None and project.tag:
+            base = f"/p/{project.tag}/triage"
+    return f"{base}?item={quote(key)}"
 
 
 def _status_of(exc: WebPushException) -> int | None:
