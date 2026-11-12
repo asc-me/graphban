@@ -204,7 +204,8 @@ def test_approval_stores_the_token_and_clears_the_legacy_key(client, auth, conso
     assert _link_row()["legacy_key"] != ""  # pending writes nothing
 
     console.poll_answer = (200, {"status": "approved", "org": {"id": "o1", "name": "Acme"},
-                                 "email": "eng@acme.dev", "token": TOKEN})
+                                 "email": "eng@acme.dev", "token": TOKEN,
+                                 "legacy_project_id": "cloud-alpha"})
     p2 = _poll(client, auth)
     assert p2.status_code == 200
     assert p2.json() == {"status": "approved", "org": "Acme", "email": "eng@acme.dev"}
@@ -358,3 +359,29 @@ def test_unlink_deletes_the_token_and_the_mappings(client, auth, console):
     row = _link_row()
     assert row["token_enc"] == "" and row["legacy_key"] == ""
     assert _mapped() == set()
+
+
+def _cloud_ids() -> dict[str, str]:
+    with SessionLocal() as db:
+        return {m.local_project_id: m.cloud_project_id for m in db.query(SyncProject).all()}
+
+
+def test_sign_in_on_a_migrated_key_link_fills_the_pinned_project(client, auth, console):
+    _key_link(client, auth)
+    _migrate()
+    assert _cloud_ids() == {"core": ""}
+    _start(client, auth)
+    console.poll_answer = (200, {"status": "approved", "org": {"name": "Acme"}, "email": "e@a.dev",
+                                 "token": TOKEN, "legacy_project_id": "cloud-alpha"})
+    assert _poll(client, auth).json()["status"] == "approved"
+    assert _cloud_ids() == {"core": "cloud-alpha"}  # sabotage: drop the fill and this is ""
+
+
+def test_sign_in_without_the_keys_project_leaves_the_row_unmapped(client, auth, console):
+    _key_link(client, auth)
+    _migrate()
+    _start(client, auth)
+    console.poll_answer = (200, {"status": "approved", "org": {"name": "Acme"}, "email": "e@a.dev",
+                                 "token": TOKEN})
+    assert _poll(client, auth).json()["status"] == "approved"
+    assert _cloud_ids() == {}
