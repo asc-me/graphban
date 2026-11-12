@@ -128,3 +128,54 @@ def test_rest_list_read_and_clear_drops_the_count(client, auth, db):
     finally:
         db2.close()
     assert client.get("/api/me/alerts", headers=auth).json()["alerts"] == []
+
+
+def _prd_pair(db, owner="prdowner", project="pa"):
+    from app.models import Project
+    from app.services import prds as prd_svc
+
+    db.add(Project(id=project, name=project.upper(), tag=project.upper()))
+    db.add(User(id=owner, name=owner, handle=owner, email=f"{owner}@x.test", password_hash="x"))
+    db.add(User(id="po_" + project, name="po", handle="po_" + project,
+                email=f"po_{project}@x.test", password_hash="x"))
+    db.flush()
+    db.add(Membership(user_id=owner, project_id=project, role="member", access="read"))
+    db.add(Membership(user_id="po_" + project, project_id=project, role="owner", access="write"))
+    db.flush()
+    prd = prd_svc.create_prd(db, title="T", project_id=project, created_by=owner)
+    ticket = items_svc.create_item(db, project_id=project, title="feature", status="in_progress",
+                                   prd_id=prd.id)
+    wait = items_svc.create_item(db, project_id=project, title="which?", status="blocked",
+                                 question="Which store?", options=["a", "b"])
+    links_svc.create_link(db, a=ticket.id, b=wait.id, type_="dependency", project_id=project)
+    return ticket, wait
+
+
+def test_needs_person_writes_exactly_one_alert_for_the_prd_owner(db):
+    _, wait = _prd_pair(db)
+    assert _count(db, wait) == 0
+    waits.answer_wait(db, wait.id, needs_person=True)
+    rows = db.query(Alert).filter(Alert.item_id == wait.id).all()
+    assert [r.user_id for r in rows] == ["prdowner"]
+    assert rows[0].kind == "response_needed" and rows[0].project_id == "pa"
+    waits.hand_to_person(db, wait)
+    assert _count(db, wait) == 1
+
+
+def test_project_with_nobody_to_alert_writes_no_alert(db):
+    from app.models import Project
+
+    db.add(Project(id="lonely", name="L", tag="LN"))
+    db.flush()
+    ticket = items_svc.create_item(db, project_id="lonely", title="t", status="in_progress")
+    wait = items_svc.create_item(db, project_id="lonely", title="q", status="blocked",
+                                 question="Which?", options=["a"])
+    links_svc.create_link(db, a=ticket.id, b=wait.id, type_="dependency", project_id="lonely")
+    items_svc.update_item(db, ticket.id, status="blocked")
+    assert waits.hand_to_person(db, wait) == {"handed": True, "alerts": 0}
+    db.refresh(wait)
+    assert _count(db, wait) == 0 and wait.decision["nobody_alerted"]
+    from app.services import triage
+
+    rows = {r["id"]: r for r in triage._blocker_rows(db, "lonely", utcnow())}
+    assert rows[ticket.key].get("nobody_alerted") is True
