@@ -139,11 +139,13 @@ def poll(url: str, repo: Path, *, force: bool = False, client: Client | None = N
     if not isinstance(health, dict):
         return {"polled": False, "failed": True, "note": "unreadable /health"}
     sha = str(health.get("git_sha") or "").strip()
-    # A different server never inherits the old server's applied sha or file hashes.
-    # A receipt with no server was written by setup alone: its file hashes are ours.
-    base = receipt if receipt.get("server") in (url, None) else {}
-    new = {"server": url, "polled_at": now, "git_sha": base.get("git_sha", ""),
-           "files": base.get("files", {})}
+    # A different server never inherits the old server's stamp or applied sha. File hashes
+    # describe what this tool wrote to disk, whichever server sent it, so they stay owned.
+    same = receipt.get("server") in (url, None)
+    base = {"git_sha": receipt.get("git_sha", "") if same else "",
+            "files": receipt.get("files", {})}
+    new = {"server": url, "polled_at": now, "git_sha": base["git_sha"],
+           "files": base["files"]}
     if not sha:
         _save(repo, new)
         return {"polled": True, "polled_at": now, "note": "deployment is unstamped (empty git_sha)"}
