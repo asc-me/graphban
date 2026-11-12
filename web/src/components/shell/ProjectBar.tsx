@@ -1,6 +1,7 @@
 import { ChevronDown } from "lucide-react";
 import { useLocation } from "react-router-dom";
 
+import { CloudTag } from "@/components/shell/CloudTag";
 import { ProjectSwitcher } from "@/components/shell/ProjectSwitcher";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
@@ -62,6 +63,7 @@ export function ProjectBar() {
               <span className="rounded border border-line-2 px-1.5 py-px font-mono text-meta text-muted">
                 {active.tag}
               </span>
+              <CloudTag projectId={active.id} />
               <ChevronDown
                 size={11}
                 className={cn("shrink-0 text-muted", t["aria-expanded"] && "rotate-180")}
