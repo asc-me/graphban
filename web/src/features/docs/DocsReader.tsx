@@ -5,11 +5,17 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/cn";
 import { useInputModality } from "@/lib/input-modality";
 
-import { StartupPromptRows } from "@/features/onboarding/StartupPrompts";
-import { requestTour } from "@/features/tour/replay";
+import { TOUR_NEEDS_PROJECT, requestGuide, requestTour } from "@/features/tour/replay";
 import { GLOBAL_SHORTCUTS, docFor } from "./content";
 
 const OPEN_EVENT = "graphban:open-docs";
+
+/** Help's three guides, in order (GRPH-1512); the command palette lists the same three. */
+const GUIDES = [
+  { kind: "concepts", label: "Concepts" },
+  { kind: "tour", label: "Take the tour" },
+  { kind: "prompts", label: "Start-up prompts" },
+] as const;
 
 /** Open the reader on the page you're on — the tour's "Read more" (GRPH-1363). */
 export function openDocsReader() {
@@ -18,7 +24,7 @@ export function openDocsReader() {
 
 /** Inline, context-aware docs reader: a floating trigger + right slide-over whose
  *  content follows the page you're on. Mounted once inside the app shell. */
-export function DocsReader({ agentOpen = false }: { agentOpen?: boolean }) {
+export function DocsReader({ agentOpen = false, hasProject = true }: { agentOpen?: boolean; hasProject?: boolean }) {
   const [open, setOpen] = React.useState(false);
   const [rendered, setRendered] = React.useState(false);
   const [thanks, setThanks] = React.useState(false);
@@ -147,16 +153,6 @@ export function DocsReader({ agentOpen = false }: { agentOpen?: boolean }) {
                 <div className="text-small text-muted">Help for the page you’re on</div>
               </div>
               <button
-                type="button"
-                onClick={() => {
-                  closeDocs("pointer");
-                  requestTour();
-                }}
-                className="h-[30px] flex-none rounded-lg border border-control bg-surface px-2.5 text-body text-fg-2 transition-colors hover:border-control-hover hover:text-fg"
-              >
-                Take the tour
-              </button>
-              <button
                 onClick={() => closeDocs("pointer")}
                 className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg border border-control bg-surface text-muted transition-colors hover:border-control-hover hover:text-fg"
                 aria-label="Close"
@@ -167,12 +163,34 @@ export function DocsReader({ agentOpen = false }: { agentOpen?: boolean }) {
 
             {/* Body */}
             <div className="min-h-0 flex-1 overflow-y-auto p-4">
-              <details className="mb-4 rounded-lg border border-line bg-surface-2 px-3 py-2">
-                <summary className="cursor-pointer text-body font-medium">Start-up prompts</summary>
-                <div className="mt-2">
-                  <StartupPromptRows />
+              {/* Help lists exactly three guides, in this order (GRPH-1512). Start-up prompts
+                  opens the quick-start dialog's prompts screen — the one place they live — so the
+                  sheet no longer carries its own inline copy. */}
+              <nav aria-label="Guides" className="mb-4">
+                <div className="mb-2 font-mono text-[9px] tracking-[0.6px] text-faint-2">GUIDES</div>
+                <div className="flex flex-col gap-1.5">
+                  {GUIDES.map((g) => {
+                    const disabled = g.kind === "tour" && !hasProject;
+                    return (
+                      <button
+                        key={g.kind}
+                        type="button"
+                        disabled={disabled}
+                        title={disabled ? TOUR_NEEDS_PROJECT : undefined}
+                        onClick={() => {
+                          closeDocs("pointer");
+                          if (g.kind === "tour") requestTour();
+                          else requestGuide(g.kind);
+                        }}
+                        className="flex h-[32px] items-center justify-between rounded-lg border border-control bg-surface px-3 text-left text-body text-fg-2 transition-colors hover:border-control-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-control disabled:hover:text-fg-2"
+                      >
+                        <span>{g.label}</span>
+                        {disabled && <span className="text-small text-faint">Needs a project</span>}
+                      </button>
+                    );
+                  })}
                 </div>
-              </details>
+              </nav>
               <h2 className="text-[16px] font-semibold tracking-tight">{doc.title}</h2>
               <p className="mb-4 mt-0.5 text-body text-muted">{doc.tagline}</p>
 
