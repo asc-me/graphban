@@ -1172,6 +1172,10 @@ class SyncStatusOut(BaseModel):
     legacy: bool = False  # a migrated key link not yet signed in (L6)
     state: str | None = None  # ok | refused | unknown; None when no credential is held
     projects: list[SyncProjectState] = []
+    # GRPH-1537: is the viewer a box admin (same check as link/start), and the console URL
+    # baked in by SYNC_CLOUD_URL ("" when unset). Never a key or token.
+    can_link: bool = False
+    console_url_env: str = ""
 
 
 class SyncOrgIdentity(BaseModel):
