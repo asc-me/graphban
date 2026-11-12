@@ -7,7 +7,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GITOPS_PRELINK_KEY } from "@/features/settings/GitopsPanel";
 import { SyncLinkPanel } from "@/features/settings/SyncLinkPanel";
 import { keys } from "@/lib/queries";
-import { CONSOLE_URL } from "@/lib/routes";
 import type { SyncStatus } from "@/lib/types";
 
 const unlinked: SyncStatus = {
@@ -27,7 +26,10 @@ const linked: SyncStatus = {
 
 const api = vi.hoisted(() => ({
   syncStatus: vi.fn(),
-  syncLink: vi.fn(),
+  syncLinkStart: vi.fn(),
+  syncLinkPoll: vi.fn(),
+  syncCloudProjects: vi.fn(),
+  syncOrg: vi.fn(),
   syncUnlink: vi.fn(),
   syncSetGraph: vi.fn(),
   syncPush: vi.fn(),
@@ -57,44 +59,19 @@ describe("SyncLinkPanel", () => {
     vi.clearAllMocks();
     sessionStorage.removeItem(GITOPS_PRELINK_KEY);
     api.syncStatus.mockResolvedValue(unlinked);
-    api.syncLink.mockResolvedValue(linked);
+    api.syncOrg.mockResolvedValue({ linked: false });
     api.syncUnlink.mockResolvedValue(unlinked);
     api.syncSetGraph.mockResolvedValue({});
     api.syncPush.mockResolvedValue({ project_id: "core", pushed: 40, removed: 0 });
   });
 
-  it("shows the link form when the instance is not linked", async () => {
+  it("shows the Link to an org wizard, not a key form, when the instance is not linked", async () => {
     renderPanel();
     expect(await screen.findByText("not linked")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText(CONSOLE_URL)).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("paste link key…")).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText("paste key…")).not.toBeInTheDocument();
-    expect(screen.getByText(/Mint the link key there/)).toBeInTheDocument();
-    expect(screen.getByText(/paste the console URL and link key/i)).toBeInTheDocument();
-    // Same object the intro names. This field used to say "Sync API key" while
-    // the paragraph said "link key".
-    expect(screen.getByText("Link key")).toBeInTheDocument();
-    expect(screen.queryByText(/Sync API key/i)).not.toBeInTheDocument();
-    // After pairing, Graphban identity is an API key / link key; the Anthropic
-    // secret is a provider key. This footer used to say "provider API keys".
-    expect(screen.getByText(/the link key is stored/i)).toBeInTheDocument();
-    expect(screen.getByText(/provider keys/i)).toBeInTheDocument();
-    expect(screen.queryByText(/provider API keys/i)).not.toBeInTheDocument();
-  });
-
-  it("submits the link form with URL, key, and org", async () => {
-    const user = userEvent.setup();
-    renderPanel();
-    await screen.findByText("not linked");
-
-    await user.type(screen.getByPlaceholderText(CONSOLE_URL), "cloud.agentldgr.dev");
-    await user.type(screen.getByPlaceholderText("paste link key…"), "gb_sk_secret");
-    await user.type(screen.getByPlaceholderText("acme"), "acme");
-    await user.click(screen.getByRole("button", { name: "Link instance" }));
-
-    await waitFor(() =>
-      expect(api.syncLink).toHaveBeenCalledWith("cloud.agentldgr.dev", "gb_sk_secret", "acme"),
-    );
+    expect(screen.getByTestId("link-wizard")).toBeInTheDocument();
+    expect(screen.getByLabelText("Console URL")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("paste link key…")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Link key/i)).not.toBeInTheDocument();
   });
 
   it("renders link details and gates the scoped controls until a project is picked", async () => {
@@ -103,11 +80,9 @@ describe("SyncLinkPanel", () => {
     renderPanel();
 
     expect(await screen.findByText("linked")).toBeInTheDocument();
-    expect(screen.getByText("https://cloud.agentldgr.dev")).toBeInTheDocument();
-    // Status used to label this row "Credential" — the same paste the form
-    // now calls a link key.
-    expect(screen.getByText("Link key")).toBeInTheDocument();
-    expect(screen.queryByText(/^Credential$/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open the org →" })).toHaveAttribute("href", "https://cloud.agentldgr.dev");
+    expect(screen.getByTestId("linked-panel")).toBeInTheDocument();
+    expect(screen.queryByText(/Link key/i)).not.toBeInTheDocument();
 
     // Scope is empty → the graph-sync checkbox does nothing yet.
     expect(screen.getByText("No project selected")).toBeInTheDocument();
@@ -149,19 +124,20 @@ describe("SyncLinkPanel", () => {
     expect(sessionStorage.getItem(GITOPS_PRELINK_KEY)).toBe("1");
   });
 
-  it("link drops the gitops cache and does not note an unlink restore", async () => {
+  it("a successful sign-in drops the gitops cache and does not note an unlink restore", async () => {
     const user = userEvent.setup();
+    api.syncLinkStart.mockResolvedValue({
+      status: "started", user_code: "ABCD-1234", verification_url: "https://c/link", interval: 0.01,
+    });
+    api.syncLinkPoll.mockResolvedValue({ status: "approved", org: "acme", email: "a@b.c" });
+    api.syncCloudProjects.mockResolvedValue({ status: "ok", projects: [], mapping: [] });
     const { qc } = renderPanel();
     qc.setQueryData(keys.gitops("core"), { fields: { base_branch: { value: "test" } } });
     await screen.findByText("not linked");
 
-    await user.type(screen.getByPlaceholderText(CONSOLE_URL), "cloud.agentldgr.dev");
-    await user.type(screen.getByPlaceholderText("paste link key…"), "gb_sk_secret");
-    await user.type(screen.getByPlaceholderText("acme"), "acme");
-    await user.click(screen.getByRole("button", { name: "Link instance" }));
-
-    await waitFor(() => expect(api.syncLink).toHaveBeenCalled());
-    expect(qc.getQueryData(keys.gitops("core"))).toBeUndefined();
+    await user.click(screen.getByRole("button", { name: "Get a sign-in code" }));
+    await waitFor(() => expect(api.syncLinkPoll).toHaveBeenCalled());
+    await waitFor(() => expect(qc.getQueryData(keys.gitops("core"))).toBeUndefined());
     expect(sessionStorage.getItem(GITOPS_PRELINK_KEY)).toBeNull();
   });
 
