@@ -541,14 +541,23 @@ function Rail({ steps, marks, current }: { steps: QsStep[]; marks: Record<QsStep
 function UnknownRows({ steps, marks }: { steps: QsStep[]; marks: Record<QsStep, StepMark> }) {
   const rows = steps.filter((s) => marks[s].status === "unknown");
   if (!rows.length) return null;
+  // Steps that share one reason (a downed API makes every step unknown for the same cause) are
+  // one line, not the same sentence five times (GRPH-1547).
+  const groups: { steps: QsStep[]; reason: string }[] = [];
+  for (const s of rows) {
+    const reason = marks[s].reason ?? "";
+    const g = groups.find((x) => x.reason === reason);
+    if (g) g.steps.push(s);
+    else groups.push({ steps: [s], reason });
+  }
   return (
     <ul className="mt-2 space-y-0.5" aria-label="Steps that could not be checked">
-      {rows.map((s) => (
-        <li key={s} className="text-[11.5px] text-muted">
+      {groups.map((g) => (
+        <li key={g.steps.join(",")} className="text-[11.5px] text-muted">
           <span className="font-mono text-faint">
-            {STEP_META[s].num} ? UNKNOWN
+            {g.steps.map((s) => STEP_META[s].num).join(" ")} ? UNKNOWN
           </span>{" "}
-          {marks[s].reason}
+          {g.reason}
         </li>
       ))}
     </ul>
