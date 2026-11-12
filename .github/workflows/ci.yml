@@ -308,8 +308,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
+          # No `cache: pnpm`: on a self-hosted machine the pnpm store already persists between
+          # runs, and setup-node's post step fails the job when the path it resolves for the
+          # store doesn't exist.
       - run: pnpm install --frozen-lockfile
       # Vitest starts one worker per core: 15 on these 16-core hosts, against 3 on the 4-core
       # hosted runners the timing-sensitive tests (p28-rail, the 16ms frame budget) were tuned
