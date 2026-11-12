@@ -651,9 +651,20 @@ def install_skill(repo: Path, slug: str = SKILL_SLUG) -> list[tuple[str, Path]]:
     saying so. A dest that differs does not block the other directories."""
     body = skill_source(slug).read_text(encoding="utf-8")
     out = []
+    from . import playbooks
+    owned = playbooks._read(repo).get("files") or {}
     for dest in skill_dests(repo, slug):
         if dest.exists():
-            out.append(("same" if dest.read_text(encoding="utf-8") == body else "differs", dest))
+            if dest.read_text(encoding="utf-8") == body:
+                status = "same"
+            elif dest.is_file() and owned.get(dest.relative_to(repo).as_posix()) == \
+                    playbooks._sha(dest.read_bytes()):
+                # The server pack wrote this exact body (the receipt says so): it is newer
+                # than the wheel's copy, not a local edit, and the pack keeps it fresh.
+                status = "same"
+            else:
+                status = "differs"
+            out.append((status, dest))
             continue
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(body, encoding="utf-8")
