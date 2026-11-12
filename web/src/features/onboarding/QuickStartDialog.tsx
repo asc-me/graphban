@@ -58,7 +58,10 @@ const ACCENTS = ["#c6f24e", "#a78bfa", "#7ca2ff", "#e0b34a", "#5fd07a", "#ff8f8f
 
 type Where = "this_computer" | "dedicated_server";
 type ModelChoice = "offline" | "ollama" | "claude";
-type Screen = QsStep | "finish" | "welcome" | "sections" | "concepts";
+type Screen = QsStep | "finish" | "welcome" | "sections" | "concepts" | "prompts";
+
+/** Guides Help can open the dialog on directly (GRPH-1512). */
+export type QsGuide = "concepts" | "prompts";
 
 /** Steps, marks and chip count for one project — the dialog and the top-bar chip share it. */
 export function useQuickStart(projectId: string, hosted: boolean, pollMs?: number) {
@@ -98,6 +101,7 @@ function errText(e: unknown): string {
 export function QuickStartDialog({
   open,
   initialStep,
+  initialGuide,
   hosted,
   onFinishLater,
   onFinish,
@@ -106,6 +110,8 @@ export function QuickStartDialog({
   open: boolean;
   /** Where to open; the chip passes the first unfinished step. */
   initialStep?: QsStep;
+  /** Help opens the dialog on a guide: Concepts (at concept 1) or Start-up prompts. */
+  initialGuide?: QsGuide;
   hosted: boolean;
   /** Esc, ✕ or "Finish later". */
   onFinishLater: () => void;
@@ -129,6 +135,7 @@ export function QuickStartDialog({
   const onboardingQ = useOnboarding();
   const welcomed = React.useRef(false);
   const landing = (): Screen => {
+    if (initialGuide) return initialGuide;
     if (!welcomed.current && !onboardingQ.data?.onboarding?.quickstart_dismissed_at) return "welcome";
     return "sections";
   };
@@ -146,7 +153,7 @@ export function QuickStartDialog({
       setConcept(0);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, initialStep]);
+  }, [open, initialStep, initialGuide]);
 
   // Step ⓪'s answer, held until a project exists to store it on (a brand-new user answers
   // ⓪ before ① creates the project). It is NOT a mark: the rail stays ◌ until stored.
@@ -203,6 +210,16 @@ export function QuickStartDialog({
               onFinish={() => go("sections")}
               onFinishLater={onFinishLater}
             />
+          )}
+          {screen === "prompts" && (
+            <div data-testid="qs-prompts">
+              <h2 className="mb-2 text-body font-semibold">Start-up prompts</h2>
+              <StartupPromptRows />
+              <div className="mt-4 flex justify-between">
+                <Button variant="outline" type="button" onClick={() => go("sections")}>Back</Button>
+                <Button variant="ghost" type="button" onClick={onFinishLater}>Finish later</Button>
+              </div>
+            </div>
           )}
           {screen === "where" && (
             <WhereStep
@@ -305,7 +322,7 @@ export type HeroState = "done" | "pending" | "unknown";
 
 /** The hero shows the same fact as the rail, for the current screen. Finish rolls the steps up. */
 export function heroState(steps: QsStep[], marks: Record<QsStep, StepMark>, screen: Screen): HeroState {
-  if (screen !== "finish" && screen !== "welcome" && screen !== "sections" && screen !== "concepts") return marks[screen].status;
+  if (screen !== "finish" && screen !== "welcome" && screen !== "sections" && screen !== "concepts" && screen !== "prompts") return marks[screen].status;
   const all = steps.map((s) => marks[s].status);
   if (all.every((x) => x === "done")) return "done";
   return all.includes("unknown") ? "unknown" : "pending";
@@ -338,7 +355,7 @@ export function Hero({
   const caption =
     screen === "concepts"
       ? conceptCaption(conceptIndex)
-      : screen === "finish" || screen === "welcome" || screen === "sections"
+      : screen === "finish" || screen === "welcome" || screen === "sections" || screen === "prompts"
         ? "Setup"
         : STEP_META[screen].label;
   return (

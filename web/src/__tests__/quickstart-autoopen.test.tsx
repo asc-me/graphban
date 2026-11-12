@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AppFrame } from "@/components/shell/AppFrame";
+import { requestGuide } from "@/features/tour/replay";
 import { api } from "@/lib/api";
 
 /** GRPH-1451 — the first-run auto-open resumes at the first unfinished step, and a failed
@@ -23,8 +24,8 @@ vi.mock("@/features/tour/AppTour", () => ({ AppTour: () => null }));
 
 const qsState: { current: Record<string, unknown> } = { current: {} };
 vi.mock("@/features/onboarding/QuickStartDialog", () => ({
-  QuickStartDialog: ({ open, initialStep }: { open: boolean; initialStep?: string }) =>
-    open ? <div data-testid="qs-open" data-step={initialStep ?? "where"} /> : null,
+  QuickStartDialog: ({ open, initialStep, initialGuide }: { open: boolean; initialStep?: string; initialGuide?: string }) =>
+    open ? <div data-testid="qs-open" data-step={initialStep ?? "where"} data-guide={initialGuide ?? ""} /> : null,
   useQuickStart: () => qsState.current,
 }));
 vi.mock("@/lib/api", () => ({
@@ -75,5 +76,16 @@ describe("GRPH-1451 quick start auto-open", () => {
     await waitFor(() => expect(api.onboarding).toHaveBeenCalled());
     await new Promise((r) => setTimeout(r, 50));
     expect(screen.queryByTestId("qs-open")).toBeNull();
+  });
+
+  it("Help ▸ Concepts / Start-up prompts open the dialog on that guide (GRPH-1512)", async () => {
+    qsState.current = { setup: undefined, setupSettled: false, firstUnfinished: "where" };
+    mount();
+    await waitFor(() => expect(api.onboarding).toHaveBeenCalled());
+    expect(screen.queryByTestId("qs-open")).toBeNull();
+    act(() => requestGuide("concepts"));
+    expect((await screen.findByTestId("qs-open")).dataset.guide).toBe("concepts");
+    act(() => requestGuide("prompts"));
+    await waitFor(() => expect(screen.getByTestId("qs-open").dataset.guide).toBe("prompts"));
   });
 });

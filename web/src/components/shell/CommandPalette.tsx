@@ -20,7 +20,7 @@ import { useNavigate } from "react-router-dom";
 
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
-import { requestTour } from "@/features/tour/replay";
+import { TOUR_NEEDS_PROJECT, requestGuide, requestTour } from "@/features/tour/replay";
 import { PALETTE_ITEM_PARAM } from "@/lib/palette-nav";
 import { projectPath, settingsPath } from "@/lib/routes";
 import { useConfig, useItems, usePrds } from "@/lib/queries";
@@ -65,7 +65,7 @@ function matchesQuery(text: string, query: string): boolean {
 type GotoRow = { kind: "goto"; id: string; label: string; path: string; icon: React.ReactNode };
 type ItemRow = { kind: "item"; id: string; label: string; title: string };
 type PrdRow = { kind: "prd"; id: string; label: string; title: string };
-type TourRow = { kind: "tour"; id: string; label: string };
+type TourRow = { kind: "tour" | "concepts" | "prompts"; id: string; label: string; disabledReason?: string };
 type PaletteRow = GotoRow | ItemRow | PrdRow | TourRow;
 
 function buildRows(
@@ -99,10 +99,19 @@ function buildRows(
       label: p.id,
       title: p.title,
     }));
-  // Replay (GRPH-1364). Only with a project: the tour points at the nav it renders.
-  const help = hasProject && (!q || matchesQuery("Take the tour", q))
-    ? [{ kind: "tour" as const, id: "help:tour", label: "Take the tour" }]
-    : [];
+  // Help lists exactly three guides, in this order, always (GRPH-1512). The tour needs a
+  // project — it points at the nav it renders — so without one its row stays, disabled with why.
+  const guides: TourRow[] = [
+    { kind: "concepts", id: "help:concepts", label: "Concepts" },
+    {
+      kind: "tour",
+      id: "help:tour",
+      label: "Take the tour",
+      disabledReason: hasProject ? undefined : TOUR_NEEDS_PROJECT,
+    },
+    { kind: "prompts", id: "help:prompts", label: "Start-up prompts" },
+  ];
+  const help = guides.filter((g) => !q || matchesQuery(g.label, q));
   return { goto, help, items: itemRows, prds: prdRows };
 }
 
@@ -169,9 +178,14 @@ export function CommandPalette({
   }
 
   function activate(row: PaletteRow) {
+    if ((row.kind === "tour" || row.kind === "concepts" || row.kind === "prompts") && row.disabledReason) return;
     close();
     if (row.kind === "tour") {
       requestTour();
+      return;
+    }
+    if (row.kind === "concepts" || row.kind === "prompts") {
+      requestGuide(row.kind);
       return;
     }
     if (row.kind === "goto") {
@@ -275,8 +289,12 @@ export function CommandPalette({
                     active={activeIndex === index}
                     onMouseEnter={() => setActiveIndex(index)}
                     onClick={() => activate(row)}
+                    disabledReason={row.disabledReason}
                   >
                     <span>{row.label}</span>
+                    {row.disabledReason && (
+                      <span className="ml-auto truncate text-small text-faint">{row.disabledReason}</span>
+                    )}
                   </PaletteOption>
                 );
               })}
@@ -365,12 +383,15 @@ function PaletteOption({
   dataIndex,
   onMouseEnter,
   onClick,
+  disabledReason,
 }: {
   children: React.ReactNode;
   active: boolean;
   dataIndex: number;
   onMouseEnter: () => void;
   onClick: () => void;
+  /** Shown, not hidden: the row stays and says why it cannot run. */
+  disabledReason?: string;
 }) {
   return (
     <button
@@ -378,6 +399,8 @@ function PaletteOption({
       role="option"
       data-index={dataIndex}
       aria-selected={active}
+      aria-disabled={disabledReason ? true : undefined}
+      title={disabledReason}
       onMouseEnter={onMouseEnter}
       onClick={onClick}
       className={cn(
