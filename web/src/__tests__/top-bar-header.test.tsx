@@ -43,4 +43,12 @@ describe("TopBar (GRPH-1174)", () => {
     expect(pill.className).toMatch(/uppercase/);
     expect(pill.querySelector(".blink")).toBeInTheDocument();
   });
+
+  it("shows unavailable, not a stale count, when the MCP read fails (GRPH-1547)", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.mcpTools).mockRejectedValue(new Error("the API is unreachable (502 from the proxy)"));
+    renderBar();
+    expect(await screen.findByText(/MCP · unavailable/)).toBeInTheDocument();
+    expect(screen.queryByText(/tools live/)).toBeNull();
+  });
 });

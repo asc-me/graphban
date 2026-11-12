@@ -182,6 +182,21 @@ class ApiError extends Error {
   }
 }
 
+/**
+ * The one-line reason for a failed response. A JSON body passes through untouched (callers parse
+ * it); anything else (an nginx 502 page, a proxy's HTML) is never shown as markup.
+ */
+export function errorDetail(status: number, body: string): string {
+  const t = body.trim();
+  if (t.startsWith("{") || t.startsWith("[")) return body;
+  if (!t || /^\s*<|<\/?[a-z][^>]*>/i.test(t)) {
+    return status >= 502 && status <= 504 || status === 500
+      ? `the API is unreachable (${status} from the proxy)`
+      : `the API returned an unreadable ${status} response`;
+  }
+  return t.split("\n")[0].slice(0, 200);
+}
+
 async function refresh(): Promise<boolean> {
   const rt = getRefreshToken();
   if (!rt) return false;
@@ -214,7 +229,7 @@ async function request<T>(path: string, opts: RequestInit = {}, retry = true): P
     return request<T>(path, opts, false);
   }
   if (!res.ok) {
-    const detail = await res.text().catch(() => res.statusText);
+    const detail = errorDetail(res.status, await res.text().catch(() => res.statusText));
     throw new ApiError(res.status, detail);
   }
   if (res.status === 204) return undefined as T;
@@ -256,7 +271,7 @@ async function requestText(path: string, retry = true): Promise<string> {
     return requestText(path, false);
   }
   if (!res.ok) {
-    const detail = await res.text().catch(() => res.statusText);
+    const detail = errorDetail(res.status, await res.text().catch(() => res.statusText));
     throw new ApiError(res.status, detail);
   }
   return res.text();

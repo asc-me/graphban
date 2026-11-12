@@ -48,6 +48,15 @@ export function SetupStatusCard({ projectId }: { projectId: string }) {
   const job = deriveMarks({ projectId, setup: setup.data }).first_job;
   const unproven = !setup.data || step?.status !== "done" || job.status !== "done";
   React.useEffect(() => setPolling(unproven && !dismissed), [unproven, dismissed]);
+  // A failed read must never keep the last good ✓: say unknown, with the reason.
+  if (!dismissed && setup.isError) {
+    const why = setup.error instanceof Error ? setup.error.message : String(setup.error);
+    return (
+      <section data-testid="setup-status-card" data-state="unknown" className="mb-4 rounded-lg border border-line p-4">
+        <p className="text-[13px] font-semibold text-muted">? Setup status unknown — could not read setup ({why})</p>
+      </section>
+    );
+  }
   if (dismissed || !step) return null;
 
   const dismiss = () => {
