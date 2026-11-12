@@ -316,7 +316,11 @@ def test_a_failed_rule_pull_never_fails_the_push(client, org, monkeypatch):  # n
         raise httpx.ConnectError("down")
 
     monkeypatch.setattr(code_sync.httpx, "get", down)
-    monkeypatch.setattr(code_sync.httpx, "post", lambda *a, **k: None)
+    # GRPH-1553: even an unchanged push now posts an (empty) batch, so the stub answers 200.
+    monkeypatch.setattr(
+        code_sync.httpx, "post",
+        lambda url, *a, **k: httpx.Response(200, json={}, request=httpx.Request("POST", url)),
+    )
     out = code_sync.push(_db(), project_id=pid, cloud_url="https://c", api_key="k")
     assert out["project_id"] == pid and "pushed" in out
     assert out["rules"]["pulled"] is False and "ConnectError" in out["rules"]["error"]
