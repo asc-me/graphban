@@ -37,6 +37,18 @@ function mount() {
 }
 
 describe("AlertsBell", () => {
+  it("renders the panel outside the top bar's stacking context (GRPH-1559)", async () => {
+    state.feed = { unread: 0, alerts: [] };
+    const { container } = mount();
+    await waitFor(() => expect(screen.getByTestId("alerts-count")).toHaveTextContent("0"));
+    await userEvent.click(screen.getByRole("button", { name: /alerts/i }));
+    const panel = screen.getByRole("dialog", { name: "Alerts" });
+    expect(container.contains(panel)).toBe(false);
+    expect(panel.parentElement).toBe(document.body);
+    expect(panel.className).toContain("fixed");
+    expect(panel.className).toContain("z-50");
+  });
+
   beforeEach(() => {
     state.fail = false;
   });
