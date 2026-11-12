@@ -67,6 +67,34 @@ separation-of-duties check reporting a clean pass because nothing recorded who d
 the work. Each looked correct in tests and was obviously wrong in the first real
 output. Deploy, then read what it actually says about a real PRD.
 
+## Standing decisions (act on these; do not ask)
+
+These are questions a person has already answered. When one comes up, act on it, record
+what you did as evidence, and say so in your report. Asking again costs a human round trip
+for an answer that is already written here. When a person answers a new question of this
+kind, add it here so it is never asked twice.
+
+- **A red test that is load-sensitive is a test defect.** Signs: it passes alone or on a
+  rerun, it failed only on a shared host, and the failure is a time delta, a wall-clock
+  budget or a `findBy` timeout. File (or claim) an item and fix the test so it asserts
+  what it means: an ordering, a count, an injected clock, a cost relative to a baseline
+  measured in the same process, or an explicit longer wait where the wait is real
+  (GRPH-1536 has worked examples). **Never** skip it, raise the budget, add a retry, or
+  shrink the runner pool to make it pass. The fix still needs sabotage evidence that the
+  test goes red, and a second agent's review. A failure that reproduces the same way every
+  time is a regression: fix the code, not the test.
+- **An infra failure is rerun, not debugged in the code.** DNS, a runner that died, a
+  cache or `setup-*` post step, an image pull: rerun the job once and add the evidence to
+  the open item for that infra fault, or file one. If the same job fails the same way
+  twice, file the item and say so.
+- **Follow-ups are filed, not proposed.** An out-of-scope defect you found while working
+  is a new item with what you saw, not a question to the user.
+
+Still a person's call, every time: a new policy (fork PRs, hosted vs self-hosted runners,
+release paths), a change to product behaviour, a security-scan finding, a migration's data
+effect, a merge or other outward action the run was not authorised for, and anything that
+needs a person's own terminal (`sudo`, an interactive login).
+
 ## Invariants (violating these is the review comment you'll get)
 
 - **One service layer.** MCP tools, REST routers, and anything new call the same
