@@ -156,6 +156,11 @@ def _connect_step(db: Session, project_id: str, user_id: str | None = None) -> d
         return {**base, "status": "unknown", "detail": f"could not check: {type(e).__name__}",
                 "reason": str(e)[:200]}
     base["machines"] = proof["machines"]
+    latest = proof["machines"][0] if proof["machines"] else None
+    if latest and latest.get("state") != "clean" and latest.get("fails"):
+        # the latest report's FAIL line outranks a used key and an older clean report (GRPH-1548)
+        live = []
+        proof = {**proof, "clean": None}
     if proof["clean"] and not live:
         name, entry = proof["clean"]
         return {**base, "status": "done", "proof": "machine_report", "machine": name,
