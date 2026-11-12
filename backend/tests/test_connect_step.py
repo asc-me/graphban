@@ -43,6 +43,7 @@ def test_pending_until_the_first_call_then_done_with_evidence(client, auth):
     step = _connect(client, auth, pid)
     assert step["status"] == "done" and step["proof"] == "first_call"
     assert "alex-mbp" in step["detail"]
+    assert step["last_call"].startswith(_last_used(key["id"]).isoformat()[:19])  # GRPH-1545 staleness bound
 
 
 def test_first_call_stamps_immediately_later_calls_are_throttled(client, auth):

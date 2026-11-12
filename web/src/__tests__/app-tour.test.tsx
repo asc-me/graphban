@@ -80,7 +80,7 @@ function Chrome({ hosted }: { hosted: boolean }) {
   );
 }
 
-type Variant = { name: string; hosted: boolean; path: string; collapsed?: boolean; skipped: string[] };
+type Variant = { name: string; hosted: boolean; path: string; collapsed?: boolean; linked?: boolean; skipped: string[] };
 
 /**
  * Every nav the product renders, and what the tour skips on it. Fleet v1 and v2 are the
@@ -95,6 +95,7 @@ const VARIANTS: Variant[] = [
   { name: "self-host, Fleet v2", hosted: false, path: "/fleet?tab=harness", skipped: [] },
   { name: "hosted, collapsed rail", hosted: true, path: "/p/CORE/tracker", collapsed: true, skipped: [] },
   { name: "self-host, collapsed rail", hosted: false, path: "/home", collapsed: true, skipped: [] },
+  { name: "self-host, linked", hosted: false, path: "/tracker", linked: true, skipped: [] },
 ];
 
 beforeEach(() => {
@@ -104,15 +105,29 @@ beforeEach(() => {
 afterEach(() => {
   localStorage.clear();
   counts.mockReset();
+  vi.mocked(api.syncStatus).mockResolvedValue({
+    linked: false, source: "", cloud_url: "", org: "", credential_set: false, linked_at: null, projects: [],
+  } as Awaited<ReturnType<typeof api.syncStatus>>);
   vi.unstubAllGlobals();
 });
 
 describe("GRPH-1363 every stop resolves or is listed as skipped, per nav variant", () => {
   it.each(VARIANTS)("$name", async (v) => {
     if (v.collapsed) localStorage.setItem(SIDEBAR_STORAGE_KEY, "1");
+    if (v.linked) {
+      vi.mocked(api.syncStatus).mockResolvedValue({
+        linked: true, source: "web", cloud_url: "https://cloud.example.com", org: "acme", credential_set: true, linked_at: null, projects: [],
+      } as Awaited<ReturnType<typeof api.syncStatus>>);
+    }
     wrap(<Chrome hosted={v.hosted} />, v.path);
     // Hosted needs the project's tag for its links; wait for the Dashboard row.
     await waitFor(() => expect(document.querySelector('[data-tour="dashboard"]')).not.toBeNull());
+    // Self-host renders the Organization entry as a button once the sync status resolves, which is
+    // what a real box shows at the tour's last stop; resolve against that, not the loading row.
+    if (!v.hosted) {
+      await waitFor(() => expect(document.querySelector('button[data-tour="org"][data-org-state]')).not.toBeNull());
+      expect(document.querySelector('button[data-tour="org"]')).toHaveAttribute("data-org-state", v.linked ? "linked" : "unlinked");
+    }
     const { resolved, skipped } = resolveStops();
     expect(skipped).toEqual(v.skipped);
     expect(resolved.map((s) => s.id)).toEqual(TOUR_STOPS.map((s) => s.id).filter((id) => !v.skipped.includes(id)));

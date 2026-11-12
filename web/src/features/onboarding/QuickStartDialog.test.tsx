@@ -21,7 +21,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppFrame } from "@/components/shell/AppFrame";
 import type { Onboarding, ProjectSetup, SetupStatus } from "@/lib/types";
 
-import { Hero, heroState } from "./QuickStartDialog";
+import { AGENT_ACTIVE_WINDOW_MS, agentIsWorking, Hero, heroState } from "./QuickStartDialog";
 import {
   chipCount,
   deriveMarks,
@@ -50,6 +50,8 @@ const srv = vi.hoisted(() => ({
   repoPatches: [] as unknown[],
   minted: [] as string[],
   setupFails: false,
+  // Extra fields merged into a step (e.g. step 5's last_call).
+  extras: {} as Record<number, Record<string, unknown>>,
 }));
 
 function setupBody(projectId: string): ProjectSetup {
@@ -64,6 +66,7 @@ function setupBody(projectId: string): ProjectSetup {
       detail: srv.details[n] ?? (n >= 2 && n <= 4 ? "0 thing(s)." : "Not answered yet."),
       how: "",
       ...(srv.reasons[n] ? { reason: srv.reasons[n] } : {}),
+      ...(srv.extras[n] ?? {}),
     })),
   };
 }
@@ -190,6 +193,7 @@ beforeEach(() => {
   srv.repoPatches = [];
   srv.minted = [];
   srv.setupFails = false;
+  srv.extras = {};
 });
 
 // ── Trigger (D6) ─────────────────────────────────────────────────────────────────────
@@ -512,6 +516,40 @@ describe("③ Connect your agent", () => {
     await waitFor(() => expect(railItem("connect").dataset.status).toBe("unknown"), { timeout: 5000 });
     expect(within(railItem("connect")).queryByText("✓")).not.toBeInTheDocument();
   }, 10000);
+
+  it("API down behind nginx: the reason is one plain line, never the 502 page (GRPH-1547)", async () => {
+    // The real request path, against a fetch that answers like nginx with the API stopped.
+    const real = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+    const { api } = await import("@/lib/api");
+    const html502 =
+      "<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>\r\n<center><h1>502 Bad Gateway</h1></center>\r\n" +
+      "<hr><center>nginx/1.27.0</center>\r\n</body>\r\n</html>\r\n<!-- a padding to disable MSIE and Chrome friendly error page -->\r\n";
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(html502, { status: 502, headers: { "Content-Type": "text/html" } })));
+    const original = vi.mocked(api.projectSetup).getMockImplementation()!;
+    vi.mocked(api.projectSetup).mockImplementation(async (id: string) =>
+      srv.setupFails ? real.api.projectSetup(id) : original(id),
+    );
+    try {
+      atConnect();
+      srv.statuses[5] = "done";
+      const user = userEvent.setup();
+      renderFrame();
+      await user.click(await screen.findByRole("button", { name: /Finish setup/ }));
+      await enter(user, "connect");
+      await waitFor(() => expect(railItem("connect").dataset.status).toBe("done"));
+      srv.setupFails = true;
+      await waitFor(() => expect(railItem("connect").dataset.status).toBe("unknown"), { timeout: 5000 });
+      const unknown = await screen.findByRole("list", { name: "Steps that could not be checked" });
+      const lines = within(unknown).getAllByRole("listitem");
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toHaveTextContent("? UNKNOWN Could not read setup: the API is unreachable (502 from the proxy)");
+      const dialog = screen.getByRole("dialog");
+      expect(dialog.textContent).not.toMatch(/Bad Gateway|nginx|padding|<|>/);
+    } finally {
+      vi.mocked(api.projectSetup).mockImplementation(original);
+      vi.unstubAllGlobals();
+    }
+  }, 10000);
 });
 
 describe("deriveMarks", () => {
@@ -719,6 +757,27 @@ describe("Welcome and Sections (GRPH-1510)", () => {
     expect(within(list).queryByText("NEW")).not.toBeInTheDocument();
   });
 
+  it("with zero projects, Get started opens Sections in the same dialog (GRPH-1542)", async () => {
+    srv.projects = [];
+    const user = userEvent.setup();
+    renderFrame();
+    await screen.findByRole("heading", { name: "Welcome to Graphban" });
+    await user.click(screen.getByRole("button", { name: "Get started →" }));
+    expect(await screen.findByRole("list", { name: "Sections" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("with zero projects, closing leaves a Create your project entry that reopens the dialog (GRPH-1542)", async () => {
+    srv.projects = [];
+    const user = userEvent.setup();
+    renderFrame();
+    await screen.findByRole("heading", { name: "Welcome to Graphban" });
+    await user.click(screen.getByRole("button", { name: "Finish later" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Create your project" }));
+    expect(await screen.findByRole("heading", { name: "Sections" })).toBeInTheDocument();
+  });
+
   it("the setup chip reopens on Sections, not Welcome", async () => {
     srv.projects = [CORE];
     srv.onboarding = { quickstart_dismissed_at: "2026-11-01T00:00:00Z" };
@@ -807,5 +866,52 @@ describe("Graphban concepts (GRPH-1511)", () => {
     await screen.findByRole("heading", { name: "The loop." });
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+});
+
+describe("agent liveness bound (GRPH-1545)", () => {
+  const now = Date.parse("2026-01-01T12:00:00Z");
+  it("is working only within the window of its last call", () => {
+    expect(agentIsWorking({ last_call: new Date(now - 1000).toISOString() }, now)).toBe(true);
+    expect(agentIsWorking({ last_call: new Date(now - AGENT_ACTIVE_WINDOW_MS - 1).toISOString() }, now)).toBe(false);
+    expect(agentIsWorking({}, now)).toBe(false);
+    expect(agentIsWorking(undefined, now)).toBe(false);
+  });
+});
+
+describe("step ④ on the paste-a-key route (GRPH-1545)", () => {
+  function counted(lastCall: string) {
+    srv.projects = [CORE];
+    srv.statuses = { 0: "done", 1: "done", 5: "done" };
+    srv.details = { 0: "this_computer", 2: "0 thing(s).", 3: "2 thing(s).", 4: "3 thing(s)." };
+    srv.extras = { 5: { proof: "first_call", key_name: "k", last_call: lastCall } };
+  }
+
+  it("says the code graph needs gban setup, with the command", async () => {
+    counted(new Date().toISOString());
+    const user = userEvent.setup();
+    renderFrame();
+    await enter(user, "first_job");
+    await screen.findByRole("heading", { name: "Give it a first job" });
+    const note = screen.getByTestId("qs-codegraph-note");
+    expect(note).toHaveTextContent("describe_code");
+    expect(within(note).getByText("gban setup")).toBeInTheDocument();
+  });
+
+  it("shows 'Your agent is working' only while the last call is fresh", async () => {
+    counted(new Date().toISOString());
+    const user = userEvent.setup();
+    renderFrame();
+    await enter(user, "first_job");
+    expect(await screen.findByText("Your agent is working. Counts are live.")).toBeInTheDocument();
+  });
+
+  it("drops 'Your agent is working' when the last call is older than the window", async () => {
+    counted(new Date(Date.now() - AGENT_ACTIVE_WINDOW_MS - 60_000).toISOString());
+    const user = userEvent.setup();
+    renderFrame();
+    await enter(user, "first_job");
+    expect(await screen.findByText(/no agent call in the last 5 minutes/)).toBeInTheDocument();
+    expect(screen.queryByText("Your agent is working. Counts are live.")).not.toBeInTheDocument();
   });
 });

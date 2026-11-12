@@ -266,6 +266,11 @@ def push(db: Session, *, project_id: str, cloud_url: str = "", api_key: str = ""
 
     changed, removed = compute_diff(local, pushed)
 
+    # GRPH-1553: an unchanged push still makes one authenticated request (an empty batch), so
+    # a removed grant or seat is observed on every push instead of reading ok unseen.
+    if not changed and not removed:
+        _post(url, key, {"nodes": []}, headers)
+
     sent = 0
     for i in range(0, len(changed), batch_size):
         chunk = changed[i:i + batch_size]

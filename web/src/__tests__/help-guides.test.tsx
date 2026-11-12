@@ -39,10 +39,10 @@ async function guideButtons() {
 }
 
 describe("GRPH-1512 Help ▸ three guides", () => {
-  it("lists exactly Concepts, Take the tour, Start-up prompts, in that order", async () => {
+  it("lists exactly Concepts, Take the tour, Start-up prompts, Setup steps, in that order", async () => {
     renderHelp();
     const names = (await guideButtons()).map((b) => b.textContent);
-    expect(names).toEqual(["Concepts", "Take the tour", "Start-up prompts"]);
+    expect(names).toEqual(["Concepts", "Take the tour", "Start-up prompts", "Setup steps"]);
   });
 
   it("Concepts and Start-up prompts request their guide; Take the tour starts the tour", async () => {
@@ -60,6 +60,9 @@ describe("GRPH-1512 Help ▸ three guides", () => {
     fireEvent.click((await guideButtons())[2]);
     expect(guide).toHaveBeenLastCalledWith("prompts");
     expect(guide).toHaveBeenCalledTimes(2);
+    openDocsReader();
+    fireEvent.click((await guideButtons())[3]);
+    expect(guide).toHaveBeenLastCalledWith("sections");
     offG();
     offT();
   });
@@ -69,7 +72,7 @@ describe("GRPH-1512 Help ▸ three guides", () => {
     const off = onTourRequested(tour);
     renderHelp(false);
     const buttons = await guideButtons();
-    expect(buttons).toHaveLength(3);
+    expect(buttons).toHaveLength(4);
     expect(buttons[1]).toBeDisabled();
     expect(buttons[1]).toHaveAttribute("title", expect.stringMatching(/project/i));
     fireEvent.click(buttons[1]);
@@ -78,7 +81,7 @@ describe("GRPH-1512 Help ▸ three guides", () => {
   });
 });
 
-function renderDialog(initialGuide: "concepts" | "prompts") {
+function renderDialog(initialGuide: "concepts" | "prompts" | "sections") {
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <MemoryRouter>
@@ -103,5 +106,16 @@ describe("GRPH-1512 the dialog lands on the guide Help asked for", () => {
     expect(within(prompts).getByRole("heading", { name: "Start-up prompts" })).toBeInTheDocument();
     expect(within(prompts).getByRole("list", { name: "Start-up prompts" })).toBeInTheDocument();
     expect(document.querySelector("[data-concept]")).toBeNull();
+  });
+
+  it("GRPH-1546: after Finish, Help's Setup steps entry reaches Sections", async () => {
+    localStorage.clear();
+    renderHelp();
+    const names = (await guideButtons()).map((b) => b.textContent);
+    expect(names).toContain("Setup steps");
+    cleanup();
+    renderDialog("sections");
+    expect(await screen.findByRole("list", { name: "Sections" })).toBeInTheDocument();
+    expect(screen.queryByTestId("qs-prompts")).toBeNull();
   });
 });

@@ -540,8 +540,11 @@ export function useLinks(projectId?: string) {
   return useQuery({ queryKey: ["links", projectId], queryFn: () => api.links(projectId), enabled: !!projectId });
 }
 
+/** How often the header's MCP chip re-reads, so a downed API turns it unavailable. Mutable for tests. */
+export const mcpToolsTiming = { pollMs: 15000 };
+
 export function useMcpTools() {
-  return useQuery({ queryKey: ["mcp-tools"], queryFn: () => api.mcpTools() });
+  return useQuery({ queryKey: ["mcp-tools"], queryFn: () => api.mcpTools(), refetchInterval: mcpToolsTiming.pollMs });
 }
 
 /**

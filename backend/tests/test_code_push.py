@@ -77,7 +77,9 @@ def test_first_push_sends_all_then_nothing(db, monkeypatch):
 
     calls2 = _capture(monkeypatch)  # nothing changed
     r2 = code_sync.push(db, project_id="core", cloud_url="https://cloud", api_key="gb_sk_x")
-    assert r2["pushed"] == 0 and not any("nodes" in c for c in calls2)
+    # GRPH-1553: nothing changed, so no node ships, but the push still asks the console once
+    # (an empty batch) so a revoked grant is observed rather than read as ok.
+    assert r2["pushed"] == 0 and _paths_sent(calls2) == [] and [c for c in calls2 if "nodes" in c] == [{"nodes": []}]
 
 
 def test_only_changed_node_ships(db, monkeypatch):

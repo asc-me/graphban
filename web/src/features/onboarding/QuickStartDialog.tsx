@@ -61,7 +61,7 @@ type ModelChoice = "offline" | "ollama" | "claude";
 type Screen = QsStep | "finish" | "welcome" | "sections" | "concepts" | "prompts";
 
 /** Guides Help can open the dialog on directly (GRPH-1512). */
-export type QsGuide = "concepts" | "prompts";
+export type QsGuide = "concepts" | "prompts" | "sections";
 
 /** Steps, marks and chip count for one project — the dialog and the top-bar chip share it. */
 export function useQuickStart(projectId: string, hosted: boolean, pollMs?: number) {
@@ -110,7 +110,7 @@ export function QuickStartDialog({
   open: boolean;
   /** Where to open; the chip passes the first unfinished step. */
   initialStep?: QsStep;
-  /** Help opens the dialog on a guide: Concepts (at concept 1) or Start-up prompts. */
+  /** Help opens the dialog on a guide: Concepts (at concept 1), Start-up prompts, or Sections (the way back in after Finish). */
   initialGuide?: QsGuide;
   hosted: boolean;
   /** Esc, ✕ or "Finish later". */
@@ -181,6 +181,10 @@ export function QuickStartDialog({
         overlayClassName="bg-black/30 backdrop-blur-none"
         className="max-h-[92vh] max-w-[960px] overflow-y-auto p-0"
         aria-describedby="qs-desc"
+        // With no project the page behind is an empty shell, so a stray focus or pointer move
+        // outside must not dismiss the dialog (GRPH-1542); Esc, ✕ and Finish later still do.
+        onFocusOutside={projects.length === 0 ? (e) => e.preventDefault() : undefined}
+        onInteractOutside={projects.length === 0 ? (e) => e.preventDefault() : undefined}
       >
         <div className="flex min-h-0">
         <Hero steps={steps} marks={qs.marks} screen={screen} conceptIndex={concept} />
@@ -537,14 +541,23 @@ function Rail({ steps, marks, current }: { steps: QsStep[]; marks: Record<QsStep
 function UnknownRows({ steps, marks }: { steps: QsStep[]; marks: Record<QsStep, StepMark> }) {
   const rows = steps.filter((s) => marks[s].status === "unknown");
   if (!rows.length) return null;
+  // Steps that share one reason (a downed API makes every step unknown for the same cause) are
+  // one line, not the same sentence five times (GRPH-1547).
+  const groups: { steps: QsStep[]; reason: string }[] = [];
+  for (const s of rows) {
+    const reason = marks[s].reason ?? "";
+    const g = groups.find((x) => x.reason === reason);
+    if (g) g.steps.push(s);
+    else groups.push({ steps: [s], reason });
+  }
   return (
     <ul className="mt-2 space-y-0.5" aria-label="Steps that could not be checked">
-      {rows.map((s) => (
-        <li key={s} className="text-[11.5px] text-muted">
+      {groups.map((g) => (
+        <li key={g.steps.join(",")} className="text-[11.5px] text-muted">
           <span className="font-mono text-faint">
-            {STEP_META[s].num} ? UNKNOWN
+            {g.steps.map((s) => STEP_META[s].num).join(" ")} ? UNKNOWN
           </span>{" "}
-          {marks[s].reason}
+          {g.reason}
         </li>
       ))}
     </ul>
@@ -1283,6 +1296,14 @@ function ModelStep({
 const JOB_TAIL =
   "describe the code, load the durable facts from AGENTS.md/CLAUDE.md/docs as memory candidates, and propose a first handful of items.";
 
+/** The agent counts as "working" only if it made a call within this many ms (the step ③ key's last_call). */
+export const AGENT_ACTIVE_WINDOW_MS = 5 * 60 * 1000;
+
+export function agentIsWorking(connect: { last_call?: string } | undefined, now: number = Date.now()): boolean {
+  const t = connect?.last_call ? Date.parse(connect.last_call) : NaN;
+  return Number.isFinite(t) && now - t <= AGENT_ACTIVE_WINDOW_MS;
+}
+
 export function firstJobPrompt(hosted: boolean): string {
   return hosted
     ? `First ask setup_project for the code-graph dry-run estimate and show it to me. Then run it for this repository and work through it: ${JOB_TAIL}`
@@ -1303,7 +1324,7 @@ function FirstJobStep({
   hosted: boolean;
   agentLabel: string;
   mark: StepMark;
-  setupSteps: { step: number; status: SetupStatus; detail: string; name: string; how: string; reason?: string }[];
+  setupSteps: { step: number; status: SetupStatus; detail: string; name: string; how: string; reason?: string; last_call?: string }[];
   isLast: boolean;
   tourAvailable: boolean;
   onDone: () => void;
@@ -1323,9 +1344,11 @@ function FirstJobStep({
       ? { status: "done" as const, text: "First job finished." }
       : mark.status === "unknown"
         ? { status: "unknown" as const, text: `Unknown — ${mark.reason}` }
-        : anyCounted
+        : anyCounted && agentIsWorking(setupSteps.find((s) => s.step === 5))
           ? { status: "pending" as const, text: "Your agent is working. Counts are live." }
-          : { status: "pending" as const, text: "Pending — nothing counted yet." };
+          : anyCounted
+            ? { status: "pending" as const, text: "Pending — no agent call in the last 5 minutes. Counts so far are shown." }
+            : { status: "pending" as const, text: "Pending — nothing counted yet." };
 
   return (
     <section aria-labelledby="qs-job-h">
@@ -1335,6 +1358,10 @@ function FirstJobStep({
       <p className="mb-1.5 mt-3 font-mono text-[10px] uppercase tracking-wide text-faint">Paste into {agentLabel}</p>
       <CopyLine text={prompt} label="Copy the first-job prompt" />
       <StatusLine status={line.status} text={line.text} />
+      <p className="mt-2 text-[12px] text-muted" data-testid="qs-codegraph-note">
+        The key from “Create a key for Claude Code” does not list <code>describe_code</code>, so your agent will not find
+        it and the code graph stays at 0 on this route. To fill it, run <code>gban setup</code> on the machine with the checkout, or use a key that can describe.
+      </p>
       <dl className="mt-3 grid grid-cols-3 gap-2">
         {counters.map(([label, , sub], i) => (
           <div key={label} className="rounded-[10px] border border-line bg-surface-2 p-2.5">

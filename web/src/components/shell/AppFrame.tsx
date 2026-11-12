@@ -238,7 +238,19 @@ function FrameBody({ hosted }: { hosted: boolean }) {
               onOpenPalette={() => {}}
               setupChip={setupChip}
             />
-            <main id="main-content" className="min-h-0 flex-1" />
+            <main id="main-content" className="flex min-h-0 flex-1 items-center justify-center">
+              <button
+                type="button"
+                className="rounded-[10px] border border-control px-4 py-2 text-[13px] hover:bg-surface-2"
+                onClick={() => {
+                  setQsGuide(undefined);
+                  setQsStep("project");
+                  setQsOpen(true);
+                }}
+              >
+                Create your project
+              </button>
+            </main>
           </div>
         ) : (
           <CreateFirstProject />

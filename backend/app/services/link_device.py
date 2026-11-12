@@ -178,8 +178,10 @@ def _ask(pending: dict) -> dict:
                            "get a new code")
         org = data.get("org")
         org_name = (org.get("name") if isinstance(org, dict) else org) or ""
+        legacy_project = data.get("legacy_project_id")
         return {"status": "approved", "org": str(org_name), "email": str(data.get("email") or ""),
-                "token": data["token"]}
+                "token": data["token"],
+                "legacy_project_id": legacy_project if isinstance(legacy_project, str) else ""}
     raise _Unknown(f"the console answered an unknown status: {status!r}")
 
 
@@ -202,11 +204,28 @@ def poll(db: Session) -> dict:
     link.org = answer["org"]
     link.linked_email = answer["email"]
     link.console_url = link.cloud_url = pending["console_url"]
+    was_legacy = bool(link.legacy_key)
     link.legacy_key = ""
     link.pending_device_enc = ""
     link.linked_at = utcnow()
+    # A migrated key link maps its pinned project with `cloud_project_id = ''` (the key named
+    # the project). The deployment token does not, so fill each such row with the key's project
+    # the console reports (GRPH-1556).
+    if was_legacy:
+        fill_legacy_projects(db, answer["legacy_project_id"])
     db.commit()
     return {"status": "approved", "org": answer["org"], "email": answer["email"]}
+
+
+def fill_legacy_projects(db: Session, cloud_project_id: str) -> None:
+    """Give every mapping with an empty `cloud_project_id` the key's project. With no project
+    to give, delete those rows instead: a row with no target pushes a 422 and shows red with no
+    reason, while an unmapped project is local only and sends the user to Choose projects."""
+    for m in [m for m in db.scalars(select(SyncProject)) if not m.cloud_project_id]:
+        if cloud_project_id:
+            m.cloud_project_id = cloud_project_id
+        else:
+            db.delete(m)
 
 
 def clear(db: Session) -> None:

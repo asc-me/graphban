@@ -158,7 +158,7 @@ describe("dashboard Setup status card (GRPH-1442)", () => {
     }
   });
 
-  it("stops polling once the connection and First job are both ✓", async () => {
+  it("slows (does not hammer) once the connection and First job are both ✓", async () => {
     const saved = setupStatusTiming.pollMs;
     setupStatusTiming.pollMs = 20;
     try {
@@ -177,5 +177,54 @@ describe("dashboard Setup status card (GRPH-1442)", () => {
     renderCard({ status: "done", proof: "first_call" }, job("done", 5));
     await screen.findByText(/Agent connection verified/);
     expect(screen.queryByTestId("setup-status-first-job")).toBeNull();
+  });
+});
+
+describe("API down (GRPH-1547)", () => {
+  const job = (status: SetupStep["status"], n: number) =>
+    [2, 3, 4].map((step) => ({ step, name: "c", status, detail: step === 4 ? `${n} item(s).` : "0 counted.", how: "" }));
+  // The page nginx serves when the API container is stopped, padding comments and all.
+  const html502 =
+    "<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>\r\n<center><h1>502 Bad Gateway</h1></center>\r\n" +
+    "<hr><center>nginx/1.27.0</center>\r\n</body>\r\n</html>\r\n<!-- a padding to disable MSIE and Chrome friendly error page -->\r\n";
+
+  it("errorDetail reduces a 502 HTML page to one line; a 500 is not blamed on the proxy", async () => {
+    const { errorDetail } = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+    const d = errorDetail(502, html502);
+    expect(d).toBe("the API is unreachable (502 from the proxy)");
+    expect(d).not.toMatch(/</);
+    expect(errorDetail(500, "<html>oops</html>")).toBe("the API returned an unreadable 500 response");
+    expect(errorDetail(400, '{"detail":"x"}')).toBe('{"detail":"x"}');
+  });
+
+  it("both ✓, then the API goes down: the slow poll turns the card unknown with a one-line reason", async () => {
+    // The real request path, against a fetch that answers like nginx with the API stopped.
+    const real = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+    const saved = { ...setupStatusTiming };
+    setupStatusTiming.pollMs = 20;
+    setupStatusTiming.provenPollMs = 40;
+    let down = false;
+    const fetchStub = vi.fn(async () =>
+      down
+        ? new Response(html502, { status: 502, headers: { "Content-Type": "text/html" } })
+        : new Response(JSON.stringify({ ...setup({ status: "done", proof: "first_call" }), steps: [...job("done", 5), ...setup({ status: "done", proof: "first_call" }).steps] }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchStub);
+    vi.mocked(api.projectSetup).mockImplementation((id: string) => real.api.projectSetup(id));
+    vi.mocked(api.machines).mockResolvedValue([]);
+    try {
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(<QueryClientProvider client={qc}><MemoryRouter><SetupStatusCard projectId="core" /></MemoryRouter></QueryClientProvider>);
+      await screen.findByText(/Agent connection verified/);
+      expect(screen.queryByTestId("setup-status-first-job")).toBeNull();
+      down = true;
+      const card = await screen.findByText(/Setup status unknown/, {}, { timeout: 2000 });
+      expect(card.textContent).toContain("the API is unreachable (502 from the proxy)");
+      expect(screen.queryByText(/Agent connection verified/)).toBeNull();
+      expect(document.body.textContent).not.toMatch(/Bad Gateway|nginx|padding|</);
+    } finally {
+      Object.assign(setupStatusTiming, saved);
+      vi.unstubAllGlobals();
+    }
   });
 });

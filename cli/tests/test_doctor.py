@@ -724,7 +724,7 @@ def test_doctor_passes_when_the_paths_are_ignored(home, monkeypatch, tmp_path):
     repo = tmp_path / "repo"
     _git_init(repo)
     gitignore.ensure(repo)
-    (repo / ".mcp.json").write_text("{}\n", encoding="utf-8")
+    (repo / ".mcp.json").write_text('{"mcpServers": {"graphban": {}}}\n', encoding="utf-8")
     monkeypatch.setattr(doctor, "authenticated", lambda url: _Server())
     monkeypatch.setattr(doctor, "find_supervisor", lambda: "")
 
@@ -815,3 +815,21 @@ def test_can_supervise_posts_a_validating_probe_and_reads_only_403_and_404(monke
         answer["code"] = code
         assert doctor.can_supervise("http://gb.invalid", "gb_sk_X") is want, code
     assert doctor.can_supervise("file:///etc/passwd", "gb_sk_X") is None
+
+
+def test_doctor_fails_when_the_graphban_entry_is_gone_from_claude_json(home, monkeypatch):
+    """gban setup wrote the entry; removing it must not leave doctor all-PASS."""
+    monkeypatch.setattr(doctor, "authenticated", lambda url: _Server())
+    monkeypatch.setattr(doctor, "find_supervisor", lambda: "")
+    cfg = home / "claude.json"
+    cfg.write_text(json.dumps({"projects": {str(home.resolve()): {
+        "mcpServers": {"graphban": {"command": "x"}}}}}), encoding="utf-8")
+    lines, code = doctor.run("http://gb.invalid", "core", "", repo=home)
+    assert [l["status"] for l in lines if l["name"] == "claude mcp"] == ["PASS"]
+
+    cfg.write_text(json.dumps({"projects": {str(home.resolve()): {"mcpServers": {}}}}),
+                   encoding="utf-8")
+    lines, code = doctor.run("http://gb.invalid", "core", "", repo=home)
+    found = [l for l in lines if l["name"] == "claude mcp"]
+    assert code == 1 and found[0]["status"] == "FAIL"
+    assert str(cfg) in found[0]["detail"]
