@@ -20,10 +20,10 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import (
     ApiKey, CodeSyncState, Membership, OrgMembership, Organization, PlatformConfig, Project,
-    SyncLink, Team, User, utcnow,
+    SyncLink, SyncProject, Team, User, utcnow,
 )
 from app.security import authz, secrets
-from app.services import code_graph, quotas
+from app.services import code_graph, link_device, quotas
 
 _BATCH = 200      # nodes per request — bounds payload size and sets resumability granularity
 _TIMEOUT = 30.0
@@ -32,6 +32,22 @@ _LINK_ID = "instance"  # the singleton SyncLink row
 
 class NotLinked(Exception):
     """No cloud sync target configured — a pure local-only instance never pushes (D2)."""
+
+
+class ConsoleRefused(Exception):
+    """The console answered 401/403/404: a definite no, with its reason (GRPH-1518, L3/L5)."""
+
+    def __init__(self, reason: str, status: int = 0):
+        super().__init__(reason)
+        self.reason, self.status = reason, status
+
+
+class ConsoleUnknown(Exception):
+    """No answer we can act on: a network error, timeout, 5xx or unreadable body. Never a no."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
 
 
 # ---- instance-wide cloud link (AL-141): the web-managed link + status --------------------
@@ -147,9 +163,43 @@ def _node_payload(n) -> dict:
             "summary": n.summary, "content_hash": n.content_hash}
 
 
-def _post(url: str, api_key: str, body: dict) -> None:
-    resp = httpx.post(f"{url.rstrip('/')}/api/sync/code-graph", json=body,
-                      headers={"X-API-Key": api_key}, timeout=_TIMEOUT)
+def _reason(resp: httpx.Response) -> str:
+    try:
+        data = resp.json()
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        found = data.get("reason") or data.get("error") or data.get("detail")
+        if isinstance(found, str) and found:
+            return found
+    return f"http_{resp.status_code}"
+
+
+def _classify(resp: httpx.Response) -> httpx.Response:
+    """Three states, never two: 401/403/404 is `ConsoleRefused` (with the console's reason),
+    5xx is `ConsoleUnknown`; any other status is returned for the caller to read."""
+    if resp.status_code >= 500:
+        raise ConsoleUnknown(f"the console answered {resp.status_code}")
+    if resp.status_code in (401, 403, 404):
+        raise ConsoleRefused(_reason(resp), resp.status_code)
+    return resp
+
+
+def _send(method: str, url: str, headers: dict, *, body: dict | None = None,
+          timeout: float = _TIMEOUT) -> httpx.Response:
+    try:
+        if method == "GET":
+            resp = httpx.get(url, headers=headers, timeout=timeout)
+        else:
+            resp = httpx.post(url, json=body, headers=headers, timeout=timeout)
+    except (httpx.HTTPError, OSError) as e:
+        raise ConsoleUnknown(f"could not reach {url.split('/api/')[0]}: {e.__class__.__name__}")
+    return _classify(resp)
+
+
+def _post(url: str, api_key: str, body: dict, headers: dict | None = None) -> None:
+    resp = _send("POST", f"{url.rstrip('/')}/api/sync/code-graph",
+                 headers or {"X-API-Key": api_key}, body=body)
     resp.raise_for_status()
 
 
@@ -178,15 +228,21 @@ def cloud_credentials(db: Session) -> tuple[str, str] | None:
 
 
 def push(db: Session, *, project_id: str, cloud_url: str = "", api_key: str = "",
-         batch_size: int = _BATCH) -> dict:
-    """Push the local code graph for `project_id` to the linked cloud tenant, incrementally."""
-    url, key = _target(db, cloud_url, api_key)
+         batch_size: int = _BATCH, headers: dict | None = None) -> dict:
+    """Push the local code graph for `project_id` to the linked cloud tenant, incrementally.
+    `headers` replaces the `X-API-Key` auth (a deployment token push, `push_mapped`); the
+    key-only rule/box tail is skipped then, since it speaks the key's protocol."""
+    if headers is not None:
+        url, key = cloud_url, ""
+    else:
+        url, key = _target(db, cloud_url, api_key)
+    tail = (lambda: {}) if headers is not None else (lambda: _sync_tail(db, url, key))
 
     # Privacy (D8): a project can opt out of ever pushing its graph off-network.
     cfg = db.get(PlatformConfig, project_id)
     if cfg is not None and not cfg.sync_graph:
         return {"project_id": project_id, "skipped": True, "reason": "graph kept local (sync_graph off)",
-                **_sync_tail(db, url, key)}
+                "pushed": 0, "edges": 0, **tail()}
 
     nodes = {n.path: n for n in code_graph.list_nodes(db, project_id)}
     local = {p: (n.content_hash or "") for p, n in nodes.items()}
@@ -202,7 +258,7 @@ def push(db: Session, *, project_id: str, cloud_url: str = "", api_key: str = ""
     sent = 0
     for i in range(0, len(changed), batch_size):
         chunk = changed[i:i + batch_size]
-        _post(url, key, {"nodes": [_node_payload(nodes[p]) for p in chunk]})
+        _post(url, key, {"nodes": [_node_payload(nodes[p]) for p in chunk]}, headers)
         for p in chunk:
             pushed[p] = local[p]
         state.manifest = dict(pushed)     # persist progress BEFORE the next batch → resumable
@@ -211,7 +267,7 @@ def push(db: Session, *, project_id: str, cloud_url: str = "", api_key: str = ""
         sent += len(chunk)
 
     if removed:
-        _post(url, key, {"remove": removed})
+        _post(url, key, {"remove": removed}, headers)
         for p in removed:
             pushed.pop(p, None)
         state.manifest = dict(pushed)
@@ -220,14 +276,17 @@ def push(db: Session, *, project_id: str, cloud_url: str = "", api_key: str = ""
 
     # Edges are lightweight and idempotent on the cloud (upsert_edge skips dupes); push the
     # current set whenever nodes moved. Edge-level incrementality is a follow-up.
+    edges_sent = 0
     if changed or removed:
         edges = code_graph.list_edges(db, project_id)
         if edges:
-            _post(url, key, {"edges": [{"src": e.src, "dst": e.dst, "type": e.type} for e in edges]})
+            _post(url, key, {"edges": [{"src": e.src, "dst": e.dst, "type": e.type} for e in edges]},
+                  headers)
+            edges_sent = len(edges)
 
     return {"project_id": project_id, "pushed": sent, "removed": len(removed),
-            "unchanged": len(local) - len(changed),
-            **_sync_tail(db, url, key)}
+            "unchanged": len(local) - len(changed), "edges": edges_sent,
+            **tail()}
 
 
 def purge(db: Session, *, project_id: str, cloud_url: str = "", api_key: str = "") -> dict:
@@ -284,6 +343,110 @@ def project_states(db: Session, project_ids: list[str]) -> list[dict]:
             "status": status,
         })
     return out
+
+
+# ---- project mapping and per-project push (GRPH-1518, P67 §6 L3/L4/L5) -------------------
+
+def _console_auth(db: Session) -> tuple[str, dict]:
+    """The console URL and auth headers for a deployment link: the token, else a migrated
+    key (`legacy_key`). Raises `NotLinked` when the box holds neither."""
+    link = db.get(SyncLink, _LINK_ID)
+    if link is not None:
+        base = (link.console_url or link.cloud_url or "").rstrip("/")
+        token = secrets.decrypt(link.token_enc) if link.token_enc else ""
+        if base and token:
+            return base, {"Authorization": f"Bearer {token}"}
+        key = secrets.decrypt(link.legacy_key) if link.legacy_key else ""
+        if base and key:
+            return base, {"X-API-Key": key}
+    raise NotLinked("this box is not signed in to a console: start with POST /api/sync/link/start")
+
+
+def console_projects(db: Session) -> dict:
+    """The cloud projects the linked engineer can reach, read live with the token:
+    `ok {projects}` (possibly empty), `refused {reason}` or `unknown {reason}`. An
+    unreachable console is never an empty `ok`."""
+    base, headers = _console_auth(db)
+    try:
+        resp = _send("GET", f"{base}/api/sync/projects", headers, timeout=_ORG_TIMEOUT)
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        rows = data.get("projects") if isinstance(data, dict) else data
+        if resp.status_code != 200 or not isinstance(rows, list):
+            raise ConsoleUnknown(f"the console answered {resp.status_code} without a project list")
+    except ConsoleRefused as e:
+        return {"status": "refused", "reason": e.reason}
+    except ConsoleUnknown as e:
+        return {"status": "unknown", "reason": e.reason}
+    projects = [{"id": str(r["id"]), "name": str(r.get("name") or r["id"])}
+                for r in rows if isinstance(r, dict) and r.get("id")]
+    return {"status": "ok", "projects": projects}
+
+
+def set_project_map(db: Session, mappings: list[tuple[str, str]]) -> None:
+    """Replace the local → cloud mapping. A project left out is local only. A kept row whose
+    cloud project is unchanged keeps its last result; a re-pointed one is pending again."""
+    existing = link_device.mappings(db)
+    wanted = {local: cloud for local, cloud in mappings}
+    for local, row in existing.items():
+        if local not in wanted:
+            db.delete(row)
+    for local, cloud in wanted.items():
+        row = existing.get(local)
+        if row is None:
+            db.add(SyncProject(local_project_id=local, cloud_project_id=cloud))
+        elif row.cloud_project_id != cloud:
+            row.cloud_project_id = cloud
+            row.last_push_at = row.last_push_result = row.last_push_reason = None
+    db.commit()
+
+
+def _store_result(row: SyncProject, result: str, reason: str | None) -> None:
+    row.last_push_at, row.last_push_result, row.last_push_reason = utcnow(), result, reason
+
+
+def push_mapped(db: Session) -> list[dict]:
+    """Push every mapped project and return a result per project (box admin's trigger).
+
+    `done {nodes, edges}` / `refused {reason}` / `unknown {reason}`, each stored on its
+    `sync_project` row. One project's refusal never stops the others. A 401 `seat_removed` or
+    `token_revoked` is the credential's, not the project's: the whole link is refused, so
+    every mapped project is stored refused with that reason (L5). Mappings are never touched
+    here, so after a takeover each one is re-checked by this next push."""
+    base, auth = _console_auth(db)
+    results: list[dict] = []
+    rows = sorted(link_device.mappings(db).values(), key=lambda m: m.local_project_id)
+    for i, row in enumerate(rows):
+        headers = {**auth, "X-Cloud-Project": row.cloud_project_id} if row.cloud_project_id else auth
+        try:
+            out = push(db, project_id=row.local_project_id, cloud_url=base, headers=headers)
+            _store_result(row, "ok", None)
+            results.append({"project_id": row.local_project_id, "status": "done",
+                            "nodes": out.get("pushed", 0), "edges": out.get("edges", 0),
+                            "at": row.last_push_at})
+        except ConsoleRefused as e:
+            db.rollback()
+            if e.reason in link_device.LINK_REFUSALS:
+                for r in rows:
+                    _store_result(r, "refused", e.reason)
+                db.commit()
+                return [{"project_id": r.local_project_id, "status": "refused",
+                         "reason": e.reason, "at": r.last_push_at} for r in rows]
+            _store_result(row, "refused", e.reason)
+            db.commit()
+            results.append({"project_id": row.local_project_id, "status": "refused",
+                            "reason": e.reason, "at": row.last_push_at})
+        except ConsoleUnknown as e:
+            db.rollback()
+            _store_result(row, "unknown", e.reason)
+            db.commit()
+            results.append({"project_id": row.local_project_id, "status": "unknown",
+                            "reason": e.reason, "at": row.last_push_at})
+        else:
+            db.commit()
+    return results
 
 
 # ---- org overview (GRPH-1223): the Organization window ----------------------------------
@@ -356,18 +519,20 @@ def cloud_org_overview(db: Session, key: ApiKey) -> dict | None:
     }
 
 
-def fetch_org_overview(url: str, key: str) -> dict | None:
-    """GET {cloud}/api/sync/org-overview. None on ANY failure — the caller decides what an
-    unreachable cloud looks like; this never raises into a request."""
+def fetch_org_overview(url: str, key: str) -> dict:
+    """GET {cloud}/api/sync/org-overview. Raises `ConsoleRefused` (401/403/404, with the
+    console's reason) or `ConsoleUnknown` (network error, timeout, 5xx, unreadable answer);
+    a failure is no longer one undifferentiated None (GRPH-1518). `org_overview` is the
+    caller that decides what an unreachable cloud looks like."""
+    resp = _send("GET", f"{url.rstrip('/')}/api/sync/org-overview", {"X-API-Key": key},
+                 timeout=_ORG_TIMEOUT)
     try:
-        resp = httpx.get(f"{url.rstrip('/')}/api/sync/org-overview",
-                         headers={"X-API-Key": key}, timeout=_ORG_TIMEOUT)
-        if resp.status_code != 200:
-            return None
-        body = resp.json()
-        return body if isinstance(body, dict) and isinstance(body.get("org"), dict) else None
-    except (httpx.HTTPError, OSError, ValueError):
-        return None
+        body = resp.json() if resp.status_code == 200 else None
+    except ValueError:
+        body = None
+    if not (isinstance(body, dict) and isinstance(body.get("org"), dict)):
+        raise ConsoleUnknown(f"the console answered {resp.status_code} without an overview")
+    return body
 
 
 def _local_last_sync(db: Session) -> datetime | None:
@@ -399,7 +564,10 @@ def org_overview(db: Session) -> dict:
     if fresh:
         body = cached["last"]
     else:
-        body = fetch_org_overview(url, key)
+        try:
+            body = fetch_org_overview(url, key)
+        except (ConsoleRefused, ConsoleUnknown):
+            body = None
         with _org_lock:
             if _org_cache.get("ident") != ident:
                 _org_cache.clear()
