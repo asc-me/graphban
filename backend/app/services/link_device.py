@@ -9,7 +9,7 @@ The box relays the console's device-code API (GBC-77, graphban-control `docs/con
   An unknown `device_code` is 404.
 
 Three states, never two. **Only an approved poll writes the link**; refused and unknown store
-nothing. A network error, timeout or 5xx is `unknown`, never `refused`, because no answer is
+nothing (a refused poll only drops the dead pending code). A network error, timeout or 5xx is `unknown`, never `refused`, because no answer is
 not a no. The token and the legacy key never leave this module in a return value.
 """
 from __future__ import annotations
@@ -198,6 +198,12 @@ def poll(db: Session) -> dict:
         answer = _ask(pending)
     except _Unknown as e:
         return {"status": "unknown", "reason": str(e)}
+    if answer["status"] == "refused":
+        # A refused code can never be approved: drop it so the box stops reporting a sign-in
+        # in flight (GRPH-1557). The link itself is untouched.
+        link.pending_device_enc = ""
+        db.commit()
+        return answer
     if answer["status"] != "approved":
         return answer
     link.token_enc = secrets.encrypt(answer["token"])
