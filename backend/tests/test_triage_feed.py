@@ -138,7 +138,6 @@ def test_decision_wait_rows_carry_question_state_and_only_response_needed_counts
     f = _feed(client, auth)
     rows = {r["id"]: r for r in f["rows"]}
     assert rows[wait.key]["question_state"] == "checking"
-    assert rows[ticket.key]["question_state"] == "checking"
     assert "question_state" not in rows[gate.key]
     assert f["waiting_on_person"] == 0
     wait.decision = {**wait.decision, "needs_person_at": "2026-11-11T10:00:00+00:00"}
@@ -146,8 +145,7 @@ def test_decision_wait_rows_carry_question_state_and_only_response_needed_counts
     f = _feed(client, auth)
     rows = {r["id"]: r for r in f["rows"]}
     assert rows[wait.key]["question_state"] == "response_needed"
-    assert rows[ticket.key]["question_state"] == "response_needed"
-    assert f["waiting_on_person"] == 2
+    assert f["waiting_on_person"] == 1
 
 
 # --- GRPH-1529: an answered decision shows who answered and whether a drain is live ---------
@@ -222,3 +220,52 @@ def test_answered_row_leaves_the_feed_after_the_window(client, auth, db):
     wait.done_at = wait.done_at - timedelta(seconds=triage_svc.ANSWERED_WINDOW_SECONDS + 60)
     db.commit()
     assert all(r["id"] != wait.key for r in _feed(client, auth)["rows"])
+
+
+# --- GRPH-1571: one row per question ---------------------------------------------------------
+
+
+def _ticket_and_wait(db, extra_gate=None):
+    from app.services import items as items_svc
+    from app.services import links as links_svc
+
+    ticket = items_svc.create_item(db, project_id="core", title="needs an answer",
+                                   status="in_progress")
+    wait = items_svc.create_item(db, project_id="core", title="which store?", status="blocked",
+                                 question="Which store?", options=["a", "b"])
+    links_svc.create_link(db, a=ticket.id, b=wait.id, type_="dependency", project_id="core")
+    if extra_gate:
+        gate = items_svc.create_item(db, project_id="core", title="merge it", status="blocked",
+                                     tags=[extra_gate])
+        links_svc.create_link(db, a=ticket.id, b=gate.id, type_="dependency", project_id="core")
+    items_svc.update_item(db, ticket.id, status="blocked")
+    return ticket, wait
+
+
+def test_question_only_ticket_row_is_dropped_and_wait_names_it(client, auth, db):
+    before = _feed(client, auth)["counts"]["blockers"]
+    ticket, wait = _ticket_and_wait(db)
+    f = _feed(client, auth)
+    ids = [r["id"] for r in f["rows"]]
+    assert ticket.key not in ids and wait.key in ids
+    row = next(r for r in f["rows"] if r["id"] == wait.key)
+    assert row["blocks"]["id"] == ticket.key and row["blocks"]["title"] == ticket.title
+    assert f["counts"]["blockers"] == before + 1
+
+
+def test_ticket_with_a_gate_keeps_its_row_and_names_the_question(client, auth, db):
+    ticket, wait = _ticket_and_wait(db, extra_gate="wait:merge")
+    rows = {r["id"]: r for r in _feed(client, auth)["rows"]}
+    assert wait.key in rows and ticket.key in rows
+    assert rows[ticket.key]["also_questions"] == [{"id": wait.key, "question": "Which store?"}]
+    assert rows[wait.key]["blocks"]["id"] == ticket.key
+
+
+def test_answered_row_carries_the_ticket_it_unblocks(client, auth, db):
+    from app.services import waits as waits_svc
+
+    ticket, wait = _ticket_and_wait(db)
+    waits_svc.answer_wait(db, wait.id, choice="a")
+    row = next(r for r in _feed(client, auth)["rows"] if r["id"] == wait.key)
+    assert row["kind"] == "answered"
+    assert row["blocks"] == {"id": ticket.key, "title": ticket.title}

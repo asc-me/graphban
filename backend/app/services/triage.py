@@ -108,6 +108,28 @@ def _nobody_alerted(db: Session, item: Item) -> bool:
     return False
 
 
+def _is_open_question(dep: Item) -> bool:
+    """A decision wait still waiting for its answer."""
+    return bool(dep.decision) and not (dep.decision or {}).get("answer") and dep.status != "done"
+
+
+def _blocks(db: Session, wait: Item) -> dict:
+    """The ticket that depends on this wait (GRPH-1571): first by key, plus how many more."""
+    from sqlalchemy import select
+
+    from app.models import Link
+
+    tickets = [t for t in (db.get(Item, i) for i in db.scalars(select(Link.a).where(
+        Link.type == "dependency", Link.b == wait.id))) if t is not None]
+    if not tickets:
+        return {}
+    tickets.sort(key=lambda t: (t.number or 0, t.key))
+    out = {"blocks": {"id": tickets[0].key, "title": tickets[0].title}}
+    if len(tickets) > 1:
+        out["blocks_more"] = len(tickets) - 1
+    return out
+
+
 def _blocker_rows(db: Session, project_id: str, now) -> list[dict]:
     ctx = prio.context(db, project_id)
     rows = []
@@ -115,6 +137,20 @@ def _blocker_rows(db: Session, project_id: str, now) -> list[dict]:
         item = db.get(Item, keys.resolve_item(db, b["id"]) or b["id"])
         if item is None:
             continue
+        # One row per question: a ticket held only by decision waits is represented by the
+        # wait's row, which names it. One that also waits on something else keeps its row.
+        questions: list[Item] = []
+        others = 0
+        if not b.get("decision"):
+            for d in (ctx.item(i) for i in prio.blocked_by(ctx, item)):
+                if d is None:
+                    continue
+                if _is_open_question(d):
+                    questions.append(d)
+                else:
+                    others += 1
+            if questions and not others:
+                continue
         row = {
             "id": item.key, "kind": "blocker", "title": item.title,
             "age_seconds": _age(item.created_at, now),
@@ -126,9 +162,15 @@ def _blocker_rows(db: Session, project_id: str, now) -> list[dict]:
             row["question_state"] = qs
         if qs and _nobody_alerted(db, item):
             row["nobody_alerted"] = True
+        if questions:
+            questions.sort(key=lambda q: (q.number or 0, q.key))
+            row["also_questions"] = [
+                {"id": q.key, "question": (q.decision or {}).get("question") or q.title}
+                for q in questions]
         if b.get("decision"):
             row["decision"] = {"question": b["decision"]["question"],
                                "options": b["decision"]["options"]}
+            row.update(_blocks(db, item))
         else:
             dep = next((d for d in (ctx.item(i) for i in prio.blocked_by(ctx, item)) if d), None)
             if dep is not None:
@@ -167,6 +209,7 @@ def _answered_rows(db: Session, project_id: str, now) -> list[dict]:
             "quote": src.get("quote") if src else None,
             "answered_by": waits_svc.answered_by_line(answer),
             "drain": waits_svc.drain_note(db, wait),
+            **_blocks(db, wait),
         })
     return rows
 
