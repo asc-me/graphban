@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
@@ -9,7 +9,9 @@ import { LeftNav } from "@/components/shell/LeftNav";
 import { CloudOrgLinkDialog } from "@/features/settings/CloudOrgLinkDialog";
 import { ProjectProvider } from "@/features/ProjectContext";
 import { ORG_SIGNUP_URL, settingsPath } from "@/lib/routes";
-import type { SyncOrgOverview, SyncStatus } from "@/lib/types";
+import { requestOrgWindow } from "@/features/settings/CloudOrgLinkDialog";
+import { LINK_FINISHED_KEY } from "@/features/organization/LinkToOrgWizard";
+import type { SyncOrgOverview, SyncProjectState, SyncStatus } from "@/lib/types";
 
 const project = {
   id: "core", tag: "CORE", name: "Core", accent: "#c6f24e", visibility: "private",
@@ -29,9 +31,23 @@ const malformed: SyncStatus = {
   projects: [],
 };
 
+const proj = (id: string, name: string, extra: Partial<SyncProjectState> = {}): SyncProjectState => ({
+  project_id: id, name, writable: true, sync_graph: true, total_nodes: 1, synced_nodes: 1,
+  pending: 0, last_synced_at: null, status: "live", mapped: false, ...extra,
+});
+
+const PUSHED_AT = "2026-11-12T14:02:00Z";
+
+/** Signed in, core → CORE pushed, two projects local only: the Linked window (resume → null). */
 const linked: SyncStatus = {
-  linked: true, source: "web", cloud_url: "https://cloud.graphban.dev", org: "acme",
-  credential_set: true, linked_at: new Date().toISOString(), projects: [],
+  linked: true, source: "web", cloud_url: "https://cloud.graphban.dev", org: "Ascme Labs",
+  credential_set: true, linked_at: new Date().toISOString(), signed_in: true,
+  linked_email: "alex@acme.example", state: "ok", can_link: true,
+  projects: [
+    proj("core", "core", { mapped: true, cloud_project_id: "c-1", cloud_project_tag: "CORE", last_push_result: "ok", last_push_at: PUSHED_AT }),
+    proj("infra", "infra"),
+    proj("notes", "notes"),
+  ],
 };
 
 const recent = new Date(Date.now() - 2 * 60_000).toISOString();
@@ -68,6 +84,9 @@ const mocks = vi.hoisted(() => ({
   syncLink: vi.fn(),
   syncOrg: vi.fn(),
   syncUnlink: vi.fn(),
+  syncLinkStart: vi.fn(),
+  syncLinkPoll: vi.fn(),
+  syncCloudProjects: vi.fn(),
 }));
 
 /** Only `control.state` is read by the nav entry. */
@@ -86,6 +105,9 @@ vi.mock("@/lib/api", () => ({
     syncLink: mocks.syncLink,
     syncOrg: mocks.syncOrg,
     syncUnlink: mocks.syncUnlink,
+    syncLinkStart: mocks.syncLinkStart,
+    syncLinkPoll: mocks.syncLinkPoll,
+    syncCloudProjects: mocks.syncCloudProjects,
     dashboard: vi.fn(async () => ({
       items_total: 0, items_by_status: {}, effort_total: 0, done_count: 0, in_progress_count: 0,
       blocked_count: 0, requests_total: 0, requests_by_type: {}, requests_by_status: {},
@@ -122,14 +144,14 @@ function wrap(ui: ReactNode, path = "/tracker") {
   );
 }
 
-function wrapDialog(open: boolean, onOpenChange = vi.fn(), linked = false) {
+function wrapDialog(open: boolean, onOpenChange = vi.fn()) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter>
         <ProjectProvider>
           <Routes>
-            <Route path="*" element={<><CloudOrgLinkDialog open={open} onOpenChange={onOpenChange} linked={linked} /><Here /></>} />
+            <Route path="*" element={<><CloudOrgLinkDialog open={open} onOpenChange={onOpenChange} /><Here /></>} />
           </Routes>
         </ProjectProvider>
       </MemoryRouter>
@@ -137,95 +159,83 @@ function wrapDialog(open: boolean, onOpenChange = vi.fn(), linked = false) {
   );
 }
 
-describe("CloudOrgLinkDialog — the not-linked explainer (GRPH-1224)", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
+const RAIL = ["Console", "Sign in", "Projects", "First push"];
 
+beforeEach(() => {
+  vi.clearAllMocks();
+  localStorage.removeItem(LINK_FINISHED_KEY);
+  mocks.syncStatus.mockResolvedValue({ ...unlinked, can_link: true });
+  mocks.syncOrg.mockResolvedValue(overview);
+  mocks.syncLinkPoll.mockResolvedValue({ status: "pending" });
+  mocks.syncCloudProjects.mockResolvedValue({ status: "ok", projects: [], mapping: [] });
+});
+
+describe("Organization window, not linked: the Link to an org wizard is the body (GRPH-1564, L1)", () => {
   it("renders nothing when closed", () => {
     wrapDialog(false);
-    expect(screen.queryByText("One org across every deployment")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(mocks.syncStatus).not.toHaveBeenCalled();
   });
 
-  it("shows the kicker, title, five benefits and the three stays items", () => {
+  it("header, ROLE · admin chip, the intro line, and the wizard's four steps", async () => {
     wrapDialog(true);
-    const dialog = screen.getByRole("dialog", { name: "One org across every deployment" });
-    expect(within(dialog).getByText("ORGANIZATIONS · GRAPHBAN CLOUD")).toBeInTheDocument();
-    const benefits = Array.from(dialog.querySelectorAll("[data-benefit]")).map((b) => b.querySelector("span.font-semibold")?.textContent);
-    expect(benefits).toEqual([
-      "People and teams in one place",
-      "Roles and access (RBAC)",
-      "Policy rules for every project",
-      "Galaxy",
-      "Feedback on your own domain",
-    ]);
-    expect(dialog.querySelectorAll("[data-benefit]")[4]).toHaveClass("col-span-full");
-    expect(within(dialog).getByText("STAYS ON THIS BOX")).toBeInTheDocument();
-    expect(Array.from(dialog.querySelectorAll("[data-stays]")).map((s) => s.textContent?.replace("✓", ""))).toEqual([
-      "Code and repos", "Memory shards", "Item content",
-    ]);
+    const dialog = await screen.findByRole("dialog", { name: "Link to an org" });
+    expect(await within(dialog).findByText("ROLE · admin")).toBeInTheDocument();
+    expect(dialog).toHaveTextContent(
+      "Link this deployment to an org on Graphban Cloud. The org's people, roles and rule decisions arrive here. Your code, agent memory and coding-agent credentials stay on this deployment.",
+    );
+    const rail = await within(dialog).findByRole("list", { name: "Link steps" });
+    for (const step of RAIL) expect(rail).toHaveTextContent(step);
   });
 
-  it("the old create-org flow is gone: no tiers, no sales, no review step, no cloud slug", () => {
+  it("the explainer is gone: no benefits grid, no Coming soon, no waitlist link, no redirect to Settings", async () => {
     wrapDialog(true);
-    for (const gone of [/Starter/, /Enterprise/, /Contact sales/, /Review/, /cloud\.graphban\.dev\//, /Continue/]) {
-      expect(screen.queryByText(gone)).not.toBeInTheDocument();
-    }
-  });
-
-  it.each([
-    ["Create a cloud org", /bg-accent/],
-  ])("%s is a Coming soon link to the waitlist in a new tab", (label, style) => {
-    wrapDialog(true);
-    const link = screen.getByRole("link", { name: `${label} — coming soon, join the waitlist` });
-    expect(link).toHaveAttribute("href", ORG_SIGNUP_URL);
-    expect(ORG_SIGNUP_URL).toBe("https://graphban.dev/platform#waitlist");
-    expect(link).toHaveAttribute("target", "_blank");
-    expect(link).toHaveAttribute("rel", "noopener noreferrer");
-    expect(within(link).getByText("Coming soon")).toBeVisible();
-    expect(link.className).toMatch(style);
-  });
-
-  it("Link to an org opens the wizard on Settings → Sync / Link and closes the dialog (GRPH-1520)", async () => {
-    const user = userEvent.setup();
-    const onOpenChange = vi.fn();
-    wrapDialog(true, onOpenChange);
-    await user.click(screen.getByRole("link", { name: "Link to an org" }));
-    expect(screen.getByTestId("here")).toHaveTextContent(settingsPath("deployment/sync"));
-    expect(onOpenChange).toHaveBeenCalledWith(false);
-  });
-
-  it("neither org action links this box: clicking them never calls POST /api/sync/link", async () => {
-    const user = userEvent.setup();
-    wrapDialog(true);
-    for (const name of [/Link to an org/, /Create a cloud org/]) {
-      const link = screen.getByRole("link", { name });
-      link.addEventListener("click", (e) => e.preventDefault());
-      await user.click(link);
-    }
+    const dialog = await screen.findByRole("dialog", { name: "Link to an org" });
+    await within(dialog).findByRole("list", { name: "Link steps" });
+    expect(dialog.querySelector("[data-benefit]")).toBeNull();
+    expect(dialog.querySelector("[data-coming-soon]")).toBeNull();
+    expect(dialog).not.toHaveTextContent(/Coming soon|One org across every deployment/);
+    expect(dialog.querySelector(`a[href="${ORG_SIGNUP_URL}"]`)).toBeNull();
+    // It stays in the window: nothing navigates to Settings.
+    expect(screen.getByTestId("here")).not.toHaveTextContent("/settings");
     expect(mocks.syncLink).not.toHaveBeenCalled();
+    // Not linked never asks the org overview.
+    expect(mocks.syncOrg).not.toHaveBeenCalled();
   });
 
-  it("Not now closes the window", async () => {
-    const user = userEvent.setup();
-    const onOpenChange = vi.fn();
-    wrapDialog(true, onOpenChange);
-    await user.click(screen.getByRole("button", { name: "Not now" }));
-    expect(onOpenChange).toHaveBeenCalledWith(false);
+  it("a non-admin box sees ROLE · member and a read-only wizard", async () => {
+    mocks.syncStatus.mockResolvedValue({ ...unlinked, can_link: false });
+    wrapDialog(true);
+    const dialog = await screen.findByRole("dialog", { name: "Link to an org" });
+    expect(await within(dialog).findByText("ROLE · member")).toBeInTheDocument();
+  });
+
+  it("a failed status read is not an unlinked box: no wizard, a Retry", async () => {
+    mocks.syncStatus.mockRejectedValue(new Error("boom"));
+    wrapDialog(true);
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("this is not an unlinked deployment");
+    expect(within(dialog).queryByRole("list", { name: "Link steps" })).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Retry now" })).toBeInTheDocument();
+  });
+
+  it("resumes at the first unfinished step: signed in, nothing chosen → ③ Projects", async () => {
+    mocks.syncStatus.mockResolvedValue({ ...linked, projects: [proj("core", "core")] });
+    wrapDialog(true);
+    const dialog = await screen.findByRole("dialog", { name: "Link to an org" });
+    expect(await within(dialog).findByRole("combobox", { name: "Cloud project for core" })).toBeInTheDocument();
   });
 });
 
-describe("OrgRailItem — the Organization nav entry (GRPH-1224)", () => {
+describe("OrgRailItem — the Organization nav entry", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
     mocks.syncStatus.mockResolvedValue(unlinked);
     mocks.gitops.mockResolvedValue(gitopsView("linked_set"));
-    mocks.syncOrg.mockResolvedValue(overview);
   });
 
   const entry = () => screen.findByRole("button", { name: /Organization/ });
 
-  it("unlinked: building icon and CLOUD, and the click opens the explainer", async () => {
+  it("unlinked: building icon and CLOUD, and the click opens the wizard in the window", async () => {
     const user = userEvent.setup();
     wrap(<LeftNav />);
     const btn = await entry();
@@ -233,12 +243,18 @@ describe("OrgRailItem — the Organization nav entry (GRPH-1224)", () => {
     expect(btn).toHaveTextContent("CLOUD");
     expect(btn.querySelector("[data-org-dot]")).toBeNull();
     await user.click(btn);
-    const dialog = await screen.findByRole("dialog", { name: "One org across every deployment" });
-    expect(dialog.querySelectorAll("[data-benefit]")).toHaveLength(5);
-    expect(dialog.querySelectorAll("[data-stays]")).toHaveLength(3);
+    const dialog = await screen.findByRole("dialog", { name: "Link to an org" });
+    expect(await within(dialog).findByRole("list", { name: "Link steps" })).toBeInTheDocument();
     expect(screen.getByTestId("here")).toHaveTextContent("/tracker");
     // Unlinked never asks the cloud whether it is reachable.
     expect(mocks.gitops).not.toHaveBeenCalled();
+  });
+
+  it("requestOrgWindow (the tour's Link to an org →) opens the window", async () => {
+    wrap(<LeftNav />);
+    await entry();
+    act(() => requestOrgWindow());
+    expect(await screen.findByRole("dialog", { name: "Link to an org" })).toBeInTheDocument();
   });
 
   it("navigates to sync settings with ?reason=malformed for bad cloud_url", async () => {
@@ -253,194 +269,130 @@ describe("OrgRailItem — the Organization nav entry (GRPH-1224)", () => {
     });
   });
 
-  it.each([
-    ["linked_set", "linked", "var(--color-st-done)"],
-    ["linked_unreachable", "unreachable", "rgb(224, 179, 74)"],
-  ])("gitops %s: %s dot, no CLOUD, never an external link, and the click opens the overview", async (control, state, colour) => {
+  it("linked: the click opens the overview, never an external link", async () => {
     const user = userEvent.setup();
     mocks.syncStatus.mockResolvedValue(linked);
-    mocks.gitops.mockResolvedValue(gitopsView(control));
     wrap(<LeftNav />);
-    await waitFor(() => expect(document.querySelector(`[data-org-state="${state}"]`)).not.toBeNull());
+    await waitFor(() => expect(document.querySelector('[data-org-state="linked"]')).not.toBeNull());
     const btn = await entry();
     expect(btn.tagName).toBe("BUTTON");
-    expect(btn.querySelector("svg.lucide-building2")).not.toBeNull();
     expect(btn).not.toHaveTextContent("CLOUD");
-    expect(btn.querySelector<HTMLElement>("[data-org-dot]")!.style.background).toBe(colour);
-    expect(screen.queryByRole("link", { name: /Organization/ })).not.toBeInTheDocument();
-    expect(document.querySelector('a[href^="https://cloud.graphban.dev"]')).toBeNull();
     await user.click(btn);
     await screen.findByRole("dialog", { name: "Linked to Ascme Labs" });
-    expect(screen.queryByText("One org across every deployment")).not.toBeInTheDocument();
     expect(screen.getByTestId("here")).toHaveTextContent("/tracker");
   });
 });
 
-describe("CloudOrgLinkDialog — the org overview on a linked box (GRPH-1225)", () => {
+describe("Organization window, linked: the P67 overview (GRPH-1564, L3/L4)", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    mocks.syncOrg.mockResolvedValue(overview);
+    mocks.syncStatus.mockResolvedValue(linked);
   });
 
-  const open = async () => {
-    wrapDialog(true, vi.fn(), true);
+  const open = async (onOpenChange = vi.fn()) => {
+    wrapDialog(true, onOpenChange);
     return screen.findByRole("dialog", { name: "Linked to Ascme Labs" });
   };
 
-  it("linked: identity, the three chips, four counts and the lede", async () => {
+  it("names the org and the signed-in email, the synced project with its tag and time, and the local count", async () => {
     const dialog = await open();
-    expect(within(dialog).getByText(/This deployment shares people, roles and org policy rules with Ascme Labs/)).toBeInTheDocument();
-    const ident = dialog.querySelector<HTMLElement>("[data-org-identity]")!;
-    expect(within(ident).getByText("AL")).toBeInTheDocument();
-    expect(within(ident).getByText("Ascme Labs")).toBeInTheDocument();
-    expect(within(ident).getByText("ascme-labs.graphban.dev")).toBeInTheDocument();
-    // `role` is the linking credential's, so the chip never claims it is the viewer's.
-    expect(Array.from(ident.querySelectorAll("[data-chip]")).map((c) => c.textContent)).toEqual([
-      "team plan", "Linked as admin", "Linked",
-    ]);
-    expect(within(ident).queryByText(/YOU/i)).not.toBeInTheDocument();
-    expect(ident.querySelector("[data-org-status]")).toHaveAttribute("data-org-status", "linked");
-    const counts = Array.from(dialog.querySelectorAll("[data-stat]")).map((s) => [
-      s.getAttribute("data-stat"), s.querySelector("[data-count]")?.textContent,
-    ]);
-    expect(counts).toEqual([["members", "18"], ["teams", "4"], ["policy_rules", "6"], ["deployments", "2"]]);
-    expect(dialog.querySelector("[data-org-unreachable]")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Retry now" })).not.toBeInTheDocument();
-  });
-
-  it("Org policy rules opens Rules and closes the window", async () => {
-    const user = userEvent.setup();
-    const onOpenChange = vi.fn();
-    wrapDialog(true, onOpenChange, true);
-    const dialog = await screen.findByRole("dialog", { name: "Linked to Ascme Labs" });
-    const rules = within(dialog).getByRole("link", { name: /Org policy rules/ });
-    expect(rules).toHaveAttribute("href", "/rules");
-    await user.click(rules);
-    expect(screen.getByTestId("here")).toHaveTextContent("/rules");
-    expect(onOpenChange).toHaveBeenCalledWith(false);
-  });
-
-  it("every count links through: members and teams to the org in Cloud, deployments to the list", async () => {
-    const dialog = await open();
-    expect(within(dialog).getByRole("link", { name: /Members/ })).toHaveAttribute("href", "https://ascme-labs.graphban.dev");
-    expect(within(dialog).getByRole("link", { name: /Teams/ })).toHaveAttribute("href", "https://ascme-labs.graphban.dev");
-    expect(within(dialog).getByRole("link", { name: /^2 Deployments/ })).toHaveAttribute("href", "#org-deployments");
-  });
-
-  it("deployment rows: name, THIS ONE on this box only, project count and a green recent sync", async () => {
-    const dialog = await open();
-    expect(within(dialog).getByText("DEPLOYMENTS IN THIS ORG")).toBeInTheDocument();
-    const rows = Array.from(dialog.querySelectorAll<HTMLElement>("[data-deployment]"));
-    expect(rows).toHaveLength(2);
-    expect(within(rows[0]!).getByText("graphban.ascme.internal")).toBeInTheDocument();
-    expect(within(rows[0]!).getByText("THIS ONE")).toBeInTheDocument();
-    expect(within(rows[1]!).queryByText("THIS ONE")).not.toBeInTheDocument();
-    expect(rows[0]!.querySelector("[data-projects]")).toHaveTextContent("5 projects");
-    expect(rows[1]!.querySelector("[data-projects]")).toHaveTextContent("3 projects");
-    expect(rows[0]!.querySelector("[data-sync]")).toHaveTextContent("synced 2m ago");
-    expect(rows[0]!.querySelector("[data-sync]")).toHaveClass("text-st-done");
-  });
-
-  it("footer: Sync link settings goes to the deployment sync page; Open in Graphban Cloud is the org in a new tab", async () => {
-    const user = userEvent.setup();
-    const dialog = await open();
-    const cloud = within(dialog).getByRole("link", { name: /Open in Graphban Cloud/ });
-    expect(cloud).toHaveAttribute("href", "https://ascme-labs.graphban.dev");
-    expect(cloud).toHaveAttribute("target", "_blank");
-    await user.click(within(dialog).getByRole("link", { name: "Sync link settings" }));
-    expect(screen.getByTestId("here")).toHaveTextContent("/settings/deployment/sync");
-  });
-
-  it("unreachable: every count is \u2014 (never 0), the banner names the time, and sync times turn amber", async () => {
-    mocks.syncOrg.mockResolvedValue(unreachable);
-    const dialog = await open();
-    const ident = dialog.querySelector<HTMLElement>("[data-org-identity]")!;
-    expect(ident.querySelector("[data-org-status]")).toHaveTextContent("Unreachable");
-    expect(ident.querySelector("[data-org-status]")).toHaveClass("text-st-review");
-    const counts = Array.from(dialog.querySelectorAll("[data-count]"));
-    expect(counts.map((c) => c.textContent)).toEqual(["—", "—", "—", "—"]);
-    for (const c of counts) expect(c).toHaveClass("text-faint");
-    const banner = dialog.querySelector<HTMLElement>("[data-org-unreachable]")!;
-    expect(banner).toHaveTextContent(
-      `Can't reach ascme-labs.graphban.dev since ${hhmm("2026-10-30T09:42:00Z")}. Org policy rules show as unmeasured in Rules`,
+    expect(dialog.querySelector("[data-linked-as]")).toHaveTextContent(
+      "This deployment is linked to Ascme Labs as alex@acme.example.",
     );
-    expect(banner).toHaveTextContent("Local work carries on.");
-    const rows = Array.from(dialog.querySelectorAll<HTMLElement>("[data-deployment]"));
-    expect(rows[0]!.querySelector("[data-sync]")).toHaveTextContent(`last sync ${hhmm("2026-10-30T09:40:00Z")}`);
-    expect(rows[0]!.querySelector("[data-sync]")).toHaveClass("text-st-review");
-    expect(rows[1]!.querySelector("[data-sync]")).toHaveTextContent("—");
-    for (const r of rows) expect(r.querySelector("[data-projects]")).toHaveTextContent("—");
+    expect(within(dialog).getByText("Ascme Labs", { selector: "strong" })).toBeInTheDocument();
+    const rows = dialog.querySelectorAll("[data-synced-project]");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveTextContent(`core→☁ CORE· ☁ SYNCED ${hhmm(PUSHED_AT)}`);
+    expect(within(dialog).getByText("2 projects are local only.")).toBeInTheDocument();
   });
 
-  it("unreachable never shows numbers even if stale counts came along", async () => {
-    mocks.syncOrg.mockResolvedValue({ ...unreachable, counts: overview.counts });
-    const dialog = await open();
-    expect(Array.from(dialog.querySelectorAll("[data-count]")).map((c) => c.textContent)).toEqual(["—", "—", "—", "—"]);
-  });
-
-  it("Retry now sits beside Open in Graphban Cloud and refetches, showing Retrying…", async () => {
+  it("Choose projects and Sign in again open the wizard at ③ and ②", async () => {
     const user = userEvent.setup();
+    const dialog = await open();
+    await user.click(within(dialog).getByRole("button", { name: "Choose projects" }));
+    expect(await within(dialog).findByRole("combobox", { name: "Cloud project for core" })).toBeInTheDocument();
+  });
+
+  it("SENDS / RECEIVES and DEPLOYMENTS IN <ORG>", async () => {
+    const dialog = await open();
+    expect(within(dialog).getByRole("list", { name: "↑ SENDS TO Ascme Labs" })).toHaveTextContent("Project names");
+    expect(within(dialog).getByRole("list", { name: "↓ RECEIVES FROM Ascme Labs" })).toHaveTextContent("Org people");
+    const deps = within(dialog).getByRole("list", { name: "DEPLOYMENTS IN ASCME LABS" });
+    await waitFor(() => expect(deps.querySelectorAll("[data-deployment]")).toHaveLength(2));
+    expect(within(deps).getByText("THIS ONE")).toBeInTheDocument();
+  });
+
+  it("no amber anywhere, and no unreachable banner while the link answers ok", async () => {
+    const dialog = await open();
+    await waitFor(() => expect(dialog.querySelectorAll("[data-deployment]")).toHaveLength(2));
+    expect(dialog.querySelector("[data-org-unreachable]")).toBeNull();
+    expect(dialog.innerHTML).not.toMatch(/224,\s*179,\s*74|st-review|amber/);
+  });
+
+  it("the link's own unknown answer is ⌁ UNREACHABLE in dashed blue, never amber", async () => {
+    mocks.syncStatus.mockResolvedValue({ ...linked, state: "unknown" });
+    const dialog = await open();
+    const banner = dialog.querySelector<HTMLElement>("[data-org-unreachable]")!;
+    expect(banner.textContent).toMatch(new RegExp(`^⌁ UNREACHABLE\\s*Org rules last synced ${hhmm(PUSHED_AT)};`));
+    expect(banner.className).toContain("border-dashed");
+    expect(banner.className).toContain("rgba(124,162,255");
+    expect(dialog.innerHTML).not.toMatch(/224,\s*179,\s*74|st-review|amber/);
+  });
+
+  it("the org read saying unreachable while Settings' status says ok: no banner, deployments grey — both read /sync/status", async () => {
     mocks.syncOrg.mockResolvedValue(unreachable);
     const dialog = await open();
-    expect(within(dialog).getByRole("link", { name: /Open in Graphban Cloud/ })).toBeInTheDocument();
-    expect(mocks.syncOrg).toHaveBeenCalledTimes(1);
-    let finish!: (v: SyncOrgOverview) => void;
-    mocks.syncOrg.mockImplementationOnce(() => new Promise((r) => { finish = r; }));
-    await user.click(within(dialog).getByRole("button", { name: "Retry now" }));
-    expect(await within(dialog).findByRole("button", { name: "Retrying…" })).toBeInTheDocument();
-    expect(mocks.syncOrg).toHaveBeenCalledTimes(2);
-    finish(overview);
-    await waitFor(() => expect(dialog.querySelector("[data-org-status]")).toHaveTextContent("Linked"));
-    expect(dialog.querySelector('[data-stat="members"] [data-count]')).toHaveTextContent("18");
+    await waitFor(() => expect(dialog.querySelectorAll("[data-deployment]")).toHaveLength(2));
+    expect(dialog.querySelector("[data-org-unreachable]")).toBeNull();
+    expect(dialog).not.toHaveTextContent(/Can.t reach/);
+    expect(dialog.querySelector("[data-linked-as]")).toHaveTextContent("linked to Ascme Labs");
+    for (const n of dialog.querySelectorAll("[data-projects]")) expect(n).toHaveTextContent("—");
+    for (const n of dialog.querySelectorAll("[data-sync]")) expect(n.className).toContain("text-faint");
   });
 
-  it("Unlink asks for confirmation, then calls DELETE /api/sync/link and closes", async () => {
+  it("the org read failing outright still shows the linked overview", async () => {
+    mocks.syncOrg.mockRejectedValue(new Error("down"));
+    const dialog = await open();
+    expect(await within(dialog).findByText(/Couldn't read the org's deployments/)).toBeInTheDocument();
+    expect(dialog.querySelector("[data-org-unreachable]")).toBeNull();
+  });
+
+  it("Unlink confirms with Settings' copy, then calls DELETE /api/sync/link and closes", async () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();
-    mocks.syncUnlink.mockResolvedValue(unlinked);
-    wrapDialog(true, onOpenChange, true);
-    const dialog = await screen.findByRole("dialog", { name: "Linked to Ascme Labs" });
-    await user.click(within(dialog).getByRole("button", { name: "Unlink…" }));
-    expect(mocks.syncUnlink).not.toHaveBeenCalled();
-    const confirm = within(dialog).getByRole("alertdialog", { name: "Unlink this deployment" });
-    expect(confirm).toHaveTextContent("Unlink this deployment from Ascme Labs?");
-    await user.click(within(confirm).getByRole("button", { name: "Cancel" }));
-    expect(mocks.syncUnlink).not.toHaveBeenCalled();
-    await user.click(within(dialog).getByRole("button", { name: "Unlink…" }));
+    mocks.syncUnlink.mockResolvedValue({ ok: true });
+    const dialog = await open(onOpenChange);
     await user.click(within(dialog).getByRole("button", { name: "Unlink" }));
-    await waitFor(() => expect(mocks.syncUnlink).toHaveBeenCalledTimes(1));
+    const confirm = within(dialog).getByRole("alertdialog", { name: "Unlink this deployment" });
+    expect(confirm).toHaveTextContent("Stops all sync. Every project becomes local only. Cloud items remain.");
+    expect(mocks.syncUnlink).not.toHaveBeenCalled();
+    await user.click(within(confirm).getByRole("button", { name: "Unlink this deployment" }));
+    await waitFor(() => expect(mocks.syncUnlink).toHaveBeenCalled());
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
   });
 
-  it("a refused unlink shows the refusal and its rule", async () => {
+  it("a refused unlink shows the refusal and keeps the window", async () => {
     const user = userEvent.setup();
-    mocks.syncUnlink.mockRejectedValue(new Error(JSON.stringify({
-      detail: "only an admin of this box can unlink it to a cloud org", rule_id: "sync.link_needs_box_admin",
-    })));
-    const dialog = await open();
-    await user.click(within(dialog).getByRole("button", { name: "Unlink…" }));
+    const onOpenChange = vi.fn();
+    mocks.syncUnlink.mockRejectedValue(new Error("not a box admin"));
+    const dialog = await open(onOpenChange);
     await user.click(within(dialog).getByRole("button", { name: "Unlink" }));
-    const alert = await within(dialog).findByRole("alert");
-    expect(alert).toHaveTextContent("only an admin of this box can unlink it");
-    expect(within(alert).getByText("sync.link_needs_box_admin")).toBeInTheDocument();
-    expect(within(alert).getByRole("link", { name: "see rule" })).toHaveAttribute("href", "/rules?rule=sync.link_needs_box_admin");
+    await user.click(within(dialog).getByRole("button", { name: "Unlink this deployment" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("not a box admin");
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
   });
 
-  it("a non-admin sees no Unlink", async () => {
-    mocks.syncOrg.mockResolvedValue({ ...overview, can_unlink: false });
+  it("a non-admin box cannot unlink", async () => {
+    mocks.syncStatus.mockResolvedValue({ ...linked, can_link: false });
     const dialog = await open();
-    expect(within(dialog).getByRole("link", { name: "Sync link settings" })).toBeInTheDocument();
-    expect(within(dialog).queryByRole("button", { name: /Unlink/ })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Unlink" })).toBeDisabled();
   });
 
-  it("the server saying unlinked falls back to the explainer", async () => {
-    mocks.syncOrg.mockResolvedValue({ linked: false });
-    wrapDialog(true, vi.fn(), true);
-    expect(await screen.findByRole("dialog", { name: "One org across every deployment" })).toBeInTheDocument();
-  });
-
-  it("the unlinked explainer never asks for the org overview", () => {
-    wrapDialog(true);
-    expect(mocks.syncOrg).not.toHaveBeenCalled();
+  it("Sync link settings goes to the deployment sync page; Open in Graphban Cloud opens the org", async () => {
+    const user = userEvent.setup();
+    const dialog = await open();
+    const cloud = await within(dialog).findByRole("link", { name: /Open in Graphban Cloud/ });
+    expect(cloud).toHaveAttribute("href", "https://ascme-labs.graphban.dev");
+    await user.click(within(dialog).getByRole("link", { name: "Sync link settings" }));
+    expect(screen.getByTestId("here")).toHaveTextContent(settingsPath("deployment/sync"));
   });
 });
