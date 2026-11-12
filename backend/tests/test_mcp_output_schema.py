@@ -45,10 +45,22 @@ def test_a_declared_key_no_call_emitted_is_a_failure(probe_dir):
     keys = _declared_keys("answer_grill")
     _write(probe_dir, "1.json", {"answer_grill": [k for k in keys if k != "graded"]})
 
-    failures = schema_probe.report(full_run=False)
+    failures = schema_probe.report(full_run=True)
 
     assert failures, "a missing declared key must fail"
     assert any("answer_grill" in line and "graded" in line for line in failures), failures
+
+
+def test_a_declared_key_unseen_on_a_SHARD_is_not_a_failure(probe_dir):
+    """A shard or a selection sees a slice of the calls. `heartbeat` with nothing claimed
+    omits its item block, and a Postgres shard that only heartbeated that way went red
+    (GRPH-1528). Only the full run, which sees every call, judges declared-minus-emitted.
+    The same data still fails a full run (the test above)."""
+    keys = _declared_keys("heartbeat")
+    _write(probe_dir, "1.json", {"heartbeat": keys[:1]})
+
+    assert schema_probe.report(full_run=False) == []
+    assert schema_probe.report(full_run=True), "the full run must still fail on this data"
 
 
 def test_a_tool_emitting_everything_it_declares_passes(probe_dir):

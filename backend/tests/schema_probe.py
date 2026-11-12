@@ -25,7 +25,8 @@ tempting stricter rule, which is why it is not the rule.
 
 FAILS CLOSED, three ways, because a probe that reports nothing must never read as a pass:
   - no probe data at all is a failure, not a skip;
-  - a tool the run never exercised is a failure (on a full run), because an unexercised tool
+  - a tool the run never exercised, or a declared key no call emitted, is a failure (on a
+    full run only: a shard sees a slice of the calls), because an unexercised tool
     is exactly how a new one would sail past this;
   - the aggregate is written by workers and read by the controller, so a worker that died
     without writing takes the count down and trips the coverage check.
@@ -120,7 +121,12 @@ def report(full_run: bool) -> list[str]:
                              "a test that calls it — an unexercised tool is how a wrong "
                              "schema gets in.")
             continue
-        missing = sorted(declared[name] - emitted[name])
+        # Declared-minus-emitted is a union over the WHOLE suite, so only a full run can
+        # judge it. A shard or a selection sees whichever calls its slice makes: `heartbeat`
+        # with nothing claimed omits the item block, and a shard that only heartbeats that
+        # way read as a broken schema (GRPH-1528: one added shard weight re-balanced the
+        # Postgres shards and turned one red). The unsharded job keeps the full check.
+        missing = sorted(declared[name] - emitted[name]) if full_run else []
         if missing:
             lines.append(f"  {name}: declares {', '.join(missing)} — never emitted by any of "
                          f"the {len(emitted[name])} keys seen across this run.")
