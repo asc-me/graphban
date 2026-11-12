@@ -420,17 +420,26 @@ def test_score_candidates_hands_the_scorer_cached_pools(client, auth, monkeypatc
     assert seen and all(t == (mem_svc.VecPool,) * 3 for t in seen)
 
 
-def test_similarity_pass_is_fast_at_real_scale():
-    """~1,300 published x 80 candidates at 1024 dims took ~34s in pure Python. Timed on the
-    pool type `score_candidates` actually passes (see the test above)."""
-    import time
+def test_similarity_pass_normalises_the_pool_once_at_real_scale(monkeypatch):
+    """~1,300 published x 80 candidates at 1024 dims took ~34s in pure Python (GRPH-1227).
+    The fix is that the pool is unit-normalised ONCE and every candidate is one matrix
+    product against it. Asserted as that count, not as a wall-clock budget, which a loaded
+    shared CI host broke without anything being wrong (GRPH-1536). Sabotage: drop the
+    cache in `VecPool.matrix` (80 normalisations) or go back to a per-member Python loop
+    (none), and this fails."""
+    real = mem_svc._unit_rows
+    built: list[int] = []
+
+    def counting(vectors):
+        built.append(len(vectors))
+        return real(vectors)
+
+    monkeypatch.setattr(mem_svc, "_unit_rows", counting)
     pool = mem_svc.VecPool((MemoryShard(id=f"s{i}"), _vec(i, 1024)) for i in range(1300))
     cands = [_vec(10_000 + i, 1024) for i in range(80)]
-    t0 = time.monotonic()
     for c in cands:
         mem_svc._best_match(c, pool)
-    elapsed = time.monotonic() - t0
-    assert elapsed < 2.0, f"similarity pass took {elapsed:.2f}s"
+    assert built == [1300], f"pool normalised {len(built)} times: {built[:5]}"
 
 
 def _seed_candidates(pid):

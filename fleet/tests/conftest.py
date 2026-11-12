@@ -405,6 +405,21 @@ def scripts(tmp_path: Path) -> dict[str, Path]:
         "time.sleep(1.5)\n",
     )
 
+    # A builder that stays alive until the test lets it go, so "X happened while the
+    # builder was still running" is an ordering fact, not a wall-clock budget a loaded
+    # CI host can blow (GRPH-1536). It notes its own exit next to itself; the 10 s cap
+    # only bounds a sabotaged run, it is never what a passing test waits on.
+    write(
+        "works_until_released",
+        "import pathlib, time\n"
+        "here = pathlib.Path(__file__).resolve().parent\n"
+        "pathlib.Path('feature.py').write_text('print(1)\\n', encoding='utf-8')\n"
+        "end = time.time() + 10\n"
+        "while time.time() < end and not (here / 'release').exists():\n"
+        "    time.sleep(0.02)\n"
+        "(here / 'builder-exited').write_text('', encoding='utf-8')\n",
+    )
+
     # Leaves an uncommitted diff and keeps running, so a partition can interrupt it with
     # work in the tree — the case where "the work survives, the claim does not" has
     # something to survive.

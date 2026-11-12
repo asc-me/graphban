@@ -67,7 +67,7 @@ permissions:
 
 jobs:
   overlap:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, graphban-ci]
     # A fork's `pull_request` token is read-only, so the comment would fail after doing all
     # the work. Skipping says so once instead of failing every fork PR.
     if: >-
