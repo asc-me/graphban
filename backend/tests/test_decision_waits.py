@@ -251,3 +251,127 @@ def test_rest_list_and_item_carry_question_state(client, auth, db):
     _seed_needs_person(db, wait)
     got = client.get(f"/api/items/{ticket.key}", headers=auth).json()
     assert got["question_state"] == "response_needed"
+
+
+# ---- P75 S1: answer_wait for agents, refused unanswered clear, answered_decisions --------------
+
+def test_an_unanswered_decision_wait_cannot_be_cleared_by_update_item(db):
+    _, wait = _pair(db)
+    with pytest.raises(ValueError, match="answer_wait"):
+        items_svc.update_item(db, wait.id, status="done")
+    db.refresh(wait)
+    assert wait.status != "done"
+
+
+def test_the_filing_agent_cannot_answer_its_own_wait(db):
+    _, wait = _pair(db, holder="GRPH-A1")
+    with pytest.raises(waits.ActionRefused, match="cannot answer"):
+        waits.answer_wait(db, wait.id, text="redis", agent="GRPH-A1",
+                          source={"kind": "session", "quote": "I decided"})
+
+
+def test_an_agent_answer_with_an_unresolvable_prd_ref_is_refused(db):
+    _, wait = _pair(db)
+    with pytest.raises(ValueError, match="does not resolve"):
+        waits.answer_wait(db, wait.id, text="redis", agent="GRPH-A2",
+                          source={"kind": "prd", "ref": "GRPH-P99999", "quote": "x"})
+    db.refresh(wait)
+    assert not wait.decision.get("answer")
+
+
+def test_an_agent_answer_needs_a_source(db):
+    _, wait = _pair(db)
+    with pytest.raises(ValueError, match="source"):
+        waits.answer_wait(db, wait.id, text="redis", agent="GRPH-A2")
+
+
+def test_agent_answer_records_by_and_source_and_reaches_the_brief(db):
+    from app.services import delegation as delegation_svc
+
+    original, wait = _pair(db, holder="GRPH-A1")
+    out = waits.answer_wait(db, wait.id, text="redis", agent="GRPH-A2",
+                            source={"kind": "session", "quote": "the user said redis"})
+    assert out["answer"]["by"]["agent"] == "GRPH-A2"
+    assert out["answer"]["source"]["kind"] == "session"
+    db.refresh(original)
+    assert original.status == "next"
+    # A different agent reading the item sees the same answer.
+    entry = delegation_svc.brief(db, original)["answered_decisions"]
+    assert len(entry) == 1
+    assert entry[0]["wait"] == wait.key and entry[0]["answer"] == "redis"
+    assert entry[0]["by"]["agent"] == "GRPH-A2" and entry[0]["source"]["quote"]
+
+
+def test_a_person_answer_has_by_user_and_no_source(db):
+    from app.services import delegation as delegation_svc
+
+    original, wait = _pair(db)
+    waits.answer_wait(db, wait.id, choice="redis")
+    entry = delegation_svc.brief(db, original)["answered_decisions"][0]
+    assert "agent" not in entry["by"] and entry["source"] == {}
+
+
+def test_a_done_wait_with_no_stored_answer_reads_unanswered_on_the_brief(db):
+    from app.services import delegation as delegation_svc
+
+    original, wait = _pair(db)
+    wait.status = "done"  # as a legacy row, written before the refusal
+    db.commit()
+    entry = delegation_svc.brief(db, original)["answered_decisions"][0]
+    assert entry["unanswered"] is True
+    assert "still open" in delegation_svc.brief(db, original)["text"]
+
+
+def test_needs_person_records_no_answer(db):
+    _, wait = _pair(db)
+    out = waits.answer_wait(db, wait.id, agent="GRPH-A2", needs_person=True)
+    db.refresh(wait)
+    assert out["needs_person"] is True
+    assert wait.decision.get("needs_person_at") and not wait.decision.get("answer")
+    assert wait.status != "done"
+
+
+def test_the_graphban_answer_skill_uses_answer_wait_not_update_item_done():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    for rel in ("cli/src/gban/skills/graphban-answer/SKILL.md",
+                ".claude/skills/graphban-answer/SKILL.md",
+                ".agents/skills/graphban-answer/SKILL.md"):
+        text = (root / rel).read_text()
+        assert "answer_wait" in text, rel
+        assert "update_item status=done" not in text and 'update_item(status="done"' not in text, rel
+        assert "then `status=done`" not in text, rel
+
+
+def _mcp_answer(client, auth, args):
+    key = client.post("/api/api-keys", json={"name": "answerer", "project_id": "core",
+                                             "scopes": ["read", "write"]},
+                      headers=auth).json()["plaintext"]
+    r = client.post("/api/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                      "params": {"name": "answer_wait", "arguments": args}},
+                    headers={"X-API-Key": key})
+    assert r.status_code == 200, r.text
+    return r.json()["result"]
+
+
+def test_mcp_answer_wait_records_the_answer_and_releases_the_ticket(client, auth, db):
+    original, wait = _pair(db, holder="GRPH-A1")
+    res = _mcp_answer(client, auth, {"wait": wait.key, "answer": "redis", "agent_id": "GRPH-A2",
+                                     "source": {"kind": "session", "quote": "the user said redis"}})
+    assert not res.get("isError"), res
+    out = res["structuredContent"]
+    assert out["wait"] == wait.key
+    assert out["answer"]["by"]["agent"] == "GRPH-A2"
+    db.refresh(original)
+    assert original.status == "next"
+
+
+def test_mcp_answer_wait_on_its_own_wait_is_refused_naming_the_rule(client, auth, db):
+    _, wait = _pair(db, holder="GRPH-A1")
+    res = _mcp_answer(client, auth, {"wait": wait.key, "answer": "redis", "agent_id": "GRPH-A1",
+                                     "source": {"kind": "session", "quote": "mine"}})
+    assert res["isError"]
+    assert res["structuredContent"]["error"]["rule_id"] == "decision.filer_cannot_answer"
+    db.refresh(wait)
+    assert not wait.decision.get("answer")

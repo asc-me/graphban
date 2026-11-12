@@ -41,10 +41,10 @@ Sources, in order. A later source does not override an earlier one. Quote the se
 
 Leave wait:secret, wait:access, wait:deploy, and wait:merge blocked. Name them.
 
-A quote: evidence on the wait, kind note, the sentence and where it came from. update_item status=done on the wait only.
+A quote: answer_wait(wait, answer, source={kind: session|prd|memory|decision, ref, quote}). ref is the PRD key, shard id or decision key; it must resolve. It stores the answer and releases the original. Never update_item the wait to done: that is refused without a stored answer.
 Do not update_prd. Do not answer_grill. Do not move the original item. Do not publish_memory.
 
-No quote: print the question, your recommendation, and one line on why the sources do not decide. Leave the wait blocked.
+No quote: answer_wait(wait, needs_person=true), then print the question, your recommendation, and one line on why the sources do not decide. The wait stays blocked.
 
 Do not spawn, merge, sign_off, bounce, or claim.
 ```
@@ -82,11 +82,11 @@ Silence is ask. A conflict is ask. Two reasonable readings are ask. A new contra
 
 A `--prd` drain answers a wait whose `prd_id` matches, or whose dependency link has `b` this wait and `a` an item on that PRD. Leave every other wait.
 
-The original is `a` on that dependency link. You are not its builder. Leave it blocked. Marking the wait `done` returns it to `next` when no other unmet dependency remains.
+The original is `a` on that dependency link. You are not its builder. Leave it blocked. `answer_wait` returns it to `next` when no other unmet dependency remains. You cannot answer a wait your own agent filed.
 
 ## Quote
 
-The answer is the quoted sentence and where it came from. When the quote is a related decision, the note also names the one step. `update_item` on the wait: evidence `kind` `note` with that sentence, then `status=done`.
+The answer is the quoted sentence and where it came from. When the quote is a related decision, the note also names the one step. `answer_wait` with `answer` (or `option`) and `source` `{kind, ref, quote}`: `kind` is `session`, `prd`, `memory` or `decision`; `ref` must resolve for the last three; `quote` is the sentence. Never move a wait to done with `update_item`.
 
 A decision that should outlive the item: `add_memory`, scope `global`. Read the returned `status`. Leave a `candidate`. Do not `publish_memory`.
 
@@ -94,7 +94,7 @@ A decision that should outlive the item: `add_memory`, scope `global`. Read the 
 
 One question. The question, your recommendation, and one line on why the sources do not decide it.
 
-Record nothing until the user answers. Their words are the evidence, then the wait is `done`. The recommendation alone is not the answer.
+Call `answer_wait` with `needs_person=true`; it records no answer. When the user answers, call `answer_wait` with their words and `source` kind `session`. The recommendation alone is not the answer.
 
 A scheduler fire that must ask prints that question and leaves the wait blocked. The parent session puts it to the user.
 
