@@ -118,6 +118,7 @@ def test_rest_list_read_and_clear_drops_the_count(client, auth, db):
     db.commit()
     body = client.get("/api/me/alerts", headers=auth).json()
     assert body["unread"] == 1 and body["alerts"][0]["question"] == "Which store?"
+    assert body["alerts"][0]["project"] == "core"
     aid = body["alerts"][0]["id"]
     assert client.post(f"/api/me/alerts/{aid}/read", headers=auth).json()["unread"] == 0
     assert client.post("/api/me/alerts/nope/read", headers=auth).status_code == 404

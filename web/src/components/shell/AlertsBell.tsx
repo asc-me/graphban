@@ -2,7 +2,9 @@ import { Bell } from "lucide-react";
 import * as React from "react";
 import { Link } from "react-router-dom";
 
-import { useMyAlerts, useReadAlert } from "@/lib/queries";
+import { useConfig, useMyAlerts, useProjects, useReadAlert } from "@/lib/queries";
+import { projectPath, rememberProjectTag } from "@/lib/routes";
+import type { AlertRow } from "@/lib/types";
 
 /**
  * The bell (GRPH-1527, P75 D4): unread alert count and a panel, newest first. A failed read
@@ -10,6 +12,17 @@ import { useMyAlerts, useReadAlert } from "@/lib/queries";
  */
 export function AlertsBell() {
   const q = useMyAlerts();
+  const { data: projects = [] } = useProjects();
+  const { data: config } = useConfig();
+  const hosted = config?.hosted_mode ?? false;
+  // The Triage row lives in the ALERT's project, not whichever one is open: hosted links by
+  // tag; self-host's flat route resolves the last-used project, so that is set on click.
+  const tagOf = (a: AlertRow) => projects.find((p) => p.id === a.project)?.tag ?? null;
+  const hrefOf = (a: AlertRow) => {
+    const tag = tagOf(a);
+    const base = hosted && tag ? projectPath(tag, "triage") : "/triage";
+    return `${base}?item=${encodeURIComponent(a.ticket ?? a.wait)}`;
+  };
   const read = useReadAlert();
   const [open, setOpen] = React.useState(false);
   const failed = q.isError && !q.data;
@@ -50,8 +63,10 @@ export function AlertsBell() {
           {q.data?.alerts.map((a) => (
             <Link
               key={a.id}
-              to={`/triage?item=${encodeURIComponent(a.ticket ?? a.wait)}`}
+              to={hrefOf(a)}
               onClick={() => {
+                const tag = tagOf(a);
+                if (tag) rememberProjectTag(tag);
                 if (!a.read) read.mutate(a.id);
                 setOpen(false);
               }}

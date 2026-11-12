@@ -3441,6 +3441,8 @@ export type TestScopeMode = "agent_full" | "agent_and_pr" | "agent_targeted";
 export interface AlertRow {
   id: string;
   kind: "response_needed";
+  /** The project the wait lives in — the Triage row is there. */
+  project: string;
   question: string;
   body: string;
   wait: string;

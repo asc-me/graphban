@@ -86,11 +86,11 @@ vi.mock("@/lib/api", () => ({
   api: { projects: vi.fn(async () => [core]), ...m },
 }));
 
-function renderTriage() {
+function renderTriage(path = "/p/CORE/triage") {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={["/p/CORE/triage"]}>
+      <MemoryRouter initialEntries={[path]}>
         <ProjectProvider>
           <TriageView />
         </ProjectProvider>
@@ -108,6 +108,18 @@ beforeEach(() => {
 });
 
 describe("Triage inbox", () => {
+  it("an alert link (?item=KEY) opens on that row, not the first (GRPH-1527)", async () => {
+    renderTriage("/p/CORE/triage?item=CORE-R1");
+    await screen.findByText("Decider falls back silently", { selector: "span" });
+    expect(selected()).toHaveTextContent("Crash on empty project");
+  });
+
+  it("a hand-off nobody could be alerted about says so on the row (GRPH-1527)", async () => {
+    m.projectTriage.mockResolvedValue(feed([{ ...blocker, question_state: "response_needed", nobody_alerted: true }]));
+    renderTriage();
+    expect(await screen.findByTestId("nobody-alerted")).toHaveTextContent(/Nobody could be alerted/);
+  });
+
   it("lists the queue with the first row selected and counts on the tabs", async () => {
     renderTriage();
     expect(await screen.findByText("Decider falls back silently", { selector: "span" })).toBeInTheDocument();

@@ -53,7 +53,8 @@ def alert_dict(db: Session, row: Alert) -> dict:
     holder = wait if wait is not None and wait.prd_id else ticket
     prd_key = holder.prd_key if holder is not None and holder.prd_id else None
     return {
-        "id": row.id, "kind": row.kind, "question": row.title, "body": row.body,
+        "id": row.id, "kind": row.kind, "project": row.project_id,
+        "question": row.title, "body": row.body,
         "wait": wait.key if wait is not None else row.item_id,
         "ticket": ticket.key if ticket is not None else None,
         "prd": prd_key,

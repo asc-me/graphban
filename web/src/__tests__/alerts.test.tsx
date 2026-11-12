@@ -14,6 +14,8 @@ vi.mock("@/lib/api", () => ({
       return state.feed;
     },
     readAlert: async () => state.feed,
+    projects: async () => [{ id: "prj_other", tag: "OTH" }],
+    config: async () => ({ hosted_mode: true }),
   },
 }));
 
@@ -38,7 +40,7 @@ describe("AlertsBell", () => {
     state.feed = {
       unread: 2,
       alerts: [
-        { id: "al_1", kind: "response_needed", question: "Which store?", body: "", wait: "GRPH-2",
+        { id: "al_1", kind: "response_needed", project: "prj_other", question: "Which store?", body: "", wait: "GRPH-2",
           ticket: "GRPH-1", prd: "GRPH-P75", asked_by: "GRPH-A3", created_at: null, read: false },
       ],
     };
@@ -46,6 +48,10 @@ describe("AlertsBell", () => {
     await waitFor(() => expect(screen.getByTestId("alerts-count")).toHaveTextContent("2"));
     await userEvent.click(screen.getByRole("button", { name: /alerts/i }));
     expect(screen.getByText("Which store?")).toBeInTheDocument();
+    // The link is to the ALERT's project's Triage row, not whichever project is open.
+    await waitFor(() =>
+      expect(screen.getByText("Which store?").closest("a")).toHaveAttribute("href", "/p/OTH/triage?item=GRPH-1"),
+    );
   });
 
   it("a failed read says could not load alerts and never renders 0", async () => {
