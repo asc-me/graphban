@@ -356,7 +356,8 @@ def test_tests_only_touches_backend(repo, fakes):
     assert set(_eval(repo, head).touched.components) == {"backend/"}
 
 
-@pytest.mark.parametrize("path", [".github/workflows/ci.yml", "scripts/foo.py",
+@pytest.mark.parametrize("path", [".github/workflows/ci.yml",
+                                  ".github/workflows/stale-base.yml", "scripts/foo.py",
                                   "docs/guide.md", "AGENTS.md",
                                   ".cursor/hooks/gb_session_start.py",
                                   ".cursor/hooks.json",

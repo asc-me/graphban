@@ -72,6 +72,8 @@ TOOLS: dict[str, tuple[str, ...]] = {
 #: (`.github/workflows/ci.yml`, the `backend` filter). Shared with the tests on purpose.
 MAPPED: tuple[tuple[str, str], ...] = (
     (".github/workflows/ci.yml", "backend/"),
+    # Runs shell on our self-hosted runners; scanned like ci.yml (docs/ci-runners.md).
+    (".github/workflows/stale-base.yml", "backend/"),
     ("scripts/**", "backend/"),
     ("docs/**", "backend/"),
     ("AGENTS.md", "backend/"),

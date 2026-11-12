@@ -70,6 +70,7 @@ jobs:
             backend:
               - 'backend/**'
               - '.github/workflows/ci.yml'
+              - '.github/workflows/stale-base.yml'
               # The backend suite reads these, so a PR touching only them must still run
               # it — otherwise the guards that exist to keep them honest never fire, and
               # the filter silently turns a doc edit into an untested one.
@@ -136,6 +137,10 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    env:
+      # One worker per core would be 16 here, on a host shared with other jobs. Four matches
+      # the hosted runners this suite was tuned on (see backend-postgres).
+      PYTEST_XDIST_AUTO_NUM_WORKERS: "4"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -190,8 +195,13 @@ jobs:
           --health-timeout 3s
           --health-retries 20
           --tmpfs /var/lib/postgresql/data:rw,size=2048m
+          --shm-size 1g
     env:
       GRAPHBAN_TEST_SHARD: ${{ matrix.shard }}/3
+      # `-n auto` would start one worker per core (16 here). Several jobs share a host, and
+      # 16 workers each cloning a database exhausts Postgres's lock table ("out of shared
+      # memory"). Four is what the 4-core hosted runners gave this suite.
+      PYTEST_XDIST_AUTO_NUM_WORKERS: "4"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
