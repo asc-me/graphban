@@ -72,7 +72,18 @@ function OrgWindowBody({ onClose }: { onClose: () => void }) {
 
   return (
     <>
-      <Header title={title} role={role} />
+      <Header
+        title={title}
+        role={role}
+        // Org Link L4: the linked view leads with "This deployment is linked to <org> as
+        // <email>." (the LinkedPanel's first line), never the not-linked intro.
+        intro={linkedView ? null : ORG_INTRO}
+        description={
+          linkedView
+            ? `This deployment is linked to ${status!.org || "your org"}${status!.linked_email ? ` as ${status!.linked_email}` : ""}.`
+            : ORG_INTRO
+        }
+      />
       <div className="flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto px-[22px] pb-5 pt-1">
         {!status ? (
           statusQ.isError ? (
@@ -107,7 +118,17 @@ function OrgWindowBody({ onClose }: { onClose: () => void }) {
   );
 }
 
-function Header({ title, role }: { title: string; role: string | null }) {
+function Header({
+  title,
+  role,
+  intro,
+  description,
+}: {
+  title: string;
+  role: string | null;
+  intro: string | null;
+  description: string;
+}) {
   return (
     <div className="flex flex-none items-start gap-3.5 px-[22px] pb-4 pt-5 pr-12">
       <span className="flex size-[34px] flex-none items-center justify-center rounded-[9px] border border-[rgba(167,139,250,.35)] bg-[rgba(167,139,250,.1)] text-[#c9b8ff]">
@@ -123,7 +144,11 @@ function Header({ title, role }: { title: string; role: string | null }) {
           )}
         </span>
         <DialogTitle className="mt-1 text-[17px] tracking-[-.01em]">{title}</DialogTitle>
-        <DialogDescription className="mt-1.5 max-w-[62ch] text-body">{ORG_INTRO}</DialogDescription>
+        {intro ? (
+          <DialogDescription className="mt-1.5 max-w-[62ch] text-body">{intro}</DialogDescription>
+        ) : (
+          <DialogDescription className="sr-only">{description}</DialogDescription>
+        )}
       </div>
     </div>
   );
