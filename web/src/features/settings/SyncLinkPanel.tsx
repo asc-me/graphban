@@ -8,19 +8,18 @@ import {
   Package,
   RefreshCw,
   Trash2,
-  Unlink,
   Upload,
 } from "lucide-react";
 import * as React from "react";
 
 import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { LinkedPanel } from "@/features/organization/LinkedPanel";
+import { LinkToOrgWizard, type WizardStep } from "@/features/organization/LinkToOrgWizard";
 import { noteGitopsUnlinked } from "@/features/settings/GitopsPanel";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { useSyncStatus } from "@/lib/queries";
-import { CONSOLE_URL } from "@/lib/routes";
+import { useSyncOrg, useSyncStatus } from "@/lib/queries";
 import type { SyncProjectState, SyncProjectStatus } from "@/lib/types";
 import { useSearchParams } from "react-router-dom";
 
@@ -82,9 +81,8 @@ export function SyncLinkPanel() {
       <div>
         <h2 className="text-[15px] font-semibold tracking-tight">Sync / Link</h2>
         <p className="mt-1 max-w-[60ch] text-body leading-relaxed text-muted">
-          Connect this self-hosted instance to the Graphban console. Mint the link key there —
-          Settings → Sync / Link, or API keys → Link key — then paste the console URL and
-          link key below. This box builds the graph; the console holds items, claims, and
+          Connect this self-hosted instance to the Graphban console. Sign in with your own
+          account — no key to copy. This box builds the graph; the console holds items, claims, and
           memory. Vectors never leave the box; the console re-embeds.
         </p>
         {reason === "missing" && (
@@ -197,33 +195,19 @@ function CloudLinkCard({
   onScope: (id: string) => void;
 }) {
   const qc = useQueryClient();
-  const [cloudUrl, setCloudUrl] = React.useState("");
-  const [apiKey, setApiKey] = React.useState("");
-  const [org, setOrg] = React.useState("");
   const [busy, setBusy] = React.useState(false);
-  const [err, setErr] = React.useState<string | null>(null);
+  const [wizardStep, setWizardStep] = React.useState<WizardStep | null>(null);
+  const { data: orgOverview } = useSyncOrg(status.linked);
+  // Only a box admin may link, re-point or unlink; the wizard is read-only for anyone else.
+  const readOnly = status.linked && orgOverview?.can_unlink === false;
+  const wizardNeeded =
+    (!status.linked && !status.signed_in) ||
+    (status.signed_in && !status.projects.some((p) => p.mapped));
 
   function dropGitopsCache() {
     // Prefix of keys.gitops(id). Link is instance-wide; do not first-paint a
     // pre-link (or pre-unlink) GitopsView. Graph-push onChange must not do this.
     qc.removeQueries({ queryKey: ["gitops"] });
-  }
-
-  async function link() {
-    setBusy(true);
-    setErr(null);
-    try {
-      await api.syncLink(cloudUrl.trim(), apiKey, org.trim());
-      setCloudUrl("");
-      setApiKey("");
-      setOrg("");
-      dropGitopsCache();
-      onChange();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "Could not link");
-    } finally {
-      setBusy(false);
-    }
   }
 
   async function unlink() {
@@ -256,69 +240,39 @@ function CloudLinkCard({
         </span>
       </div>
 
-      {status.linked ? (
+      {wizardStep !== null || wizardNeeded ? (
+        <LinkToOrgWizard
+          status={status}
+          initialStep={wizardStep ?? undefined}
+          readOnly={readOnly}
+          onLinked={() => {
+            dropGitopsCache();
+            onChange();
+          }}
+          onDone={() => {
+            setWizardStep(null);
+            onChange();
+          }}
+        />
+      ) : (
         <>
-          <div className="overflow-hidden rounded-[9px] border border-line bg-surface">
-            <LinkRow label="Cloud URL" value={status.cloud_url} />
-            {status.org && <LinkRow label="Tenant / org" value={status.org} />}
-            <LinkRow
-              label="Link key"
-              value={status.credential_set ? "configured" : "missing"}
-              valueClass={status.credential_set ? "text-accent" : "text-st-blocked"}
-              note="scope: sync"
-            />
-            <LinkRow
-              label="Managed by"
-              value={status.source === "env" ? "env (SYNC_CLOUD_URL)" : "this deployment (web)"}
-              note={status.linked_at ? `linked ${ago(status.linked_at)}` : ""}
-              last
-            />
-          </div>
-
+          <LinkedPanel
+            status={status}
+            readOnly={readOnly || status.source === "env"}
+            busy={busy}
+            orgHref={status.cloud_url || undefined}
+            onChooseProjects={() => setWizardStep(3)}
+            onSignIn={() => setWizardStep(1)}
+            onUnlink={unlink}
+          />
           <ProjectsTable projects={status.projects} scopedId={scopedId} onScope={onScope} />
-
-          {status.source === "env" ? (
+          {status.source === "env" && (
             <p className="mt-4 border-t border-line pt-3 text-small leading-relaxed text-faint">
               This link comes from the <code className="font-mono text-[10.5px]">SYNC_CLOUD_URL</code> env
-              var. Manage it where the instance is configured, or link from here to override it.
+              var. Manage it where the instance is configured.
             </p>
-          ) : (
-            <div className="mt-4 flex items-center gap-3 border-t border-line pt-3.5">
-              <Button variant="danger" size="sm" onClick={unlink} disabled={busy}>
-                <Unlink size={13} />
-                Unlink
-              </Button>
-              <span className="text-small text-faint">
-                Stops all sync. Local data is untouched; cloud items remain.
-              </span>
-            </div>
           )}
         </>
-      ) : (
-        <div className="space-y-3">
-          <div>
-            <Label>Console URL</Label>
-            <Input value={cloudUrl} onChange={(e) => setCloudUrl(e.target.value)} placeholder={CONSOLE_URL} />
-          </div>
-          <div>
-            <Label>Link key</Label>
-            <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="paste link key…" />
-          </div>
-          <div>
-            <Label>
-              Tenant / org <span className="text-faint-2">(optional label)</span>
-            </Label>
-            <Input value={org} onChange={(e) => setOrg(e.target.value)} placeholder="acme" />
-          </div>
-          {err && <p className="text-small text-st-blocked">{err}</p>}
-          <Button size="sm" onClick={link} disabled={busy || !cloudUrl.trim() || !apiKey}>
-            {busy ? "Linking…" : "Link instance"}
-          </Button>
-          <p className="text-small leading-relaxed text-faint">
-            The link key is stored encrypted at rest and never shown again — the same handling as
-            your provider keys.
-          </p>
-        </div>
       )}
     </div>
   );
@@ -762,28 +716,6 @@ function ScopedCard({
   );
 }
 
-function LinkRow({
-  label,
-  value,
-  note,
-  valueClass,
-  last,
-}: {
-  label: string;
-  value: string;
-  note?: string;
-  valueClass?: string;
-  last?: boolean;
-}) {
-  return (
-    <div className={cn("flex items-baseline gap-3.5 px-3.5 py-2.5", !last && "border-b border-line")}>
-      <span className="w-32 flex-none font-mono text-[10px] uppercase tracking-wide text-faint">{label}</span>
-      <span className={cn("min-w-0 flex-1 break-words font-mono text-[12px]", valueClass ?? "text-fg-2")}>{value}</span>
-      {note && <span className="font-mono text-[10px] text-faint-2">{note}</span>}
-    </div>
-  );
-}
-
 function Stat({ value, label, valueClass }: { value: string; label: string; valueClass?: string }) {
   return (
     <span className="inline-flex items-baseline gap-1.5">
@@ -791,8 +723,4 @@ function Stat({ value, label, valueClass }: { value: string; label: string; valu
       <span className="text-faint">{label}</span>
     </span>
   );
-}
-
-function Label({ children }: { children: React.ReactNode }) {
-  return <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-faint">{children}</div>;
 }

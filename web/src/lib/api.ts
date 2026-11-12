@@ -107,6 +107,10 @@ import type {
   Shard,
   ShardHit,
   Status,
+  CloudProjectsResult,
+  LinkPollResult,
+  LinkStartResult,
+  ProjectPushResult,
   SyncBundle,
   SyncOrgOverview,
   SyncStatus,
@@ -1302,6 +1306,14 @@ export const api = {
     }),
   syncLink: (cloud_url: string, api_key: string, org: string) =>
     request<SyncStatus>("/sync/link", { method: "POST", body: JSON.stringify({ cloud_url, api_key, org }) }),
+  syncLinkStart: (console_url: string) =>
+    request<LinkStartResult>("/sync/link/start", { method: "POST", body: JSON.stringify({ console_url }) }),
+  syncLinkPoll: () => request<LinkPollResult>("/sync/link/poll"),
+  syncCloudProjects: () => request<CloudProjectsResult>("/sync/projects"),
+  syncSaveProjectMap: (mappings: { local_project_id: string; cloud_project_id: string }[]) =>
+    request<{ mapping: unknown[] }>("/sync/projects", { method: "PUT", body: JSON.stringify({ mappings }) }),
+  syncPushAll: () =>
+    request<{ projects: ProjectPushResult[] }>("/sync/push", { method: "POST", body: JSON.stringify({}) }),
   syncUnlink: () => request<SyncStatus>("/sync/link", { method: "DELETE" }),
   syncOrg: () => request<SyncOrgOverview>("/sync/org"),
   syncPush: (project_id: string) =>

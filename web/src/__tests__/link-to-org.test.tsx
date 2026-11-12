@@ -1,0 +1,257 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { LinkedPanel } from "@/features/organization/LinkedPanel";
+import { LinkToOrgWizard } from "@/features/organization/LinkToOrgWizard";
+import type { SyncProjectState, SyncStatus } from "@/lib/types";
+
+const api = vi.hoisted(() => ({
+  syncLinkStart: vi.fn(),
+  syncLinkPoll: vi.fn(),
+  syncCloudProjects: vi.fn(),
+  syncSaveProjectMap: vi.fn(),
+  syncPushAll: vi.fn(),
+}));
+vi.mock("@/lib/api", () => ({ api }));
+
+const proj = (id: string, name: string, extra: Partial<SyncProjectState> = {}): SyncProjectState => ({
+  project_id: id, name, writable: true, sync_graph: true, total_nodes: 1, synced_nodes: 1,
+  pending: 0, last_synced_at: null, status: "live", mapped: false, ...extra,
+});
+
+const base: SyncStatus = {
+  linked: false, source: "", cloud_url: "", org: "", credential_set: false, linked_at: null,
+  projects: [proj("core", "Core"), proj("north", "North")],
+};
+
+const signedIn: SyncStatus = {
+  ...base, linked: true, source: "web", cloud_url: "https://c.dev", org: "Acme",
+  signed_in: true, linked_email: "ann@acme.dev", state: "ok",
+  projects: [
+    proj("core", "Core", { mapped: true, cloud_project_id: "CORE", last_push_result: "ok" }),
+    proj("north", "North"),
+  ],
+};
+
+function wizard(status: SyncStatus, props: Partial<React.ComponentProps<typeof LinkToOrgWizard>> = {}) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>
+        <LinkToOrgWizard status={status} {...props} />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  api.syncLinkStart.mockResolvedValue({
+    status: "started", user_code: "WXYZ-1234", verification_url: "https://c.dev/link", interval: 0.01,
+  });
+  api.syncLinkPoll.mockResolvedValue({ status: "pending" });
+  api.syncCloudProjects.mockResolvedValue({
+    status: "ok", projects: [{ id: "CORE", name: "Core" }], mapping: [],
+  });
+});
+
+describe("LinkToOrgWizard", () => {
+  it("shows the rail and a waiting status line, with a pulsing dot", async () => {
+    wizard(base);
+    for (const l of ["① Console", "② Sign in", "③ Projects", "④ First push"])
+      expect(screen.getByText(l)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("SIGN-IN · WAITING");
+    expect(screen.getByTestId("status-dot").className).toContain("motion-reduce:animate-none");
+  });
+
+  it("makes the console URL read-only with a note when SYNC_CLOUD_URL sets it", () => {
+    wizard({ ...base, source: "env", cloud_url: "https://baked.dev" });
+    expect(screen.getByLabelText("Console URL")).toHaveAttribute("readonly");
+    expect(screen.getByText(/SYNC_CLOUD_URL/)).toBeInTheDocument();
+  });
+
+  it("shows the code, copy, open, expiry and terminal command", async () => {
+    const user = userEvent.setup();
+    wizard(base);
+    await user.click(screen.getByRole("button", { name: "Get a sign-in code" }));
+    expect(await screen.findByTestId("user-code")).toHaveTextContent("WXYZ-1234");
+    expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open the console →" })).toHaveAttribute("href", "https://c.dev/link");
+    expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
+    expect(screen.getByText("Expires in 10 minutes.")).toBeInTheDocument();
+    expect(screen.getByText(/graphban link/)).toBeInTheDocument();
+  });
+
+  it.each([
+    ["declined", "The code was declined in the console."],
+    ["expired", "This code expired. Get a new code."],
+    ["not_member", "That account isn't a member of an org."],
+    ["no_seat", "You don't have a seat in Acme. Ask an org admin."],
+  ])("says %s word for word, in red, with Get a new code", async (reason, text) => {
+    const user = userEvent.setup();
+    api.syncLinkPoll.mockResolvedValue({ status: "refused", reason });
+    wizard({ ...base, org: "Acme" });
+    await user.click(screen.getByRole("button", { name: "Get a sign-in code" }));
+    const msg = await screen.findByText(text);
+    expect(msg.className).toContain("text-st-blocked");
+    expect(screen.getByRole("status")).toHaveTextContent("SIGN-IN · REFUSED");
+    expect(screen.getByRole("button", { name: "Get a new code" })).toBeInTheDocument();
+  });
+
+  it("an unreachable console is grey with Try again, never refused", async () => {
+    const user = userEvent.setup();
+    api.syncLinkPoll.mockResolvedValue({ status: "unknown", reason: "down" });
+    wizard(base);
+    await user.click(screen.getByRole("button", { name: "Get a sign-in code" }));
+    expect(await screen.findByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("CONSOLE · UNREACHABLE");
+    expect(screen.getByRole("status").getAttribute("data-tone")).toBe("grey");
+    expect(screen.queryByText(/refused/i)).not.toBeInTheDocument();
+  });
+
+  it("approval moves to Projects, each defaulting to Local only", async () => {
+    const user = userEvent.setup();
+    api.syncLinkPoll.mockResolvedValue({ status: "approved", org: "Acme", email: "ann@acme.dev" });
+    wizard(base);
+    await user.click(screen.getByRole("button", { name: "Get a sign-in code" }));
+    expect(await screen.findByLabelText("Cloud project for Core")).toHaveValue("");
+    expect(screen.getByLabelText("Cloud project for North")).toHaveValue("");
+    expect(screen.getByText("Nothing will sync. The box stays linked to Acme.")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("PROJECTS · 0 SYNCED · 2 LOCAL");
+    await user.selectOptions(screen.getByLabelText("Cloud project for Core"), "CORE");
+    expect(screen.getByText("☁ CORE")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("PROJECTS · 1 SYNCED · 1 LOCAL");
+  });
+
+  it("says no reachable projects, and unknown is grey rather than 'no projects'", async () => {
+    api.syncCloudProjects.mockResolvedValue({ status: "ok", projects: [], mapping: [] });
+    const { unmount } = wizard(signedIn, { initialStep: 3 });
+    expect(await screen.findByText("You don't have access to any projects in Acme yet. Ask an org admin.")).toBeInTheDocument();
+    unmount();
+
+    api.syncCloudProjects.mockResolvedValue({ status: "unknown", reason: "down" });
+    wizard(signedIn, { initialStep: 3 });
+    expect(await screen.findByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(screen.queryByText(/don't have access/)).not.toBeInTheDocument();
+    expect(screen.getByRole("status").getAttribute("data-tone")).toBe("grey");
+  });
+
+  it("First push: done, refused on that row only, and push later names graphban sync", async () => {
+    const user = userEvent.setup();
+    api.syncPushAll.mockResolvedValue({
+      projects: [
+        { project_id: "core", status: "done", nodes: 1284, edges: 3906, at: "2026-11-11T14:02:00" },
+        { project_id: "north", status: "refused", reason: "no_access" },
+      ],
+    });
+    wizard(
+      { ...signedIn, projects: [
+        proj("core", "Core", { mapped: true, cloud_project_id: "CORE" }),
+        proj("north", "North", { mapped: true, cloud_project_id: "NORTH" }),
+      ] },
+      { initialStep: 4 },
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("PUSH · NOT YET");
+    expect(screen.getByText(/graphban sync/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Push now" }));
+    expect(await screen.findByText("Pushed 1,284 nodes and 3,906 edges to CORE at 14:02.")).toBeInTheDocument();
+    expect(screen.getByText("No access to NORTH. Ask an org admin.")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("PUSH · 1 DONE · 1 REFUSED");
+    expect(screen.queryByText(/seat in Acme was removed/)).not.toBeInTheDocument();
+  });
+
+  it("First push: an unknown row is grey, not refused", async () => {
+    const user = userEvent.setup();
+    api.syncPushAll.mockResolvedValue({ projects: [{ project_id: "core", status: "unknown", reason: "down" }] });
+    wizard(signedIn, { initialStep: 4 });
+    await user.click(screen.getByRole("button", { name: "Push now" }));
+    const row = await screen.findByText(/UNKNOWN/);
+    expect(row.className).toContain("text-faint");
+    expect(screen.queryByText("☁ REFUSED")).not.toBeInTheDocument();
+    expect(screen.queryByText(/No access/)).not.toBeInTheDocument();
+  });
+
+  it("First push: seat removed refuses the whole wizard", async () => {
+    const user = userEvent.setup();
+    api.syncPushAll.mockResolvedValue({
+      projects: [{ project_id: "core", status: "refused", reason: "seat_removed" }],
+    });
+    wizard(signedIn, { initialStep: 4 });
+    await user.click(screen.getByRole("button", { name: "Push now" }));
+    expect(await screen.findByText("Your seat in Acme was removed. Nothing is syncing.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
+  });
+
+  it("resumes at the first unfinished step", () => {
+    wizard(signedIn);
+    // signed in with a mapped project → First push
+    expect(screen.getByRole("button", { name: "Push now" })).toBeInTheDocument();
+    expect(screen.getByText("④ First push")).toHaveAttribute("aria-current", "step");
+  });
+});
+
+describe("LinkedPanel", () => {
+  const noop = () => {};
+  const panel = (status: SyncStatus) =>
+    render(
+      <LinkedPanel status={status} orgHref="https://c.dev" onChooseProjects={noop} onSignIn={noop} onUnlink={noop} />,
+    );
+
+  it("reads who it is linked as, the projects, and the actions", () => {
+    panel(signedIn);
+    expect(screen.getByText("This deployment is linked to Acme as ann@acme.dev.")).toBeInTheDocument();
+    expect(screen.getByText("☁ CORE")).toBeInTheDocument();
+    expect(screen.getByText("1 project is local only.")).toBeInTheDocument();
+    for (const n of ["Choose projects", "Sign in again", "Unlink"])
+      expect(screen.getByRole("button", { name: n })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open the org →" })).toBeInTheDocument();
+    expect(screen.getByText("Stops all sync. Every project becomes local only. Cloud items remain.")).toBeInTheDocument();
+  });
+
+  it("seat removed: red line, every row REFUSED, Sign in again note", () => {
+    panel({ ...signedIn, state: "refused" });
+    const line = screen.getByText("Your seat in Acme was removed. Nothing is syncing.");
+    expect(line.className).toContain("text-st-blocked");
+    expect(screen.getByText("☁ REFUSED")).toBeInTheDocument();
+    expect(screen.getByText(/Anyone with a seat in Acme can sign this box in/)).toBeInTheDocument();
+  });
+
+  it("an unknown row is grey, never REFUSED", () => {
+    panel({ ...signedIn, state: "unknown", projects: [
+      proj("core", "Core", { mapped: true, cloud_project_id: "CORE", last_push_result: "unknown" }),
+    ] });
+    expect(screen.getByText("☁ UNKNOWN").className).toContain("text-faint");
+    expect(screen.queryByText("☁ REFUSED")).not.toBeInTheDocument();
+  });
+
+  it("the old-key relink warning is muted — not amber, not red", () => {
+    panel({ ...signedIn, signed_in: false, legacy: true, state: "ok" });
+    const warn = screen.getByTestId("relink-warning");
+    expect(warn).toHaveTextContent(
+      "This deployment still uses an old link key. Sign in again to link it to your seat. It keeps syncing until then.",
+    );
+    expect(warn.className).toContain("text-faint");
+    expect(warn.className).not.toMatch(/st-blocked|st-review|amber|red/);
+  });
+
+  it("no warning once signed in; old key refused is a red line", () => {
+    const { unmount } = panel(signedIn);
+    expect(screen.queryByTestId("relink-warning")).not.toBeInTheDocument();
+    unmount();
+    panel({ ...signedIn, signed_in: false, legacy: true, state: "refused" });
+    expect(screen.queryByTestId("relink-warning")).not.toBeInTheDocument();
+    const line = screen.getByText("This link used a key. Sign in to keep syncing.");
+    expect(line.className).toContain("text-st-blocked");
+  });
+
+  it("Unlink calls back", async () => {
+    const user = userEvent.setup();
+    const onUnlink = vi.fn();
+    render(<LinkedPanel status={signedIn} onChooseProjects={noop} onSignIn={noop} onUnlink={onUnlink} />);
+    await user.click(screen.getByRole("button", { name: "Unlink" }));
+    await waitFor(() => expect(onUnlink).toHaveBeenCalled());
+  });
+});

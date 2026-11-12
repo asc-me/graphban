@@ -1269,6 +1269,12 @@ export interface PlatformConfig {
 export type SyncProjectStatus = "live" | "stale" | "paused" | "unsynced" | "empty";
 
 export interface SyncProjectState {
+  /** GRPH-1517: the cloud project this one maps to. Unmapped is local only. */
+  mapped?: boolean;
+  cloud_project_id?: string | null;
+  last_push_at?: string | null;
+  last_push_result?: "ok" | "refused" | "unknown" | null;
+  last_push_reason?: string | null;
   project_id: string;
   name: string;
   /** Whether the current user may push/purge this project (drives control enablement). */
@@ -1305,6 +1311,59 @@ export interface SyncStatus {
   last_redacted_models?: number | null;
   last_snapshot_at?: string | null;
   projects: SyncProjectState[];
+  /** GRPH-1517 deployment link — never the token or the key. */
+  linked_email?: string;
+  signed_in?: boolean;
+  sign_in_pending?: boolean;
+  /** A migrated key link not yet signed in (L6). */
+  legacy?: boolean;
+  /** The link's own answer: ok | refused | unknown; null when no credential is held. */
+  state?: "ok" | "refused" | "unknown" | null;
+}
+
+export interface LinkStartResult {
+  status: "started" | "refused" | "unknown";
+  console_url?: string;
+  user_code?: string;
+  verification_url?: string;
+  expires_at?: string;
+  interval?: number;
+  reason?: string;
+}
+
+export interface LinkPollResult {
+  status: "approved" | "pending" | "refused" | "unknown";
+  org?: string;
+  email?: string;
+  reason?: string;
+}
+
+export interface CloudProject {
+  id: string;
+  name: string;
+}
+
+export interface SyncMappingRow {
+  local_project_id: string;
+  cloud_project_id: string | null;
+  last_push_result: "ok" | "refused" | "unknown" | null;
+  last_push_reason: string | null;
+}
+
+export interface CloudProjectsResult {
+  status: "ok" | "refused" | "unknown";
+  projects?: CloudProject[];
+  reason?: string;
+  mapping: SyncMappingRow[];
+}
+
+export interface ProjectPushResult {
+  project_id: string;
+  status: "done" | "refused" | "unknown";
+  nodes?: number;
+  edges?: number;
+  reason?: string;
+  at?: string | null;
 }
 
 /** `GET /api/sync/org` — the Organization window (GRPH-1223/1225). Unlinked is `{linked: false}`
