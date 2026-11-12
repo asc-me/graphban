@@ -48,6 +48,11 @@ function canPatchDone(item: Item): boolean {
 }
 
 /** Planner-facing statuses: live work, not backlog/next/done. */
+/** The Response Needed filter: the server's `question_state`, not a second derivation. */
+const RESPONSE_NEEDED = "response_needed";
+const matches = (it: Item, filter: string) =>
+  filter === RESPONSE_NEEDED ? it.question_state === "response_needed" : statusMatches(it.status, filter, ACTIVE_STATUSES);
+
 const ACTIVE_STATUSES: Status[] = ["in_progress", "review", "blocked"];
 
 type TrackerFilter = string;
@@ -114,7 +119,7 @@ export function TrackerView() {
       { activity: (it) => it.updated_at || it.created_at, finishedAt: (it) => (it.status === "done" ? it.done_at : null) },
     );
   const scoped = scopeOf(views.state);
-  const visible = scoped.shown.filter((it) => statusMatches(it.status, filter, ACTIVE_STATUSES));
+  const visible = scoped.shown.filter((it) => matches(it, filter));
 
   // Chip counts follow the scope, so a chip's number is the rows it would show.
   const counts = React.useMemo(() => {
@@ -123,6 +128,7 @@ export function TrackerView() {
     return c;
   }, [scoped.shown]);
 
+  const responseNeededCount = scoped.shown.filter((it) => it.question_state === "response_needed").length;
   const activeCount = ACTIVE_STATUSES.reduce((n, s) => n + (counts[s] ?? 0), 0);
   const hidden = hiddenSummary(scoped, views.state, "done");
   const showHidden = () => views.patch({ window: 0, hide: 0 });
@@ -221,7 +227,7 @@ export function TrackerView() {
         views={views}
         doneWord="done"
         countFor={(v) =>
-          scopeOf(v).shown.filter((it) => statusMatches(it.status, v.status, ACTIVE_STATUSES)).length
+          scopeOf(v).shown.filter((it) => matches(it, v.status)).length
         }
         leading={
           <>
@@ -247,6 +253,12 @@ export function TrackerView() {
               color={STATUS_META[s].color}
             />
           ))}
+          <FilterChip
+            active={filter === RESPONSE_NEEDED}
+            onClick={() => setFilter(RESPONSE_NEEDED)}
+            label="Response Needed"
+            count={responseNeededCount}
+          />
         </div>
         </Collapsible>
       )}
@@ -292,7 +304,7 @@ export function TrackerView() {
             onSelect={setSelectedId}
             onStatus={setStatus}
             columns={columns}
-            statuses={BOARD_COLUMNS.filter((st) => statusMatches(st, filter, ACTIVE_STATUSES))}
+            statuses={BOARD_COLUMNS.filter((st) => filter === RESPONSE_NEEDED || statusMatches(st, filter, ACTIVE_STATUSES))}
           />
         )
       ) : (
@@ -358,6 +370,7 @@ export function TrackerView() {
 function filterLabel(filter: TrackerFilter): string {
   if (filter === "all") return "";
   if (filter === "active") return " (Active)";
+  if (filter === RESPONSE_NEEDED) return " (Response Needed)";
   return ` (${STATUS_META[filter as Status]?.label ?? filter})`;
 }
 

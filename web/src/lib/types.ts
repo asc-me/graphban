@@ -738,6 +738,9 @@ export interface EvidenceReceipt {
   commit?: string;
 }
 
+/** Why a blocked ticket (or its decision wait) is waiting on an answer (GRPH-P75 D1). Server-decided. */
+export type QuestionState = "checking" | "response_needed";
+
 export interface Item {
   id: string;
   project_id: string;
@@ -767,6 +770,8 @@ export interface Item {
   updated_at: string;
   /** When it last reached `done` (GRPH-1134); null while it is not done. */
   done_at: string | null;
+  /** Absent unless an open decision wait, or a ticket blocked on one. */
+  question_state?: QuestionState | null;
 }
 
 /** The full record: `GET /items/{id}`, or the list with `?fields=full`. The project list
@@ -1118,6 +1123,7 @@ export interface TriageBlockerRow extends TriageFeedBase {
   blocked_seconds: number;
   reason: string;
   decision?: { question: string; options: string[] };
+  question_state?: QuestionState;
   waiting_on?: { id: string; title: string; status: string };
 }
 
@@ -1136,6 +1142,8 @@ export interface TriageFeed {
   counts: Record<TriageTab, number>;
   /** Sources that did not answer; their kinds are missing from `rows`, not clear. */
   failed_sources: string[];
+  /** Rows in Response Needed only; Checking context is not waiting on a person (GRPH-P75 D1). */
+  waiting_on_person?: number;
 }
 
 export interface TriageRow {

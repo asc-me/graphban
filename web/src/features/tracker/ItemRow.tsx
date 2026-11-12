@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/cn";
+import { QuestionStateBadge } from "./QuestionStateBadge";
 import { CHECK_COLOR, PR_STATE_COLOR, STATUS_META, STATUS_ORDER } from "@/lib/meta";
 import type { Item, Status } from "@/lib/types";
 
@@ -103,6 +104,8 @@ export function ItemRow({
       <span className="w-16 flex-none font-mono text-small text-faint">{item.id}</span>
 
       <span className="min-w-0 flex-1 truncate text-[13.5px] text-fg-2">{item.title}</span>
+
+      <QuestionStateBadge state={item.question_state} />
 
       {item.fidelity === "high" && (
         <span

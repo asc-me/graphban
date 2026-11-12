@@ -42,6 +42,52 @@ def is_human_wait(item: Item) -> bool:
     return item.status == "blocked" and bool(wait_tags_on(item))
 
 
+CHECKING = "checking"
+RESPONSE_NEEDED = "response_needed"
+
+
+def _open_decision_state(wait: Item) -> str | None:
+    """The state of ONE wait item: None unless it is an open `wait:decision`."""
+    if "wait:decision" not in {str(t).lower() for t in wait.tags or []}:
+        return None
+    if wait.status == "done":
+        return None
+    d = wait.decision or {}
+    if d.get("answer"):
+        return None
+    return RESPONSE_NEEDED if d.get("needs_person_at") else CHECKING
+
+
+def question_state(db: Session, item: Item) -> str | None:
+    """None | "checking" | "response_needed" (GRPH-P75 D1). The ONE definition every surface reads.
+
+    An open `wait:decision` reads Checking context until `decision.needs_person_at` is set, then
+    Response Needed. A `blocked` ticket that depends on one reads the same. Gate waits (merge,
+    deploy, secret, access) and every other item read None, i.e. plain blocked. Answering the
+    wait clears it on the wait and on whatever waited on it.
+    """
+    own = _open_decision_state(item)
+    if own is not None:
+        return own
+    if item.status != "blocked":
+        return None
+    from sqlalchemy import select
+
+    from app.models import Link
+
+    dep_ids = db.scalars(select(Link.b).where(Link.type == "dependency", Link.a == item.id)).all()
+    states = []
+    for dep_id in dict.fromkeys(dep_ids):
+        dep = db.get(Item, dep_id)
+        if dep is not None:
+            st = _open_decision_state(dep)
+            if st is not None:
+                states.append(st)
+    if RESPONSE_NEEDED in states:
+        return RESPONSE_NEEDED
+    return CHECKING if states else None
+
+
 def waiting(db: Session, project_id: str | None = None) -> list[Item]:
     """Blocked items carrying a `wait:` tag — the finder until/search_items use.
 

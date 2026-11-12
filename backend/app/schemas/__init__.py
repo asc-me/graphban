@@ -675,6 +675,10 @@ class ItemOut(ORMModel):
     decision: dict | None = None
     #: Hidden from triage until this time (GRPH-1137).
     snoozed_until: datetime | None = None
+    #: `checking` | `response_needed` | null (GRPH-P75 D1), from `waits.question_state` via the
+    #: `Item.question_state` property, so the web never computes it a second time.
+    question_state: str | None = None
+
     @field_validator("decision", mode="before")
     @classmethod
     def _decision_public(cls, v):

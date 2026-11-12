@@ -101,6 +101,9 @@ def _blocker_rows(db: Session, project_id: str, now) -> list[dict]:
             "owner": item.claimed_by, "blocked_seconds": _age(item.updated_at, now),
             "reason": item.blocker or "", "paths": list(item.touchpoints or []),
         }
+        qs = waits_svc.question_state(db, item)
+        if qs:
+            row["question_state"] = qs
         if b.get("decision"):
             row["decision"] = {"question": b["decision"]["question"],
                                "options": b["decision"]["options"]}
@@ -170,4 +173,7 @@ def feed(db: Session, project_id: str) -> dict:
     for r in rows:
         for t in _tab_of(r):
             counts[t] += 1
-    return {"rows": rows, "counts": counts, "failed_sources": failed}
+    # Only Response Needed is waiting on a person; Checking context is an agent still looking.
+    on_person = sum(r.get("question_state") == waits_svc.RESPONSE_NEEDED for r in rows)
+    return {"rows": rows, "counts": counts, "failed_sources": failed,
+            "waiting_on_person": on_person}

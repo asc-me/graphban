@@ -299,6 +299,21 @@ describe("Triage inbox", () => {
     expect(document.querySelector("ul")).toBeNull();
   });
 
+  it("shows Checking context and Response Needed on decision-wait rows (P75 D1)", async () => {
+    const d = { question: "Which key?", options: ["Use env"] };
+    m.projectTriage.mockResolvedValue(feed([
+      { ...blocker, decision: d, question_state: "checking" } as TriageFeedRow,
+    ]));
+    const first = renderTriage();
+    expect(await screen.findAllByText(/Checking context/)).not.toHaveLength(0);
+    first.unmount();
+    m.projectTriage.mockResolvedValue(feed([
+      { ...blocker, decision: d, question_state: "response_needed" } as TriageFeedRow,
+    ]));
+    renderTriage();
+    expect(await screen.findAllByText(/Response Needed/)).not.toHaveLength(0);
+  });
+
   it("renders the collision cluster table and the amber recommendation callout", async () => {
     m.projectTriage.mockResolvedValue(feed([collisionBlocked]));
     renderTriage();

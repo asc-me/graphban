@@ -20,12 +20,21 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { Input } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { AGENTS, ConnectStep, ROUTE_LABEL, type Route } from "@/features/onboarding/ConnectStep";
+import { InviteeLinkCard } from "@/features/onboarding/InviteeLinkCard";
 import { StartupPromptRows } from "@/features/onboarding/StartupPrompts";
 import { TagField, useTagField } from "@/features/onboarding/TagField";
 import { postureView, type PostureWarning } from "@/features/onboarding/posture";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { keys, useConfirmSetup, useCredentials, useInstancePosture, useOrgs, useProjectSetup } from "@/lib/queries";
+import {
+  keys,
+  useConfirmSetup,
+  useCredentials,
+  useInstancePosture,
+  useOnboarding,
+  useOrgs,
+  useProjectSetup,
+} from "@/lib/queries";
 import type { Credential, SetupStatus } from "@/lib/types";
 
 import {
@@ -48,7 +57,7 @@ const ACCENTS = ["#c6f24e", "#a78bfa", "#7ca2ff", "#e0b34a", "#5fd07a", "#ff8f8f
 
 type Where = "this_computer" | "dedicated_server";
 type ModelChoice = "offline" | "ollama" | "claude";
-type Screen = QsStep | "finish";
+type Screen = QsStep | "finish" | "welcome" | "sections";
 
 /** Steps, marks and chip count for one project — the dialog and the top-bar chip share it. */
 export function useQuickStart(projectId: string, hosted: boolean, pollMs?: number) {
@@ -113,13 +122,26 @@ export function QuickStartDialog({
   const projectId = active?.id ?? createdId;
   const project = projects.find((p) => p.id === projectId) ?? active;
 
-  const [screen, setScreen] = React.useState<Screen>(initialStep ?? stepsFor(hosted)[0]);
+  // First open shows Welcome (GRPH-P67 v1.1 R1); every later open, the chip included, lands
+  // on Sections. A dialog that was ever closed has recorded `quickstart_dismissed`, so the
+  // server fact and the in-session ref agree.
+  const onboardingQ = useOnboarding();
+  const welcomed = React.useRef(false);
+  const landing = (): Screen => {
+    if (!welcomed.current && !onboardingQ.data?.onboarding?.quickstart_dismissed_at) return "welcome";
+    return "sections";
+  };
+  const [screen, setScreen] = React.useState<Screen>(landing);
   const qs = useQuickStart(projectId, hosted, open && (screen === "first_job" || screen === "connect") ? 3000 : undefined);
   const steps = qs.steps;
 
-  // Re-opening lands where the caller asked (the chip: first unfinished), every time.
+  // Opening lands on Welcome the first time and on Sections after that.
   React.useEffect(() => {
-    if (open) setScreen(initialStep ?? steps[0]);
+    if (open) {
+      const next = landing();
+      if (next === "welcome") welcomed.current = true;
+      setScreen(next);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialStep]);
 
@@ -131,10 +153,16 @@ export function QuickStartDialog({
   const [route, setRoute] = React.useState<Route>("gban");
   const whereStep = qs.setup?.steps.find((s) => s.step === 0);
 
-  const idx = screen === "finish" ? steps.length : steps.indexOf(screen);
+  const idx = screen === "finish" ? steps.length : steps.indexOf(screen as QsStep);
   const isLast = idx === steps.length - 1;
   const go = (s: Screen) => setScreen(s);
-  const back = () => idx > 0 && go(steps[idx - 1]);
+  const back = () => (idx > 0 ? go(steps[idx - 1]) : go("sections"));
+  const takeTour = onTakeTour
+    ? () => {
+        onFinishLater();
+        onTakeTour();
+      }
+    : undefined;
   const advance = () => go(isLast ? "finish" : steps[idx + 1]);
 
   return (
@@ -160,6 +188,10 @@ export function QuickStartDialog({
         </div>
 
         <div className="px-5 py-4">
+          {screen === "welcome" && <WelcomePanel onStart={() => go("sections")} onFinishLater={onFinishLater} />}
+          {screen === "sections" && (
+            <SectionsPanel steps={steps} marks={qs.marks} onOpen={go} onTour={takeTour} onFinishLater={onFinishLater} />
+          )}
           {screen === "where" && (
             <WhereStep
               projectId={projectId}
@@ -261,7 +293,7 @@ export type HeroState = "done" | "pending" | "unknown";
 
 /** The hero shows the same fact as the rail, for the current screen. Finish rolls the steps up. */
 export function heroState(steps: QsStep[], marks: Record<QsStep, StepMark>, screen: Screen): HeroState {
-  if (screen !== "finish") return marks[screen].status;
+  if (screen !== "finish" && screen !== "welcome" && screen !== "sections") return marks[screen].status;
   const all = steps.map((s) => marks[s].status);
   if (all.every((x) => x === "done")) return "done";
   return all.includes("unknown") ? "unknown" : "pending";
@@ -289,7 +321,8 @@ export function Hero({
 }) {
   const state = heroState(steps, marks, screen);
   const flowing = state === "pending" && LIVE_STEPS.includes(screen);
-  const caption = screen === "finish" ? "Setup" : STEP_META[screen].label;
+  const caption =
+    screen === "finish" || screen === "welcome" || screen === "sections" ? "Setup" : STEP_META[screen].label;
   return (
     <aside
       aria-hidden
@@ -312,6 +345,115 @@ export function Hero({
         {caption} · {state.toUpperCase()}
       </p>
     </aside>
+  );
+}
+
+// ── Welcome and Sections ───────────────────────────────────────────────────────────────
+
+function WelcomePanel({ onStart, onFinishLater }: { onStart: () => void; onFinishLater: () => void }) {
+  return (
+    <section aria-labelledby="qs-welcome-h">
+      <h2 id="qs-welcome-h" className="text-[16px] font-semibold">
+        Welcome to Graphban
+      </h2>
+      <p className="mt-2 text-[13px] text-muted">
+        A few short sections get you set up, show you around and explain the ideas behind it. Do them in any order, and
+        come back to any of them from Finish setup, or from Help once you&apos;re done.
+      </p>
+      <div className="mt-5 flex items-center gap-2 border-t border-line pt-4">
+        <Button variant="ghost" size="sm" type="button" onClick={onFinishLater}>
+          Finish later
+        </Button>
+        <div className="flex-1" />
+        <Button size="sm" type="button" onClick={onStart}>
+          Get started →
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+function SectionsPanel({
+  steps,
+  marks,
+  onOpen,
+  onTour,
+  onFinishLater,
+}: {
+  steps: QsStep[];
+  marks: Record<QsStep, StepMark>;
+  onOpen: (s: QsStep) => void;
+  /** Absent until a project exists for the tour to point at. */
+  onTour?: () => void;
+  onFinishLater: () => void;
+}) {
+  const row = "flex w-full items-center gap-3 rounded-[10px] border border-control px-3 py-2 text-left";
+  return (
+    <section aria-labelledby="qs-sections-h">
+      <h2 id="qs-sections-h" className="text-[16px] font-semibold">
+        Sections
+      </h2>
+      <ul className="mt-3 space-y-2" aria-label="Sections">
+        {steps.map((s) => {
+          const g = GLYPH[marks[s].status];
+          return (
+            <li key={s}>
+              <button
+                type="button"
+                data-section={s}
+                data-status={marks[s].status}
+                className={cn(row, "hover:bg-surface-2")}
+                onClick={() => onOpen(s)}
+              >
+                <span className={g.cls} aria-hidden>
+                  {g.g}
+                </span>
+                <span className="flex-1 text-[13px]">
+                  <span className="font-mono text-faint">{STEP_META[s].num}</span> {STEP_META[s].label}
+                  <span className="sr-only"> — {g.word}</span>
+                </span>
+                <span className="font-mono text-[10px] uppercase tracking-wide text-faint" aria-hidden>
+                  {g.word}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+        <li>
+          <button
+            type="button"
+            data-section="tour"
+            className={cn(row, onTour ? "hover:bg-surface-2" : "opacity-60")}
+            disabled={!onTour}
+            onClick={onTour}
+          >
+            <span className="flex-1 text-[13px]">
+              <span className="font-semibold">Tour</span>
+              <span className="block text-[12px] text-muted">
+                Eight stops around the app, ending at Organization. About two minutes.
+              </span>
+            </span>
+            <span className="font-mono text-[10px] uppercase tracking-wide text-faint">~2 MIN</span>
+          </button>
+        </li>
+        <li>
+          <button type="button" data-section="concepts" className={cn(row, "opacity-60")} disabled>
+            <span className="flex-1 text-[13px]">
+              <span className="font-semibold">Graphban concepts</span>
+              <span className="block text-[12px] text-muted">
+                The loop, the tracker, specs, memory, the code graph and rules.
+              </span>
+            </span>
+            <span className="font-mono text-[10px] uppercase tracking-wide text-faint">6 CONCEPTS</span>
+          </button>
+        </li>
+      </ul>
+      <div className="mt-5 flex items-center border-t border-line pt-4">
+        <Button variant="ghost" size="sm" type="button" onClick={onFinishLater}>
+          Finish later
+        </Button>
+      </div>
+    </section>
   );
 }
 
@@ -502,7 +644,7 @@ function Choice({
   );
 }
 
-function CopyLine({ text, label }: { text: string; label: string }) {
+export function CopyLine({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = React.useState(false);
   return (
     <div className="flex items-start gap-2 rounded-[8px] border border-line bg-bg p-2.5">
@@ -1262,7 +1404,7 @@ export function FinishScreen({
       {marks.connect?.status === "done" && marks.connect.evidence && (
         <p className="mt-2 text-[12px] text-muted">Agent connection: {marks.connect.evidence}</p>
       )}
-      {invitee && <LinkSetupCard />}
+      {invitee && <InviteeLinkCard />}
       {invitee && promptsOpen && (
         <div className="mt-3">
           <StartupPromptRows />
@@ -1304,27 +1446,5 @@ export function FinishScreen({
         )}
       </div>
     </section>
-  );
-}
-
-/**
- * The invitee's optional link setup (GRPH-1364): collapsed, and nothing here is required. It
- * only builds the `graphban link` command from the org-issued key — the key is never sent
- * anywhere by this card, and no prefix is assumed (`graphban link` decides what it accepts).
- */
-function LinkSetupCard() {
-  const [key, setKey] = React.useState("");
-  const cmd = `graphban link --cloud-url ${window.location.origin} --api-key ${key.trim() || "<link key>"}`;
-  return (
-    <details className="mt-4 rounded-[10px] border border-line bg-surface-2 px-3 py-2" data-link-setup>
-      <summary className="cursor-pointer text-body font-medium">Link a self-host deployment (optional)</summary>
-      <div className="mt-2 flex flex-col gap-2">
-        <label className="flex flex-col gap-1 text-small text-muted">
-          Link key from your org
-          <Input value={key} onChange={(e) => setKey(e.target.value)} autoComplete="off" spellCheck={false} />
-        </label>
-        <CopyLine text={cmd} label="Copy the link command" />
-      </div>
-    </details>
   );
 }

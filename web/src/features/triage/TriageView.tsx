@@ -1,3 +1,4 @@
+import { QUESTION_LABEL } from "@/features/tracker/QuestionStateBadge";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
@@ -40,7 +41,7 @@ const kindWord = (r: TriageFeedRow) => r.kind[0].toUpperCase() + r.kind.slice(1)
 
 function metaOf(r: TriageFeedRow): string {
   if (r.kind === "blocker")
-    return `${r.owner ?? "unclaimed"} · ${r.decision ? "needs a decision" : r.waiting_on ? `waiting on ${r.waiting_on.id}` : "blocked"}`;
+    return `${r.owner ?? "unclaimed"} · ${r.question_state ? QUESTION_LABEL[r.question_state] : r.decision ? "needs a decision" : r.waiting_on ? `waiting on ${r.waiting_on.id}` : "blocked"}`;
   if (r.kind === "collision") return `${r.members.length} items · ${r.risk}`;
   return `↑ ${r.votes} · ${r.by || "anonymous"}${r.duplicate ? ` · ${duplicateHintCopy(r.duplicate.id, r.duplicate.score)}` : ""}`;
 }
