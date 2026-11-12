@@ -211,7 +211,9 @@ def clear(db: Session) -> None:
     legacy key and every mapping, so each project is local only again."""
     link = _link(db)
     if link is not None:
-        link.token_enc = link.pending_device_enc = link.legacy_key = ""
+        # Clearing, not a credential: an empty string is "no token held".
+        link.token_enc = ""  # nosec B105
+        link.pending_device_enc = link.legacy_key = ""
         link.linked_email = link.console_url = ""
     db.execute(delete(SyncProject))
     db.commit()
