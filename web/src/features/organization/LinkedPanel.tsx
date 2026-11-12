@@ -80,13 +80,16 @@ export function LinkedPanel({
           return (
             <li key={p.project_id} data-synced-project className="flex items-baseline gap-2 text-body">
               <span className="max-w-40 truncate font-mono">{p.name}</span>
-              <span aria-hidden className="text-faint">→</span>
-              <span
-                className="font-mono text-[10px] uppercase text-faint"
-                title={cloudTagText(p.cloud_project_tag) === UNKNOWN_CLOUD_TAG ? UNKNOWN_TAG_TOOLTIP : undefined}
-              >
-                ☁ {cloudTagText(p.cloud_project_tag)}
-              </span>
+              {!seatRemoved && <span aria-hidden className="text-faint">→</span>}
+              {/* Seat removed: the row reads only ☁ REFUSED (Org Link L3, linked seat removed). */}
+              {!seatRemoved && (
+                <span
+                  className="font-mono text-[10px] uppercase text-faint"
+                  title={cloudTagText(p.cloud_project_tag) === UNKNOWN_CLOUD_TAG ? UNKNOWN_TAG_TOOLTIP : undefined}
+                >
+                  ☁ {cloudTagText(p.cloud_project_tag)}
+                </span>
+              )}
               {result === "ok" && p.last_push_at && (
                 <span className="font-mono text-[10px] uppercase text-st-done">· ☁ SYNCED {clockTime(p.last_push_at)}</span>
               )}
