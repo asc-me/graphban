@@ -147,7 +147,7 @@ def poll(url: str, repo: Path, *, force: bool = False, client: Client | None = N
     if not sha:
         _save(repo, new)
         return {"polled": True, "polled_at": now, "note": "deployment is unstamped (empty git_sha)"}
-    if sha == base.get("git_sha"):
+    if sha == base.get("git_sha") and not force:
         _save(repo, new)
         return {"polled": True, "polled_at": now, "git_sha": sha, "note": f"current at {sha[:12]}"}
     try:
