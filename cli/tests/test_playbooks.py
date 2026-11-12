@@ -370,3 +370,22 @@ def test_a_skill_setup_planted_then_edited_is_left_and_named(tmp_path, monkeypat
     assert r["kept"] == [SKILL]
     assert (repo / SKILL).read_text() == "mine"
     assert (repo / COPIES[2]).read_text() == "S2"
+
+
+def test_switching_server_keeps_file_ownership(tmp_path):
+    other = "http://other.example"
+    poll(URL, tmp_path, client=Fake({"git_sha": "1"}, _pack("1")), now=0)
+    poll(other, tmp_path, client=Fake({"git_sha": "1"}, _pack("1")), now=10)
+    r = poll(URL, tmp_path, client=Fake({"git_sha": "2"}, _pack("2", skill="S2")), now=20)
+    assert r["polled"] is True and not r.get("kept")
+    for rel in COPIES:
+        assert (tmp_path / rel).read_text() == "S2"
+
+
+def test_switching_server_still_leaves_a_local_edit(tmp_path):
+    other = "http://other.example"
+    poll(URL, tmp_path, client=Fake({"git_sha": "1"}, _pack("1")), now=0)
+    (tmp_path / LOOP).write_text("mine")
+    poll(other, tmp_path, client=Fake({"git_sha": "1"}, _pack("1")), now=10)
+    r = poll(URL, tmp_path, client=Fake({"git_sha": "2"}, _pack("2", loop="L2")), now=20)
+    assert (tmp_path / LOOP).read_text() == "mine" and r["kept"] == [LOOP]
