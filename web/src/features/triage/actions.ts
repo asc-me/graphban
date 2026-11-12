@@ -121,7 +121,7 @@ export function actionsFor(row: TriageFeedRow, projectId: string): TriageAction[
           return {
             result: answeredCopy(`Answered "${o}" — ${owner} resumed`, a),
             command: a?.drain?.command,
-        drain: a?.drain ?? MISSING_DRAIN,
+            drain: a?.drain ?? MISSING_DRAIN,
             undo: () => api.undoBlocker(row.id),
           };
         },

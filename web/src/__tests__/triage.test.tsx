@@ -242,16 +242,33 @@ describe("Triage inbox", () => {
     expect(screen.queryByText("THE QUOTE IT USED")).not.toBeInTheDocument();
   });
 
+  // Each ref opens the view App.tsx mounts for it: the PRD editor (`prds/:id`), the
+  // published lesson for a memory shard (`lessons/:id`), and Tracker with the item
+  // selected through the palette's `select` param.
   it.each([
-    ["prd", "GRPH-P75", "answered from PRD GRPH-P75 by GRPH-A7", "/prd/GRPH-P75"],
-    ["memory", "M-12", "answered from memory M-12 by GRPH-A7", null],
-    ["decision", "GRPH-44", "answered from GRPH-44's decision by GRPH-A7", null],
+    ["prd", "GRPH-P75", "answered from PRD GRPH-P75 by GRPH-A7", "/p/CORE/prds/GRPH-P75"],
+    ["memory", "M-12", "answered from memory M-12 by GRPH-A7", "/p/CORE/lessons/M-12"],
+    ["decision", "GRPH-44", "answered from GRPH-44's decision by GRPH-A7", "/p/CORE/tracker?select=GRPH-44"],
   ])("a %s source renders its line and links the ref", async (kind, ref, line, href) => {
     m.projectTriage.mockResolvedValue(feed([answered({ source: { kind, ref } })]));
     renderTriage();
     expect(await screen.findByTestId("answered-source")).toHaveTextContent(line);
-    const link = screen.getByRole("link", { name: ref });
-    if (href) expect(link).toHaveAttribute("href", href);
+    expect(screen.getByRole("link", { name: ref })).toHaveAttribute("href", href);
+  });
+
+  it("on a flat (self-host) path the source link has no project prefix", async () => {
+    m.projectTriage.mockResolvedValue(feed([answered({ source: { kind: "decision", ref: "GRPH-44" } })]));
+    renderTriage("/triage");
+    await screen.findByTestId("answered-source");
+    expect(screen.getByRole("link", { name: "GRPH-44" })).toHaveAttribute("href", "/tracker?select=GRPH-44");
+  });
+
+  it("an agent answer's list meta line reads 'answered by <agent> (agent)' in purple", async () => {
+    m.projectTriage.mockResolvedValue(feed([answered({ quote: "" })]));
+    renderTriage();
+    const meta = await screen.findByTestId("answered-meta");
+    expect(meta).toHaveTextContent("answered by GRPH-A7 (agent)");
+    expect(meta).toHaveClass("text-purple");
   });
 
   it("a session source has no link", async () => {

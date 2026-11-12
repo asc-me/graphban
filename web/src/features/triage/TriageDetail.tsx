@@ -1,8 +1,11 @@
 import { QUESTION_LABEL } from "@/features/tracker/QuestionStateBadge";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Link, useLocation } from "react-router-dom";
 
 
 import { CommentThread } from "@/features/requests/CommentThread";
+import { PALETTE_ITEM_PARAM } from "@/lib/palette-nav";
+import { projectPath, tagFromPath } from "@/lib/routes";
 import type { TriageAnsweredRow, TriageFeedRow } from "@/lib/types";
 
 import { DrainNote } from "./DrainNote";
@@ -306,20 +309,37 @@ export function TriageDetail({
   );
 }
 
-function sourceLine(row: TriageAnsweredRow): ReactNode {
+/**
+ * Where a source ref opens in the app, honouring the hosted `/p/:tag/...` scope.
+ * PRD → its editor; decision → the Tracker with that item selected; memory → the
+ * published lesson for that shard (an agent answers from published memory, and the
+ * Memory review queue holds only unpublished candidates, so it cannot open one).
+ */
+export function sourceHref(kind: string | undefined, ref: string, tag: string | null): string | null {
+  const id = encodeURIComponent(ref);
+  const sub =
+    kind === "prd" ? `prds/${id}`
+      : kind === "memory" ? `lessons/${id}`
+        : kind === "decision" ? `tracker?${PALETTE_ITEM_PARAM}=${id}`
+          : null;
+  if (!sub) return null;
+  return tag ? projectPath(tag, sub) : `/${sub}`;
+}
+
+function SourceLine({ row }: { row: TriageAnsweredRow }) {
+  const { pathname } = useLocation();
   const agent = row.by.agent;
   const src = row.source;
   const ref = src?.ref ?? null;
-  const link = (href: string) => (
-    <a href={href} className="text-st-review underline">{ref}</a>
-  );
+  const href = ref ? sourceHref(src?.kind, ref, tagFromPath(pathname)) : null;
+  const link = href ? <Link to={href} className="text-purple underline">{ref}</Link> : ref;
   switch (src?.kind) {
     case "prd":
-      return <>answered from PRD {ref ? link(`/prd/${ref}`) : null} by {agent}</>;
+      return <>answered from PRD {link} by {agent}</>;
     case "memory":
-      return <>answered from memory {ref ? link(`/memory?entry=${encodeURIComponent(ref)}`) : null} by {agent}</>;
+      return <>answered from memory {link} by {agent}</>;
     case "decision":
-      return <>answered from {ref ? link(`/tracker?item=${encodeURIComponent(ref)}`) : null}'s decision by {agent}</>;
+      return <>answered from {link}'s decision by {agent}</>;
     case "session":
       return <>answered from this session by {agent}</>;
     default:
@@ -341,10 +361,10 @@ function AnsweredCard({ row }: { row: TriageAnsweredRow }) {
           {isAgent ? (
             <>
               <span aria-hidden>🤖</span>
-              <span className="rounded border border-purple-400/40 bg-purple-400/10 px-1.5 py-px font-mono text-micro uppercase text-purple-400">
+              <span className="rounded border border-purple/40 bg-purple/10 px-1.5 py-px font-mono text-micro uppercase text-purple">
                 BY AN AGENT
               </span>
-              <span data-testid="answered-source">{sourceLine(row)}</span>
+              <span data-testid="answered-source"><SourceLine row={row} /></span>
             </>
           ) : (
             <>
@@ -355,10 +375,10 @@ function AnsweredCard({ row }: { row: TriageAnsweredRow }) {
         </div>
       </div>
       {isAgent && (
-        <div data-testid="agent-quote" className="mt-3 rounded-lg border border-purple-400/30 bg-purple-400/[0.07] px-3 py-2.5">
+        <div data-testid="agent-quote" className="mt-3 rounded-lg border border-purple/30 bg-purple/[0.07] px-3 py-2.5">
           {row.quote ? (
             <>
-              <div className="font-mono text-micro uppercase tracking-[0.07em] text-purple-400">THE QUOTE IT USED</div>
+              <div className="font-mono text-micro uppercase tracking-[0.07em] text-purple">THE QUOTE IT USED</div>
               <p className="mt-1.5 text-body italic text-fg-2">{row.quote}</p>
               <p className="mt-1.5 text-small text-muted">
                 Does the quote support this answer? If not, tell the PRD owner.

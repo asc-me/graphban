@@ -45,11 +45,14 @@ const kindText = (r: TriageFeedRow) => KIND_TEXT[r.kind] ?? "text-muted";
 const kindDot = (r: TriageFeedRow) => KIND_DOT[r.kind] ?? "bg-faint-2";
 const kindWord = (r: TriageFeedRow) => r.kind[0].toUpperCase() + r.kind.slice(1);
 
-function metaOf(r: TriageFeedRow): string {
+function metaOf(r: TriageFeedRow): ReactNode {
   if (r.kind === "blocker")
     return `${r.owner ?? "unclaimed"} · ${r.question_state ? QUESTION_LABEL[r.question_state] : r.decision ? "needs a decision" : r.waiting_on ? `waiting on ${r.waiting_on.id}` : "blocked"}`;
   if (r.kind === "collision") return `${r.members.length} items · ${r.risk}`;
-  if (r.kind === "answered") return answeredMetaCopy(r.by, r.answered_by);
+  if (r.kind === "answered") {
+    const copy = answeredMetaCopy(r.by, r.answered_by);
+    return r.by?.agent ? <span data-testid="answered-meta" className="text-purple">{copy}</span> : copy;
+  }
   return `↑ ${r.votes} · ${r.by || "anonymous"}${r.duplicate ? ` · ${duplicateHintCopy(r.duplicate.id, r.duplicate.score)}` : ""}`;
 }
 
