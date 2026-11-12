@@ -179,3 +179,31 @@ describe("dashboard Setup status card (GRPH-1442)", () => {
     expect(screen.queryByTestId("setup-status-first-job")).toBeNull();
   });
 });
+
+describe("API down (GRPH-1547)", () => {
+  const html502 = "<html>\n<head><title>502 Bad Gateway</title></head>\n<body><center><h1>502 Bad Gateway</h1></center><!-- padding --></body></html>";
+
+  it("errorDetail reduces a 502 HTML page to one line", async () => {
+    const { errorDetail } = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+    const d = errorDetail(502, html502);
+    expect(d).toBe("the API is unreachable (502 from the proxy)");
+    expect(d).not.toMatch(/</);
+    expect(errorDetail(400, '{"detail":"x"}')).toBe('{"detail":"x"}');
+  });
+
+  it("a failed read after a good ✓ shows unknown with the reason, not the stale ✓", async () => {
+    const { errorDetail } = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+    setupStatusTiming.pollMs = 20;
+    vi.mocked(api.machines).mockResolvedValue([]);
+    vi.mocked(api.projectSetup)
+      .mockResolvedValueOnce(setup({ status: "done" }))
+      .mockRejectedValue(new Error(errorDetail(502, html502)));
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={qc}><MemoryRouter><SetupStatusCard projectId="core" /></MemoryRouter></QueryClientProvider>);
+    const card = await screen.findByText(/Setup status unknown/);
+    expect(card.textContent).toContain("the API is unreachable (502 from the proxy)");
+    expect(screen.queryByText(/Agent connection verified/)).toBeNull();
+    expect(document.body.innerHTML).not.toContain("Bad Gateway");
+    setupStatusTiming.pollMs = 3000;
+  });
+});
