@@ -310,7 +310,8 @@ def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[
           checklist: str | None, lessons: list[dict], previous: dict | None,
           attempts: list[dict], test_scope: str | None = None,
           test_engines: list[str] | None = None,
-          checklist_matched: list[str] | None = None) -> str:
+          checklist_matched: list[str] | None = None,
+          answered: list[dict] | None = None) -> str:
     """Prose for a spawn prompt, derived from the fields and nothing else (D16). Deliberately
     excludes the lane and tier suggestions so a pasted brief cannot become the default."""
     lines = [f"Item {item.key}: {item.title}"]
@@ -345,11 +346,44 @@ def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[
             "Resume from that head (merged with the base). Do not refuse to merge it "
             "and do not rebuild from the base."
         )
+    for a in answered or []:
+        if a.get("unanswered"):
+            lines.append(f"Open question: {a['wait']} ({a['question']}) was closed with no "
+                         "stored answer, so that question is still open.")
+        else:
+            lines.append(f"Answered {a['wait']}: {a['question']} -> {a['answer']}")
     if test_scope:
         lines.append(test_scope_line(test_scope, test_engines))
     if len(attempts) > 1:
         lines.append(f"Attempts so far: {len(attempts)}")
     return "\n".join(lines)
+
+
+def answered_decisions(db: Session, item: Item) -> list[dict]:
+    """P75 D5: each `wait:decision` this item depends on that has a stored answer. A done wait
+    with no stored answer reads `unanswered`: that question is still open."""
+    from app.models import Link
+
+    out: list[dict] = []
+    ids = db.scalars(select(Link.b).where(Link.type == "dependency", Link.a == item.id)).all()
+    for wid in dict.fromkeys(ids):
+        w = db.get(Item, wid)
+        if w is None or not w.decision or "wait:decision" not in {
+                str(t).lower() for t in w.tags or []}:
+            continue
+        ans = w.decision.get("answer")
+        q = w.decision.get("question", "")
+        if ans:
+            by = ans.get("by")
+            if not isinstance(by, dict):
+                by = {"user": by or ""}
+            out.append({"wait": w.key, "question": q,
+                        "answer": ans.get("text") or ans.get("choice") or "",
+                        "by": by, "source": ans.get("source") or {}, "at": ans.get("at")})
+        elif w.status == "done":
+            out.append({"wait": w.key, "question": q, "unanswered": True,
+                        "note": "this question is still open: the wait was closed with no answer"})
+    return out
 
 
 def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
@@ -394,10 +428,12 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
     mix = mix_counts(db, item.project_id)
     test_scope = rule_toggles.test_scope_mode(db, item.project_id)
     test_engines = rule_toggles.test_scope_engines(db, item.project_id)
+    answered = answered_decisions(db, item)
     return {
         "item": item.key,
         "title": item.title,
         "summary": summary,
+        "answered_decisions": answered,
         "touchpoints": touchpoints,
         "blocked_by": blocked_by,
         "ready": bool(items_svc.claimable(item)) and prioritization.ready(ctx, item),
@@ -416,7 +452,8 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
         "text": _text(item, summary=summary, touchpoints=touchpoints, blocked_by=blocked_by,
                       checklist=checklist, lessons=lessons, previous=previous,
                       attempts=attempts, test_scope=test_scope,
-                      test_engines=test_engines, checklist_matched=checklist_matched),
+                      test_engines=test_engines, checklist_matched=checklist_matched,
+                      answered=answered),
         "test_scope": test_scope,
         # PRD-41 D5 / D15: the set the resolver will score, inside the measured_for_lane cap.
         "capabilities": caps,

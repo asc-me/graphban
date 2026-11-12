@@ -213,9 +213,42 @@ def _event(db: Session, action: str, items: dict[str, tuple[Item, dict]], *, act
     return ev.id
 
 
+SOURCE_KINDS = ("session", "prd", "memory", "decision")
+
+
+def _resolve_source(db: Session, source: dict | None) -> dict:
+    """Validate an agent answer's source. `ref` must resolve for prd, memory and decision."""
+    from app.models import MemoryShard, Prd
+    from app.services import keys
+
+    if not isinstance(source, dict) or source.get("kind") not in SOURCE_KINDS:
+        raise ValueError(f"an agent answer needs a `source` with kind one of {', '.join(SOURCE_KINDS)}")
+    kind = source["kind"]
+    ref, quote = str(source.get("ref") or "").strip(), str(source.get("quote") or "").strip()
+    if kind in ("prd", "memory", "decision") and not ref:
+        raise ValueError(f"a {kind} source needs a `ref`")
+    if kind == "prd":
+        pid = keys.resolve_prd(db, ref) or ref
+        if db.get(Prd, pid) is None:
+            raise ValueError(f"source ref {ref!r} does not resolve to a PRD")
+    elif kind == "memory":
+        if db.get(MemoryShard, ref) is None:
+            raise ValueError(f"source ref {ref!r} does not resolve to a memory shard")
+    elif kind == "decision":
+        other = db.get(Item, keys.resolve_item(db, ref) or ref)
+        if other is None or not (other.decision or {}).get("answer"):
+            raise ValueError(f"source ref {ref!r} does not resolve to an answered decision")
+    return {"kind": kind, "ref": ref, "quote": quote}
+
+
 def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: str | None = None,
-                actor=None, surface: str = "rest") -> dict:
-    """Record the answer on a decision wait, mark it done, and release what waited on it."""
+                actor=None, surface: str = "rest", agent: str | None = None,
+                source: dict | None = None, needs_person: bool = False) -> dict:
+    """Record the answer on a decision wait, mark it done, and release what waited on it.
+
+    An agent (`agent` set) must name a `source`; a person's answer carries none. `needs_person`
+    records no answer: it only stamps `decision.needs_person_at` (S4 hands it to a person).
+    """
     from sqlalchemy import select
 
     from app.models import Link, utcnow
@@ -225,6 +258,22 @@ def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: s
         raise ActionRefused(f"{wait.key} is not a decision wait")
     if wait.status == "done" or wait.decision.get("answer"):
         raise ActionRefused(f"{wait.key} is already answered")
+    if agent:
+        askers = {d.claimed_by for d in db.scalars(select(Item).join(
+            Link, Link.a == Item.id).where(Link.type == "dependency", Link.b == wait.id)).all()
+            if d.claimed_by}
+        askers |= {d.built_by for d in db.scalars(select(Item).join(
+            Link, Link.a == Item.id).where(Link.type == "dependency", Link.b == wait.id)).all()
+            if getattr(d, "built_by", None)}
+        if agent in askers:
+            raise ActionRefused(f"{agent} filed the question on {wait.key} and cannot answer it; "
+                                "another agent or a person must")
+    if needs_person:
+        wait.decision = {**wait.decision, "needs_person_at": int(utcnow().timestamp())}
+        db.commit()
+        db.refresh(wait)
+        return {"wait": wait.key, "needs_person": True, "released": []}
+    src = _resolve_source(db, source) if agent else None
     choice, text = (choice or "").strip(), (text or "").strip()
     if not choice and not text:
         raise ValueError("an answer needs a chosen `option` or free `text`")
@@ -245,9 +294,13 @@ def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: s
         if dep.claimed_by and _lease_live(dep) and dep.claimed_by not in notify:
             notify.append(dep.claimed_by)
 
-    answer = {"choice": choice, "text": text,
-              "by": getattr(actor, "handle", "") or getattr(actor, "name", "") or "",
-              "at": int(utcnow().timestamp())}
+    user = getattr(actor, "handle", "") or getattr(actor, "name", "") or ""
+    if agent:
+        answer = {"choice": choice, "text": text, "by": {"agent": agent, "user": user},
+                  "source": src, "at": int(utcnow().timestamp())}
+    else:
+        answer = {"choice": choice, "text": text, "by": {"user": user},
+                  "at": int(utcnow().timestamp())}
     wait.decision = {**wait.decision, "answer": answer, "notify": notify, "notified": []}
     # Through `update_item`, the one gated writer of `done`: it clears a typed wait without an
     # attestation and releases its dependents (`release_waiters`).

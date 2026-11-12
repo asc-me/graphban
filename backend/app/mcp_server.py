@@ -64,6 +64,7 @@ from app.services import mcp_stats
 from app.services import memory as mem_svc
 from app.services import setup as setup_svc
 from app.services import tool_tiers
+from app.services import waits as waits_svc
 from app.services import delegation as delegation_svc
 from app.services import entitlements as entitlements_svc
 from app.services import rule_toggles as rule_toggles_svc
@@ -921,6 +922,26 @@ TOOLS: list[dict[str, Any]] = [
                 "reason": {"type": "string"},
             },
             "required": ["id"],
+        },
+    },
+    {
+        "name": "answer_wait",
+        "description": (
+            "Answer a decision wait you did not file: `answer` (or `option`) plus `source` "
+            "{kind: session|prd|memory|decision, ref, quote}; `ref` must resolve for prd, memory, "
+            "decision. `needs_person=true` records no answer and asks a person."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "wait": {"type": "string"},
+                "answer": {"type": "string"},
+                "option": {"type": "string"},
+                "needs_person": {"type": "boolean"},
+                "source": {"type": "object"},
+                "agent_id": {"type": "string"},
+            },
+            "required": ["wait"],
         },
     },
     {
@@ -1890,6 +1911,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     },
     "heartbeat": _ITEM_SCHEMA,
     "release_item": _ITEM_SCHEMA,
+    "answer_wait": {"type": "object", "properties": {"wait": {"type": "string"}}},
     "related_work": {"type": "object", "properties": {"results": {"type": "array"}}},
     "next_cluster": {
         "type": "object",
@@ -3769,6 +3791,19 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             message, hint = items_svc.release_refusal(db, args["id"])
             raise errors.Conflict(message, hint=hint)
         return _item_dict(item)
+    if name == "answer_wait":
+        _scoped_item(db, args["wait"], allowed)
+        agent = fleet_svc.caller_identity(args.get("agent_id"), key)
+        user = db.get(User, key.user_id) if key.user_id else None
+        try:
+            return waits_svc.answer_wait(
+                db, args["wait"], choice=args.get("option"), text=args.get("answer"),
+                actor=user, surface="mcp", agent=agent, source=args.get("source"),
+                needs_person=bool(args.get("needs_person")))
+        except waits_svc.ActionRefused as e:
+            raise errors.Conflict(str(e))
+        except ValueError as e:
+            raise errors.Validation(str(e))
     if name == "extract_lessons":
         _scoped_item(db, args["id"], allowed)
         item_id = args["id"]

@@ -1795,6 +1795,14 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
                 "is not finished work. Leave this item blocked; do not move it to "
                 f"{fields['status']}"
             )
+        # P75 D7. A decision wait clears only by an answer: `answer_wait` stores it, then
+        # calls here. Every other caller, a person moving the card included, is refused.
+        if (fields["status"] == "done" and item.decision
+                and "wait:decision" in {str(t).lower() for t in item.tags or []}
+                and not item.decision.get("answer")):
+            raise ValueError(
+                f"{item.key} is a decision wait with no stored answer. Answer it with the "
+                "Answer control (POST /api/items/{id}/answer) or, as an agent, `answer_wait`")
         # The wait ITEM itself going to `done` is the operator clearing it (not refused).
         # A wait item going to `review` is also not the original pretending to be done.
         if fields["status"] == "review" and wait_tags_on(item) and prev_status == "blocked":
