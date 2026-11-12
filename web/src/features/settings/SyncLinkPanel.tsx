@@ -258,7 +258,8 @@ function CloudLinkCard({
         <>
           <LinkedPanel
             status={status}
-            readOnly={readOnly || status.source === "env"}
+            readOnly={readOnly}
+            unlinkable={status.source !== "env"}
             busy={busy}
             orgHref={status.cloud_url || undefined}
             onChooseProjects={() => setWizardStep(3)}

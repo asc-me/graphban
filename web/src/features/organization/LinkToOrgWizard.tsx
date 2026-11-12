@@ -47,6 +47,11 @@ function refusalText(reason: string | undefined, org: string): string {
       return "That account isn't a member of an org.";
     case "no_seat":
       return `You don't have a seat in ${org || "this org"}. Ask an org admin.`;
+    case "seat_removed":
+    case "token_revoked":
+      return `Your seat in ${org || "this org"} was removed. Nothing is syncing.`;
+    case "key_refused":
+      return "This link used a key. Sign in to keep syncing.";
     default:
       return reason || "The sign-in was refused.";
   }
@@ -76,6 +81,7 @@ export function LinkToOrgWizard({
   >("waiting");
   const [refusal, setRefusal] = React.useState<string | undefined>();
   const [org, setOrg] = React.useState(status.org);
+  const [email, setEmail] = React.useState(status.linked_email ?? "");
   const [copied, setCopied] = React.useState("");
   const [err, setErr] = React.useState<string | null>(null);
 
@@ -108,9 +114,9 @@ export function LinkToOrgWizard({
         if (!live) return;
         if (r.status === "approved") {
           setOrg(r.org ?? "");
+          setEmail(r.email ?? "");
           setSignIn("approved");
           onLinked?.();
-          setStep(3);
         } else if (r.status === "refused") {
           setSignIn("refused");
           setRefusal(r.reason);
@@ -200,7 +206,8 @@ export function LinkToOrgWizard({
   const refused = pushes?.filter((p) => p.status === "refused").length ?? 0;
 
   let line: Line;
-  if (step <= 2 && signIn === "refused") line = { text: "SIGN-IN · REFUSED", tone: "red" };
+  const cloudSeatRefused = step === 3 && cloud.state === "refused" && SEAT_REMOVED.includes(cloud.reason ?? "");
+  if ((step <= 2 && signIn === "refused") || cloudSeatRefused) line = { text: "SIGN-IN · REFUSED", tone: "red" };
   else if (signIn === "unreachable" || (step === 3 && cloud.state === "unknown"))
     line = { text: "CONSOLE · UNREACHABLE", tone: "grey" };
   else if (step === 1 || (step === 2 && signIn === "waiting"))
@@ -211,7 +218,7 @@ export function LinkToOrgWizard({
       text: `PROJECTS · ${synced.length} SYNCED · ${status.projects.length - synced.length} LOCAL`,
       tone: "ok",
     };
-  else if (!pushes) line = { text: pushing ? "PUSH · NOT YET" : "PUSH · NOT YET", tone: pushing ? "wait" : "muted" };
+  else if (!pushes) line = { text: "PUSH · NOT YET", tone: pushing ? "wait" : "muted" };
   else line = { text: `PUSH · ${done} DONE · ${refused} REFUSED`, tone: refused ? "red" : "ok" };
   const pulsing = line.tone === "wait";
 
@@ -219,7 +226,7 @@ export function LinkToOrgWizard({
 
   return (
     <div className="rounded-[13px] border border-line-2 bg-surface-2 p-4" data-testid="link-wizard">
-      <ol className="mb-3 flex flex-wrap gap-x-4 gap-y-1 font-mono text-[11px]" aria-label="Link steps">
+      <ol className="mb-3 flex flex-wrap gap-x-4 gap-y-1 font-mono text-small" aria-label="Link steps">
         {RAIL.map((label, i) => (
           <li
             key={label}
@@ -304,8 +311,19 @@ export function LinkToOrgWizard({
               {copied && <span className="sr-only">Copied {copied}</span>}
               <p className="text-small text-faint">Expires in 10 minutes.</p>
               <p className="text-small text-faint">
-                Or in a terminal: <code className="font-mono text-[11px]">graphban link</code>
+                Or in a terminal: <code className="font-mono text-small">graphban link</code>
               </p>
+            </>
+          )}
+          {signIn === "approved" && (
+            <>
+              <p className="text-body text-st-done">
+                Signed in to {orgLabel}
+                {email ? ` as ${email}` : ""}.
+              </p>
+              <Button size="sm" onClick={() => setStep(3)}>
+                Choose projects →
+              </Button>
             </>
           )}
           {signIn === "refused" && (
@@ -341,7 +359,14 @@ export function LinkToOrgWizard({
             </>
           )}
           {cloud.state === "refused" && (
-            <p className="text-body text-st-blocked">{refusalText(cloud.reason, orgLabel)}</p>
+            <>
+              <p className="text-body text-st-blocked">{refusalText(cloud.reason, orgLabel)}</p>
+              {SEAT_REMOVED.includes(cloud.reason ?? "") && (
+                <Button size="sm" onClick={begin} disabled={readOnly}>
+                  Sign in again
+                </Button>
+              )}
+            </>
           )}
           {cloud.state === "ok" && cloud.projects.length === 0 && (
             <p className="text-body text-muted">
@@ -422,10 +447,16 @@ export function LinkToOrgWizard({
                 </div>
               );
             })}
+          {seatRemoved && (
+            <p className="text-small text-faint">
+              Anyone with a seat in {orgLabel} can sign this box in. Your project choices are kept
+              and checked again.
+            </p>
+          )}
           {err && <p className="text-small text-st-blocked">{err}</p>}
           <div className="flex items-center gap-3">
             {seatRemoved ? (
-              <Button size="sm" onClick={begin}>
+              <Button size="sm" onClick={begin} disabled={readOnly}>
                 Sign in again
               </Button>
             ) : (
@@ -437,7 +468,7 @@ export function LinkToOrgWizard({
               Push later
             </Button>
             <span className="text-small text-faint">
-              Later: <code className="font-mono text-[11px]">graphban sync</code>
+              Later: <code className="font-mono text-small">graphban sync</code>
             </span>
           </div>
         </div>

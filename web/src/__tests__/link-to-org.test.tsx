@@ -112,11 +112,15 @@ describe("LinkToOrgWizard", () => {
     expect(screen.queryByText(/refused/i)).not.toBeInTheDocument();
   });
 
-  it("approval moves to Projects, each defaulting to Local only", async () => {
+  it("approval reads SIGNED IN · <ORG>, then Projects, each defaulting to Local only", async () => {
     const user = userEvent.setup();
     api.syncLinkPoll.mockResolvedValue({ status: "approved", org: "Acme", email: "ann@acme.dev" });
     wizard(base);
     await user.click(screen.getByRole("button", { name: "Get a sign-in code" }));
+    expect(await screen.findByText("Signed in to Acme as ann@acme.dev.")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("SIGNED IN · ACME");
+    expect(screen.getByRole("status").getAttribute("data-tone")).toBe("ok");
+    await user.click(screen.getByRole("button", { name: "Choose projects →" }));
     expect(await screen.findByLabelText("Cloud project for Core")).toHaveValue("");
     expect(screen.getByLabelText("Cloud project for North")).toHaveValue("");
     expect(screen.getByText("Nothing will sync. The box stays linked to Acme.")).toBeInTheDocument();
@@ -124,6 +128,15 @@ describe("LinkToOrgWizard", () => {
     await user.selectOptions(screen.getByLabelText("Cloud project for Core"), "CORE");
     expect(screen.getByText("☁ CORE")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("PROJECTS · 1 SYNCED · 1 LOCAL");
+  });
+
+  it("a seat-removed refusal of the cloud projects names it and offers Sign in again", async () => {
+    api.syncCloudProjects.mockResolvedValue({ status: "refused", reason: "seat_removed" });
+    wizard(signedIn, { initialStep: 3 });
+    expect(await screen.findByText("Your seat in Acme was removed. Nothing is syncing.")).toBeInTheDocument();
+    expect(screen.queryByText("seat_removed")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("SIGN-IN · REFUSED");
   });
 
   it("says no reachable projects, and unknown is grey rather than 'no projects'", async () => {
@@ -245,6 +258,16 @@ describe("LinkedPanel", () => {
     expect(screen.queryByTestId("relink-warning")).not.toBeInTheDocument();
     const line = screen.getByText("This link used a key. Sign in to keep syncing.");
     expect(line.className).toContain("text-st-blocked");
+  });
+
+  it("an env-baked link can still sign in again and choose projects; only Unlink is off", () => {
+    render(
+      <LinkedPanel status={{ ...signedIn, legacy: true, signed_in: false, state: "refused", source: "env" }}
+        unlinkable={false} onChooseProjects={noop} onSignIn={noop} onUnlink={noop} />,
+    );
+    expect(screen.getByRole("button", { name: "Sign in again" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Choose projects" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Unlink" })).toBeDisabled();
   });
 
   it("Unlink calls back", async () => {

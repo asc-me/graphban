@@ -7,6 +7,7 @@ export function LinkedPanel({
   status,
   orgHref,
   readOnly = false,
+  unlinkable = true,
   busy = false,
   onChooseProjects,
   onSignIn,
@@ -15,6 +16,9 @@ export function LinkedPanel({
   status: SyncStatus;
   orgHref?: string;
   readOnly?: boolean;
+  /** False when the link is baked in by env vars: Unlink cannot clear it, but signing in
+   *  again and choosing projects still work (GRPH-1520). */
+  unlinkable?: boolean;
   busy?: boolean;
   onChooseProjects: () => void;
   onSignIn: () => void;
@@ -95,7 +99,7 @@ export function LinkedPanel({
             Open the org →
           </a>
         )}
-        <Button size="sm" variant="danger" onClick={onUnlink} disabled={readOnly || busy}>
+        <Button size="sm" variant="danger" onClick={onUnlink} disabled={readOnly || busy || !unlinkable}>
           Unlink
         </Button>
       </div>
