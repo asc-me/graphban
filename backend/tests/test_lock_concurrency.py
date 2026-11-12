@@ -34,6 +34,7 @@ RACED = {
     "services/teams.py": "test_recompute_locks_the_project_it_materialises_into",
     "services/keys.py": "test_minting_a_key_locks_the_project_it_numbers",
     "services/headroom.py": "test_admission_locks_the_entitlement_it_counts",
+    "services/waits.py": "test_hand_to_person_locks_the_wait_it_hands_off",
 }
 
 postgres_only = pytest.mark.skipif(
@@ -236,3 +237,30 @@ def test_admission_locks_the_entitlement_it_counts(org, monkeypatch):
         "SELECT id FROM entitlements WHERE id = 'lk_ent' FOR NO KEY UPDATE",
         lambda v: headroom.report(v, org["org"], "lk_ent", "spawn_start", agent_id="LK-A1"),
     ), "admission never contended for the entitlement row — the lock is absent"
+
+
+@postgres_only
+def test_hand_to_person_locks_the_wait_it_hands_off(org):
+    """`waits.hand_to_person` re-reads the wait FOR UPDATE before it writes alerts, so an
+    answer committing first makes the hand-off a no-op rather than alerting a person about a
+    question already answered (GRPH-1527, P75 D4).
+
+    `FOR KEY SHARE` is the discriminator: it conflicts with the explicit `FOR UPDATE`, but not
+    with the plain non-key UPDATE of `decision` the hand-off would do without the lock.
+    """
+    from app.models import Item
+    from app.services import items as items_svc
+    from app.services import waits
+
+    s = SessionLocal()
+    try:
+        wait = items_svc.create_item(s, project_id=org["project"], title="which?",
+                                     status="blocked", question="Which?", options=["a"])
+        wait_id = wait.id
+    finally:
+        s.close()
+
+    assert _blocks_while_row_is_locked(
+        f"SELECT id FROM items WHERE id = '{wait_id}' FOR KEY SHARE",
+        lambda v: waits.hand_to_person(v, v.get(Item, wait_id)),
+    ), "the hand-off never contended for the wait row — the lock is absent"

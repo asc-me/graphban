@@ -1,6 +1,7 @@
 import { QUESTION_LABEL } from "@/features/tracker/QuestionStateBadge";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { FETCH_FAILED, PlannerError, TriageQueueSkeleton } from "@/components/planner/PlannerStates";
@@ -58,11 +59,21 @@ export function TriageView() {
   const feedQ = useTriageFeed(projectId);
 
   const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("all");
-  const [selId, setSelId] = useState<string | null>(null);
+  // `?item=KEY` (the bell's alert links, GRPH-1527) opens on that row.
+  const [params] = useSearchParams();
+  const linked = params.get("item");
+  const [selId, setSelId] = useState<string | null>(linked);
   const [processed, setProcessed] = useState<Processed[]>([]);
   const [confirming, setConfirming] = useState<TriageAction | null>(null);
   const [error, setError] = useState<string | null>(null);
   const busy = useRef(false);
+  // A second bell click while Triage is already open changes only the query string.
+  useEffect(() => {
+    if (linked) {
+      setTab("all");
+      setSelId(linked);
+    }
+  }, [linked]);
 
   const hidden = useMemo(() => new Set(processed.map((p) => p.row.id)), [processed]);
   // An answered decision comes back as its own receipt row, so answering it here does not hide it.

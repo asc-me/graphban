@@ -92,6 +92,22 @@ def _request_rows(db: Session, project_id: str, now) -> list[dict]:
     return rows
 
 
+def _nobody_alerted(db: Session, item: Item) -> bool:
+    """The wait (or a wait this ticket depends on) was handed off with no one to alert."""
+    from sqlalchemy import select
+
+    from app.models import Link
+
+    if (item.decision or {}).get("nobody_alerted"):
+        return True
+    for dep_id in db.scalars(select(Link.b).where(Link.type == "dependency", Link.a == item.id)):
+        dep = db.get(Item, dep_id)
+        if dep is not None and (dep.decision or {}).get("nobody_alerted") and not (
+                dep.decision or {}).get("answer"):
+            return True
+    return False
+
+
 def _blocker_rows(db: Session, project_id: str, now) -> list[dict]:
     ctx = prio.context(db, project_id)
     rows = []
@@ -108,6 +124,8 @@ def _blocker_rows(db: Session, project_id: str, now) -> list[dict]:
         qs = waits_svc.question_state(db, item)
         if qs:
             row["question_state"] = qs
+        if qs and _nobody_alerted(db, item):
+            row["nobody_alerted"] = True
         if b.get("decision"):
             row["decision"] = {"question": b["decision"]["question"],
                                "options": b["decision"]["options"]}

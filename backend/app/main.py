@@ -246,10 +246,15 @@ async def lifespan(app: FastAPI):
     if is_leader and settings.plan_grant_check_seconds > 0:
         grant_task = asyncio.create_task(_plan_grant_loop())
 
+    # Question grace sweep (GRPH-1527): leader-only, `0` disables.
+    sweep_task = None
+    if is_leader and settings.question_sweep_seconds > 0:
+        sweep_task = asyncio.create_task(_question_sweep_loop())
+
     try:
         yield
     finally:
-        for task in (retry_task, export_task, judge_task, update_task, grant_task):
+        for task in (retry_task, export_task, judge_task, update_task, grant_task, sweep_task):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -290,6 +295,28 @@ def _plan_grant_pass(startup: bool) -> None:
         plan_grant.refresh_if_due(db, startup=startup)
     finally:
         db.close()
+
+
+def _question_sweep_pass() -> None:
+    from app.services import waits as waits_svc
+
+    db = SessionLocal()
+    try:
+        waits_svc.sweep_questions(db)
+    finally:
+        db.close()
+
+
+async def _question_sweep_loop() -> None:
+    """Hand overdue decision waits to a person. Same properties as `_plan_grant_loop`."""
+    while True:
+        try:
+            await asyncio.to_thread(_question_sweep_pass)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.warning("question sweep pass failed", exc_info=True)
+        await asyncio.sleep(settings.question_sweep_seconds)
 
 
 async def _plan_grant_loop() -> None:
@@ -524,6 +551,8 @@ from app.routers import setup as setup_routes  # noqa: E402
 app.include_router(setup_routes.router, prefix=API)
 from app.routers import machines as machines_routes  # noqa: E402
 app.include_router(machines_routes.router, prefix=API)
+from app.routers import me_alerts as me_alerts_routes  # noqa: E402
+app.include_router(me_alerts_routes.router, prefix=API)
 app.include_router(projects.router, prefix=API)
 app.include_router(items.router, prefix=API)
 app.include_router(requests.router, prefix=API)

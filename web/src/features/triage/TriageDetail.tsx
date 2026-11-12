@@ -104,6 +104,11 @@ export function TriageDetail({
                 {QUESTION_LABEL[row.question_state]}
               </div>
             )}
+            {row.nobody_alerted && (
+              <div data-testid="nobody-alerted" className="mt-1 font-mono text-micro text-st-blocked">
+                Nobody could be alerted: no one with access to this project was found.
+              </div>
+            )}
             <p className="mt-1.5 text-body leading-relaxed text-fg-2">
               {row.decision?.question ?? (row.reason || "No reason was recorded.")}
             </p>

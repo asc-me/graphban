@@ -1682,3 +1682,16 @@ export function useFleetPresence(projectId?: string, enabled = true) {
 export function useApiKeys() {
   return useQuery({ queryKey: keys.apiKeys, queryFn: () => api.apiKeys() });
 }
+
+/** The bell's feed. Polled so a hand-off shows up without a reload; a failure stays an error. */
+export function useMyAlerts() {
+  return useQuery({ queryKey: ["my-alerts"], queryFn: () => api.myAlerts(), refetchInterval: 30_000 });
+}
+
+export function useReadAlert() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.readAlert(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["my-alerts"] }),
+  });
+}
