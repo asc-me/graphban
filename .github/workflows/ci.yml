@@ -311,7 +311,10 @@ jobs:
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test
+      # Vitest starts one worker per core: 15 on these 16-core hosts, against 3 on the 4-core
+      # hosted runners the timing-sensitive tests (p28-rail, the 16ms frame budget) were tuned
+      # on. Four keeps them inside their budgets on a host shared with other jobs.
+      - run: pnpm test --maxWorkers=4
       - name: Canvas perf bench
         run: |
           # Chromium's system libraries are installed on the runner hosts once (apt on
