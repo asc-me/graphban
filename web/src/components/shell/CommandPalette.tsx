@@ -20,7 +20,7 @@ import { useNavigate } from "react-router-dom";
 
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
-import { requestTour } from "@/features/tour/replay";
+import { requestGuide, requestTour } from "@/features/tour/replay";
 import { PALETTE_ITEM_PARAM } from "@/lib/palette-nav";
 import { projectPath, settingsPath } from "@/lib/routes";
 import { useConfig, useItems, usePrds } from "@/lib/queries";
@@ -65,7 +65,7 @@ function matchesQuery(text: string, query: string): boolean {
 type GotoRow = { kind: "goto"; id: string; label: string; path: string; icon: React.ReactNode };
 type ItemRow = { kind: "item"; id: string; label: string; title: string };
 type PrdRow = { kind: "prd"; id: string; label: string; title: string };
-type TourRow = { kind: "tour"; id: string; label: string };
+type TourRow = { kind: "tour" | "concepts" | "prompts"; id: string; label: string };
 type PaletteRow = GotoRow | ItemRow | PrdRow | TourRow;
 
 function buildRows(
@@ -99,10 +99,14 @@ function buildRows(
       label: p.id,
       title: p.title,
     }));
-  // Replay (GRPH-1364). Only with a project: the tour points at the nav it renders.
-  const help = hasProject && (!q || matchesQuery("Take the tour", q))
-    ? [{ kind: "tour" as const, id: "help:tour", label: "Take the tour" }]
-    : [];
+  // Help lists exactly three guides, in this order (GRPH-1512). The tour alone needs a
+  // project: it points at the nav it renders.
+  const guides: TourRow[] = [
+    { kind: "concepts", id: "help:concepts", label: "Concepts" },
+    ...(hasProject ? [{ kind: "tour" as const, id: "help:tour", label: "Take the tour" }] : []),
+    { kind: "prompts", id: "help:prompts", label: "Start-up prompts" },
+  ];
+  const help = guides.filter((g) => !q || matchesQuery(g.label, q));
   return { goto, help, items: itemRows, prds: prdRows };
 }
 
@@ -172,6 +176,10 @@ export function CommandPalette({
     close();
     if (row.kind === "tour") {
       requestTour();
+      return;
+    }
+    if (row.kind === "concepts" || row.kind === "prompts") {
+      requestGuide(row.kind);
       return;
     }
     if (row.kind === "goto") {
