@@ -313,10 +313,29 @@ def push(db: Session, *, project_id: str, cloud_url: str = "", api_key: str = ""
 
 def purge(db: Session, *, project_id: str, cloud_url: str = "", api_key: str = "") -> dict:
     """Delete this project's code graph FROM the cloud (AL-137 D8) and reset the local sync
-    manifest, so a later re-enable does a clean full re-push."""
-    url, key = _target(db, cloud_url, api_key)
+    manifest, so a later re-enable does a clean full re-push.
+
+    It authenticates the way the push does (GRPH-1567). Explicit args (the CLI's config-file
+    key) send `X-API-Key`. A deployment link sends its own auth — the token as Bearer, else
+    the migrated key — with `X-Cloud-Project` naming the project's mapped cloud project; a
+    project with no mapping has nothing published and the console is not called. Otherwise
+    the old key link / env sends `X-API-Key`."""
+    if cloud_url and api_key:
+        url, headers = cloud_url, {"X-API-Key": api_key}
+    else:
+        try:
+            url, auth = _console_auth(db)
+        except NotLinked:
+            url, key = _target(db, cloud_url, api_key)
+            headers = {"X-API-Key": key}
+        else:
+            row = link_device.mappings(db).get(project_id)
+            if row is None or not row.cloud_project_id:
+                return {"project_id": project_id, "skipped": True,
+                        "reason": "project is not mapped to a console project"}
+            headers = {**auth, "X-Cloud-Project": row.cloud_project_id}
     resp = httpx.request("DELETE", f"{url.rstrip('/')}/api/sync/code-graph",
-                         headers={"X-API-Key": key}, timeout=_TIMEOUT)
+                         headers=headers, timeout=_TIMEOUT)
     resp.raise_for_status()
     state = db.get(CodeSyncState, project_id)
     if state is not None:

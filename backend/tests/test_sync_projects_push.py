@@ -354,3 +354,66 @@ def test_a_projects_read_refreshes_the_stored_tag(client, auth, fake, linked):
     fake.projects = httpx.ConnectError("down")
     client.get("/api/sync/projects", headers=auth)
     assert _tags() == {"core": "CORE2", "side": "SIDE"}
+
+
+# ---- purge authenticates the way the push does (GRPH-1567) -------------------------------
+
+@pytest.fixture()
+def deletes(monkeypatch):
+    """Record every DELETE the box sends; the console answers 200."""
+    seen: list[tuple[str, dict]] = []
+
+    def request(method, url, headers=None, timeout=None, **kw):
+        seen.append((method, dict(headers or {})))
+        return httpx.Response(200, json={"removed": 1}, request=httpx.Request(method, url))
+
+    monkeypatch.setattr(httpx, "request", request)
+    return seen
+
+
+def _purge(client, auth, project_id="core"):
+    r = client.post("/api/sync/purge", headers=auth, json={"project_id": project_id})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_a_token_purge_sends_the_bearer_and_the_mapped_project(client, auth, linked, deletes):
+    _purge(client, auth)
+    assert len(deletes) == 1
+    method, headers = deletes[0]
+    assert method == "DELETE"
+    assert headers.get("Authorization") == f"Bearer {TOKEN}"
+    assert headers.get("X-Cloud-Project") == "c1"
+    assert "X-API-Key" not in headers
+
+
+def test_a_legacy_key_link_purges_with_its_key(client, auth, legacy, deletes):
+    _purge(client, auth)
+    (_, headers), = deletes
+    assert headers.get("X-API-Key") == LEGACY_KEY
+    assert headers.get("X-Cloud-Project") == "c1"
+    assert "Authorization" not in headers
+
+
+def test_an_old_key_link_purges_with_x_api_key_as_before(client, auth, deletes):
+    with SessionLocal() as db:
+        link = db.get(SyncLink, "instance") or SyncLink(id="instance")
+        link.cloud_url = CONSOLE
+        link.console_url = ""
+        link.token_enc = ""
+        link.legacy_key = ""
+        link.api_key_enc = secrets.encrypt(LEGACY_KEY)
+        db.add(link)
+        db.commit()
+    _purge(client, auth)
+    (_, headers), = deletes
+    assert headers == {"X-API-Key": LEGACY_KEY}
+
+
+def test_an_unmapped_project_purge_does_not_call_the_console(client, auth, linked, deletes):
+    r = client.put("/api/sync/projects", headers=auth, json={"mappings": [
+        {"local_project_id": "side", "cloud_project_id": "c2"}]})
+    assert r.status_code == 200, r.text
+    out = _purge(client, auth)
+    assert out["skipped"] is True
+    assert deletes == []
