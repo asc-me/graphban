@@ -7,9 +7,12 @@ import { api } from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({ api: { syncStatus: vi.fn() } }));
 
+// GRPH-1562: the id is a UUID unlike the tag, so rendering the id fails these tests.
+const CLOUD_ID = "b1d36410-76d9-4c2e-9a51-0f3e2a7c1d01";
 const proj = (id: string, extra: Record<string, unknown>) => ({
   project_id: id, name: id, writable: false, sync_graph: true, total_nodes: 0, synced_nodes: 0,
-  pending: 0, last_synced_at: null, status: "live", mapped: true, cloud_project_id: "core", ...extra,
+  pending: 0, last_synced_at: null, status: "live", mapped: true, cloud_project_id: CLOUD_ID,
+  cloud_project_tag: "core", ...extra,
 });
 const status = (projects: unknown[], extra: Record<string, unknown> = {}) => ({
   linked: true, source: "web", cloud_url: "https://console.example.com", org: "Acme",
@@ -33,6 +36,18 @@ describe("cloud tag", () => {
     expect(tag).toHaveTextContent("☁ CORE");
     expect(tag).toHaveAttribute("data-state", "synced");
     expect(tag.title).toMatch(/^Syncs to CORE in Acme · last push \d\d:\d\d$/);
+    expect(tag.outerHTML.toLowerCase()).not.toContain("b1d36410");
+  });
+
+  it("unknown tag: ☁ ? with its tooltip, never the id", async () => {
+    vi.mocked(api.syncStatus).mockResolvedValue(
+      status([proj("a", { cloud_project_tag: "", last_push_result: "ok", last_push_at: "2026-11-11T14:02:00" })]) as never,
+    );
+    renderTag("a");
+    const tag = await screen.findByTestId("cloud-tag");
+    expect(tag).toHaveTextContent("☁ ?");
+    expect(tag.title).toBe("Couldn't read the cloud project's tag");
+    expect(tag.outerHTML.toLowerCase()).not.toContain("b1d36410");
   });
 
   it("pending: mapped and never pushed", async () => {

@@ -1344,7 +1344,9 @@ export const api = {
     request<LinkStartResult>("/sync/link/start", { method: "POST", body: JSON.stringify({ console_url }) }),
   syncLinkPoll: () => request<LinkPollResult>("/sync/link/poll"),
   syncCloudProjects: () => request<CloudProjectsResult>("/sync/projects"),
-  syncSaveProjectMap: (mappings: { local_project_id: string; cloud_project_id: string }[]) =>
+  syncSaveProjectMap: (
+    mappings: { local_project_id: string; cloud_project_id: string; cloud_project_tag?: string }[],
+  ) =>
     request<{ mapping: unknown[] }>("/sync/projects", { method: "PUT", body: JSON.stringify({ mappings }) }),
   syncPushAll: () =>
     request<{ projects: ProjectPushResult[] }>("/sync/push", { method: "POST", body: JSON.stringify({}) }),

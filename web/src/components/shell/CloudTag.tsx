@@ -25,6 +25,16 @@ function clock(iso: string): string {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
+/** Shown when a mapped project's cloud tag is not known yet (GRPH-1562). Never the id. */
+export const UNKNOWN_CLOUD_TAG = "?";
+export const UNKNOWN_TAG_TOOLTIP = "Couldn't read the cloud project's tag";
+
+/** The cloud project's tag for display, uppercased, or `?` when unknown — never its id. */
+export function cloudTagText(tag: string | null | undefined): string {
+  const t = (tag ?? "").trim();
+  return t ? t.toUpperCase() : UNKNOWN_CLOUD_TAG;
+}
+
 /**
  * The tag a project carries, or null for a local-only one (no tag, no "local" badge).
  * `status` undefined means the read failed: every tag is then unknown, never synced.
@@ -36,12 +46,19 @@ export function cloudTagFor(projectId: string, status: SyncStatus | undefined): 
   }
   const p = status.projects.find((x) => x.project_id === projectId);
   if (!p || !p.mapped) return null;
-  const cloud = (p.cloud_project_id ?? "").toUpperCase();
+  const cloud = cloudTagText(p.cloud_project_tag);
   const label = `☁ ${cloud}`;
   const org = status.org || "the org";
   const result = status.state === "refused" ? "refused" : p.last_push_result;
+  const known = cloud !== UNKNOWN_CLOUD_TAG;
   if (result === "refused") {
+    if (!known) return { state: "refused", label, tooltip: UNKNOWN_TAG_TOOLTIP };
     return { state: "refused", label, tooltip: `${org} refused the last push · no access to ${cloud}` };
+  }
+  if (!known) {
+    const state = result === "ok" && p.last_push_at ? "synced"
+      : result === "unknown" || status.state === "unknown" ? "unknown" : "pending";
+    return { state, label, tooltip: UNKNOWN_TAG_TOOLTIP };
   }
   if (result === "ok" && p.last_push_at) {
     return { state: "synced", label, tooltip: `Syncs to ${cloud} in ${org} · last push ${clock(p.last_push_at)}` };

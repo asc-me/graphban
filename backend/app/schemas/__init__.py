@@ -1145,6 +1145,7 @@ class SyncProjectState(BaseModel):
     # GRPH-1517: the project's mapping to a cloud project. Unmapped is local only.
     mapped: bool = False
     cloud_project_id: str | None = None
+    cloud_project_tag: str | None = None  # GRPH-1562: "" = not read yet (☁ ?)
     last_push_at: datetime | None = None
     last_push_result: str | None = None  # ok | refused | unknown; None = never pushed
     last_push_reason: str | None = None

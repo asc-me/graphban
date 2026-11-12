@@ -1302,6 +1302,8 @@ export interface SyncProjectState {
   /** GRPH-1517: the cloud project this one maps to. Unmapped is local only. */
   mapped?: boolean;
   cloud_project_id?: string | null;
+  /** GRPH-1562: the cloud project's tag (☁ CORE). "" until a projects read fills it (☁ ?). */
+  cloud_project_tag?: string | null;
   last_push_at?: string | null;
   last_push_result?: "ok" | "refused" | "unknown" | null;
   last_push_reason?: string | null;
@@ -1374,12 +1376,15 @@ export interface LinkPollResult {
 
 export interface CloudProject {
   id: string;
+  /** GRPH-1562: the project's tag on the console — what ☁ TAG shows. */
+  tag?: string;
   name: string;
 }
 
 export interface SyncMappingRow {
   local_project_id: string;
   cloud_project_id: string | null;
+  cloud_project_tag?: string | null;
   last_push_result: "ok" | "refused" | "unknown" | null;
   last_push_reason: string | null;
 }

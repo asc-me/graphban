@@ -1,3 +1,4 @@
+import { cloudTagText, UNKNOWN_CLOUD_TAG, UNKNOWN_TAG_TOOLTIP } from "@/components/shell/CloudTag";
 import { Button } from "@/components/ui/button";
 import type { SyncStatus } from "@/lib/types";
 
@@ -58,8 +59,11 @@ export function LinkedPanel({
           return (
             <li key={p.project_id} className="flex items-baseline gap-3 text-body">
               <span className="w-40 truncate">{p.name}</span>
-              <span className="font-mono text-[10px] uppercase text-faint">
-                ☁ {(p.cloud_project_id ?? "").toUpperCase()}
+              <span
+                className="font-mono text-[10px] uppercase text-faint"
+                title={cloudTagText(p.cloud_project_tag) === UNKNOWN_CLOUD_TAG ? UNKNOWN_TAG_TOOLTIP : undefined}
+              >
+                ☁ {cloudTagText(p.cloud_project_tag)}
               </span>
               {result === "refused" && (
                 <span className="font-mono text-[10px] uppercase text-st-blocked">☁ REFUSED</span>

@@ -365,6 +365,9 @@ class PushIn(BaseModel):
 class ProjectMapping(BaseModel):
     local_project_id: str
     cloud_project_id: str = ""
+    #: The cloud project's tag from the reachable-projects answer (GRPH-1562); optional,
+    #: and corrected by the next projects read.
+    cloud_project_tag: str = ""
 
 
 class ProjectMapIn(BaseModel):
@@ -399,7 +402,8 @@ def put_project_map(body: ProjectMapIn, db: Session = Depends(get_db),
             raise HTTPException(404, f"no local project {local!r}")
         if not cloud and not (link and link.legacy_key):
             raise HTTPException(422, f"project {local!r} needs a cloud_project_id")
-    code_sync.set_project_map(db, list(pairs.items()))
+    tags = {m.cloud_project_id.strip(): m.cloud_project_tag.strip() for m in body.mappings}
+    code_sync.set_project_map(db, list(pairs.items()), tags)
     return {"mapping": _mapping_view(db)}
 
 

@@ -81,7 +81,8 @@ def _stored():
 
 def test_projects_ok_and_unknown_never_an_empty_list(client, auth, fake, linked):
     r = client.get("/api/sync/projects", headers=auth)
-    assert r.json()["status"] == "ok" and r.json()["projects"] == [{"id": "c1", "name": "One"}]
+    assert r.json()["status"] == "ok" and r.json()["projects"] == [
+        {"id": "c1", "tag": "", "name": "One"}]
     assert len(r.json()["mapping"]) == 2
     for down in (httpx.ConnectTimeout("t"), (503, {})):
         fake.projects = down
@@ -310,3 +311,46 @@ def test_a_413_on_an_edge_batch_is_that_projects_refusal_with_the_limit(
     assert (out["core"]["status"], out["core"]["reason"]) == (
         "refused", "at most 20000 edges per request")
     assert out["side"]["status"] == "done"
+
+
+def _tags():
+    with SessionLocal() as db:
+        return {m.local_project_id: m.cloud_project_tag for m in db.query(SyncProject)}
+
+
+def _status_tags(client, auth):
+    rows = client.get("/api/sync/status", headers=auth).json()["projects"]
+    return {p["project_id"]: p["cloud_project_tag"] for p in rows if p["mapped"]}
+
+
+def test_mapping_stores_the_tag_and_status_serves_it(client, auth, fake, linked):
+    """GRPH-1562: the tag the wizard mapped from is stored and served, never the id."""
+    # `side` is not readable by this user, so the status page lists `core` alone.
+    assert _status_tags(client, auth) == {"core": ""}  # unknown → ☁ ?
+    r = client.put("/api/sync/projects", headers=auth, json={"mappings": [
+        {"local_project_id": "core", "cloud_project_id": "c1", "cloud_project_tag": "CORE"},
+        {"local_project_id": "side", "cloud_project_id": "c2", "cloud_project_tag": "SIDE"}]})
+    assert {m["local_project_id"]: m["cloud_project_tag"] for m in r.json()["mapping"]} == {
+        "core": "CORE", "side": "SIDE"}
+    assert _status_tags(client, auth) == {"core": "CORE"}
+    # A re-point with no tag drops the old project's tag rather than keeping a wrong one.
+    client.put("/api/sync/projects", headers=auth, json={"mappings": [
+        {"local_project_id": "core", "cloud_project_id": "c9"},
+        {"local_project_id": "side", "cloud_project_id": "c2"}]})
+    assert _tags() == {"core": "", "side": "SIDE"}
+
+
+def test_a_projects_read_refreshes_the_stored_tag(client, auth, fake, linked):
+    fake.projects = (200, {"projects": [{"id": "c1", "tag": "CORE", "name": "One"},
+                                        {"id": "c2", "tag": "SIDE", "name": "Two"}]})
+    r = client.get("/api/sync/projects", headers=auth).json()
+    assert [p["tag"] for p in r["projects"]] == ["CORE", "SIDE"]
+    assert _tags() == {"core": "CORE", "side": "SIDE"}
+    fake.projects = (200, {"projects": [{"id": "c1", "tag": "CORE2", "name": "One"}]})
+    client.get("/api/sync/projects", headers=auth)
+    # Renamed upstream → refreshed; absent from the answer → kept, not blanked.
+    assert _tags() == {"core": "CORE2", "side": "SIDE"}
+    assert _status_tags(client, auth) == {"core": "CORE2"}
+    fake.projects = httpx.ConnectError("down")
+    client.get("/api/sync/projects", headers=auth)
+    assert _tags() == {"core": "CORE2", "side": "SIDE"}
