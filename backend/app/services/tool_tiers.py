@@ -153,6 +153,9 @@ CORE_TOOLS: dict[str, str] = {
     "register_agent": "MUST stay core for the same reason it is ungated: a caller cannot hold "
                       "anything before it registers",
 
+    "answer_wait": "the answer loop: an agent that can ask a person but not answer a peer's "
+                   "question strands the wait. Same class as release_item",
+
     # ---- review: a plain credential is how a human reviews -----------------------------------
     "claim_review": "review is not fleet administration. Tiering these would mean a reviewer "
                     "credential minted by hand could not see the verbs it exists for",
