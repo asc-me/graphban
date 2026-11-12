@@ -11,6 +11,7 @@ from pywebpush import WebPushException
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Alert, Membership, PushSubscription
+from app.services import alerts as alerts_svc
 from app.services import items as items_svc
 from app.services import links as links_svc
 from app.services import push as push_svc
@@ -150,3 +151,16 @@ def test_hosted_push_links_the_triage_row_by_project_tag(db, monkeypatch):
     assert push_svc._triage_url(db, "core", "GRPH-7") == "/triage?item=GRPH-7"
     monkeypatch.setattr(settings, "hosted_mode", True)
     assert push_svc._triage_url(db, "core", "GRPH-7") == f"/p/{tag}/triage?item=GRPH-7"
+
+
+def test_no_push_to_a_user_who_lost_project_access(db, vapid, monkeypatch):
+    fake = FakePushService()
+    monkeypatch.setattr(push_svc, "webpush", fake)
+    uid = _owner(db)
+    _sub(db, uid)
+    _, wait = _pair(db)
+    alerts = alerts_svc.write_for_wait(db, wait, [uid])
+    db.query(Membership).filter(Membership.user_id == uid, Membership.project_id == "core").delete()
+    db.commit()
+    assert push_svc.send_for_alerts(db, [a.id for a in alerts]) == 0
+    assert fake.calls == []

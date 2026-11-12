@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Alert, Item, Link, utcnow
+from app.security.authz import readable_project_ids
 
 KIND = "response_needed"
 
@@ -65,7 +66,10 @@ def alert_dict(db: Session, row: Alert) -> dict:
 
 
 def list_for_user(db: Session, user_id: str) -> dict:
-    rows = db.scalars(select(Alert).where(Alert.user_id == user_id, Alert.cleared_at.is_(None))
+    # D6: access is checked at read time, so an alert for a project the user lost is hidden
+    readable = readable_project_ids(db, user_id)
+    rows = db.scalars(select(Alert).where(Alert.user_id == user_id, Alert.cleared_at.is_(None),
+                                          Alert.project_id.in_(readable))
                       .order_by(Alert.created_at.desc(), Alert.id.desc())).all()
     return {"unread": sum(r.read_at is None for r in rows),
             "alerts": [alert_dict(db, r) for r in rows]}
@@ -73,7 +77,7 @@ def list_for_user(db: Session, user_id: str) -> dict:
 
 def mark_read(db: Session, user_id: str, alert_id: str) -> bool:
     row = db.get(Alert, alert_id)
-    if row is None or row.user_id != user_id:
+    if row is None or row.user_id != user_id or row.project_id not in readable_project_ids(db, user_id):
         return False
     if row.read_at is None:
         row.read_at = utcnow()
