@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.errors import Refused
-from app.models import ApiKey, Project, User
+from app.models import ApiKey, Project, SyncLink, User
 from app.schemas import GitopsView, SyncLinkIn, SyncOrgOverviewOut, SyncStatusOut
 from app.security import authz
 from app.security.deps import get_agent_key, get_current_user
@@ -356,20 +356,68 @@ def sync_gitops(db: Session = Depends(get_db), key: ApiKey = Depends(get_agent_k
 
 
 class PushIn(BaseModel):
-    project_id: str = "core"
+    project_id: str | None = None
+
+
+class ProjectMapping(BaseModel):
+    local_project_id: str
+    cloud_project_id: str = ""
+
+
+class ProjectMapIn(BaseModel):
+    mappings: list[ProjectMapping]
+
+
+def _mapping_view(db: Session) -> list[dict]:
+    return [{"local_project_id": pid, **link_device.project_view(m)}
+            for pid, m in sorted(link_device.mappings(db).items())]
+
+
+@router.get("/projects")
+def list_cloud_projects(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The cloud projects the linked engineer can reach, read live from the console (box
+    admin): `ok {projects}` (possibly empty), `refused {reason}` or `unknown {reason}`, never
+    an empty list for an unreachable console. `mapping` is the stored local → cloud map."""
+    refuse_unless_box_admin(db, user, "map projects of")
+    return {**_linked(code_sync.console_projects, db), "mapping": _mapping_view(db)}
+
+
+@router.put("/projects")
+def put_project_map(body: ProjectMapIn, db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
+    """Store the local → cloud project mapping (box admin), replacing the old one: a project
+    left out is local only. Stores nothing about access; the console answers that per push."""
+    refuse_unless_box_admin(db, user, "map projects of")
+    link = db.get(SyncLink, "instance")
+    pairs = {m.local_project_id: m.cloud_project_id.strip() for m in body.mappings}
+    known = set(db.scalars(select(Project.id).where(Project.id.in_(list(pairs)))).all())
+    for local, cloud in pairs.items():
+        if local not in known:
+            raise HTTPException(404, f"no local project {local!r}")
+        if not cloud and not (link and link.legacy_key):
+            raise HTTPException(422, f"project {local!r} needs a cloud_project_id")
+    code_sync.set_project_map(db, list(pairs.items()))
+    return {"mapping": _mapping_view(db)}
 
 
 @router.post("/push")
 def trigger_push(
-    body: PushIn,
+    body: PushIn | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Push THIS (local) instance's code graph for a project up to its linked cloud tenant
-    (AL-139) — the `graphban sync` trigger. Only a member who can write the project may
-    sync it; a `409` means the instance isn't linked to a cloud."""
-    authz.require_writable(db, user.id, body.project_id, "item")
-    return _linked(code_sync.push, db, project_id=body.project_id)
+    """Push THIS (local) instance's code graph up to its linked cloud (AL-139) — the
+    `graphban sync` trigger.
+
+    With a `project_id`: that one project, as before — a member who can write it. With none
+    (GRPH-1518, box admin): every mapped project, returning a result PER PROJECT — `done
+    {nodes, edges}`, `refused {reason}` or `unknown {reason}` — each stored on its mapping.
+    `409` means the instance isn't linked to a cloud."""
+    if body is not None and body.project_id:
+        authz.require_writable(db, user.id, body.project_id, "item")
+        return _linked(code_sync.push, db, project_id=body.project_id)
+    refuse_unless_box_admin(db, user, "push")
+    return {"projects": _linked(code_sync.push_mapped, db)}
 
 
 @router.post("/purge")
