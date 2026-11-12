@@ -14,6 +14,7 @@ import type {
   OrgProjectAccess,
   TriageRow,
   AlertsFeed,
+  PushStatus,
   TriageFeed,
   DrainNote,
   AdminInvite,
@@ -447,6 +448,11 @@ export const api = {
   me: () => request<User>("/auth/me"),
   /** The signed-in user's open alerts and unread count (GRPH-1527). */
   myAlerts: () => request<AlertsFeed>("/me/alerts"),
+  pushStatus: () => request<PushStatus>("/me/push"),
+  pushSubscribe: (sub: { endpoint: string; keys: { p256dh: string; auth: string } }) =>
+    request<PushStatus>("/me/push/subscribe", { method: "POST", body: JSON.stringify(sub) }),
+  pushUnsubscribe: (endpoint: string) =>
+    request<PushStatus>("/me/push/unsubscribe", { method: "POST", body: JSON.stringify({ endpoint }) }),
   readAlert: (id: string) =>
     request<AlertsFeed>(`/me/alerts/${encodeURIComponent(id)}/read`, { method: "POST" }),
   // Quick-start progress (GRPH-P67 D6/D8). Readable before any project exists, so the

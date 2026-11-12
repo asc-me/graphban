@@ -3516,6 +3516,12 @@ export interface AlertRow {
   read: boolean;
 }
 
+/** Browser push availability (GRPH-1528): `configured` is false without VAPID keys. */
+export interface PushStatus {
+  configured: boolean;
+  public_key: string | null;
+}
+
 export interface AlertsFeed {
   unread: number;
   alerts: AlertRow[];

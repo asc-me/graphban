@@ -1688,6 +1688,14 @@ export function useMyAlerts() {
   return useQuery({ queryKey: ["my-alerts"], queryFn: () => api.myAlerts(), refetchInterval: 30_000 });
 }
 
+export function usePushStatus() {
+  return useQuery({ queryKey: ["push-status"], queryFn: () => api.pushStatus() });
+}
+
+export function usePushSubscribe() {
+  return useMutation({ mutationFn: (sub: { endpoint: string; keys: { p256dh: string; auth: string } }) => api.pushSubscribe(sub) });
+}
+
 export function useReadAlert() {
   const qc = useQueryClient();
   return useMutation({
