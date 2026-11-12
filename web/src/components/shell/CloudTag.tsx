@@ -117,7 +117,7 @@ export function CloudTagView({ model, className }: { model: CloudTagModel; class
         id={tipId}
         role="tooltip"
         hidden={!open}
-        className="pointer-events-none absolute left-0 top-full z-50 mt-1 whitespace-nowrap rounded-[6px] border border-line-2 bg-surface-3 px-2 py-1 font-sans text-[11px] normal-case text-fg-2 shadow-lg"
+        className="pointer-events-none absolute left-0 top-full z-50 mt-1 whitespace-nowrap rounded-[6px] border border-line-2 bg-surface-3 px-2 py-1 font-sans text-small normal-case text-fg-2 shadow-lg"
       >
         {model.tooltip}
       </span>
