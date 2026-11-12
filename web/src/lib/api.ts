@@ -14,6 +14,7 @@ import type {
   OrgProjectAccess,
   TriageRow,
   TriageFeed,
+  DrainNote,
   AdminInvite,
   AdminOrg,
   AdminUser,
@@ -259,7 +260,7 @@ async function requestText(path: string, retry = true): Promise<string> {
 export interface AnswerWaitResult {
   answered_by?: string;
   quote?: string | null;
-  drain?: { status: "live" | "not_live" | "unknown"; prd: string | null; message: string; command?: string };
+  drain?: DrainNote;
 }
 
 export const api = {

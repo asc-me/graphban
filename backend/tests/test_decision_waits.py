@@ -427,3 +427,18 @@ def test_answer_response_says_drain_and_who_answered(db):
     assert out["quote"] == "the user said redis"
     _, wait2 = _pair(db)
     assert waits.answer_wait(db, wait2.id, choice="redis")["answered_by"].startswith("answered by ")
+
+
+def test_answer_response_says_drain_is_running_with_a_seat_scoped_to_the_prd(db):
+    from app.services import prds as prds_svc
+
+    prd = prds_svc.create_prd(db, project_id="core", title="Drained", body="## A\n\nx\n")
+    original, wait = _pair(db)
+    original.prd_id = prd.id
+    db.commit()
+    _seat(db, prd_id=prd.id, number=94)
+    out = waits.answer_wait(db, wait.id, choice="redis")
+    key = original.prd_key
+    assert key and out["drain"]["status"] == "live" and out["drain"]["prd"] == key
+    assert out["drain"]["message"] == f"A drain is running for {key}. It will pick this ticket up."
+    assert "command" not in out["drain"]
