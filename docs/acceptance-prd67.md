@@ -125,3 +125,16 @@ Walked 2026-11-12 16:29–16:42Z, after GBC-82 merged (graphban-control `b483a85
 Also found: the box's purge sends `DELETE /api/sync/code-graph`, which the console does not serve (GBC-83). The box sends all edges in one request, and the console refuses more than 20000 (GRPH-1555).
 
 **Verdict: blocked on GRPH-1556.** Every other step passes. Re-walk the migrated-key sign-in once GRPH-1556 lands.
+
+## Migrated-key sign-in, confirmed on main
+
+Two fixes were needed. GRPH-1556 (asc-me/graphban#1616, merged `c21e446d`) makes the box fill the pinned project after sign-in. GBC-84 (asc-me/graphban-control#95, merged `b6a3811`) makes the console's poll answer name the revoked key's project. The walk was first run against both PR heads (17:38Z), then again on main at 18:14Z: box API at `c21e446d`, console at `b6a3811`.
+
+| Step | Observed | Verdict |
+|---|---|---|
+| Migrated key link | Fresh console sync credential on Cloud Alpha → box key link + `0194.migrate_key_links` → `legacy=True`; push `done` | **pass** |
+| Sign in | Second member approves → console revokes the key; box `legacy=False`, Walk Project's cloud project filled with Cloud Alpha | **pass** |
+| Next push | `done` to Cloud Alpha, row IN SYNC, relink warning gone | **pass** |
+| Old key | A direct push with it gets 401 | **pass** |
+
+**Verdict: pass.** Every §8.4 step has now passed: grant, sign-in, step ③, first push, and all seven sabotages. Two items are still open but don't block this walk: GRPH-1553 (an unchanged push never contacts the console; it was worked around here) and GRPH-1557 (`sign_in_pending` stays set after an expired code).
