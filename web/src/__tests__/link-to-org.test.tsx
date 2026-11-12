@@ -5,8 +5,17 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LinkedPanel } from "@/features/organization/LinkedPanel";
-import { LINK_FINISHED_KEY, LinkToOrgWizard, resumeTarget } from "@/features/organization/LinkToOrgWizard";
+import {
+  expiryText,
+  LINK_FINISHED_KEY,
+  LinkToOrgWizard,
+  resumeTarget,
+  unreachableText,
+} from "@/features/organization/LinkToOrgWizard";
+import { CONSOLE_URL } from "@/lib/routes";
 import type { SyncProjectState, SyncStatus } from "@/lib/types";
+
+const CONSOLE_HOST = new URL(CONSOLE_URL).host;
 
 const api = vi.hoisted(() => ({
   syncLinkStart: vi.fn(),
@@ -14,6 +23,7 @@ const api = vi.hoisted(() => ({
   syncCloudProjects: vi.fn(),
   syncSaveProjectMap: vi.fn(),
   syncPushAll: vi.fn(),
+  projects: vi.fn(),
 }));
 vi.mock("@/lib/api", () => ({ api }));
 
@@ -65,6 +75,10 @@ beforeEach(() => {
     status: "started", user_code: "WXYZ-1234", verification_url: "https://c.dev/link", interval: 0.01,
   });
   api.syncLinkPoll.mockResolvedValue({ status: "pending" });
+  api.projects.mockResolvedValue([
+    { id: "core", tag: "CORE", name: "Core" },
+    { id: "north", tag: "NRTH", name: "North" },
+  ]);
   api.syncCloudProjects.mockResolvedValue({
     status: "ok", projects: [{ id: CORE_ID, tag: "CORE", name: "Core project" }], mapping: [],
   });
@@ -73,8 +87,14 @@ beforeEach(() => {
 describe("LinkToOrgWizard", () => {
   it("① reads SIGN-IN · NOT YET, muted with a still dot, until a code exists", () => {
     wizard(base);
-    for (const l of ["① Console", "② Sign in", "③ Projects", "④ First push"])
-      expect(screen.getByText(l)).toBeInTheDocument();
+    const rail = screen.getByRole("list", { name: "Link steps" });
+    const nodes = within(rail).getAllByRole("listitem");
+    expect(nodes.map((n) => n.textContent)).toEqual([
+      `①Console◌${CONSOLE_HOST}`,
+      "②Sign in◌your step",
+      "③Projects◌not yet",
+      "④First push◌not yet",
+    ]);
     const st = screen.getByRole("status");
     expect(st).toHaveTextContent("SIGN-IN · NOT YET");
     expect(st.getAttribute("data-tone")).toBe("muted");
@@ -85,7 +105,7 @@ describe("LinkToOrgWizard", () => {
   it("shows the rail and a waiting status line, with a pulsing dot, once a code exists", async () => {
     const user = userEvent.setup();
     wizard(base);
-    await user.click(screen.getByRole("button", { name: "Get a sign-in code" }));
+    await user.click(screen.getByRole("button", { name: "Next →" }));
     await screen.findByTestId("user-code");
     expect(screen.getByRole("status")).toHaveTextContent("SIGN-IN · WAITING");
     expect(screen.getByTestId("status-dot").getAttribute("data-pulse")).toBe("true");
@@ -105,8 +125,11 @@ describe("LinkToOrgWizard", () => {
     const input = screen.getByLabelText("Console URL");
     expect(input).toHaveAttribute("readonly");
     expect(input).toHaveValue("https://baked.dev");
-    expect(screen.getByText(/SYNC_CLOUD_URL/)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Get a sign-in code" }));
+    expect(screen.getByText("SOURCE · env")).toBeInTheDocument();
+    expect(input).toHaveAccessibleDescription(
+      "SOURCE · env Set by this deployment's environment. Change SYNC_CLOUD_URL to move it.",
+    );
+    await user.click(screen.getByRole("button", { name: "Next →" }));
     expect(api.syncLinkStart).toHaveBeenCalledWith("https://baked.dev");
   });
 
@@ -114,18 +137,81 @@ describe("LinkToOrgWizard", () => {
     wizard(base);
     expect(screen.getByLabelText("Console URL")).not.toHaveAttribute("readonly");
     expect(screen.queryByText(/SYNC_CLOUD_URL/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Console URL")).toHaveAccessibleDescription(
+      "The address of your org's Graphban console.",
+    );
+  });
+
+  it("Next → on ① is disabled with a reason while the URL is empty; ← Back is absent on ①", async () => {
+    const user = userEvent.setup();
+    wizard(base);
+    expect(screen.queryByRole("button", { name: "← Back" })).not.toBeInTheDocument();
+    await user.clear(screen.getByLabelText("Console URL"));
+    const next = screen.getByRole("button", { name: "Next →" });
+    expect(next).toBeDisabled();
+    expect(next).toHaveAccessibleDescription("Enter the console's URL.");
   });
 
   it("shows the code, copy, open, expiry and terminal command", async () => {
     const user = userEvent.setup();
+    api.syncLinkStart.mockResolvedValue({
+      status: "started", user_code: "WXYZ-1234", verification_url: "https://c.dev/link", interval: 0.01,
+      expires_at: new Date(Date.now() + 7 * 60000 - 1000).toISOString(),
+    });
     wizard(base);
-    await user.click(screen.getByRole("button", { name: "Get a sign-in code" }));
+    await user.click(screen.getByRole("button", { name: "Next →" }));
     expect(await screen.findByTestId("user-code")).toHaveTextContent("WXYZ-1234");
-    expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    const block = screen.getByTestId("code-block");
+    expect(within(block).getByText("YOUR STEP")).toBeInTheDocument();
+    expect(block).toHaveTextContent("Open c.dev/link and enter the code.");
+    expect(within(block).getByText("c.dev/link").tagName).toBe("STRONG");
+    expect(screen.getByText("Waiting for you to approve it in the console.")).toBeInTheDocument();
+    expect(within(block).getByRole("button", { name: "Copy" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open the console →" })).toHaveAttribute("href", "https://c.dev/link");
     expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
-    expect(screen.getByText("Expires in 10 minutes.")).toBeInTheDocument();
-    expect(screen.getByText(/graphban link/)).toBeInTheDocument();
+    // The expiry is the console's expires_at, not a fixed "10 minutes".
+    expect(screen.getByTestId("expiry")).toHaveTextContent("Expires in 7 minutes.");
+    const term = screen.getByTestId("prefer-terminal");
+    expect(term).toHaveTextContent("PREFER THE TERMINAL?");
+    expect(term).toHaveTextContent(`$ graphban link --cloud-url ${CONSOLE_URL}`);
+    expect(within(term).getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    // Rail ② is pending and waiting; Next is off with the reason.
+    expect(document.querySelector('[data-rail-node="2"]')).toHaveTextContent("②Sign in◌waiting…");
+    const next = screen.getByRole("button", { name: "Next →" });
+    expect(next).toBeDisabled();
+    expect(next).toHaveAccessibleDescription("Approve the code in the console first.");
+    expect(screen.getByRole("button", { name: "← Back" })).toBeInTheDocument();
+  });
+
+  it("no expires_at, no expiry line — never a hard-coded one", async () => {
+    const user = userEvent.setup();
+    wizard(base);
+    await user.click(screen.getByRole("button", { name: "Next →" }));
+    await screen.findByTestId("user-code");
+    expect(screen.queryByTestId("expiry")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Expires in/)).not.toBeInTheDocument();
+  });
+
+  it("expiryText counts down from expires_at", () => {
+    const now = Date.parse("2026-11-12T10:00:00Z");
+    expect(expiryText("2026-11-12T10:10:00Z", now)).toBe("Expires in 10 minutes.");
+    expect(expiryText("2026-11-12T10:00:30Z", now)).toBe("Expires in 1 minute.");
+    expect(expiryText("2026-11-12T09:59:00Z", now)).toBe("This code has expired.");
+    expect(expiryText(undefined, now)).toBeNull();
+  });
+
+  it("Copied is a visible label on the button that was pressed", async () => {
+    const user = userEvent.setup();
+    wizard(base);
+    await user.click(screen.getByRole("button", { name: "Next →" }));
+    const block = await screen.findByTestId("code-block");
+    await user.click(within(block).getByRole("button", { name: "Copy" }));
+    const copied = within(block).getByRole("button", { name: "Copied" });
+    expect(copied).toBeVisible();
+    expect(copied.className).not.toContain("sr-only");
+    // Only that one: the terminal block's Copy is untouched.
+    expect(within(screen.getByTestId("prefer-terminal")).getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    expect(document.querySelector(".sr-only")?.textContent ?? "").not.toMatch(/Copied/);
   });
 
   it.each([
@@ -137,7 +223,7 @@ describe("LinkToOrgWizard", () => {
     const user = userEvent.setup();
     api.syncLinkPoll.mockResolvedValue({ status: "refused", reason });
     wizard({ ...base, org: "Acme" });
-    await user.click(screen.getByRole("button", { name: "Get a sign-in code" }));
+    await user.click(screen.getByRole("button", { name: "Next →" }));
     const msg = await screen.findByText(text);
     expect(msg.className).toContain("text-st-blocked");
     expect(screen.getByRole("status")).toHaveTextContent("SIGN-IN · REFUSED");
@@ -148,23 +234,45 @@ describe("LinkToOrgWizard", () => {
     const user = userEvent.setup();
     api.syncLinkPoll.mockResolvedValue({ status: "unknown", reason: "down" });
     wizard(base);
-    await user.click(screen.getByRole("button", { name: "Get a sign-in code" }));
+    await user.click(screen.getByRole("button", { name: "Next →" }));
     expect(await screen.findByRole("button", { name: "Try again" })).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("CONSOLE · UNREACHABLE");
     expect(screen.getByRole("status").getAttribute("data-tone")).toBe("grey");
     expect(screen.queryByText(/refused/i)).not.toBeInTheDocument();
+    // The line carries the backend's reason.
+    expect(screen.getByTestId("unreachable")).toHaveTextContent(`? Couldn't reach ${CONSOLE_HOST}: down.`);
+    expect(document.querySelector('[data-rail-node="2"]')).toHaveTextContent("②Sign in?couldn't reach");
+  });
+
+  it("an unreachable start shows the reason the backend gave", async () => {
+    const user = userEvent.setup();
+    api.syncLinkStart.mockResolvedValue({ status: "unknown", reason: "connection timed out after 10s" });
+    wizard({ ...base, console_url_env: "https://cloud.acme.dev" });
+    await user.click(screen.getByRole("button", { name: "Next →" }));
+    expect(await screen.findByTestId("unreachable")).toHaveTextContent(
+      "Couldn't reach cloud.acme.dev: connection timed out after 10s.",
+    );
+    expect(unreachableText("https://x.dev", "")).toBe("Couldn't reach x.dev.");
   });
 
   it("approval reads SIGNED IN · <ORG>, then Projects, each defaulting to Local only", async () => {
     const user = userEvent.setup();
     api.syncLinkPoll.mockResolvedValue({ status: "approved", org: "Acme", email: "ann@acme.dev" });
     wizard(base);
-    await user.click(screen.getByRole("button", { name: "Get a sign-in code" }));
-    expect(await screen.findByText("Signed in to Acme as ann@acme.dev.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Next →" }));
+    expect(await screen.findByText(/Signed in to Acme as/)).toHaveTextContent("✓ Signed in to Acme as ann@acme.dev.");
     expect(screen.getByRole("status")).toHaveTextContent("SIGNED IN · ACME");
     expect(screen.getByRole("status").getAttribute("data-tone")).toBe("ok");
-    await user.click(screen.getByRole("button", { name: "Choose projects →" }));
+    expect(document.querySelector('[data-rail-node="1"]')).toHaveTextContent(`①Console✓${CONSOLE_HOST}`);
+    expect(document.querySelector('[data-rail-node="2"]')).toHaveTextContent("②Sign in✓Acme · ann@acme.dev");
+    await user.click(screen.getByRole("button", { name: "Next →" }));
     expect(await screen.findByLabelText("Cloud project for Core")).toHaveValue("");
+    expect(screen.getByText("Pick where each local project syncs in Acme. Local only keeps it on this box.")).toBeInTheDocument();
+    expect(screen.getAllByText("YOUR STEP")).toHaveLength(1);
+    // Rows are labelled with the local project's tag.
+    expect(await screen.findByText("CORE", { selector: "label" })).toHaveAttribute("title", "Core");
+    expect(screen.getByText("NRTH", { selector: "label" })).toBeInTheDocument();
+    expect(document.querySelector('[data-rail-node="3"]')).toHaveTextContent("③Projects◌0 synced · 2 local");
     expect(screen.getByLabelText("Cloud project for North")).toHaveValue("");
     expect(screen.getByText("Nothing will sync. The box stays linked to Acme.")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("PROJECTS · 0 SYNCED · 2 LOCAL");
@@ -177,6 +285,7 @@ describe("LinkToOrgWizard", () => {
     expect(screen.getByRole("status")).toHaveTextContent("PROJECTS · 1 SYNCED · 1 LOCAL");
     expect(screen.getByRole("status").getAttribute("data-tone")).toBe("ok");
     expect(screen.getByRole("status").className).toContain("text-st-done");
+    expect(document.querySelector('[data-rail-node="3"]')).toHaveTextContent("1 synced · 1 local");
   });
 
   it("a seat-removed refusal of the cloud projects names it and offers Sign in again", async () => {
@@ -191,7 +300,10 @@ describe("LinkToOrgWizard", () => {
   it("says no reachable projects, and unknown is grey rather than 'no projects'", async () => {
     api.syncCloudProjects.mockResolvedValue({ status: "ok", projects: [], mapping: [] });
     const { unmount } = wizard(signedIn, { initialStep: 3 });
-    expect(await screen.findByText("You don't have access to any projects in Acme yet. Ask an org admin.")).toBeInTheDocument();
+    expect(await screen.findByText(/You don't have access to any projects in Acme yet. Ask an org admin./)).toBeInTheDocument();
+    // No reachable projects: no selects at all.
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Pick where/)).not.toBeInTheDocument();
     unmount();
 
     api.syncCloudProjects.mockResolvedValue({ status: "unknown", reason: "down" });
@@ -199,6 +311,12 @@ describe("LinkToOrgWizard", () => {
     expect(await screen.findByRole("button", { name: "Try again" })).toBeInTheDocument();
     expect(screen.queryByText(/don't have access/)).not.toBeInTheDocument();
     expect(screen.getByRole("status").getAttribute("data-tone")).toBe("grey");
+    // The unknown line is the backend's reason, not a fixed sentence.
+    expect(screen.getByTestId("unreachable")).toHaveTextContent("Couldn't reach c.dev: down.");
+    expect(document.querySelector('[data-rail-node="3"]')).toHaveTextContent("③Projects?couldn't reach");
+    const next = screen.getByRole("button", { name: "Next →" });
+    expect(next).toBeDisabled();
+    expect(next).toHaveAccessibleDescription("Projects couldn't be loaded.");
   });
 
   it("First push: done, refused on that row only, then Done", async () => {
@@ -265,7 +383,8 @@ describe("LinkToOrgWizard", () => {
     api.syncSaveProjectMap.mockResolvedValue({ mapping: [] });
     const unmapped = { ...signedIn, projects: [proj("core", "Core"), proj("north", "North")] };
     wizard(unmapped, { initialStep: 3 });
-    await user.click(await screen.findByRole("button", { name: "Finish" }));
+    await screen.findByLabelText("Cloud project for Core");
+    await user.click(screen.getByRole("button", { name: "Next →" }));
     expect(await screen.findByText("Nothing to push. Every project is local only.")).toBeInTheDocument();
     expect(localStorage.getItem(LINK_FINISHED_KEY)).toBe("1");
     expect(resumeTarget(unmapped)).toBeNull();
@@ -289,8 +408,42 @@ describe("LinkToOrgWizard", () => {
     });
     wizard(signedIn, { initialStep: 4 });
     await user.click(screen.getByRole("button", { name: "Push now" }));
-    expect(await screen.findByText("Your seat in Acme was removed. Nothing is syncing.")).toBeInTheDocument();
+    expect(await screen.findByText(/Your seat in Acme was removed. Nothing is syncing./)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("SIGN-IN · SEAT REMOVED");
+    expect(screen.getByRole("status").getAttribute("data-tone")).toBe("red");
+    expect(screen.getByText("☁ REFUSED")).toBeInTheDocument();
+    expect(document.querySelector('[data-rail-node="4"]')).toHaveTextContent("④First push✕seat removed");
+  });
+
+  it("④ while pushing: every row reads ◌ PUSHING…, the line is muted and pulses", async () => {
+    const user = userEvent.setup();
+    let resolve!: (v: unknown) => void;
+    api.syncPushAll.mockReturnValue(new Promise((r) => (resolve = r)));
+    wizard(signedIn, { initialStep: 4 });
+    await user.click(screen.getByRole("button", { name: "Push now" }));
+    expect(await screen.findByText("◌ PUSHING…")).toBeInTheDocument();
+    const st = screen.getByRole("status");
+    expect(st.getAttribute("data-tone")).toBe("wait");
+    expect(st.className).not.toContain("text-st-done");
+    expect(screen.getByTestId("status-dot").getAttribute("data-pulse")).toBe("true");
+    expect(document.querySelector('[data-rail-node="4"]')).toHaveTextContent("◌pushing…");
+    resolve({ projects: [{ project_id: "core", status: "done", nodes: 1284, edges: 3906 }] });
+    expect(await screen.findByText(/Pushed 1,284 nodes/)).toBeInTheDocument();
+    expect(screen.queryByText("◌ PUSHING…")).not.toBeInTheDocument();
+    expect(screen.getByRole("status").getAttribute("data-tone")).toBe("ok");
+    expect(document.querySelector('[data-rail-node="4"]')).toHaveTextContent("④First push✓1,284 nodes");
+  });
+
+  it("④ every push unknown is grey CONSOLE · UNREACHABLE, never green", async () => {
+    const user = userEvent.setup();
+    api.syncPushAll.mockResolvedValue({ projects: [{ project_id: "core", status: "unknown", reason: "timed out" }] });
+    wizard(signedIn, { initialStep: 4 });
+    await user.click(screen.getByRole("button", { name: "Push now" }));
+    await screen.findByText(/UNKNOWN/);
+    expect(screen.getByRole("status")).toHaveTextContent("CONSOLE · UNREACHABLE");
+    expect(screen.getByRole("status").getAttribute("data-tone")).toBe("grey");
+    expect(screen.getByText(/UNKNOWN/)).toHaveTextContent("Couldn't reach c.dev: timed out.");
   });
 
   it("③ saves the tag from the reachable-projects answer with the mapping (GRPH-1562)", async () => {
@@ -298,7 +451,7 @@ describe("LinkToOrgWizard", () => {
     api.syncSaveProjectMap.mockResolvedValue({ mapping: [] });
     wizard(signedIn, { initialStep: 3 });
     await screen.findByLabelText("Cloud project for Core");
-    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await user.click(screen.getByRole("button", { name: "Next →" }));
     await waitFor(() => expect(api.syncSaveProjectMap).toHaveBeenCalled());
     expect(api.syncSaveProjectMap.mock.calls[0][0]).toEqual([
       { local_project_id: "core", cloud_project_id: CORE_ID, cloud_project_tag: "CORE" },
@@ -318,7 +471,7 @@ describe("LinkToOrgWizard", () => {
     // signed in with a mapped project that never pushed → First push
     wizard({ ...signedIn, projects: [proj("core", "Core", { mapped: true, cloud_project_id: CORE_ID, cloud_project_tag: "CORE" })] });
     expect(screen.getByRole("button", { name: "Push now" })).toBeInTheDocument();
-    expect(screen.getByText("④ First push")).toHaveAttribute("aria-current", "step");
+    expect(document.querySelector('[data-rail-node="4"]')).toHaveAttribute("aria-current", "step");
   });
 
   describe("resumeTarget (design L3)", () => {
@@ -374,6 +527,11 @@ describe("LinkedPanel", () => {
     expect(line.className).toContain("text-st-blocked");
     expect(screen.getByText("☁ REFUSED")).toBeInTheDocument();
     expect(screen.getByText(/Anyone with a seat in Acme can sign this box in/)).toBeInTheDocument();
+    // The row shows only ☁ REFUSED: no ☁ CORE tag beside it, no SYNCED time.
+    const row = document.querySelector("[data-synced-project]")!;
+    expect(row.textContent).toBe("Core☁ REFUSED");
+    expect(row).not.toHaveTextContent("☁ CORE");
+    expect(row).not.toHaveTextContent("SYNCED");
   });
 
   it("an unknown row is grey, never REFUSED", () => {

@@ -221,6 +221,7 @@ describe("Organization window, not linked: the Link to an org wizard is the body
 
   it("resumes at the first unfinished step: signed in, nothing chosen → ③ Projects", async () => {
     mocks.syncStatus.mockResolvedValue({ ...linked, projects: [proj("core", "core")] });
+    mocks.syncCloudProjects.mockResolvedValue({ status: "ok", projects: [{ id: "c1", tag: "CORE", name: "Core" }], mapping: [] });
     wrapDialog(true);
     const dialog = await screen.findByRole("dialog", { name: "Link to an org" });
     expect(await within(dialog).findByRole("combobox", { name: "Cloud project for core" })).toBeInTheDocument();
@@ -305,8 +306,17 @@ describe("Organization window, linked: the P67 overview (GRPH-1564, L3/L4)", () 
     expect(within(dialog).getByText("2 projects are local only.")).toBeInTheDocument();
   });
 
+  it("leads with the linked line, never the not-linked intro (Org Link L4)", async () => {
+    const dialog = await open();
+    expect(dialog).not.toHaveTextContent(/Link this deployment to an org on Graphban Cloud/);
+    expect(dialog).toHaveAccessibleDescription("This deployment is linked to Ascme Labs as alex@acme.example.");
+    // The first visible line of the body is the linked line.
+    expect(dialog.querySelector("[data-linked-as]")).toBeVisible();
+  });
+
   it("Choose projects and Sign in again open the wizard at ③ and ②", async () => {
     const user = userEvent.setup();
+    mocks.syncCloudProjects.mockResolvedValue({ status: "ok", projects: [{ id: "c1", tag: "CORE", name: "Core" }], mapping: [] });
     const dialog = await open();
     await user.click(within(dialog).getByRole("button", { name: "Choose projects" }));
     expect(await within(dialog).findByRole("combobox", { name: "Cloud project for core" })).toBeInTheDocument();

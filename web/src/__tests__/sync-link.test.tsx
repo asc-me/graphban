@@ -83,7 +83,11 @@ describe("SyncLinkPanel", () => {
     renderPanel();
     expect(await screen.findByTestId("link-wizard")).toBeInTheDocument();
     expect(screen.getByText(/Only a box admin can link this deployment/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Get a sign-in code" })).toBeDisabled();
+    const next = screen.getByRole("button", { name: "Next →" });
+    expect(next).toBeDisabled();
+    expect(next).toHaveAccessibleDescription(
+      "Only a box admin can link this deployment. You can see where it stands here.",
+    );
     expect(screen.getByLabelText("Console URL")).toHaveAttribute("readonly");
     expect(api.syncLinkStart).not.toHaveBeenCalled();
   });
@@ -93,7 +97,7 @@ describe("SyncLinkPanel", () => {
     renderPanel();
     expect(await screen.findByTestId("link-wizard")).toBeInTheDocument();
     expect(screen.queryByText(/Only a box admin can link/)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Get a sign-in code" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Next →" })).toBeEnabled();
   });
 
   it("shows a non-admin the Linked panel read-only (can_link false)", async () => {
@@ -168,7 +172,7 @@ describe("SyncLinkPanel", () => {
     qc.setQueryData(keys.gitops("core"), { fields: { base_branch: { value: "test" } } });
     await screen.findByText("not linked");
 
-    await user.click(screen.getByRole("button", { name: "Get a sign-in code" }));
+    await user.click(screen.getByRole("button", { name: "Next →" }));
     await waitFor(() => expect(api.syncLinkPoll).toHaveBeenCalled());
     await waitFor(() => expect(qc.getQueryData(keys.gitops("core"))).toBeUndefined());
     expect(sessionStorage.getItem(GITOPS_PRELINK_KEY)).toBeNull();
@@ -194,8 +198,12 @@ describe("SyncLinkPanel", () => {
       cloud_project_tag: mapped ? "CORE" : null, last_push_result: pushed ? "ok" : null,
     }],
   });
-  const current = () =>
-    screen.getAllByRole("listitem").find((li) => li.getAttribute("aria-current") === "step")?.textContent;
+  // The rail node's step name; each node also carries a glyph and a sub-line (GRPH-1565).
+  const RAIL_NAMES = ["① Console", "② Sign in", "③ Projects", "④ First push"];
+  const current = () => {
+    const li = screen.getAllByRole("listitem").find((n) => n.getAttribute("aria-current") === "step");
+    return li ? RAIL_NAMES[Number(li.getAttribute("data-rail-node")) - 1] : undefined;
+  };
 
   it("resume: no token with a known console URL opens ② Sign in", async () => {
     api.syncStatus.mockResolvedValue({ ...unlinked, cloud_url: "https://c.dev", linked: false });
@@ -241,7 +249,8 @@ describe("SyncLinkPanel", () => {
     api.syncSaveProjectMap.mockResolvedValue({ mapping: [] });
     api.syncStatus.mockResolvedValue(signedIn(false, false));
     const { unmount } = renderPanel();
-    await user.click(await screen.findByRole("button", { name: "Finish" }));
+    await screen.findByRole("combobox");
+    await user.click(screen.getByRole("button", { name: "Next →" }));
     expect(await screen.findByText("Nothing to push. Every project is local only.")).toBeInTheDocument();
     const wiz = within(screen.getByTestId("link-wizard"));
     expect(wiz.queryByRole("button", { name: "Push now" })).not.toBeInTheDocument();
