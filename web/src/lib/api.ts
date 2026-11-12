@@ -255,6 +255,13 @@ async function requestText(path: string, retry = true): Promise<string> {
   return res.text();
 }
 
+/** GRPH-1529: what `POST /items/{id}/answer` says about who answered and whether a drain is live. */
+export interface AnswerWaitResult {
+  answered_by?: string;
+  quote?: string | null;
+  drain?: { status: "live" | "not_live" | "unknown"; prd: string | null; message: string; command?: string };
+}
+
 export const api = {
   async login(email: string, password: string): Promise<User> {
     const data = await request<{ access_token: string; refresh_token: string }>(
@@ -881,7 +888,7 @@ export const api = {
     }),
   /** Blocker actions (GRPH-1137). `undoBlocker` reverses the newest one on the item. */
   answerBlocker: (itemId: string, option: string) =>
-    request<unknown>(`/items/${encodeURIComponent(itemId)}/answer`, {
+    request<AnswerWaitResult>(`/items/${encodeURIComponent(itemId)}/answer`, {
       method: "POST",
       body: JSON.stringify({ option }),
     }),

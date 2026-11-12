@@ -1,4 +1,4 @@
-import { api } from "@/lib/api";
+import { api, type AnswerWaitResult } from "@/lib/api";
 import type { TriageFeedRow, TriageTab } from "@/lib/types";
 
 /** Reverses one action. Resolves once the server has restored the row. */
@@ -12,7 +12,7 @@ export interface TriageAction {
   primary?: boolean;
   /** Override and Merge only: the actions Undo does not reverse cleanly ask first. */
   confirm?: string;
-  run: () => Promise<{ result: string; undo: Undo }>;
+  run: () => Promise<{ result: string; undo: Undo; command?: string }>;
 }
 
 export const TABS: { id: TriageTab; label: string; key: string; dot: string | null }[] = [
@@ -41,6 +41,14 @@ export function formatAge(seconds: number): string {
 /** PRD-47 S3: duplicate hint on the queue and in the detail callout. */
 export function duplicateHintCopy(id: string, score: number): string {
   return `looks like ${id} — ${Math.round(score * 100)}% similar`;
+}
+
+/** The Processed line for an answer: who answered, then whether a drain will pick the ticket up. */
+export function answeredCopy(base: string, a: AnswerWaitResult | undefined): string {
+  const parts = [base];
+  if (a?.answered_by) parts.push(a.answered_by + (a.quote ? ` — "${a.quote}"` : ""));
+  if (a?.drain?.message) parts.push(a.drain.message);
+  return parts.join(". ");
 }
 
 const iso = (ms: number) => new Date(Date.now() + ms).toISOString();
@@ -74,8 +82,12 @@ export function actionsFor(row: TriageFeedRow, projectId: string): TriageAction[
       const options = row.decision.options.slice(0, OPTION_KEYS.length).map<TriageAction>((o, i) => ({
         key: OPTION_KEYS[i], label: o,
         run: async () => {
-          await api.answerBlocker(row.id, o);
-          return { result: `Answered "${o}" — ${owner} resumed`, undo: () => api.undoBlocker(row.id) };
+          const a = await api.answerBlocker(row.id, o);
+          return {
+            result: answeredCopy(`Answered "${o}" — ${owner} resumed`, a),
+            command: a?.drain?.command,
+            undo: () => api.undoBlocker(row.id),
+          };
         },
       }));
       return [...options, escalate, snooze];

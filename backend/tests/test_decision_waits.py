@@ -375,3 +375,55 @@ def test_mcp_answer_wait_on_its_own_wait_is_refused_naming_the_rule(client, auth
     assert res["structuredContent"]["error"]["rule_id"] == "decision.filer_cannot_answer"
     db.refresh(wait)
     assert not wait.decision.get("answer")
+
+
+# --- GRPH-1529: drain status after an answer --------------------------------------------
+
+
+def _seat(db, *, prd_id=None, seen_ago=0, number=90):
+    from app.models import Agent, Enrolment
+
+    eid = f"enr-d{number}-{prd_id}"
+    db.add(Enrolment(id=eid, project_id="core", code_hash="x", role="worker", prd_id=prd_id,
+                     expires_at=utcnow() + timedelta(hours=1)))
+    db.flush()
+    db.add(Agent(id=f"core-A{number}", project_id="core", number=number, enrolment_id=eid,
+                 state="working", last_seen_at=utcnow() - timedelta(seconds=seen_ago)))
+    db.commit()
+
+
+def test_drain_status_live_not_live_and_scoped(db):
+    assert fleet_svc.drain_status(db, "core", "p1") == "not_live"
+    _seat(db, prd_id="other-prd", number=91)
+    assert fleet_svc.drain_status(db, "core", "p1") == "not_live"
+    _seat(db, prd_id="p1", number=92, seen_ago=10)
+    assert fleet_svc.drain_status(db, "core", "p1") == "live"
+
+
+def test_drain_status_stale_seat_is_not_live(db):
+    _seat(db, prd_id="p1", number=93, seen_ago=fleet_svc.presence_ttl_seconds() + 60)
+    assert fleet_svc.drain_status(db, "core", "p1") == "not_live"
+
+
+def test_drain_status_failed_read_is_unknown_never_no_drain(db):
+    class Broken:
+        def execute(self, *a, **k):
+            raise RuntimeError("db down")
+
+    assert fleet_svc.drain_status(Broken(), "core", "p1") == "unknown"
+    _, wait = _pair(db)
+    note = waits.drain_note(db, wait, status="unknown")
+    assert note["message"] == "Could not check for a running drain."
+    assert "No drain is running" not in note["message"] and "command" not in note
+
+
+def test_answer_response_says_drain_and_who_answered(db):
+    original, wait = _pair(db)
+    out = waits.answer_wait(db, wait.id, text="redis", agent="GRPH-A2",
+                            source={"kind": "session", "quote": "the user said redis"})
+    assert out["drain"]["status"] == "not_live"
+    assert out["drain"]["message"].startswith("No drain is running")
+    assert out["answered_by"] == "answered from session by GRPH-A2"
+    assert out["quote"] == "the user said redis"
+    _, wait2 = _pair(db)
+    assert waits.answer_wait(db, wait2.id, choice="redis")["answered_by"].startswith("answered by ")

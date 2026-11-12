@@ -291,6 +291,47 @@ def _resolve_source(db: Session, source: dict | None) -> dict:
     return {"kind": kind, "ref": ref, "quote": quote}
 
 
+def drain_note(db: Session, wait: Item, status: str | None = None) -> dict:
+    """The drain-status sentence for an answered wait (GRPH-1529).
+
+    The PRD is the asking ticket's (a dependent), falling back to the wait's own. `status`
+    is injectable so a failed read can be shown without a broken database.
+    """
+    from sqlalchemy import select
+
+    from app.models import Link
+    from app.services import fleet as fleet_svc
+
+    holder = wait
+    if not wait.prd_id:
+        for dep_id in db.scalars(select(Link.a).where(Link.type == "dependency", Link.b == wait.id)):
+            dep = db.get(Item, dep_id)
+            if dep is not None and dep.prd_id:
+                holder = dep
+                break
+    prd_key = holder.prd_key if holder.prd_id else None
+    status = status or fleet_svc.drain_status(db, wait.project_id, holder.prd_id)
+    label = prd_key or "this project"
+    note: dict = {"status": status, "prd": prd_key}
+    if status == "live":
+        note["message"] = f"A drain is running for {label}. It will pick this ticket up."
+    elif status == "not_live":
+        note["message"] = f"No drain is running for {label}."
+        note["command"] = f"gban fleet until --prd {prd_key}" if prd_key else "gban fleet until"
+    else:
+        note["message"] = "Could not check for a running drain."
+    return note
+
+
+def answered_by_line(answer: dict) -> str:
+    """"answered by <person>" or "answered from <source> by <agent>" for the Triage row."""
+    by = answer.get("by") or {}
+    src = answer.get("source")
+    if by.get("agent") and src:
+        return f"answered from {src.get('kind')} by {by['agent']}"
+    return f"answered by {by.get('user') or 'a person'}"
+
+
 def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: str | None = None,
                 actor=None, surface: str = "rest", agent: str | None = None,
                 source: dict | None = None, needs_person: bool = False) -> dict:
@@ -363,7 +404,10 @@ def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: s
                  meta={"released": released})
     db.commit()
     db.refresh(wait)
-    return {"wait": wait.key, "answer": answer, "released": released, "event_id": eid}
+    return {"wait": wait.key, "answer": answer, "released": released, "event_id": eid,
+            "answered_by": answered_by_line(answer),
+            "quote": (answer.get("source") or {}).get("quote"),
+            "drain": drain_note(db, wait)}
 
 
 def pending_answers(db: Session, agent_id: str) -> list[Item]:

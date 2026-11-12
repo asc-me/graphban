@@ -163,6 +163,30 @@ describe("Triage inbox", () => {
     await waitFor(() => expect(m.answerBlocker).toHaveBeenCalledWith("GRPH-906", "Both"));
   });
 
+  it("after an answer, says whether a drain is running and offers the restart command", async () => {
+    const decide: TriageFeedRow = {
+      ...blocker, id: "GRPH-906",
+      decision: { question: "Which store?", options: ["Postgres", "SQLite", "Both", "Neither"] },
+    };
+    m.projectTriage.mockResolvedValue(feed([decide, bug]));
+    m.answerBlocker.mockResolvedValueOnce({
+      answered_by: "answered from session by GRPH-A2",
+      quote: "the user said both",
+      drain: {
+        status: "not_live", prd: "GRPH-P75", message: "No drain is running for GRPH-P75.",
+        command: "gban fleet until --prd GRPH-P75",
+      },
+    });
+    renderTriage();
+    await screen.findByText("Crash on empty project");
+    const user = userEvent.setup();
+    await user.keyboard("d");
+    await screen.findByText(/No drain is running for GRPH-P75/);
+    expect(screen.getByText(/answered from session by GRPH-A2 — "the user said both"/)).toBeInTheDocument();
+    expect(screen.getByText("gban fleet until --prd GRPH-P75")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+  });
+
   it("asks before Merge and Override, ↵ confirms, and nothing else asks", async () => {
     renderTriage();
     await screen.findByText("Sidebar collapses on resize");
