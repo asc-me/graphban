@@ -114,6 +114,7 @@ def create_prd(body: PrdCreate, db: Session = Depends(get_db), user: User = Depe
     authz.require_writable(db, user.id, body.project_id)
     return prd_svc.create_prd(
         db, title=body.title, template=body.template, project_id=body.project_id, body=body.body,
+        created_by=user.id,
     )
 
 
