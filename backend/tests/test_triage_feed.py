@@ -120,3 +120,31 @@ def test_collision_id_stable_until_member_set_changes(client, auth):
 def test_other_projects_key_is_refused(client, auth):
     r = client.get("/api/projects/does-not-exist/triage", headers=auth)
     assert r.status_code == 404
+
+
+def test_decision_wait_rows_carry_question_state_and_only_response_needed_counts(
+        client, auth, db):
+    from app.services import items as items_svc
+    from app.services import links as links_svc
+
+    ticket = items_svc.create_item(db, project_id="core", title="needs an answer",
+                                   status="in_progress")
+    wait = items_svc.create_item(db, project_id="core", title="which store?", status="blocked",
+                                 question="Which store?", options=["a", "b"])
+    gate = items_svc.create_item(db, project_id="core", title="merge it", status="blocked",
+                                 tags=["wait:merge"])
+    links_svc.create_link(db, a=ticket.id, b=wait.id, type_="dependency", project_id="core")
+    items_svc.update_item(db, ticket.id, status="blocked")
+    f = _feed(client, auth)
+    rows = {r["id"]: r for r in f["rows"]}
+    assert rows[wait.key]["question_state"] == "checking"
+    assert rows[ticket.key]["question_state"] == "checking"
+    assert "question_state" not in rows[gate.key]
+    assert f["waiting_on_person"] == 0
+    wait.decision = {**wait.decision, "needs_person_at": "2026-11-11T10:00:00+00:00"}
+    db.commit()
+    f = _feed(client, auth)
+    rows = {r["id"]: r for r in f["rows"]}
+    assert rows[wait.key]["question_state"] == "response_needed"
+    assert rows[ticket.key]["question_state"] == "response_needed"
+    assert f["waiting_on_person"] == 2

@@ -192,3 +192,62 @@ def test_mcp_create_item_schema_advertises_question_and_options():
 
     props = next(t for t in TOOLS if t["name"] == "create_item")["inputSchema"]["properties"]
     assert "question" in props and "options" in props
+
+
+def _gate_pair(db, kind="merge"):
+    ticket = items_svc.create_item(db, project_id="core", title="ticket", status="in_progress")
+    gate = items_svc.create_item(db, project_id="core", title=f"gate {kind}", status="blocked",
+                                 tags=[f"wait:{kind}"])
+    links_svc.create_link(db, a=ticket.id, b=gate.id, type_="dependency", project_id="core")
+    items_svc.update_item(db, ticket.id, status="blocked")
+    db.refresh(ticket)
+    return ticket, gate
+
+
+def _seed_needs_person(db, wait):
+    wait.decision = {**wait.decision, "needs_person_at": "2026-11-11T10:00:00+00:00"}
+    db.commit()
+    db.refresh(wait)
+
+
+def test_question_state_checking_then_response_needed_then_cleared(db):
+    ticket, wait = _pair(db)
+    assert waits.question_state(db, wait) == "checking"
+    assert waits.question_state(db, ticket) == "checking"
+    assert items_svc.item_dict(ticket)["question_state"] == "checking"
+    assert items_svc.get_item_details(db, ticket.key)["question_state"] == "checking"
+    _seed_needs_person(db, wait)
+    assert waits.question_state(db, wait) == "response_needed"
+    assert waits.question_state(db, ticket) == "response_needed"
+    assert items_svc.item_dict(ticket)["question_state"] == "response_needed"
+    waits.answer_wait(db, wait.id, choice="redis")
+    db.refresh(wait)
+    db.refresh(ticket)
+    assert waits.question_state(db, wait) is None
+    assert waits.question_state(db, ticket) is None
+    assert "question_state" not in items_svc.item_dict(wait)
+
+
+def test_gate_waits_read_as_plain_blocked(db):
+    for kind in ("merge", "deploy", "secret", "access"):
+        ticket, gate = _gate_pair(db, kind)
+        assert waits.question_state(db, gate) is None
+        assert waits.question_state(db, ticket) is None
+        assert "question_state" not in items_svc.item_dict(ticket)
+
+
+def test_item_dict_renders_question_state_from_the_one_function(db, monkeypatch):
+    """Removing the `question_state` call from `item_dict` fails this test."""
+    ticket, _ = _pair(db)
+    monkeypatch.setattr(waits, "question_state", lambda _db, _item: "response_needed")
+    assert items_svc.item_dict(ticket)["question_state"] == "response_needed"
+
+
+def test_rest_list_and_item_carry_question_state(client, auth, db):
+    ticket, wait = _pair(db)
+    rows = {r["id"]: r for r in client.get("/api/items?project_id=core", headers=auth).json()}
+    assert rows[ticket.key]["question_state"] == "checking"
+    assert rows[wait.key]["question_state"] == "checking"
+    _seed_needs_person(db, wait)
+    got = client.get(f"/api/items/{ticket.key}", headers=auth).json()
+    assert got["question_state"] == "response_needed"

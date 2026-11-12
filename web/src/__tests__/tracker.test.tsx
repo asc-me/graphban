@@ -117,6 +117,31 @@ describe("TrackerView", () => {
     }
   });
 
+  it("labels question states and the Response Needed filter lists only Response Needed (P75 D1)", async () => {
+    const blockedBase = { ...items[0], status: "blocked" as const };
+    served = [
+      ...items,
+      { ...blockedBase, id: "AL-10", title: "Checking ticket", sort_order: 2, question_state: "checking" },
+      { ...blockedBase, id: "AL-11", title: "Needs answer ticket", sort_order: 3, question_state: "response_needed" },
+      { ...blockedBase, id: "AL-12", title: "Gate wait ticket", sort_order: 4 },
+    ];
+    try {
+      const user = userEvent.setup();
+      renderTracker();
+      await screen.findByText("Checking ticket");
+      const labels = screen.getAllByTestId("question-state").map((n) => n.textContent);
+      // Exactly two labelled rows: the gate-wait ticket stays a plain blocked row.
+      expect(labels.sort()).toEqual(["Checking context", "Response Needed"]);
+      await user.click(screen.getByRole("button", { name: /^Response Needed\s*\d+$/ }));
+      expect(screen.getByText("Needs answer ticket")).toBeInTheDocument();
+      expect(screen.queryByText("Checking ticket")).not.toBeInTheDocument();
+      expect(screen.queryByText("Gate wait ticket")).not.toBeInTheDocument();
+      expect(screen.queryByText("In progress thing")).not.toBeInTheDocument();
+    } finally {
+      served = items;
+    }
+  });
+
   it("filters by status", async () => {
     const user = userEvent.setup();
     renderTracker();

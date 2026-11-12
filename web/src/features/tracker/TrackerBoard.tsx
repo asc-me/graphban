@@ -3,6 +3,7 @@ import * as React from "react";
 
 import { Avatar } from "@/components/ui/avatar";
 import { cn } from "@/lib/cn";
+import { QuestionStateBadge } from "./QuestionStateBadge";
 import { BOARD_COLUMNS, CHECK_COLOR, PR_STATE_COLOR, STATUS_META } from "@/lib/meta";
 import type { Item, Status } from "@/lib/types";
 
@@ -193,6 +194,7 @@ function BoardCard({
             PROTO
           </span>
         )}
+        <QuestionStateBadge state={item.question_state} />
         <span className="flex-1" />
         {item.pr && (
           <span
