@@ -132,6 +132,18 @@ One gap the page states rather than hides: `agent_calls` are swept at
 not sent inside that window is lost **and not counted**. `dropped` covers backlogs the
 exporter gave up on, never rows the sweep took first.
 
+### Browser notifications (VAPID)
+
+Response Needed alerts can also reach a person as a browser push (GRPH-1528, P75 D4). It is standard Web Push with VAPID keys; no third-party push service. The in-app alert exists whether or not push works.
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `VAPID_PUBLIC_KEY` | empty | Application server key (base64url) the browser subscribes with |
+| `VAPID_PRIVATE_KEY` | empty | The matching private key: a PEM path or base64url key |
+| `VAPID_SUBJECT` | `mailto:admin@localhost` | The `sub` claim: a `mailto:` or `https:` contact for the push service |
+
+With either key empty the bell says browser notifications are not set up on this deployment and offers no button. The browser asks permission only when a person clicks "Notify me in this browser". A 404/410 from the push service deletes that subscription; any other failure sets `failed_at` and keeps it.
+
 ## AI Providers tab
 
 **Where it lives:** hosted → the **AI Providers** tab. Self-host → **This box → AI
@@ -276,3 +288,5 @@ Deployments cards — the sync credential is identity (PRD-21 D6), gitops is hou
 | GET | `/api/projects/{id}/members` | List members |
 | GET / POST / DELETE | `/api/api-keys` … | Manage API keys |
 | GET | `/api/auth/me/memberships` | The current user's project access (Profile) |
+| GET | `/api/me/push` | Whether browser push is configured, and the public key |
+| POST | `/api/me/push/subscribe` · `/unsubscribe` | Register / remove this browser (`endpoint`, `keys`) |

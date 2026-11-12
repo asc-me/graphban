@@ -2,9 +2,73 @@ import { Bell } from "lucide-react";
 import * as React from "react";
 import { Link } from "react-router-dom";
 
-import { useConfig, useMyAlerts, useProjects, useReadAlert } from "@/lib/queries";
+import { useConfig, useMyAlerts, useProjects, usePushStatus, usePushSubscribe, useReadAlert } from "@/lib/queries";
 import { projectPath, rememberProjectTag } from "@/lib/routes";
 import type { AlertRow } from "@/lib/types";
+
+function b64ToBytes(b64: string): Uint8Array {
+  const pad = "=".repeat((4 - (b64.length % 4)) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
+
+const pushSupported = () =>
+  typeof window !== "undefined" && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+
+/**
+ * "Notify me in this browser" (GRPH-1528). Permission is asked ONLY on the click, never on
+ * load. No VAPID keys: says so and offers no button. Denied / unsupported are shown as such.
+ */
+function BrowserPush() {
+  const status = usePushStatus();
+  const subscribe = usePushSubscribe();
+  const [done, setDone] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  if (!status.data) return null;
+  if (!status.data.configured || !status.data.public_key) {
+    return <div className="border-t border-line p-3 text-[12px] text-muted">Browser notifications are not set up on this deployment.</div>;
+  }
+  if (!pushSupported()) {
+    return <div className="border-t border-line p-3 text-[12px] text-muted">This browser does not support push notifications.</div>;
+  }
+  if (Notification.permission === "denied") {
+    return <div className="border-t border-line p-3 text-[12px] text-muted">Notifications are blocked for this site in your browser settings.</div>;
+  }
+  if (done) return <div className="border-t border-line p-3 text-[12px] text-muted">Notifications are on in this browser.</div>;
+  const enable = async () => {
+    setError(null);
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") {
+        setError(perm === "denied" ? "Notifications are blocked for this site in your browser settings." : "Permission was not granted.");
+        return;
+      }
+      await navigator.serviceWorker.register("/sw.js");
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: b64ToBytes(status.data!.public_key!) as BufferSource,
+      });
+      const j = sub.toJSON();
+      await subscribe.mutateAsync({ endpoint: sub.endpoint, keys: { p256dh: j.keys?.p256dh ?? "", auth: j.keys?.auth ?? "" } });
+      setDone(true);
+    } catch {
+      setError("Could not turn on notifications in this browser.");
+    }
+  };
+  return (
+    <div className="border-t border-line p-3">
+      <button type="button" onClick={enable} className="rounded-md border border-control px-2.5 py-1 text-[12px] hover:border-control-hover">
+        Notify me in this browser
+      </button>
+      {error && (
+        <div role="alert" className="mt-1.5 text-[12px] text-st-blocked">
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * The bell (GRPH-1527, P75 D4): unread alert count and a panel, newest first. A failed read
@@ -80,6 +144,7 @@ export function AlertsBell() {
               </div>
             </Link>
           ))}
+          <BrowserPush />
         </div>
       )}
     </div>

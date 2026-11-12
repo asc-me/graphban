@@ -11,6 +11,19 @@ export default defineConfig({
   resolve: {
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
   },
+  build: {
+    rollupOptions: {
+      // The push service worker (GRPH-1528) is its own entry, emitted at /sw.js unhashed so
+      // the bell can register it by a stable URL.
+      input: {
+        main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        sw: fileURLToPath(new URL("./src/sw.ts", import.meta.url)),
+      },
+      output: {
+        entryFileNames: (chunk) => (chunk.name === "sw" ? "sw.js" : "assets/[name]-[hash].js"),
+      },
+    },
+  },
   server: {
     host: true,
     port: 5173,

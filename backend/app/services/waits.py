@@ -369,12 +369,19 @@ def hand_to_person(db: Session, wait: Item) -> dict:
         if not users:
             new["nobody_alerted"] = True
         locked.decision = new
+        alert_ids = [r.id for r in rows]
         db.commit()
         db.refresh(wait)
-        return {"handed": True, "alerts": len(rows)}
     except Exception:
         db.rollback()
         raise
+    # After the commit; best-effort, so a push failure never fails the hand-off or the alert.
+    try:
+        from app.services import push as push_svc
+        push_svc.send_for_alerts(db, alert_ids)
+    except Exception:  # noqa: BLE001
+        db.rollback()
+    return {"handed": True, "alerts": len(alert_ids)}
 
 
 def sweep_questions(db: Session, *, grace_seconds: int | None = None, now=None) -> list[str]:

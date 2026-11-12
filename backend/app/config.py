@@ -332,6 +332,13 @@ class Settings(BaseSettings):
     question_grace_seconds: int = 600
     question_sweep_seconds: int = 60
 
+    # Browser push for Response Needed alerts (GRPH-1528). Standard Web Push with VAPID; no
+    # third-party service. Leave the keys empty and the bell says browser notifications are
+    # not set up on this deployment. `vapid_private_key` is a PEM path or the base64url key.
+    vapid_public_key: str = ""
+    vapid_private_key: str = ""
+    vapid_subject: str = "mailto:admin@localhost"
+
     # LLM call spans (GRPH-225). How long `llm_call_spans` rows live; 0 or negative
     # keeps everything. The table is telemetry, not the ledger — unbounded growth of
     # per-call rows is the difference between a cost panel and an ops incident.
