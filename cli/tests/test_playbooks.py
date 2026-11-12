@@ -82,21 +82,21 @@ def test_same_sha_does_not_download(tmp_path):
 
 def test_ownership(tmp_path):
     def pack(sha_, body):
-        return {"git_sha": sha_, "files": [{"path": "s/a.md", "body": body},
-                                           {"path": "s/b.md", "body": "B"}]}
+        return {"git_sha": sha_, "files": [{"path": ".claude/agents/a.md", "kind": "loop", "body": body},
+                                           {"path": ".claude/agents/b.md", "kind": "loop", "body": "B"}]}
     poll(URL, tmp_path, client=Fake({"git_sha": "1"}, pack("1", "A1")), now=0)
-    (tmp_path / "s/b.md").write_text("edited")
+    (tmp_path / ".claude/agents/b.md").write_text("edited")
     r = poll(URL, tmp_path, client=Fake({"git_sha": "2"}, pack("2", "A2")), now=5000)
-    assert (tmp_path / "s/a.md").read_text() == "A2"
-    assert (tmp_path / "s/b.md").read_text() == "edited" and "s/b.md" in r["note"]
+    assert (tmp_path / ".claude/agents/a.md").read_text() == "A2"
+    assert (tmp_path / ".claude/agents/b.md").read_text() == "edited" and ".claude/agents/b.md" in r["note"]
 
 
 def test_pack_is_fetched_with_the_credential_not_the_bare_client(tmp_path):
     bare = Fake({"git_sha": "a"}, Refused(401, "authentication required"))
-    authed = Fake(None, {"git_sha": "a", "files": [{"path": "s/a.md", "body": "A"}]})
+    authed = Fake(None, {"git_sha": "a", "files": [{"path": ".claude/agents/a.md", "kind": "loop", "body": "A"}]})
     r = playbooks.poll(URL, tmp_path, client=bare, auth=lambda: authed, now=1000)
     assert bare.calls == ["/health"] and authed.calls == ["/api/playbooks"]
-    assert (tmp_path / "s/a.md").read_text() == "A"
+    assert (tmp_path / ".claude/agents/a.md").read_text() == "A"
     assert r["polled"] and receipt(tmp_path)["git_sha"] == "a"
 
 
@@ -389,3 +389,29 @@ def test_switching_server_still_leaves_a_local_edit(tmp_path):
     poll(other, tmp_path, client=Fake({"git_sha": "1"}, _pack("1")), now=10)
     r = poll(URL, tmp_path, client=Fake({"git_sha": "2"}, _pack("2", loop="L2")), now=20)
     assert (tmp_path / LOOP).read_text() == "mine" and r["kept"] == [LOOP]
+
+
+# --- GRPH-1534: the client only writes the pack's allowed directories ----------------------
+
+@pytest.mark.parametrize("kind,path", [
+    ("loop", ".claude/settings.json"), ("loop", "AGENTS.md"), ("loop", "CLAUDE.md"),
+    ("loop", ".git/hooks/pre-commit"), ("loop", ".mcp.json"),
+    ("skill", ".claude/skills/x/other.md"), ("loop", ".claude/agents/a/b.md"),
+    ("hook", ".git/hooks/pre-commit"), ("bogus", ".claude/agents/ok.md"), (None, LOOP),
+])
+def test_a_path_outside_the_allowlist_writes_nothing(tmp_path, kind, path):
+    pack = _pack("1")
+    pack["files"].append({"path": path, "kind": kind, "body": "x"})
+    r = poll(URL, tmp_path, client=Fake({"git_sha": "1"}, pack), now=0)
+    assert r.get("failed")
+    if kind in ("loop", "hook"):
+        assert path in r["note"]
+    assert not any(p.is_file() for p in tmp_path.rglob("*"))
+
+
+def test_the_real_pack_passes_the_allowlist():
+    from pathlib import Path
+    real = Path(__file__).resolve().parents[2] / "backend/scripts/gban_playbooks.json"
+    for e in json.loads(real.read_text())["files"]:
+        for rel in playbooks.targets(e):
+            assert playbooks.allowed(e["kind"], rel), (e["kind"], rel)

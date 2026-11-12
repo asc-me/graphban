@@ -6,6 +6,7 @@ Every `gban` command may poll `/health`; `gban update` always does. The receipt
 """
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import os
@@ -22,6 +23,31 @@ INTERVAL = 3600
 #: A `skill` entry is published once, under `.claude/skills/<slug>/SKILL.md`; every harness
 #: reads its own directory (`gbagent` reads all three), so the client writes it to each.
 SKILL_DIRS = (".claude/skills", ".grok/skills", ".agents/skills")
+
+
+#: What a pack entry may write, per `kind` (GRPH-P65 table). `*` is one path segment. Anything
+#: else (settings, AGENTS.md, MCP config, .git/hooks) is refused and the whole pack is dropped.
+ALLOWED = {
+    "skill": tuple(f"{b}/*/SKILL.md" for b in SKILL_DIRS),
+    "loop": (".cursor/agents/*", ".claude/agents/*", ".codex/agents/*", ".cursor/rules/*.mdc"),
+    "playbook": (".cursor/plugins/graphban/skills/*/SKILL.md",),
+    "hook": (".cursor/hooks.json", ".cursor/hooks/gb_after_file_edit.py",
+             ".cursor/hooks/gb_claim_manifest.py", ".cursor/hooks/gb_session_start.py",
+             ".cursor/hooks/gb_stop.py", ".grok/hooks/graphban-claim-manifest.json"),
+}
+
+
+def allowed(kind: object, rel: object) -> bool:
+    """True when `rel` is a path the pack may write for this `kind`."""
+    if not isinstance(kind, str) or kind not in ALLOWED or not isinstance(rel, str):
+        return False
+    parts = rel.split("/")
+    for pat in ALLOWED[kind]:
+        want = pat.split("/")
+        if len(want) == len(parts) and all(
+                fnmatch.fnmatchcase(g, w) and (w != "*" or g) for g, w in zip(parts, want)):
+            return True
+    return False
 
 
 def targets(entry: dict) -> list[str]:
@@ -184,6 +210,10 @@ def poll(url: str, repo: Path, *, force: bool = False, client: Client | None = N
                     or ".." in Path(rel).parts or Path(rel).is_absolute():
                 return {"polled": False, "failed": True,
                         "note": "unreadable pack; wrote nothing"}
+            if not allowed(entry.get("kind"), rel):
+                return {"polled": False, "failed": True,
+                        "note": f"pack names a path outside its allowed directories: {rel}; "
+                                "wrote nothing"}
             plan[rel] = body.encode("utf-8")
     applied = apply(repo, plan, dict(base.get("files", {})))
     owned, written, kept = applied["files"], applied["written"], applied["kept"]
