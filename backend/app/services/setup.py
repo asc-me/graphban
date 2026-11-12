@@ -172,6 +172,7 @@ def _connect_step(db: Session, project_id: str, user_id: str | None = None) -> d
         return {**base, "status": "pending", "detail": "No first call seen yet."}
     k = max(live, key=lambda r: r.last_used)
     return {**base, "status": "done", "proof": "first_call", "key_name": k.name,
+            "last_call": (k.last_used if k.last_used.tzinfo else k.last_used.replace(tzinfo=timezone.utc)).isoformat(),
             "detail": f"First call from key '{k.name}' at {k.last_used.isoformat()}."}
 
 

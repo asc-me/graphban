@@ -1287,6 +1287,14 @@ function ModelStep({
 const JOB_TAIL =
   "describe the code, load the durable facts from AGENTS.md/CLAUDE.md/docs as memory candidates, and propose a first handful of items.";
 
+/** The agent counts as "working" only if it made a call within this many ms (the step ③ key's last_call). */
+export const AGENT_ACTIVE_WINDOW_MS = 5 * 60 * 1000;
+
+export function agentIsWorking(connect: { last_call?: string } | undefined, now: number = Date.now()): boolean {
+  const t = connect?.last_call ? Date.parse(connect.last_call) : NaN;
+  return Number.isFinite(t) && now - t <= AGENT_ACTIVE_WINDOW_MS;
+}
+
 export function firstJobPrompt(hosted: boolean): string {
   return hosted
     ? `First ask setup_project for the code-graph dry-run estimate and show it to me. Then run it for this repository and work through it: ${JOB_TAIL}`
@@ -1307,7 +1315,7 @@ function FirstJobStep({
   hosted: boolean;
   agentLabel: string;
   mark: StepMark;
-  setupSteps: { step: number; status: SetupStatus; detail: string; name: string; how: string; reason?: string }[];
+  setupSteps: { step: number; status: SetupStatus; detail: string; name: string; how: string; reason?: string; last_call?: string }[];
   isLast: boolean;
   tourAvailable: boolean;
   onDone: () => void;
@@ -1327,9 +1335,11 @@ function FirstJobStep({
       ? { status: "done" as const, text: "First job finished." }
       : mark.status === "unknown"
         ? { status: "unknown" as const, text: `Unknown — ${mark.reason}` }
-        : anyCounted
+        : anyCounted && agentIsWorking(setupSteps.find((s) => s.step === 5))
           ? { status: "pending" as const, text: "Your agent is working. Counts are live." }
-          : { status: "pending" as const, text: "Pending — nothing counted yet." };
+          : anyCounted
+            ? { status: "pending" as const, text: "Pending — no agent call in the last 5 minutes. Counts so far are shown." }
+            : { status: "pending" as const, text: "Pending — nothing counted yet." };
 
   return (
     <section aria-labelledby="qs-job-h">
@@ -1339,6 +1349,10 @@ function FirstJobStep({
       <p className="mb-1.5 mt-3 font-mono text-[10px] uppercase tracking-wide text-faint">Paste into {agentLabel}</p>
       <CopyLine text={prompt} label="Copy the first-job prompt" />
       <StatusLine status={line.status} text={line.text} />
+      <p className="mt-2 text-[12px] text-muted" data-testid="qs-codegraph-note">
+        The key from “Create a key for Claude Code” does not list <code>describe_code</code>, so your agent will not find
+        it and the code graph stays at 0 on this route. To fill it, run <code>gban setup</code> on the machine with the checkout, or use a key that can describe.
+      </p>
       <dl className="mt-3 grid grid-cols-3 gap-2">
         {counters.map(([label, , sub], i) => (
           <div key={label} className="rounded-[10px] border border-line bg-surface-2 p-2.5">
