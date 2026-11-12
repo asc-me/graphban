@@ -2280,6 +2280,10 @@ class SyncProject(Base):
     #: "" on a migrated key link: the key was pinned to one cloud project server-side and the
     #: box never learned its id. The mapping still exists, so the project keeps pushing.
     cloud_project_id: Mapped[str] = mapped_column(String, default="", server_default="")
+    #: The cloud project's tag (GRPH-1562), shown as `☁ TAG`. Written when the project is
+    #: mapped and refreshed on every projects read; "" (or null) until known, shown `☁ ?`.
+    cloud_project_tag: Mapped[str | None] = mapped_column(
+        String, default="", server_default="", nullable=True)
     last_push_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_push_result: Mapped[str | None] = mapped_column(String, nullable=True)
     last_push_reason: Mapped[str | None] = mapped_column(String, nullable=True)

@@ -17,6 +17,17 @@ const api = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/api", () => ({ api }));
 
+// GRPH-1562: cloud ids are UUIDs and never equal the tag, so a surface that renders the id fails.
+const CORE_ID = "b1d36410-76d9-4c2e-9a51-0f3e2a7c1d01";
+const NORTH_ID = "7a0c2e91-3f44-4b8e-8d12-5c6b9e0a4f02";
+// What a person can read: text plus every tooltip. An <option value> is not shown.
+const noUuid = () => {
+  const titles = Array.from(document.querySelectorAll("[title],[aria-label]"))
+    .map((e) => `${e.getAttribute("title") ?? ""} ${e.getAttribute("aria-label") ?? ""}`).join(" ");
+  const seen = `${document.body.textContent ?? ""} ${titles}`.toLowerCase();
+  for (const id of [CORE_ID, NORTH_ID]) expect(seen).not.toContain(id.slice(0, 8));
+};
+
 const proj = (id: string, name: string, extra: Partial<SyncProjectState> = {}): SyncProjectState => ({
   project_id: id, name, writable: true, sync_graph: true, total_nodes: 1, synced_nodes: 1,
   pending: 0, last_synced_at: null, status: "live", mapped: false, ...extra,
@@ -31,7 +42,7 @@ const signedIn: SyncStatus = {
   ...base, linked: true, source: "web", cloud_url: "https://c.dev", org: "Acme",
   signed_in: true, linked_email: "ann@acme.dev", state: "ok",
   projects: [
-    proj("core", "Core", { mapped: true, cloud_project_id: "CORE", last_push_result: "ok" }),
+    proj("core", "Core", { mapped: true, cloud_project_id: CORE_ID, cloud_project_tag: "CORE", last_push_result: "ok" }),
     proj("north", "North"),
   ],
 };
@@ -54,7 +65,7 @@ beforeEach(() => {
   });
   api.syncLinkPoll.mockResolvedValue({ status: "pending" });
   api.syncCloudProjects.mockResolvedValue({
-    status: "ok", projects: [{ id: "CORE", name: "Core" }], mapping: [],
+    status: "ok", projects: [{ id: CORE_ID, tag: "CORE", name: "Core project" }], mapping: [],
   });
 });
 
@@ -146,8 +157,9 @@ describe("LinkToOrgWizard", () => {
     // Nothing synced yet is muted, not green.
     expect(screen.getByRole("status").getAttribute("data-tone")).toBe("muted");
     expect(screen.getByRole("status").className).not.toContain("text-st-done");
-    await user.selectOptions(screen.getByLabelText("Cloud project for Core"), "CORE");
+    await user.selectOptions(screen.getByLabelText("Cloud project for Core"), CORE_ID);
     expect(screen.getByText("☁ CORE")).toBeInTheDocument();
+    noUuid();
     expect(screen.getByRole("status")).toHaveTextContent("PROJECTS · 1 SYNCED · 1 LOCAL");
     expect(screen.getByRole("status").getAttribute("data-tone")).toBe("ok");
     expect(screen.getByRole("status").className).toContain("text-st-done");
@@ -185,8 +197,8 @@ describe("LinkToOrgWizard", () => {
     });
     wizard(
       { ...signedIn, projects: [
-        proj("core", "Core", { mapped: true, cloud_project_id: "CORE" }),
-        proj("north", "North", { mapped: true, cloud_project_id: "NORTH" }),
+        proj("core", "Core", { mapped: true, cloud_project_id: CORE_ID, cloud_project_tag: "CORE" }),
+        proj("north", "North", { mapped: true, cloud_project_id: NORTH_ID, cloud_project_tag: "NORTH" }),
       ] },
       { initialStep: 4 },
     );
@@ -195,6 +207,7 @@ describe("LinkToOrgWizard", () => {
     await user.click(screen.getByRole("button", { name: "Push now" }));
     expect(await screen.findByText("Pushed 1,284 nodes and 3,906 edges to CORE at 14:02.")).toBeInTheDocument();
     expect(screen.getByText("No access to NORTH. Ask an org admin.")).toBeInTheDocument();
+    noUuid();
     expect(screen.getByRole("status")).toHaveTextContent("PUSH · 1 DONE · 1 REFUSED");
     expect(screen.queryByText(/seat in Acme was removed/)).not.toBeInTheDocument();
   });
@@ -221,6 +234,27 @@ describe("LinkToOrgWizard", () => {
     expect(screen.getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
   });
 
+  it("③ saves the tag from the reachable-projects answer with the mapping (GRPH-1562)", async () => {
+    const user = userEvent.setup();
+    api.syncSaveProjectMap.mockResolvedValue({ mapping: [] });
+    wizard(signedIn, { initialStep: 3 });
+    await screen.findByLabelText("Cloud project for Core");
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(api.syncSaveProjectMap).toHaveBeenCalled());
+    expect(api.syncSaveProjectMap.mock.calls[0][0]).toEqual([
+      { local_project_id: "core", cloud_project_id: CORE_ID, cloud_project_tag: "CORE" },
+    ]);
+  });
+
+  it("④ with no stored tag and no projects read shows ☁ ?, never the id", () => {
+    wizard(
+      { ...signedIn, projects: [proj("core", "Core", { mapped: true, cloud_project_id: CORE_ID, cloud_project_tag: "" })] },
+      { initialStep: 4 },
+    );
+    expect(screen.getByText("☁ ?")).toBeInTheDocument();
+    noUuid();
+  });
+
   it("resumes at the first unfinished step", () => {
     wizard(signedIn);
     // signed in with a mapped project → First push
@@ -240,11 +274,19 @@ describe("LinkedPanel", () => {
     panel(signedIn);
     expect(screen.getByText("This deployment is linked to Acme as ann@acme.dev.")).toBeInTheDocument();
     expect(screen.getByText("☁ CORE")).toBeInTheDocument();
+    noUuid();
     expect(screen.getByText("1 project is local only.")).toBeInTheDocument();
     for (const n of ["Choose projects", "Sign in again", "Unlink"])
       expect(screen.getByRole("button", { name: n })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open the org →" })).toBeInTheDocument();
     expect(screen.getByText("Stops all sync. Every project becomes local only. Cloud items remain.")).toBeInTheDocument();
+  });
+
+  it("a row with no stored tag reads ☁ ? with the tooltip, never the id", () => {
+    panel({ ...signedIn, projects: [proj("core", "Core", { mapped: true, cloud_project_id: CORE_ID, cloud_project_tag: "" })] });
+    const tag = screen.getByText("☁ ?");
+    expect(tag).toHaveAttribute("title", "Couldn't read the cloud project's tag");
+    noUuid();
   });
 
   it("seat removed: red line, every row REFUSED, Sign in again note", () => {
@@ -257,7 +299,7 @@ describe("LinkedPanel", () => {
 
   it("an unknown row is grey, never REFUSED", () => {
     panel({ ...signedIn, state: "unknown", projects: [
-      proj("core", "Core", { mapped: true, cloud_project_id: "CORE", last_push_result: "unknown" }),
+      proj("core", "Core", { mapped: true, cloud_project_id: CORE_ID, cloud_project_tag: "CORE", last_push_result: "unknown" }),
     ] });
     expect(screen.getByText("☁ UNKNOWN").className).toContain("text-faint");
     expect(screen.queryByText("☁ REFUSED")).not.toBeInTheDocument();

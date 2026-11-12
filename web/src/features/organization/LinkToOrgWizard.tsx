@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { cloudTagText } from "@/components/shell/CloudTag";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
@@ -24,8 +25,10 @@ const RAIL = ["Console", "Sign in", "Projects", "First push"] as const;
 const LOCAL = "";
 const SEAT_REMOVED = ["seat_removed", "token_revoked", "key_refused"];
 
-export function tagOf(p: CloudProject | undefined, fallback: string): string {
-  return (p?.name || fallback).toUpperCase();
+/** The ☁ tag for a cloud project: its console tag, else the stored one, else `?` — never the
+ * id and never the name (GRPH-1562). */
+export function tagOf(p: CloudProject | undefined, stored?: string | null): string {
+  return cloudTagText(p?.tag || stored);
 }
 
 /** The first unfinished step, from `/api/sync/status`. */
@@ -167,8 +170,12 @@ export function LinkToOrgWizard({
   }, [step, loadCloud]);
 
   const synced = Object.values(choice).filter(Boolean);
-  const nameOf = (id: string) =>
-    tagOf(cloud.projects.find((p) => p.id === id), id);
+  /** The tag for cloud project `id`; `local` is the row whose stored tag is the fallback. */
+  const nameOf = (id: string, local?: SyncProjectState) =>
+    tagOf(
+      cloud.projects.find((p) => p.id === id),
+      local && local.cloud_project_id === id ? local.cloud_project_tag : null,
+    );
 
   async function saveAndPush() {
     setSaving(true);
@@ -177,7 +184,11 @@ export function LinkToOrgWizard({
       await api.syncSaveProjectMap(
         Object.entries(choice)
           .filter(([, c]) => c)
-          .map(([local_project_id, cloud_project_id]) => ({ local_project_id, cloud_project_id })),
+          .map(([local_project_id, cloud_project_id]) => ({
+            local_project_id,
+            cloud_project_id,
+            cloud_project_tag: cloud.projects.find((c) => c.id === cloud_project_id)?.tag ?? "",
+          })),
       );
       setStep(4);
     } catch (e) {
@@ -397,7 +408,7 @@ export function LinkToOrgWizard({
                     ))}
                   </select>
                   <span className="w-24 font-mono text-[10px] text-faint">
-                    {value ? `☁ ${nameOf(value)}` : "local"}
+                    {value ? `☁ ${nameOf(value, p)}` : "local"}
                   </span>
                 </div>
               );
@@ -427,7 +438,7 @@ export function LinkToOrgWizard({
             .filter((p) => p.mapped || choice[p.project_id])
             .map((p) => {
               const r = pushes?.find((x) => x.project_id === p.project_id);
-              const tag = nameOf(choice[p.project_id] ?? p.cloud_project_id ?? "");
+              const tag = nameOf(choice[p.project_id] ?? p.cloud_project_id ?? "", p);
               return (
                 <div key={p.project_id} className="flex items-baseline gap-3 text-body">
                   <span className="w-32 truncate">{p.name}</span>

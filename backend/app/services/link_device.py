@@ -281,8 +281,10 @@ def link_view(db: Session, maps: dict[str, SyncProject] | None = None) -> dict:
 def project_view(mapping: SyncProject | None) -> dict:
     """One local project's mapping and last push result; unmapped is local only."""
     if mapping is None:
-        return {"mapped": False, "cloud_project_id": None, "last_push_at": None,
+        return {"mapped": False, "cloud_project_id": None, "cloud_project_tag": None,
+                "last_push_at": None,
                 "last_push_result": None, "last_push_reason": None}
     return {"mapped": True, "cloud_project_id": mapping.cloud_project_id,
+            "cloud_project_tag": mapping.cloud_project_tag or "",
             "last_push_at": mapping.last_push_at, "last_push_result": mapping.last_push_result,
             "last_push_reason": mapping.last_push_reason}

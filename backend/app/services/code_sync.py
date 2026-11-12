@@ -402,14 +402,35 @@ def console_projects(db: Session) -> dict:
         return {"status": "refused", "reason": e.reason}
     except ConsoleUnknown as e:
         return {"status": "unknown", "reason": e.reason}
-    projects = [{"id": str(r["id"]), "name": str(r.get("name") or r["id"])}
+    projects = [{"id": str(r["id"]), "tag": str(r.get("tag") or ""),
+                 "name": str(r.get("name") or r["id"])}
                 for r in rows if isinstance(r, dict) and r.get("id")]
+    _refresh_tags(db, {p["id"]: p["tag"] for p in projects if p["tag"]})
     return {"status": "ok", "projects": projects}
 
 
-def set_project_map(db: Session, mappings: list[tuple[str, str]]) -> None:
+def _refresh_tags(db: Session, tags: dict[str, str]) -> None:
+    """Store the console's current tag on every mapping it names (GRPH-1562). A project the
+    console did not name, or named without a tag, keeps what it had: absence is not a rename."""
+    changed = False
+    for row in link_device.mappings(db).values():
+        tag = tags.get(row.cloud_project_id)
+        if tag and row.cloud_project_tag != tag:
+            row.cloud_project_tag = tag
+            changed = True
+    if changed:
+        db.commit()
+
+
+def set_project_map(db: Session, mappings: list[tuple[str, str]],
+                    tags: dict[str, str] | None = None) -> None:
     """Replace the local → cloud mapping. A project left out is local only. A kept row whose
-    cloud project is unchanged keeps its last result; a re-pointed one is pending again."""
+    cloud project is unchanged keeps its last result; a re-pointed one is pending again.
+
+    `tags` maps a cloud project id to its tag, from the reachable-projects answer the mapping
+    was chosen from (GRPH-1562). A row with no tag given keeps its own if its cloud project is
+    unchanged, else starts at "" (`☁ ?`) until the next projects read fills it."""
+    tags = {k: v for k, v in (tags or {}).items() if v}
     existing = link_device.mappings(db)
     wanted = {local: cloud for local, cloud in mappings}
     for local, row in existing.items():
@@ -418,10 +439,15 @@ def set_project_map(db: Session, mappings: list[tuple[str, str]]) -> None:
     for local, cloud in wanted.items():
         row = existing.get(local)
         if row is None:
-            db.add(SyncProject(local_project_id=local, cloud_project_id=cloud))
-        elif row.cloud_project_id != cloud:
+            db.add(SyncProject(local_project_id=local, cloud_project_id=cloud,
+                               cloud_project_tag=tags.get(cloud, "")))
+            continue
+        if row.cloud_project_id != cloud:
             row.cloud_project_id = cloud
+            row.cloud_project_tag = ""
             row.last_push_at = row.last_push_result = row.last_push_reason = None
+        if cloud in tags:
+            row.cloud_project_tag = tags[cloud]
     db.commit()
 
 
