@@ -106,6 +106,12 @@ def _link_row() -> dict:
             "legacy_key", "linked_at")}
 
 
+def _pending_enc() -> str:
+    with SessionLocal() as db:
+        link = db.get(SyncLink, "instance")
+        return link.pending_device_enc if link is not None else ""
+
+
 def _mapped() -> set[str]:
     with SessionLocal() as db:
         return {m.local_project_id for m in db.query(SyncProject).all()}
@@ -256,7 +262,13 @@ def test_each_refusal_says_which_and_stores_nothing(client, auth, console, reaso
     r = _poll(client, auth)
     assert r.json() == {"status": "refused", "reason": reason}
     assert _link_row() == before
-    assert _status(client, auth).json()["legacy"] is True
+    status = _status(client, auth).json()
+    assert status["legacy"] is True
+    # The dead code is no longer in flight (GRPH-1557): the pending secret is gone and a
+    # second poll has nothing to ask about.
+    assert status["sign_in_pending"] is False
+    assert _pending_enc() == ""
+    assert _poll(client, auth).status_code == 404
     _assert_no_secrets(r)
 
 
@@ -281,12 +293,14 @@ def test_no_answer_is_unknown_never_refused_and_stores_nothing(client, auth, con
     assert out["status"] == "unknown", out
     assert out["reason"]
     assert _link_row() == before
+    assert _status(client, auth).json()["sign_in_pending"] is True  # still in flight
 
 
 def test_a_code_the_console_does_not_know_is_refused_expired(client, auth, console):
     _start(client, auth)
     console.poll_answer = (404, {"detail": "unknown_code"})
     assert _poll(client, auth).json() == {"status": "refused", "reason": "expired"}
+    assert _status(client, auth).json()["sign_in_pending"] is False
 
 
 def test_poll_with_no_sign_in_in_flight_is_404(client, auth, console):
