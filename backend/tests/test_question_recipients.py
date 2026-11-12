@@ -109,3 +109,20 @@ def test_mcp_create_stores_key_user_and_survives_key_revocation(client, auth, db
     db.commit()
     db.refresh(prd)
     assert prd.created_by == row.user_id
+    # ...and the owner still resolves: who is alerted does not follow the key.
+    db.add(Item(id="CORE-9001", number=9001, project_id="core", title="q", prd_id=prd.id))
+    db.commit()
+    out = question_recipients(db, db.get(Item, "CORE-9001"))
+    assert out == {"users": [row.user_id], "reason": "prd owner"}
+
+
+def test_only_project_owners_with_read_access_are_returned(db):
+    """Sabotage target: dropping the can_read check on the owners loop lets `po2` in."""
+    _, item = _setup(db, owner_access="none")
+    _user(db, "po2")
+    _member(db, "po2", "owner", "none")
+    db.commit()
+    out = question_recipients(db, item)
+    assert out["users"] == ["po"]
+    assert "project owners" in out["reason"]
+

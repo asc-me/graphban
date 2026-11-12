@@ -305,7 +305,7 @@ def prd_close(prd_id: str, payload: CloseIn, db: Session = Depends(get_db),
         raise HTTPException(404, "prd not found")
     try:
         return prd_svc.close_prd(db, prd, dispositions=payload.dispositions,
-                                 closed_by=f"user:{user.id}", verdict=payload.verdict,
+                                 closed_by=f"user:{user.id}", created_by=user.id, verdict=payload.verdict,
                                  judge_reachable=payload.judge_reachable)
     except (prd_svc.CloseRefused, prd_svc.PrdClosed) as e:
         raise HTTPException(409, str(e))
@@ -414,7 +414,8 @@ def prd_promote(prd_id: str, payload: PromoteIn, db: Session = Depends(get_db),
         raise HTTPException(404, "no such PRD")
     try:
         if payload.target == "prd":
-            out = prd_svc.promote_to_prd(db, prd, payload.sections, title=payload.title)
+            out = prd_svc.promote_to_prd(db, prd, payload.sections, title=payload.title,
+                                         created_by=user.id)
             return {"target": "prd", "id": out.key, "promoted_sections": out.promoted_sections}
         if len(payload.sections) != 1:
             raise ValueError("promoting to an item takes exactly one section")

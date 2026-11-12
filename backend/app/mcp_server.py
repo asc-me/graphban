@@ -2512,6 +2512,13 @@ def _readable_prd(db, prd_id: str, readable):
     return prd
 
 
+def _key_user_id(db, key: ApiKey) -> str | None:
+    """The USER behind the calling key, resolved now (P75 D2). A PRD's owner is stored as
+    this id, so revoking or deactivating the key later never moves it. None — never a
+    placeholder — when the key resolves to no user."""
+    return key.user_id if key.user_id and db.get(User, key.user_id) is not None else None
+
+
 def _writable_prd(db, prd_id: str, allowed):
     """Scope-gated like every other write tool. Checked BEFORE the service call, so a key
     without write scope cannot learn whether a PRD exists by reading the error."""
@@ -3849,7 +3856,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         prd = prd_svc.create_prd(
             db, title=args["title"], template=args.get("template", "standard"),
             project_id=pid, body=args.get("body"),
-            created_by=(db.get(User, key.user_id).id if key.user_id and db.get(User, key.user_id) else None),
+            created_by=_key_user_id(db, key),
         )
         return _prd_dict(prd)
     if name == "get_prd":
@@ -4045,7 +4052,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         try:
             out = dict(prd_svc.close_prd(
                 db, prd, dispositions=args["dispositions"], verdict=args.get("verdict", ""),
-                closed_by=f"agent:{key.name or key.id}"))
+                closed_by=f"agent:{key.name or key.id}", created_by=_key_user_id(db, key)))
             # The outputSchema says `disclosure` is a string, and a JUDGED close has no
             # disclosure to make — the record keeps None so a mechanical close can never be
             # read as judged, but the wire says "" or a strict client refuses a close that
