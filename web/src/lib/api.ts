@@ -923,6 +923,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ option }),
     }),
+  answerBlockerText: (itemId: string, text: string) =>
+    request<AnswerWaitResult>(`/items/${encodeURIComponent(itemId)}/answer`, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    }),
   blockerAction: (itemId: string, action: "unblock" | "escalate" | "release-claim") =>
     request<unknown>(`/items/${encodeURIComponent(itemId)}/${action}`, { method: "POST" }),
   snoozeBlocker: (itemId: string, until: string) =>
