@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { LINK_FINISHED_KEY } from "@/features/organization/LinkToOrgWizard";
 import { GITOPS_PRELINK_KEY } from "@/features/settings/GitopsPanel";
 import { SyncLinkPanel } from "@/features/settings/SyncLinkPanel";
 import { keys } from "@/lib/queries";
@@ -29,6 +30,8 @@ const api = vi.hoisted(() => ({
   syncLinkStart: vi.fn(),
   syncLinkPoll: vi.fn(),
   syncCloudProjects: vi.fn(),
+  syncSaveProjectMap: vi.fn(),
+  syncPushAll: vi.fn(),
   syncOrg: vi.fn(),
   syncUnlink: vi.fn(),
   syncSetGraph: vi.fn(),
@@ -58,6 +61,7 @@ describe("SyncLinkPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     sessionStorage.removeItem(GITOPS_PRELINK_KEY);
+    localStorage.removeItem(LINK_FINISHED_KEY);
     api.syncStatus.mockResolvedValue(unlinked);
     api.syncOrg.mockResolvedValue({ linked: false });
     api.syncUnlink.mockResolvedValue(unlinked);
@@ -95,7 +99,7 @@ describe("SyncLinkPanel", () => {
   it("shows a non-admin the Linked panel read-only (can_link false)", async () => {
     api.syncStatus.mockResolvedValue({
       ...linked, can_link: false, signed_in: true,
-      projects: [{ ...linked.projects[0], mapped: true }],
+      projects: [{ ...linked.projects[0], mapped: true, last_push_result: "ok" }],
     });
     renderPanel();
     const unlinkBtn = await screen.findByRole("button", { name: "Unlink" });
@@ -179,6 +183,95 @@ describe("SyncLinkPanel", () => {
     await user.click(screen.getByText(/Sync this project.s code graph to the cloud/));
     await waitFor(() => expect(api.syncSetGraph).toHaveBeenCalled());
     expect(qc.getQueryData(keys.gitops("core"))).toEqual({ keep: true });
+  });
+
+  // ── GRPH-1563: resume opens the first unfinished step (design L3) ─────────────────────────
+
+  const signedIn = (mapped: boolean, pushed: boolean): SyncStatus => ({
+    ...linked, signed_in: true, linked_email: "ann@acme.dev", state: "ok",
+    projects: [{
+      ...linked.projects[0], mapped, cloud_project_id: mapped ? "c-1" : null,
+      cloud_project_tag: mapped ? "CORE" : null, last_push_result: pushed ? "ok" : null,
+    }],
+  });
+  const current = () =>
+    screen.getAllByRole("listitem").find((li) => li.getAttribute("aria-current") === "step")?.textContent;
+
+  it("resume: no token with a known console URL opens ② Sign in", async () => {
+    api.syncStatus.mockResolvedValue({ ...unlinked, cloud_url: "https://c.dev", linked: false });
+    renderPanel();
+    expect(await screen.findByTestId("link-wizard")).toBeInTheDocument();
+    expect(current()).toBe("② Sign in");
+    expect(screen.getByRole("button", { name: "Get a sign-in code" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("SIGN-IN · NOT YET");
+  });
+
+  it("resume: no token and no console URL known opens ① Console", async () => {
+    renderPanel();
+    expect(await screen.findByTestId("link-wizard")).toBeInTheDocument();
+    expect(current()).toBe("① Console");
+  });
+
+  it("resume: signed in, nothing mapped, never finished opens ③ Projects", async () => {
+    api.syncCloudProjects.mockResolvedValue({ status: "ok", projects: [], mapping: [] });
+    api.syncStatus.mockResolvedValue(signedIn(false, false));
+    renderPanel();
+    expect(await screen.findByTestId("link-wizard")).toBeInTheDocument();
+    expect(current()).toBe("③ Projects");
+  });
+
+  it("resume: mapped but never pushed opens ④ First push, not Linked", async () => {
+    api.syncStatus.mockResolvedValue(signedIn(true, false));
+    renderPanel();
+    expect(await screen.findByTestId("link-wizard")).toBeInTheDocument();
+    expect(current()).toBe("④ First push");
+    expect(screen.queryByTestId("linked-panel")).not.toBeInTheDocument();
+  });
+
+  it("resume: mapped and pushed opens the Linked window", async () => {
+    api.syncStatus.mockResolvedValue(signedIn(true, true));
+    renderPanel();
+    expect(await screen.findByTestId("linked-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("link-wizard")).not.toBeInTheDocument();
+  });
+
+  it("choosing nothing at ③ finishes the link: Done goes to Linked, and reopening shows Linked", async () => {
+    const user = userEvent.setup();
+    api.syncCloudProjects.mockResolvedValue({ status: "ok", projects: [{ id: "c-1", tag: "CORE", name: "Core" }], mapping: [] });
+    api.syncSaveProjectMap.mockResolvedValue({ mapping: [] });
+    api.syncStatus.mockResolvedValue(signedIn(false, false));
+    const { unmount } = renderPanel();
+    await user.click(await screen.findByRole("button", { name: "Finish" }));
+    expect(await screen.findByText("Nothing to push. Every project is local only.")).toBeInTheDocument();
+    const wiz = within(screen.getByTestId("link-wizard"));
+    expect(wiz.queryByRole("button", { name: "Push now" })).not.toBeInTheDocument();
+    await user.click(wiz.getByRole("button", { name: "Done" }));
+    expect(await screen.findByTestId("linked-panel")).toBeInTheDocument();
+    unmount();
+
+    renderPanel();
+    expect(await screen.findByTestId("linked-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("link-wizard")).not.toBeInTheDocument();
+  });
+
+  it("unlink forgets a finished empty link", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem(LINK_FINISHED_KEY, "1");
+    api.syncStatus.mockResolvedValue(signedIn(false, false));
+    renderPanel();
+    await user.click(await screen.findByRole("button", { name: "Unlink" }));
+    await waitFor(() => expect(api.syncUnlink).toHaveBeenCalled());
+    expect(localStorage.getItem(LINK_FINISHED_KEY)).toBeNull();
+  });
+
+  it("Linked's Sign in again opens ② Sign in, not ①", async () => {
+    const user = userEvent.setup();
+    api.syncStatus.mockResolvedValue({ ...signedIn(true, true), can_link: true });
+    renderPanel();
+    await user.click(await screen.findByRole("button", { name: "Sign in again" }));
+    expect(await screen.findByTestId("link-wizard")).toBeInTheDocument();
+    expect(current()).toBe("② Sign in");
+    expect(screen.queryByLabelText("Console URL")).not.toBeInTheDocument();
   });
 
   // ── PRD-47 S17: a read that failed is not a read still running ──────────────────────────

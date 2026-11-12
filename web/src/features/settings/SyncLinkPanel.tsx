@@ -15,7 +15,12 @@ import * as React from "react";
 import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { Button } from "@/components/ui/button";
 import { LinkedPanel } from "@/features/organization/LinkedPanel";
-import { LinkToOrgWizard, type WizardStep } from "@/features/organization/LinkToOrgWizard";
+import {
+  LinkToOrgWizard,
+  resumeTarget,
+  setLinkFinished,
+  type WizardStep,
+} from "@/features/organization/LinkToOrgWizard";
 import { noteGitopsUnlinked } from "@/features/settings/GitopsPanel";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -197,6 +202,8 @@ function CloudLinkCard({
   const qc = useQueryClient();
   const [busy, setBusy] = React.useState(false);
   const [wizardStep, setWizardStep] = React.useState<WizardStep | null>(null);
+  // Done closes the wizard for this visit even before the refetched status lands.
+  const [closed, setClosed] = React.useState(false);
   const { data: orgOverview } = useSyncOrg(status.linked);
   // Only a box admin may link, re-point or unlink; the wizard is read-only for anyone else.
   // can_link answers it on a linked AND an unlinked box (GRPH-1537); /sync/org's can_unlink
@@ -204,9 +211,9 @@ function CloudLinkCard({
   const readOnly =
     status.can_link === false ||
     (status.can_link === undefined && status.linked && orgOverview?.can_unlink === false);
-  const wizardNeeded =
-    (!status.linked && !status.signed_in) ||
-    (status.signed_in && !status.projects.some((p) => p.mapped));
+  // The first unfinished step (design L3 "Resume"); null opens the Linked window.
+  const resume = resumeTarget(status);
+  const wizardNeeded = resume !== null && !(closed && status.signed_in);
 
   function dropGitopsCache() {
     // Prefix of keys.gitops(id). Link is instance-wide; do not first-paint a
@@ -218,6 +225,8 @@ function CloudLinkCard({
     setBusy(true);
     try {
       await api.syncUnlink();
+      setLinkFinished(false);
+      setClosed(false);
       noteGitopsUnlinked();
       dropGitopsCache();
       onChange();
@@ -247,7 +256,7 @@ function CloudLinkCard({
       {wizardStep !== null || wizardNeeded ? (
         <LinkToOrgWizard
           status={status}
-          initialStep={wizardStep ?? undefined}
+          initialStep={wizardStep ?? resume ?? undefined}
           readOnly={readOnly}
           onLinked={() => {
             dropGitopsCache();
@@ -255,6 +264,7 @@ function CloudLinkCard({
           }}
           onDone={() => {
             setWizardStep(null);
+            setClosed(true);
             onChange();
           }}
         />
@@ -267,7 +277,7 @@ function CloudLinkCard({
             busy={busy}
             orgHref={status.cloud_url || undefined}
             onChooseProjects={() => setWizardStep(3)}
-            onSignIn={() => setWizardStep(1)}
+            onSignIn={() => setWizardStep(2)}
             onUnlink={unlink}
           />
           <ProjectsTable projects={status.projects} scopedId={scopedId} onScope={onScope} />
