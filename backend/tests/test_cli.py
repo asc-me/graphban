@@ -91,31 +91,24 @@ def test_init_key_tiers_default_is_none(cfg_path, monkeypatch):
     assert captured["key_tiers"] is None
 
 
-def test_link_persists_target_chmod_600(cfg_path):
-    assert cli.main(["link", "--cloud-url", "https://c.example/", "--api-key", "gb_sk_x", "--project", "core"]) == 0
-    saved = json.loads(cfg_path.read_text())
-    assert saved == {"cloud_url": "https://c.example", "api_key": "gb_sk_x", "project": "core"}  # slash trimmed
-    assert oct(cfg_path.stat().st_mode)[-3:] == "600"  # credential file is not world-readable
+def _write_cfg(cfg_path, **kw):
+    cfg_path.write_text(json.dumps({"cloud_url": "https://c.example", **kw}))
 
 
-def test_link_requires_both_url_and_key(cfg_path):
-    # --api-key is the flag (identity). The parenthetical used to say "sync credential"
-    # while Settings → Cloud / Sync names the same object a link key.
-    with pytest.raises(SystemExit, match=r"--api-key \(the org-issued link key\)") as e:
-        cli.main(["link", "--cloud-url", "https://c.example/"])  # missing --api-key
-    assert "sync credential" not in str(e.value)
+def test_link_has_no_api_key_flag_and_needs_a_console(cfg_path, capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["link", "--cloud-url", "https://c.example", "--api-key", "gb_sk_x"])
+    with pytest.raises(SystemExit, match="--cloud-url"):
+        cli.main(["link"])
 
 
-def test_link_help_names_the_org_issued_link_key(capsys):
-    # THE CALL. Parent `graphban -h` does not list subparser help strings.
-    # `graphban link -h` is what prints description= (and --api-key as the flag).
+def test_link_help_describes_the_device_flow(capsys):
     with pytest.raises(SystemExit) as e:
         cli.main(["link", "-h"])
     assert e.value.code == 0
     out = capsys.readouterr().out
-    assert "org-issued link key" in out
-    assert "--api-key" in out
-    assert "org-issued credential" not in out
+    assert "device code" in out and "LOCAL=CLOUD" in out
+    assert "--api-key" not in out
 
 
 def test_status_reports_not_linked(cfg_path, capsys):
@@ -123,26 +116,14 @@ def test_status_reports_not_linked(cfg_path, capsys):
     assert "Not linked" in capsys.readouterr().out
 
 
-def test_status_linked_shows_never_synced(cfg_path, capsys):
-    cli.main(["link", "--cloud-url", "https://c.example", "--api-key", "gb_sk_x"])
-    capsys.readouterr()
+def test_status_linked_shows_never_synced(cfg_path, capsys, monkeypatch):
+    from app.services import code_sync
+    monkeypatch.setattr(code_sync, "link_status",
+                        lambda db: {"linked": True, "cloud_url": "https://c.example", "source": "db"})
+    _write_cfg(cfg_path)
     assert cli.main(["status"]) == 0
     out = capsys.readouterr().out
     assert "https://c.example" in out and "Last sync : never" in out
-
-
-def test_sync_passes_the_stored_link_to_push(cfg_path, monkeypatch):
-    cli.main(["link", "--cloud-url", "https://c.example", "--api-key", "gb_sk_x"])
-    seen = {}
-
-    def fake_push(db, *, project_id, cloud_url, api_key, **kw):
-        seen.update(project_id=project_id, cloud_url=cloud_url, api_key=api_key)
-        return {"pushed": 3, "removed": 0, "unchanged": 10}
-
-    from app.services import code_sync
-    monkeypatch.setattr(code_sync, "push", fake_push)
-    assert cli.main(["sync"]) == 0
-    assert seen == {"project_id": "core", "cloud_url": "https://c.example", "api_key": "gb_sk_x"}
 
 
 def test_sync_reports_not_linked_cleanly(cfg_path, monkeypatch):
@@ -151,13 +132,32 @@ def test_sync_reports_not_linked_cleanly(cfg_path, monkeypatch):
     def boom(*a, **k):
         raise code_sync.NotLinked("no cloud sync target configured")
 
-    monkeypatch.setattr(code_sync, "push", boom)
+    monkeypatch.setattr(code_sync, "push_mapped", boom)
     with pytest.raises(SystemExit):
         cli.main(["sync"])  # not linked -> clean exit, not a traceback
 
 
+def test_sync_prints_one_line_per_project_and_refusal_is_non_zero(cfg_path, monkeypatch, capsys):
+    from app.services import code_sync
+    results = [{"project_id": "core", "status": "done", "nodes": 3, "edges": 2},
+               {"project_id": "web", "status": "refused", "reason": "no access"},
+               {"project_id": "ops", "status": "unknown", "reason": "could not reach c"}]
+    monkeypatch.setattr(code_sync, "push_mapped", lambda db: results)
+    assert cli.main(["sync"]) == 1
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert lines == ["core: done · 3 nodes, 2 edges", "web: refused · no access",
+                     "ops: unknown · could not reach c"]
+
+
+def test_sync_all_done_exits_zero(cfg_path, monkeypatch):
+    from app.services import code_sync
+    monkeypatch.setattr(code_sync, "push_mapped",
+                        lambda db: [{"project_id": "core", "status": "done", "nodes": 1, "edges": 0}])
+    assert cli.main(["sync"]) == 0
+
+
 def test_purge_requires_confirmation(cfg_path):
-    cli.main(["link", "--cloud-url", "https://c.example", "--api-key", "gb_sk_x"])
+    _write_cfg(cfg_path)
     with pytest.raises(SystemExit):
         cli.main(["purge"])  # no --yes
 

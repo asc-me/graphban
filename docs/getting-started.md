@@ -88,6 +88,26 @@ walk-through below covers the same ground at your own pace.
 6. **Settings** (bottom of the nav) — switch the AI provider, connect integrations, manage
    members and API keys. → [Settings & profile](settings.md)
 
+## Sign in to a cloud org (optional)
+
+Linking is a sign-in, not a key. In a terminal on the box:
+
+```bash
+graphban link --cloud-url <console>
+# Open <console>/link and enter ABCD-EFGH. Expires in 10 minutes.
+```
+
+Open that address, enter the code and approve. The command then prints the org and your
+email and asks which local projects to sync. Scripts can skip the prompt with
+`--project LOCAL=CLOUD` (repeatable), e.g. `--project core=CORE`.
+
+It exits **0** when approved, **1** when the console refuses (the reason is printed and
+nothing is stored), and **2** when the console cannot be reached (`UNKNOWN could not reach
+<console>: …`, nothing stored). `graphban sync` then pushes each mapped project and prints one
+line per project: done with counts, refused with the reason, or unknown with the reason. It
+exits non-zero if any project was refused or unknown. The same flow is in the app under
+Settings.
+
 ## Talk to it as an agent (MCP)
 
 1. In **Settings → API Keys**, create a key and copy it (shown once).
