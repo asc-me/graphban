@@ -1343,6 +1343,10 @@ export interface SyncStatus {
   sign_in_pending?: boolean;
   /** A migrated key link not yet signed in (L6). */
   legacy?: boolean;
+  /** GRPH-1537: is the viewer a box admin (may link, re-point or unlink)? Absent on an older API. */
+  can_link?: boolean;
+  /** GRPH-1537: the baked-in SYNC_CLOUD_URL, "" when unset — even before any link exists. */
+  console_url_env?: string;
   /** The link's own answer: ok | refused | unknown; null when no credential is held. */
   state?: "ok" | "refused" | "unknown" | null;
 }

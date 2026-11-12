@@ -67,10 +67,23 @@ describe("LinkToOrgWizard", () => {
     expect(screen.getByTestId("status-dot").className).toContain("motion-reduce:animate-none");
   });
 
-  it("makes the console URL read-only with a note when SYNC_CLOUD_URL sets it", () => {
-    wizard({ ...base, source: "env", cloud_url: "https://baked.dev" });
-    expect(screen.getByLabelText("Console URL")).toHaveAttribute("readonly");
+  it("makes the console URL read-only with a note when SYNC_CLOUD_URL sets it on an unlinked box", async () => {
+    // What GET /api/sync/status sends for an env-URL-only box: no link yet, so source and
+    // cloud_url are empty — only console_url_env carries the baked-in URL (GRPH-1537).
+    const user = userEvent.setup();
+    wizard({ ...base, console_url_env: "https://baked.dev" });
+    const input = screen.getByLabelText("Console URL");
+    expect(input).toHaveAttribute("readonly");
+    expect(input).toHaveValue("https://baked.dev");
     expect(screen.getByText(/SYNC_CLOUD_URL/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Get a sign-in code" }));
+    expect(api.syncLinkStart).toHaveBeenCalledWith("https://baked.dev");
+  });
+
+  it("keeps the console URL editable when no SYNC_CLOUD_URL is set", () => {
+    wizard(base);
+    expect(screen.getByLabelText("Console URL")).not.toHaveAttribute("readonly");
+    expect(screen.queryByText(/SYNC_CLOUD_URL/)).not.toBeInTheDocument();
   });
 
   it("shows the code, copy, open, expiry and terminal command", async () => {

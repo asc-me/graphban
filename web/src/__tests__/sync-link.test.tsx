@@ -74,6 +74,35 @@ describe("SyncLinkPanel", () => {
     expect(screen.queryByText(/Link key/i)).not.toBeInTheDocument();
   });
 
+  it("shows a non-admin the wizard read-only on an unlinked box (can_link false)", async () => {
+    api.syncStatus.mockResolvedValue({ ...unlinked, can_link: false });
+    renderPanel();
+    expect(await screen.findByTestId("link-wizard")).toBeInTheDocument();
+    expect(screen.getByText(/Only a box admin can link this deployment/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Get a sign-in code" })).toBeDisabled();
+    expect(screen.getByLabelText("Console URL")).toHaveAttribute("readonly");
+    expect(api.syncLinkStart).not.toHaveBeenCalled();
+  });
+
+  it("gives a box admin a live wizard on an unlinked box (can_link true)", async () => {
+    api.syncStatus.mockResolvedValue({ ...unlinked, can_link: true });
+    renderPanel();
+    expect(await screen.findByTestId("link-wizard")).toBeInTheDocument();
+    expect(screen.queryByText(/Only a box admin can link/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Get a sign-in code" })).toBeEnabled();
+  });
+
+  it("shows a non-admin the Linked panel read-only (can_link false)", async () => {
+    api.syncStatus.mockResolvedValue({
+      ...linked, can_link: false, signed_in: true,
+      projects: [{ ...linked.projects[0], mapped: true }],
+    });
+    renderPanel();
+    const unlinkBtn = await screen.findByRole("button", { name: "Unlink" });
+    expect(unlinkBtn).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Sign in again" })).toBeDisabled();
+  });
+
   it("renders link details and gates the scoped controls until a project is picked", async () => {
     const user = userEvent.setup();
     api.syncStatus.mockResolvedValue(linked);

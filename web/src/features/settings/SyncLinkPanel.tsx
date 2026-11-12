@@ -199,7 +199,11 @@ function CloudLinkCard({
   const [wizardStep, setWizardStep] = React.useState<WizardStep | null>(null);
   const { data: orgOverview } = useSyncOrg(status.linked);
   // Only a box admin may link, re-point or unlink; the wizard is read-only for anyone else.
-  const readOnly = status.linked && orgOverview?.can_unlink === false;
+  // can_link answers it on a linked AND an unlinked box (GRPH-1537); /sync/org's can_unlink
+  // is the fallback for an older API that does not send it.
+  const readOnly =
+    status.can_link === false ||
+    (status.can_link === undefined && status.linked && orgOverview?.can_unlink === false);
   const wizardNeeded =
     (!status.linked && !status.signed_in) ||
     (status.signed_in && !status.projects.some((p) => p.mapped));

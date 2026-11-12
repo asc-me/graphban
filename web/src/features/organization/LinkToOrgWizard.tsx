@@ -73,7 +73,8 @@ export function LinkToOrgWizard({
   onDone?: () => void;
 }) {
   const [step, setStep] = React.useState<WizardStep>(initialStep ?? resumeStep(status));
-  const envUrl = status.source === "env" ? status.cloud_url : "";
+  // The env URL comes from console_url_env, set even on an unlinked box (GRPH-1537).
+  const envUrl = status.console_url_env ?? "";
   const [url, setUrl] = React.useState(envUrl || status.cloud_url || CONSOLE_URL);
   const [start, setStart] = React.useState<LinkStartResult | null>(null);
   const [signIn, setSignIn] = React.useState<
