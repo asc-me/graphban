@@ -278,9 +278,30 @@ function Field({
   );
 }
 
-function messageFor(err: unknown, fallback: string): string {
-  if (err && typeof err === "object" && "message" in err && typeof err.message === "string") {
-    return err.message;
+/**
+ * The text to show for a failed sign-up. The API client throws with the raw response body as
+ * the message, so a pydantic 422 arrives as `{"detail":[{"msg":...}]}`; flatten that to the
+ * field messages as one plain sentence. Anything else that parses as JSON falls back too, so
+ * a body is never shown verbatim.
+ */
+export function messageFor(err: unknown, fallback: string): string {
+  if (!err || typeof err !== "object" || !("message" in err) || typeof err.message !== "string") {
+    return fallback;
+  }
+  const raw = err.message.trim();
+  if (!raw.startsWith("{") && !raw.startsWith("[")) return raw || fallback;
+  try {
+    const detail = (JSON.parse(raw) as { detail?: unknown })?.detail;
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) {
+      const msgs = detail
+        .map((d) => (d && typeof d === "object" && typeof d.msg === "string" ? d.msg : ""))
+        .filter(Boolean)
+        .map((m) => m.replace(/^value error,\s*/i, "").replace(/\.$/, ""));
+      if (msgs.length) return `${msgs.join(". ")}.`;
+    }
+  } catch {
+    // not JSON after all; fall through
   }
   return fallback;
 }

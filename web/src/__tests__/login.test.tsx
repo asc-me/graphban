@@ -70,6 +70,32 @@ describe("login page (GRPH-912)", () => {
     await waitFor(() => expect(auth.login).toHaveBeenCalledWith("wrong@example.com", "bad-password"));
   });
 
+  it("shows a pydantic 422 on Create account as plain text, never JSON (GRPH-1551)", async () => {
+    auth.register.mockRejectedValue(
+      new Error(
+        JSON.stringify({
+          detail: [
+            {
+              type: "value_error",
+              loc: ["body", "email"],
+              msg: "value is not a valid email address: The domain name example.test is a special-use domain.",
+            },
+          ],
+        }),
+      ),
+    );
+    await renderLogin();
+    await userEvent.click(screen.getByRole("button", { name: /create an account/i }));
+    await userEvent.type(screen.getByLabelText("Name"), "Ann");
+    await userEvent.type(screen.getByLabelText("Handle"), "ann");
+    await userEvent.type(screen.getByLabelText("Email"), "ann@example.test");
+    await userEvent.type(screen.getByLabelText("Password"), "correct-horse-1");
+    await userEvent.click(screen.getByRole("button", { name: /create account/i }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("value is not a valid email address");
+    expect(alert.textContent).not.toMatch(/[{}\[\]]|"detail"|"loc"/);
+  });
+
   it("sabotage: an unassociated label would fail the getByLabel test above", () => {
     expect(loginSrc).toMatch(/htmlFor="login-email"/);
     expect(loginSrc).toMatch(/htmlFor="login-password"/);
