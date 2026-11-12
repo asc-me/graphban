@@ -187,6 +187,31 @@ def test_timeout_or_5xx_is_unknown_never_refused(client, auth, fake, linked, ans
     assert {r for r, _ in _stored().values()} == {"unknown"}
 
 
+@pytest.mark.parametrize("hit", ["c1", "c2"])
+@pytest.mark.parametrize("code,body,state,reason", [
+    (429, {"reason": "slow_down"}, "unknown", "429"),
+    (408, {}, "unknown", "408"),
+    (425, {}, "unknown", "425"),
+    (400, {"reason": "bad_batch"}, "refused", "bad_batch"),
+    (413, {}, "refused", "http_413"),
+    (409, {"detail": "conflict"}, "refused", "conflict"),
+])
+def test_every_other_4xx_is_one_projects_result_never_a_500(
+        client, auth, fake, linked, hit, code, body, state, reason):
+    # Any non-2xx is classified (GRPH-1518 bounce): 408/425/429 are "not now" (unknown),
+    # every other 4xx is the console's no for that project. Never an HTTPStatusError / 500,
+    # and the other project (answering 200) is still pushed, whichever order they run in.
+    fake.rules[hit] = (code, body)
+    out = _push(client, auth)
+    hit_local, other = ("core", "side") if hit == "c1" else ("side", "core")
+    assert out[other]["status"] == "done"
+    assert out[hit_local]["status"] == state and reason in out[hit_local]["reason"]
+    stored = _stored()
+    assert stored[other] == ("ok", None)
+    assert stored[hit_local][0] == state and reason in stored[hit_local][1]
+    assert client.get("/api/sync/status", headers=auth).json()["state"] != "refused"
+
+
 def test_a_token_replacement_keeps_the_mappings(client, auth, fake, linked):
     with SessionLocal() as db:
         db.get(SyncLink, "instance").token_enc = secrets.encrypt("gb_dep_other")

@@ -35,7 +35,8 @@ class NotLinked(Exception):
 
 
 class ConsoleRefused(Exception):
-    """The console answered 401/403/404: a definite no, with its reason (GRPH-1518, L3/L5)."""
+    """The console answered a definite 4xx no (401/403/404, 400, 413...), with its reason
+    (GRPH-1518, L3/L5). 408/425/429 are not a no: see `_classify`."""
 
     def __init__(self, reason: str, status: int = 0):
         super().__init__(reason)
@@ -43,7 +44,8 @@ class ConsoleRefused(Exception):
 
 
 class ConsoleUnknown(Exception):
-    """No answer we can act on: a network error, timeout, 5xx or unreadable body. Never a no."""
+    """No answer we can act on: a network error, timeout, 5xx, 408/425/429 or unreadable body.
+    Never a no."""
 
     def __init__(self, reason: str):
         super().__init__(reason)
@@ -175,14 +177,24 @@ def _reason(resp: httpx.Response) -> str:
     return f"http_{resp.status_code}"
 
 
+_TRANSIENT_4XX = (408, 425, 429)  # timeout / too early / rate limit: try again, not a no
+
+
 def _classify(resp: httpx.Response) -> httpx.Response:
-    """Three states, never two: 401/403/404 is `ConsoleRefused` (with the console's reason),
-    5xx is `ConsoleUnknown`; any other status is returned for the caller to read."""
-    if resp.status_code >= 500:
-        raise ConsoleUnknown(f"the console answered {resp.status_code}")
-    if resp.status_code in (401, 403, 404):
-        raise ConsoleRefused(_reason(resp), resp.status_code)
-    return resp
+    """Three states, never two, for EVERY status (GRPH-1518): a 2xx is returned for the
+    caller to read. 408/425/429 (request timeout, too early, rate limited) and any 5xx are
+    `ConsoleUnknown`: the console has not said no, only "not now", so the next push re-asks.
+    Every other 4xx (401/403/404, and 400/409/413/422...) is `ConsoleRefused` with the
+    console's reason: a definite answer about this request. Anything else (1xx, an
+    unfollowed 3xx) is `ConsoleUnknown`. No status escapes as `httpx.HTTPStatusError`."""
+    code = resp.status_code
+    if 200 <= code < 300:
+        return resp
+    if code in _TRANSIENT_4XX:
+        raise ConsoleUnknown(f"the console answered {code} ({_reason(resp)})")
+    if 400 <= code < 500:
+        raise ConsoleRefused(_reason(resp), code)
+    raise ConsoleUnknown(f"the console answered {code}")
 
 
 def _send(method: str, url: str, headers: dict, *, body: dict | None = None,
@@ -198,9 +210,8 @@ def _send(method: str, url: str, headers: dict, *, body: dict | None = None,
 
 
 def _post(url: str, api_key: str, body: dict, headers: dict | None = None) -> None:
-    resp = _send("POST", f"{url.rstrip('/')}/api/sync/code-graph",
-                 headers or {"X-API-Key": api_key}, body=body)
-    resp.raise_for_status()
+    _send("POST", f"{url.rstrip('/')}/api/sync/code-graph",
+          headers or {"X-API-Key": api_key}, body=body)
 
 
 def _target(db: Session, cloud_url: str, api_key: str) -> tuple[str, str]:
@@ -537,8 +548,9 @@ def cloud_org_overview(db: Session, key: ApiKey) -> dict | None:
 
 
 def fetch_org_overview(url: str, key: str) -> dict:
-    """GET {cloud}/api/sync/org-overview. Raises `ConsoleRefused` (401/403/404, with the
-    console's reason) or `ConsoleUnknown` (network error, timeout, 5xx, unreadable answer);
+    """GET {cloud}/api/sync/org-overview. Raises `ConsoleRefused` (a definite 4xx, with the
+    console's reason) or `ConsoleUnknown` (network error, timeout, 408/425/429, 5xx,
+    unreadable answer; see `_classify`);
     a failure is no longer one undifferentiated None (GRPH-1518). `org_overview` is the
     caller that decides what an unreachable cloud looks like."""
     resp = _send("GET", f"{url.rstrip('/')}/api/sync/org-overview", {"X-API-Key": key},
