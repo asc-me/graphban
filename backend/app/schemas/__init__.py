@@ -1142,6 +1142,12 @@ class SyncProjectState(BaseModel):
     pending: int
     last_synced_at: datetime | None = None
     status: str  # live | stale | paused | unsynced | empty
+    # GRPH-1517: the project's mapping to a cloud project. Unmapped is local only.
+    mapped: bool = False
+    cloud_project_id: str | None = None
+    last_push_at: datetime | None = None
+    last_push_result: str | None = None  # ok | refused | unknown; None = never pushed
+    last_push_reason: str | None = None
 
 
 class SyncStatusOut(BaseModel):
@@ -1159,6 +1165,12 @@ class SyncStatusOut(BaseModel):
     last_floors: dict | None = None
     last_redacted_models: int | None = None
     last_snapshot_at: str | None = None
+    # GRPH-1517: the deployment link. Never the token, never the legacy key.
+    linked_email: str = ""
+    signed_in: bool = False
+    sign_in_pending: bool = False
+    legacy: bool = False  # a migrated key link not yet signed in (L6)
+    state: str | None = None  # ok | refused | unknown; None when no credential is held
     projects: list[SyncProjectState] = []
 
 
