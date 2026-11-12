@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import get_db
 from app.errors import Refused
 from app.models import ApiKey, Project, SyncLink, User
@@ -57,7 +58,9 @@ def _status(db: Session, user: User) -> dict:
          "name": names.get(pid, pid), "writable": pid in writable}
         for pid in order
     ]
-    return {**link, **deployment, "projects": projects}
+    return {**link, **deployment, "projects": projects,
+            "can_link": code_sync.is_box_admin(db, user),
+            "console_url_env": settings.sync_cloud_url or ""}
 
 
 @router.get("/status", response_model=SyncStatusOut)
