@@ -1,12 +1,13 @@
 import { QUESTION_LABEL } from "@/features/tracker/QuestionStateBadge";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-import { copyText } from "@/lib/clipboard";
 
 import { CommentThread } from "@/features/requests/CommentThread";
-import type { TriageFeedRow } from "@/lib/types";
+import type { TriageAnsweredRow, TriageFeedRow } from "@/lib/types";
 
-import { answeredByCopy, duplicateHintCopy, formatAge, type TriageAction } from "./actions";
+import { DrainNote } from "./DrainNote";
+
+import { duplicateHintCopy, formatAge, type TriageAction } from "./actions";
 
 /** `c` in the queue asks the open question's answer box to show itself. */
 export const OPEN_ANSWER_EVENT = "triage-open-answer";
@@ -267,33 +268,7 @@ export function TriageDetail({
         </>
       )}
 
-      {row.kind === "answered" && (
-        <>
-          <div className="mt-5 rounded-lg border border-st-done/30 bg-st-done/[0.07] px-3 py-2.5">
-            <div className="font-mono text-micro uppercase tracking-[0.07em] text-st-done">ANSWERED</div>
-            <p className="mt-1.5 text-body leading-relaxed text-fg-2">{row.question}</p>
-            <p className="mt-1.5 text-body font-semibold text-fg">{row.answer}</p>
-            <p data-testid="answered-by" className="mt-1.5 text-small text-muted">
-              {answeredByCopy(row.answered_by, row.quote)}
-            </p>
-          </div>
-          <Label>DRAIN</Label>
-          <p data-testid="drain-note" className="mt-1.5 text-body text-fg-2">{row.drain.message}</p>
-          {row.drain.command && (
-            <div className="mt-1.5 flex items-center gap-2">
-              <code className="rounded-[5px] border border-line bg-surface px-1.5 py-px font-mono text-meta text-fg-2">
-                {row.drain.command}
-              </code>
-              <button
-                onClick={() => void copyText(row.drain.command!)}
-                className="rounded border border-control px-1.5 py-px text-small text-muted hover:text-fg"
-              >
-                Copy
-              </button>
-            </div>
-          )}
-        </>
-      )}
+      {row.kind === "answered" && <AnsweredCard row={row} />}
 
       {row.kind !== "blocker" && row.kind !== "collision" && row.kind !== "answered" && (
         <>
@@ -328,5 +303,81 @@ export function TriageDetail({
         </>
       )}
     </div>
+  );
+}
+
+function sourceLine(row: TriageAnsweredRow): ReactNode {
+  const agent = row.by.agent;
+  const src = row.source;
+  const ref = src?.ref ?? null;
+  const link = (href: string) => (
+    <a href={href} className="text-st-review underline">{ref}</a>
+  );
+  switch (src?.kind) {
+    case "prd":
+      return <>answered from PRD {ref ? link(`/prd/${ref}`) : null} by {agent}</>;
+    case "memory":
+      return <>answered from memory {ref ? link(`/memory?entry=${encodeURIComponent(ref)}`) : null} by {agent}</>;
+    case "decision":
+      return <>answered from {ref ? link(`/tracker?item=${encodeURIComponent(ref)}`) : null}'s decision by {agent}</>;
+    case "session":
+      return <>answered from this session by {agent}</>;
+    default:
+      return <>answered by {agent}</>;
+  }
+}
+
+function AnsweredCard({ row }: { row: TriageAnsweredRow }) {
+  const isAgent = !!row.by?.agent;
+  const ref = row.source?.ref;
+  const isSession = row.source?.kind === "session";
+  return (
+    <>
+      <div className="mt-5 rounded-lg border border-st-done/30 bg-st-done/[0.07] px-3 py-2.5">
+        <div className="font-mono text-micro uppercase tracking-[0.07em] text-st-done">ANSWERED</div>
+        <p className="mt-1.5 text-small text-muted">{row.question}</p>
+        <p className="mt-1.5 text-[18px] font-semibold leading-snug text-fg">{row.answer}</p>
+        <div data-testid="answered-by" className="mt-2 flex flex-wrap items-center gap-2 text-small text-muted">
+          {isAgent ? (
+            <>
+              <span aria-hidden>🤖</span>
+              <span className="rounded border border-purple-400/40 bg-purple-400/10 px-1.5 py-px font-mono text-micro uppercase text-purple-400">
+                BY AN AGENT
+              </span>
+              <span data-testid="answered-source">{sourceLine(row)}</span>
+            </>
+          ) : (
+            <>
+              <span aria-hidden>👤</span>
+              <span>{row.answered_by}</span>
+            </>
+          )}
+        </div>
+      </div>
+      {isAgent && (
+        <div data-testid="agent-quote" className="mt-3 rounded-lg border border-purple-400/30 bg-purple-400/[0.07] px-3 py-2.5">
+          {row.quote ? (
+            <>
+              <div className="font-mono text-micro uppercase tracking-[0.07em] text-purple-400">THE QUOTE IT USED</div>
+              <p className="mt-1.5 text-body italic text-fg-2">{row.quote}</p>
+              <p className="mt-1.5 text-small text-muted">
+                Does the quote support this answer? If not, tell the PRD owner.
+              </p>
+            </>
+          ) : (
+            <p className="text-small text-fg-2">
+              {isSession
+                ? "No quote given. Check the source before relying on this. With a session source, that means confirming with whoever ran the session."
+                : `No quote given. Check the source${ref ? ` (${ref})` : ""} before relying on this. If it's wrong, tell the PRD owner.`}
+            </p>
+          )}
+        </div>
+      )}
+      <DrainNote
+        status={row.drain?.status} prd={row.drain?.prd}
+        message={row.drain?.message} command={row.drain?.command}
+      />
+      <p className="mt-4 text-small text-faint-2">Leaves Triage 24h after the answer.</p>
+    </>
   );
 }
