@@ -202,3 +202,24 @@ def test_the_api_refuses_to_promote_delivered_work(client, auth, db, approved):
                       json={"sections": ["Baseline"], "target": "item"}, headers=auth)
 
     assert out.status_code == 422 and "Baseline" in out.json()["detail"]
+
+
+# ---- the successor's owner (GRPH-1526, P75 D2) ----------------------------------------
+def test_a_rest_promote_owns_the_successor_as_the_promoting_user(client, auth, db, approved):
+    out = client.post(f"/api/prds/{approved.id}/promote",
+                      json={"sections": ["Judging"], "target": "prd"}, headers=auth)
+    assert out.status_code == 200
+    me = client.get("/api/auth/me", headers=auth).json()["id"]
+    successor = prd_svc.get_prd(db, out.json()["id"])
+    db.refresh(successor)
+    assert successor.created_by == me
+
+
+def test_a_close_that_promotes_passes_its_user_to_the_successor(db, approved):
+    out = prd_svc.close_prd(db, approved, closed_by="user:u-closer", created_by="u-closer",
+                            dispositions=[
+                                {"section": "Judging", "disposition": "promoted", "promote_to": "prd"},
+                                {"section": "Close report", "disposition": "deferred", "reason": "later"},
+                            ])
+    key = next(d["target"] for d in out["dispositions"] if d["section"] == "Judging")
+    assert prd_svc.get_prd(db, key).created_by == "u-closer"

@@ -82,6 +82,7 @@ def create_prd(
     template: str = "standard",
     project_id: str = "core",
     body: str | None = None,
+    created_by: str | None = None,
 ) -> Prd:
     # An imported markdown body wins over the template.
     imported = body is not None
@@ -94,7 +95,7 @@ def create_prd(
     # See items.create_item: the id is frozen identity, `number` renders the key.
     prd_id, number = keys.mint(db, project_id, "prd")
     prd = Prd(id=prd_id, number=number, project_id=project_id, title=title, status="draft",
-              version="v0.1", body=content, linked=[])
+              version="v0.1", body=content, linked=[], created_by=created_by)
     db.add(prd)
     db.flush()
     db.add(PrdVersion(prd_id=prd.id, version="v0.1", date="just now", note=note, body=content))
@@ -2084,7 +2085,7 @@ class CloseRefused(ValueError):
 
 def close_prd(
     db: Session, prd: Prd, *, dispositions: list[dict], closed_by: str,
-    verdict: str = "", judge_reachable: bool = True,
+    verdict: str = "", judge_reachable: bool = True, created_by: str | None = None,
 ) -> dict:
     """Close a PRD — the terminal state (GRPH-244).
 
@@ -2158,7 +2159,8 @@ def close_prd(
                              "target": None, "reason": d["reason"].strip()})
             continue
         if d.get("promote_to", "item") == "prd":
-            target = promote_to_prd(db, prd, [section], title=d.get("title", "")).key
+            target = promote_to_prd(db, prd, [section], title=d.get("title", ""),
+                                    created_by=created_by).key
         else:
             target = promote_to_item(db, prd, section, title=d.get("title", "")).key
         recorded.append({"section": section, "disposition": "promoted",
@@ -2527,7 +2529,8 @@ def promote_to_item(db: Session, prd: Prd, section: str, *, title: str = "") -> 
     )
 
 
-def promote_to_prd(db: Session, prd: Prd, sections: list[str], *, title: str = "") -> Prd:
+def promote_to_prd(db: Session, prd: Prd, sections: list[str], *, title: str = "",
+                   created_by: str | None = None) -> Prd:
     """Create a successor PRD carrying dropped intent, linked back to this one.
 
     PRD-12 requires post-close changes to become a new PRD rather than reopening a closed
@@ -2547,7 +2550,9 @@ def promote_to_prd(db: Session, prd: Prd, sections: list[str], *, title: str = "
         f"## {s}\n\n{bodies.get(s, '').strip()}" for s in promoted
     ) + "\n"
 
-    successor = create_prd(db, title=heading, project_id=prd.project_id, body=body)
+    # The successor's owner is whoever promoted it (P75 D2), not the predecessor's author.
+    successor = create_prd(db, title=heading, project_id=prd.project_id, body=body,
+                           created_by=created_by)
     successor.supersedes_prd_id = prd.id
     successor.promoted_sections = promoted
     db.commit()
