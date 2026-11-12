@@ -571,6 +571,27 @@ def test_an_edited_skill_is_left_alone(tmp_path, wired):
     assert other.read_text() == setup_mod.skill_source("watch-wave").read_text()
 
 
+def test_a_pack_written_skill_that_differs_from_the_bundled_one_is_not_unknown(tmp_path, wired):
+    """GRPH-1543: the pack just wrote a newer skill than the wheel carries. Setup must not
+    flag a file the same command wrote."""
+    from gban import playbooks
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    planted = {}
+    for rel in setup_mod.SKILL_DEST_DIRS:
+        dest = repo / rel / "graphban-delegation" / "SKILL.md"
+        dest.parent.mkdir(parents=True)
+        dest.write_bytes(b"newer pack copy\n")
+        planted[dest.relative_to(repo).as_posix()] = b"newer pack copy\n"
+    playbooks.record(repo, planted)
+
+    lines, _, _ = _run(Server(), repo, home, wired=wired)
+
+    assert not any("left alone" in l["detail"] for l in lines)
+    assert not any(l.get("name") == "skill" and l.get("status") == "UNKNOWN" for l in lines)
+    assert dest.read_bytes() == b"newer pack copy\n"
+
+
 def test_the_skill_tells_the_agent_the_two_things_it_cannot_work_out(tmp_path):
     """Both are failures that read as something else. A missing tier reads as the tool not
     existing; a missing session reads as something to retry, when the remedy is a person at a
