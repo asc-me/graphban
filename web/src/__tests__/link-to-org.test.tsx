@@ -1,11 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LinkedPanel } from "@/features/organization/LinkedPanel";
-import { LinkToOrgWizard } from "@/features/organization/LinkToOrgWizard";
+import { LINK_FINISHED_KEY, LinkToOrgWizard, resumeTarget } from "@/features/organization/LinkToOrgWizard";
 import type { SyncProjectState, SyncStatus } from "@/lib/types";
 
 const api = vi.hoisted(() => ({
@@ -60,6 +60,7 @@ function wizard(status: SyncStatus, props: Partial<React.ComponentProps<typeof L
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.removeItem(LINK_FINISHED_KEY);
   api.syncLinkStart.mockResolvedValue({
     status: "started", user_code: "WXYZ-1234", verification_url: "https://c.dev/link", interval: 0.01,
   });
@@ -70,11 +71,24 @@ beforeEach(() => {
 });
 
 describe("LinkToOrgWizard", () => {
-  it("shows the rail and a waiting status line, with a pulsing dot", async () => {
+  it("① reads SIGN-IN · NOT YET, muted with a still dot, until a code exists", () => {
     wizard(base);
     for (const l of ["① Console", "② Sign in", "③ Projects", "④ First push"])
       expect(screen.getByText(l)).toBeInTheDocument();
+    const st = screen.getByRole("status");
+    expect(st).toHaveTextContent("SIGN-IN · NOT YET");
+    expect(st.getAttribute("data-tone")).toBe("muted");
+    expect(st.className).toContain("text-faint");
+    expect(screen.getByTestId("status-dot").getAttribute("data-pulse")).toBe("false");
+  });
+
+  it("shows the rail and a waiting status line, with a pulsing dot, once a code exists", async () => {
+    const user = userEvent.setup();
+    wizard(base);
+    await user.click(screen.getByRole("button", { name: "Get a sign-in code" }));
+    await screen.findByTestId("user-code");
     expect(screen.getByRole("status")).toHaveTextContent("SIGN-IN · WAITING");
+    expect(screen.getByTestId("status-dot").getAttribute("data-pulse")).toBe("true");
     // Waiting is muted: never the lime accent, never amber.
     const st = screen.getByRole("status");
     expect(st.getAttribute("data-tone")).toBe("wait");
@@ -187,8 +201,9 @@ describe("LinkToOrgWizard", () => {
     expect(screen.getByRole("status").getAttribute("data-tone")).toBe("grey");
   });
 
-  it("First push: done, refused on that row only, and push later names graphban sync", async () => {
+  it("First push: done, refused on that row only, then Done", async () => {
     const user = userEvent.setup();
+    const onDone = vi.fn();
     api.syncPushAll.mockResolvedValue({
       projects: [
         { project_id: "core", status: "done", nodes: 1284, edges: 3906, at: "2026-11-11T14:02:00" },
@@ -200,16 +215,60 @@ describe("LinkToOrgWizard", () => {
         proj("core", "Core", { mapped: true, cloud_project_id: CORE_ID, cloud_project_tag: "CORE" }),
         proj("north", "North", { mapped: true, cloud_project_id: NORTH_ID, cloud_project_tag: "NORTH" }),
       ] },
-      { initialStep: 4 },
+      { initialStep: 4, onDone },
     );
     expect(screen.getByRole("status")).toHaveTextContent("PUSH · NOT YET");
-    expect(screen.getByText(/graphban sync/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Push now" }));
     expect(await screen.findByText("Pushed 1,284 nodes and 3,906 edges to CORE at 14:02.")).toBeInTheDocument();
     expect(screen.getByText("No access to NORTH. Ask an org admin.")).toBeInTheDocument();
     noUuid();
     expect(screen.getByRole("status")).toHaveTextContent("PUSH · 1 DONE · 1 REFUSED");
     expect(screen.queryByText(/seat in Acme was removed/)).not.toBeInTheDocument();
+    // After a successful push the wizard offers Done, which goes to the Linked window.
+    expect(screen.queryByRole("button", { name: "Push later" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
+  it("Push later reveals the command and keeps the wizard open", async () => {
+    const user = userEvent.setup();
+    const onDone = vi.fn();
+    const neverPushed = { ...signedIn, projects: [
+      proj("core", "Core", { mapped: true, cloud_project_id: CORE_ID, cloud_project_tag: "CORE" }),
+    ] };
+    wizard(neverPushed, { initialStep: 4, onDone });
+    expect(screen.queryByText("graphban sync")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Push later" }));
+    expect(onDone).not.toHaveBeenCalled();
+    expect(screen.getByTestId("link-wizard")).toBeInTheDocument();
+    const block = screen.getByTestId("push-later");
+    expect(block).toHaveTextContent("④ stays pending. Run this on the box when you're ready.");
+    expect(within(block).getByText("graphban sync")).toBeInTheDocument();
+    expect(within(block).getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    // Still pushable from here.
+    expect(screen.getByRole("button", { name: "Push now" })).toBeInTheDocument();
+  });
+
+  it("④ with every project local only says Nothing to push and offers Done", async () => {
+    const user = userEvent.setup();
+    const onDone = vi.fn();
+    wizard({ ...signedIn, projects: [proj("core", "Core"), proj("north", "North")] }, { initialStep: 4, onDone });
+    expect(screen.getByText("Nothing to push. Every project is local only.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Push now" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Push later" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
+  it("Finish with nothing chosen at ③ lands on Nothing to push and remembers the link is finished", async () => {
+    const user = userEvent.setup();
+    api.syncSaveProjectMap.mockResolvedValue({ mapping: [] });
+    const unmapped = { ...signedIn, projects: [proj("core", "Core"), proj("north", "North")] };
+    wizard(unmapped, { initialStep: 3 });
+    await user.click(await screen.findByRole("button", { name: "Finish" }));
+    expect(await screen.findByText("Nothing to push. Every project is local only.")).toBeInTheDocument();
+    expect(localStorage.getItem(LINK_FINISHED_KEY)).toBe("1");
+    expect(resumeTarget(unmapped)).toBeNull();
   });
 
   it("First push: an unknown row is grey, not refused", async () => {
@@ -256,10 +315,27 @@ describe("LinkToOrgWizard", () => {
   });
 
   it("resumes at the first unfinished step", () => {
-    wizard(signedIn);
-    // signed in with a mapped project → First push
+    // signed in with a mapped project that never pushed → First push
+    wizard({ ...signedIn, projects: [proj("core", "Core", { mapped: true, cloud_project_id: CORE_ID, cloud_project_tag: "CORE" })] });
     expect(screen.getByRole("button", { name: "Push now" })).toBeInTheDocument();
     expect(screen.getByText("④ First push")).toHaveAttribute("aria-current", "step");
+  });
+
+  describe("resumeTarget (design L3)", () => {
+    const pushed = signedIn;
+    const neverPushed = { ...signedIn, projects: [proj("core", "Core", { mapped: true, cloud_project_id: CORE_ID })] };
+    const nothingMapped = { ...signedIn, projects: [proj("core", "Core")] };
+    it("no token and no console URL → ①", () => expect(resumeTarget(base, false)).toBe(1));
+    it("no token with a known console URL → ②", () =>
+      expect(resumeTarget({ ...base, cloud_url: "https://c.dev" }, false)).toBe(2));
+    it("no token with a sign-in pending → ②", () =>
+      expect(resumeTarget({ ...base, sign_in_pending: true }, false)).toBe(2));
+    it("signed in, nothing mapped, never finished → ③", () => expect(resumeTarget(nothingMapped, false)).toBe(3));
+    it("signed in, nothing mapped, finished → Linked", () => expect(resumeTarget(nothingMapped, true)).toBeNull());
+    it("mapped but never pushed → ④", () => expect(resumeTarget(neverPushed, false)).toBe(4));
+    it("mapped and pushed → Linked", () => expect(resumeTarget(pushed, false)).toBeNull());
+    it("a key link still holding its credential → Linked", () =>
+      expect(resumeTarget({ ...base, linked: true, cloud_url: "https://c.dev", credential_set: true, legacy: true }, false)).toBeNull());
   });
 });
 
