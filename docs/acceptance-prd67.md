@@ -137,4 +137,19 @@ Two fixes were needed. GRPH-1556 (asc-me/graphban#1616, merged `c21e446d`) makes
 | Next push | `done` to Cloud Alpha, row IN SYNC, relink warning gone | **pass** |
 | Old key | A direct push with it gets 401 | **pass** |
 
-**Verdict: pass.** Every §8.4 step has now passed: grant, sign-in, step ③, first push, and all seven sabotages. Two items are still open but don't block this walk: GRPH-1553 (an unchanged push never contacts the console; it was worked around here) and GRPH-1557 (`sign_in_pending` stays set after an expired code).
+## Cloud tag and GRPH-1553, checked on main
+
+Same stack, 18:20Z (box `c21e446d`, console `b6a3811`).
+
+| Step | Observed | Verdict |
+|---|---|---|
+| Cloud tag on the synced project | Project switcher: Walk Project shows a green dot and `☁ B1D36410-…` (state `synced`, `CloudTag`) | **pass** |
+| No tag on the local-only projects | Local Two and Local Three show no cloud tag in the switcher, and none on Settings → Project | **pass** |
+| Unchanged push reaches the console | GRPH-1553 merged as `c285b507` at 16:59Z, which is in `c21e446d`. A push with nothing changed (no manifest edit) answers `done 0/0`, and the console's `last_pushed_at` moves | **pass** |
+| Grant removed, on main, no workaround | Grant deleted → push `refused no_project_access`, Walk Project red, link `ok`, Local Two and Three unchanged. Grant restored → `done` | **pass** |
+
+**Correction.** The manifest-hash edit described under "Setup used throughout" was needed only for the 16:29–16:42Z pushes. GRPH-1553 landed (`c285b507`) before both the 18:14Z migrated-key run and these checks, and neither of them used the workaround.
+
+Polish, not blocking: the cloud tag shows the raw cloud project id, not the project's name or tag.
+
+**Verdict: pass.** Every §8.4 step has passed, including the cloud tag in step 1. The one item still open is GRPH-1557 (`sign_in_pending` stays set after an expired code), which doesn't block this walk.
