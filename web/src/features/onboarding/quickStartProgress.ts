@@ -9,6 +9,8 @@
  */
 import type { Credential, ProjectSetup, SetupStatus, SetupStep } from "@/lib/types";
 
+type Reported = NonNullable<SetupStep["reported"]>;
+
 export type QsStep = "where" | "project" | "model" | "connect" | "first_job";
 
 export const STEP_META: Record<QsStep, { num: string; label: string }> = {
@@ -35,6 +37,8 @@ export interface StepMark {
   reason?: string;
   /** What proved a ✓ step, when the server said (③'s first call). */
   evidence?: string;
+  /** ③ pending after a machine report that was not all-PASS: which machine and its failing lines. */
+  reported?: Reported;
 }
 
 export interface MarkInputs {
@@ -123,6 +127,7 @@ export function deriveMarks(i: MarkInputs): Record<QsStep, StepMark> {
   const connect: StepMark = {
     ...fromServer(connectStep, missing(5)),
     ...(connectStep?.status === "done" ? { evidence: connectStep.detail } : {}),
+    ...(connectStep?.status !== "done" && connectStep?.reported ? { reported: connectStep.reported } : {}),
   };
 
   return {

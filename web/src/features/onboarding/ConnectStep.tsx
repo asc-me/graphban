@@ -189,7 +189,11 @@ export function ConnectStep({
         ? `? Unknown — ${mark.reason}`
         : minted && effective === "key"
           ? "Waiting for your agent's first call…"
-          : "Pending — no first call seen yet.";
+          : mark.reported
+            ? ""
+            : "Pending — no first call seen yet.";
+  const rep = mark.status === "done" ? undefined : mark.reported;
+  const repCount = rep ? (rep.fails ? `${rep.fails} FAIL` : `${rep.unknowns || "an"} UNKNOWN`) : "";
 
   return (
     <section aria-labelledby="qs-connect-h">
@@ -297,8 +301,23 @@ export function ConnectStep({
         </p>
       )}
       <p className="mt-3 text-[12px] text-muted" role="status" data-status={mark.status}>
-        {line}
+        {rep ? `Pending — ${rep.machine} reported ${repCount}, so no ✓ yet.` : line}
       </p>
+      {rep && (
+        <div data-testid="connect-reported" className="mt-1.5 space-y-1.5">
+          <ul className="space-y-0.5 font-mono text-[12px] text-muted">
+            {rep.failing.map((l, i) => (
+              <li key={i}>
+                {l.status} {l.name}
+                {l.detail ? ` — ${l.detail}` : ""}
+              </li>
+            ))}
+          </ul>
+          <p className="text-[12px] text-muted">
+            Fix the lines above, then re-run <code className="font-mono">gban doctor</code>.
+          </p>
+        </div>
+      )}
       {children}
     </section>
   );

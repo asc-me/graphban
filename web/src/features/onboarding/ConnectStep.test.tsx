@@ -134,4 +134,37 @@ describe("PairApproval (GRPH-1366)", () => {
     await user.click(screen.getByRole("button", { name: "Approve" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/isn't valid/);
   });
+
+  it("names the machine, count and each failing line when a machine report says why it is not ✓", () => {
+    render(
+      <ConnectStep
+        projectId="core"
+        address=""
+        dedicated={false}
+        mark={{
+          status: "pending",
+          reported: {
+            machine: "laptop",
+            fails: 0,
+            unknowns: 2,
+            at: "2026-01-01T00:00:00Z",
+            failing: [
+              { status: "UNKNOWN", name: "mcp reachable", detail: "no network" },
+              { status: "UNKNOWN", name: "key valid", detail: "" },
+            ],
+          },
+        }}
+        agent="cursor"
+        onAgent={() => undefined}
+        route="key"
+        onRoute={() => undefined}
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("laptop reported 2 UNKNOWN");
+    expect(screen.getByRole("status")).not.toHaveTextContent("no first call seen yet");
+    const box = screen.getByTestId("connect-reported");
+    expect(box).toHaveTextContent("UNKNOWN mcp reachable — no network");
+    expect(box).toHaveTextContent("UNKNOWN key valid");
+    expect(box).toHaveTextContent("gban doctor");
+  });
 });
