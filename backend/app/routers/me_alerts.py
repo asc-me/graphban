@@ -48,7 +48,7 @@ def push_status(user: User = Depends(get_current_user)):
 def push_subscribe(body: PushSubscribeIn, db: Session = Depends(get_db),
                    user: User = Depends(get_current_user)):
     if not push_svc.configured():
-        raise HTTPException(409, "browser notifications are not set up on this deployment")
+        raise HTTPException(503, "browser notifications are not set up on this deployment")
     push_svc.subscribe(db, user.id, body.endpoint, body.keys.p256dh, body.keys.auth)
     return push_svc.status()
 

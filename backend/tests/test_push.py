@@ -140,7 +140,7 @@ def test_rest_unconfigured_says_so_and_refuses_subscribe(client, auth, monkeypat
     monkeypatch.setattr(settings, "vapid_public_key", "")
     assert client.get("/api/me/push", headers=auth).json()["configured"] is False
     body = {"endpoint": "https://push.test/x", "keys": {"p256dh": "k", "auth": "a"}}
-    assert client.post("/api/me/push/subscribe", json=body, headers=auth).status_code == 409
+    assert client.post("/api/me/push/subscribe", json=body, headers=auth).status_code == 503
 
 
 def test_hosted_push_links_the_triage_row_by_project_tag(db, monkeypatch):
