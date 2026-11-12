@@ -3849,6 +3849,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         prd = prd_svc.create_prd(
             db, title=args["title"], template=args.get("template", "standard"),
             project_id=pid, body=args.get("body"),
+            created_by=(db.get(User, key.user_id).id if key.user_id and db.get(User, key.user_id) else None),
         )
         return _prd_dict(prd)
     if name == "get_prd":

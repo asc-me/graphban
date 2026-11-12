@@ -1391,7 +1391,10 @@ class Prd(Base):
     # alone says a successor exists, and `promoted_sections` is what makes the chain from
     # original intent, through what was dropped, to what came next actually walkable.
     # Holds the frozen id, never a rendering — see GRPH-319.
+    # The creating USER (P75 D2), never the key: a key can be revoked or deactivated and the
+    # owner must not move with it. NULL for PRDs created before the column or with no user.
     supersedes_prd_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)
     promoted_sections: Mapped[list] = mapped_column(JSON, default=list)
     # Where the CURRENT interrogation starts in the transcript (GRPH-322). A rebaseline is
     # a new statement of intent and has to earn approval on its own answers; without this

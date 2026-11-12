@@ -82,6 +82,7 @@ def create_prd(
     template: str = "standard",
     project_id: str = "core",
     body: str | None = None,
+    created_by: str | None = None,
 ) -> Prd:
     # An imported markdown body wins over the template.
     imported = body is not None
@@ -94,7 +95,7 @@ def create_prd(
     # See items.create_item: the id is frozen identity, `number` renders the key.
     prd_id, number = keys.mint(db, project_id, "prd")
     prd = Prd(id=prd_id, number=number, project_id=project_id, title=title, status="draft",
-              version="v0.1", body=content, linked=[])
+              version="v0.1", body=content, linked=[], created_by=created_by)
     db.add(prd)
     db.flush()
     db.add(PrdVersion(prd_id=prd.id, version="v0.1", date="just now", note=note, body=content))
