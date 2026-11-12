@@ -61,6 +61,17 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def record(repo: Path, written: dict[str, bytes]) -> None:
+    """Note files this tool wrote outside a poll (setup's skills), so a later pack replaces them
+    like any file we wrote. Keeps every other receipt field."""
+    receipt = _read(repo)
+    files = dict(receipt.get("files") or {})
+    for rel, data in written.items():
+        files[rel] = _sha(data)
+    receipt["files"] = files
+    _save(repo, receipt)
+
+
 def when(ts: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(ts))
 
@@ -129,7 +140,8 @@ def poll(url: str, repo: Path, *, force: bool = False, client: Client | None = N
         return {"polled": False, "failed": True, "note": "unreadable /health"}
     sha = str(health.get("git_sha") or "").strip()
     # A different server never inherits the old server's applied sha or file hashes.
-    base = receipt if receipt.get("server") == url else {}
+    # A receipt with no server was written by setup alone: its file hashes are ours.
+    base = receipt if receipt.get("server") in (url, None) else {}
     new = {"server": url, "polled_at": now, "git_sha": base.get("git_sha", ""),
            "files": base.get("files", {})}
     if not sha:
