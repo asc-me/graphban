@@ -82,7 +82,7 @@ describe("LinkToOrgWizard", () => {
     expect(screen.getByRole("link", { name: "Open the console →" })).toHaveAttribute("href", "https://c.dev/link");
     expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
     expect(screen.getByText("Expires in 10 minutes.")).toBeInTheDocument();
-    expect(screen.getByText(/graphban sync link/)).toBeInTheDocument();
+    expect(screen.getByText(/graphban link/)).toBeInTheDocument();
   });
 
   it.each([

@@ -304,7 +304,7 @@ export function LinkToOrgWizard({
               {copied && <span className="sr-only">Copied {copied}</span>}
               <p className="text-small text-faint">Expires in 10 minutes.</p>
               <p className="text-small text-faint">
-                Or in a terminal: <code className="font-mono text-[11px]">graphban sync link</code>
+                Or in a terminal: <code className="font-mono text-[11px]">graphban link</code>
               </p>
             </>
           )}
