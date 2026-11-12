@@ -5,11 +5,11 @@ import { ProjectProvider, useProjectCtx } from "@/features/ProjectContext";
 import { DocsReader } from "@/features/docs/DocsReader";
 import { CreateFirstOrg } from "@/features/onboarding/CreateFirstOrg";
 import { CreateFirstProject } from "@/features/onboarding/CreateFirstProject";
-import { QuickStartDialog, useQuickStart } from "@/features/onboarding/QuickStartDialog";
+import { QuickStartDialog, useQuickStart, type QsGuide } from "@/features/onboarding/QuickStartDialog";
 import type { QsStep } from "@/features/onboarding/quickStartProgress";
 import { AppTour } from "@/features/tour/AppTour";
 import { onConnectStepRequested } from "@/features/home/SetupStatusCard";
-import { onTourRequested } from "@/features/tour/replay";
+import { onGuideRequested, onTourRequested } from "@/features/tour/replay";
 import { useCompleteTour, useConfig, useMarkOnboarding, useOnboarding, useOrgs } from "@/lib/queries";
 import { ORG_BASE, clearOrgStateForSelfHost } from "@/lib/routes";
 
@@ -118,6 +118,7 @@ function FrameBody({ hosted }: { hosted: boolean }) {
   const markOnboarding = useMarkOnboarding();
   const [qsOpen, setQsOpen] = React.useState(false);
   const [qsStep, setQsStep] = React.useState<QsStep | undefined>(undefined);
+  const [qsGuide, setQsGuide] = React.useState<QsGuide | undefined>(undefined);
   const autoOpened = React.useRef(false);
   // ── App tour (GRPH-P67 §5) ── started from the quick start's Finish.
   const [tourOpen, setTourOpen] = React.useState(false);
@@ -136,6 +137,11 @@ function FrameBody({ hosted }: { hosted: boolean }) {
   React.useEffect(
     () => (hasProject ? onTourRequested(() => { setPaletteOpen(false); setTourOpen(true); }) : undefined),
     [hasProject],
+  );
+  // Help ▸ Concepts / Start-up prompts (GRPH-1512) open the quick-start dialog on that guide.
+  React.useEffect(
+    () => onGuideRequested((kind) => { setPaletteOpen(false); setQsStep(undefined); setQsGuide(kind); setQsOpen(true); }),
+    [],
   );
   React.useEffect(
     () => onConnectStepRequested(() => { setQsStep("connect"); setQsOpen(true); }),
@@ -186,11 +192,13 @@ function FrameBody({ hosted }: { hosted: boolean }) {
     <QuickStartDialog
       open={qsOpen}
       initialStep={qsStep}
+      initialGuide={qsGuide}
       hosted={hosted}
       // The tour needs the nav it points at, which only exists once there is a project.
       onTakeTour={projects.length ? () => setTourOpen(true) : undefined}
       onFinishLater={() => {
         setQsOpen(false);
+        setQsGuide(undefined);
         if (!onboarding?.quickstart_dismissed_at && !finished) markOnboarding.mutate("quickstart_dismissed");
       }}
       onFinish={async () => {
@@ -205,6 +213,7 @@ function FrameBody({ hosted }: { hosted: boolean }) {
       ? {
           ...qs.chip,
           onOpen: () => {
+            setQsGuide(undefined);
             setQsStep(qs.firstUnfinished);
             setQsOpen(true);
           },
