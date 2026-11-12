@@ -32,7 +32,7 @@ export function TopBar({
 }) {
   const { user, logout } = useAuth();
   const { data: keys } = useApiKeys();
-  const { data: mcp, isError: mcpError } = useMcpTools();
+  const { data: mcp, isError: mcpError, error: mcpErr } = useMcpTools();
   const navigate = useNavigate();
   const liveTools = mcp?.live ?? 0;
   const [reportOpen, setReportOpen] = React.useState(false);
@@ -86,11 +86,25 @@ export function TopBar({
         </button>
       )}
 
-      <div className="flex items-center gap-1.5 rounded-lg border border-[#1c2620] bg-[rgba(95,208,122,0.05)] px-2.5 py-1.5 font-mono text-[10.5px] uppercase tracking-[0.08em] text-st-done">
-        <span className="blink h-1.5 w-1.5 rounded-full bg-st-done shadow-[0_0_8px_#5fd07a]" />
-        {mcpError ? "MCP · unavailable" : `MCP · ${liveTools} tools live`}
-        {!mcpError && keys && keys.length > 0 && <span className="text-muted-2">· {keys.length} keys</span>}
-      </div>
+      {mcpError ? (
+        // A failed read never keeps the last good count (GRPH-1547): say unavailable, and why.
+        <div
+          data-testid="mcp-chip"
+          data-state="unavailable"
+          title={mcpErr instanceof Error ? mcpErr.message : String(mcpErr)}
+          className="flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 font-mono text-[10.5px] uppercase tracking-[0.08em] text-muted"
+        >
+          <span className="h-1.5 w-1.5 rounded-full bg-muted" />
+          MCP · unavailable
+          <span className="sr-only"> — {mcpErr instanceof Error ? mcpErr.message : String(mcpErr)}</span>
+        </div>
+      ) : (
+        <div data-testid="mcp-chip" data-state="live" className="flex items-center gap-1.5 rounded-lg border border-[#1c2620] bg-[rgba(95,208,122,0.05)] px-2.5 py-1.5 font-mono text-[10.5px] uppercase tracking-[0.08em] text-st-done">
+          <span className="blink h-1.5 w-1.5 rounded-full bg-st-done shadow-[0_0_8px_#5fd07a]" />
+          MCP · {liveTools} tools live
+          {keys && keys.length > 0 && <span className="text-muted-2">· {keys.length} keys</span>}
+        </div>
+      )}
 
       {user && <AlertsBell />}
 

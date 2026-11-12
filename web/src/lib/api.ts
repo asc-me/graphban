@@ -190,7 +190,7 @@ export function errorDetail(status: number, body: string): string {
   const t = body.trim();
   if (t.startsWith("{") || t.startsWith("[")) return body;
   if (!t || /^\s*<|<\/?[a-z][^>]*>/i.test(t)) {
-    return status >= 502 && status <= 504 || status === 500
+    return status >= 502 && status <= 504
       ? `the API is unreachable (${status} from the proxy)`
       : `the API returned an unreadable ${status} response`;
   }

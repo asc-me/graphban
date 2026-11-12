@@ -516,6 +516,40 @@ describe("③ Connect your agent", () => {
     await waitFor(() => expect(railItem("connect").dataset.status).toBe("unknown"), { timeout: 5000 });
     expect(within(railItem("connect")).queryByText("✓")).not.toBeInTheDocument();
   }, 10000);
+
+  it("API down behind nginx: the reason is one plain line, never the 502 page (GRPH-1547)", async () => {
+    // The real request path, against a fetch that answers like nginx with the API stopped.
+    const real = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
+    const { api } = await import("@/lib/api");
+    const html502 =
+      "<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>\r\n<center><h1>502 Bad Gateway</h1></center>\r\n" +
+      "<hr><center>nginx/1.27.0</center>\r\n</body>\r\n</html>\r\n<!-- a padding to disable MSIE and Chrome friendly error page -->\r\n";
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(html502, { status: 502, headers: { "Content-Type": "text/html" } })));
+    const original = vi.mocked(api.projectSetup).getMockImplementation()!;
+    vi.mocked(api.projectSetup).mockImplementation(async (id: string) =>
+      srv.setupFails ? real.api.projectSetup(id) : original(id),
+    );
+    try {
+      atConnect();
+      srv.statuses[5] = "done";
+      const user = userEvent.setup();
+      renderFrame();
+      await user.click(await screen.findByRole("button", { name: /Finish setup/ }));
+      await enter(user, "connect");
+      await waitFor(() => expect(railItem("connect").dataset.status).toBe("done"));
+      srv.setupFails = true;
+      await waitFor(() => expect(railItem("connect").dataset.status).toBe("unknown"), { timeout: 5000 });
+      const unknown = await screen.findByRole("list", { name: "Steps that could not be checked" });
+      const lines = within(unknown).getAllByRole("listitem");
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toHaveTextContent("? UNKNOWN Could not read setup: the API is unreachable (502 from the proxy)");
+      const dialog = screen.getByRole("dialog");
+      expect(dialog.textContent).not.toMatch(/Bad Gateway|nginx|padding|<|>/);
+    } finally {
+      vi.mocked(api.projectSetup).mockImplementation(original);
+      vi.unstubAllGlobals();
+    }
+  }, 10000);
 });
 
 describe("deriveMarks", () => {

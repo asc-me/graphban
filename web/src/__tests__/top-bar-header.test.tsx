@@ -44,11 +44,22 @@ describe("TopBar (GRPH-1174)", () => {
     expect(pill.querySelector(".blink")).toBeInTheDocument();
   });
 
-  it("shows unavailable, not a stale count, when the MCP read fails (GRPH-1547)", async () => {
+  it("a live count, then the API goes down: the chip re-reads and says unavailable, with the reason (GRPH-1547)", async () => {
     const { api } = await import("@/lib/api");
-    vi.mocked(api.mcpTools).mockRejectedValue(new Error("the API is unreachable (502 from the proxy)"));
-    renderBar();
-    expect(await screen.findByText(/MCP · unavailable/)).toBeInTheDocument();
-    expect(screen.queryByText(/tools live/)).toBeNull();
+    const { mcpToolsTiming } = await import("@/lib/queries");
+    const saved = mcpToolsTiming.pollMs;
+    mcpToolsTiming.pollMs = 30;
+    try {
+      vi.mocked(api.mcpTools).mockResolvedValue({ live: 78, tools: [] });
+      renderBar();
+      expect(await screen.findByText(/MCP · 78 tools live/)).toBeInTheDocument();
+      vi.mocked(api.mcpTools).mockRejectedValue(new Error("the API is unreachable (502 from the proxy)"));
+      const chip = await screen.findByText(/MCP · unavailable/, {}, { timeout: 2000 });
+      expect(chip).toHaveAttribute("title", "the API is unreachable (502 from the proxy)");
+      expect(chip.querySelector(".blink")).toBeNull();
+      expect(screen.queryByText(/tools live/)).toBeNull();
+    } finally {
+      mcpToolsTiming.pollMs = saved;
+    }
   });
 });

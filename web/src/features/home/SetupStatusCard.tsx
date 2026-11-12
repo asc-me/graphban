@@ -22,8 +22,11 @@ export function onConnectStepRequested(fn: () => void): () => void {
 
 const CONNECT_STEP = 5;
 
-/** How often the card re-reads setup while a step is still unproven. Mutable for tests. */
-export const setupStatusTiming = { pollMs: 3000 };
+/**
+ * How often the card re-reads setup: fast while a step is still unproven, slowly once both are ✓
+ * so a downed API still turns the card unknown instead of leaving a stale ✓. Mutable for tests.
+ */
+export const setupStatusTiming = { pollMs: 3000, provenPollMs: 15000 };
 const dismissKey = (projectId: string) => `al.setupStatus.dismissed.${projectId}`;
 
 /**
@@ -33,10 +36,10 @@ const dismissKey = (projectId: string) => `al.setupStatus.dismissed.${projectId}
  * Dismiss hides only this card, for good; Settings → Machines keeps the list.
  */
 export function SetupStatusCard({ projectId }: { projectId: string }) {
-  // Poll while the connection or First job is unproven, so an agent seeding an item moves the
-  // counter without a reload; stop once both are ✓ or the card is dismissed.
-  const [polling, setPolling] = React.useState(true);
-  const setup = useProjectSetup(projectId, polling ? setupStatusTiming.pollMs : undefined);
+  // Poll fast while the connection or First job is unproven, so an agent seeding an item moves
+  // the counter without a reload; slowly once both are ✓ (a failed read must still surface);
+  // not at all once the card is dismissed.
+  const [unprovenSeen, setUnprovenSeen] = React.useState(true);
   const [dismissed, setDismissed] = React.useState(() => {
     try {
       return localStorage.getItem(dismissKey(projectId)) === "1";
@@ -44,10 +47,12 @@ export function SetupStatusCard({ projectId }: { projectId: string }) {
       return false;
     }
   });
+  const pollMs = dismissed ? undefined : unprovenSeen ? setupStatusTiming.pollMs : setupStatusTiming.provenPollMs;
+  const setup = useProjectSetup(projectId, pollMs);
   const step = setup.data?.steps.find((s) => s.step === CONNECT_STEP);
   const job = deriveMarks({ projectId, setup: setup.data }).first_job;
   const unproven = !setup.data || step?.status !== "done" || job.status !== "done";
-  React.useEffect(() => setPolling(unproven && !dismissed), [unproven, dismissed]);
+  React.useEffect(() => setUnprovenSeen(unproven), [unproven]);
   // A failed read must never keep the last good ✓: say unknown, with the reason.
   if (!dismissed && setup.isError) {
     const why = setup.error instanceof Error ? setup.error.message : String(setup.error);
