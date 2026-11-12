@@ -2,6 +2,7 @@ import { Check, Plus, Search } from "lucide-react";
 import * as React from "react";
 import { createPortal } from "react-dom";
 
+import { CloudTag } from "@/components/shell/CloudTag";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { NewProjectDialog } from "@/features/onboarding/NewProjectDialog";
 import { cn } from "@/lib/cn";
@@ -254,6 +255,7 @@ export function ProjectSwitcher({
                         <span className="rounded border border-line px-1.5 font-mono text-meta text-muted">
                           {p.tag}
                         </span>
+                        <CloudTag projectId={p.id} />
                       </span>
                       <span data-testid="switcher-meta" className="min-h-[14px] truncate font-mono text-[10px] text-faint">
                         {summaryMeta(s)}

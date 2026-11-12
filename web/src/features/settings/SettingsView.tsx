@@ -14,6 +14,7 @@ import { UpdatesPanel } from "@/features/settings/UpdatesPanel";
 import { ApiKeysPanel } from "@/features/settings/ApiKeysPanel";
 import { CloudOrgLinkPanel } from "@/features/settings/CloudOrgLinkPanel";
 import { SyncLinkPanel } from "@/features/settings/SyncLinkPanel";
+import { CloudTag } from "@/components/shell/CloudTag";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { copyText } from "@/lib/clipboard";
 import { api } from "@/lib/api";
@@ -748,6 +749,7 @@ function ProjectPanel() {
     <Section title="Project" desc="Configuration for the active project.">
       <div className="mb-3"><Label>Name</Label><Input value={form.name ?? ""} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} className="max-w-sm" /></div>
       <RetagRow />
+      <div className="mb-3"><CloudTag projectId={active.id} /></div>
       <div className="mb-4"><Label>Description</Label><Textarea rows={2} value={form.description ?? ""} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} /></div>
       <div className="mb-4 space-y-2">
         {flags.map((fl) => (
