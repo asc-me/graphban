@@ -31,7 +31,10 @@ _TIMEOUT = 10.0
 #: The console's definite noes on a poll. Anything else it says is not a refusal we know.
 REFUSED_REASONS = ("declined", "expired", "not_member", "no_seat")
 #: Push refusals that are about the credential, not one project (L5): they refuse the link.
-LINK_REFUSALS = ("seat_removed", "token_revoked")
+#: `key_refused` is a 401 on a migrated key (`legacy_key`) for any other reason: the key is the
+#: link's only credential, so its refusal is the link's too (GRPH-1518).
+LINK_REFUSALS = ("seat_removed", "token_revoked", "key_refused")
+KEY_REFUSED = "key_refused"
 #: Key prefixes whose public part the console can match, and its length past the prefix.
 _KEY_PREFIXES = ("gb_sync_",) + apikey.ACCEPTED_PREFIXES
 _PUBLIC_CHARS = 4

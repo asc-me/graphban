@@ -111,13 +111,71 @@ def test_one_refusal_does_not_stop_the_others(client, auth, fake, linked):
     assert _stored()["side"] == ("refused", "no_project_access")
 
 
+@pytest.mark.parametrize("hit", ["c1", "c2"])
 @pytest.mark.parametrize("reason", ["seat_removed", "token_revoked"])
-def test_a_credential_refusal_refuses_every_project(client, auth, fake, linked, reason):
-    fake.default = (401, {"reason": reason})
+def test_a_credential_refusal_refuses_every_project(client, auth, fake, linked, reason, hit):
+    # Only ONE project's push meets the 401; the other would answer 200. Whichever order they
+    # are pushed in, the credential's refusal must refuse the link and every mapped project.
+    fake.rules[hit] = (401, {"reason": reason})
     out = _push(client, auth)
-    assert {p["status"] for p in out.values()} == {"refused"} and len(out) == 2
-    assert set(_stored().values()) == {("refused", reason)}
+    assert set(out) == {"core", "side"}
+    assert {(p["status"], p["reason"]) for p in out.values()} == {("refused", reason)}
+    assert _stored() == {"core": ("refused", reason), "side": ("refused", reason)}
     assert client.get("/api/sync/status", headers=auth).json()["state"] == "refused"
+
+
+def test_a_project_401_with_another_reason_on_a_token_is_that_projects_only(
+        client, auth, fake, linked):
+    fake.rules["c2"] = (401, {"reason": "no_project_access"})
+    out = _push(client, auth)
+    assert out["core"]["status"] == "done"
+    assert (out["side"]["status"], out["side"]["reason"]) == ("refused", "no_project_access")
+    assert client.get("/api/sync/status", headers=auth).json()["state"] == "ok"
+
+
+LEGACY_KEY = "gb_sync_legacyKEYSECRETvalue"
+
+
+@pytest.fixture()
+def legacy(client, auth, linked):
+    """The same two mappings on a migrated key link: `legacy_key` set, no token."""
+    with SessionLocal() as db:
+        link = db.get(SyncLink, "instance")
+        link.token_enc = ""
+        link.legacy_key = secrets.encrypt(LEGACY_KEY)
+        db.commit()
+
+
+def test_a_legacy_link_pushes_with_its_key(client, auth, fake, legacy, monkeypatch):
+    seen = []
+    real = fake.post
+
+    def spy(url, json=None, headers=None, timeout=None, **kw):
+        seen.append(dict(headers or {}))
+        return real(url, json=json, headers=headers, timeout=timeout)
+
+    monkeypatch.setattr(httpx, "post", spy)
+    out = _push(client, auth)
+    assert {p["status"] for p in out.values()} == {"done"}
+    assert seen and all(h.get("X-API-Key") == LEGACY_KEY for h in seen)
+    assert not any("Authorization" in h for h in seen)
+
+
+@pytest.mark.parametrize("reason", ["invalid_key", None])
+def test_any_401_on_a_legacy_key_refuses_the_link(client, auth, fake, legacy, reason):
+    fake.rules["c1"] = (401, {"reason": reason} if reason else {})
+    out = _push(client, auth)
+    assert {(p["status"], p["reason"]) for p in out.values()} == {("refused", "key_refused")}
+    assert {p["console_reason"] for p in out.values()} == {reason or "http_401"}
+    assert set(_stored().values()) == {("refused", "key_refused")}
+    assert client.get("/api/sync/status", headers=auth).json()["state"] == "refused"
+
+
+def test_a_legacy_key_403_is_still_one_projects_no(client, auth, fake, legacy):
+    fake.rules["c2"] = (403, {"reason": "no_project_access"})
+    out = _push(client, auth)
+    assert out["core"]["status"] == "done"
+    assert (out["side"]["status"], out["side"]["reason"]) == ("refused", "no_project_access")
 
 
 @pytest.mark.parametrize("answer", [httpx.ReadTimeout("slow"), (502, {})])

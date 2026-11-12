@@ -407,13 +407,28 @@ def _store_result(row: SyncProject, result: str, reason: str | None) -> None:
     row.last_push_at, row.last_push_result, row.last_push_reason = utcnow(), result, reason
 
 
+def _link_refusal(e: ConsoleRefused, auth: dict) -> str | None:
+    """The reason a refusal refuses the whole link, else None (one project's no).
+
+    A 401 `seat_removed` / `token_revoked` is the credential's. On a migrated key link
+    (`X-API-Key` auth) ANY 401 is the key's: the key is the link's only credential and has no
+    per-project grant to be missing, so it is stored as `key_refused` (the console's own words
+    ride along as `console_reason`)."""
+    if e.reason in link_device.LINK_REFUSALS:
+        return e.reason
+    if e.status == 401 and "X-API-Key" in auth:
+        return link_device.KEY_REFUSED
+    return None
+
+
 def push_mapped(db: Session) -> list[dict]:
     """Push every mapped project and return a result per project (box admin's trigger).
 
     `done {nodes, edges}` / `refused {reason}` / `unknown {reason}`, each stored on its
     `sync_project` row. One project's refusal never stops the others. A 401 `seat_removed` or
     `token_revoked` is the credential's, not the project's: the whole link is refused, so
-    every mapped project is stored refused with that reason (L5). Mappings are never touched
+    every mapped project is stored refused with that reason (L5); so is any 401 on a migrated
+    key (`_link_refusal`). Mappings are never touched
     here, so after a takeover each one is re-checked by this next push."""
     base, auth = _console_auth(db)
     results: list[dict] = []
@@ -428,12 +443,14 @@ def push_mapped(db: Session) -> list[dict]:
                             "at": row.last_push_at})
         except ConsoleRefused as e:
             db.rollback()
-            if e.reason in link_device.LINK_REFUSALS:
+            reason = _link_refusal(e, auth)
+            if reason is not None:
                 for r in rows:
-                    _store_result(r, "refused", e.reason)
+                    _store_result(r, "refused", reason)
                 db.commit()
                 return [{"project_id": r.local_project_id, "status": "refused",
-                         "reason": e.reason, "at": r.last_push_at} for r in rows]
+                         "reason": reason, "console_reason": e.reason, "at": r.last_push_at}
+                        for r in rows]
             _store_result(row, "refused", e.reason)
             db.commit()
             results.append({"project_id": row.local_project_id, "status": "refused",
