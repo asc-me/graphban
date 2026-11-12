@@ -61,7 +61,7 @@ type ModelChoice = "offline" | "ollama" | "claude";
 type Screen = QsStep | "finish" | "welcome" | "sections" | "concepts" | "prompts";
 
 /** Guides Help can open the dialog on directly (GRPH-1512). */
-export type QsGuide = "concepts" | "prompts";
+export type QsGuide = "concepts" | "prompts" | "sections";
 
 /** Steps, marks and chip count for one project — the dialog and the top-bar chip share it. */
 export function useQuickStart(projectId: string, hosted: boolean, pollMs?: number) {
@@ -110,7 +110,7 @@ export function QuickStartDialog({
   open: boolean;
   /** Where to open; the chip passes the first unfinished step. */
   initialStep?: QsStep;
-  /** Help opens the dialog on a guide: Concepts (at concept 1) or Start-up prompts. */
+  /** Help opens the dialog on a guide: Concepts (at concept 1), Start-up prompts, or Sections (the way back in after Finish). */
   initialGuide?: QsGuide;
   hosted: boolean;
   /** Esc, ✕ or "Finish later". */

@@ -10,11 +10,12 @@ import { GLOBAL_SHORTCUTS, docFor } from "./content";
 
 const OPEN_EVENT = "graphban:open-docs";
 
-/** Help's three guides, in order (GRPH-1512); the command palette lists the same three. */
+/** Help's guides, in order (GRPH-1512, GRPH-1546); Setup steps is the way back into the quick start once it is finished. */
 const GUIDES = [
   { kind: "concepts", label: "Concepts" },
   { kind: "tour", label: "Take the tour" },
   { kind: "prompts", label: "Start-up prompts" },
+  { kind: "sections", label: "Setup steps" },
 ] as const;
 
 /** Open the reader on the page you're on — the tour's "Read more" (GRPH-1363). */
@@ -163,7 +164,7 @@ export function DocsReader({ agentOpen = false, hasProject = true }: { agentOpen
 
             {/* Body */}
             <div className="min-h-0 flex-1 overflow-y-auto p-4">
-              {/* Help lists exactly three guides, in this order (GRPH-1512). Start-up prompts
+              {/* Help lists exactly four guides, in this order (GRPH-1512). Start-up prompts
                   opens the quick-start dialog's prompts screen — the one place they live — so the
                   sheet no longer carries its own inline copy. */}
               <nav aria-label="Guides" className="mb-4">

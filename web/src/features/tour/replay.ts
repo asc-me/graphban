@@ -15,7 +15,7 @@ export function onTourRequested(fn: () => void): () => void {
 const GUIDE_EVENT = "graphban:open-guide";
 
 /** Help's other two guides open the quick-start dialog on a panel (GRPH-1512). */
-export type GuideKind = "concepts" | "prompts";
+export type GuideKind = "concepts" | "prompts" | "sections";
 
 export function requestGuide(kind: GuideKind) {
   window.dispatchEvent(new CustomEvent<GuideKind>(GUIDE_EVENT, { detail: kind }));
