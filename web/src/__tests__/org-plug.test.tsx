@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { onOrgWindowRequested } from "@/features/settings/CloudOrgLinkDialog";
 import { OrgPlug, canRequestAgain } from "@/features/tour/OrgPlug";
 import { onTourRequested, requestTour } from "@/features/tour/replay";
 import { StartupPromptRows } from "@/features/onboarding/StartupPrompts";
@@ -107,7 +108,9 @@ describe("GRPH-1364 org plug", () => {
     plug();
     expect(await screen.findByText(/Requested on/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Request/ })).toBeNull();
-    expect(screen.getByRole("button", { name: "Finish tour" })).toBeInTheDocument();
+    // Self-host still leads with Link to an org →, so Not now stays its equal.
+    expect(screen.getByRole("button", { name: "Link to an org →" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Not now" })).toBeInTheDocument();
   });
 
   it("hosted in an org: Invite a teammate, never Request an org", async () => {
@@ -119,12 +122,35 @@ describe("GRPH-1364 org plug", () => {
     expect(screen.queryByRole("button", { name: /Request/ })).toBeNull();
   });
 
-  it("self-host: Link to an org opens Settings → Cloud / Sync; Not now is an equal button", async () => {
+  it("self-host, not linked: the primary is Link to an org →, which ends the tour and opens the Organization window (L5)", async () => {
+    const opened = vi.fn();
+    const off = onOrgWindowRequested(opened);
     const { onNavigate, onNotNow } = plug();
-    fireEvent.click(await screen.findByRole("button", { name: /Link to an org/ }));
-    expect(onNavigate).toHaveBeenCalledWith("/settings/deployment/sync");
-    fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+    const primary = await screen.findByRole("button", { name: "Link to an org →" });
+    // The primary sits in the action pair, before Not now — never the request.
+    const pair = primary.parentElement!;
+    expect(Array.from(pair.querySelectorAll("button")).map((b) => b.textContent)).toEqual(["Link to an org →", "Not now"]);
+    expect(screen.getByText("Opens Organization → Link to an org. You'll sign in with a code.")).toBeInTheDocument();
+    fireEvent.click(primary);
     expect(onNotNow).toHaveBeenCalled();
+    expect(opened).toHaveBeenCalledTimes(1);
+    expect(onNavigate).not.toHaveBeenCalled();
+    off();
+  });
+
+  it("self-host: Request an org stays as the secondary action, outside the pair", async () => {
+    plug();
+    const req = await screen.findByRole("button", { name: "Request an org" });
+    const primary = screen.getByRole("button", { name: "Link to an org →" });
+    expect(req.parentElement).not.toBe(primary.parentElement);
+    fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+  });
+
+  it("the pitch ends with local-only for unchosen projects", async () => {
+    plug();
+    expect(
+      await screen.findByText("Your code graph stays local-first, and any project you don't choose to sync stays local only."),
+    ).toBeInTheDocument();
   });
 });
 

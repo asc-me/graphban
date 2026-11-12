@@ -43,6 +43,14 @@ describe("GRPH-1522 invitee link card", () => {
     expect(document.querySelector("input")).toBeNull();
   });
 
+  it("L6: the optional sub-line names the org, and the footer says nothing waits on it", async () => {
+    vi.mocked(api.orgs).mockResolvedValue([{ id: "o", name: "Acme", plan: "x", role: "member" }] as never);
+    vi.mocked(api.projects).mockResolvedValue([] as never);
+    mount();
+    expect(await screen.findByText("Optional. Link your local box to Acme.")).toBeInTheDocument();
+    expect(screen.getByText("Optional. Nothing here waits on it.")).toBeInTheDocument();
+  });
+
   it("projects unknown: says so, never an empty list", async () => {
     vi.mocked(api.orgs).mockResolvedValue([{ id: "o", name: "Acme", plan: "x", role: "member" }] as never);
     vi.mocked(api.projects).mockRejectedValue(new Error("boom"));

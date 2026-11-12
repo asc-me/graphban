@@ -1,6 +1,7 @@
 import * as React from "react";
 
 import { Input, Textarea } from "@/components/ui/input";
+import { requestOrgWindow } from "@/features/settings/CloudOrgLinkDialog";
 import { useConfig, useOnboarding, useOrgs, useRequestOrg, useSyncStatus } from "@/lib/queries";
 import { settingsPath, usableHttpUrl } from "@/lib/routes";
 
@@ -26,8 +27,9 @@ const EQUAL = `${BTN} border-control bg-transparent text-fg-2 hover:border-contr
 /**
  * The tour's closing card, anchored on Organization (GRPH-P67 §5, D2/D4/D10; design
  * `Tour Stop.dc.html`, `stop: org`). Hosted users in an org get Invite a teammate and never
- * Request an org; a self-host user can link to an org or request one. "Not now" is an equal
- * button and nothing nags later. There is no Declined/Expired state: after the stored date
+ * Request an org. A self-host box that is not linked leads with **Link to an org →**, which
+ * ends the tour and opens the Organization window on the wizard (L5, GRPH-1564); Request an
+ * org stays as the secondary action. "Not now" is an equal button and nothing nags later. There is no Declined/Expired state: after the stored date
  * is 14 days old, Request again overwrites it.
  */
 export function OrgPlug({
@@ -64,13 +66,24 @@ export function OrgPlug({
     }
   }
 
+  // Self-host, not linked: Link to an org → leads; the request is the secondary action.
+  const selfHost = kind === "request" && !hosted;
+  const linkToOrg = () => {
+    onNotNow();
+    requestOrgWindow();
+  };
+
+  let requestAction: { label: string; run: () => void; disabled?: boolean } | null = null;
+  if (kind === "hosted" || kind === "unknown") requestAction = null;
+  else if (form)
+    requestAction = { label: "Send", run: send, disabled: !name.trim() || !email.trim().includes("@") || request.isPending };
+  else if (!requestedAt) requestAction = { label: "Request an org", run: () => setForm(true) };
+  else if (canRequestAgain(requestedAt)) requestAction = { label: "Request again", run: () => setForm(true) };
+
   let action: { label: string; run: () => void; disabled?: boolean } | null = null;
   if (kind === "hosted") action = { label: "Invite a teammate →", run: () => onNavigate(settingsPath("members")) };
-  else if (kind === "unknown") action = null;
-  else if (form)
-    action = { label: "Send", run: send, disabled: !name.trim() || !email.trim().includes("@") || request.isPending };
-  else if (!requestedAt) action = { label: "Request an org", run: () => setForm(true) };
-  else if (canRequestAgain(requestedAt)) action = { label: "Request again", run: () => setForm(true) };
+  else if (selfHost && !form) action = { label: "Link to an org →", run: linkToOrg };
+  else action = requestAction;
 
   if (kind === "linked" && linkedOrg) {
     const orgName = linkedOrg.org || "an org";
@@ -120,7 +133,7 @@ export function OrgPlug({
         <li>Memory that carries across projects</li>
         <li>One roster of everyone's agents</li>
         <li>Capacity routing across your team's entitlements</li>
-        <li>Your code graph stays local-first</li>
+        <li>Your code graph stays local-first, and any project you don't choose to sync stays local only.</li>
       </ul>
       {form && (
         <div className="flex flex-col gap-2">
@@ -158,14 +171,21 @@ export function OrgPlug({
           {form ? "Cancel" : action ? "Not now" : "Finish tour"}
         </button>
       </div>
-      {kind === "request" && !form && (
-        <button
-          type="button"
-          onClick={() => onNavigate(settingsPath("deployment/sync"))}
-          className="self-start rounded text-body text-faint outline-none hover:text-fg-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
-        >
-          Already in an org? Link to an org → <span className="sr-only">Opens Settings, Cloud / Sync</span>
-        </button>
+      {selfHost && !form && (
+        <>
+          <p className="text-small text-faint" data-tour-link-hint>
+            Opens Organization → Link to an org. You&apos;ll sign in with a code.
+          </p>
+          {requestAction && (
+            <button
+              type="button"
+              onClick={requestAction.run}
+              className="self-start rounded text-body text-faint outline-none hover:text-fg-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+            >
+              {requestAction.label}
+            </button>
+          )}
+        </>
       )}
     </div>
   );

@@ -348,7 +348,10 @@ describe("LinkedPanel", () => {
 
   it("reads who it is linked as, the projects, and the actions", () => {
     panel(signedIn);
-    expect(screen.getByText("This deployment is linked to Acme as ann@acme.dev.")).toBeInTheDocument();
+    const who = document.querySelector("[data-linked-as]")!;
+    expect(who).toHaveTextContent("This deployment is linked to Acme as ann@acme.dev.");
+    expect(within(who as HTMLElement).getByText("Acme").tagName).toBe("STRONG");
+    expect(within(who as HTMLElement).getByText("ann@acme.dev").tagName).toBe("CODE");
     expect(screen.getByText("☁ CORE")).toBeInTheDocument();
     noUuid();
     expect(screen.getByText("1 project is local only.")).toBeInTheDocument();
@@ -409,6 +412,30 @@ describe("LinkedPanel", () => {
     expect(screen.getByRole("button", { name: "Sign in again" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Choose projects" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Unlink" })).toBeDisabled();
+  });
+
+  it("a pushed row reads core → ☁ CORE · ☁ SYNCED <time>", () => {
+    const at = "2026-11-12T14:02:00Z";
+    const hhmm = new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+    panel({ ...signedIn, projects: [
+      proj("core", "core", { mapped: true, cloud_project_id: CORE_ID, cloud_project_tag: "CORE", last_push_result: "ok", last_push_at: at }),
+    ] });
+    expect(document.querySelector("[data-synced-project]")).toHaveTextContent(`core→☁ CORE· ☁ SYNCED ${hhmm}`);
+  });
+
+  it("confirmUnlink asks first, with the same copy, then calls back", async () => {
+    const user = userEvent.setup();
+    const onUnlink = vi.fn();
+    render(<LinkedPanel status={signedIn} confirmUnlink onChooseProjects={noop} onSignIn={noop} onUnlink={onUnlink} />);
+    await user.click(screen.getByRole("button", { name: "Unlink" }));
+    expect(onUnlink).not.toHaveBeenCalled();
+    const confirm = screen.getByRole("alertdialog", { name: "Unlink this deployment" });
+    expect(confirm).toHaveTextContent("Stops all sync. Every project becomes local only. Cloud items remain.");
+    await user.click(within(confirm).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Unlink" }));
+    await user.click(screen.getByRole("button", { name: "Unlink this deployment" }));
+    expect(onUnlink).toHaveBeenCalledTimes(1);
   });
 
   it("Unlink calls back", async () => {
