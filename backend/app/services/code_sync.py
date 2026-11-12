@@ -26,6 +26,9 @@ from app.security import authz, secrets
 from app.services import code_graph, link_device, quotas
 
 _BATCH = 200      # nodes per request — bounds payload size and sets resumability granularity
+# Edges per request. The console's POST /api/sync/code-graph refuses more than 20000 edges in
+# one request with a 413 (GBC-82); one oversized request would refuse the project every push.
+_EDGE_BATCH = 20000
 _TIMEOUT = 30.0
 _LINK_ID = "instance"  # the singleton SyncLink row
 
@@ -295,10 +298,13 @@ def push(db: Session, *, project_id: str, cloud_url: str = "", api_key: str = ""
     edges_sent = 0
     if changed or removed:
         edges = code_graph.list_edges(db, project_id)
-        if edges:
-            _post(url, key, {"edges": [{"src": e.src, "dst": e.dst, "type": e.type} for e in edges]},
+        # Batched within the console's limit (GRPH-1555). A 413 on a batch is still that
+        # project's refusal, with the console's stated reason (`_classify`).
+        for i in range(0, len(edges), _EDGE_BATCH):
+            chunk = edges[i:i + _EDGE_BATCH]
+            _post(url, key, {"edges": [{"src": e.src, "dst": e.dst, "type": e.type} for e in chunk]},
                   headers)
-            edges_sent = len(edges)
+            edges_sent += len(chunk)
 
     return {"project_id": project_id, "pushed": sent, "removed": len(removed),
             "unchanged": len(local) - len(changed), "edges": edges_sent,
