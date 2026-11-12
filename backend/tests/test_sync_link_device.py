@@ -385,3 +385,63 @@ def test_sign_in_without_the_keys_project_leaves_the_row_unmapped(client, auth, 
                                  "token": TOKEN})
     assert _poll(client, auth).json()["status"] == "approved"
     assert _cloud_ids() == {}
+
+
+NO_PROJECT = "X-Cloud-Project is required with a deployment token."
+
+
+def _push_after_sign_in(client, auth, console, monkeypatch) -> dict:
+    """Migrated key link pinned to `core` → sign in (the console reports the key's project
+    `cloud-alpha`) → push, against a console that keys the push on `X-Cloud-Project`: a token
+    push naming cloud-alpha is a 200, a token push naming nothing is the console's 422."""
+    _key_link(client, auth)
+    _migrate()
+    _start(client, auth)
+    console.poll_answer = (200, {"status": "approved", "org": {"name": "Acme"}, "email": "e@a.dev",
+                                 "token": TOKEN, "legacy_project_id": "cloud-alpha"})
+    assert _poll(client, auth).json()["status"] == "approved"
+
+    pushes: list[dict] = []
+
+    def push_console(url, json=None, headers=None, timeout=None, **kw):
+        headers = dict(headers or {})
+        pushes.append(headers)
+        req = httpx.Request("POST", url)
+        if headers.get("Authorization") != f"Bearer {TOKEN}":
+            return httpx.Response(401, json={"reason": "invalid_token"}, request=req)
+        if headers.get("X-Cloud-Project") == "cloud-alpha":
+            return httpx.Response(200, json={"pushed": 0, "edges": 0}, request=req)
+        return httpx.Response(422, json={"detail": NO_PROJECT}, request=req)
+
+    monkeypatch.setattr(httpx, "post", push_console)
+    r = client.post("/api/sync/push", headers=auth, json={})
+    assert r.status_code == 200, r.text
+    assert pushes, "the push never contacted the console"
+    out = {p["project_id"]: p for p in r.json()["projects"]}
+    with SessionLocal() as db:
+        row = db.get(SyncProject, "core")
+        stored = (row.cloud_project_id, row.last_push_result, row.last_push_reason) if row else None
+    return {"out": out, "stored": stored, "pushes": pushes}
+
+
+def test_after_sign_in_on_a_migrated_key_link_the_next_push_is_done_to_cloud_alpha(
+        client, auth, console, monkeypatch):
+    got = _push_after_sign_in(client, auth, console, monkeypatch)
+    assert got["out"]["core"]["status"] == "done"
+    assert got["stored"] == ("cloud-alpha", "ok", None)
+    assert all(h.get("X-Cloud-Project") == "cloud-alpha" for h in got["pushes"])
+    assert all("X-API-Key" not in h for h in got["pushes"])  # the key is gone; the token pushes
+
+
+def test_sabotage_guard_without_the_fill_the_push_is_the_consoles_422(
+        client, auth, console, monkeypatch):
+    """The fill removed: the row keeps `cloud_project_id = ''`, the push names no project and
+    the console's 422 lands on the row — the failure GRPH-1556 was filed for. Proves the test
+    above can fail."""
+    from app.services import link_device
+    monkeypatch.setattr(link_device, "fill_legacy_projects", lambda db, cloud_project_id: None)
+    got = _push_after_sign_in(client, auth, console, monkeypatch)
+    assert got["out"]["core"]["status"] == "refused"
+    assert got["stored"][0] == ""
+    assert got["stored"][1] == "refused" and NO_PROJECT in (got["stored"][2] or "")
+    assert all("X-Cloud-Project" not in h for h in got["pushes"])
