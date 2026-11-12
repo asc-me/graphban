@@ -1,5 +1,5 @@
 import { QUESTION_LABEL } from "@/features/tracker/QuestionStateBadge";
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { copyText } from "@/lib/clipboard";
 
@@ -7,6 +7,103 @@ import { CommentThread } from "@/features/requests/CommentThread";
 import type { TriageFeedRow } from "@/lib/types";
 
 import { answeredByCopy, duplicateHintCopy, formatAge, type TriageAction } from "./actions";
+
+/** `c` in the queue asks the open question's answer box to show itself. */
+export const OPEN_ANSWER_EVENT = "triage-open-answer";
+const EMPTY_ANSWER = "Type an answer first. An empty answer isn't sent.";
+const OPEN_QUESTION =
+  "The agent asked an open question, so there are no options. Type the answer it should work from.";
+
+function AnswerOptions({
+  options, onAction, onText,
+}: {
+  options: TriageAction[];
+  onAction: (a: TriageAction) => void;
+  onText: (text: string) => void;
+}) {
+  const noOptions = options.length === 0;
+  const [open, setOpen] = useState(noOptions);
+  const [text, setText] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const focusNext = useRef(false);
+  const show = open || noOptions;
+  useEffect(() => {
+    const on = () => { focusNext.current = true; setOpen(true); ref.current?.focus(); };
+    window.addEventListener(OPEN_ANSWER_EVENT, on);
+    return () => window.removeEventListener(OPEN_ANSWER_EVENT, on);
+  }, []);
+  useEffect(() => {
+    if (show && focusNext.current) { focusNext.current = false; ref.current?.focus(); }
+  }, [show]);
+  const send = () => {
+    if (!text.trim()) { setErr(EMPTY_ANSWER); return; }
+    setErr(null);
+    onText(text.trim());
+  };
+  const keyed = options.filter((o) => o.key);
+  const more = options.filter((o) => !o.key);
+  const btn = (a: TriageAction) => (
+    <button
+      key={a.label}
+      onClick={() => onAction(a)}
+      className="flex h-8 w-full items-center gap-2 rounded-md border border-control px-3 text-small text-fg-2 hover:bg-surface-3"
+    >
+      {a.key && <kbd className="rounded bg-surface-3 px-1 font-mono text-micro text-muted">{a.key.toUpperCase()}</kbd>}
+      {a.label}
+    </button>
+  );
+  return (
+    <div className="mt-4" data-testid="answer-options">
+      {keyed.length > 0 && <div className="flex flex-col gap-1.5">{keyed.map(btn)}</div>}
+      {more.length > 0 && (
+        <>
+          <div className="my-3 flex items-center gap-2 font-mono text-micro uppercase tracking-[0.07em] text-faint-2">
+            <span className="h-px flex-1 bg-line" />More options<span className="h-px flex-1 bg-line" />
+          </div>
+          <div className="flex flex-col gap-1.5">{more.map(btn)}</div>
+        </>
+      )}
+      {!noOptions && !show && (
+        <button onClick={() => { focusNext.current = true; setOpen(true); }}
+          className="mt-3 text-small text-muted underline hover:text-fg">
+          Answer in your own words
+        </button>
+      )}
+      {show && (
+        <div className="mt-3">
+          <label className="font-mono text-micro uppercase tracking-[0.07em] text-faint-2" htmlFor="triage-answer">
+            Your answer
+          </label>
+          <textarea
+            id="triage-answer"
+            ref={ref}
+            data-triage-answer
+            value={text}
+            rows={3}
+            placeholder={noOptions ? OPEN_QUESTION : undefined}
+            onChange={(e) => { setText(e.target.value); setErr(null); }}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") { e.preventDefault(); e.currentTarget.blur(); }
+              else if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+            }}
+            className="mt-1 w-full rounded-md border border-control bg-surface px-2 py-1.5 text-small text-fg"
+          />
+          {err && <div role="alert" className="mt-1 text-small text-st-blocked">{err}</div>}
+          <div className="mt-1.5 flex items-center gap-3">
+            <button onClick={send} className="h-7 rounded-md bg-accent px-3 text-small font-semibold text-bg">Send</button>
+            {!noOptions && (
+              <button onClick={() => { setOpen(false); setErr(null); }}
+                className="text-small text-muted underline hover:text-fg">
+                Back to options
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 const STATUS_TEXT: Record<string, string> = {
   in_progress: "text-st-next", review: "text-st-review", blocked: "text-st-blocked", next: "text-purple",
@@ -48,11 +145,16 @@ export function TriageDetail({
   row,
   actions,
   onAction,
+  onAnswerText,
 }: {
   row: TriageFeedRow;
   actions: TriageAction[];
   onAction: (a: TriageAction) => void;
+  onAnswerText?: (text: string) => void;
 }) {
+  const isDecision = row.kind === "blocker" && !!row.decision;
+  const optionActions = actions.filter((a) => a.option);
+  const toolbarActions = actions.filter((a) => !a.option);
   const metaLine =
     row.kind === "blocker"
       ? `claimed by ${row.owner ?? "nobody"} · blocked ${formatAge(row.blocked_seconds)}`
@@ -76,7 +178,7 @@ export function TriageDetail({
       <h2 className="mt-2 text-[18px] font-semibold leading-snug">{row.title}</h2>
 
       <div className="mt-4 flex flex-wrap gap-2" role="toolbar" aria-label="Actions">
-        {actions.map((a) => (
+        {toolbarActions.map((a) => (
           <button
             key={a.key}
             onClick={() => onAction(a)}
@@ -91,6 +193,9 @@ export function TriageDetail({
           </button>
         ))}
       </div>
+      {isDecision && onAnswerText && (
+        <AnswerOptions key={row.id} options={optionActions} onAction={onAction} onText={onAnswerText} />
+      )}
       <div data-testid="triage-rule" className="mt-4 border-t border-line" />
 
       {row.kind === "blocker" && (

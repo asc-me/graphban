@@ -5,11 +5,13 @@ import type { TriageFeedRow, TriageTab } from "@/lib/types";
 export type Undo = () => Promise<unknown>;
 
 export interface TriageAction {
-  /** Single lowercase letter; the chip shows it upper-cased. */
+  /** Single lowercase letter; the chip shows it upper-cased. Empty for options past the sixth. */
   key: string;
   label: string;
   /** Runs on ↵ as well as on its own key. */
   primary?: boolean;
+  /** One of an agent's answer options: rendered full-width in the options list, never primary. */
+  option?: boolean;
   /** Override and Merge only: the actions Undo does not reverse cleanly ask first. */
   confirm?: string;
   run: () => Promise<{ result: string; undo: Undo; command?: string }>;
@@ -65,6 +67,22 @@ const HOUR = 3_600_000;
  */
 const OPTION_KEYS = "abdfgh";
 
+/** A person's own-words answer to a decision wait (`POST /answer` with `text`). */
+export function answerTextAction(row: TriageFeedRow, text: string): TriageAction {
+  const owner = row.kind === "blocker" ? (row.owner ?? "the agent") : "the agent";
+  return {
+    key: "", label: "Send answer",
+    run: async () => {
+      const a = await api.answerBlockerText(row.id, text);
+      return {
+        result: answeredCopy(`Answered "${text}" — ${owner} resumed`, a),
+        command: a?.drain?.command,
+        undo: () => api.undoBlocker(row.id),
+      };
+    },
+  };
+}
+
 export function actionsFor(row: TriageFeedRow, projectId: string): TriageAction[] {
   // Already answered: nothing to act on, the row only says who answered and what happens next.
   if (row.kind === "answered") return [];
@@ -86,8 +104,9 @@ export function actionsFor(row: TriageFeedRow, projectId: string): TriageAction[
     };
     if (row.decision) {
       // No option is primary: ↵ must not answer a human decision on the agent's behalf.
-      const options = row.decision.options.slice(0, OPTION_KEYS.length).map<TriageAction>((o, i) => ({
-        key: OPTION_KEYS[i], label: o,
+      // Options past the sixth have no key, but are never dropped.
+      const options = row.decision.options.map<TriageAction>((o, i) => ({
+        key: OPTION_KEYS[i] ?? "", label: o, option: true,
         run: async () => {
           const a = await api.answerBlocker(row.id, o);
           return {

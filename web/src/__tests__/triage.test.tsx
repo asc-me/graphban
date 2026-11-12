@@ -75,6 +75,7 @@ const m = vi.hoisted(() => ({
   blockerAction: vi.fn(async () => ({})),
   undoBlocker: vi.fn(async () => ({})),
   answerBlocker: vi.fn(async () => ({})),
+  answerBlockerText: vi.fn(async () => ({})),
   decideCollision: vi.fn(async () => ({ id: 7 })),
   undoCollisionDecision: vi.fn(async () => ({})),
   requestComments: vi.fn(),
@@ -171,6 +172,7 @@ describe("Triage inbox", () => {
     const user = userEvent.setup();
     await user.keyboard("c");
     expect(m.answerBlocker).not.toHaveBeenCalled();
+    await user.keyboard("{Escape}"); // leave the answer box that C opened
     await user.keyboard("d");
     await waitFor(() => expect(m.answerBlocker).toHaveBeenCalledWith("GRPH-906", "Both"));
   });
@@ -514,5 +516,52 @@ describe("Triage request comments", () => {
     await screen.findByText("Needs the key API");
     expect(screen.queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument();
     expect(m.requestComments).not.toHaveBeenCalled();
+  });
+});
+
+describe("Triage: every question can be answered (GRPH-1572)", () => {
+  const ask = (options: string[]): TriageFeedRow =>
+    ({ ...blocker, id: "GRPH-910", decision: { question: "Which store?", options } }) as TriageFeedRow;
+
+  it("8 options render all 8; 7 and 8 sit under More options with no key and send on click", async () => {
+    const opts = ["o1", "o2", "o3", "o4", "o5", "o6", "o7", "o8"];
+    m.projectTriage.mockResolvedValue(feed([ask(opts), bug]));
+    renderTriage();
+    await screen.findByText("More options");
+    const list = screen.getByTestId("answer-options");
+    for (const o of opts) expect(list).toHaveTextContent(o);
+    const seventh = screen.getByRole("button", { name: "o7" });
+    expect(seventh.querySelector("kbd")).toBeNull();
+    await userEvent.setup().click(seventh);
+    await waitFor(() => expect(m.answerBlocker).toHaveBeenCalledWith("GRPH-910", "o7"));
+  });
+
+  it("a question with no options shows the box; Enter sends {text}", async () => {
+    m.projectTriage.mockResolvedValue(feed([ask([]), bug]));
+    renderTriage();
+    const box = await screen.findByPlaceholderText(/The agent asked an open question/);
+    const user = userEvent.setup();
+    await user.type(box, "use redis{Enter}");
+    await waitFor(() => expect(m.answerBlockerText).toHaveBeenCalledWith("GRPH-910", "use redis"));
+    expect(await screen.findByText(/Answered "use redis"/)).toBeInTheDocument();
+  });
+
+  it("letter keys type in the box instead of answering; an empty send is refused", async () => {
+    m.projectTriage.mockResolvedValue(feed([ask(["Postgres", "SQLite"]), bug]));
+    renderTriage();
+    const user = userEvent.setup();
+    await screen.findByText("Which store?", { selector: "p" });
+    await user.keyboard("c");
+    const box = await screen.findByLabelText("Your answer");
+    await waitFor(() => expect(box).toHaveFocus());
+    await user.keyboard("a");
+    expect(box).toHaveValue("a");
+    expect(m.answerBlocker).not.toHaveBeenCalled();
+    await user.clear(box);
+    await user.type(box, "  {Enter}");
+    expect(screen.getByText("Type an answer first. An empty answer isn't sent.")).toBeInTheDocument();
+    expect(m.answerBlockerText).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Back to options" }));
+    expect(screen.queryByLabelText("Your answer")).not.toBeInTheDocument();
   });
 });

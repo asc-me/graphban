@@ -10,8 +10,8 @@ import { copyText } from "@/lib/clipboard";
 import { useTriageFeed } from "@/lib/queries";
 import type { TriageFeedRow } from "@/lib/types";
 
-import { TABS, actionsFor, duplicateHintCopy, formatAge, inTab, type TriageAction, type Undo } from "./actions";
-import { TriageDetail } from "./TriageDetail";
+import { TABS, actionsFor, answerTextAction, duplicateHintCopy, formatAge, inTab, type TriageAction, type Undo } from "./actions";
+import { OPEN_ANSWER_EVENT, TriageDetail } from "./TriageDetail";
 
 /**
  * Triage — one keyboard-driven queue across bugs, requests, blockers and collisions
@@ -172,13 +172,18 @@ export function TriageView() {
       if (k === "c") {
         const ta = document.querySelector<HTMLTextAreaElement>("textarea[data-triage-comment]");
         if (ta) { ta.focus(); e.preventDefault(); return; }
+        if (sel?.kind === "blocker" && sel.decision) {
+          window.dispatchEvent(new Event(OPEN_ANSWER_EVENT));
+          e.preventDefault();
+          return;
+        }
       }
       const hit = actions.find((a) => a.key === k);
       if (hit) { e.preventDefault(); trigger(hit); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [actions, confirming, move, run, trigger, undo]);
+  }, [actions, confirming, move, run, trigger, undo, sel]);
 
   const loading = feedQ.isLoading;
   const failedRead = feedQ.isError && !feedQ.data;
@@ -254,7 +259,7 @@ export function TriageView() {
         </div>
         <span className="flex-1" />
         <span className="flex items-center gap-1.5 font-mono text-meta text-faint-2">
-          <Kbd>J</Kbd><Kbd>K</Kbd> move · <Kbd>1–5</Kbd> tabs · <Kbd>A…Z</Kbd> act · <Kbd>⌫</Kbd> undo
+          <Kbd>J</Kbd><Kbd>K</Kbd> move · <Kbd>1–5</Kbd> tabs · <Kbd>A…H</Kbd> answer · <Kbd>C</Kbd> type an answer · <Kbd>⌫</Kbd> undo
         </span>
       </div>
 
@@ -338,7 +343,8 @@ export function TriageView() {
 
         {sel && (
           <div className="max-h-full min-h-0 overflow-y-auto rounded-[13px] border border-line bg-surface">
-            <TriageDetail row={sel} actions={actions} onAction={trigger} />
+            <TriageDetail row={sel} actions={actions} onAction={trigger}
+              onAnswerText={(t) => void run(answerTextAction(sel, t))} />
           </div>
         )}
       </div>
