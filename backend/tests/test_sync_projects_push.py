@@ -247,3 +247,14 @@ def test_sabotage_guard_projects_error_is_not_an_empty_ok(client, auth, fake, li
             "/api/sync/projects", headers=auth).json()["mapping"]}
     fake.projects = httpx.ConnectError("down")
     assert client.get("/api/sync/projects", headers=auth).json()["status"] == "unknown"
+
+
+def test_unchanged_push_still_contacts_the_console_and_sees_a_refusal(client, auth, fake, linked):
+    """GRPH-1553: with nothing changed, a removed grant must show refused, not ok."""
+    assert {p["status"] for p in _push(client, auth).values()} == {"done"}
+    fake.posts.clear()
+    fake.rules["c2"] = (403, {"reason": "no_project_access"})
+    out = _push(client, auth)
+    assert {c for c, _ in fake.posts} == {"c1", "c2"}
+    assert out["core"]["status"] == "done"
+    assert (out["side"]["status"], out["side"]["reason"]) == ("refused", "no_project_access")
