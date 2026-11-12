@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import Alert, Item, Project, PushSubscription, utcnow
+from app.security.authz import readable_project_ids
 
 log = logging.getLogger(__name__)
 
@@ -86,6 +87,8 @@ def send_for_alerts(db: Session, alert_ids: list[str]) -> int:
     sent = 0
     try:
         for alert in db.scalars(select(Alert).where(Alert.id.in_(alert_ids))).all():
+            if alert.project_id not in readable_project_ids(db, alert.user_id):
+                continue  # D6: the user lost read access since the alert was written
             subs = db.scalars(select(PushSubscription).where(
                 PushSubscription.user_id == alert.user_id)).all()
             if not subs:

@@ -180,3 +180,18 @@ def test_project_with_nobody_to_alert_writes_no_alert(db):
 
     rows = {r["id"]: r for r in triage._blocker_rows(db, "lonely", utcnow())}
     assert rows[ticket.key].get("nobody_alerted") is True
+
+
+def test_alert_hidden_and_unreadable_after_access_lost(client, auth, db):
+    _, wait = _pair(db)
+    me = db.query(User).first()
+    alerts_svc.write_for_wait(db, wait, [me.id])
+    db.commit()
+    body = client.get("/api/me/alerts", headers=auth).json()
+    assert body["unread"] == 1
+    aid = body["alerts"][0]["id"]
+    db.query(Membership).filter(Membership.user_id == me.id, Membership.project_id == "core").delete()
+    db.commit()
+    body = client.get("/api/me/alerts", headers=auth).json()
+    assert body["unread"] == 0 and body["alerts"] == []
+    assert client.post(f"/api/me/alerts/{aid}/read", headers=auth).status_code == 404
