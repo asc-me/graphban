@@ -104,3 +104,24 @@ Walked 2026-11-12 against a scratch console built from graphban-control `main` (
 Also found: `docker-compose.yml` doesn't forward `SYNC_CLOUD_URL`/`SYNC_API_KEY` (GRPH-1554). `describe_code` is callable with an agent key but missing from its `tools/list` (noted on GRPH-1545). The console `/link` page renders browser-default controls, and its expiry is a raw ISO timestamp (polish).
 
 **Verdict: blocked.** Re-walk from the first push once GBC-82 decides where a linked box's code graph goes.
+
+# §8.4 link walk (GRPH-1523), re-walk after GBC-82
+
+Walked 2026-11-12 16:29–16:42Z, after GBC-82 merged (graphban-control `b483a85`, `POST /api/sync/code-graph`). The scratch console was rebuilt from the GBC-82 commit, which has the same tree as `b483a85`, keeping its database. The box was the same scratch box (graphban `2f0d6ea4`).
+
+**Setup used throughout.** GRPH-1553 is still open: a push with nothing changed never contacts the console. So before each push below, the box's `code_sync_state` manifest hash for `app/greet.py` was set to a stale value, which makes a real request reach the console. For the expiry check, the code's `expires_at` was moved into the past in the scratch console database instead of waiting ten minutes. For the migrated-key checks, the box was linked with a console sync credential and then the migration step `0194.migrate_key_links` was run on it, which is how a pre-upgrade box arrives.
+
+| Step | Observed | Verdict |
+|---|---|---|
+| First push | Box: `done`, 2 nodes, 1 edge; sync status `ok`. Console: both nodes stored (`stale=false`) plus the edge; `box_deployment_projects` has the project; `last_pushed_at` set, so freshness left `never` | **pass** |
+| Grant removed | Team grant on Cloud Alpha deleted → push `refused no_project_access`, Walk Project red; link stays `ok`; Local Two/Three unchanged. Grant restored → next push `done` | **pass** |
+| Seat removed | Engineer removed from the org → push `refused seat_removed`; box shows **LINKED** with "Your seat in Walk Org was removed. Nothing is syncing." and Sign in again | **pass** |
+| Takeover | Second member (seat, team Eng) approves a new device code → new deployment, box linked as `walk-m2`, mapping Walk Project → Cloud Alpha kept; next push checked again and `done` | **pass** |
+| Console stopped mid-poll | Sign-in started, console stopped → poll `unknown` ("could not reach … ConnectError"), not refused; the stored link row is byte-identical | **pass** |
+| Code expired | Approve → `410 expired`; box poll `refused: expired`; link unchanged. Minor: `sign_in_pending` stays true (GRPH-1557) | **pass** |
+| Migrated key link | Keeps pushing (`done`; the console records the key's `last_pushed_at`); muted "This deployment still uses an old link key…" warning. Sign in → the console revokes the key (a push with it is 401), `legacy` clears, the warning goes. **But** the pinned mapping keeps an empty cloud project, so the next push is 422 "X-Cloud-Project is required with a deployment token." and Walk Project shows REFUSED with no target (GRPH-1556) | **fail** |
+| Migrated key refused in the console | Key revoked in the console → push `refused key_refused`; box shows red "This link used a key. Sign in to keep syncing." with Sign in again | **pass** |
+
+Also found: the box's purge sends `DELETE /api/sync/code-graph`, which the console does not serve (GBC-83). The box sends all edges in one request, and the console refuses more than 20000 (GRPH-1555).
+
+**Verdict: blocked on GRPH-1556.** Every other step passes. Re-walk the migrated-key sign-in once GRPH-1556 lands.
