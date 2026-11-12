@@ -530,7 +530,24 @@ def push_mapped(db: Session) -> list[dict]:
                             "reason": e.reason, "at": row.last_push_at})
         else:
             db.commit()
+    if any(r["status"] == "done" for r in results):
+        refresh_missing_tags(db)
     return results
+
+
+def refresh_missing_tags(db: Session) -> None:
+    """Fill the tag of every mapping that has none from one projects read (GRPH-1568).
+
+    A mapping made by the old-key migration or by `graphban link --project` can start with
+    no tag, and only the reachable-projects read stores one; a box that only ever pushes
+    would sit at `☁ ?` for good. One GET, only when a tag is missing; a refused or
+    unreachable answer leaves every tag as it was (the push result is already stored)."""
+    if not any(not m.cloud_project_tag for m in link_device.mappings(db).values()):
+        return
+    try:
+        console_projects(db)
+    except NotLinked:
+        pass
 
 
 # ---- org overview (GRPH-1223): the Organization window ----------------------------------
