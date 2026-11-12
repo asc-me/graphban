@@ -120,12 +120,14 @@ def test_a_cli_link_refuses_too(client, key, tmp_path, monkeypatch):
     """End-to-end on the AL-281 fix: link via the CLI, then confirm the gate sees it.
     Before AL-281 the CLI wrote only ~/.graphban/config.json, link_status never read it,
     and this call would have SUCCEEDED on a linked box."""
-    from app import cli
+    from app.db import SessionLocal
+    from app.services import code_sync
 
-    monkeypatch.setenv("GRAPHBAN_CONFIG", str(tmp_path / "config.json"))
-    cli.cmd_link(type("A", (), {"cloud_url": "https://cloud.example/",
-                                "api_key": "gb_sk_" + "0" * 40,
-                                "project": None, "org": None})())
+    db = SessionLocal()
+    try:
+        code_sync.set_link(db, cloud_url="https://cloud.example", api_key="gb_sk_" + "0" * 40)
+    finally:
+        db.close()
 
     err = _err(client, key, {"name": "Conjured While Linked"})
     assert err["code"] == "unauthorized", err

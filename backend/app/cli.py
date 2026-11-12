@@ -7,11 +7,11 @@ body — the `code_sync` service functions do — so the CLI calls the services,
 
 Run it where `DATABASE_URL` points at your instance — inside the backend container
 (`docker compose exec backend graphban sync`) or with the env exported. The cloud link
-(URL + org-issued sync credential) is stored in `~/.graphban/config.json`, chmod 600. An
+(console URL; the org sign-in itself lives in the database) is stored in `~/.graphban/config.json`, chmod 600. An
 existing `~/.agentledger/config.json` is still read if the new one is absent (override
 either with `GRAPHBAN_CONFIG`, or the older `AGENTLEDGER_CONFIG`).
 
-    graphban link --cloud-url https://graphban-console-console-production-ascme-labs.unkey.app --api-key gb_sk_… --project core
+    graphban link --cloud-url https://graphban-console-console-production-ascme-labs.unkey.app --project core=CORE
     graphban status          # link + last-synced state
     graphban sync            # incremental push of the linked project's code graph
     graphban purge --yes     # delete this project's graph from the cloud
@@ -128,50 +128,146 @@ def cmd_init(args) -> int:
     return 0
 
 
-def cmd_link(args) -> int:
-    """Link this instance to a cloud tenant, recording it in BOTH places (AL-281).
+# The device code lives ten minutes on the console; the CLI gives up polling then.
+_LINK_WAIT_SECONDS = 600
 
-    The config file is what the CLI's own commands read. The `sync_link` row is what
-    everything server-side reads — `code_sync.link_status()` resolves that row, then the
-    env link, and never consults the config file. Writing only the file left a
-    CLI-linked box reporting `linked: false` to the server, which would make the AL-284
-    authority gate FAIL OPEN: an agent could create projects that reach the org's tenant
-    space precisely on the instances that are linked to one.
 
-    The DB write is required, not best-effort. A silent failure here is the fail-open
-    case, and this CLI already runs where `DATABASE_URL` points at the instance.
+def _parse_mappings(pairs) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for raw in pairs or []:
+        local, sep, cloud = raw.partition("=")
+        if not sep or not local.strip() or not cloud.strip():
+            sys.exit(f"graphban link: --project wants LOCAL=CLOUD, got {raw!r}")
+        out[local.strip()] = cloud.strip()
+    return out
+
+
+# The answer that makes a project local only at the `graphban link` prompt.
+_LOCAL_ONLY = "-"
+
+
+def _choose_mapping(db, console: dict | None) -> dict[str, str] | None:
+    """Ask which local projects to sync and to which cloud project.
+
+    Each prompt defaults to the project's current cloud project, so a blank answer keeps
+    it; `-` makes it local only. Returns the whole wanted map, or None to leave the stored
+    map untouched — on EOF (a non-interactive re-link) or when nothing changed. A re-link
+    must never wipe the mappings `link_device.poll` promises to keep.
     """
-    from app.services import code_sync
+    from app.models import Project
+    from app.services import link_device
+
+    local = [p.id for p in db.query(Project).order_by(Project.id).all()]
+    if not local:
+        return None
+    current = {k: row.cloud_project_id for k, row in link_device.mappings(db).items()}
+    cloud = (console or {}).get("projects") or []
+    if cloud:
+        print("Cloud projects you can reach:")
+        for c in cloud:
+            print(f"  {c['id']}  {c['name']}")
+    chosen = dict(current)
+    for lp in local:
+        now = current.get(lp)
+        hint = (f"[blank = keep {now}, {_LOCAL_ONLY} = local only]" if now
+                else "[blank = local only]")
+        try:
+            answer = input(f"Sync local project {lp!r} to which cloud project? {hint} ").strip()
+        except EOFError:
+            return None
+        if answer == _LOCAL_ONLY:
+            chosen.pop(lp, None)
+        elif answer:
+            chosen[lp] = answer
+    return None if chosen == current else chosen
+
+
+def cmd_link(args) -> int:
+    """Sign this box in to a cloud org with a device code (GRPH-1519, P67 §5).
+
+    Exit 0 approved, 1 refused, 2 unknown (console unreachable). Uses `link_device`, the
+    same service the app's wizard uses, so the `sync_link` row — what everything server-side
+    reads — is written by the approval itself and nothing is stored before it. The CLI's
+    config file only records the console URL, after approval.
+    """
+    import time
+
+    from sqlalchemy import select
+
+    from app.services import code_sync, link_device
 
     cfg = load_config()
-    if args.cloud_url:
-        cfg["cloud_url"] = args.cloud_url.rstrip("/")
-    if args.api_key:
-        cfg["api_key"] = args.api_key
-    if args.project:
-        cfg["project"] = args.project
-    if not cfg.get("cloud_url") or not cfg.get("api_key"):
-        sys.exit("graphban link: need --cloud-url and --api-key (the org-issued link key)")
+    cloud_url = (args.cloud_url or cfg.get("cloud_url") or "").rstrip("/")
+    if not cloud_url:
+        sys.exit("graphban link: need --cloud-url (the console to sign in to)")
+    wanted = _parse_mappings(getattr(args, "project", None))
 
     db = _session()
     try:
-        # Carry the existing org label through. `set_link` overwrites it, and the label
-        # is the UI's to set — re-linking from the CLI must not blank it.
-        existing = code_sync.get_link(db)
-        org = args.org if getattr(args, "org", None) else (existing.org if existing else "")
-        code_sync.set_link(db, cloud_url=cfg["cloud_url"], api_key=cfg["api_key"], org=org)
-    except Exception as e:  # noqa: BLE001 — surface it; never leave the row unwritten
-        sys.exit(
-            f"graphban link: could not record the link in the database ({e}).\n"
-            "The link is not saved. Run this where DATABASE_URL points at your instance "
-            "(e.g. `docker compose exec api graphban link …`)."
-        )
+        # A typo in --project must not sign the box in and then store nothing: check the
+        # local ids before the console is asked for a code.
+        from app.models import Project
+        known = set(db.scalars(select(Project.id)).all())
+        missing = sorted(set(wanted) - known)
+        if missing:
+            print(f"graphban link: no local project {', '.join(missing)}; not signing in.",
+                  file=sys.stderr)
+            return 1
+        try:
+            started = link_device.start(db, label=getattr(args, "org", None) or "",
+                                        requested_console=cloud_url)
+        except link_device.NoConsole as e:
+            sys.exit(f"graphban link: {e}")
+        if started["status"] != "started":
+            return _link_failed(started, cloud_url)
+        console = started["console_url"]
+        print(f"Open {started['verification_url']} and enter {started['user_code']}. "
+              "Expires in 10 minutes.")
+        interval = max(int(started.get("interval") or 5), 1)
+        deadline = time.monotonic() + _LINK_WAIT_SECONDS
+        while True:
+            answer = link_device.poll(db)
+            if answer["status"] != "pending":
+                break
+            if time.monotonic() >= deadline:
+                answer = {"status": "refused", "reason": "the code expired before it was approved"}
+                break
+            time.sleep(interval)
+        if answer["status"] != "approved":
+            return _link_failed(answer, console)
+
+        print(f"Linked to {answer['org']} as {answer['email']}.")
+        current = {k: row.cloud_project_id for k, row in link_device.mappings(db).items()}
+        if wanted:
+            # --project sets the named projects; the rest of the stored map is kept.
+            chosen = {**current, **wanted}
+        else:
+            chosen = _choose_mapping(db, code_sync.console_projects(db))
+        if chosen is not None and chosen != current:
+            code_sync.set_project_map(db, list(chosen.items()))
+        mapping = {k: row.cloud_project_id for k, row in link_device.mappings(db).items()}
     finally:
         db.close()
 
+    cfg["cloud_url"] = console
+    cfg.pop("api_key", None)
     path = save_config(cfg)
-    print(f"Linked → {cfg['cloud_url']} (project {cfg.get('project', 'core')}). Saved to {path}.")
+    if mapping:
+        print("Mapped: " + ", ".join(f"{k} → {v}" for k, v in sorted(mapping.items())))
+    else:
+        print("No projects mapped; every project stays local until you map one.")
+    print(f"Saved to {path}.")
     return 0
+
+
+def _link_failed(answer: dict, console: str) -> int:
+    reason = answer.get("reason") or "no reason given"
+    if answer["status"] == "unknown":
+        print(f"UNKNOWN {reason}" if reason.startswith("could not reach")
+              else f"UNKNOWN could not reach {console}: {reason}", file=sys.stderr)
+        return 2
+    print(f"REFUSED {reason}", file=sys.stderr)
+    return 1
 
 
 def cmd_status(args) -> int:
@@ -190,9 +286,9 @@ def cmd_status(args) -> int:
             # where to push. Say so rather than reporting a bare "not linked".
             print(f"Not linked in {_read_path()}, but the INSTANCE is linked to "
                   f"{server['cloud_url']} (source: {server['source']}).")
-            print("Run: graphban link --cloud-url … --api-key … to link this config too.")
+            print("Run: graphban link --cloud-url … to link this config too.")
             return 0
-        print("Not linked. Run: graphban link --cloud-url … --api-key …")
+        print("Not linked. Run: graphban link --cloud-url …")
         return 0
     project = _project(args, cfg)
     key = cfg.get("api_key", "")
@@ -221,20 +317,27 @@ def cmd_status(args) -> int:
 
 
 def cmd_sync(args) -> int:
-    cfg = load_config()
+    """Push every mapped project and report one line per project (GRPH-1519). Non-zero if
+    any project was refused or unknown."""
     from app.services import code_sync
     db = _session()
     try:
-        result = code_sync.push(
-            db, project_id=_project(args, cfg),
-            cloud_url=cfg.get("cloud_url", ""), api_key=cfg.get("api_key", ""),
-        )
+        results = code_sync.push_mapped(db)
     except code_sync.NotLinked as e:
         sys.exit(f"graphban sync: {e}  (run `graphban link` first)")
     finally:
         db.close()
-    print(json.dumps(result, indent=2, default=str))
-    return 0
+    if not results:
+        print("No projects are mapped to the cloud. Run `graphban link` to choose some.")
+        return 0
+    bad = 0
+    for r in results:
+        if r["status"] == "done":
+            print(f"{r['project_id']}: done · {r.get('nodes', 0)} nodes, {r.get('edges', 0)} edges")
+        else:
+            bad += 1
+            print(f"{r['project_id']}: {r['status']} · {r.get('reason', '')}")
+    return 1 if bad else 0
 
 
 def cmd_purge(args) -> int:
@@ -518,16 +621,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     lk = sub.add_parser(
         "link",
-        help="store the console sync target (URL + org-issued link key)",
-        description="store the console sync target (URL + org-issued link key). "
+        help="sign this box in to a cloud org with a device code",
+        description="sign this box in to a cloud org with a device code; exits 0 approved, "
+                    "1 refused, 2 unknown. "
                     "Until cloud.graphban.dev is the console, --cloud-url is "
                     "https://graphban-console-console-production-ascme-labs.unkey.app",
     )
     lk.add_argument("--cloud-url",
                     help="console origin. Until DNS cutover that is "
                          "https://graphban-console-console-production-ascme-labs.unkey.app")
-    lk.add_argument("--api-key")
-    lk.add_argument("--project")
+    lk.add_argument("--project", action="append", metavar="LOCAL=CLOUD",
+                    help="map a local project to a cloud project without prompting; repeatable")
     lk.add_argument("--org", help="optional label for the linked org (shown in the UI); "
                                   "omitted keeps whatever label is already recorded")
     lk.set_defaults(func=cmd_link)
@@ -537,7 +641,6 @@ def build_parser() -> argparse.ArgumentParser:
     st.set_defaults(func=cmd_status)
 
     sy = sub.add_parser("sync", help="incremental push of the project's code graph to the cloud")
-    sy.add_argument("--project")
     sy.set_defaults(func=cmd_sync)
 
     pu = sub.add_parser("purge", help="delete the project's code graph from the cloud")
