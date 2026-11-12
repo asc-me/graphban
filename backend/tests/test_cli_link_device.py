@@ -24,8 +24,13 @@ def env(client, tmp_path, monkeypatch):
     return tmp_path / "config.json"
 
 
-def _console(monkeypatch, poll_answers, start=None):
+def _console(monkeypatch, poll_answers, start=None, projects=None):
     answers = list(poll_answers)
+    reachable = projects if projects is not None else [{"id": "CORE", "name": "Core"}]
+
+    def get(url, headers=None, timeout=None, **kw):  # GET /api/sync/projects, after approval
+        return httpx.Response(200, json={"projects": reachable},
+                              request=httpx.Request("GET", url))
 
     def post(url, json=None, timeout=None, **kw):
         if url.endswith("/device/start"):
@@ -41,6 +46,7 @@ def _console(monkeypatch, poll_answers, start=None):
         return httpx.Response(200, json=a, request=httpx.Request("POST", url))
 
     monkeypatch.setattr(httpx, "post", post)
+    monkeypatch.setattr(httpx, "get", get)
 
 
 def _args(**kw):
@@ -168,3 +174,24 @@ def test_project_flag_keeps_unnamed_mappings(env, monkeypatch):
     _console(monkeypatch, [APPROVED])
     assert cli.cmd_link(_args(project=["other=OTHER"])) == 0
     assert _state()[1] == {"core": "CORE", "other": "OTHER"}
+
+
+def test_a_cli_mapping_is_saved_with_its_tag(env, monkeypatch):
+    """GRPH-1568: `--project` stores the console's tag with the mapping, so the box never
+    shows `☁ ?` for a project it mapped from the terminal."""
+    _console(monkeypatch, [APPROVED], projects=[
+        {"id": "b1d36410-0000-4000-8000-000000000001", "tag": "CORE", "name": "Core"}])
+    assert cli.cmd_link(_args(project=["core=b1d36410-0000-4000-8000-000000000001"])) == 0
+    with SessionLocal() as db:
+        assert {m.local_project_id: m.cloud_project_tag for m in db.query(SyncProject)} == {
+            "core": "CORE"}
+
+
+def test_a_cli_mapping_with_an_unreachable_projects_read_still_links(env, monkeypatch):
+    _console(monkeypatch, [APPROVED])
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: (_ for _ in ()).throw(
+        httpx.ConnectError("down")))
+    assert cli.cmd_link(_args(project=["core=CORE"])) == 0
+    with SessionLocal() as db:
+        assert {m.local_project_id: (m.cloud_project_id, m.cloud_project_tag)
+                for m in db.query(SyncProject)} == {"core": ("CORE", "")}

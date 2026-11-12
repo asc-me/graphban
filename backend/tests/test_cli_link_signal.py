@@ -34,6 +34,8 @@ def _fake_console(monkeypatch, poll):
         return httpx.Response(200, json=poll, request=httpx.Request("POST", url))
 
     monkeypatch.setattr(httpx, "post", post)
+    monkeypatch.setattr(httpx, "get", lambda url, **kw: httpx.Response(
+        200, json={"projects": []}, request=httpx.Request("GET", url)))
 
 
 def _args(**kw):

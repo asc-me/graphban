@@ -24,6 +24,7 @@ class Fake:
         self.default = (200, {})
         self.projects = (200, {"projects": [{"id": "c1", "name": "One"}]})
         self.posts: list[tuple[str, dict]] = []
+        self.gets = 0
 
     def _answer(self, answer, url):
         if isinstance(answer, Exception):
@@ -32,6 +33,7 @@ class Fake:
         return httpx.Response(code, json=body, request=httpx.Request("GET", url))
 
     def get(self, url, headers=None, timeout=None, **kw):
+        self.gets += 1
         return self._answer(self.projects, url)
 
     def post(self, url, json=None, headers=None, timeout=None, **kw):
@@ -354,6 +356,34 @@ def test_a_projects_read_refreshes_the_stored_tag(client, auth, fake, linked):
     fake.projects = httpx.ConnectError("down")
     client.get("/api/sync/projects", headers=auth)
     assert _tags() == {"core": "CORE2", "side": "SIDE"}
+
+
+def test_a_push_fills_an_empty_tag(client, auth, fake, linked):
+    """GRPH-1568: a mapping with no tag (old-key migration, CLI) gets one after the next
+    successful push, with no Choose projects visit."""
+    assert _tags() == {"core": "", "side": ""}
+    fake.projects = (200, {"projects": [{"id": "c1", "tag": "CORE", "name": "One"},
+                                        {"id": "c2", "tag": "SIDE", "name": "Two"}]})
+    out = _push(client, auth)
+    assert {p: o["status"] for p, o in out.items()} == {"core": "done", "side": "done"}
+    assert _tags() == {"core": "CORE", "side": "SIDE"}
+    assert _status_tags(client, auth) == {"core": "CORE"}
+    # Every tag known → the next push does not read the projects list again.
+    before = fake.gets
+    _push(client, auth)
+    assert fake.gets == before
+
+
+def test_a_failed_push_does_not_read_projects_and_a_down_read_keeps_tags(
+        client, auth, fake, linked):
+    fake.default = (503, {})
+    _push(client, auth)
+    assert fake.gets == 0 and _tags() == {"core": "", "side": ""}
+    fake.default = (200, {})
+    fake.projects = httpx.ConnectError("down")
+    out = _push(client, auth)
+    assert out["core"]["status"] == "done"  # the push result never depends on the read
+    assert _tags() == {"core": "", "side": ""}
 
 
 # ---- purge authenticates the way the push does (GRPH-1567) -------------------------------

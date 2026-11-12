@@ -238,13 +238,17 @@ def cmd_link(args) -> int:
 
         print(f"Linked to {answer['org']} as {answer['email']}.")
         current = {k: row.cloud_project_id for k, row in link_device.mappings(db).items()}
+        # One projects read either way: the prompt lists it, and its tags are stored with
+        # the mapping so a CLI mapping never starts at ☁ ? (GRPH-1568).
+        reachable = code_sync.console_projects(db)
+        tags = {p["id"]: p["tag"] for p in reachable.get("projects") or [] if p.get("tag")}
         if wanted:
             # --project sets the named projects; the rest of the stored map is kept.
             chosen = {**current, **wanted}
         else:
-            chosen = _choose_mapping(db, code_sync.console_projects(db))
+            chosen = _choose_mapping(db, reachable)
         if chosen is not None and chosen != current:
-            code_sync.set_project_map(db, list(chosen.items()))
+            code_sync.set_project_map(db, list(chosen.items()), tags)
         mapping = {k: row.cloud_project_id for k, row in link_device.mappings(db).items()}
     finally:
         db.close()
