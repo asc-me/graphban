@@ -258,3 +258,55 @@ def test_unchanged_push_still_contacts_the_console_and_sees_a_refusal(client, au
     assert {c for c, _ in fake.posts} == {"c1", "c2"}
     assert out["core"]["status"] == "done"
     assert (out["side"]["status"], out["side"]["reason"]) == ("refused", "no_project_access")
+
+
+def _many_edges(pid: str, n: int):
+    from app.models import CodeEdge
+    with SessionLocal() as db:
+        db.add_all([CodeEdge(project_id=pid, src="a.py", dst=f"d{i}.py", type="imports")
+                    for i in range(n)])
+        db.commit()
+
+
+def test_edges_over_the_console_limit_go_in_batches_and_the_project_is_done(
+        client, auth, fake, linked, monkeypatch):
+    """GRPH-1555: the console refuses >20000 edges per request (413). A 20001-edge push
+    sends more than one edges request, each within the limit, and still ends done."""
+    from app.services import code_sync
+    limit = 20000
+    assert code_sync._EDGE_BATCH == limit
+
+    def post(url, json=None, headers=None, timeout=None, **kw):
+        cloud = (headers or {}).get("X-Cloud-Project", "")
+        fake.posts.append((cloud, json))
+        if len((json or {}).get("edges", [])) > limit:
+            return httpx.Response(413, json={"reason": f"at most {limit} edges per request"},
+                                  request=httpx.Request("POST", url))
+        return httpx.Response(200, json={}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx, "post", post)
+    _many_edges("core", limit + 1)
+    out = _push(client, auth)
+    batches = [len(b["edges"]) for c, b in fake.posts if c == "c1" and "edges" in b]
+    assert len(batches) > 1 and all(n <= limit for n in batches), batches
+    assert sum(batches) == limit + 1
+    assert out["core"]["status"] == "done" and out["core"]["edges"] == limit + 1
+
+
+def test_a_413_on_an_edge_batch_is_that_projects_refusal_with_the_limit(
+        client, auth, fake, linked, monkeypatch):
+    """A 413 on an edges batch stays one project's no, carrying the console's stated limit."""
+    def post(url, json=None, headers=None, timeout=None, **kw):
+        cloud = (headers or {}).get("X-Cloud-Project", "")
+        fake.posts.append((cloud, json))
+        if cloud == "c1" and "edges" in (json or {}):
+            return httpx.Response(413, json={"reason": "at most 20000 edges per request"},
+                                  request=httpx.Request("POST", url))
+        return httpx.Response(200, json={}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx, "post", post)
+    _many_edges("core", 3)
+    out = _push(client, auth)
+    assert (out["core"]["status"], out["core"]["reason"]) == (
+        "refused", "at most 20000 edges per request")
+    assert out["side"]["status"] == "done"
