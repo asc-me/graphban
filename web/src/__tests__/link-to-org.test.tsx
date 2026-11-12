@@ -64,6 +64,11 @@ describe("LinkToOrgWizard", () => {
     for (const l of ["① Console", "② Sign in", "③ Projects", "④ First push"])
       expect(screen.getByText(l)).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("SIGN-IN · WAITING");
+    // Waiting is muted: never the lime accent, never amber.
+    const st = screen.getByRole("status");
+    expect(st.getAttribute("data-tone")).toBe("wait");
+    expect(st.className).toContain("text-muted");
+    expect(st.className).not.toMatch(/text-accent|amber|text-st-done/);
     expect(screen.getByTestId("status-dot").className).toContain("motion-reduce:animate-none");
   });
 
@@ -138,9 +143,14 @@ describe("LinkToOrgWizard", () => {
     expect(screen.getByLabelText("Cloud project for North")).toHaveValue("");
     expect(screen.getByText("Nothing will sync. The box stays linked to Acme.")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("PROJECTS · 0 SYNCED · 2 LOCAL");
+    // Nothing synced yet is muted, not green.
+    expect(screen.getByRole("status").getAttribute("data-tone")).toBe("muted");
+    expect(screen.getByRole("status").className).not.toContain("text-st-done");
     await user.selectOptions(screen.getByLabelText("Cloud project for Core"), "CORE");
     expect(screen.getByText("☁ CORE")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("PROJECTS · 1 SYNCED · 1 LOCAL");
+    expect(screen.getByRole("status").getAttribute("data-tone")).toBe("ok");
+    expect(screen.getByRole("status").className).toContain("text-st-done");
   });
 
   it("a seat-removed refusal of the cloud projects names it and offers Sign in again", async () => {
