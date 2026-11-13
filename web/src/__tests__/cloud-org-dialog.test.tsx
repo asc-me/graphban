@@ -333,6 +333,22 @@ describe("Organization window, linked: the P67 overview (GRPH-1564, L3/L4)", () 
     expect(within(summary).getAllByRole("button")[0]).toHaveTextContent("Sign in again");
   });
 
+  it("summary: no 'this deployment' name in the heading while the deployment name is unknown", async () => {
+    mocks.syncOrg.mockReturnValue(new Promise(() => {})); // /api/sync/org has not answered
+    const pending = await openSummary();
+    const h1 = (await within(pending).findByTestId("linked-summary")).querySelector("h3")!;
+    expect(h1).toHaveTextContent("Linked");
+    expect(h1).not.toHaveTextContent(/this deployment/);
+    expect(h1).not.toHaveTextContent("Linked as");
+  });
+
+  it("summary: heading names the deployment once /api/sync/org answers", async () => {
+    const dialog = await openSummary();
+    await waitFor(() =>
+      expect(within(dialog).getByTestId("linked-summary").querySelector("h3")).toHaveTextContent("Linked as graphban.ascme.internal"),
+    );
+  });
+
   it("summary: Open org overview shows the overview", async () => {
     const user = userEvent.setup();
     const dialog = await openSummary();
