@@ -452,7 +452,8 @@ def accept_org_update(db: Session, user, org_id: str, profile_id: str, *, reason
 
 def accept_project_update(db: Session, user, project_id: str, profile_id: str, *,
                           reason: str | None, version: str | None = None) -> dict:
-    """As `accept_org_update` for one project; refused whole under an org lock."""
+    """As `accept_org_update` for one project, but carries the last apply's exceptions and
+    skips (rather than refuses on) a rule the org has locked; the event records both."""
     rule_toggles._require_person(db, user)
     authz.require_writable(db, user.id, project_id)
     last = _last_applied(db, "project", project_id)
