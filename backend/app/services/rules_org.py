@@ -87,6 +87,43 @@ def list_profiles(db: Session, user, org_id: str) -> dict:
                          for pid, p in sorted((pack.profiles if pack else {}).items())]}
 
 
+#: Strictness order the Quick configure picker shows; profiles the pack adds follow by id.
+STRICTNESS = ("exploratory", "standard", "regulated")
+
+
+def _enforceable(rule_id: str) -> bool:
+    r = rule_toggles.LIBRARY.get(rule_id)
+    return r is not None and not r.unmeasured_reason
+
+
+def project_profiles(db: Session, user, project_id: str) -> dict:
+    """The pack's profiles with their pins, and the project's applied level (the latest
+    `apply_rule_profile` event for it, or None). Readable by anyone who can read the project."""
+    authz.require_readable(db, user.id, project_id)
+    pack = rule_pack.CURRENT
+    profiles = pack.profiles if pack else {}
+    order = [p for p in STRICTNESS if p in profiles] + sorted(p for p in profiles if p not in STRICTNESS)
+    ev = _last_applied_any(db, "project", project_id)
+    meta = (ev.meta or {}) if ev else {}
+    applied = None
+    if ev is not None:
+        applied = {"profile": meta.get("profile"), "version": meta.get("profile_version"),
+                   "pack_version": meta.get("pack_version"),
+                   "exceptions": list(meta.get("exceptions", [])),
+                   "skipped": list(meta.get("skipped", [])),
+                   "by": ev.actor_label or ev.actor_id, "at": ev.ts}
+    return {"project_id": project_id, "pack_loaded": pack is not None,
+            "pack_version": pack.version if pack else None, "order": order,
+            "profiles": [{"id": pid, "title": profiles[pid].get("title", pid),
+                          "summary": profiles[pid].get("summary", ""),
+                          "version": profiles[pid].get("version"),
+                          "pins": [{"rule_id": rid, "state": pin.get("state", "on"),
+                                    "params": pin.get("params", {}), "enforceable": _enforceable(rid)}
+                                   for rid, pin in sorted(_pins(profiles[pid]).items())]}
+                         for pid in order],
+            "applied": applied}
+
+
 def _pin_changes(rule_id: str, pin: dict) -> dict:
     state = pin.get("state", "on")
     if state not in ("on", "off"):
@@ -415,11 +452,18 @@ def accept_org_update(db: Session, user, org_id: str, profile_id: str, *, reason
 
 def accept_project_update(db: Session, user, project_id: str, profile_id: str, *,
                           reason: str | None, version: str | None = None) -> dict:
-    """As `accept_org_update` for one project; refused whole under an org lock."""
+    """As `accept_org_update` for one project, but carries the last apply's exceptions and
+    skips (rather than refuses on) a rule the org has locked; the event records both."""
     rule_toggles._require_person(db, user)
     authz.require_writable(db, user.id, project_id)
-    _require_offer(_offers(_last_applied(db, "project", project_id)), profile_id, version)
-    return apply_project_profile(db, user, project_id, profile_id, reason=reason)
+    last = _last_applied(db, "project", project_id)
+    _require_offer(_offers(last), profile_id, version)
+    # Carry the earlier exceptions (those the new version still pins) and skip locked rules,
+    # so accepting an update does not forget what the person left out.
+    kept = sorted(set((last[profile_id].meta or {}).get("exceptions", []))
+                  & set(_pins(_profile(profile_id))))
+    return apply_project_profile(db, user, project_id, profile_id, reason=reason,
+                                 except_=kept, skip_locked=True)
 
 
 # ---- org recommendations (D6) -------------------------------------------------------------

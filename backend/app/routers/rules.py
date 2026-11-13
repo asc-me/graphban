@@ -318,6 +318,13 @@ def _org_call(fn, *args, **kw):
         raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
 
 
+@router.get("/rules/profiles")
+def project_profiles(project_id: str = "core", db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """The pack's profiles, strictest last, and the project's applied level. Reads only."""
+    return _org_call(rules_org.project_profiles, db, user, project_id)
+
+
 @router.get("/rules/profiles/updates")
 def project_profile_updates(project_id: str = "core", db: Session = Depends(get_db),
                             user: User = Depends(get_current_user)):
