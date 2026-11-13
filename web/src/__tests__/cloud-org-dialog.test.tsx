@@ -311,12 +311,42 @@ describe("Organization window, linked: the P67 overview (GRPH-1564, L3/L4)", () 
     expect(summary).toHaveTextContent("This deployment is linked to Ascme Labs as alex@acme.example.");
     const rows = summary.querySelectorAll("[data-synced-project]");
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toHaveTextContent(`core→☁ CORE· ☁ SYNCED ${hhmm(PUSHED_AT)}`);
+    expect(rows[0]).toHaveTextContent(`core→☁ CORE☁ SYNCED ${hhmm(PUSHED_AT)}`);
     expect(within(summary).getByText("2 projects are local only.")).toBeInTheDocument();
     expect(dialog.querySelector("#org-deployments")).toBeNull();
     for (const n of ["Open org overview", "Choose projects", "Sign in again"]) {
       expect(within(summary).getByRole("button", { name: n })).toBeInTheDocument();
     }
+    // Healthy: Open org overview leads; the row is a bordered card, no divider above the buttons.
+    expect(within(summary).getAllByRole("button")[0]).toHaveTextContent("Open org overview");
+    expect(rows[0]).toHaveClass("border");
+    expect(summary.querySelector(".border-t")).toBeNull();
+  });
+
+  it("summary, seat removed: a red ✕ alert box, Sign in again first", async () => {
+    mocks.syncStatus.mockResolvedValue({ ...linked, state: "refused", legacy: false });
+    const dialog = await openSummary();
+    const summary = await within(dialog).findByTestId("linked-summary");
+    const alert = within(summary).getByRole("alert");
+    expect(alert).toHaveTextContent("✕ Your seat in Ascme Labs was removed");
+    expect(alert).toHaveClass("border");
+    expect(within(summary).getAllByRole("button")[0]).toHaveTextContent("Sign in again");
+  });
+
+  it("summary: no 'this deployment' name in the heading while the deployment name is unknown", async () => {
+    mocks.syncOrg.mockReturnValue(new Promise(() => {})); // /api/sync/org has not answered
+    const pending = await openSummary();
+    const h1 = (await within(pending).findByTestId("linked-summary")).querySelector("h3")!;
+    expect(h1).toHaveTextContent("Linked");
+    expect(h1).not.toHaveTextContent(/this deployment/);
+    expect(h1).not.toHaveTextContent("Linked as");
+  });
+
+  it("summary: heading names the deployment once /api/sync/org answers", async () => {
+    const dialog = await openSummary();
+    await waitFor(() =>
+      expect(within(dialog).getByTestId("linked-summary").querySelector("h3")).toHaveTextContent("Linked as graphban.ascme.internal"),
+    );
   });
 
   it("summary: Open org overview shows the overview", async () => {

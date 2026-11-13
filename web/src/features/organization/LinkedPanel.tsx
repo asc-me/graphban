@@ -191,23 +191,28 @@ export function LinkedSummary({
   const keyRefused = refused && !!status.legacy;
   const mapped = status.projects.filter((p) => p.mapped);
   const local = status.projects.length - mapped.length;
-  const deployment = deploymentName || "this deployment";
 
   return (
     <div className="space-y-3" data-testid="linked-summary">
       {seatRemoved && (
-        <p role="alert" className="text-body text-st-blocked">
-          Your seat in {org} was removed. Nothing is syncing.
+        <p role="alert" className="rounded-md border border-[rgba(255,107,107,0.35)] bg-[rgba(255,107,107,0.06)] px-3 py-2 text-body font-semibold text-st-blocked">
+          <span aria-hidden>✕ </span>Your seat in {org} was removed. Nothing is syncing.
         </p>
       )}
       {keyRefused && (
-        <p role="alert" className="text-body text-st-blocked">
-          This link used a key. Sign in to keep syncing.
+        <p role="alert" className="rounded-md border border-[rgba(255,107,107,0.35)] bg-[rgba(255,107,107,0.06)] px-3 py-2 text-body font-semibold text-st-blocked">
+          <span aria-hidden>✕ </span>This link used a key. Sign in to keep syncing.
         </p>
       )}
       <h3 className="text-[15px] font-semibold">
         <span aria-hidden className="text-st-done">⛓ </span>
-        Linked as <span className="font-mono">{deployment}</span>
+        {deploymentName ? (
+          <>
+            Linked as <span className="font-mono">{deploymentName}</span>
+          </>
+        ) : (
+          "Linked"
+        )}
       </h3>
       <p className="text-body">
         This deployment is linked to <strong className="font-semibold text-fg">{org}</strong>
@@ -220,18 +225,24 @@ export function LinkedSummary({
         .
       </p>
       <span className="font-mono text-meta text-faint">SYNCED PROJECTS</span>
-      <ul className="space-y-1">
+      <ul className="max-w-[520px] space-y-1.5">
         {mapped.map((p) => {
           const result = seatRemoved ? "refused" : p.last_push_result;
           return (
-            <li key={p.project_id} data-synced-project className="flex items-baseline gap-2 text-body">
-              <span className="max-w-40 truncate font-mono">{p.name}</span>
-              {!seatRemoved && <span aria-hidden className="text-faint">→</span>}
-              {!seatRemoved && (
-                <span className="font-mono text-[10px] uppercase text-faint">☁ {cloudTagText(p.cloud_project_tag)}</span>
-              )}
+            <li
+              key={p.project_id}
+              data-synced-project
+              className="flex items-center justify-between gap-2 rounded-md border border-line px-3 py-2 text-body"
+            >
+              <span className="flex min-w-0 items-baseline gap-2">
+                <span className="max-w-40 truncate font-mono">{p.name}</span>
+                {!seatRemoved && <span aria-hidden className="text-faint">→</span>}
+                {!seatRemoved && (
+                  <span className="font-mono text-[10px] uppercase text-faint">☁ {cloudTagText(p.cloud_project_tag)}</span>
+                )}
+              </span>
               {result === "ok" && p.last_push_at && (
-                <span className="font-mono text-[10px] uppercase text-st-done">· ☁ SYNCED {clockTime(p.last_push_at)}</span>
+                <span className="font-mono text-[10px] uppercase text-st-done">☁ SYNCED {clockTime(p.last_push_at)}</span>
               )}
               {result === "refused" && <span className="font-mono text-[10px] uppercase text-st-blocked">☁ REFUSED</span>}
               {result === "unknown" && <span className="font-mono text-[10px] uppercase text-faint">☁ UNKNOWN</span>}
@@ -248,16 +259,23 @@ export function LinkedSummary({
           checked again.
         </p>
       )}
-      <div className="flex flex-wrap items-center gap-2 border-t border-line pt-3">
-        <Button size="sm" variant={refused ? "ghost" : "default"} onClick={onOpenOverview}>
+      <div className="flex flex-wrap items-center gap-2 pt-1">
+        {refused && (
+          <Button size="sm" onClick={onSignIn} disabled={readOnly || busy}>
+            Sign in again
+          </Button>
+        )}
+        <Button size="sm" variant={refused ? "outline" : "default"} onClick={onOpenOverview}>
           Open org overview
         </Button>
-        <Button size="sm" variant="ghost" onClick={onChooseProjects} disabled={readOnly || busy}>
+        <Button size="sm" variant="outline" onClick={onChooseProjects} disabled={readOnly || busy}>
           Choose projects
         </Button>
-        <Button size="sm" variant={refused ? "default" : "ghost"} onClick={onSignIn} disabled={readOnly || busy}>
-          Sign in again
-        </Button>
+        {!refused && (
+          <Button size="sm" variant="outline" onClick={onSignIn} disabled={readOnly || busy}>
+            Sign in again
+          </Button>
+        )}
       </div>
     </div>
   );
