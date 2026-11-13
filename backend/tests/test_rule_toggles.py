@@ -284,6 +284,26 @@ def test_params_are_the_templates_own_keys_and_types(client, org):
                                                 "reason": "r"}).status_code == 422
 
 
+def test_a_params_write_keeps_the_params_it_does_not_name(client, org):
+    rid = T.TEST_SCOPE_RULE
+    T.register(T.LibraryRule(
+        id=rid, stage="build", title="Test scope", summary="",
+        enforcement="checked", enforcer=R.Enforcer("graphban_source", "app/services/fleet.py"),
+        default_on=True, default_params={"mode": "agent_and_pr",
+                                         "engines": ["postgres", "sqlite"]}))
+    url = f"/api/rules/toggles/{rid}"
+    hdr = org["owner"]
+    first = client.put(url, params={"project_id": org["a"]}, headers=hdr, json={
+        "params": {"engines": ["sqlite"]}, "reason": "r"})
+    assert first.status_code == 200, first.text
+    second = client.put(url, params={"project_id": org["a"]}, headers=hdr, json={
+        "params": {"mode": "agent_targeted"}, "reason": "r"})
+    assert second.status_code == 200, second.text
+    got = _toggles(client, org, org["a"])[rid]["params"]["value"]
+    assert got["mode"] == "agent_targeted"
+    assert got["engines"] == ["sqlite"]  # not reset to the template default
+
+
 def test_an_unknown_rule_is_404(client, org):
     r = client.put("/api/rules/toggles/review.nope", params={"project_id": org["a"]},
                    json={"on": True, "reason": "r"}, headers=org["owner"])
