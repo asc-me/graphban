@@ -135,9 +135,72 @@ def test_an_item_in_review_with_a_file_outside_touchpoints_is_held_not_published
     assert held[0]["branch"] == child.branch
     assert child.branch not in wave.review_publish_tried
 
-    # A second tick on the same head does not post the same hold again.
+
+
+def _holds(ledger) -> list[dict]:
+    return [o for o in ledger.observations if o.get("kind") == "undeclared_held"]
+
+
+def test_a_second_return_to_review_without_a_fix_is_held_again(stray_builder):
+    """The bounce on 96a78f84: the hold deduped per file list for the life of the wave, so a
+    builder that moved the item back to review without touching the branch left it in review
+    with no PR and nothing posted. Sabotage: restore the per-list dedupe and this gets 1."""
+    child, bare = stray_builder
+    ledger = _Ledger(["feature.py"], ["GRPH-1"])
+    wave = sup.Wave()
     sup._publish_in_review(wave, [child], ledger)
-    assert len([o for o in ledger.observations if o.get("kind") == "undeclared_held"]) == 1
+    ledger.review = []  # the server recorded the hold and took the item out of review
+    sup._publish_in_review(wave, [child], ledger)
+    assert len(_holds(ledger)) == 1
+    ledger.review = ["GRPH-1"]  # the builder moved it back, the stray file still committed
+
+    sup._publish_in_review(wave, [child], ledger)
+
+    assert len(_holds(ledger)) == 2
+    assert not _on_remote(bare, child.branch)
+
+
+def test_a_resubmission_between_ticks_is_held_again(stray_builder):
+    """The builder may move the item back before any tick saw it out of review. Seeing it in
+    review after a recorded hold is a new episode either way."""
+    child, _ = stray_builder
+    ledger = _Ledger(["feature.py"], ["GRPH-1"])
+    wave = sup.Wave()
+    sup._publish_in_review(wave, [child], ledger)
+    sup._publish_in_review(wave, [child], ledger)
+    assert len(_holds(ledger)) == 2
+
+
+class _OldLedger(_Ledger):
+    """A server that predates `undeclared_held`: it refuses the kind and moves nothing."""
+
+    def post_observation(self, **payload):
+        raise RuntimeError("422 unknown observation kind 'undeclared_held'")
+
+
+def test_a_refused_hold_is_not_reposted_every_tick(stray_builder):
+    child, bare = stray_builder
+    ledger = _OldLedger(["feature.py"], ["GRPH-1"])
+    wave = sup.Wave()
+    for _ in range(3):
+        sup._publish_in_review(wave, [child], ledger)
+    assert wave.observations_refused == 1
+    assert not _on_remote(bare, child.branch)
+
+
+def test_the_reap_gate_holds_again_only_an_item_back_in_review(stray_builder):
+    """The early check held the branch; the reap re-measures it. An item still out of review
+    is not held twice, and one its builder moved back before exiting is."""
+    child, _ = stray_builder
+    ledger = _Ledger(["feature.py"], ["GRPH-1"])
+    wave = sup.Wave()
+    sup._publish_in_review(wave, [child], ledger)
+    ledger.review = []
+    sup._hold_undeclared(wave, ledger, ["GRPH-1"], child.branch, [STRAY])
+    assert len(_holds(ledger)) == 1
+    ledger.review = ["GRPH-1"]
+    sup._hold_undeclared(wave, ledger, ["GRPH-1"], child.branch, [STRAY])
+    assert len(_holds(ledger)) == 2
 
 
 def test_once_declared_the_same_head_is_published(stray_builder):
