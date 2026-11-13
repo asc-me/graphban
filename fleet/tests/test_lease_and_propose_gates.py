@@ -138,8 +138,10 @@ def test_a_withheld_proposal_is_reported_on_the_item(no_forge):
     wave.undeclared["wave/1"] = ["web/src/App.tsx"]
     client = _client({"update_item"})
     propose_branch(wave, Path("."), "wave/1", ["GRPH-1"], client=client)
-    client.post_observation.assert_called_once()
-    posted = client.post_observation.call_args.kwargs
+    # GRPH-1591: the withheld note is followed by the `undeclared_held` send-back.
+    kinds = [c.kwargs["kind"] for c in client.post_observation.call_args_list]
+    assert kinds == ["withheld", "undeclared_held"]
+    posted = client.post_observation.call_args_list[0].kwargs
     assert posted["item_id"] == "GRPH-1" and posted["kind"] == "withheld"
     assert posted["branch"] == "wave/1"
     assert "web/src/App.tsx" in posted["reason"]
