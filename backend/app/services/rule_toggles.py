@@ -413,17 +413,20 @@ def _value(r: dict) -> dict:
     return {"on": r["on"]["value"], "params": r["params"]["value"]}
 
 
-def set_project_toggle(db: Session, project_id: str, rule_id: str, changes: dict, *,
-                       actor: object, reason: str | None) -> dict:
-    """A project's own value for a rule. `changes` holds `on` and/or `params`; `None` for
-    either clears the project's value so it inherits again. Every plan (D11)."""
+def _check_project_writer(db: Session, actor: object, project_id: str) -> User:
     user = _require_person(db, actor)
-    rule = _rule(rule_id)
-    why = _reason(reason)
     authz.require_writable(db, user.id, project_id)
     if authz.project_role(db, user.id, project_id) not in PROJECT_ADMIN_ROLES:
         raise Refused(403, "setting a rule toggle needs the project's owner or an admin",
                       rule_id=ADMIN_RULE)
+    return user
+
+
+def _stage_project_toggle(db: Session, project_id: str, rule_id: str, changes: dict,
+                          user: User) -> tuple[RuleToggle, dict, dict]:
+    """Check and apply one project write to the session, uncommitted. Returns the row, the
+    effective state before, and the row's own values before."""
+    rule = _rule(rule_id)
     unknown = sorted(set(changes) - {"on", "params"})
     if unknown or not changes:
         raise Validation(f"a project toggle sets `on` and/or `params`"
@@ -441,7 +444,11 @@ def set_project_toggle(db: Session, project_id: str, rule_id: str, changes: dict
     # A write keeps the params it does not name: they merge onto what holds for the project now.
     _apply(row, rule, changes, copy.deepcopy(before["params"]["value"]))
     row.updated_by = user.id
-    db.commit()
+    return row, before, old
+
+
+def _record_project_toggle(db: Session, project_id: str, rule_id: str, row: RuleToggle,
+                           before: dict, old: dict, user: User, why: str) -> dict:
     after = resolve(db, rule_id, project_id)
     events_svc.record_user(
         db, user, action="set_rule_toggle", target_type="rule", target_id=rule_id,
@@ -451,6 +458,66 @@ def set_project_toggle(db: Session, project_id: str, rule_id: str, changes: dict
     if before["on"]["value"] and not after["on"]["value"]:
         _switched_off(db, rule_id, [project_id], user)
     return after
+
+
+def set_project_toggle(db: Session, project_id: str, rule_id: str, changes: dict, *,
+                       actor: object, reason: str | None) -> dict:
+    """A project's own value for a rule. `changes` holds `on` and/or `params`; `None` for
+    either clears the project's value so it inherits. Every plan (D11)."""
+    user = _require_person(db, actor)
+    _rule(rule_id)
+    why = _reason(reason)
+    user = _check_project_writer(db, user, project_id)
+    row, before, old = _stage_project_toggle(db, project_id, rule_id, changes, user)
+    db.commit()
+    return _record_project_toggle(db, project_id, rule_id, row, before, old, user, why)
+
+
+class BatchRefused(Exception):
+    """One write in a batch was refused; nothing in the batch was applied. `rule_id` is the
+    library rule it refused, `error` the server's own refusal for that rule."""
+
+    def __init__(self, rule_id: str, error: Exception):
+        super().__init__(f"{rule_id}: {error}")
+        self.rule_id = rule_id
+        self.error = error
+
+
+def set_project_toggles(db: Session, project_id: str, writes: list[dict], *,
+                        actor: object, reason: str | None) -> list[dict]:
+    """Several project writes under one reason, all-or-nothing (GRPH-1594). Each entry is
+    `{rule_id, on?, params?}`. One refusal rolls the whole batch back and raises
+    `BatchRefused` naming that rule; otherwise every rule gets its own `set_rule_toggle`
+    event carrying the shared reason. Returns each rule's effective state, in order."""
+    user = _require_person(db, actor)
+    why = _reason(reason)
+    if not writes:
+        raise Validation("a batch toggle write names at least one rule")
+    ids = [w.get("rule_id") for w in writes]
+    dupes = sorted({i for i in ids if ids.count(i) > 1 and isinstance(i, str)})
+    if dupes:
+        raise Validation(f"a batch names each rule once; repeated: {', '.join(dupes)}",
+                         hint="merge the changes for a rule into one entry")
+    user = _check_project_writer(db, user, project_id)
+    staged = []
+    for w in writes:
+        changes = dict(w)
+        rule_id = changes.pop("rule_id", None)
+        try:
+            if not isinstance(rule_id, str) or not rule_id:
+                raise Validation("every batch entry names a `rule_id`")
+            staged.append((rule_id, *_stage_project_toggle(db, project_id, rule_id, changes,
+                                                           user)))
+            db.flush()  # the next entry's resolve() sees this one; the rollback takes it back
+        except (NotFound, Validation, Refused) as e:
+            db.rollback()
+            raise BatchRefused(rule_id or "?", e) from e
+        except Exception:
+            db.rollback()
+            raise
+    db.commit()
+    return [_record_project_toggle(db, project_id, rule_id, row, before, old, user, why)
+            for rule_id, row, before, old in staged]
 
 
 def set_org_toggle(db: Session, org_id: str, rule_id: str, changes: dict, *, actor: object,

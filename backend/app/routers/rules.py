@@ -14,8 +14,8 @@ from app.models import Organization, User
 from app.errors import NotFound, Refused, Validation
 from app.schemas import (ObservationBackfillOut, ObservationsOut,
                          RecommendedRulesOut, RefusalCoverageOut, RuleSuggestionOut,
-                         RulesFlowOut, RulesOut, RuleToggleOut, RuleTogglesOut,
-                         RuleToggleWrite, UnmappedRefusalsOut)
+                         RulesFlowOut, RulesOut, RuleToggleBatchOut, RuleToggleBatchWrite,
+                         RuleToggleOut, RuleTogglesOut, RuleToggleWrite, UnmappedRefusalsOut)
 from app.security import authz
 from app.security.deps import get_current_user, get_user_or_agent_key
 from app.services import events as events_svc
@@ -189,6 +189,36 @@ def set_project_rule_toggle(rule_id: str, body: RuleToggleWrite, project_id: str
     _toggle_write(rule_toggles.set_project_toggle, project_id, rule_id, body=body, user=user,
                   db=db)
     return next(t for t in rule_toggles.effective(db, project_id) if t["rule_id"] == rule_id)
+
+
+@router.put("/rules/toggles", response_model=RuleToggleBatchOut)
+def set_project_rule_toggles(body: RuleToggleBatchWrite, project_id: str = "core",
+                             db: Session = Depends(get_db),
+                             user: User = Depends(get_current_user)):
+    """Several of a project's own values under one reason, all-or-nothing (GRPH-1594). One
+    refusal rolls the whole batch back and names the rule it refused; nothing was applied.
+    Each rule changed gets its own `set_rule_toggle` event carrying the shared reason."""
+    writes = [e.model_dump(exclude_unset=True) for e in body.toggles]
+    try:
+        rule_toggles.set_project_toggles(db, project_id, writes, actor=user,
+                                         reason=body.reason)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except Validation as e:
+        raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
+    except rule_toggles.BatchRefused as e:
+        err, prefix = e.error, f"{e.rule_id}: "
+        if isinstance(err, Refused):
+            # The server's own refusal, re-raised whole (its registry rule kept), naming the
+            # library rule it refused in its detail and its audit meta.
+            err.detail = prefix + str(err.detail)
+            err.meta = {**err.meta, "refused_rule": e.rule_id, "batch": True}
+            raise err from e
+        status = 404 if isinstance(err, NotFound) else 422
+        raise HTTPException(status, prefix + str(err) + (
+            f" — {err.hint}" if getattr(err, "hint", None) else "")) from e
+    by_id = {t["rule_id"]: t for t in rule_toggles.effective(db, project_id)}
+    return {"toggles": [by_id[w["rule_id"]] for w in writes]}
 
 
 # Org rule toggles are served by the console (GBC-P8). `set_org_toggle` / `org_view` stay

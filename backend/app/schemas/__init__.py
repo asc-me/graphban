@@ -1886,6 +1886,25 @@ class RuleToggleWrite(BaseModel):
     reason: str = ""
 
 
+class RuleToggleBatchEntry(BaseModel):
+    """One rule in a batch write: `on` / `params` null clears the project's value."""
+    model_config = {"extra": "forbid"}
+    rule_id: str
+    on: bool | None = None
+    params: dict | None = None
+
+
+class RuleToggleBatchWrite(BaseModel):
+    """Several project toggle writes under one `reason`, applied all-or-nothing (GRPH-1594)."""
+    model_config = {"extra": "forbid"}
+    toggles: list[RuleToggleBatchEntry]
+    reason: str = ""
+
+
+class RuleToggleBatchOut(BaseModel):
+    toggles: list[RuleToggleOut]
+
+
 class OrgProjectToggleOut(BaseModel):
     project_id: str
     on: RuleToggleValueOut
