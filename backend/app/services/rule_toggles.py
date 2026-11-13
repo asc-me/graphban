@@ -363,7 +363,7 @@ def _check_done_predicates(value: object) -> list[str]:
     return names
 
 
-def _check_params(rule: LibraryRule, params: dict) -> dict:
+def _check_params(rule: LibraryRule, params: dict, base: dict | None = None) -> dict:
     """Params are the template's own keys, each the type of its default. An unknown key is
     refused rather than stored, where it would read as a setting the primitive honours."""
     if not isinstance(params, dict):
@@ -391,16 +391,16 @@ def _check_params(rule: LibraryRule, params: dict) -> dict:
         if choices is not None and v not in choices:
             raise Validation(f"{rule.id} param {k!r} must be one of {', '.join(choices)}",
                              hint=f"got {v!r}")
-    return {**rule.default_params, **params}
+    return {**(rule.default_params if base is None else base), **params}
 
 
-def _apply(row: RuleToggle, rule: LibraryRule, changes: dict) -> None:
+def _apply(row: RuleToggle, rule: LibraryRule, changes: dict, base: dict | None = None) -> None:
     if "on" in changes:
         if changes["on"] is not None and not isinstance(changes["on"], bool):
             raise Validation("`on` must be true, false or null (inherit)")
         row.on = changes["on"]
     if "params" in changes:
-        row.params = None if changes["params"] is None else _check_params(rule, changes["params"])
+        row.params = None if changes["params"] is None else _check_params(rule, changes["params"], base)
 
 
 def _snapshot(row: RuleToggle | None) -> dict:
@@ -438,7 +438,8 @@ def set_project_toggle(db: Session, project_id: str, rule_id: str, changes: dict
     if row is None:
         row = RuleToggle(rule_id=rule_id, project_id=project_id)
         db.add(row)
-    _apply(row, rule, changes)
+    # A write keeps the params it does not name: they merge onto what holds for the project now.
+    _apply(row, rule, changes, copy.deepcopy(before["params"]["value"]))
     row.updated_by = user.id
     db.commit()
     after = resolve(db, rule_id, project_id)
