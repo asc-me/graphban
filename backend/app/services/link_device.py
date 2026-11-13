@@ -2,10 +2,14 @@
 
 The box relays the console's device-code API (GBC-77, graphban-control `docs/contract.md`):
 
-- `POST {console}/api/sync/device/start {label, host, legacy_key_id?}` →
+- `POST {console}/api/sync/device/start {label, host, legacy_key_id?, previous_deployment_id?}` →
   `{device_code, user_code, verification_url, expires_at, interval}`.
 - `POST {console}/api/sync/device/poll {device_code}` → `pending`, `approved {org:{id,name},
-  email, token}` (the token only on the poll that first sees approval), or `refused {reason}`.
+  email, token, deployment_id}` (the token only on the poll that first sees approval), or
+  `refused {reason}`.
+
+Re-sign-in revoke (GBC-88): a box holding a deployment token names that token's deployment as
+`previous_deployment_id` on start, so approving the new code revokes exactly the old one.
   An unknown `device_code` is 404.
 
 Three states, never two. **Only an approved poll writes the link**; refused and unknown store
@@ -83,6 +87,14 @@ def legacy_key_id(link: SyncLink | None) -> str | None:
     return None
 
 
+def previous_deployment_id(link: SyncLink | None) -> str | None:
+    """The deployment the held token belongs to (GBC-88). None — the field is omitted, never
+    null or "" — when the box holds no deployment token or does not know its deployment."""
+    if link is None or not link.token_enc or not link.deployment_id:
+        return None
+    return link.deployment_id
+
+
 def _post(url: str, body: dict) -> httpx.Response:
     """POST to the console. No answer (network error, timeout, 5xx) raises `_Unknown`."""
     try:
@@ -121,6 +133,9 @@ def start(db: Session, *, label: str = "", requested_console: str = "") -> dict:
     key_id = legacy_key_id(link)
     if key_id:
         body["legacy_key_id"] = key_id
+    previous = previous_deployment_id(link)
+    if previous:
+        body["previous_deployment_id"] = previous
     try:
         resp = _post(f"{base}/api/sync/device/start", body)
         data = _json(resp)
@@ -194,9 +209,11 @@ def _ask(pending: dict) -> dict:
         org = data.get("org")
         org_name = (org.get("name") if isinstance(org, dict) else org) or ""
         legacy_project = data.get("legacy_project_id")
+        deployment = data.get("deployment_id")
         return {"status": "approved", "org": str(org_name), "email": str(data.get("email") or ""),
                 "token": data["token"],
-                "legacy_project_id": legacy_project if isinstance(legacy_project, str) else ""}
+                "legacy_project_id": legacy_project if isinstance(legacy_project, str) else "",
+                "deployment_id": deployment if isinstance(deployment, str) else ""}
     raise _Unknown(f"the console answered an unknown status: {status!r}")
 
 
@@ -222,6 +239,8 @@ def poll(db: Session) -> dict:
     if answer["status"] != "approved":
         return answer
     link.token_enc = secrets.encrypt(answer["token"])
+    # Replaced, never kept: an old id beside a new token would name the wrong deployment.
+    link.deployment_id = answer["deployment_id"]
     link.org = answer["org"]
     link.linked_email = answer["email"]
     link.console_url = link.cloud_url = pending["console_url"]
@@ -256,7 +275,7 @@ def clear(db: Session) -> None:
     if link is not None:
         # Clearing, not a credential: an empty string is "no token held".
         link.token_enc = ""  # nosec B105
-        link.pending_device_enc = link.legacy_key = ""
+        link.pending_device_enc = link.legacy_key = link.deployment_id = ""
         link.linked_email = link.console_url = ""
     db.execute(delete(SyncProject))
     db.commit()

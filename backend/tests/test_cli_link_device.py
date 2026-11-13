@@ -195,3 +195,22 @@ def test_a_cli_mapping_with_an_unreachable_projects_read_still_links(env, monkey
     with SessionLocal() as db:
         assert {m.local_project_id: (m.cloud_project_id, m.cloud_project_tag)
                 for m in db.query(SyncProject)} == {"core": ("CORE", "")}
+
+
+def test_a_cli_relink_names_the_held_tokens_deployment(env, monkeypatch):
+    """GRPH-1576 (GBC-88): the first link holds no token and omits `previous_deployment_id`;
+    the re-link sends the deployment the first approval named."""
+    starts: list[dict] = []
+    _console(monkeypatch, [{**APPROVED, "deployment_id": "dep-1"}])
+    post = httpx.post
+
+    def recording(url, json=None, timeout=None, **kw):
+        if url.endswith("/device/start"):
+            starts.append(json)
+        return post(url, json=json, timeout=timeout, **kw)
+
+    monkeypatch.setattr(httpx, "post", recording)
+    assert cli.cmd_link(_args(project=["core=CORE"])) == 0
+    assert cli.cmd_link(_args(project=["core=CORE"])) == 0
+    assert "previous_deployment_id" not in starts[0]
+    assert starts[1]["previous_deployment_id"] == "dep-1"

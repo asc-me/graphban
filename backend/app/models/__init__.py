@@ -2314,6 +2314,10 @@ class SyncLink(Base):
     linked_email: Mapped[str] = mapped_column(String, default="", server_default="")
     #: The deployment token, encrypted with SECRET_ENCRYPTION_KEY. Never returned.
     token_enc: Mapped[str] = mapped_column(String, default="", server_default="")
+    #: The console's id for the deployment `token_enc` belongs to (GBC-88), from the approved
+    #: poll. Sent as `previous_deployment_id` on the next sign-in so approving it revokes
+    #: exactly this deployment. "" when no token is held or the console did not say.
+    deployment_id: Mapped[str] = mapped_column(String, default="", server_default="")
     #: The sign-in in flight: encrypted JSON `{console_url, device_code}` written by
     #: `link/start`. Cleared by an approved poll; refused and unknown leave it alone.
     pending_device_enc: Mapped[str] = mapped_column(String, default="", server_default="")
