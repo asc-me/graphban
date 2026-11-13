@@ -194,7 +194,7 @@ export function ProjectHome() {
             />
           )}
 
-          {mapOk && nodes === 0 && <NoGraphYet tag={active.tag} />}
+          {mapOk && nodes === 0 && <NoGraphYet tag={active.tag} hosted={hosted} />}
 
           <StartupPromptsWidget />
 
@@ -563,18 +563,28 @@ function AgentLoopInfo({ to }: { to: (sub: string) => string }) {
   );
 }
 
-function NoGraphYet({ tag }: { tag: string }) {
+export function NoGraphYet({ tag, hosted }: { tag: string; hosted: boolean }) {
   return (
     <div className="mt-4 rounded-[13px] border border-st-review/30 bg-st-review/[0.06] px-3.5 py-3">
       <div className="text-[13px] font-semibold text-st-review">
-        No deployment has pushed a code graph to this project
+        {hosted ? "No deployment has pushed a code graph to this project" : "No code graph has been built for this project"}
       </div>
       <p className="mt-1 max-w-[72ch] text-[12px] leading-relaxed text-st-review/80">
         Empty because nothing has arrived, not because{" "}
-        <span className="font-mono text-fg-2">{tag}</span> has no structure. A linked box
-        builds the graph locally and pushes summaries up — run{" "}
-        <code className="font-mono text-[11.5px]">graphban link</code> on the machine with
-        the checkout.
+        <span className="font-mono text-fg-2">{tag}</span> has no structure.{" "}
+        {hosted ? (
+          <>
+            A linked box builds the graph locally and pushes summaries up — run{" "}
+            <code className="font-mono text-[11.5px]">graphban link</code> on the machine with
+            the checkout.
+          </>
+        ) : (
+          <>
+            This box is the ledger, so an agent builds the graph with{" "}
+            <code className="font-mono text-[11.5px]">describe_code</code>, or run{" "}
+            <code className="font-mono text-[11.5px]">gban setup</code> in the checkout.
+          </>
+        )}
       </p>
     </div>
   );
