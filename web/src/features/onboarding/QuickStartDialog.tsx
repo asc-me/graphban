@@ -94,6 +94,21 @@ const GLYPH: Record<SetupStatus, { g: string; word: string; cls: string }> = {
   unknown: { g: "?", word: "unknown", cls: "text-faint" },
 };
 
+/** Store a provider credential and point the project at it. Shared with the New project wizard. */
+export async function saveModelCredential(
+  projectId: string,
+  kind: "ollama" | "anthropic",
+  body: { base_url?: string; api_key?: string },
+) {
+  const created = await api.createCredential(projectId, {
+    kind,
+    label: kind === "ollama" ? "Ollama (quick start)" : "Claude (quick start)",
+    ...body,
+  });
+  await api.setProjectCredential(projectId, { credential_id: created.id });
+  return created;
+}
+
 function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
@@ -1143,12 +1158,7 @@ function ModelStep({
     setError("");
     setResult({ status: "pending", text: kind === "ollama" ? "Probing…" : "Testing…" });
     try {
-      const created = await api.createCredential(projectId, {
-        kind,
-        label: kind === "ollama" ? "Ollama (quick start)" : "Claude (quick start)",
-        ...body,
-      });
-      await api.setProjectCredential(projectId, { credential_id: created.id });
+      const created = await saveModelCredential(projectId, kind, body);
       await qc.invalidateQueries({ queryKey: ["credentials", projectId] });
       if (created.state === "valid") {
         setResult({ status: "done", text: "Answered. Saved and set for this project." });

@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { FETCH_FAILED } from "@/components/planner/PlannerStates";
 import { RefusalRuleLink } from "@/features/activity/RefusalRuleLink";
-import { clockTime, LinkedPanel } from "@/features/organization/LinkedPanel";
+import { clockTime, LinkedPanel, LinkedSummary } from "@/features/organization/LinkedPanel";
 import { LinkToOrgWizard, useLinkFlow } from "@/features/organization/LinkToOrgWizard";
 import { cn } from "@/lib/cn";
 import { errorDetail, errorRuleId, isRefusal } from "@/lib/errors";
@@ -67,6 +67,12 @@ function OrgWindowBody({ onClose }: { onClose: () => void }) {
   const status = statusQ.data;
   const flow = useLinkFlow(status);
   const linkedView = !!status && status.linked && !flow.wizard;
+  // Design 2e: a finished link opens on the "Linked as" summary — after Done on ④ and on
+  // reopening — and Open org overview leads on. Any wizard visit resets it.
+  const [overview, setOverview] = React.useState(false);
+  const summaryView = linkedView && !overview;
+  const orgQ = useSyncOrg(summaryView);
+  const deploymentName = orgQ.data?.linked ? (orgQ.data.deployments ?? []).find((d) => d.here)?.name : null;
   const title = linkedView ? `Linked to ${status!.org || "your org"}` : "Link to an org";
   const role = status?.can_link === true ? "admin" : status?.can_link === false ? "member" : null;
 
@@ -108,7 +114,26 @@ function OrgWindowBody({ onClose }: { onClose: () => void }) {
             initialStep={flow.initialStep}
             readOnly={flow.readOnly}
             onLinked={flow.onLinked}
-            onDone={flow.onDone}
+            onDone={() => {
+              setOverview(false);
+              flow.onDone();
+            }}
+          />
+        ) : summaryView ? (
+          <LinkedSummary
+            status={status}
+            deploymentName={deploymentName}
+            readOnly={flow.readOnly}
+            busy={flow.busy}
+            onOpenOverview={() => setOverview(true)}
+            onChooseProjects={() => {
+              setOverview(false);
+              flow.openAt(3);
+            }}
+            onSignIn={() => {
+              setOverview(false);
+              flow.openAt(2);
+            }}
           />
         ) : (
           <LinkedOverview status={status} flow={flow} onClose={onClose} />

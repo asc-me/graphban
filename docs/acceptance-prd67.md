@@ -153,3 +153,34 @@ Same stack, 18:20Z (box `c21e446d`, console `b6a3811`).
 Polish, not blocking: the cloud tag shows the raw cloud project id, not the project's name or tag.
 
 **Verdict: pass.** Every §8.4 step has passed, including the cloud tag in step 1. The one item still open is GRPH-1557 (`sign_in_pending` stays set after an expired code), which doesn't block this walk.
+
+# §8.1 step 8 re-walk, `gban setup` route (GRPH-1570)
+
+Walked 2026-11-13 06:16–06:20Z by a planner session against `main` at `bc4efd98` (product version 2026.11.19). That is after GRPH-1543 (`3348de6f`) and GRPH-1548 (#1630) merged.
+
+- **Box:** a scratch compose stack, `docker compose -p gb-walk-1570 up -d --build`, with its own ports (DB `:8490`, API `:8491`, web `:8492`).
+- **CLI:** from PyPI under a clean `$HOME` (`env -i HOME=<scratch>`): `uv tool install graphban-cli && uv tool install graphban-fleet` served `graphban-cli` 0.8.9 and `graphban-fleet` 0.18.20. 0.8.9 is the first release carrying the GRPH-1543 fix.
+- **Project:** "Walk Project" with repo URL `github.com/walk-org/walk-app`; a new checkout `~/code/walk-app` with that remote.
+
+| # | Step | What was shown | Verdict |
+|---|---|---|---|
+| 8a | `gban login --pair` | Code shown; approved by the owner; session stored 0600; "project walk-project (the only one you can read)" | ok |
+| 8b | `gban setup` in `~/code/walk-app` | "applied …: 78 file(s) written", matched the project by git remote, then **18 PASS, 0 UNKNOWN, 0 FAIL**. Every pack-written skill, `graphban-answer` included, reads PASS | **GRPH-1543 fixed** |
+| 8c | ③ with no key yet | `status: done`, `proof: machine_report`, "vicious-apogee reported clean" | **✓ by itself** |
+
+## Sabotage re-run: FAIL report with a used key (GRPH-1548)
+
+A quick-start key was minted for the project and made one `/api/mcp` call (200), so ③ read `done` with proof `first_call`. Then:
+
+| Report posted for the same machine | ③ |
+|---|---|
+| one `FAIL config written` line | `pending`, "vicious-apogee reported 1 FAIL." |
+| the same line as `PASS` | `done`, proof `first_call` again |
+
+**Flips: yes.** The FAIL line now outranks a live used key.
+
+## Verdict
+
+**Pass.** ③ goes ✓ by itself on the `gban setup` route from a clean `$HOME`, and the FAIL-report sabotage flips with a live key. With the paste-a-key route already ✓ in the first walk, §8.1 step 8 passes on both routes.
+
+Small, not blocking: `gban setup` printed "applied unknown" for the pack version, because a local `--build` box has no `git_sha`.
