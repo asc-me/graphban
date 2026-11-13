@@ -511,7 +511,9 @@ def test_accept_is_refused_for_a_key_or_engine_and_under_an_org_lock(client, org
     n = len(_events("apply_rule_profile"))
     r = client.post(f"/api/rules/profiles/standard/updates/accept", params={"project_id": p},
                     json={"reason": "go"}, headers=org["owner"])
-    assert r.status_code == 409 and len(_events("apply_rule_profile")) == n
+    # Accept skips the rules the org locked rather than refusing (GRPH-1609).
+    assert r.status_code == 200 and r.json()["skipped_locked"] == [RULE]
+    assert len(_events("apply_rule_profile")) == n + 1
 
 
 def test_updates_org_scope_is_plan_gated(client, org, monkeypatch):

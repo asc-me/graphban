@@ -361,6 +361,7 @@
 "tests/test_rules_memory_write_mode.py": 0.16,
 "tests/test_rules_org.py": 0.84,
 "tests/test_rules_p63_acceptance.py": 0.84,
+"tests/test_rules_project_profiles.py": 0.5,
 "tests/test_rules_recommend.py": 1.86,
 "tests/test_rules_recommend_fleet.py": 1.38,
 "tests/test_rules_registry.py": 0.7,
