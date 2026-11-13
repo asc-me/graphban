@@ -84,6 +84,10 @@ describe("planFor", () => {
     expect(reg.changes.map((c) => c.ruleId)).toEqual(["review.sabotage"]);
     expect(reg.changes[0].params).toEqual([{ name: "min_tests_failed", before: 1, after: 2 }]);
     expect(reg.changes[0].risk).toBeUndefined();
+    // gap-blocks is locked on and Regulated pins it on: it already matches, yet the server still
+    // counts it as locked and refuses without skip_locked, so the plan names it.
+    expect(reg.locked).toEqual(["review.gap_blocks"]);
+    expect(planFor(profiles.profiles[2], rules, new Set(["review.gap_blocks"])).locked).toEqual([]);
   });
 
   it("names the level, exceptions, skipped rules and drift on the chip", () => {
@@ -128,7 +132,7 @@ describe("QuickConfigure", () => {
     expect(screen.queryByTestId("rules-quick-table")).toBeNull();
   });
 
-  it("review: one prefixed reason, a dropped rule is sent as an exception, locked rules skipped", async () => {
+  it("review: one prefixed reason, a dropped rule is sent as an exception, a locked rule that already matches is still skipped", async () => {
     const user = userEvent.setup();
     const onApplied = vi.fn();
     vi.mocked(api.applyRuleProfile).mockResolvedValue({ project_id: "core", profile: "regulated", applied: ["review.sabotage"], excepted: ["review.cross_vendor"], skipped_locked: [] });
@@ -139,12 +143,13 @@ describe("QuickConfigure", () => {
     await user.click(within(sheet).getByTestId("rules-review-drop-review.cross_vendor"));
     expect(within(sheet).queryByTestId("rules-review-rule-review.cross_vendor")).toBeNull();
     expect(within(sheet).getByTestId("rules-quick-dropped")).toHaveTextContent("Recorded as Regulated, except: T review.cross_vendor");
+    expect(within(sheet).getByTestId("rules-quick-skipped")).toHaveTextContent("Skipped, set by org acme · locked: T review.gap_blocks");
     expect(within(sheet).getByTestId("rules-review-save")).toBeDisabled();
     await user.type(within(sheet).getByLabelText("Reason"), "audit season");
     await user.click(within(sheet).getByTestId("rules-review-save"));
     await waitFor(() => expect(onApplied).toHaveBeenCalledWith(["review.sabotage"]));
     expect(api.applyRuleProfile).toHaveBeenCalledWith("core", "regulated", {
-      reason: "applying Regulated 0.1.0: audit season", except: ["review.cross_vendor"], skip_locked: false,
+      reason: "applying Regulated 0.1.0: audit season", except: ["review.cross_vendor"], skip_locked: true,
     });
   });
 

@@ -94,7 +94,11 @@ export function differsIn(profile: RuleProfile, rules: Map<string, RuleFlowRule>
 
 export interface LevelPlan {
   changes: RuleChange[];
-  /** Org-locked rules the level would change: skipped and named. */
+  /**
+   * Every org-locked rule the level pins and the person did not leave out, whether or not it
+   * already matches: the server refuses the whole apply on any of them unless `skip_locked`,
+   * and records them as skipped. Named in the sheet so that record is no surprise.
+   */
   locked: string[];
   /** Pinned rules this server's library cannot enforce: the apply refuses the whole level. */
   unenforceable: string[];
@@ -110,11 +114,14 @@ export function planFor(profile: RuleProfile, rules: Map<string, RuleFlowRule>, 
       unenforceable.push(pin.rule_id);
       continue;
     }
-    if (leaveOut.has(pin.rule_id) || !pinChanges(pin, rule)) continue;
+    if (leaveOut.has(pin.rule_id)) continue;
+    // Locked is checked before "does it change": the server counts a locked pin that already
+    // matches too (rules_org.apply_project_profile), so skip_locked must be sent for it.
     if (rule.locked) {
       locked.push(pin.rule_id);
       continue;
     }
+    if (!pinChanges(pin, rule)) continue;
     const want = pin.state === "on";
     const now = paramsOf(rule);
     const params: ParamChange[] = paramDiffs(pin, rule).map((k) => ({ name: k, before: now[k], after: pin.params[k] }));
@@ -549,7 +556,7 @@ function Compare({
         </span>,
       );
     }
-    if (rule?.locked && pin && pinChanges(pin, rule)) {
+    if (rule?.locked && pin && !dropped.has(id)) {
       out.push(
         <span key="l" className="text-small text-muted" data-testid={`rules-quick-locked-${id}`}>
           set by org {orgName} · locked
