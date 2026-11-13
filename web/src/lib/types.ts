@@ -1129,6 +1129,11 @@ export interface TriageBlockerRow extends TriageFeedBase {
   /** Handed to a person but no one with access could be alerted (P75 D6). */
   nobody_alerted?: boolean;
   waiting_on?: { id: string; title: string; status: string };
+  /** On a question row: the ticket it blocks (GRPH-1571). `blocks_more` counts further tickets. */
+  blocks?: { id: string; title: string };
+  blocks_more?: number;
+  /** On a ticket row also waiting on questions: the questions, each its own row. */
+  also_questions?: { id: string; question: string }[];
 }
 
 export interface TriageCollisionRow extends TriageFeedBase {

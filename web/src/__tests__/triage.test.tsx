@@ -126,7 +126,7 @@ describe("Triage inbox", () => {
     expect(await screen.findByText("Decider falls back silently", { selector: "span" })).toBeInTheDocument();
     expect(selected()).toHaveTextContent("Decider falls back silently");
     expect(screen.getByText("4", { selector: "span.text-fg" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Bugs\s*2/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Bugs\s*2/ })).toBeInTheDocument();
   });
 
   it("moves with J/K and switches tabs with 1–5", async () => {
@@ -358,10 +358,10 @@ describe("Triage inbox", () => {
   it("puts the tab row above both columns, not inside the list", async () => {
     renderTriage();
     await screen.findByText("Crash on empty project");
-    const tabs = screen.getByRole("group", { name: "Triage tabs" });
-    expect(tabs.contains(screen.getByRole("button", { name: /Collisions/ }))).toBe(true);
+    const tabs = screen.getByRole("tablist", { name: "Triage tabs" });
+    expect(tabs.contains(screen.getByRole("tab", { name: /Collisions/ }))).toBe(true);
     expect(tabs.contains(screen.getByRole("listbox"))).toBe(false);
-    expect(screen.getByRole("listbox").closest("[role=group]")).toBeNull();
+    expect(screen.getByRole("listbox").closest("[role=tablist]")).toBeNull();
   });
 
   it("hides the Processed card until something is processed", async () => {
@@ -377,7 +377,7 @@ describe("Triage inbox", () => {
     renderTriage();
     const label = await screen.findByText("AGENT ASKED");
     expect(label.parentElement).toHaveClass("border-st-blocked/30");
-    expect(screen.getByText("Which key?")).toBeInTheDocument();
+    expect(screen.getByText("Which key?", { selector: "p" })).toBeInTheDocument();
     const chips = screen.getByLabelText("Agent's options");
     expect(chips).toHaveTextContent("Use env");
     expect(chips).toHaveTextContent("Use vault");
@@ -563,5 +563,95 @@ describe("Triage: every question can be answered (GRPH-1572)", () => {
     expect(m.answerBlockerText).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Back to options" }));
     expect(screen.queryByLabelText("Your answer")).not.toBeInTheDocument();
+  });
+
+  describe("question rows, state tags, tabs (GRPH-1573)", () => {
+    const q = (extra: Record<string, unknown>): TriageFeedRow =>
+      ({ ...blocker, id: "GRPH-W1", title: "wait: pick a store", decision: { question: "Which store?", options: ["A", "B"] },
+        blocks: { id: "GRPH-412", title: "Build the store" }, waiting_on: undefined, ...extra }) as TriageFeedRow;
+
+    it("a question row is titled by the question, meta says blocks <ticket>, detail has a BLOCKS line", async () => {
+      m.projectTriage.mockResolvedValue(feed([q({ question_state: "response_needed" })]));
+      renderTriage();
+      const row = await screen.findByRole("option");
+      expect(row).toHaveTextContent("Which store?");
+      expect(row).not.toHaveTextContent("wait: pick a store");
+      expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Which store?");
+      expect(row).toHaveTextContent("blocks GRPH-412 · worker-3");
+      expect(screen.getByTestId("blocks-line")).toHaveTextContent("GRPH-412Build the store");
+      expect(screen.queryByText("blocker", { selector: "span.rounded-full" })).not.toBeInTheDocument();
+    });
+
+    it("Response Needed is amber with an edge; Checking context is grey with none; nobody alerted is red", async () => {
+      m.projectTriage.mockResolvedValue(feed([
+        q({ id: "W-A", question_state: "response_needed" }),
+        q({ id: "W-B", question_state: "checking" }),
+        q({ id: "W-C", question_state: "response_needed", nobody_alerted: true }),
+      ]));
+      renderTriage();
+      await screen.findAllByRole("option");
+      const [a, b, c] = screen.getAllByRole("option");
+      expect(a.querySelector(".text-st-review")).toHaveTextContent("Response Needed");
+      expect(a.querySelector('[data-testid="row-edge"]')).toHaveClass("bg-st-review");
+      expect(b.querySelector(".text-muted")).toHaveTextContent("Checking context");
+      expect(b.querySelector('[data-testid="row-edge"]')).toBeNull();
+      expect(c.querySelector('[data-testid="row-edge"]')).toHaveClass("bg-st-blocked");
+      expect(c).toHaveTextContent("nobody alerted");
+    });
+
+    it("?item=<ticket key> selects the question row; an unknown key shows the banner", async () => {
+      m.projectTriage.mockResolvedValue(feed([bug, q({ question_state: "checking" })]));
+      const { unmount } = renderTriage("/p/CORE/triage?item=GRPH-412");
+      await screen.findAllByRole("option");
+      await waitFor(() => expect(selected()).toHaveTextContent("Which store?"));
+      expect(screen.getByTestId("checking-note")).toBeInTheDocument();
+      unmount();
+      renderTriage("/p/CORE/triage?item=GRPH-999");
+      expect(await screen.findByText(/GRPH-999 isn't in your Triage/)).toBeInTheDocument();
+    });
+
+    it("a ticket with also_questions offers to open the question", async () => {
+      m.projectTriage.mockResolvedValue(feed([
+        { ...blocker, also_questions: [{ id: "GRPH-W1", question: "Which store?" }] } as TriageFeedRow,
+        q({ question_state: "response_needed" }),
+      ]));
+      renderTriage();
+      const user = userEvent.setup();
+      expect(await screen.findByText(/\+ a question/)).toBeInTheDocument();
+      await user.click(await screen.findByRole("button", { name: "Open the question" }));
+      await waitFor(() => expect(selected()).toHaveTextContent("Which store?"));
+    });
+
+    it("ArrowRight on the focused Bugs tab selects and focuses Requests; the panel is labelled by the tab", async () => {
+      renderTriage();
+      await screen.findByText("Crash on empty project");
+      const user = userEvent.setup();
+      screen.getByRole("tab", { name: /Bugs/ }).focus();
+      await user.keyboard("{ArrowRight}");
+      const req = screen.getByRole("tab", { name: /Requests/ });
+      expect(req).toHaveAttribute("aria-selected", "true");
+      expect(req).toHaveFocus();
+      expect(req).toHaveAttribute("tabindex", "0");
+      expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", req.id);
+    });
+
+    it("z does nothing; Backspace undoes", async () => {
+      renderTriage();
+      await screen.findByText("Crash on empty project");
+      const user = userEvent.setup();
+      await user.keyboard("u");
+      await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+      await user.keyboard("z");
+      expect(m.undoBlocker).not.toHaveBeenCalled();
+      await user.keyboard("{Backspace}");
+      await waitFor(() => expect(m.undoBlocker).toHaveBeenCalled());
+    });
+
+    it("keeps the tabpanel in the DOM when Triage is clear", async () => {
+      m.projectTriage.mockResolvedValue(feed([]));
+      renderTriage();
+      expect(await screen.findByText("Triage clear")).toBeInTheDocument();
+      expect(screen.getByRole("tabpanel")).toHaveTextContent("Triage clear");
+    });
   });
 });
