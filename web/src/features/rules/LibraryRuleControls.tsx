@@ -365,7 +365,7 @@ function ToggleError({ err }: { err: unknown }) {
 }
 
 /** Drafts as they will be saved: list entries trimmed with blanks dropped, map rows without a key dropped. */
-function cleanParams(drafts: Params): Params {
+export function cleanParams(drafts: Params): Params {
   const out: Params = {};
   for (const [k, v] of Object.entries(drafts)) {
     if (Array.isArray(v)) out[k] = v.map((x) => x.trim()).filter(Boolean);

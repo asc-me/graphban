@@ -82,6 +82,8 @@ import type {
   RuleToggle,
   SerialisationPreview,
   RuleToggles,
+  RuleToggleBatchOut,
+  RuleToggleBatchWrite,
   RuleToggleWrite,
   UnmappedRefusals,
   StackTopology,
@@ -1229,6 +1231,13 @@ export const api = {
   /** A project's own value. A person's write: refused naming `rules.org_lock_holds` when locked. */
   setRuleToggle: (projectId: string, ruleId: string, body: RuleToggleWrite) =>
     request<RuleToggle>(`/rules/toggles/${encodeURIComponent(ruleId)}${projectQuery(projectId)}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  /** Several of a project's own values under one reason, all-or-nothing (GRPH-1594). A refusal
+   *  names the rule it refused (`<rule_id>: ...`) and nothing was saved. */
+  setRuleToggles: (projectId: string, body: RuleToggleBatchWrite) =>
+    request<RuleToggleBatchOut>(`/rules/toggles${projectQuery(projectId)}`, {
       method: "PUT",
       body: JSON.stringify(body),
     }),

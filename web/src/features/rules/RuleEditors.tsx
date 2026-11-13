@@ -28,7 +28,7 @@ import type { FleetPolicy, GitopsPatch, GitopsView, RuleFlowRule } from "@/lib/t
 
 const MONO = "font-mono";
 
-type FieldKey = Exclude<keyof GitopsPatch, "model">;
+export type FieldKey = Exclude<keyof GitopsPatch, "model">;
 
 /** Rule id → the PATCH key it edits. `gitops.model` is a preset that rewrites other fields, so
  *  it stays in Settings → Gitops rather than becoming a single-row editor here. */
@@ -42,7 +42,7 @@ export const GITOPS_RULE_FIELDS: Record<string, FieldKey> = {
   "release.release_defined_in": "release_defined_in",
 };
 
-const SELECTS: Partial<Record<FieldKey, readonly (readonly [string, string])[]>> = {
+export const SELECTS: Partial<Record<FieldKey, readonly (readonly [string, string])[]>> = {
   reviewer_bar: [
     ["", "Unmeasured"], ["sign_off", "Graphban sign_off"], ["forge", "Forge approvals"], ["both", "Both"],
   ],
@@ -54,7 +54,7 @@ const PATTERN_FIELDS: FieldKey[] = ["branch_name_pattern", "pr_title_pattern"];
 const inputClass =
   "h-9 w-full rounded-[9px] border border-control bg-surface-2 px-3 text-[13px] text-fg outline-none";
 
-function currentValue(view: GitopsView, key: FieldKey): string {
+export function currentValue(view: GitopsView, key: FieldKey): string {
   const v =
     key === "version_from" ? view.version_from.value
     : key === "release_defined_in" ? view.release_defined_in.value
@@ -62,7 +62,7 @@ function currentValue(view: GitopsView, key: FieldKey): string {
   return v === null || v === undefined ? "" : String(v);
 }
 
-function toPatch(key: FieldKey, draft: string): GitopsPatch {
+export function toPatch(key: FieldKey, draft: string): GitopsPatch {
   if (draft === "") return { [key]: null };
   return { [key]: key === "no_push_to_base" ? draft === "true" : draft };
 }
