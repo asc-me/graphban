@@ -136,13 +136,15 @@ exporter gave up on, never rows the sweep took first.
 
 Response Needed alerts can also reach a person as a browser push (GRPH-1528, P75 D4). It is standard Web Push with VAPID keys; no third-party push service. The in-app alert exists whether or not push works.
 
+Nothing needs setting: the server generates a key pair on its first start and keeps it in the database, reusing it on every start and upgrade (GRPH-1582). The variables below are optional overrides for supplying your own keys.
+
 | Env var | Default | Meaning |
 | --- | --- | --- |
-| `VAPID_PUBLIC_KEY` | empty | Application server key (base64url) the browser subscribes with |
-| `VAPID_PRIVATE_KEY` | empty | The matching private key: a PEM path or base64url key |
-| `VAPID_SUBJECT` | `mailto:admin@localhost` | The `sub` claim: a `mailto:` or `https:` contact for the push service |
+| `VAPID_PUBLIC_KEY` | empty (generated pair) | Your own application server key (base64url) the browser subscribes with |
+| `VAPID_PRIVATE_KEY` | empty (generated pair) | The matching private key: a PEM path or base64url key. Used only when both keys are set |
+| `VAPID_SUBJECT` | `mailto:` the first account's email | The `sub` claim: a `mailto:` or `https:` contact for the push service (`mailto:admin@localhost` before any account exists) |
 
-With either key empty the bell says browser notifications are not set up on this deployment and offers no button. The browser asks permission only when a person clicks "Notify me in this browser". A 404/410 from the push service deletes that subscription; any other failure sets `failed_at` and keeps it.
+Only if the stored pair cannot be generated or decrypted does the bell say browser notifications are not set up on this deployment and offer no button; the server logs why and never replaces the stored pair on its own. The browser asks permission only when a person clicks "Notify me in this browser". A 404/410 from the push service deletes that subscription; any other failure sets `failed_at` and keeps it.
 
 ## AI Providers tab
 

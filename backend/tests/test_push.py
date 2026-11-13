@@ -118,6 +118,7 @@ def test_unexpected_error_never_fails_the_hand_off(db, vapid, monkeypatch):
 
 def test_no_vapid_keys_sends_nothing(db, monkeypatch):
     monkeypatch.setattr(settings, "vapid_public_key", "")
+    monkeypatch.setattr(push_svc, "_stored", None)  # no stored pair resolved either
     fake = FakePushService()
     monkeypatch.setattr(push_svc, "webpush", fake)
     _sub(db, _owner(db))
@@ -139,6 +140,7 @@ def test_rest_subscribe_status_unsubscribe(client, auth, db, vapid):
 
 def test_rest_unconfigured_says_so_and_refuses_subscribe(client, auth, monkeypatch):
     monkeypatch.setattr(settings, "vapid_public_key", "")
+    monkeypatch.setattr(push_svc, "_stored", None)  # e.g. the startup ensure step failed
     assert client.get("/api/me/push", headers=auth).json()["configured"] is False
     body = {"endpoint": "https://push.test/x", "keys": {"p256dh": "k", "auth": "a"}}
     assert client.post("/api/me/push/subscribe", json=body, headers=auth).status_code == 503
@@ -164,3 +166,170 @@ def test_no_push_to_a_user_who_lost_project_access(db, vapid, monkeypatch):
     db.commit()
     assert push_svc.send_for_alerts(db, [a.id for a in alerts]) == 0
     assert fake.calls == []
+
+
+# --- The generated, stored key pair (GRPH-1582) -------------------------------------------
+
+
+@pytest.fixture()
+def no_env_keys(monkeypatch):
+    monkeypatch.setattr(settings, "vapid_public_key", "")
+    monkeypatch.setattr(settings, "vapid_private_key", "")
+    monkeypatch.setattr(settings, "vapid_subject", "mailto:admin@localhost")
+    monkeypatch.setattr(push_svc, "_stored", None)
+
+
+def _empty_table(db):
+    from app.models import VapidKey
+
+    db.query(VapidKey).delete()
+    db.commit()
+
+
+def _b64decode(s: str) -> bytes:
+    import base64
+
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+def test_startup_generates_a_pair_from_an_empty_table(db, no_env_keys):
+    _empty_table(db)
+    assert push_svc.status()["configured"] is False
+    push_svc.ensure_keys(db)
+    got = push_svc.status()
+    assert got["configured"] is True
+    raw = _b64decode(got["public_key"])
+    assert len(raw) == 65 and raw[0] == 0x04  # uncompressed P-256 point
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), raw)  # a real curve point
+
+
+def test_restart_reuses_the_stored_pair(db, no_env_keys, monkeypatch):
+    """Sabotage: drop the read-the-stored-row-first branch and the second start generates a
+    pair it was never meant to make; generation is refused here, so push comes up off."""
+    _empty_table(db)
+    push_svc.ensure_keys(db)
+    first = push_svc.status()["public_key"]
+    push_svc._stored = None  # a new process: nothing cached
+
+    def must_not_generate():
+        raise AssertionError("a restart generated a new pair instead of reusing the stored one")
+
+    monkeypatch.setattr(push_svc, "_generate", must_not_generate)
+    push_svc.ensure_keys(db)
+    assert push_svc.status()["public_key"] == first
+    from app.models import VapidKey
+
+    assert db.query(VapidKey).count() == 1
+
+
+def test_the_stored_pair_is_what_a_running_app_serves(client, auth, no_env_keys):
+    from app.main import app
+    from fastapi.testclient import TestClient
+
+    with TestClient(app):  # the lifespan's ensure step, as a real start runs it
+        pass
+    got = client.get("/api/me/push", headers=auth).json()
+    assert got["configured"] is True and len(_b64decode(got["public_key"])) == 65
+
+
+def test_env_keys_win_and_the_table_stays_empty(db, monkeypatch):
+    from app.models import VapidKey
+
+    _empty_table(db)
+    monkeypatch.setattr(settings, "vapid_public_key", "BENVPUB")
+    monkeypatch.setattr(settings, "vapid_private_key", "ENVPRIV")
+    monkeypatch.setattr(push_svc, "_stored", None)
+    push_svc.ensure_keys(db)
+    assert push_svc.status() == {"configured": True, "public_key": "BENVPUB"}
+    assert db.query(VapidKey).count() == 0
+
+
+def test_the_stored_private_key_is_encrypted_at_rest(db, no_env_keys, monkeypatch):
+    from app.models import VapidKey
+
+    monkeypatch.setattr(settings, "secret_encryption_key", "test-secret-for-vapid")
+    _empty_table(db)
+    public, private = push_svc.ensure_keys(db)
+    db.expire_all()
+    row = db.get(VapidKey, "vapid")
+    assert row.public_key == public
+    assert row.private_key.startswith("enc::") and private not in row.private_key
+    push_svc._stored = None
+    assert push_svc.ensure_keys(db) == (public, private)  # and it decrypts back on restart
+
+
+def test_a_generation_failure_leaves_push_off_and_does_not_raise(db, no_env_keys, monkeypatch):
+    from app.models import VapidKey
+
+    _empty_table(db)
+
+    def boom():
+        raise RuntimeError("no entropy today")
+
+    monkeypatch.setattr(push_svc, "_generate", boom)
+    assert push_svc.ensure_keys(db) is None
+    assert push_svc.status() == {"configured": False, "public_key": None}
+    assert db.query(VapidKey).count() == 0
+
+
+def test_concurrent_first_starts_end_with_one_row_and_one_pair(db, no_env_keys, monkeypatch):
+    """Both workers read an empty table, both generate, both insert: the loser re-reads the
+    winner. Sabotage: drop the IntegrityError re-read and the loser ends with no pair."""
+    import threading
+
+    from app.models import VapidKey
+
+    _empty_table(db)
+    real = push_svc._generate
+    barrier = threading.Barrier(2, timeout=10)
+
+    def generate_after_both_read():
+        pair = real()
+        barrier.wait()  # both have seen no row and made their own pair before either inserts
+        return pair
+
+    monkeypatch.setattr(push_svc, "_generate", generate_after_both_read)
+    results: list = [None, None]
+
+    def start(i):
+        s = SessionLocal()
+        try:
+            results[i] = push_svc.ensure_keys(s)
+        finally:
+            s.close()
+
+    threads = [threading.Thread(target=start, args=(i,)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert results[0] is not None and results[0] == results[1]
+    db.expire_all()
+    assert db.query(VapidKey).count() == 1
+    assert db.get(VapidKey, "vapid").public_key == results[0][0]
+
+
+def test_send_signs_with_the_stored_key_and_the_first_users_email(db, no_env_keys, monkeypatch):
+    from app.models import User
+
+    _empty_table(db)
+    _, private = push_svc.ensure_keys(db)
+    seen = []
+
+    def fake(*, subscription_info, data=None, vapid_private_key=None, vapid_claims=None, **kw):
+        seen.append((vapid_private_key, vapid_claims))
+        return SimpleNamespace(status_code=201)
+
+    monkeypatch.setattr(push_svc, "webpush", fake)
+    _sub(db, _owner(db))
+    _, wait = _pair(db)
+    waits.hand_to_person(db, wait)
+    first = db.query(User).order_by(User.created_at, User.id).first()
+    assert seen == [(private, {"sub": f"mailto:{first.email}"})]
+
+
+def test_an_env_subject_is_used_as_given(db, no_env_keys, monkeypatch):
+    monkeypatch.setattr(settings, "vapid_subject", "https://ops.example")
+    assert push_svc._subject(db) == "https://ops.example"
