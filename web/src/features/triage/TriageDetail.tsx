@@ -1,5 +1,8 @@
 import { QUESTION_LABEL } from "@/features/tracker/QuestionStateBadge";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
+
+import { settingsPath } from "@/lib/routes";
 
 import { copyText } from "@/lib/clipboard";
 
@@ -146,11 +149,13 @@ export function TriageDetail({
   actions,
   onAction,
   onAnswerText,
+  onOpenRow,
 }: {
   row: TriageFeedRow;
   actions: TriageAction[];
   onAction: (a: TriageAction) => void;
   onAnswerText?: (text: string) => void;
+  onOpenRow?: (id: string) => void;
 }) {
   const isDecision = row.kind === "blocker" && !!row.decision;
   const optionActions = actions.filter((a) => a.option);
@@ -167,7 +172,9 @@ export function TriageDetail({
   return (
     <div className="px-6 py-5">
       <div className="flex flex-wrap items-center gap-2 font-mono text-meta text-faint-2">
-        <span className={`rounded-full border px-2 py-px uppercase ${kindPill(row.kind)}`}>{row.kind}</span>
+        {!(row.kind === "blocker" && row.blocks) && (
+          <span className={`rounded-full border px-2 py-px uppercase ${kindPill(row.kind)}`}>{row.kind}</span>
+        )}
         <span>{row.id}</span>
         {row.kind === "collision" && row.predicted && (
           <span className="rounded border border-purple/30 px-1.5 py-px text-micro uppercase text-purple">predicted</span>
@@ -204,6 +211,14 @@ export function TriageDetail({
             <div className="font-mono text-micro uppercase tracking-[0.07em] text-st-blocked">
               {row.decision ? "AGENT ASKED" : "WHY IT'S BLOCKED"}
             </div>
+            {row.blocks && (
+              <div data-testid="blocks-line" className="mt-1 flex items-center gap-2 text-small text-fg-2">
+                <span className="font-mono text-micro uppercase tracking-[0.07em] text-st-blocked">BLOCKS</span>
+                <span className="font-mono text-meta">{row.blocks.id}</span>
+                <span className="min-w-0 flex-1 truncate text-muted">{row.blocks.title}</span>
+                {!!row.blocks_more && <span className="font-mono text-micro text-faint-2">+{row.blocks_more} more</span>}
+              </div>
+            )}
             {row.question_state && (
               <div data-testid="question-state" className="mt-1 font-mono text-micro text-st-blocked">
                 {QUESTION_LABEL[row.question_state]}
@@ -211,8 +226,16 @@ export function TriageDetail({
             )}
             {row.nobody_alerted && (
               <div data-testid="nobody-alerted" className="mt-1 font-mono text-micro text-st-blocked">
-                Nobody could be alerted: no one with access to this project was found.
+                Nobody could be alerted: no one with access to this project was found.{" "}
+                <Link to={settingsPath("project/members")} className="underline">
+                  Add a project owner in Settings › This project › Members
+                </Link>
               </div>
+            )}
+            {row.question_state === "checking" && (
+              <p data-testid="checking-note" className="mt-1 text-small text-muted">
+                An agent is still checking the PRD, published memory and earlier decisions. You can answer now. If you do, the agent stops checking.
+              </p>
             )}
             <p className="mt-1.5 text-body leading-relaxed text-fg-2">
               {row.decision?.question ?? (row.reason || "No reason was recorded.")}
@@ -225,6 +248,15 @@ export function TriageDetail({
               </div>
             )}
           </div>
+          {row.also_questions?.map((q) => (
+            <div key={q.id} data-testid="also-question" className="mt-3 flex items-center gap-2 rounded-md border border-line bg-surface px-3 py-2 text-small">
+              <span className="min-w-0 flex-1 text-fg-2">Also waiting on a question: {q.question}</span>
+              <button onClick={() => onOpenRow?.(q.id)}
+                className="shrink-0 rounded border border-control px-1.5 py-px text-muted hover:text-fg">
+                Open the question
+              </button>
+            </div>
+          ))}
           {row.waiting_on && (
             <>
               <Label>WAITING ON</Label>

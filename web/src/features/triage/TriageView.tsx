@@ -44,7 +44,18 @@ const kindText = (r: TriageFeedRow) => KIND_TEXT[r.kind] ?? "text-muted";
 const kindDot = (r: TriageFeedRow) => KIND_DOT[r.kind] ?? "bg-faint-2";
 const kindWord = (r: TriageFeedRow) => r.kind[0].toUpperCase() + r.kind.slice(1);
 
+/** The tag and left edge a row wears. A question wears its state, not "Blocker". */
+function tagOf(r: TriageFeedRow): { word: string; text: string; edge: string } {
+  if (r.kind === "blocker" && r.question_state === "response_needed")
+    return { word: "Response Needed", text: "text-st-review", edge: r.nobody_alerted ? "bg-st-blocked" : "bg-st-review" };
+  if (r.kind === "blocker" && r.question_state === "checking")
+    return { word: "Checking context", text: "text-muted", edge: r.nobody_alerted ? "bg-st-blocked" : "" };
+  return { word: kindWord(r), text: kindText(r), edge: r.kind === "blocker" && r.nobody_alerted ? "bg-st-blocked" : "" };
+}
+
 function metaOf(r: TriageFeedRow): string {
+  if (r.kind === "blocker" && r.blocks)
+    return `blocks ${r.blocks.id}${r.blocks_more ? ` +${r.blocks_more}` : ""} · ${r.owner ?? "unclaimed"}`;
   if (r.kind === "blocker")
     return `${r.owner ?? "unclaimed"} · ${r.question_state ? QUESTION_LABEL[r.question_state] : r.decision ? "needs a decision" : r.waiting_on ? `waiting on ${r.waiting_on.id}` : "blocked"}`;
   if (r.kind === "collision") return `${r.members.length} items · ${r.risk}`;
@@ -82,7 +93,17 @@ export function TriageView() {
     [feedQ.data, hidden],
   );
   const shown = useMemo(() => live.filter((r) => inTab(r, tab)), [live, tab]);
-  const sel = shown.find((r) => r.id === selId) ?? shown[0] ?? null;
+  // A ticket key selects the question row that blocks it; a wait key selects itself.
+  const resolvedSel = useMemo(() => {
+    if (!selId) return null;
+    const rows = feedQ.data?.rows ?? [];
+    return rows.find((r) => r.id === selId)?.id
+      ?? rows.find((r) => r.kind === "blocker" && r.blocks?.id === selId)?.id
+      ?? selId;
+  }, [selId, feedQ.data]);
+  const sel = shown.find((r) => r.id === resolvedSel) ?? shown[0] ?? null;
+  const linkMissing = !!linked && !!feedQ.data && !feedQ.isFetching
+    && !(feedQ.data.rows).some((r) => r.id === linked || (r.kind === "blocker" && r.blocks?.id === linked));
   const actions = useMemo(() => (sel ? actionsFor(sel, projectId) : []), [sel, projectId]);
 
   const refresh = useCallback(
@@ -159,7 +180,7 @@ export function TriageView() {
       }
       if (k === "j" || e.key === "ArrowDown") { move(1); e.preventDefault(); return; }
       if (k === "k" || e.key === "ArrowUp") { move(-1); e.preventDefault(); return; }
-      if (e.key === "Backspace" || k === "z") { void undo(); e.preventDefault(); return; }
+      if (e.key === "Backspace") { void undo(); e.preventDefault(); return; }
       const tabHit = TABS.find((x) => x.key === e.key);
       if (tabHit) { setTab(tabHit.id); setSelId(null); return; }
       if (e.key === "Enter") {
@@ -275,15 +296,39 @@ export function TriageView() {
         </div>
       )}
 
-      <div className="flex gap-1.5 px-6 pt-3" role="group" aria-label="Triage tabs">
+      {linkMissing && (
+        <div role="status" className="border-b border-line px-6 py-2 text-small text-muted">
+          {linked} isn't in your Triage.
+        </div>
+      )}
+
+      <div className="flex gap-1.5 px-6 pt-3" role="tablist" aria-label="Triage tabs"
+        onKeyDown={(e) => {
+          const focused = (e.target as HTMLElement).id.replace("triage-tab-", "");
+          const i = TABS.findIndex((x) => x.id === focused);
+          if (i < 0) return;
+          const j = e.key === "ArrowRight" ? (i + 1) % TABS.length
+            : e.key === "ArrowLeft" ? (i + TABS.length - 1) % TABS.length
+            : e.key === "Home" ? 0 : e.key === "End" ? TABS.length - 1 : -1;
+          if (j < 0) return;
+          e.preventDefault();
+          e.stopPropagation();
+          setTab(TABS[j].id);
+          setSelId(null);
+          document.getElementById(`triage-tab-${TABS[j].id}`)?.focus();
+        }}>
         {TABS.map((t) => {
           const n = feedQ.data?.counts[t.id];
           const on = tab === t.id;
           return (
             <button
               key={t.id}
+              id={`triage-tab-${t.id}`}
+              role="tab"
+              aria-selected={on}
+              aria-controls="triage-panel"
+              tabIndex={on ? 0 : -1}
               onClick={() => { setTab(t.id); setSelId(null); }}
-              aria-pressed={on}
               className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-small ${
                 on ? "border-control bg-surface-3 text-fg" : "border-control text-muted hover:text-fg-2"
               }`}
@@ -296,6 +341,7 @@ export function TriageView() {
         })}
       </div>
 
+      <div role="tabpanel" id="triage-panel" aria-labelledby={`triage-tab-${tab}`} className="flex min-h-0 flex-1 flex-col">
       {queueClear ? (
         <div className="min-h-0 flex-1 overflow-y-auto p-6 pt-3">
           <ClearCard processed={processed.length} />
@@ -316,21 +362,25 @@ export function TriageView() {
             ) : (
               shown.map((r) => {
                 const on = r.id === sel?.id;
+                const tag = tagOf(r);
                 return (
                   <div
                     key={r.id}
                     role="option"
                     aria-selected={on}
                     onClick={() => setSelId(r.id)}
-                    className={`m-1.5 cursor-pointer rounded-lg border px-3 py-2 ${on ? "border-control bg-surface-2" : "border-transparent hover:bg-surface-2"}`}
+                    className={`m-1.5 cursor-pointer relative rounded-lg border px-3 py-2 ${on ? "border-control bg-surface-2" : "border-transparent hover:bg-surface-2"}`}
                   >
+                    {tag.edge && <span data-testid="row-edge" className={`absolute inset-y-1 left-0 w-[3px] rounded ${tag.edge}`} aria-hidden />}
                     <div className="flex items-start gap-2.5">
                       <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${kindDot(r)}`} aria-hidden />
                       <span className={`min-w-0 flex-1 text-body leading-snug ${on ? "text-fg" : "text-fg-2"}`}>{r.title}</span>
                       <span className="shrink-0 font-mono text-meta text-faint-2">{formatAge(r.age_seconds)}</span>
                     </div>
                     <div className="mt-1 pl-[18px] font-mono text-meta text-faint-2">
-                      <span className={kindText(r)}>{kindWord(r)}</span> · {r.id} · {metaOf(r)}
+                      <span className={tag.text}>{tag.word}</span> · {r.id} · {metaOf(r)}
+                      {r.kind === "blocker" && r.nobody_alerted && <span className="text-st-blocked"> · nobody alerted</span>}
+                      {r.kind === "blocker" && r.also_questions?.length ? " · + a question" : ""}
                     </div>
                   </div>
                 );
@@ -344,11 +394,13 @@ export function TriageView() {
         {sel && (
           <div className="max-h-full min-h-0 overflow-y-auto rounded-[13px] border border-line bg-surface">
             <TriageDetail row={sel} actions={actions} onAction={trigger}
-              onAnswerText={(t) => void run(answerTextAction(sel, t))} />
+              onAnswerText={(t) => void run(answerTextAction(sel, t))}
+              onOpenRow={(id) => { setTab("all"); setSelId(id); }} />
           </div>
         )}
       </div>
       )}
+      </div>
 
       {confirming && (
         <div role="dialog" aria-modal="true" aria-label={`Confirm ${confirming.label}`}
