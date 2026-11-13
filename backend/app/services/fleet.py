@@ -5719,6 +5719,11 @@ def collect_directive(db: Session, agent_id: str | None) -> dict | None:
     agent = db.get(Agent, agent_id)
     expired = session_expired(db, agent)
     directive = pending_directive(agent, expired=expired)
+    if directive is None and not expired:
+        # The touchpoint gate refused this agent's branch a PR (GRPH-1591).
+        gate = _take_gate_directive(db, agent)
+        if gate is not None:
+            return gate
     if directive is None:
         # A human answered a question this agent asked (GRPH-1137). Delivered once, after any
         # role change, which is the more urgent fact.
@@ -5765,8 +5770,11 @@ def park(db: Session, attempt, *, agent_id: str | None = None,
         result = attempt(db)
         if result is not None:
             return result
-        if agent_id and pending_directive(db.get(Agent, agent_id)) is not None:
-            return None
+        if agent_id:
+            parked = db.get(Agent, agent_id)
+            if (pending_directive(parked) is not None
+                    or (parked is not None and (parked.capabilities or {}).get(GATE_DIRECTIVES))):
+                return None
         # Bounded by BOTH the wall clock and the time actually slept. Wall alone is correct in
         # production and a trap under test: an injected no-op `sleep` never advances it, so the
         # loop spins hot for the full minute — which is how this arrived, as an 84-second test
@@ -5790,8 +5798,10 @@ def park(db: Session, attempt, *, agent_id: str | None = None,
 #: no-op and not a second route somebody adds beside this one. GRPH-1236 adds two:
 #: `merged_trunk` (the trunk was merged into the branch before it was proposed) and
 #: `behind_conflict`, the one kind that also moves the item (`_send_back_behind`).
+#: GRPH-1591 adds `undeclared_held`: the touchpoint gate refused the PR, so a `review` item
+#: goes back to `in_progress` for its builder, with a directive naming the files.
 OBSERVATION_KINDS = ("cut_from", "pr_opened", "salvage", "withheld", "merged_trunk",
-                     "behind_conflict", "undeclared_warned")
+                     "behind_conflict", "undeclared_warned", "undeclared_held")
 OBSERVATION_LATER = ("pushed_head",)
 
 _CUT_BASE = re.compile(r"^[0-9a-f]{7,40}$")
@@ -5931,6 +5941,11 @@ def _observation_receipt(kind: str, *, branch: str, base: str | None, url: str |
         if not why:
             raise ObservationError(422, "behind_conflict names the ref and the files")
         return {"kind": "note", "detail": f"gbfleet: not proposed as a PR — {why}"}
+    if kind == "undeclared_held":
+        why = (reason or "").strip()
+        if not why:
+            raise ObservationError(422, "undeclared_held names the files outside touchpoints")
+        return {"kind": "note", "detail": f"gbfleet: `{branch}` held from review — {why}"}
     raise ObservationError(
         422,
         f"unknown observation kind {kind!r}; this route records "
@@ -5964,6 +5979,74 @@ def _send_back_behind(db: Session, item: Item, *, branch: str, reason: str) -> N
     item.review_claimed_at = None
     item.branch = branch or item.branch
     item.bounce_reason = reason
+
+
+#: The directive kind `_hold_undeclared` queues on the builder (GRPH-1591).
+GATE_DIRECTIVES = "gate_directives"
+
+
+def _hold_undeclared(db: Session, item: Item, *, branch: str, reason: str) -> None:
+    """Take a `review` item whose branch the touchpoint gate refused back to `in_progress`
+    (GRPH-1591), and tell its builder why.
+
+    GRPH-1587 sat in `review` with no PR and no CI run: the gate correctly withheld the PR
+    for a stray `-E` sed backup, and nothing moved the item. A reviewer can sign off only
+    what a PR carries, so `review` without one is a state nobody can finish.
+
+    The builder keeps the claim and the authorship. This is not a bounce — no verdict, no
+    `bounced` attempt — because the fix is the builder's to make in the same tree: drop
+    the files or declare them. `bounce_reason` carries the brief too, so a builder that has
+    already exited is resumed on this branch with the files named rather than rebuilt. A
+    `done` item is left alone, as `_send_back_behind` leaves it.
+
+    The directive rides the agent's outbox (`collect_directive`), delivered once.
+    """
+    if item.status == "done":
+        return
+    if item.status == "review":
+        item.status = "in_progress"
+        item.review_claimed_by = None
+        item.review_claimed_at = None
+        item.claimed_by = item.claimed_by or item.built_by
+        item.claimed_at = datetime.now(timezone.utc)
+    item.branch = branch or item.branch
+    item.bounce_reason = reason
+    who = item.claimed_by or item.built_by
+    agent = db.get(Agent, who) if who else None
+    if agent is None:
+        return
+    caps = dict(agent.capabilities or {})
+    queued = [d for d in (caps.get(GATE_DIRECTIVES) or []) if d.get("item") != item.key]
+    queued.append({
+        "type": "touchpoint_gate",
+        "item": item.key,
+        "branch": branch,
+        "reason": reason,
+        "next": (f"{item.key} is back in_progress and no PR was opened: remove the named "
+                 "file(s) from the branch and commit, or declare them with "
+                 f"update_item(id=\"{item.key}\", touchpoints=[...]) and a note; then run "
+                 "`gbfleet check-touchpoints` and move it to review again"),
+    })
+    caps[GATE_DIRECTIVES] = queued
+    agent.capabilities = caps
+
+
+def _take_gate_directive(db: Session, agent: Agent | None) -> dict | None:
+    """Pop the oldest touchpoint-gate directive queued on `agent` (GRPH-1591), or None."""
+    if agent is None:
+        return None
+    caps = dict(agent.capabilities or {})
+    queued = list(caps.get(GATE_DIRECTIVES) or [])
+    if not queued:
+        return None
+    first = queued.pop(0)
+    if queued:
+        caps[GATE_DIRECTIVES] = queued
+    else:
+        caps.pop(GATE_DIRECTIVES, None)
+    agent.capabilities = caps
+    db.commit()
+    return first
 
 
 def _record_lease(db: Session, item: Item, *, branch: str, agent_id: str | None,
@@ -6078,6 +6161,8 @@ def record_observation(db: Session, api_key, *, item_key: str, kind: str,
     item.evidence = items_svc.append_evidence(item.evidence, [receipt])
     if kind == "behind_conflict":
         _send_back_behind(db, item, branch=cleaned, reason=(reason or "").strip())
+    if kind == "undeclared_held":
+        _hold_undeclared(db, item, branch=cleaned, reason=(reason or "").strip())
     if receipt.get("kind") == "url":
         # The cooldown clock. `update_item` starts it from a url receipt; this route is
         # now the writer of that receipt, so the clock has to start here or a draft PR

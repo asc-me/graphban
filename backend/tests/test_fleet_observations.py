@@ -860,3 +860,61 @@ def test_the_supervision_probe_is_403_for_a_refused_key_and_404_for_a_supervisin
         got = _post(client, able, **OBSERVATION_PROBE)
         assert got.status_code == 404, got.text
         assert "no such item" in got.text
+
+
+# ---- GRPH-1591: the touchpoint gate refused the PR, so the item leaves review ----------------
+
+
+def test_an_undeclared_hold_takes_a_review_item_back_to_its_builder(client, auth, db):
+    """`undeclared_held` returns a `review` item to `in_progress`, held by its builder, with the
+    files on the item and a one-shot directive on the builder's next call.
+
+    GRPH-1587 sat in `review` with no PR: the gate withheld it for `NewProjectWizard.tsx-E` and
+    nothing moved the item. Sabotage: drop the `_hold_undeclared` call in `record_observation`
+    and the item stays in `review` with no directive.
+    """
+    from app.models import Delegation
+
+    proj, hand, planner = _project(client, auth)
+    worker, item = _in_review(client, hand, planner, db)
+    _bind(db, proj, item, wave="wave-1")
+    brief = ("Branch gb/behind changed file(s) outside every declared touchpoint: "
+             "web/src/NewProjectWizard.tsx-E. No PR is opened for it.")
+    got = _post(client, planner, item_id=item, kind="undeclared_held", branch="gb/behind",
+                reason=brief)
+    assert got.status_code == 200, got.text
+    db.expire_all()
+    row = db.get(Item, item)
+    assert row.status == "in_progress"
+    assert row.claimed_by == worker["agent_id"] and row.built_by == worker["agent_id"]
+    assert row.review_claimed_by is None and row.reviewed_by is None
+    assert row.bounce_reason == brief
+    outcomes = [d.outcome for d in db.query(Delegation).filter(Delegation.item_id == item)]
+    assert "bounced" not in outcomes
+    assert any(n["detail"] == f"gbfleet: `gb/behind` held from review — {brief}"
+               for n in _notes(client, hand, item))
+
+    beat = _ok(client, hand, "heartbeat", {"agent_id": worker["agent_id"], "id": item})
+    directive = beat.get("directive")
+    assert directive and directive["type"] == "touchpoint_gate", beat
+    assert directive["item"] == row.key or directive["item"] == item
+    assert "NewProjectWizard.tsx-E" in directive["reason"]
+    assert "update_item" in directive["next"]
+    again = _ok(client, hand, "heartbeat", {"agent_id": worker["agent_id"], "id": item})
+    assert "directive" not in again, "the gate directive was delivered twice"
+
+
+def test_an_undeclared_hold_names_its_files_and_leaves_done_alone(client, auth, db):
+    proj, hand, planner = _project(client, auth)
+    _worker, item = _in_review(client, hand, planner, db)
+    _bind(db, proj, item, wave="wave-1")
+    empty = _post(client, planner, item_id=item, kind="undeclared_held", branch="gb/behind")
+    assert empty.status_code == 422, empty.text
+    row = db.get(Item, item)
+    row.status = "done"
+    db.commit()
+    got = _post(client, planner, item_id=item, kind="undeclared_held", branch="gb/behind",
+                reason="a.txt-E")
+    assert got.status_code == 200, got.text
+    db.expire_all()
+    assert db.get(Item, item).status == "done"
