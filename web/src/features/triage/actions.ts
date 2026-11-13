@@ -229,3 +229,9 @@ export function actionsFor(row: TriageFeedRow, projectId: string): TriageAction[
     ...rest,
   ];
 }
+
+/** What a row is titled by: a question row is titled by its question, never
+ *  the wait item's own title, which create_item takes separately (GRPH-1573). */
+export function rowTitle(row: TriageFeedRow): string {
+  return (row.kind === "blocker" && row.decision?.question) || row.title;
+}

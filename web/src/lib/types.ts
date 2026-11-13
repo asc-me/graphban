@@ -1129,6 +1129,11 @@ export interface TriageBlockerRow extends TriageFeedBase {
   /** Handed to a person but no one with access could be alerted (P75 D6). */
   nobody_alerted?: boolean;
   waiting_on?: { id: string; title: string; status: string };
+  /** On a question row: the ticket it blocks (GRPH-1571). `blocks_more` counts further tickets. */
+  blocks?: { id: string; title: string };
+  blocks_more?: number;
+  /** On a ticket row also waiting on questions: the questions, each its own row. */
+  also_questions?: { id: string; question: string }[];
 }
 
 export interface TriageCollisionRow extends TriageFeedBase {
@@ -1355,6 +1360,15 @@ export interface SyncStatus {
   console_url_env?: string;
   /** The link's own answer: ok | refused | unknown; null when no credential is held. */
   state?: "ok" | "refused" | "unknown" | null;
+  /** GRPH-1575: the sign-in in flight (box admins only) — the code a person types, never the
+   *  device code. null when nothing is in flight. */
+  pending_sign_in?: {
+    console_url: string;
+    user_code: string;
+    verification_url: string;
+    expires_at?: string | null;
+    interval?: number | null;
+  } | null;
 }
 
 export interface LinkStartResult {

@@ -58,8 +58,11 @@ def _status(db: Session, user: User) -> dict:
          "name": names.get(pid, pid), "writable": pid in writable}
         for pid in order
     ]
+    can_link = code_sync.is_box_admin(db, user)
     return {**link, **deployment, "projects": projects,
-            "can_link": code_sync.is_box_admin(db, user),
+            "can_link": can_link,
+            # The code in flight is for the person who may approve it: a box admin (GRPH-1575).
+            "pending_sign_in": link_device.pending_code(db) if can_link else None,
             "console_url_env": settings.sync_cloud_url or ""}
 
 
