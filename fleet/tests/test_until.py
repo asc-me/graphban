@@ -2984,7 +2984,7 @@ def test_a_row_whose_ci_run_is_in_progress_gets_no_reviewer_and_waits(
     gets no reviewer; until waits (the one CI wait, GRPH-1392's) and does not exit
     `review-unsigned` because of it."""
     from gbfleet import until
-    monkeypatch.setattr(until_mod, "ci_verdict", lambda *a: ("pending", "89a0225d2552", ""))
+    monkeypatch.setattr(until, "ci_verdict", lambda *a: ("pending", "89a0225d2552", ""))
     workspace = tmp_path / "ws"
     roles: list[str] = []
     planner, supervisor = _clients(
