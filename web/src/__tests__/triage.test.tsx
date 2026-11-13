@@ -676,7 +676,9 @@ describe("Triage: every question can be answered (GRPH-1572)", () => {
       expect(screen.getByTestId("checking-note")).toBeInTheDocument();
       unmount();
       renderTriage("/p/CORE/triage?item=GRPH-999");
-      expect(await screen.findByText(/GRPH-999 isn't in your Triage/)).toBeInTheDocument();
+      expect(await screen.findByText(/GRPH-999 is not waiting on a person any more/)).toBeInTheDocument();
+      expect(selected()).toBeNull();
+      expect(screen.getByRole("link", { name: "Open GRPH-999" })).toBeInTheDocument();
     });
 
     it("a ticket with also_questions offers to open the question", async () => {

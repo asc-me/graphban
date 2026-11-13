@@ -269,3 +269,26 @@ def test_answered_row_carries_the_ticket_it_unblocks(client, auth, db):
     row = next(r for r in _feed(client, auth)["rows"] if r["id"] == wait.key)
     assert row["kind"] == "answered"
     assert row["blocks"] == {"id": ticket.key, "title": ticket.title}
+
+
+# --- GRPH-1606: an open question on an unblocked item is in the feed --------------------------
+
+def test_open_question_on_unblocked_item_is_in_feed(client, auth, db):
+    from app.services import items as items_svc
+
+    it = items_svc.create_item(db, project_id="core", title="backlog q", status="backlog",
+                               tags=["wait:decision"], question="Which store?", options=["a", "b"])
+    it.decision = {**it.decision, "needs_person_at": "2026-11-11T10:00:00+00:00"}
+    db.commit()
+    rows = {r["id"]: r for r in _feed(client, auth)["rows"]}
+    assert rows[it.key]["decision"]["question"] == "Which store?"
+    assert rows[it.key]["question_state"] == "response_needed"
+
+
+def test_blocked_open_decision_appears_once(client, auth, db):
+    from app.services import items as items_svc
+
+    it = items_svc.create_item(db, project_id="core", title="blocked q", status="blocked",
+                               question="Which store?", options=["a", "b"])
+    ids = [r["id"] for r in _feed(client, auth)["rows"]]
+    assert ids.count(it.key) == 1
