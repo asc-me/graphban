@@ -377,7 +377,7 @@ describe("Triage inbox", () => {
     renderTriage();
     const label = await screen.findByText("AGENT ASKED");
     expect(label.parentElement).toHaveClass("border-st-blocked/30");
-    expect(screen.getByText("Which key?")).toBeInTheDocument();
+    expect(screen.getByText("Which key?", { selector: "p" })).toBeInTheDocument();
     const chips = screen.getByLabelText("Agent's options");
     expect(chips).toHaveTextContent("Use env");
     expect(chips).toHaveTextContent("Use vault");
@@ -567,13 +567,16 @@ describe("Triage: every question can be answered (GRPH-1572)", () => {
 
   describe("question rows, state tags, tabs (GRPH-1573)", () => {
     const q = (extra: Record<string, unknown>): TriageFeedRow =>
-      ({ ...blocker, id: "GRPH-W1", title: "Which store?", decision: { question: "Which store?", options: ["A", "B"] },
+      ({ ...blocker, id: "GRPH-W1", title: "wait: pick a store", decision: { question: "Which store?", options: ["A", "B"] },
         blocks: { id: "GRPH-412", title: "Build the store" }, waiting_on: undefined, ...extra }) as TriageFeedRow;
 
     it("a question row is titled by the question, meta says blocks <ticket>, detail has a BLOCKS line", async () => {
       m.projectTriage.mockResolvedValue(feed([q({ question_state: "response_needed" })]));
       renderTriage();
       const row = await screen.findByRole("option");
+      expect(row).toHaveTextContent("Which store?");
+      expect(row).not.toHaveTextContent("wait: pick a store");
+      expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Which store?");
       expect(row).toHaveTextContent("blocks GRPH-412 · worker-3");
       expect(screen.getByTestId("blocks-line")).toHaveTextContent("GRPH-412Build the store");
       expect(screen.queryByText("blocker", { selector: "span.rounded-full" })).not.toBeInTheDocument();

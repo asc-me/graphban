@@ -9,7 +9,7 @@ import { copyText } from "@/lib/clipboard";
 import { CommentThread } from "@/features/requests/CommentThread";
 import type { TriageFeedRow } from "@/lib/types";
 
-import { answeredByCopy, duplicateHintCopy, formatAge, type TriageAction } from "./actions";
+import { answeredByCopy, duplicateHintCopy, formatAge, rowTitle, type TriageAction } from "./actions";
 
 /** `c` in the queue asks the open question's answer box to show itself. */
 export const OPEN_ANSWER_EVENT = "triage-open-answer";
@@ -182,7 +182,7 @@ export function TriageDetail({
         <span className="flex-1" />
         <span className="text-muted">{metaLine}</span>
       </div>
-      <h2 className="mt-2 text-[18px] font-semibold leading-snug">{row.title}</h2>
+      <h2 className="mt-2 text-[18px] font-semibold leading-snug">{rowTitle(row)}</h2>
 
       <div className="mt-4 flex flex-wrap gap-2" role="toolbar" aria-label="Actions">
         {toolbarActions.map((a) => (

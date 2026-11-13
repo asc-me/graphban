@@ -10,7 +10,7 @@ import { copyText } from "@/lib/clipboard";
 import { useTriageFeed } from "@/lib/queries";
 import type { TriageFeedRow } from "@/lib/types";
 
-import { TABS, actionsFor, answerTextAction, duplicateHintCopy, formatAge, inTab, type TriageAction, type Undo } from "./actions";
+import { TABS, actionsFor, answerTextAction, duplicateHintCopy, formatAge, inTab, rowTitle, type TriageAction, type Undo } from "./actions";
 import { OPEN_ANSWER_EVENT, TriageDetail } from "./TriageDetail";
 
 /**
@@ -374,7 +374,7 @@ export function TriageView() {
                     {tag.edge && <span data-testid="row-edge" className={`absolute inset-y-1 left-0 w-[3px] rounded ${tag.edge}`} aria-hidden />}
                     <div className="flex items-start gap-2.5">
                       <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${kindDot(r)}`} aria-hidden />
-                      <span className={`min-w-0 flex-1 text-body leading-snug ${on ? "text-fg" : "text-fg-2"}`}>{r.title}</span>
+                      <span className={`min-w-0 flex-1 text-body leading-snug ${on ? "text-fg" : "text-fg-2"}`}>{rowTitle(r)}</span>
                       <span className="shrink-0 font-mono text-meta text-faint-2">{formatAge(r.age_seconds)}</span>
                     </div>
                     <div className="mt-1 pl-[18px] font-mono text-meta text-faint-2">
