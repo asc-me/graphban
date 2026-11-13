@@ -3441,6 +3441,102 @@ export interface RuleToggleBatchOut {
   toggles: RuleToggle[];
 }
 
+// ── Quick configure: the pack's strictness profiles (GRPH-1600, GRPH-1609) ─────────
+/** One rule a profile pins: its on/off and the params it names (unnamed params are left alone). */
+export interface RuleProfilePin {
+  rule_id: string;
+  state: "on" | "off";
+  params: Record<string, RuleParamValue>;
+  /** False when the loaded library cannot enforce the rule: the apply refuses the profile. */
+  enforceable: boolean;
+}
+
+export interface RuleProfile {
+  id: string;
+  title: string;
+  summary: string;
+  version: string | number | null;
+  pins: RuleProfilePin[];
+}
+
+/** The project's latest `apply_rule_profile` event. */
+export interface RuleProfileApplied {
+  profile: string | null;
+  version: string | number | null;
+  pack_version: string | null;
+  exceptions: string[];
+  skipped: string[];
+  by: string | null;
+  at: string;
+}
+
+/** `GET /rules/profiles?project_id=`: the pack's profiles, least strict first, and the applied level. */
+export interface RuleProfiles {
+  project_id: string;
+  pack_loaded: boolean;
+  pack_version: string | null;
+  order: string[];
+  profiles: RuleProfile[];
+  applied: RuleProfileApplied | null;
+}
+
+export interface RuleProfileDriftRow {
+  rule_id: string;
+  kind: "weakening" | "changed" | "unmeasured";
+  detail: string;
+}
+
+/** `GET /rules/profiles/{id}/drift`: how the project differs from the profile now. */
+export interface RuleProfileDrift {
+  project_id: string;
+  profile: string;
+  state: "clean" | "drifted";
+  differs_in: number;
+  summary: string;
+  weakening: number;
+  drift: RuleProfileDriftRow[];
+}
+
+export interface RuleProfileDiffRow {
+  rule_id: string;
+  change: "added" | "removed" | "state_changed" | "params_changed";
+  kind: "weakening" | "changed";
+  from?: unknown;
+  to?: unknown;
+}
+
+/** One applied profile the loaded pack has a newer version of. `diff` is null when the apply
+ *  predates recorded pins, so there is nothing to diff against. */
+export interface RuleProfileUpdate {
+  profile: string;
+  applied_version: string | number | null;
+  offered_version: string | number | null;
+  pack_version: string | null;
+  diff: RuleProfileDiffRow[] | null;
+  weakening: number | null;
+}
+
+export interface RuleProfileUpdates {
+  project_id: string;
+  updates: RuleProfileUpdate[];
+}
+
+export interface RuleProfileApplyWrite {
+  reason: string;
+  /** Rule ids left as they are, recorded as the level's exceptions. */
+  except: string[];
+  /** Apply the rest when the org has locked a rule the profile names. */
+  skip_locked: boolean;
+}
+
+export interface RuleProfileApplyOut {
+  project_id: string;
+  profile: string;
+  applied: string[];
+  excepted: string[];
+  skipped_locked: string[];
+}
+
 export interface RuleStage {
   id: string;
   title: string;

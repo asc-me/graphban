@@ -14,6 +14,8 @@ vi.mock("@/lib/api", () => ({
   api: {
     rulesFlow: vi.fn(), gitops: vi.fn(), config: vi.fn(), syncStatus: vi.fn(),
     setRuleToggles: vi.fn(), me: vi.fn(), members: vi.fn(), pathCounts: vi.fn(), exclusiveAreasPreview: vi.fn(),
+    ruleProfiles: vi.fn(), ruleProfileDrift: vi.fn(), ruleProfileUpdates: vi.fn(), applyRuleProfile: vi.fn(),
+    acceptRuleProfileUpdate: vi.fn(),
   },
 }));
 vi.mock("@/features/ProjectContext", () => ({
@@ -49,6 +51,12 @@ beforeEach(() => {
   vi.mocked(api.me).mockResolvedValue({ id: "u1" } as never);
   vi.mocked(api.members).mockResolvedValue([{ user: { id: "u1" }, role: "owner" }] as never);
   vi.mocked(api.setRuleToggles).mockResolvedValue({} as never);
+  vi.mocked(api.ruleProfiles).mockResolvedValue({
+    project_id: "core", pack_loaded: true, pack_version: "0.4.0", order: ["standard"], applied: null,
+    profiles: [{ id: "standard", title: "Standard", summary: "", version: "0.1.0",
+      pins: [{ rule_id: "merge.gate", state: "on", params: { min_effort: 5 }, enforceable: true }] }],
+  });
+  vi.mocked(api.ruleProfileUpdates).mockResolvedValue({ project_id: "core", updates: [] });
 });
 
 describe("RulesView setup wizard", () => {
@@ -72,5 +80,26 @@ describe("RulesView setup wizard", () => {
     await waitFor(() => expect(screen.queryByTestId("rules-setup-wizard")).toBeNull());
     expect(screen.getByTestId("rules-chip-merge.gate")).toHaveAttribute("data-changed", "true");
     expect(screen.getByTestId("rules-chip-merge.other")).not.toHaveAttribute("data-changed");
+  });
+
+  it("Quick configure applies a level and lands on the map with the changed rule highlighted", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.applyRuleProfile).mockResolvedValue({ project_id: "core", profile: "standard", applied: ["merge.gate"], excepted: [], skipped_locked: [] });
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={["/rules"]}>
+          <RulesView />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await user.click(await screen.findByTestId("rules-open-quick"));
+    await user.click(await screen.findByTestId("rules-quick-choose-standard"));
+    expect(screen.getByTestId("rules-quick-cell-change-merge.gate")).toBeInTheDocument();
+    await user.click(screen.getByTestId("rules-quick-review"));
+    await user.type(screen.getByLabelText("Reason"), "baseline");
+    await user.click(screen.getByTestId("rules-review-save"));
+    await waitFor(() => expect(screen.queryByTestId("rules-quick-configure")).toBeNull());
+    expect(api.applyRuleProfile).toHaveBeenCalledWith("core", "standard", { reason: "applying Standard 0.1.0: baseline", except: [], skip_locked: false });
+    expect(screen.getByTestId("rules-chip-merge.gate")).toHaveAttribute("data-changed", "true");
   });
 });

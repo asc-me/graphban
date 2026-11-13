@@ -57,6 +57,7 @@ import { LibraryRuleControls, MemoryWriteModeControl, useCanWriteRules } from ".
 import { RecommendedSheet, UnmappedSheet, useDialogBehavior } from "./RefusalPanels";
 import { AdminGitopsLink, BudgetCapEditor, GITOPS_RULE_FIELDS, GitopsRuleEditor, useOrgName } from "./RuleEditors";
 import { RuleLevelIcon } from "./RuleLevelIcon";
+import { QuickConfigure, QuickConfigureBar, type QuickScreen } from "./QuickConfigure";
 import { ChangedRulesContext, SetupWizard } from "./SetupWizard";
 import { StageEditor, stageIsEditable } from "./StageEditor";
 
@@ -110,6 +111,7 @@ export function RulesView() {
     setFocusRule(ruleParam);
   }, [ruleParam]);
   const [wizard, setWizard] = React.useState(false);
+  const [quick, setQuick] = React.useState<QuickScreen | null>(null);
   const [changed, setChanged] = React.useState<ReadonlySet<string>>(new Set());
   const [prefill, setPrefill] = React.useState<{ rule: string; value: string } | null>(null);
   const [sheet, setSheet] = React.useState<"unmapped" | "recommended" | null>(null);
@@ -140,6 +142,8 @@ export function RulesView() {
   const { data: gitops } = useGitops(activeId);
   const controlState = flow?.control.state ?? null;
   const fresh = !!flow && flow.model === null && controlState === "local";
+  const orgName = useOrgName(gitops);
+  const openQuick = (s: QuickScreen) => { setSel(null); setWizard(false); setQuick(s); };
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="rules-view">
@@ -177,7 +181,7 @@ export function RulesView() {
             </button>
             <button
               type="button"
-              onClick={() => { setSel(null); setWizard(true); }}
+              onClick={() => { setSel(null); setQuick(null); setWizard(true); }}
               data-testid="rules-open-wizard"
               className="h-7 rounded-[8px] border border-control px-2.5 text-small text-fg-2 hover:text-fg"
             >
@@ -206,6 +210,7 @@ export function RulesView() {
         </div>
       )}
       <ControlBanner state={controlState} gitops={gitops} />
+      <QuickConfigureBar onOpen={openQuick} />
       {fresh && (
         <div
           role="status"
@@ -217,6 +222,14 @@ export function RulesView() {
           <span className="flex-1 text-body text-fg-2">
             Your delivery contract is unmeasured. The server's own gates still apply.
           </span>
+          <button
+            type="button"
+            onClick={() => openQuick({ screen: "picker" })}
+            data-testid="rules-fresh-quick"
+            className="h-[30px] rounded-[8px] bg-accent px-3 text-body font-semibold text-[#0a0c0e]"
+          >
+            Quick configure
+          </button>
           <button
             type="button"
             onClick={() => { setSel(null); setWizard(true); }}
@@ -242,6 +255,17 @@ export function RulesView() {
             narrow={narrow}
             onExit={() => setWizard(false)}
             onApplied={(ids) => { setChanged(new Set(ids)); setWizard(false); setSel(null); }}
+          />
+        )}
+        {quick && flow && (
+          <QuickConfigure
+            flow={flow}
+            narrow={narrow}
+            orgName={orgName}
+            start={quick}
+            onExit={() => setQuick(null)}
+            onApplied={(ids) => { setChanged(new Set(ids)); setQuick(null); setSel(null); }}
+            onSetup={() => { setQuick(null); setWizard(true); }}
           />
         )}
         {q.isError && !flow ? (

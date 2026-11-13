@@ -3,7 +3,7 @@ import * as React from "react";
 
 import { api } from "./api";
 import type { OnboardingMark, SetupConfirm } from "./types";
-import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, Item, ItemDetail, LessonFilters, LogExportPatch, RequestItem, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
+import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, Item, ItemDetail, LessonFilters, LogExportPatch, RequestItem, RuleProfileApplyWrite, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
 
 export const keys = {
   me: ["me"] as const,
@@ -724,6 +724,8 @@ function invalidateRuleToggles(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ["rules-flow"] });
   qc.invalidateQueries({ queryKey: ["rule-toggles"] });
   qc.invalidateQueries({ queryKey: ["events"] });
+  // A hand change can drift the project from its applied level (GRPH-1600).
+  qc.invalidateQueries({ queryKey: ["rule-profile-drift"] });
 }
 
 export function useSetRuleToggle(projectId: string) {
@@ -740,6 +742,58 @@ export function useSetRuleToggles(projectId: string) {
   return useMutation({
     mutationFn: (body: RuleToggleBatchWrite) => api.setRuleToggles(projectId, body),
     onSuccess: () => invalidateRuleToggles(qc),
+  });
+}
+
+/** Quick configure (GRPH-1600): the pack's profiles and the project's applied level. */
+export function useRuleProfiles(projectId: string) {
+  return useQuery({
+    queryKey: ["rule-profiles", projectId],
+    queryFn: () => api.ruleProfiles(projectId),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+export function useRuleProfileDrift(projectId: string, profileId: string | null) {
+  return useQuery({
+    queryKey: ["rule-profile-drift", projectId, profileId],
+    queryFn: () => api.ruleProfileDrift(projectId, profileId!),
+    enabled: !!projectId && !!profileId,
+    retry: false,
+  });
+}
+
+export function useRuleProfileUpdates(projectId: string) {
+  return useQuery({
+    queryKey: ["rule-profile-updates", projectId],
+    queryFn: () => api.ruleProfileUpdates(projectId),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+function invalidateRuleProfiles(qc: ReturnType<typeof useQueryClient>) {
+  invalidateRuleToggles(qc);
+  qc.invalidateQueries({ queryKey: ["rule-profiles"] });
+  qc.invalidateQueries({ queryKey: ["rule-profile-updates"] });
+}
+
+export function useApplyRuleProfile(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ profileId, body }: { profileId: string; body: RuleProfileApplyWrite }) =>
+      api.applyRuleProfile(projectId, profileId, body),
+    onSuccess: () => invalidateRuleProfiles(qc),
+  });
+}
+
+export function useAcceptRuleProfileUpdate(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ profileId, reason, version }: { profileId: string; reason: string; version: string | null }) =>
+      api.acceptRuleProfileUpdate(projectId, profileId, { reason, version }),
+    onSuccess: () => invalidateRuleProfiles(qc),
   });
 }
 
