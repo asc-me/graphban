@@ -166,6 +166,10 @@ describe("AlertsBell", () => {
       mount();
       await userEvent.click(await screen.findByRole("button", { name: /alerts/i }));
       expect(await screen.findByText(/need this site on HTTPS/i)).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /why\?/i })).toHaveAttribute(
+        "href",
+        "https://github.com/asc-me/graphban/blob/main/docs/deploy.md#browser-push-optional",
+      );
       expect(screen.queryByText(/does not support push/i)).toBeNull();
       expect(screen.queryByRole("button", { name: /notify me in this browser/i })).toBeNull();
     });

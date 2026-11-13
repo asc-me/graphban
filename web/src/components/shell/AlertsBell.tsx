@@ -35,7 +35,7 @@ function BrowserPush() {
     return (
       <div className="border-t border-line p-3 text-[12px] text-muted">
         Browser notifications need this site on HTTPS. In-app alerts still work.{" "}
-        <a className="underline" href="https://github.com/graphban/graphban/blob/main/docs/deploy.md#browser-push-optional" target="_blank" rel="noreferrer">
+        <a className="underline" href="https://github.com/asc-me/graphban/blob/main/docs/deploy.md#browser-push-optional" target="_blank" rel="noreferrer">
           Why?
         </a>
       </div>
