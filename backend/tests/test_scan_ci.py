@@ -524,7 +524,7 @@ def test_a_foreign_id_in_the_pr_text_does_not_fail_a_clean_scan(repo, fakes, for
 
 
 def test_every_id_refused_still_fails_as_a_broken_key_would(repo, fakes, foreign_ledger):
-    calls, foreign = foreign_ledger
+    _, foreign = foreign_ledger
     foreign.add("SA-1095")
     head = _pr(repo, {"backend/app/x.py": "x = 2\n"})
     rc = scan_ci.main(["--repo", str(repo), "--base", repo.base, "--head", head,
