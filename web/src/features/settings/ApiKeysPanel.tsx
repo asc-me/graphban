@@ -822,14 +822,16 @@ function KeyRow({ k, projectName, onAction }: {
 
   return (
     <div className={cn("rounded-[11px] border border-line-2 bg-surface-2", k.revoked && "opacity-50")}>
-      {/* Line 1 never wraps: the name side shrinks, the actions stay right-aligned on it. */}
+      {/* Line 1 never wraps: the name side shrinks, the actions stay right-aligned on it. The
+          last-used label shrinks too (GRPH-1552) — flex-none there pushed a gban-setup row's
+          two buttons out of the card. */}
       <div data-line="first" className="flex items-center gap-x-3 px-3 pt-2.5">
         <span className="max-w-[40%] flex-none truncate text-[13px] text-fg-2" title={k.name}>{k.name}</span>
         <code className="min-w-0 truncate font-mono text-small text-faint">{k.prefix}…</code>
         <span className={cn(chip, "flex-none", k.project_id ? "border-line-2 text-muted" : "border-[rgba(167,139,250,0.3)] text-purple-2")}>
           {k.project_id ? projectName(k.project_id) : "All projects"}
         </span>
-        <span className={cn("ml-auto flex-none whitespace-nowrap font-mono text-[10px]", k.last_used ? "text-faint-2" : "text-amber-400")} title={k.last_used ?? undefined}>
+        <span className={cn("ml-auto min-w-0 truncate whitespace-nowrap font-mono text-[10px]", k.last_used ? "text-faint-2" : "text-amber-400")} title={k.last_used ?? undefined}>
           {lastUsedLabel(k.last_used)}
         </span>
         <button

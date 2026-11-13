@@ -527,7 +527,7 @@ function Rail({ steps, marks, current }: { steps: QsStep[]; marks: Record<QsStep
                 {g.word}
               </span>
             </div>
-            <div className={cn("truncate text-[12px]", cur ? "font-semibold text-fg" : "text-muted")}>
+            <div className={cn("break-words text-[12px] leading-tight", cur ? "font-semibold text-fg" : "text-muted")}>
               {STEP_META[s].label}
               <span className="sr-only"> — {g.word}</span>
             </div>

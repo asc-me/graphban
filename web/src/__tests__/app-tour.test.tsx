@@ -302,6 +302,17 @@ describe("GRPH-1363 the tour engine", () => {
     expect(onExit).toHaveBeenCalled();
   });
 
+  it("takes focus back when it lands behind the card, so Enter acts on the tour (GRPH-1552)", async () => {
+    tour({});
+    const next = await screen.findByRole("button", { name: "Next" });
+    await waitFor(() => expect(next).toHaveFocus());
+    const behind = document.createElement("button");
+    document.body.appendChild(behind);
+    act(() => behind.focus());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Next" })).toHaveFocus());
+    behind.remove();
+  });
+
   it("announces each stop to a screen reader", async () => {
     tour();
     await waitFor(() => expect(screen.getByText("Stop 1 / 8: Dashboard")).toBeInTheDocument());

@@ -915,3 +915,13 @@ describe("step ④ on the paste-a-key route (GRPH-1545)", () => {
     expect(screen.queryByText("Your agent is working. Counts are live.")).not.toBeInTheDocument();
   });
 });
+
+describe("GRPH-1552 humanizeTimestamps", () => {
+  it("replaces raw ISO timestamps with a plain date and time", async () => {
+    const { humanizeTimestamps } = await import("./quickStartProgress");
+    const out = humanizeTimestamps("first call at 2026-11-12T13:06:41.891806+00:00 via key");
+    expect(out).not.toMatch(/T13:06|891806/);
+    expect(out).toMatch(/Nov 1[23], 2026/);
+    expect(humanizeTimestamps("no stamp here")).toBe("no stamp here");
+  });
+});

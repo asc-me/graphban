@@ -102,15 +102,15 @@ vi.mock("@/lib/api", () => ({
   },
 }));
 
-function renderHome() {
+function renderHome(path = "/p/CORE", route = "/p/:tag") {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return Object.assign(
     render(
       <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={["/p/CORE"]}>
+        <MemoryRouter initialEntries={[path]}>
           <ProjectProvider>
             <Routes>
-              <Route path="/p/:tag" element={<ProjectHome />} />
+              <Route path={route} element={<ProjectHome />} />
             </Routes>
           </ProjectProvider>
         </MemoryRouter>
@@ -182,6 +182,15 @@ describe("Project home", () => {
     );
     renderHome();
     expect(await screen.findByText("stale")).toBeInTheDocument();
+  });
+
+  it("self-host copy points at describe_code and gban setup, not graphban link (GRPH-1552)", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.codeMap).mockResolvedValue(codeMap(0) as never);
+    renderHome("/", "*");
+    expect(await screen.findByText(/describe_code/)).toBeInTheDocument();
+    expect(screen.queryByText(/graphban link/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No deployment has pushed/)).not.toBeInTheDocument();
   });
 
   it("names an empty code graph as nothing described, not nothing to describe", async () => {

@@ -171,6 +171,20 @@ function TourRun({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stop?.id, !!spot]);
 
+  // The tour is modal, so focus never rests behind it. Without this, a click on the page or a
+  // re-render that drops the focused button leaves it on the page, and Enter then activates
+  // whatever is there (the last stop's Activity row, GRPH-1552) instead of the tour card.
+  React.useEffect(() => {
+    if (!spot) return;
+    function onFocusIn(e: FocusEvent) {
+      const pop = popRef.current;
+      if (!pop || (e.target instanceof Node && pop.contains(e.target))) return;
+      (nextRef.current ?? pop.querySelector<HTMLElement>("button:not([disabled])"))?.focus({ preventScroll: true });
+    }
+    document.addEventListener("focusin", onFocusIn);
+    return () => document.removeEventListener("focusin", onFocusIn);
+  }, [!!spot]);
+
   // Esc exits. Captured first so the sidebar flyout and the docs reader do not also act on it.
   React.useEffect(() => {
     function onKey(e: KeyboardEvent) {

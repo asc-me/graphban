@@ -12,6 +12,7 @@ import * as React from "react";
 import { Button } from "@/components/ui/button";
 import gbanAgents from "@/lib/gban-agents.json";
 import { api } from "@/lib/api";
+import { INSTALL_UV } from "@/features/fleet/install";
 import { McpInstall } from "@/features/settings/McpInstall";
 import { useApproveCliPair } from "@/lib/queries";
 import type { ApiKeyCreated } from "@/lib/types";
@@ -249,6 +250,10 @@ export function ConnectStep({
       {effective === "gban" ? (
         <div className="mt-3 space-y-2">
           <CopyBlock text={cmds[0]} label="Copy the install command" />
+          <p className="text-[11.5px] text-faint">
+            Needs <span className="font-mono">uv</span>. Don't have it? Run{" "}
+            <span className="font-mono">{INSTALL_UV}</span> first.
+          </p>
           <div className="rounded-[8px] border border-line p-2.5" data-testid="your-step">
             <p className="font-mono text-[10px] uppercase tracking-wide text-faint">
               Your step — signing in is yours; it can't be done for you

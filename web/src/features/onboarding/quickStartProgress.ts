@@ -13,6 +13,16 @@ type Reported = NonNullable<SetupStep["reported"]>;
 
 export type QsStep = "where" | "project" | "model" | "connect" | "first_job";
 
+/** Server details embed raw ISO timestamps with microseconds; show them as a plain local date and time. */
+export function humanizeTimestamps(text: string): string {
+  return text.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})/g, (iso) => {
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime())
+      ? iso
+      : d.toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+  });
+}
+
 export const STEP_META: Record<QsStep, { num: string; label: string }> = {
   where: { num: "⓪", label: "Where" },
   project: { num: "①", label: "Project" },
@@ -126,7 +136,7 @@ export function deriveMarks(i: MarkInputs): Record<QsStep, StepMark> {
   const connectStep = by.get(5);
   const connect: StepMark = {
     ...fromServer(connectStep, missing(5)),
-    ...(connectStep?.status === "done" ? { evidence: connectStep.detail } : {}),
+    ...(connectStep?.status === "done" ? { evidence: humanizeTimestamps(connectStep.detail) } : {}),
     ...(connectStep?.status !== "done" && connectStep?.reported ? { reported: connectStep.reported } : {}),
   };
 
