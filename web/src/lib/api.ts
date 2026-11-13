@@ -78,6 +78,11 @@ import type {
   RuleSuggestion,
   RefusalCoverage,
   RulesFlow,
+  RuleProfiles,
+  RuleProfileDrift,
+  RuleProfileUpdates,
+  RuleProfileApplyWrite,
+  RuleProfileApplyOut,
   PathCounts,
   RuleToggle,
   SerialisationPreview,
@@ -1241,6 +1246,27 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
+  /** The pack's profiles and this project's applied level (GRPH-1609). Reads only. */
+  ruleProfiles: (projectId: string) => request<RuleProfiles>(`/rules/profiles${projectQuery(projectId)}`),
+  /** How the project differs from one profile; turning a pinned-on rule off is `weakening`. */
+  ruleProfileDrift: (projectId: string, profileId: string) =>
+    request<RuleProfileDrift>(`/rules/profiles/${encodeURIComponent(profileId)}/drift${projectQuery(projectId)}`),
+  /** Applied profiles the loaded pack has a newer version of, with the diff. Reads only. */
+  ruleProfileUpdates: (projectId: string) =>
+    request<RuleProfileUpdates>(`/rules/profiles/updates${projectQuery(projectId)}`),
+  /** Apply a profile to this project: a person's act with one reason. Excepted rules stay as
+   *  they are; with `skip_locked` the org-locked rules are skipped rather than refusing the lot. */
+  applyRuleProfile: (projectId: string, profileId: string, body: RuleProfileApplyWrite) =>
+    request<RuleProfileApplyOut>(`/rules/profiles/${encodeURIComponent(profileId)}/apply${projectQuery(projectId)}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  /** Accept the offered newer version; the server carries the last apply's exceptions and skips locked rules. */
+  acceptRuleProfileUpdate: (projectId: string, profileId: string, body: { reason: string; version: string | null }) =>
+    request<RuleProfileApplyOut>(
+      `/rules/profiles/${encodeURIComponent(profileId)}/updates/accept${projectQuery(projectId)}`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
   /** Files each prefix or glob matches in the indexed code graph; `files` is null when it can't count. */
   pathCounts: (projectId: string, paths: string[]) =>
     request<PathCounts>(
