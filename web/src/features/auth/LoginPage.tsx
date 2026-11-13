@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/cn";
 
 import { api } from "@/lib/api";
+import { useConfig } from "@/lib/queries";
 
 import { useAuth } from "./AuthContext";
 
@@ -15,7 +16,10 @@ const FORGOT_HINT_ID = "login-forgot-hint";
 
 export function LoginPage() {
   const { login, register } = useAuth();
-  const [mode, setMode] = React.useState<Mode>("signin");
+  const { data: config } = useConfig();
+  // A box with zero users opens on sign-up (GRPH-1581); an explicit choice always wins.
+  const [picked, setPicked] = React.useState<Mode | null>(null);
+  const mode: Mode = picked ?? (config?.has_users === false ? "signup" : "signin");
   const [name, setName] = React.useState("");
   const [handle, setHandle] = React.useState("");
   const [email, setEmail] = React.useState("");
@@ -79,7 +83,7 @@ export function LoginPage() {
   }
 
   function switchMode(next: Mode) {
-    setMode(next);
+    setPicked(next);
     setError("");
   }
 

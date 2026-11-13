@@ -105,6 +105,37 @@ describe("login page (GRPH-912)", () => {
   });
 });
 
+describe("login page first visitor (GRPH-1581)", () => {
+  async function renderWithConfig(has_users: boolean) {
+    const { LoginPage } = await import("@/features/auth/LoginPage");
+    const qc = new QueryClient();
+    qc.setQueryData(["config"], { hosted_mode: false, signup_mode: "open", has_users });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <LoginPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it("opens on Create your account when the box has no users", async () => {
+    await renderWithConfig(false);
+    expect(screen.getByRole("heading", { name: "Create your account" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /^sign in$/i }));
+    expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+  });
+
+  it("opens on Sign in when the box has users", async () => {
+    await renderWithConfig(true);
+    expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+  });
+
+  it("sabotage: the source must default off config.has_users", () => {
+    expect(loginSrc).toMatch(/config\?\.has_users === false \? "signup" : "signin"/);
+  });
+});
+
 describe("login page (GRPH-921)", () => {
   it("tagline copy meets the 4.5:1 contrast floor on the page canvas", () => {
     const ratio = contrastRatio(TOKENS["color-muted-2"]!, TOKENS["color-bg"]!);

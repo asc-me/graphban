@@ -604,10 +604,23 @@ app.include_router(host_router)
 def public_config():
     """Unauthenticated deploy flags the SPA needs before login to shape onboarding:
     whether this is a hosted (org) deployment and whether self-serve signup is open.
-    Deliberately tiny — no secrets, just the two switches that change the UI."""
+    Deliberately tiny — no secrets, just the switches that change the UI.
+
+    `has_users` (GRPH-1581) lets the login page open on "Create your account" for the first
+    visitor to a box with no users. A bare boolean: it says whether ANY account exists, never
+    whose, so it is no account-enumeration oracle. A DB failure reads as True (the ordinary
+    Sign in page) rather than raising."""
+    from app.models import User
+
+    try:
+        with SessionLocal() as s:
+            has_users = s.query(User.id).first() is not None
+    except Exception:  # noqa: BLE001 — config must never raise
+        has_users = True
     return {
         "hosted_mode": settings.hosted_mode,
         "signup_mode": settings.signup_mode,
+        "has_users": has_users,
     }
 
 
