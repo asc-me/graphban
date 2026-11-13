@@ -143,4 +143,41 @@ describe("New project wizard", () => {
     await user.click(screen.getByRole("button", { name: /create project/i }));
     await waitFor(() => expect(api.createProject).toHaveBeenCalledTimes(2));
   });
+
+  it("after a partial failure it names the created project, locks name/tag, and retries only the failed write", async () => {
+    const user = userEvent.setup();
+    api.updateProject.mockRejectedValueOnce(new Error("boom"));
+    renderWizard();
+    await toRepo(user);
+    await user.type(screen.getByLabelText("Git remote"), "git@github.com:acme/core.git");
+    await user.click(next());
+    await user.click(next());
+    await user.click(screen.getByRole("button", { name: /create project/i }));
+    expect(await screen.findByText(/Core Platform was created, but a follow-up step failed/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit name" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit tag" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit accent" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit repository" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /create project/i }));
+    expect(await screen.findByText("Core Platform is ready.")).toBeInTheDocument();
+    expect(api.createProject).toHaveBeenCalledTimes(1);
+    expect(api.updateProject).toHaveBeenCalledTimes(2);
+    expect(api.updateProject).toHaveBeenLastCalledWith("core", { repo_url: "git@github.com:acme/core.git" });
+  });
+
+  it("locks the identity step after a partial failure so edits cannot be dropped", async () => {
+    const user = userEvent.setup();
+    api.updateProject.mockRejectedValueOnce(new Error("boom"));
+    renderWizard();
+    await toRepo(user);
+    await user.type(screen.getByLabelText("Git remote"), "git@github.com:acme/core.git");
+    await user.click(next());
+    await user.click(next());
+    await user.click(screen.getByRole("button", { name: /create project/i }));
+    await screen.findByText(/was created, but a follow-up step failed/);
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByLabelText("Project name")).toBeDisabled();
+  });
 });
