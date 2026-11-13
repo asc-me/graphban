@@ -57,6 +57,7 @@ import { LibraryRuleControls, MemoryWriteModeControl, useCanWriteRules } from ".
 import { RecommendedSheet, UnmappedSheet, useDialogBehavior } from "./RefusalPanels";
 import { AdminGitopsLink, BudgetCapEditor, GITOPS_RULE_FIELDS, GitopsRuleEditor, useOrgName } from "./RuleEditors";
 import { RuleLevelIcon } from "./RuleLevelIcon";
+import { ChangedRulesContext, SetupWizard } from "./SetupWizard";
 import { StageEditor, stageIsEditable } from "./StageEditor";
 
 const PACK_KEY = "pack";
@@ -108,6 +109,8 @@ export function RulesView() {
   React.useEffect(() => {
     setFocusRule(ruleParam);
   }, [ruleParam]);
+  const [wizard, setWizard] = React.useState(false);
+  const [changed, setChanged] = React.useState<ReadonlySet<string>>(new Set());
   const [prefill, setPrefill] = React.useState<{ rule: string; value: string } | null>(null);
   const [sheet, setSheet] = React.useState<"unmapped" | "recommended" | null>(null);
   const unmappedBtn = React.useRef<HTMLButtonElement | null>(null);
@@ -172,6 +175,14 @@ export function RulesView() {
             >
               Recommended
             </button>
+            <button
+              type="button"
+              onClick={() => { setSel(null); setWizard(true); }}
+              data-testid="rules-open-wizard"
+              className="h-7 rounded-[8px] border border-control px-2.5 text-small text-fg-2 hover:text-fg"
+            >
+              Set up rules
+            </button>
             <RulePackPills />
             <ModelPill flow={flow} loading={q.isLoading} />
           </div>
@@ -208,14 +219,31 @@ export function RulesView() {
           </span>
           <button
             type="button"
-            onClick={() => setSel(stageKey("merge"))}
+            onClick={() => { setSel(null); setWizard(true); }}
+            data-testid="rules-fresh-setup"
             className="h-[30px] rounded-[8px] bg-accent px-3 text-body font-semibold text-[#0a0c0e]"
+          >
+            Set up rules
+          </button>
+          <button
+            type="button"
+            onClick={() => setSel(stageKey("merge"))}
+            className="h-[30px] rounded-[8px] border border-control px-3 text-body text-fg-2"
           >
             Set it up in Merge
           </button>
         </div>
       )}
+      <ChangedRulesContext.Provider value={changed}>
       <div className="relative min-h-0 flex-1 overflow-hidden">
+        {wizard && flow && (
+          <SetupWizard
+            flow={flow}
+            narrow={narrow}
+            onExit={() => setWizard(false)}
+            onApplied={(ids) => { setChanged(new Set(ids)); setWizard(false); setSel(null); }}
+          />
+        )}
         {q.isError && !flow ? (
           <LoadError detail={errorDetail(q.error, "request failed")} onRetry={() => void q.refetch()} />
         ) : !flow ? (
@@ -231,6 +259,7 @@ export function RulesView() {
         {sheet === "unmapped" && <UnmappedSheet returnTo={unmappedBtn} onClose={() => setSheet(null)} />}
         {sheet === "recommended" && <RecommendedSheet returnTo={recommendedBtn} onClose={() => setSheet(null)} onOpenValue={openValueSuggestion} />}
       </div>
+      </ChangedRulesContext.Provider>
     </div>
   );
 }
@@ -687,14 +716,16 @@ const TRUTH_LABEL: Record<string, string> = { db: "DB", code: "CODE", repo_file:
 function RuleChip({ rule, onPick }: { rule: RuleFlowRule; onPick: () => void }) {
   const level = ruleLevel(rule);
   const meta = LEVELS[level];
+  const changed = React.useContext(ChangedRulesContext).has(rule.id);
   return (
     <div
       onClick={onPick}
+      data-changed={changed ? "true" : undefined}
       title={`${rule.id} — ${rule.title}${level === "external" ? " · not verified" : ""}`}
       data-testid={`rules-chip-${rule.id}`}
       data-level={level}
       className="flex h-full w-full cursor-pointer flex-col gap-1 overflow-hidden rounded-[10px] px-2.5 py-[7px]"
-      style={{ border: meta.border, background: meta.bg, opacity: rule.used ? 1 : 0.5 }}
+      style={{ border: meta.border, background: meta.bg, opacity: rule.used ? 1 : 0.5, boxShadow: changed ? "0 0 0 2px #5ad1a0" : undefined }}
     >
       <div className="flex items-center gap-1.5" style={{ color: meta.color }}>
         <RuleLevelIcon level={level} size={12} />

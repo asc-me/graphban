@@ -1,0 +1,109 @@
+/** Setup wizard (GRPH-1601). */
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { api } from "@/lib/api";
+import type { RuleFlowRule, RulesFlow } from "@/lib/types";
+
+import { SetupWizard } from "./SetupWizard";
+
+vi.mock("@/lib/api", () => ({
+  api: { setRuleToggles: vi.fn(), me: vi.fn(), members: vi.fn(), pathCounts: vi.fn(), exclusiveAreasPreview: vi.fn() },
+}));
+vi.mock("@/features/ProjectContext", () => ({
+  useProjectCtx: () => ({ activeId: "core", active: { id: "core" }, projects: [], setActiveId: () => {} }),
+}));
+
+function rule(id: string, stage: string, params: Record<string, string | number>): RuleFlowRule {
+  return {
+    id, stage, title: id, summary: "", enforcement: "enforced", channel: null,
+    enforcer: { kind: "code", url: "" }, truth: "db", scope: "project", models: [], value: true,
+    source: "platform default", used: true, label: null, skills: null, control: "toggle",
+    params: { value: params, source: "platform default" }, locked: false,
+  } as unknown as RuleFlowRule;
+}
+const scope = rule("build.test_scope", "build", { mode: "agent_full" });
+const gate = rule("merge.gate", "merge", { min_effort: 3 });
+const flow = {
+  stages: ["spec", "plan", "build", "review", "merge", "learn", "release"].map((id) => ({
+    id, title: id[0].toUpperCase() + id.slice(1), summary: "", state: "enforced",
+    rules: id === "build" ? [scope] : id === "merge" ? [gate] : [],
+  })),
+} as unknown as RulesFlow;
+
+function view(over: { onExit?: () => void; onApplied?: (ids: string[]) => void } = {}) {
+  return render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <SetupWizard flow={flow} narrow={false} onExit={over.onExit ?? (() => {})} onApplied={over.onApplied ?? (() => {})} />
+    </QueryClientProvider>,
+  );
+}
+
+async function setMergeEffort(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "4. Merge" }));
+  await user.click(screen.getByRole("button", { name: "Set my own" }));
+}
+
+beforeEach(() => {
+  vi.resetAllMocks();
+  vi.mocked(api.me).mockResolvedValue({ id: "u1" } as never);
+  vi.mocked(api.members).mockResolvedValue([{ user: { id: "u1" }, role: "owner" }] as never);
+});
+
+describe("SetupWizard", () => {
+  it("walks Plan to Learn, skips Spec and Release with reasons, and starts on the default", async () => {
+    view();
+    expect(screen.getByRole("button", { name: "1. Plan" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "5. Learn" })).toBeInTheDocument();
+    expect(screen.getByTestId("rules-wizard-skipped")).toHaveTextContent(/Spec: Skipped/);
+    expect(screen.getByTestId("rules-wizard-skipped")).toHaveTextContent(/Release: Skipped/);
+    await userEvent.setup().click(screen.getByRole("button", { name: "2. Build" }));
+    expect(screen.getByRole("button", { name: "Keep the default" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("rules-wizard-detected")).toHaveTextContent("Nothing detected");
+  });
+
+  it("keeps an answer across Back and Next", async () => {
+    const user = userEvent.setup();
+    view();
+    await user.click(screen.getByRole("button", { name: "2. Build" }));
+    await user.click(screen.getByRole("button", { name: "Set my own" }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByRole("button", { name: "Set my own" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("confirms Exit only when an answer differs from its default", async () => {
+    const user = userEvent.setup();
+    const onExit = vi.fn();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    view({ onExit });
+    await user.click(screen.getByTestId("rules-wizard-exit"));
+    expect(confirm).not.toHaveBeenCalled();
+    expect(onExit).toHaveBeenCalledTimes(1);
+    confirm.mockRestore();
+  });
+
+  it("applies nothing when every answer is the default", async () => {
+    const user = userEvent.setup();
+    view();
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    expect(screen.getByTestId("rules-wizard-no-changes")).toBeInTheDocument();
+    expect(api.setRuleToggles).not.toHaveBeenCalled();
+  });
+
+  it("on a refusal returns to the step with the rule and keeps the answers", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.setRuleToggles).mockRejectedValue(new Error("merge.gate: org locked"));
+    view();
+    await setMergeEffort(user);
+    await user.click(screen.getByRole("button", { name: "Increase min_effort" }));
+    await user.click(screen.getByRole("button", { name: "5. Learn" }));
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    await user.type(screen.getByLabelText("Reason"), "because");
+    await user.click(screen.getByTestId("rules-review-save"));
+    await waitFor(() => expect(screen.getByTestId("rules-wizard-refused-merge.gate")).toHaveTextContent("org locked"));
+    expect(screen.getByRole("button", { name: "Set my own" })).toHaveAttribute("aria-pressed", "true");
+  });
+});
