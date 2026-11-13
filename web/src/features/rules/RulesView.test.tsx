@@ -1,0 +1,76 @@
+/** The Rules page opens the setup wizard and, after Apply, lands on the map with the changed rules highlighted (GRPH-1601). */
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { api } from "@/lib/api";
+import type { RuleFlowRule, RulesFlow } from "@/lib/types";
+
+import { RulesView } from "./RulesView";
+
+vi.mock("@/lib/api", () => ({
+  api: {
+    rulesFlow: vi.fn(), gitops: vi.fn(), config: vi.fn(), syncStatus: vi.fn(),
+    setRuleToggles: vi.fn(), me: vi.fn(), members: vi.fn(), pathCounts: vi.fn(), exclusiveAreasPreview: vi.fn(),
+  },
+}));
+vi.mock("@/features/ProjectContext", () => ({
+  useProjectCtx: () => ({ activeId: "core", active: { id: "core", tag: "CORE", name: "Core" }, projects: [], setActiveId: () => {} }),
+}));
+
+function rule(id: string, stage: string, params: Record<string, number> | null): RuleFlowRule {
+  return {
+    id, stage, title: id, summary: "", enforcement: "enforced", channel: null,
+    enforcer: { kind: "graphban_source", ref: "", url: "" }, truth: "db", scope: "project", models: ["prs_to_base"],
+    value: true, source: "platform default", used: true, label: null, skills: null,
+    control: params ? "toggle" : null, params: params ? { value: params, source: "platform default" } : null, locked: false,
+  } as unknown as RuleFlowRule;
+}
+
+const flow = {
+  version: "1.0.0",
+  model: "prs_to_base",
+  control: { state: "local", writable: true, message: "", org_name: "" },
+  edges: [["spec", "plan"], ["plan", "build"], ["build", "review"], ["review", "merge"], ["merge", "release"], ["release", "learn"]],
+  stages: ["spec", "plan", "build", "review", "merge", "release", "learn"].map((id) => ({
+    id, title: id[0].toUpperCase() + id.slice(1), summary: "", state: "enforced",
+    rules: id === "merge" ? [rule("merge.gate", "merge", { min_effort: 3 }), rule("merge.other", "merge", null)] : [],
+  })),
+} as unknown as RulesFlow;
+
+beforeEach(() => {
+  vi.resetAllMocks();
+  vi.mocked(api.rulesFlow).mockResolvedValue(flow);
+  vi.mocked(api.gitops).mockResolvedValue({ control: { state: "local", writable: true, message: "" } } as never);
+  vi.mocked(api.config).mockResolvedValue({ hosted_mode: false } as never);
+  vi.mocked(api.syncStatus).mockResolvedValue({ linked: false } as never);
+  vi.mocked(api.me).mockResolvedValue({ id: "u1" } as never);
+  vi.mocked(api.members).mockResolvedValue([{ user: { id: "u1" }, role: "owner" }] as never);
+  vi.mocked(api.setRuleToggles).mockResolvedValue({} as never);
+});
+
+describe("RulesView setup wizard", () => {
+  it("Set up rules opens the wizard; Apply lands on the map with the changed rule highlighted", async () => {
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={["/rules"]}>
+          <RulesView />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await user.click(await screen.findByTestId("rules-open-wizard"));
+    expect(screen.getByTestId("rules-setup-wizard")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "4. Merge" }));
+    await user.click(screen.getByRole("button", { name: "Set my own" }));
+    await user.click(screen.getByRole("button", { name: "Increase min_effort" }));
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    await user.type(screen.getByLabelText("Reason"), "first setup");
+    await user.click(screen.getByTestId("rules-review-save"));
+    await waitFor(() => expect(screen.queryByTestId("rules-setup-wizard")).toBeNull());
+    expect(screen.getByTestId("rules-chip-merge.gate")).toHaveAttribute("data-changed", "true");
+    expect(screen.getByTestId("rules-chip-merge.other")).not.toHaveAttribute("data-changed");
+  });
+});
