@@ -87,6 +87,8 @@ const mocks = vi.hoisted(() => ({
   syncLinkStart: vi.fn(),
   syncLinkPoll: vi.fn(),
   syncCloudProjects: vi.fn(),
+  syncSaveProjectMap: vi.fn(),
+  syncPushAll: vi.fn(),
 }));
 
 /** Only `control.state` is read by the nav entry. */
@@ -108,6 +110,8 @@ vi.mock("@/lib/api", () => ({
     syncLinkStart: mocks.syncLinkStart,
     syncLinkPoll: mocks.syncLinkPoll,
     syncCloudProjects: mocks.syncCloudProjects,
+    syncSaveProjectMap: mocks.syncSaveProjectMap,
+    syncPushAll: mocks.syncPushAll,
     dashboard: vi.fn(async () => ({
       items_total: 0, items_by_status: {}, effort_total: 0, done_count: 0, in_progress_count: 0,
       blocked_count: 0, requests_total: 0, requests_by_type: {}, requests_by_status: {},
@@ -315,12 +319,50 @@ describe("Organization window, linked: the P67 overview (GRPH-1564, L3/L4)", () 
     }
   });
 
-  it("Open org overview shows the overview; Choose projects opens ③; Sign in again opens ②", async () => {
+  it("summary: Open org overview shows the overview", async () => {
     const user = userEvent.setup();
-    mocks.syncCloudProjects.mockResolvedValue({ status: "ok", projects: [{ id: "c1", tag: "CORE", name: "Core" }], mapping: [] });
-    let dialog = await openSummary();
+    const dialog = await openSummary();
     await user.click(await within(dialog).findByRole("button", { name: "Open org overview" }));
     expect(await within(dialog).findByTestId("linked-panel")).toBeInTheDocument();
+    expect(within(dialog).queryByTestId("linked-summary")).toBeNull();
+  });
+
+  /** Summary → overview → Choose projects → ③ → Next: the wizard at ④, the overview visited first. */
+  const toStepFourFromOverview = async (user: ReturnType<typeof userEvent.setup>, onOpenChange = vi.fn()) => {
+    mocks.syncCloudProjects.mockResolvedValue({ status: "ok", projects: [{ id: "c-1", tag: "CORE", name: "Core" }], mapping: [] });
+    mocks.syncSaveProjectMap.mockResolvedValue({ mapping: [] });
+    const dialog = await open(onOpenChange);
+    expect(await within(dialog).findByTestId("linked-panel")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Choose projects" }));
+    return dialog;
+  };
+
+  it("④ pushed → Done shows the Linked as summary, not the overview or a closed window", async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    mocks.syncPushAll.mockResolvedValue({ projects: [{ project_id: "core", status: "done", nodes: 12, edges: 3, at: PUSHED_AT }] });
+    const dialog = await toStepFourFromOverview(user, onOpenChange);
+    await within(dialog).findByRole("combobox", { name: "Cloud project for core" });
+    await user.click(await within(dialog).findByRole("button", { name: "Next →" }));
+    await user.click(await within(dialog).findByRole("button", { name: "Push now" }));
+    expect(mocks.syncPushAll).toHaveBeenCalled();
+    await user.click(await within(dialog).findByRole("button", { name: "Done" }));
+    expect(await within(dialog).findByTestId("linked-summary")).toHaveTextContent("Linked as");
+    expect(within(dialog).queryByTestId("linked-panel")).toBeNull();
+    expect(within(dialog).queryByTestId("link-wizard")).toBeNull();
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+  });
+
+  it("④ nothing to push → Done shows the Linked as summary", async () => {
+    const user = userEvent.setup();
+    const dialog = await toStepFourFromOverview(user);
+    await user.selectOptions(await within(dialog).findByRole("combobox", { name: "Cloud project for core" }), "Local only");
+    await user.click(within(dialog).getByRole("button", { name: "Next →" }));
+    expect(await within(dialog).findByText("Nothing to push. Every project is local only.")).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Done" }));
+    expect(await within(dialog).findByTestId("linked-summary")).toBeInTheDocument();
+    expect(within(dialog).queryByTestId("linked-panel")).toBeNull();
+    expect(mocks.syncPushAll).not.toHaveBeenCalled();
   });
 
   it("summary: Choose projects opens step ③", async () => {
@@ -345,6 +387,15 @@ describe("Organization window, linked: the P67 overview (GRPH-1564, L3/L4)", () 
     const summary = await within(dialog).findByTestId("linked-summary");
     expect(within(summary).getByRole("alert")).toHaveTextContent("Your seat in Ascme Labs was removed. Nothing is syncing.");
     expect(summary).toHaveTextContent("Anyone with a seat in Ascme Labs can sign this box in");
+    expect(within(summary).getByRole("button", { name: "Sign in again" }).className).toContain("bg-accent");
+    expect(within(summary).getByRole("button", { name: "Open org overview" }).className).not.toContain("bg-accent");
+  });
+
+  it("old key refused: the key alert line above the heading and Sign in again is primary", async () => {
+    mocks.syncStatus.mockResolvedValue({ ...linked, state: "refused", legacy: true });
+    const dialog = await openSummary();
+    const summary = await within(dialog).findByTestId("linked-summary");
+    expect(within(summary).getByRole("alert")).toHaveTextContent("This link used a key. Sign in to keep syncing.");
     expect(within(summary).getByRole("button", { name: "Sign in again" }).className).toContain("bg-accent");
     expect(within(summary).getByRole("button", { name: "Open org overview" }).className).not.toContain("bg-accent");
   });
