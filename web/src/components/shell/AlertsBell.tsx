@@ -30,6 +30,17 @@ function BrowserPush() {
   if (!status.data.configured || !status.data.public_key) {
     return <div className="border-t border-line p-3 text-[12px] text-muted">Browser notifications are not set up on this deployment.</div>;
   }
+  // Service workers (so Web Push) exist only in a secure context: HTTPS or localhost.
+  if (typeof window !== "undefined" && window.isSecureContext === false) {
+    return (
+      <div className="border-t border-line p-3 text-[12px] text-muted">
+        Browser notifications need this site on HTTPS. In-app alerts still work.{" "}
+        <a className="underline" href="https://github.com/asc-me/graphban/blob/main/docs/deploy.md#browser-push-optional" target="_blank" rel="noreferrer">
+          Why?
+        </a>
+      </div>
+    );
+  }
   if (!pushSupported()) {
     return <div className="border-t border-line p-3 text-[12px] text-muted">This browser does not support push notifications.</div>;
   }

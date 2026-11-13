@@ -128,6 +128,7 @@ describe("AlertsBell", () => {
       subscribed.length = 0;
       state.feed = { unread: 0, alerts: [] };
       vi.stubGlobal("Notification", Object.assign(function () {}, { permission: "default", requestPermission }));
+      Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
       Object.defineProperty(window, "PushManager", { value: function () {}, configurable: true });
       Object.defineProperty(navigator, "serviceWorker", {
         configurable: true,
@@ -155,6 +156,31 @@ describe("AlertsBell", () => {
       expect(await screen.findByText(/not set up on this deployment/i)).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: /notify me in this browser/i })).toBeNull();
       expect(requestPermission).not.toHaveBeenCalled();
+    });
+
+    it("on an insecure context says HTTPS is needed, not that the browser lacks support", async () => {
+      state.push = { configured: true, public_key: "AQAB" };
+      Object.defineProperty(window, "isSecureContext", { value: false, configurable: true });
+      Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: undefined });
+      delete (navigator as unknown as Record<string, unknown>).serviceWorker;
+      mount();
+      await userEvent.click(await screen.findByRole("button", { name: /alerts/i }));
+      expect(await screen.findByText(/need this site on HTTPS/i)).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /why\?/i })).toHaveAttribute(
+        "href",
+        "https://github.com/asc-me/graphban/blob/main/docs/deploy.md#browser-push-optional",
+      );
+      expect(screen.queryByText(/does not support push/i)).toBeNull();
+      expect(screen.queryByRole("button", { name: /notify me in this browser/i })).toBeNull();
+    });
+
+    it("on a secure context without PushManager says the browser does not support push", async () => {
+      state.push = { configured: true, public_key: "AQAB" };
+      delete (window as unknown as Record<string, unknown>).PushManager;
+      mount();
+      await userEvent.click(await screen.findByRole("button", { name: /alerts/i }));
+      expect(await screen.findByText(/does not support push notifications/i)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /notify me in this browser/i })).toBeNull();
     });
 
     it("shows denied permission as such", async () => {
