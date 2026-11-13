@@ -198,7 +198,7 @@ describe("Triage inbox", () => {
     await user.keyboard("d");
     await screen.findByText(/No drain is running for GRPH-P75/);
     expect(screen.getByText(/answered by alex/)).toBeInTheDocument();
-    expect(screen.getByText("gban fleet until --prd GRPH-P75")).toBeInTheDocument();
+    expect(screen.getByText("$ gban fleet until --prd GRPH-P75")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
   });
 
@@ -214,16 +214,68 @@ describe("Triage inbox", () => {
     ...over,
   });
 
-  it("an agent's answered row shows its source and quote, and the restart command", async () => {
+  it("an agent's answered row shows BY AN AGENT, its source line, quote and the restart command", async () => {
     m.projectTriage.mockResolvedValue(feed([answered()]));
     renderTriage();
-    expect(await screen.findByTestId("answered-by")).toHaveTextContent(
-      'answered from session by GRPH-A7 — "the user said redis"');
+    const by = await screen.findByTestId("answered-by");
+    expect(by).toHaveTextContent("BY AN AGENT");
+    expect(screen.getByTestId("answered-source")).toHaveTextContent("answered from this session by GRPH-A7");
+    expect(screen.getByTestId("agent-quote")).toHaveTextContent("THE QUOTE IT USED");
+    expect(screen.getByTestId("agent-quote")).toHaveTextContent("the user said redis");
+    expect(screen.getByTestId("agent-quote")).toHaveTextContent("Does the quote support this answer?");
     expect(screen.getByTestId("drain-note")).toHaveTextContent("No drain is running for GRPH-P75.");
-    expect(screen.getByText("gban fleet until --prd GRPH-P75")).toBeInTheDocument();
+    expect(screen.getByText("$ gban fleet until --prd GRPH-P75")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    expect(screen.getByText("Leaves Triage 24h after the answer.")).toBeInTheDocument();
     // Nothing to act on: the row carries no action buttons.
     expect(screen.getByRole("toolbar", { name: "Actions" }).children).toHaveLength(0);
+  });
+
+  it("an agent answer with an empty quote is still an agent's, with the no-quote note", async () => {
+    m.projectTriage.mockResolvedValue(feed([answered({
+      quote: "", source: { kind: "prd", ref: "GRPH-P75" }, answered_by: "answered by GRPH-A7",
+    })]));
+    renderTriage();
+    expect(await screen.findByTestId("answered-by")).toHaveTextContent("BY AN AGENT");
+    expect(screen.getByTestId("agent-quote")).toHaveTextContent(
+      "No quote given. Check the source (GRPH-P75) before relying on this. If it's wrong, tell the PRD owner.");
+    expect(screen.queryByText("THE QUOTE IT USED")).not.toBeInTheDocument();
+  });
+
+  // Each ref opens the view App.tsx mounts for it: the PRD editor (`prds/:id`), the
+  // published lesson for a memory shard (`lessons/:id`), and Tracker with the item
+  // selected through the palette's `select` param.
+  it.each([
+    ["prd", "GRPH-P75", "answered from PRD GRPH-P75 by GRPH-A7", "/p/CORE/prds/GRPH-P75"],
+    ["memory", "M-12", "answered from memory M-12 by GRPH-A7", "/p/CORE/lessons/M-12"],
+    ["decision", "GRPH-44", "answered from GRPH-44's decision by GRPH-A7", "/p/CORE/tracker?select=GRPH-44"],
+  ])("a %s source renders its line and links the ref", async (kind, ref, line, href) => {
+    m.projectTriage.mockResolvedValue(feed([answered({ source: { kind, ref } })]));
+    renderTriage();
+    expect(await screen.findByTestId("answered-source")).toHaveTextContent(line);
+    expect(screen.getByRole("link", { name: ref })).toHaveAttribute("href", href);
+  });
+
+  it("on a flat (self-host) path the source link has no project prefix", async () => {
+    m.projectTriage.mockResolvedValue(feed([answered({ source: { kind: "decision", ref: "GRPH-44" } })]));
+    renderTriage("/triage");
+    await screen.findByTestId("answered-source");
+    expect(screen.getByRole("link", { name: "GRPH-44" })).toHaveAttribute("href", "/tracker?select=GRPH-44");
+  });
+
+  it("an agent answer's list meta line reads 'answered by <agent> (agent)' in purple", async () => {
+    m.projectTriage.mockResolvedValue(feed([answered({ quote: "" })]));
+    renderTriage();
+    const meta = await screen.findByTestId("answered-meta");
+    expect(meta).toHaveTextContent("answered by GRPH-A7 (agent)");
+    expect(meta).toHaveClass("text-purple");
+  });
+
+  it("a session source has no link", async () => {
+    m.projectTriage.mockResolvedValue(feed([answered()]));
+    renderTriage();
+    await screen.findByTestId("answered-source");
+    expect(screen.queryByRole("link", { name: /GRPH/ })).not.toBeInTheDocument();
   });
 
   it("a person's answered row shows the person; a live drain shows no command", async () => {
@@ -232,20 +284,37 @@ describe("Triage inbox", () => {
       drain: { status: "live", prd: "GRPH-P75", message: "A drain is running for GRPH-P75. It will pick this ticket up." },
     })]));
     renderTriage();
-    expect(await screen.findByTestId("answered-by")).toHaveTextContent(/^answered by alex$/);
+    expect(await screen.findByTestId("answered-by")).toHaveTextContent(/answered by alex$/);
+    expect(screen.queryByText("BY AN AGENT")).not.toBeInTheDocument();
     expect(screen.getByTestId("drain-note")).toHaveTextContent("A drain is running for GRPH-P75.");
     expect(screen.queryByText(/gban fleet until/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Copy" })).not.toBeInTheDocument();
   });
 
-  it("a failed drain read says it could not check, never that no drain is running", async () => {
+  it("a failed drain read says it could not check, even if the payload carries a command", async () => {
     m.projectTriage.mockResolvedValue(feed([answered({
-      drain: { status: "unknown", prd: "GRPH-P75", message: "Could not check for a running drain." },
+      drain: { status: "unknown", prd: null, message: "whatever", command: "gban fleet until --prd X" },
     })]));
     renderTriage();
     expect(await screen.findByTestId("drain-note")).toHaveTextContent("Could not check for a running drain.");
     expect(screen.queryByText(/No drain is running/)).not.toBeInTheDocument();
     expect(screen.queryByText(/gban fleet until/)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("drain-tag")).not.toBeInTheDocument();
+  });
+
+  it("a missing drain reads as unknown", async () => {
+    m.projectTriage.mockResolvedValue(feed([answered({ drain: undefined as never })]));
+    renderTriage();
+    expect(await screen.findByTestId("drain-note")).toHaveTextContent("Could not check for a running drain.");
+  });
+
+  it("not_live with no PRD shows the PROJECT-WIDE tag and the command", async () => {
+    m.projectTriage.mockResolvedValue(feed([answered({
+      drain: { status: "not_live", prd: null, message: "No drain is running.", command: "gban fleet until" },
+    })]));
+    renderTriage();
+    expect(await screen.findByTestId("drain-tag")).toHaveTextContent("PROJECT-WIDE · NO PRD");
+    expect(screen.getByText("$ gban fleet until")).toBeInTheDocument();
   });
 
   it("asks before Merge and Override, ↵ confirms, and nothing else asks", async () => {

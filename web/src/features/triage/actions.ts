@@ -1,5 +1,5 @@
 import { api, type AnswerWaitResult } from "@/lib/api";
-import type { TriageFeedRow, TriageTab } from "@/lib/types";
+import type { DrainNote as DrainNoteData, TriageFeedRow, TriageTab } from "@/lib/types";
 
 /** Reverses one action. Resolves once the server has restored the row. */
 export type Undo = () => Promise<unknown>;
@@ -14,7 +14,7 @@ export interface TriageAction {
   option?: boolean;
   /** Override and Merge only: the actions Undo does not reverse cleanly ask first. */
   confirm?: string;
-  run: () => Promise<{ result: string; undo: Undo; command?: string }>;
+  run: () => Promise<{ result: string; undo: Undo; command?: string; drain?: DrainNoteData }>;
 }
 
 export const TABS: { id: TriageTab; label: string; key: string; dot: string | null }[] = [
@@ -50,13 +50,21 @@ export function answeredByCopy(answeredBy: string, quote: string | null | undefi
   return answeredBy + (quote ? ` — "${quote}"` : "");
 }
 
+/** The list meta line: purple-worthy agent answers say so, a person's does not. */
+export function answeredMetaCopy(by: { agent: string | null } | undefined, answeredBy: string): string {
+  return by?.agent ? `answered by ${by.agent} (agent)` : answeredBy;
+}
+
 /** The Processed line for an answer: who answered, then whether a drain will pick the ticket up. */
 export function answeredCopy(base: string, a: AnswerWaitResult | undefined): string {
   const parts = [base];
   if (a?.answered_by) parts.push(answeredByCopy(a.answered_by, a.quote));
-  if (a?.drain?.message) parts.push(a.drain.message);
+  if (a?.drain?.status === "live" && a.drain.message) parts.push(a.drain.message);
   return parts.join(". ");
 }
+
+/** An answer reply with no `drain` is a failed read, not "no drain is running". */
+const MISSING_DRAIN: DrainNoteData = { status: "unknown", prd: null, message: "Could not check for a running drain." };
 
 const iso = (ms: number) => new Date(Date.now() + ms).toISOString();
 const HOUR = 3_600_000;
@@ -77,6 +85,7 @@ export function answerTextAction(row: TriageFeedRow, text: string): TriageAction
       return {
         result: answeredCopy(`Answered "${text}" — ${owner} resumed`, a),
         command: a?.drain?.command,
+        drain: a?.drain ?? MISSING_DRAIN,
         undo: () => api.undoBlocker(row.id),
       };
     },
@@ -112,6 +121,7 @@ export function actionsFor(row: TriageFeedRow, projectId: string): TriageAction[
           return {
             result: answeredCopy(`Answered "${o}" — ${owner} resumed`, a),
             command: a?.drain?.command,
+            drain: a?.drain ?? MISSING_DRAIN,
             undo: () => api.undoBlocker(row.id),
           };
         },

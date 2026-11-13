@@ -6,11 +6,11 @@ import { useSearchParams } from "react-router-dom";
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { FETCH_FAILED, PlannerError, TriageQueueSkeleton } from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
-import { copyText } from "@/lib/clipboard";
 import { useTriageFeed } from "@/lib/queries";
-import type { TriageFeedRow } from "@/lib/types";
+import type { DrainNote as DrainNoteData, TriageFeedRow } from "@/lib/types";
 
-import { TABS, actionsFor, answerTextAction, duplicateHintCopy, formatAge, inTab, rowTitle, type TriageAction, type Undo } from "./actions";
+import { TABS, actionsFor, answerTextAction, answeredMetaCopy, duplicateHintCopy, formatAge, inTab, rowTitle, type TriageAction, type Undo } from "./actions";
+import { DrainNote } from "./DrainNote";
 import { OPEN_ANSWER_EVENT, TriageDetail } from "./TriageDetail";
 
 /**
@@ -28,6 +28,7 @@ interface Processed {
   result: string;
   undo: Undo;
   command?: string;
+  drain?: DrainNoteData;
 }
 
 const KIND_TEXT: Record<string, string> = {
@@ -53,13 +54,16 @@ function tagOf(r: TriageFeedRow): { word: string; text: string; edge: string } {
   return { word: kindWord(r), text: kindText(r), edge: r.kind === "blocker" && r.nobody_alerted ? "bg-st-blocked" : "" };
 }
 
-function metaOf(r: TriageFeedRow): string {
+function metaOf(r: TriageFeedRow): ReactNode {
   if (r.kind === "blocker" && r.blocks)
     return `blocks ${r.blocks.id}${r.blocks_more ? ` +${r.blocks_more}` : ""} · ${r.owner ?? "unclaimed"}`;
   if (r.kind === "blocker")
     return `${r.owner ?? "unclaimed"} · ${r.question_state ? QUESTION_LABEL[r.question_state] : r.decision ? "needs a decision" : r.waiting_on ? `waiting on ${r.waiting_on.id}` : "blocked"}`;
   if (r.kind === "collision") return `${r.members.length} items · ${r.risk}`;
-  if (r.kind === "answered") return r.answered_by;
+  if (r.kind === "answered") {
+    const copy = answeredMetaCopy(r.by, r.answered_by);
+    return r.by?.agent ? <span data-testid="answered-meta" className="text-purple">{copy}</span> : copy;
+  }
   return `↑ ${r.votes} · ${r.by || "anonymous"}${r.duplicate ? ` · ${duplicateHintCopy(r.duplicate.id, r.duplicate.score)}` : ""}`;
 }
 
@@ -120,8 +124,8 @@ export function TriageView() {
       const i = shown.indexOf(sel);
       const next = shown[i + 1] ?? shown[i - 1] ?? null;
       try {
-        const { result, undo, command } = await action.run();
-        setProcessed((p) => [...p, { row: sel, result, undo, command }]);
+        const { result, undo, command, drain } = await action.run();
+        setProcessed((p) => [...p, { row: sel, result, undo, command, drain }]);
         setSelId(next?.id ?? null);
         void refresh();
       } catch (e) {
@@ -225,19 +229,10 @@ export function TriageView() {
       </div>
       <ul className="mt-1.5 space-y-1">
         {processed.slice(-5).reverse().map((p) => (
-          <li key={p.row.id} className="truncate text-small text-muted">
+          <li key={p.row.id} className="text-small text-muted">
             <span className="font-mono text-faint-2">{p.row.id}</span> {p.result}
-            {p.command && (
-              <>
-                {" "}
-                <code className="font-mono text-faint-2">{p.command}</code>{" "}
-                <button
-                  onClick={() => void copyText(p.command!)}
-                  className="rounded border border-control px-1.5 py-px text-muted hover:text-fg"
-                >
-                  Copy
-                </button>
-              </>
+            {p.drain && p.drain.status !== "live" && (
+              <DrainNote compact status={p.drain.status} prd={p.drain.prd} message={p.drain.message} command={p.drain.command ?? p.command} />
             )}
           </li>
         ))}
