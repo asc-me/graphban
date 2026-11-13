@@ -72,6 +72,42 @@ describe("AlertsBell", () => {
     );
   });
 
+  describe("row content (GRPH-1607)", () => {
+    const row = (over: Record<string, unknown>) => ({
+      id: "al_9", kind: "response_needed", project: "prj_other", project_tag: "OTH", title: "V9-A2 Build the Audience pane",
+      question: "What belongs in settings?", body: "", wait: "GRPH-2", ticket: null, prd: null, asked_by: null,
+      created_at: null, read: false, impact: "question", drain: "not_live", ...over,
+    });
+    const open = async (alert: unknown) => {
+      state.feed = { unread: 1, alerts: [alert] };
+      mount();
+      await userEvent.click(await screen.findByRole("button", { name: /alerts/i }));
+    };
+
+    it("the unread headline sets an explicit foreground, not the link accent", async () => {
+      await open(row({}));
+      const h = await screen.findByTestId("alert-headline");
+      expect(h.className).toContain("text-fg");
+      expect(h.className).not.toContain("accent");
+    });
+
+    it("the headline is the item title and the full question is secondary", async () => {
+      await open(row({}));
+      expect(screen.getByTestId("alert-headline")).toHaveTextContent("V9-A2 Build the Audience pane");
+      expect(screen.getByText("What belongs in settings?")).toBeInTheDocument();
+    });
+
+    it.each([
+      ["drain_waiting", "live", "GRPH-1", "Drain waiting"],
+      ["blocks", "not_live", "GRPH-1", "Blocks GRPH-1"],
+      ["question", "not_live", null, "Question"],
+      ["question", "unknown", null, "Question"],
+    ])("impact %s (drain %s, ticket %s) shows %s", async (impact, drain, ticket, text) => {
+      await open(row({ impact, drain, ticket }));
+      expect(await screen.findByTestId("alert-impact")).toHaveTextContent(text as string);
+    });
+  });
+
   it("a failed read says could not load alerts and never renders 0", async () => {
     state.fail = true;
     mount();
