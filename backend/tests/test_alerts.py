@@ -179,7 +179,11 @@ def test_project_with_nobody_to_alert_writes_no_alert(db):
     from app.services import triage
 
     rows = {r["id"]: r for r in triage._blocker_rows(db, "lonely", utcnow())}
-    assert rows[ticket.key].get("nobody_alerted") is True
+    # One row per question (GRPH-1571): the ticket held only by this wait has no row of its
+    # own; the wait's row names it and says nobody could be alerted (P75 D6).
+    assert ticket.key not in rows
+    assert rows[wait.key]["blocks"]["id"] == ticket.key
+    assert rows[wait.key].get("nobody_alerted") is True
 
 
 def test_alert_hidden_and_unreadable_after_access_lost(client, auth, db):
