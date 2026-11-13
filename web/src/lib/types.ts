@@ -3547,6 +3547,14 @@ export interface AlertRow {
   kind: "response_needed";
   /** The project the wait lives in — the Triage row is there. */
   project: string;
+  /** The project's tag, for the meta line. */
+  project_tag?: string | null;
+  /** The wait item's own title: the row headline. `question` is the secondary line. */
+  title?: string;
+  /** Derived impact (GRPH-1607): a live drain is held on it, a ticket is blocked, or neither. */
+  impact?: "drain_waiting" | "blocks" | "question";
+  /** `live | not_live | unknown` — the drain-status read behind `impact`. */
+  drain?: "live" | "not_live" | "unknown";
   question: string;
   body: string;
   wait: string;

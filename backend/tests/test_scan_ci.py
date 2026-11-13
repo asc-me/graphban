@@ -492,6 +492,46 @@ def test_the_script_never_reads_the_ledger(repo, fakes, ledger, monkeypatch):
     assert _receipts(calls)[0]["evidence"][0]["predicates"][0]["passed"] is False
 
 
+@pytest.fixture()
+def foreign_ledger(monkeypatch):
+    """A ledger that refuses `unauthorized` for ids in `foreign`, as the server does for an
+    item in a project the gate key cannot write."""
+    calls: list[tuple[str, dict]] = []
+    foreign: set[str] = set()
+
+    def call_tool(url, key, name, arguments, *, timeout=15.0):
+        calls.append((name, arguments))
+        if name == "update_item" and arguments.get("id") in foreign:
+            raise attest_ci.OutOfScope(f"{arguments['id']}: graphban refused the write")
+
+    monkeypatch.setenv("GRAPHBAN_URL", "https://example.invalid")
+    monkeypatch.setenv("GRAPHBAN_GATE_KEY", "gb_sk_x")
+    monkeypatch.setattr(attest_ci, "call_tool", call_tool)
+    return calls, foreign
+
+
+def test_a_foreign_id_in_the_pr_text_does_not_fail_a_clean_scan(repo, fakes, foreign_ledger,
+                                                                capsys):
+    """GRPH-1607: a PR body quoting `SA-1095` from its item turned a clean scan red."""
+    calls, foreign = foreign_ledger
+    foreign.add("SA-1095")
+    head = _pr(repo, {"backend/app/x.py": "x = 2\n"})
+    rc = scan_ci.main(["--repo", str(repo), "--base", repo.base, "--head", head,
+                       "--branch", "gb/x", "--text", "GRPH-1110: SA-1095 only removed it"])
+    assert rc == 0
+    assert [a["id"] for a in _receipts(calls)] == ["GRPH-1110", "SA-1095"]
+    assert "belongs to another project" in capsys.readouterr().out
+
+
+def test_every_id_refused_still_fails_as_a_broken_key_would(repo, fakes, foreign_ledger):
+    _, foreign = foreign_ledger
+    foreign.add("SA-1095")
+    head = _pr(repo, {"backend/app/x.py": "x = 2\n"})
+    rc = scan_ci.main(["--repo", str(repo), "--base", repo.base, "--head", head,
+                       "--branch", "gb/x", "--text", "Attests: SA-1095"])
+    assert rc == 1
+
+
 def test_a_failed_scan_row_post_does_not_change_the_attestation(repo, fakes, ledger, capsys):
     calls, failing = ledger
     head = _pr(repo, {"backend/app/x.py": "x = 2\n"})

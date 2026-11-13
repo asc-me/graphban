@@ -10,7 +10,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Alert, Item, Link, utcnow
+from app.models import Alert, Item, Link, Project, utcnow
 from app.security.authz import readable_project_ids
 
 KIND = "response_needed"
@@ -53,8 +53,20 @@ def alert_dict(db: Session, row: Alert) -> dict:
     ticket = _asker(db, wait) if wait is not None else None
     holder = wait if wait is not None and wait.prd_id else ticket
     prd_key = holder.prd_key if holder is not None and holder.prd_id else None
+    # Derived impact (GRPH-1607), never a stored priority: a live drain waiting on this PRD, else
+    # a ticket blocked on the wait, else a plain question. An `unknown` drain read claims nothing.
+    drain = "unknown"
+    if wait is not None:
+        from app.services import fleet as fleet_svc
+
+        drain = fleet_svc.drain_status(db, wait.project_id, holder.prd_id if holder is not None else None)
+    impact = "drain_waiting" if drain == "live" else "blocks" if ticket is not None else "question"
+    project = db.get(Project, row.project_id)
     return {
         "id": row.id, "kind": row.kind, "project": row.project_id,
+        "project_tag": project.tag if project is not None else None,
+        "title": wait.title if wait is not None else row.title,
+        "impact": impact, "drain": drain,
         "question": row.title, "body": row.body,
         "wait": wait.key if wait is not None else row.item_id,
         "ticket": ticket.key if ticket is not None else None,

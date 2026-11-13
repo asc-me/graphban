@@ -199,3 +199,26 @@ def test_alert_hidden_and_unreadable_after_access_lost(client, auth, db):
     body = client.get("/api/me/alerts", headers=auth).json()
     assert body["unread"] == 0 and body["alerts"] == []
     assert client.post(f"/api/me/alerts/{aid}/read", headers=auth).status_code == 404
+
+
+def test_alert_dict_carries_title_tag_and_derived_impact(db):
+    from app.services import fleet as fleet_svc
+
+    _, wait = _pair(db)
+    ticket_free = items_svc.create_item(db, project_id="core", title="loose q", status="blocked",
+                                        question="Anything?", options=["a", "b"])
+    rows = alerts_svc.write_for_wait(db, wait, ["u1"]) + alerts_svc.write_for_wait(db, ticket_free, ["u1"])
+    blocked, loose = (alerts_svc.alert_dict(db, r) for r in rows)
+    assert blocked["title"] == "which?" and blocked["project_tag"]
+    assert blocked["impact"] == "blocks" and blocked["ticket"]
+    assert loose["title"] == "loose q" and loose["ticket"] is None
+    assert loose["impact"] == "question"
+    # a live drain wins; an unknown read claims nothing
+    orig = fleet_svc.drain_status
+    try:
+        fleet_svc.drain_status = lambda *a, **k: "live"
+        assert alerts_svc.alert_dict(db, rows[0])["impact"] == "drain_waiting"
+        fleet_svc.drain_status = lambda *a, **k: "unknown"
+        assert alerts_svc.alert_dict(db, rows[1])["impact"] == "question"
+    finally:
+        fleet_svc.drain_status = orig
