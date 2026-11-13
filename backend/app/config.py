@@ -333,8 +333,9 @@ class Settings(BaseSettings):
     question_sweep_seconds: int = 60
 
     # Browser push for Response Needed alerts (GRPH-1528). Standard Web Push with VAPID; no
-    # third-party service. Leave the keys empty and the bell says browser notifications are
-    # not set up on this deployment. `vapid_private_key` is a PEM path or the base64url key.
+    # third-party service. Optional overrides: left empty, the server generates a pair on first
+    # start and keeps it in the database (GRPH-1582). `vapid_private_key` is a PEM path or the
+    # base64url key.
     vapid_public_key: str = ""
     vapid_private_key: str = ""
     vapid_subject: str = "mailto:admin@localhost"

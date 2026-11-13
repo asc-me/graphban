@@ -2474,6 +2474,20 @@ class PushSubscription(Base):
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class VapidKey(Base):
+    """The one generated VAPID key pair for browser push (GRPH-1582). Single row, fixed
+    primary key `vapid`, so concurrent first starts race to one winner. The private key is
+    stored through `security.secrets.encrypt`. Never rotated by the server: changing it
+    invalidates every browser subscription."""
+
+    __tablename__ = "vapid_keys"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    public_key: Mapped[str] = mapped_column(String)
+    private_key: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class IdempotencyKey(Base):
     """Maps an agent-supplied idempotency key to the resource a create tool produced,
     so a retried call returns the original resource instead of a duplicate."""

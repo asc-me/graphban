@@ -134,15 +134,15 @@ exporter gave up on, never rows the sweep took first.
 
 ### Browser notifications (VAPID)
 
-Response Needed alerts can also reach a person as a browser push (GRPH-1528, P75 D4). It is standard Web Push with VAPID keys; no third-party push service. The in-app alert exists whether or not push works.
+Response Needed alerts can also reach a person as a browser push (GRPH-1528, P75 D4). It is standard Web Push with VAPID keys; no third-party push service. The in-app alert exists whether or not push works. Nothing to set up: the server generates a key pair on first start and keeps it in the database. The variables below are optional overrides to supply your own keys.
 
 | Env var | Default | Meaning |
 | --- | --- | --- |
-| `VAPID_PUBLIC_KEY` | empty | Application server key (base64url) the browser subscribes with |
-| `VAPID_PRIVATE_KEY` | empty | The matching private key: a PEM path or base64url key |
-| `VAPID_SUBJECT` | `mailto:admin@localhost` | The `sub` claim: a `mailto:` or `https:` contact for the push service |
+| `VAPID_PUBLIC_KEY` | generated | Application server key (base64url) the browser subscribes with |
+| `VAPID_PRIVATE_KEY` | generated | The matching private key: a PEM path or base64url key |
+| `VAPID_SUBJECT` | earliest user's `mailto:` | The `sub` claim: a `mailto:` or `https:` contact for the push service |
 
-With either key empty the bell says browser notifications are not set up on this deployment and offers no button. The browser asks permission only when a person clicks "Notify me in this browser". A 404/410 from the push service deletes that subscription; any other failure sets `failed_at` and keeps it.
+If key generation fails at startup the bell says browser notifications are not set up and offers no button. The browser asks permission only when a person clicks "Notify me in this browser". A 404/410 from the push service deletes that subscription; any other failure sets `failed_at` and keeps it.
 
 ## AI Providers tab
 

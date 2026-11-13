@@ -1,6 +1,7 @@
 """Browser push for Response Needed alerts (GRPH-1528, P75 D4).
 
-Standard Web Push with VAPID keys from settings. Best-effort by construction: nothing here
+Standard Web Push with VAPID keys: from the environment when supplied, else the pair the
+server generated and stored on first start (GRPH-1582). Best-effort by construction: nothing here
 raises into the hand-off, and the in-app alert exists whether or not any push arrives.
 """
 from __future__ import annotations
@@ -11,21 +12,91 @@ import uuid
 
 from pywebpush import WebPushException, webpush
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Alert, Item, Project, PushSubscription, utcnow
+from app.models import Alert, Item, Project, PushSubscription, User, VapidKey, utcnow
 from app.security.authz import readable_project_ids
+from app.security.secrets import decrypt, encrypt
 
 log = logging.getLogger(__name__)
 
 
+_DEFAULT_SUBJECT = "mailto:admin@localhost"
+_ROW_ID = "vapid"
+_stored: tuple[str, str] | None = None  # per-process cache of the stored pair
+
+
+def _b64(raw: bytes) -> str:
+    import base64
+
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def _generate() -> tuple[str, str]:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    pub = key.public_key().public_bytes(serialization.Encoding.X962,
+                                        serialization.PublicFormat.UncompressedPoint)
+    return _b64(pub), _b64(key.private_numbers().private_value.to_bytes(32, "big"))
+
+
+def _read(db: Session) -> tuple[str, str] | None:
+    row = db.get(VapidKey, _ROW_ID)
+    if row is None:
+        return None
+    priv = decrypt(row.private_key)
+    return (row.public_key, priv) if priv else None
+
+
+def ensure_keys(db: Session) -> None:
+    """Startup step: resolve the VAPID pair. Env keys win and the table is untouched; else
+    reuse the stored row, else generate and insert it (race-safe: on conflict re-read the
+    winner). Never raises; a failure leaves push unconfigured."""
+    global _stored
+    _stored = None
+    if settings.vapid_public_key and settings.vapid_private_key:
+        return
+    try:
+        pair = _read(db)
+        if pair is None:
+            pub, priv = _generate()
+            db.add(VapidKey(id=_ROW_ID, public_key=pub, private_key=encrypt(priv)))
+            try:
+                db.commit()
+                pair = (pub, priv)
+            except IntegrityError:
+                db.rollback()
+                pair = _read(db)
+        _stored = pair
+    except Exception:  # noqa: BLE001 - push stays off; the api still starts
+        log.exception("push: could not ensure the VAPID key pair")
+        db.rollback()
+        _stored = None
+
+
+def _resolved() -> tuple[str, str]:
+    if settings.vapid_public_key and settings.vapid_private_key:
+        return settings.vapid_public_key, settings.vapid_private_key
+    return _stored or ("", "")
+
+
 def configured() -> bool:
-    return bool(settings.vapid_public_key and settings.vapid_private_key)
+    return bool(all(_resolved()))
 
 
 def status() -> dict:
-    return {"configured": configured(), "public_key": settings.vapid_public_key or None}
+    return {"configured": configured(), "public_key": _resolved()[0] or None}
+
+
+def _subject(db: Session) -> str:
+    if settings.vapid_subject != _DEFAULT_SUBJECT:
+        return settings.vapid_subject
+    email = db.scalar(select(User.email).order_by(User.created_at, User.id).limit(1))
+    return f"mailto:{email}" if email else settings.vapid_subject
 
 
 def subscribe(db: Session, user_id: str, endpoint: str, p256dh: str, auth: str) -> PushSubscription:
@@ -104,10 +175,12 @@ def send_for_alerts(db: Session, alert_ids: list[str]) -> int:
 
 def _send_one(db: Session, sub: PushSubscription, data: str) -> int:
     try:
+        private_key = _resolved()[1]
+        subject = _subject(db)
         webpush(subscription_info={"endpoint": sub.endpoint,
                                    "keys": {"p256dh": sub.p256dh, "auth": sub.auth}},
-                data=data, vapid_private_key=settings.vapid_private_key,
-                vapid_claims={"sub": settings.vapid_subject}, timeout=10)
+                data=data, vapid_private_key=private_key,
+                vapid_claims={"sub": subject}, timeout=10)
     except WebPushException as exc:
         if _status_of(exc) in (404, 410):
             db.delete(sub)

@@ -97,33 +97,18 @@ app port directly (GRPH-478) from sending one entry and choosing its bucket.
 `TRUSTED_PROXY` still works and now logs that its key is spoofable. `TRUSTED_HOPS` wins when
 both are set.
 
-## Browser push (optional)
+## Browser push
 
-Browser push is off until a VAPID key pair is configured; the bell panel then says
-"Browser notifications are not set up on this deployment".
+Browser push works out of the box. On first start the api generates a VAPID key pair and keeps it
+in the database (the private key is encrypted like provider keys when `SECRET_ENCRYPTION_KEY` is
+set); every later start and upgrade reuses it, so existing browser subscriptions keep working.
+Open the bell panel and click "Notify me in this browser".
 
-1. Generate a key pair with the backend's own dependency (`cryptography`):
-
-   ```
-   python - <<'PY'
-   import base64
-   from cryptography.hazmat.primitives import serialization
-   from cryptography.hazmat.primitives.asymmetric import ec
-   k = ec.generate_private_key(ec.SECP256R1())
-   b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()
-   print("VAPID_PRIVATE_KEY=" + b64(k.private_numbers().private_value.to_bytes(32, "big")))
-   print("VAPID_PUBLIC_KEY=" + b64(k.public_key().public_bytes(
-       serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)))
-   PY
-   ```
-
-   (`py_vapid`'s `vapid --gen` also works.)
-2. Key formats: both keys are base64url strings; `VAPID_PRIVATE_KEY` may instead be the path
-   to a PEM file (it must be readable inside the api container).
-3. Set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT` (a `mailto:` or https URL)
-   in `.env`. Compose forwards all three to the api service.
-4. Restart the api so it reads them: `docker compose up -d api`.
-5. Open the bell panel: it should now offer "Notify me in this browser".
+To supply your own keys instead, set `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY` (base64url, or
+`VAPID_PRIVATE_KEY` as a PEM path readable inside the api container) in `.env`, then
+`docker compose up -d api`. Environment keys take precedence and the database is not touched.
+`VAPID_SUBJECT` (a `mailto:` or https URL) is optional; by default it is `mailto:` plus the
+earliest account's email. Changing the keys invalidates every existing browser subscription.
 
 ## Deploy
 

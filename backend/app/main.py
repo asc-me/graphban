@@ -115,6 +115,18 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
 
+    # Browser push key pair (GRPH-1582): generated once and kept in the database, so push
+    # needs no operator setup. Never fatal; a failure leaves push unconfigured.
+    db = SessionLocal()
+    try:
+        from app.services import push
+
+        push.ensure_keys(db)
+    except Exception:  # noqa: BLE001
+        logger.warning("push key ensure failed", exc_info=True)
+    finally:
+        db.close()
+
     # LLM span retention (GRPH-225), once before serving and never fatal: janitorial
     # work on telemetry does not justify taking the box down, and a boot that dies on
     # a DELETE is exactly the "unhandled error takes down every self-host install"

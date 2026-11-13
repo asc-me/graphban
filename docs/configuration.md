@@ -57,15 +57,15 @@ mail is simply not sent, so an invite can be "issued" and never arrive.
 ## Browser notifications (Web Push)
 
 Response Needed alerts can also reach a person as a browser push (GRPH-1528, P75 D4): standard
-Web Push signed with VAPID keys, no third-party push service. With either key empty the bell says
-browser notifications are not set up on this deployment and offers no button; the in-app alert
-works either way. Generate a pair with `vapid --gen` (from `py-vapid`) or any Web Push tool.
+Web Push signed with VAPID keys, no third-party push service. Nothing to set up: the api generates a key pair
+on first start and keeps it in the database. The variables below are optional overrides to supply
+your own keys (environment keys win and the database is untouched). The in-app alert works either way.
 
 | Var | Default | Notes |
 | --- | --- | --- |
-| `VAPID_PUBLIC_KEY` | *(empty)* | Application server key (base64url) the browser subscribes with |
-| `VAPID_PRIVATE_KEY` | *(empty)* | The matching private key: a PEM path or the base64url key |
-| `VAPID_SUBJECT` | `mailto:admin@localhost` | The `sub` claim: a `mailto:` or `https:` contact the push service can reach |
+| `VAPID_PUBLIC_KEY` | *(empty; generated)* | Application server key (base64url) the browser subscribes with |
+| `VAPID_PRIVATE_KEY` | *(empty; generated)* | The matching private key: a PEM path or the base64url key |
+| `VAPID_SUBJECT` | earliest user's `mailto:` | The `sub` claim: a `mailto:` or `https:` contact the push service can reach |
 
 ## Deployment mode and operations
 
