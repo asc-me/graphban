@@ -263,7 +263,7 @@ function PathCountBadge({ projectId, path }: { projectId: string; path: string }
     warn = true;
   } else text = `${row.files} file${row.files === 1 ? "" : "s"}`;
   return (
-    <span data-testid="rules-path-count" className={cn(MONO, "flex-none text-[11px]", warn ? "text-[#ffb454]" : "text-muted-2")}>
+    <span data-testid="rules-path-count" className={cn(MONO, "flex-none text-small", warn ? "text-[#ffb454]" : "text-muted-2")}>
       {warn && "⚠ "}
       {row?.normalised && row.normalised !== trimmed ? `${row.normalised} · ` : ""}
       {text}
