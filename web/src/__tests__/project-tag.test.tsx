@@ -24,7 +24,10 @@ vi.mock("@/features/ProjectContext", () => ({
   useProjectCtx: () => ({ setActiveId: vi.fn() }),
 }));
 
-vi.mock("@/lib/queries", () => ({ keys: { projects: ["projects"] } }));
+vi.mock("@/lib/queries", () => ({
+  keys: { projects: ["projects"] },
+  useConfirmSetup: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
 
 function renderDialog() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -49,7 +52,7 @@ describe("project tag field", () => {
     const user = userEvent.setup();
     renderDialog();
 
-    await user.type(screen.getByPlaceholderText("e.g. Web App"), "Graph Widgets");
+    await user.type(screen.getByPlaceholderText("e.g. Core Platform"), "Graph Widgets");
     await waitFor(() => expect(api.tagSuggestion).toHaveBeenCalledWith("Graph Widgets"));
     await waitFor(() => expect(tagInput().value).toBe("GW"));
   });
@@ -58,12 +61,12 @@ describe("project tag field", () => {
     const user = userEvent.setup();
     renderDialog();
 
-    await user.type(screen.getByPlaceholderText("e.g. Web App"), "Graph Widgets");
+    await user.type(screen.getByPlaceholderText("e.g. Core Platform"), "Graph Widgets");
     await waitFor(() => expect(tagInput().value).toBe("GW"));
 
     await user.clear(tagInput());
     await user.type(tagInput(), "ZED");
-    await user.type(screen.getByPlaceholderText("e.g. Web App"), " Renamed");
+    await user.type(screen.getByPlaceholderText("e.g. Core Platform"), " Renamed");
 
     // A deliberate choice must survive a later edit to the name.
     await waitFor(() => expect(tagInput().value).toBe("ZED"));
@@ -86,7 +89,7 @@ describe("project tag field", () => {
     });
     renderDialog();
 
-    await user.type(screen.getByPlaceholderText("e.g. Web App"), "Product Docs");
+    await user.type(screen.getByPlaceholderText("e.g. Core Platform"), "Product Docs");
     await user.clear(tagInput());
     await user.type(tagInput(), "PRD");
 
@@ -96,7 +99,7 @@ describe("project tag field", () => {
       ).toBeInTheDocument(),
     );
 
-    await user.click(screen.getByRole("button", { name: /create/i }));
+    expect(screen.getByRole("button", { name: /next/i })).toBeDisabled();
     expect(api.createProject).not.toHaveBeenCalled();
   });
 
@@ -104,10 +107,12 @@ describe("project tag field", () => {
     const user = userEvent.setup();
     renderDialog();
 
-    await user.type(screen.getByPlaceholderText("e.g. Web App"), "Graph Widgets");
+    await user.type(screen.getByPlaceholderText("e.g. Core Platform"), "Graph Widgets");
     await waitFor(() => expect(tagInput().value).toBe("GW"));
+    await waitFor(() => expect(screen.getByRole("button", { name: /next/i })).toBeEnabled());
 
-    await user.click(screen.getByRole("button", { name: /create/i }));
+    for (let i = 0; i < 3; i++) await user.click(screen.getByRole("button", { name: /next/i }));
+    await user.click(screen.getByRole("button", { name: /create project/i }));
     await waitFor(() =>
       expect(api.createProject).toHaveBeenCalledWith(
         expect.objectContaining({ name: "Graph Widgets", tag: "GW" }),
