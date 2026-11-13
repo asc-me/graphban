@@ -136,4 +136,37 @@ describe("StageEditor", () => {
     await waitFor(() => expect(api.updateGitops).toHaveBeenCalledWith("core", { reviewer_bar: "forge" }));
     expect(api.setRuleToggles).not.toHaveBeenCalled();
   });
+
+  it("a gitops refusal after the rule batch saved says the rules were saved, not that nothing was", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.setRuleToggles).mockResolvedValue({ toggles: [] });
+    vi.mocked(api.updateGitops).mockRejectedValue(
+      Object.assign(new Error(JSON.stringify({ detail: "reviewer_bar: forge needs a linked forge" })), { status: 422 }),
+    );
+    view();
+    await user.click(screen.getByRole("switch", { name: "Test scope: on" }));
+    await user.selectOptions(await within(screen.getByTestId("rules-edit-gitops-reviewer_bar")).findByLabelText("Reviewer bar"), "forge");
+    await user.click(screen.getByRole("button", { name: /Review changes · 2/ }));
+    await user.type(await screen.findByLabelText("Reason"), "mixed");
+    await user.click(screen.getByTestId("rules-review-save"));
+    const note = await screen.findByTestId("rules-draft-partly-saved");
+    expect(note).toHaveTextContent("The rule changes were saved; the gitops setting was refused: “reviewer_bar: forge needs a linked forge”.");
+    expect(screen.queryByTestId("rules-draft-refused")).not.toBeInTheDocument();
+    expect(api.setRuleToggles).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("rules-edit-gitops-error-reviewer_bar")).toHaveTextContent("forge needs a linked forge");
+  });
+
+  it("a gitops-only refusal says nothing was saved and names the gitops setting", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.updateGitops).mockRejectedValue(
+      Object.assign(new Error(JSON.stringify({ detail: "no forge" })), { status: 422 }),
+    );
+    view();
+    await user.selectOptions(await within(screen.getByTestId("rules-edit-gitops-reviewer_bar")).findByLabelText("Reviewer bar"), "forge");
+    await user.click(screen.getByRole("button", { name: /Review changes/ }));
+    await user.click(await screen.findByTestId("rules-review-save"));
+    expect(await screen.findByTestId("rules-draft-refused")).toHaveTextContent("Nothing was saved. Fix the gitops setting below");
+    expect(screen.queryByTestId("rules-draft-partly-saved")).not.toBeInTheDocument();
+    expect(api.setRuleToggles).not.toHaveBeenCalled();
+  });
 });

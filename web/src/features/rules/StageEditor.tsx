@@ -63,6 +63,8 @@ export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narr
   const [reason, setReason] = React.useState("");
   const [sheetOpen, setSheetOpen] = React.useState(false);
   const [sheetError, setSheetError] = React.useState<string | null>(null);
+  // True when the rule batch saved but the gitops patch after it was refused: the copy must say so.
+  const [rulesSaved, setRulesSaved] = React.useState(false);
 
   const gitopsEditable = !!gitops && gitops.control.writable && gitops.control.state === "local";
   const rules = stageRules(stage);
@@ -121,6 +123,7 @@ export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narr
 
   const firstParamError = Object.values(paramErrors)[0];
   const hasRuleErrors = Object.keys(ruleErrors).length + Object.keys(gitopsErrors).length > 0;
+  const gitopsRefusal = Object.values(gitopsErrors)[0];
 
   function setParam(rule: RuleFlowRule, name: string, value: Params[string]) {
     setDraft((d) => {
@@ -150,6 +153,8 @@ export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narr
     setSheetError(null);
     setRuleErrors({});
     setGitopsErrors({});
+    setRulesSaved(false);
+    let savedRules = false;
     if (entries.length > 0) {
       try {
         await saveRules.mutateAsync({ toggles: entries, reason: reason.trim() });
@@ -160,6 +165,7 @@ export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narr
         return;
       }
       setDraft({});
+      savedRules = true;
     }
     if (Object.keys(patch).length > 0) {
       try {
@@ -167,6 +173,8 @@ export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narr
       } catch (err) {
         const field = Object.keys(patch)[0];
         setGitopsErrors({ [field]: errorDetail(err, "Could not save gitops.") });
+        // The rule batch (if any) is already saved; only the gitops setting is left in the draft.
+        setRulesSaved(savedRules);
         setSheetOpen(false);
         return;
       }
@@ -195,11 +203,15 @@ export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narr
         </Button>
       </div>
       {firstParamError && <p role="alert" className="text-[12px] text-st-blocked">{firstParamError}</p>}
-      {hasRuleErrors && (
-        <p className="text-[12px] text-fg-2" data-testid="rules-draft-refused">
-          Nothing was saved. Fix the rule below and review again; the rest of your draft is kept.
+      {hasRuleErrors && rulesSaved && gitopsRefusal ? (
+        <p className="text-[12px] text-fg-2" data-testid="rules-draft-partly-saved">
+          The rule changes were saved; the gitops setting was refused: “{gitopsRefusal}”. Fix it below and review again.
         </p>
-      )}
+      ) : hasRuleErrors ? (
+        <p className="text-[12px] text-fg-2" data-testid="rules-draft-refused">
+          Nothing was saved. Fix the {gitopsRefusal ? "gitops setting" : "rule"} below and review again; the rest of your draft is kept.
+        </p>
+      ) : null}
 
       {rules.map((r) => {
         const d = draft[r.id];
