@@ -3,7 +3,7 @@ import * as React from "react";
 
 import { api } from "./api";
 import type { OnboardingMark, SetupConfirm } from "./types";
-import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, Item, ItemDetail, LessonFilters, LogExportPatch, RequestItem, RuleToggleWrite, ShardClass } from "./types";
+import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, Item, ItemDetail, LessonFilters, LogExportPatch, RequestItem, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
 
 export const keys = {
   me: ["me"] as const,
@@ -731,6 +731,14 @@ export function useSetRuleToggle(projectId: string) {
   return useMutation({
     mutationFn: ({ ruleId, body }: { ruleId: string; body: RuleToggleWrite }) =>
       api.setRuleToggle(projectId, ruleId, body),
+    onSuccess: () => invalidateRuleToggles(qc),
+  });
+}
+
+export function useSetRuleToggles(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: RuleToggleBatchWrite) => api.setRuleToggles(projectId, body),
     onSuccess: () => invalidateRuleToggles(qc),
   });
 }

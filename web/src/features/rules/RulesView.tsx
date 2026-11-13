@@ -53,10 +53,11 @@ import {
   type Level,
   type MapLayout,
 } from "./levels";
-import { LibraryRuleControls, MemoryWriteModeControl } from "./LibraryRuleControls";
+import { LibraryRuleControls, MemoryWriteModeControl, useCanWriteRules } from "./LibraryRuleControls";
 import { RecommendedSheet, UnmappedSheet, useDialogBehavior } from "./RefusalPanels";
 import { AdminGitopsLink, BudgetCapEditor, GITOPS_RULE_FIELDS, GitopsRuleEditor, useOrgName } from "./RuleEditors";
 import { RuleLevelIcon } from "./RuleLevelIcon";
+import { StageEditor, stageIsEditable } from "./StageEditor";
 
 const PACK_KEY = "pack";
 const stageKey = (id: string) => `s:${id}`;
@@ -949,6 +950,11 @@ function Inspector({
   onClose: () => void;
 }) {
   const dialog = useDialogBehavior<HTMLElement>(onClose);
+  const [editing, setEditing] = React.useState(false);
+  const { activeId } = useProjectCtx();
+  const canWrite = useCanWriteRules(activeId);
+  // Switching stage ends the draft with it; the draft is one stage's.
+  React.useEffect(() => setEditing(false), [sel]);
   const pack = sel === PACK_KEY ? packOf(flow) : null;
   const index = flow.stages.findIndex((s) => stageKey(s.id) === sel);
   const stage = index >= 0 ? flow.stages[index] : null;
@@ -1003,7 +1009,18 @@ function Inspector({
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-3">
         {pack && <PackBody pack={pack} />}
-        {stage && level === "not_used" && (
+        {stage && !editing && stageIsEditable(stage) && canWrite !== false && (
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            data-testid="rules-edit-stage"
+            className="h-[30px] self-start rounded-[8px] border border-control px-3 text-body font-semibold text-fg hover:border-accent"
+          >
+            Edit {stage.title} rules
+          </button>
+        )}
+        {stage && editing && <StageEditor stage={stage} narrow={sheet} onClose={() => setEditing(false)} />}
+        {stage && !editing && level === "not_used" && (
           <div className="flex flex-col gap-1 rounded-[8px] px-3 py-2.5" style={{ border: "1.5px dashed #1e242a" }}>
             <LevelWord level="not_used" className="text-[10px]" />
             <span className="text-[12px] leading-snug text-muted">
@@ -1020,7 +1037,7 @@ function Inspector({
             </span>
           </div>
         )}
-        {rules.map((r) => (
+        {!editing && rules.map((r) => (
           <RuleRow
             key={r.id}
             rule={r}

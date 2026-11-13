@@ -3424,6 +3424,23 @@ export interface RuleToggleWrite {
   reason: string;
 }
 
+/** One rule in a batch write: `on` / `params` null clears the project's value; omitted = no change. */
+export interface RuleToggleBatchEntry {
+  rule_id: string;
+  on?: boolean | null;
+  params?: Record<string, RuleParamValue> | null;
+}
+
+/** `PUT /rules/toggles` (GRPH-1594): several rules under one reason, all-or-nothing. */
+export interface RuleToggleBatchWrite {
+  toggles: RuleToggleBatchEntry[];
+  reason: string;
+}
+
+export interface RuleToggleBatchOut {
+  toggles: RuleToggle[];
+}
+
 export interface RuleStage {
   id: string;
   title: string;
