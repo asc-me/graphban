@@ -333,8 +333,8 @@ export function NewProjectWizard({
                   </p>
                 </div>
                 <div className="rounded-[10px] border border-line-2 bg-surface-2 p-3">
-                  <p className="text-[12.5px] font-semibold">Why the remote matters</p>
-                  <p className="mt-1 text-[12.5px] leading-relaxed text-muted">
+                  <p className="text-body font-semibold">Why the remote matters</p>
+                  <p className="mt-1 text-body leading-relaxed text-muted">
                     gban setup reads the git remote in your checkout and matches it here. Without it, each machine asks which project to use.
                   </p>
                 </div>
@@ -431,15 +431,15 @@ export function NewProjectWizard({
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-[13px] font-semibold">{name}</p>
-                    <p className="font-mono text-[11px] text-faint">
+                    <p className="font-mono text-small text-faint">
                       {tagField.tag} · {repo.trim() ? repoSlug(repo) : "no repository"}
                     </p>
                   </div>
                   <span className="text-st-done">✓</span>
                 </div>
                 <div>
-                  <p className="mb-1.5 text-[12.5px] text-muted">Run this in your checkout:</p>
-                  <div className="flex items-center gap-2 rounded-[8px] border border-line-2 bg-surface-2 px-3 py-2 font-mono text-[12.5px]">
+                  <p className="mb-1.5 text-body text-muted">Run this in your checkout:</p>
+                  <div className="flex items-center gap-2 rounded-[8px] border border-line-2 bg-surface-2 px-3 py-2 font-mono text-body">
                     <span className="flex-1">$ gban setup</span>
                     <button type="button" onClick={copy} className="text-[12px] text-muted hover:text-fg">
                       {copied ? "Copied" : "Copy"}
