@@ -94,10 +94,14 @@ export function TagField({
   tag,
   setTag,
   status,
+  compact = false,
 }: {
   tag: string;
   setTag: (v: string) => void;
   status: TagStatus;
+  /** The New project wizard's look: a 120px mono input and a "Checking…" line while the
+   *  availability call is in flight (GRPH-1587). */
+  compact?: boolean;
 }) {
   return (
     <div>
@@ -114,10 +118,19 @@ export function TagField({
         placeholder="e.g. GRPH"
         maxLength={4}
         aria-invalid={status.kind === "unavailable" || status.kind === "error" || (!!tag && !TAG_FORMAT.test(tag))}
-        className="font-mono uppercase"
+        className={compact ? "w-[120px] font-mono uppercase tracking-wide" : "font-mono uppercase"}
       />
       <p className="mt-1.5 font-mono text-[10px] text-faint" role="status">
-        {tag && !TAG_FORMAT.test(tag) ? (
+        {compact && status.kind === "checking" && TAG_FORMAT.test(tag) ? (
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              aria-hidden="true"
+              className="pw-anim h-2.5 w-2.5 rounded-full border-[1.5px] border-line border-t-muted"
+              style={{ animation: "pwSpin .8s linear infinite" }}
+            />
+            Checking…
+          </span>
+        ) : tag && !TAG_FORMAT.test(tag) ? (
           <span className="text-danger">{TAG_HINT}</span>
         ) : status.kind === "unavailable" ? (
           <span className="text-danger">{status.reason}</span>

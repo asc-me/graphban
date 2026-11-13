@@ -125,7 +125,7 @@ describe("project tag field", () => {
     renderDialog();
 
     await user.type(tagInput(), "GRPH");
-    expect(screen.getByText("GRPH-12")).toBeInTheDocument();
+    expect(await screen.findByText("GRPH-12")).toBeInTheDocument();
     expect(screen.getByText("GRPH-R33")).toBeInTheDocument();
     expect(screen.getByText("GRPH-P4")).toBeInTheDocument();
   });

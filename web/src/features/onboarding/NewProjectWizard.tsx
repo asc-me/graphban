@@ -16,6 +16,7 @@ import { useProjectCtx } from "@/features/ProjectContext";
 import { saveModelCredential } from "@/features/onboarding/QuickStartDialog";
 import { normalizeAddress } from "@/features/onboarding/quickStartProgress";
 import { TagField, useTagField } from "@/features/onboarding/TagField";
+import { type GraphicSpec, HeroDrawing, LogoMark, prefersReducedMotion, WizardKeyframes } from "@/features/onboarding/WizardGraphic";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { keys, useConfirmSetup } from "@/lib/queries";
@@ -32,12 +33,12 @@ const STEP_LABEL: Record<Step, string> = {
 };
 type Model = "offline" | "ollama" | "claude";
 const MODELS: { id: Model; title: string; sub: string; desc: string }[] = [
-  { id: "offline", title: "Offline", sub: "Stub", desc: "Runs as is. Chat is canned and nothing gets graded." },
+  { id: "offline", title: "Offline", sub: "stub", desc: "Runs as is. Chat is canned and nothing gets graded." },
   { id: "ollama", title: "Local", sub: "Ollama", desc: "A model server on your network." },
   { id: "claude", title: "Cloud", sub: "Claude", desc: "Your Anthropic API key." },
 ];
 const MODEL_LABEL: Record<Model, string> = {
-  offline: "Offline · Stub",
+  offline: "Offline · stub",
   ollama: "Local · Ollama",
   claude: "Cloud · Claude",
 };
@@ -57,40 +58,74 @@ function repoSlug(repo: string): string {
 
 const LABEL = "mb-1.5 block font-mono text-[10px] uppercase tracking-wide text-faint";
 
-function Graphic({ step, tag, created, failed }: { step: Step; tag: string; created: boolean; failed: boolean }) {
-  const T = tag || "PROJECT";
-  const caption = created
-    ? `CREATED · ${T}`
-    : failed
-      ? "NOT CREATED"
-      : step === "identity"
-        ? `PROJECT · ${tag || "UNNAMED"}`
-        : step === "repo"
-          ? `REPO → ${T}`
-          : step === "model"
-            ? `MODEL → ${T}`
-            : `REVIEW · ${T}`;
+/** The spec and caption the left panel draws for where the wizard is (GRPH-1587). */
+export function graphicFor(o: {
+  step: Step;
+  name: string;
+  tag: string;
+  repo: string;
+  repoOk: boolean;
+  model: Model;
+  busy: boolean;
+  created: boolean;
+  failed: boolean;
+}): { spec: GraphicSpec; caption: string } {
+  const T = o.tag || "PROJECT";
+  if (o.created) return { spec: { kind: "single", from: "YOU", to: T, lit: true }, caption: `CREATED · ${T}` };
+  if (o.failed) return { spec: { kind: "single", from: "YOU", to: T, broken: true }, caption: "NOT CREATED" };
+  if (o.step === "identity") return { spec: { kind: "pulse", label: T }, caption: `PROJECT · ${o.name.trim() ? T : "UNNAMED"}` };
+  if (o.step === "repo") {
+    const has = !!o.repo.trim();
+    return { spec: { kind: "single", from: "REPO", to: T, lit: has && o.repoOk }, caption: has ? `REPO → ${T}` : "REPO · NONE YET" };
+  }
+  if (o.step === "model") {
+    const sel = MODELS.findIndex((m) => m.id === o.model);
+    return {
+      spec: { kind: "fan", from: T, to: MODELS.map((m) => m.sub.toUpperCase()), sel },
+      caption: `MODEL · ${MODELS[sel].sub.toUpperCase()}`,
+    };
+  }
+  return { spec: { kind: "single", from: "YOU", to: T }, caption: o.busy ? `CREATING · ${T}` : `REVIEW · ${T}` };
+}
+
+function Graphic({ spec, caption, accent, still }: { spec: GraphicSpec; caption: string; accent: string; still: boolean }) {
   return (
-    <div
-      aria-hidden="true"
-      className="hidden w-[380px] shrink-0 flex-col justify-between border-r border-line-2 bg-surface-2 p-6 md:flex"
-    >
-      <div className="flex items-center gap-2">
-        <span className="font-semibold tracking-tight">Graphban</span>
+    <div aria-hidden="true" className="relative hidden w-[380px] shrink-0 overflow-hidden border-r border-line-2 bg-bg md:block">
+      <div className="absolute inset-0">
+        <HeroDrawing spec={spec} still={still} />
+      </div>
+      <div className="absolute left-[22px] top-5 flex items-center gap-2">
+        <LogoMark />
+        <span className="text-lead font-medium tracking-tight text-accent">Graphban</span>
         <span className="font-mono text-[10px] tracking-wide text-faint">LOCAL</span>
       </div>
-      <div className="flex flex-col items-center gap-3">
-        <div
-          className={cn(
-            "flex h-20 w-20 items-center justify-center rounded-[16px] border font-mono text-[18px] font-semibold",
-            failed ? "border-st-blocked text-st-blocked" : created ? "border-accent text-accent" : "border-line-hover text-fg",
-          )}
-        >
-          {tag || "—"}
-        </div>
+      <div className="absolute bottom-5 left-[22px] right-[22px] flex items-center gap-2">
+        <span data-testid="pw-accent-square" className="h-2 w-2 rounded-[2px]" style={{ background: accent }} />
+        <span data-testid="pw-caption" className="font-mono text-[10.5px] tracking-wide text-faint-2">
+          {caption}
+        </span>
       </div>
-      <span className="font-mono text-[10.5px] tracking-wide text-faint">{caption}</span>
     </div>
+  );
+}
+
+function RadioDot({ on }: { on: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn("flex h-4 w-4 items-center justify-center rounded-full border-[1.5px]", on ? "border-accent" : "border-control")}
+    >
+      <span className={cn("h-2 w-2 rounded-full", on ? "bg-accent" : "bg-transparent")} />
+    </span>
+  );
+}
+
+function AlertIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 8v5M12 16h.01" />
+    </svg>
   );
 }
 
@@ -118,6 +153,8 @@ export function NewProjectWizard({
   const [copied, setCopied] = React.useState(false);
   const tagField = useTagField(name);
   const titleRef = React.useRef<HTMLHeadingElement>(null);
+  const nameRef = React.useRef<HTMLInputElement>(null);
+  const [still] = React.useState(prefersReducedMotion);
 
   function resetAll() {
     setReady(false);
@@ -138,8 +175,10 @@ export function NewProjectWizard({
     if (open) resetAll();
   }, [open]);
 
+  // Step one lands on the name field; every other step (and the ready card) on its title.
   React.useEffect(() => {
-    titleRef.current?.focus();
+    if (!ready && step === "identity" && nameRef.current && !nameRef.current.disabled) nameRef.current.focus();
+    else titleRef.current?.focus();
   }, [step, ready]);
 
   const tagValid = TAG_RE.test(tagField.tag);
@@ -218,26 +257,34 @@ export function NewProjectWizard({
   const title = ready ? `${name} is ready.` : COPY[step][0];
   const lede = ready ? "Next, connect the checkout on this machine." : COPY[step][1];
 
-  const summary: [string, string, Step][] = [
-    ["NAME", name, "identity"],
-    ["TAG", tagField.tag, "identity"],
-    ["ACCENT", accent, "identity"],
-    ["REPOSITORY", repo.trim() || "None yet", "repo"],
-    ["MODEL", MODEL_LABEL[model], "model"],
+  const T = tagField.tag;
+  // [key, value, step it edits, mono value]
+  const summary: [string, string, Step, boolean][] = [
+    ["NAME", name, "identity", false],
+    ["TAG", `${T} · ${T}-12, ${T}-R33`, "identity", true],
+    ["ACCENT", accent, "identity", true],
+    ["REPOSITORY", repo.trim() || "None yet", "repo", true],
+    ["MODEL", MODEL_LABEL[model], "model", false],
   ];
+  const graphic = graphicFor({ step, name, tag: T, repo, repoOk, model, busy, created: ready, failed: !!error });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="flex h-[640px] max-h-[92vh] w-[960px] max-w-[96vw] overflow-hidden p-0"
         onKeyDown={onKeyDown}
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          nameRef.current?.focus();
+        }}
         aria-describedby="pw-desc"
       >
         <DialogTitle className="sr-only">New project</DialogTitle>
         <DialogDescription id="pw-desc" className="sr-only">
           Create a project in four steps.
         </DialogDescription>
-        <Graphic step={step} tag={tagField.tag} created={ready} failed={!!error} />
+        <WizardKeyframes />
+        <Graphic spec={graphic.spec} caption={graphic.caption} accent={accent} still={still} />
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className="flex items-center gap-2 py-3.5 pl-6 pr-12">
             <span className="font-mono text-[10px] tracking-wide text-faint">NEW PROJECT</span>
@@ -272,7 +319,12 @@ export function NewProjectWizard({
               })}
             </ol>
           )}
-          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pb-5 pt-5">
+          <div
+            key={ready ? "ready" : step}
+            data-testid="pw-body"
+            className="pw-anim flex min-h-0 flex-1 flex-col gap-[18px] overflow-y-auto px-6 pb-5 pt-[22px]"
+            style={still ? undefined : { animation: "pwEnter .17s ease" }}
+          >
             <div className="flex flex-col gap-1.5">
               <h2 ref={titleRef} tabIndex={-1} className="text-[18px] font-semibold outline-none">
                 {title}
@@ -288,6 +340,7 @@ export function NewProjectWizard({
                   </label>
                   <Input
                     id="pw-name"
+                    ref={nameRef}
                     value={name}
                     disabled={!!createdId}
                     onChange={(e) => setName(e.target.value)}
@@ -297,7 +350,7 @@ export function NewProjectWizard({
                 {createdId ? (
                   <p className="font-mono text-[12px] text-faint">Tag {tagField.tag} is fixed once the project exists.</p>
                 ) : (
-                  <TagField tag={tagField.tag} setTag={tagField.setTag} status={tagField.status} />
+                  <TagField tag={tagField.tag} setTag={tagField.setTag} status={tagField.status} compact />
                 )}
                 <div>
                   <span id="pw-accent" className={cn(LABEL, "mb-2")}>
@@ -357,63 +410,82 @@ export function NewProjectWizard({
             )}
 
             {!ready && step === "model" && (
-              <>
-                <fieldset className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                  <legend className="sr-only">Model</legend>
-                  {MODELS.map((m) => (
-                    <label
+              <div role="radiogroup" aria-label="Model" className="flex flex-col gap-2">
+                {MODELS.map((m) => {
+                  const on = model === m.id;
+                  return (
+                    <div
                       key={m.id}
-                      className={cn(
-                        "flex cursor-pointer flex-col rounded-[10px] border p-3",
-                        model === m.id ? "border-accent/45 bg-accent/5" : "border-line-2 bg-surface-2",
-                      )}
+                      data-testid={`pw-model-${m.id}`}
+                      className={cn("flex flex-col rounded-[10px] border", on ? "border-accent/45 bg-accent/5" : "border-line bg-surface")}
                     >
-                      <span className="flex items-center gap-2">
-                        <input type="radio" name="pw-model" value={m.id} checked={model === m.id} onChange={() => setModel(m.id)} />
-                        <span className="text-[13px] font-semibold">{m.title}</span>
-                        <span className="font-mono text-[10px] text-faint">{m.sub}</span>
-                      </span>
-                      <span className="mt-1 text-[11.5px] text-faint">{m.desc}</span>
-                    </label>
-                  ))}
-                </fieldset>
-                {model === "ollama" && (
-                  <div>
-                    <label htmlFor="pw-ollama" className={LABEL}>
-                      Ollama URL
-                    </label>
-                    <Input id="pw-ollama" value={ollamaUrl} onChange={(e) => setOllamaUrl(e.target.value)} placeholder="http://localhost:11434" />
-                    <p className="mt-1.5 text-[12px] text-faint">Under compose this is host.docker.internal. Natively it is localhost.</p>
-                  </div>
-                )}
-                {model === "claude" && (
-                  <div>
-                    <label htmlFor="pw-claude" className={LABEL}>
-                      Anthropic API key
-                    </label>
-                    <Input
-                      id="pw-claude"
-                      type="password"
-                      autoComplete="off"
-                      value={claudeKey}
-                      onChange={(e) => setClaudeKey(e.target.value)}
-                      placeholder="sk-ant-…"
-                    />
-                    <p className="mt-1.5 text-[12px] text-faint">Stored encrypted. Never shown again after you save.</p>
-                  </div>
-                )}
-              </>
+                      <button
+                        type="button"
+                        role="radio"
+                        aria-checked={on}
+                        onClick={() => setModel(m.id)}
+                        className="grid grid-cols-[16px_minmax(0,1fr)] items-center gap-x-3 gap-y-[3px] px-3.5 py-3 text-left text-fg"
+                      >
+                        <RadioDot on={on} />
+                        <span className="flex items-baseline gap-2">
+                          <span className="text-[13.5px] font-semibold">{m.title}</span>
+                          <span className="font-mono text-[10.5px] text-faint">{m.sub}</span>
+                        </span>
+                        <span />
+                        <span className="text-[12px] leading-snug text-muted">{m.desc}</span>
+                      </button>
+                      {on && m.id === "ollama" && (
+                        <div className="pw-anim flex flex-col gap-1.5 pb-3 pl-[42px] pr-3.5" style={still ? undefined : { animation: "pwReveal .24s ease-out" }}>
+                          <label htmlFor="pw-ollama" className={cn(LABEL, "mb-0")}>
+                            Ollama URL
+                          </label>
+                          <Input
+                            id="pw-ollama"
+                            value={ollamaUrl}
+                            onChange={(e) => setOllamaUrl(e.target.value)}
+                            placeholder="http://localhost:11434"
+                            spellCheck={false}
+                            className="h-[34px] bg-bg font-mono text-[12px]"
+                          />
+                          <p className="text-[11.5px] text-faint">Under compose this is host.docker.internal. Natively it is localhost.</p>
+                        </div>
+                      )}
+                      {on && m.id === "claude" && (
+                        <div className="pw-anim flex flex-col gap-1.5 pb-3 pl-[42px] pr-3.5" style={still ? undefined : { animation: "pwReveal .24s ease-out" }}>
+                          <label htmlFor="pw-claude" className={cn(LABEL, "mb-0")}>
+                            Anthropic API key
+                          </label>
+                          <Input
+                            id="pw-claude"
+                            type="password"
+                            autoComplete="off"
+                            value={claudeKey}
+                            onChange={(e) => setClaudeKey(e.target.value)}
+                            placeholder="sk-ant-…"
+                            spellCheck={false}
+                            className="h-[34px] bg-bg font-mono text-[12px]"
+                          />
+                          <p className="text-[11.5px] text-faint">Stored encrypted. Never shown again after you save.</p>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             )}
 
             {!ready && step === "review" && (
               <>
-                <dl className="m-0">
-                  {summary.map(([k, v, st], i) => (
-                    <div key={k} className={cn("flex items-center gap-3 py-2.5", i > 0 && "border-t border-line-2")}>
-                      <dt className="w-28 font-mono text-[10px] tracking-wide text-faint">{k}</dt>
-                      <dd className="m-0 flex min-w-0 flex-1 items-center gap-2 truncate text-[13px]">
-                        {k === "ACCENT" && <span className="h-3.5 w-3.5 rounded-[4px]" style={{ background: accent }} />}
-                        {v}
+                <dl data-testid="pw-summary" className="m-0 flex flex-col overflow-hidden rounded-[12px] border border-line bg-surface">
+                  {summary.map(([k, v, st, mono], i) => (
+                    <div
+                      key={k}
+                      className={cn("grid grid-cols-[96px_minmax(0,1fr)_auto] items-baseline gap-3 px-3.5 py-[11px]", i > 0 && "border-t border-line-2")}
+                    >
+                      <dt className="font-mono text-[10px] tracking-wide text-faint">{k}</dt>
+                      <dd className="m-0 flex min-w-0 items-center gap-2">
+                        {k === "ACCENT" && <span className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: accent }} />}
+                        <span className={cn("truncate text-body", mono && "font-mono", v === "None yet" ? "text-faint" : "text-fg")}>{v}</span>
                       </dd>
                       {createdId && st === "identity" ? (
                         <span className="text-[12px] text-faint">Created</span>
@@ -423,7 +495,7 @@ export function NewProjectWizard({
                           aria-label={`Edit ${k.toLowerCase()}`}
                           disabled={busy}
                           onClick={() => go(st)}
-                          className="text-[12px] text-muted hover:text-fg"
+                          className="text-[12px] text-accent hover:text-accent-hi disabled:opacity-50"
                         >
                           Edit
                         </button>
@@ -432,7 +504,8 @@ export function NewProjectWizard({
                   ))}
                 </dl>
                 {error && (
-                  <p role="alert" className="text-[12px] text-st-blocked">
+                  <p role="alert" className="flex items-center gap-[7px] text-body text-danger">
+                    <AlertIcon />
                     {error}
                   </p>
                 )}
@@ -441,30 +514,39 @@ export function NewProjectWizard({
 
             {ready && (
               <>
-                <div className="flex items-center gap-3 rounded-[10px] border border-line-2 bg-surface-2 p-3">
+                <div className="flex items-center gap-3 rounded-[12px] border border-line bg-surface px-4 py-3.5">
                   <span
-                    className="flex h-10 w-10 items-center justify-center rounded-[10px] font-mono text-[12px] font-semibold text-black"
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] font-mono text-small font-semibold text-bg"
                     style={{ background: accent }}
                   >
                     {tagField.tag}
                   </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-[13px] font-semibold">{name}</p>
-                    <p className="font-mono text-small text-faint">
+                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <p className="truncate text-lead font-semibold">{name}</p>
+                    <p className="font-mono text-small text-muted">
                       {tagField.tag} · {repo.trim() ? repoSlug(repo) : "no repository"}
                     </p>
                   </div>
-                  <span className="text-st-done">✓</span>
+                  <span className="font-mono text-[12px] text-st-done">✓</span>
                 </div>
-                <div>
-                  <p className="mb-1.5 text-body text-muted">Run this in your checkout:</p>
-                  <div className="flex items-center gap-2 rounded-[8px] border border-line-2 bg-surface-2 px-3 py-2 font-mono text-body">
-                    <span className="flex-1">$ gban setup</span>
-                    <button type="button" onClick={copy} className="text-[12px] text-muted hover:text-fg">
+                <div className="flex flex-col gap-2">
+                  <p className="text-[13px] text-fg-2">Run this in your checkout:</p>
+                  <div className="flex h-[38px] items-center gap-2.5 rounded-[8px] border border-line-2 bg-surface pl-3 pr-1.5 font-mono text-[12px]">
+                    <span className="flex-1 text-fg-2">
+                      <span className="text-faint">$</span> gban setup
+                    </span>
+                    <button
+                      type="button"
+                      onClick={copy}
+                      className={cn(
+                        "h-[26px] rounded-[6px] border border-control bg-surface-2 px-2 font-mono text-small hover:border-control",
+                        copied ? "text-st-done" : "text-fg-2",
+                      )}
+                    >
                       {copied ? "Copied" : "Copy"}
                     </button>
                   </div>
-                  <p className="mt-1.5 text-[12px] text-faint">
+                  <p className="text-[12px] text-faint">
                     It reads the git remote and connects this machine to {tagField.tag || "the project"}.
                   </p>
                 </div>
@@ -472,37 +554,45 @@ export function NewProjectWizard({
             )}
           </div>
 
-          <div className="flex items-center justify-between border-t border-line-2 px-6 py-3">
-            {ready ? (
-              <>
-                <Button type="button" variant="outline" size="sm" onClick={another}>
-                  Create another
-                </Button>
-                <Button type="button" size="sm" onClick={openProject}>
-                  Open project
-                </Button>
-              </>
-            ) : (
-              <>
-                <Button type="button" variant="outline" size="sm" onClick={() => onOpenChange(false)}>
-                  Cancel
-                </Button>
-                <div className="flex gap-2">
-                  <Button type="button" variant="outline" size="sm" disabled={idx <= 0 || busy} onClick={() => go(STEPS[idx - 1])}>
-                    Back
-                  </Button>
-                  {step === "repo" && !repo.trim() && (
-                    <Button type="button" variant="outline" size="sm" onClick={() => setStep("model")}>
-                      Skip
-                    </Button>
-                  )}
-                  <Button type="button" size="sm" disabled={!okFor[step] || busy} onClick={next}>
-                    {step === "review" ? (busy ? "Creating…" : "Create project") : "Next →"}
-                  </Button>
-                </div>
-              </>
+          <footer data-testid="pw-footer" className="flex items-center gap-2 border-t border-line-2 py-3 pl-3.5 pr-4">
+            {!ready && (
+              <Button type="button" variant="ghost" size="sm" className="h-[34px] text-[13px]" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
             )}
-          </div>
+            <span className="flex-1" />
+            {!ready && step === "repo" && !repo.trim() && (
+              <Button type="button" variant="ghost" size="sm" className="h-[34px] text-[13px]" onClick={() => setStep("model")}>
+                Skip
+              </Button>
+            )}
+            {!ready && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-[34px] border-control bg-transparent text-[13px]"
+                disabled={idx <= 0 || busy}
+                onClick={() => go(STEPS[idx - 1])}
+              >
+                <span aria-hidden="true">←</span> Back
+              </Button>
+            )}
+            {ready && (
+              <Button type="button" variant="outline" size="sm" className="h-[34px] border-control bg-transparent text-[13px]" onClick={another}>
+                Create another
+              </Button>
+            )}
+            {ready ? (
+              <Button type="button" size="sm" className="h-[34px] px-[15px] text-[13px]" onClick={openProject}>
+                Open project
+              </Button>
+            ) : (
+              <Button type="button" size="sm" className="h-[34px] px-[15px] text-[13px]" disabled={!okFor[step] || busy} onClick={next}>
+                {step === "review" ? (busy ? "Creating…" : "Create project") : "Next →"}
+              </Button>
+            )}
+          </footer>
         </div>
       </DialogContent>
     </Dialog>
