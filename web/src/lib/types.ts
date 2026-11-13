@@ -77,6 +77,8 @@ export type SignupMode = "open" | "invite_only" | "closed";
 export interface AppConfig {
   hosted_mode: boolean;
   signup_mode: SignupMode;
+  /** False on a box with zero users (GRPH-1581): the login page opens on sign-up. */
+  has_users?: boolean;
 }
 
 /**

@@ -226,3 +226,20 @@ def test_platform_invites_do_not_leak_into_org_invite_list(client, operator):
     client.post("/api/admin/invites", json={"email": "outside@example.com"}, headers=operator)
     org_invites = client.get(f"/api/orgs/{org['id']}/invites", headers=operator).json()
     assert org_invites == []
+
+
+def test_config_has_users_true_when_a_user_exists(client):
+    """GRPH-1581: a box with users opens on Sign in."""
+    body = client.get("/api/config").json()
+    assert body["has_users"] is True
+    assert set(body) == {"hosted_mode", "signup_mode", "has_users"}  # a bare flag, nothing about who
+
+
+def test_config_has_users_false_on_a_zero_user_box():
+    """GRPH-1581: no `client` fixture, so no lifespan seed — the DB really has zero users."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    body = TestClient(app).get("/api/config").json()  # no `with`: lifespan (the seed) not run
+    assert body["has_users"] is False
