@@ -33,6 +33,10 @@ PROBE_EXTRA: dict[str, dict] = {
     # enum in the schema, so the generated dummy cannot know. One entry, so the route gets
     # asked the question instead of sitting here at 422 looking covered.
     "PUT /api/projects/{project_id}/members/{user_id}": {"access": "read"},
+    # The batch toggle write refuses a missing reason and an empty list before it looks at the
+    # project, so the schema's bare minimum (no reason, no entries) never reaches the org check.
+    "PUT /api/rules/toggles": {"reason": "cross-tenant probe",
+                               "toggles": [{"rule_id": "probe.rule", "on": True}]},
 }
 
 #: Deliberately empty. Every project-scoped write blocks a cross-org caller today; an entry
