@@ -279,3 +279,20 @@ def test_helper_does_not_reexec_when_unchanged(tagged_repo, tmp_path):
 def test_status_carries_helper_sha(tmp_path):
     got = ch.handle({"op": "status"}, repo=tmp_path, dest=tmp_path)
     assert got["helper_sha"] == ch.STARTUP_SHA and got["helper_sha"]
+
+
+def test_compose_forwards_every_vapid_setting_to_the_api():
+    """Sabotage the CALL: GRPH-1579 — api.environment is an explicit list, so a Settings
+    field missing from it can never be set from .env on a Compose install."""
+    import yaml
+
+    from app.config import Settings
+
+    env = yaml.safe_load((REPO / "docker-compose.yml").read_text(encoding="utf-8"))[
+        "services"
+    ]["api"]["environment"]
+    fields = [f for f in Settings.model_fields if f.startswith("vapid_")]
+    assert len(fields) == 3
+    for f in fields:
+        assert f.upper() in env, f"{f.upper()} is not forwarded in api.environment"
+        assert f"${{{f.upper()}:-" in env[f.upper()]
