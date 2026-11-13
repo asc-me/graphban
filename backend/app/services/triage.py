@@ -133,7 +133,7 @@ def _blocks(db: Session, wait: Item) -> dict:
 def _blocker_rows(db: Session, project_id: str, now) -> list[dict]:
     ctx = prio.context(db, project_id)
     rows = []
-    for b in waits_svc.triage_blockers(db, project_id):
+    for b in waits_svc.triage_blockers(db, project_id, include_open_questions=True):
         item = db.get(Item, keys.resolve_item(db, b["id"]) or b["id"])
         if item is None:
             continue
