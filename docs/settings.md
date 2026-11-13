@@ -134,7 +134,7 @@ exporter gave up on, never rows the sweep took first.
 
 ### Browser notifications (VAPID)
 
-Response Needed alerts can also reach a person as a browser push (GRPH-1528, P75 D4). It is standard Web Push with VAPID keys; no third-party push service. The in-app alert exists whether or not push works.
+Response Needed alerts can also reach a person as a browser push (GRPH-1528, P75 D4). It is standard Web Push with VAPID keys; no third-party push service. The in-app alert exists whether or not push works. Push needs the site served over HTTPS (or opened on localhost); over plain http the bell shows in-app alerts only (see `docs/deploy.md`, Browser push).
 
 Nothing needs setting: the server generates a key pair on its first start and keeps it in the database, reusing it on every start and upgrade (GRPH-1582). The variables below are optional overrides for supplying your own keys.
 

@@ -105,6 +105,10 @@ keeps it in the database (`vapid_keys`; the private key is encrypted at rest whe
 same pair, so existing browser subscriptions keep working. Open the bell panel and it offers
 "Notify me in this browser". The push `sub` claim is `mailto:` the first account's email.
 
+Browser push needs the site served over HTTPS (or opened on `localhost`): browsers expose
+service workers only in a secure context. Over plain `http://` the bell says "Browser
+notifications need this site on HTTPS" and shows in-app alerts only.
+
 Set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT` in `.env` only to supply your
 own keys or contact (Compose forwards all three to the api; restart it with
 `docker compose up -d api`). With both keys set the stored pair is ignored and left alone.
