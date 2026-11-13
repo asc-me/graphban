@@ -140,7 +140,7 @@ export function RuleReviewSheet({
                   {p.name}: {showValue(p.before)} → {showValue(p.after)}
                 </span>
               ))}
-              <span className={cn(MONO, "text-[11px] text-muted")} data-testid="rules-review-source">
+              <span className={cn(MONO, "text-small text-muted")} data-testid="rules-review-source">
                 source: {c.sourceBefore} → {c.sourceAfter}
               </span>
               <ChangeNote change={c} />
