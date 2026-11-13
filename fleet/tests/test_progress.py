@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from gbfleet.adapters import ADAPTERS  # noqa: E402
 from gbfleet.observe import LOG_FILE  # noqa: E402
 from gbfleet.progress import NEVER_WROTE, Output  # noqa: E402
+from gbfleet import supervisor  # noqa: E402
 from gbfleet.supervisor import Limits, up  # noqa: E402
 
 from test_supervisor import _factory, _seats, _server  # noqa: E402
@@ -176,7 +177,7 @@ def test_a_child_that_produces_nothing_is_reported_quiet(
 
 
 def test_a_child_that_worked_and_then_stalled_is_reported_with_a_duration(
-    git_repo: Path, tmp_path: Path, scripts, state: Path
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch
 ):
     """The realistic stuck child, and the one the test above does NOT cover.
 
@@ -186,10 +187,27 @@ def test_a_child_that_worked_and_then_stalled_is_reported_with_a_duration(
     and the one an operator most needs named.
     """
     workspace = tmp_path / "ws"
+    release = scripts["talks_until_released"].parent / "release"
+    original = supervisor._watch_output
+    seen = {"output": False}
+
+    def watch_then_release(wave, children, limits, **kw):
+        # GRPH-1608: the child stalls until the supervisor has REPORTED it quiet, not for
+        # a fixed 1.5 s a loaded runner can spend before its first sample. Output must be
+        # on disk BEFORE this sample, so anything reported from here on is the numeric
+        # silence path and never NEVER_WROTE standing in for it.
+        logs = workspace / "logs"
+        if not seen["output"] and logs.exists():
+            seen["output"] = any(p.stat().st_size for p in logs.rglob("stdout.log"))
+        original(wave, children, limits, **kw)
+        if seen["output"] and wave.silent:
+            release.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(supervisor, "_watch_output", watch_then_release)
     wave = up(
         git_repo,
         _seats(1),
-        _factory(scripts, "talks_then_stalls"),
+        _factory(scripts, "talks_until_released"),
         _server(workspace),
         limits=Limits(max_workers=1, quiet_after=0.2),
         state=state,

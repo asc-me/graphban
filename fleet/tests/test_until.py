@@ -1501,11 +1501,26 @@ def test_until_waits_for_room_instead_of_spawning_into_a_full_machine(
     workspace = tmp_path / "ws"
     planner, supervisor = _clients(workspace, clusters=4, workers=3, sticky_clusters=True)
     monkeypatch.setattr(hostos, "available_memory", lambda: headroom.RESERVE)
+
+    # GRPH-1608: the live child is held until the gate has refused, not for a 1.0 s wall
+    # clock a loaded runner can spend before the loop comes round to the next spawn — at
+    # which point nothing is live, the first child is never gated, and nothing is refused.
+    # The wall clock and the script's own 10 s cap only bound a sabotaged run.
+    release = scripts["works_until_released"].parent / "release"
+    refuse = until._room_refusal
+
+    def refuse_then_release(wave, room, live_n):
+        reason = refuse(wave, room, live_n)
+        if reason is not None:
+            release.write_text("", encoding="utf-8")
+        return reason
+
+    monkeypatch.setattr(until, "_room_refusal", refuse_then_release)
     result = run(
-        git_repo, _factory(scripts, "sleeper"),
+        git_repo, _factory(scripts, "works_until_released"),
         planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
         state=state, workspace=workspace, poll=0.05, empty_ticks=3,
-        limits=Limits(max_workers=4, max_children=2, child_wall_clock=1.0),
+        limits=Limits(max_workers=4, max_children=2, child_wall_clock=15.0),
     )
     payload = result.as_json()
     assert payload["gated"], "a live child on a full machine must hold the next spawn"
@@ -2969,7 +2984,7 @@ def test_a_row_whose_ci_run_is_in_progress_gets_no_reviewer_and_waits(
     gets no reviewer; until waits (the one CI wait, GRPH-1392's) and does not exit
     `review-unsigned` because of it."""
     from gbfleet import until
-    monkeypatch.setattr(until, "ci_verdict", lambda *a: ("pending", "89a0225d2552", ""))
+    monkeypatch.setattr(until_mod, "ci_verdict", lambda *a: ("pending", "89a0225d2552", ""))
     workspace = tmp_path / "ws"
     roles: list[str] = []
     planner, supervisor = _clients(

@@ -420,6 +420,22 @@ def scripts(tmp_path: Path) -> dict[str, Path]:
         "(here / 'builder-exited').write_text('', encoding='utf-8')\n",
     )
 
+    # `talks_then_stalls` held open by the test instead of by a 1.5 s budget (GRPH-1608).
+    # Silence is counted from the supervisor SAMPLE that first saw the output, not from
+    # the write, so on a loaded host the first sample can land late enough that no later
+    # one fits inside a fixed stall. This one stays quiet until the test has seen the
+    # quiet reported; the 10 s cap only bounds a sabotaged run.
+    write(
+        "talks_until_released",
+        "import pathlib, sys, time\n"
+        "here = pathlib.Path(__file__).resolve().parent\n"
+        "sys.stdout.write('starting work\\n')\n"
+        "sys.stdout.flush()\n"
+        "end = time.time() + 10\n"
+        "while time.time() < end and not (here / 'release').exists():\n"
+        "    time.sleep(0.02)\n",
+    )
+
     # Leaves an uncommitted diff and keeps running, so a partition can interrupt it with
     # work in the tree — the case where "the work survives, the claim does not" has
     # something to survive.
