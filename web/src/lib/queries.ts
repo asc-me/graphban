@@ -690,6 +690,35 @@ export function useRuleToggleLastChange(projectId: string, ruleId: string) {
   });
 }
 
+/** Per-prefix file counts for a path param; a failed count reads as "can't count", never 0. */
+export function usePathCounts(projectId: string, paths: string[], enabled = true) {
+  return useQuery({
+    queryKey: ["path-counts", projectId, paths],
+    queryFn: () => api.pathCounts(projectId, paths),
+    enabled: !!projectId && enabled && paths.length > 0,
+    retry: false,
+  });
+}
+
+export function useExclusiveAreasPreview(projectId: string, paths: string[], enabled = true) {
+  return useQuery({
+    queryKey: ["exclusive-preview", projectId, paths],
+    queryFn: () => api.exclusiveAreasPreview(projectId, paths),
+    enabled: !!projectId && enabled && paths.length > 0,
+    retry: false,
+  });
+}
+
+/** Every `set_rule_toggle` event on one rule in this project, newest first: the full trail. */
+export function useRuleHistory(projectId: string, ruleId: string, enabled: boolean) {
+  const q: EventsQuery = { projectId, action: "set_rule_toggle", targetType: "rule", targetId: ruleId, limit: 50 };
+  return useQuery({
+    queryKey: keys.events(q),
+    queryFn: async () => (await api.events(q)).results,
+    enabled: !!projectId && enabled,
+  });
+}
+
 function invalidateRuleToggles(qc: ReturnType<typeof useQueryClient>) {
   // The map draws the toggle (used / NOT USED) from the flow; the row's "changed by" from events.
   qc.invalidateQueries({ queryKey: ["rules-flow"] });

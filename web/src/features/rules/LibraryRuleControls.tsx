@@ -16,19 +16,22 @@ import { Input } from "@/components/ui/input";
 import { RefusalRuleLink } from "@/features/activity/RefusalRuleLink";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
+import { consoleHref, settingsPath } from "@/lib/routes";
 import { errorDetail, errorRuleId, isRefusal } from "@/lib/errors";
 import {
   useGitops,
-  useRuleToggleLastChange,
+  useMe,
+  useMembers,
   useRuleToggles,
   useSetMemoryWriteMode,
   useSetRuleToggle,
 } from "@/lib/queries";
-import { relTime } from "@/lib/relTime";
-import type { RuleFlowRule, RuleParamValue, RuleToggleSource, RuleToggleWrite, TestScopeMode } from "@/lib/types";
+import type { RuleFlowRule, RuleParamValue, RuleToggleWrite, TestScopeMode } from "@/lib/types";
 
-import { toggleSourceLabel } from "./levels";
 import { useOrgName } from "./RuleEditors";
+import { RuleHistory } from "./RuleHistory";
+import { inheritsLabel, ReadOnlyReason, RuleSource, SourceChip } from "./RuleSource";
+import { registerEnum, RuleValueEditor } from "./RuleValueEditor";
 
 /** GRPH-1405: the test-scope rule's one choice. Mirrors `rule_toggles.TEST_SCOPE_MODES`. */
 export const TEST_SCOPE_RULE = "build.test_scope";
@@ -41,6 +44,8 @@ export const TEST_SCOPE_MODES: { value: TestScopeMode; label: string; explain: s
     explain: "The builder runs the tests it changed, the module's tests and the sabotage check; the PR's CI runs the full suites.",
   },
 ];
+
+registerEnum(TEST_SCOPE_RULE, "mode", TEST_SCOPE_MODES.map((m) => ({ ...m, risky: m.value === "agent_targeted" })), "Where the test suites run");
 
 const MONO = "font-mono";
 const note = "text-[11.5px] leading-snug text-muted";
@@ -125,29 +130,30 @@ export function MemoryWriteModeControl({ rule }: { rule: RuleFlowRule }) {
         />
       )}
       {error !== null && <ToggleError err={error} />}
-      <LastChange ruleId={rule.id} />
+      <RuleHistory ruleId={rule.id} />
     </div>
   );
 }
 
-function SourceChip({ source, testId }: { source: RuleToggleSource | string | null | undefined; testId: string }) {
-  const set = source === "project" || source === "org";
-  return (
-    <span
-      data-testid={testId}
-      className={cn(MONO, "rounded-[4px] px-1.5 text-meta tracking-[0.04em]")}
-      style={{
-        border: `1px ${set ? "solid" : "dashed"} ${source === "project" ? "rgba(167,139,250,.42)" : "#626c75"}`,
-        color: source === "project" ? "#c9b8ff" : "#dfe3e7",
-      }}
-    >
-      {toggleSourceLabel(source)}
-    </span>
-  );
+/** Mirrors `rule_toggles.PROJECT_ADMIN_ROLES`: the roles that may set a project's rule toggle. */
+export const RULE_WRITER_ROLES = ["owner", "admin"];
+
+/**
+ * Whether this person can write the project's toggles, known up front so a member who can't
+ * sees text with a link instead of live editors that end in a 403 (`rules.toggle_needs_admin`).
+ * `null` while either read is outstanding or failed: the editors show and the server decides.
+ */
+export function useCanWriteRules(projectId: string): boolean | null {
+  const { data: me } = useMe();
+  const { data: members } = useMembers(projectId);
+  if (!me || !members) return null;
+  const role = members.find((m) => m.user.id === me.id)?.role;
+  return !!role && RULE_WRITER_ROLES.includes(role);
 }
 
 function ToggleBody({ rule }: { rule: RuleFlowRule }) {
   const { activeId } = useProjectCtx();
+  const canWrite = useCanWriteRules(activeId);
   const { data: gitops } = useGitops(activeId);
   const { data: toggles } = useRuleToggles(activeId);
   const toggle = toggles?.toggles.find((t) => t.rule_id === rule.id);
@@ -157,8 +163,11 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
   const on = rule.value === true;
   const params: Params = (rule.params?.value as Params | null) ?? {};
   const locked = !!rule.locked;
+  const notWritable = !locked && canWrite === false;
+  const readOnly = locked || notWritable;
 
-  const [draftParams, setDraftParams] = React.useState<Record<string, string>>(() => paramDrafts(params));
+  const [draftParams, setDraftParams] = React.useState<Params>(() => structuredClone(params));
+  const [paramErrors, setParamErrors] = React.useState<Record<string, string>>({});
   const [pending, setPending] = React.useState<Pending | null>(null);
   const [reason, setReason] = React.useState("");
   const setProject = useSetRuleToggle(activeId);
@@ -168,7 +177,8 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
   // A refetched flow (another person's change, or ours) resets the param inputs to what holds.
   const paramsKey = JSON.stringify(params);
   React.useEffect(() => {
-    setDraftParams(paramDrafts(JSON.parse(paramsKey) as Params));
+    setDraftParams(JSON.parse(paramsKey) as Params);
+    setParamErrors({});
   }, [paramsKey]);
 
   function ask(p: Pending) {
@@ -190,20 +200,31 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
     setProject.mutate({ ruleId: rule.id, body }, opts);
   }
 
-  const parsed = parseParams(params, draftParams);
-  const paramsDirty = parsed.ok && JSON.stringify(parsed.value) !== paramsKey;
+  const cleaned = cleanParams(draftParams);
+  const firstError = Object.values(paramErrors)[0];
+  const paramsDirty = !firstError && JSON.stringify(cleaned) !== paramsKey;
+  const orgScoped = !!gitops?.org_id;
+  const inherits = inheritsLabel(orgScoped ? orgName : null);
 
   return (
     <div className="flex flex-col gap-2 rounded-[8px] border border-[#2a333a] bg-bg p-2.5" data-testid="rules-toggle">
       <div className="flex items-center gap-2">
         <span className={cn(MONO, "text-[10px] text-muted-2")}>{on ? "ON" : "OFF"}</span>
         <span className="flex-1" />
-        <SourceChip source={rule.source} testId="rules-toggle-source" />
+        <SourceChip source={rule.source} locked={locked} testId="rules-toggle-source" />
       </div>
 
       {locked ? (
-        <span className="text-[12px] text-fg-2" data-testid="rules-toggle-locked">
-          set by org {orgName} · locked
+        <span data-testid="rules-toggle-locked">
+          <ReadOnlyReason href={consoleHref("/rules")} linkText="Change it on the org console">
+            set by org {orgName} · locked.
+          </ReadOnlyReason>
+        </span>
+      ) : notWritable ? (
+        <span data-testid="rules-toggle-not-writable">
+          <ReadOnlyReason href={settingsPath("project/members")} linkText="Ask an owner or admin">
+            {on ? "On" : "Off"} · only the project's owner or an admin can change this rule.
+          </ReadOnlyReason>
         </span>
       ) : (
         <button
@@ -228,61 +249,45 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
           <div className="flex items-center gap-2">
             <span className={cn(MONO, "text-[10px] text-muted-2")}>params</span>
             <span className="flex-1" />
-            <SourceChip source={rule.params?.source} testId="rules-toggle-params-source" />
+            <RuleSource
+              source={rule.params?.source}
+              locked={locked}
+              testId="rules-toggle-params-source"
+              inherits={inherits}
+              disabled={saving || !!pending}
+              onReset={readOnly ? undefined : () => ask({ body: { params: null }, what: `Reset to ${inherits}` })}
+            />
           </div>
           {Object.entries(params).map(([k, v]) =>
-            locked ? (
-              <span key={k} className={cn(MONO, "text-[12px] text-fg-2")}>
-                {k} = {String(v)}
-              </span>
-            ) : rule.id === TEST_SCOPE_RULE && k === "mode" ? (
-              <div key={k} role="radiogroup" aria-label="Where the test suites run" className="flex flex-col gap-1.5" data-testid="rules-test-scope">
-                {TEST_SCOPE_MODES.map((m) => (
-                  <label key={m.value} className="flex items-start gap-2 text-[12px] text-fg-2">
-                    <input
-                      type="radio"
-                      name={`${rule.id}-mode`}
-                      value={m.value}
-                      aria-label={m.label}
-                      checked={(draftParams[k] ?? String(v)) === m.value}
-                      onChange={() => setDraftParams({ ...draftParams, [k]: m.value })}
-                    />
-                    <span>
-                      <span className="text-fg">{m.label}</span>
-                      <span className="block text-muted-2">{m.explain}</span>
-                    </span>
-                  </label>
-                ))}
-              </div>
-            ) : typeof v === "boolean" ? (
-              <label key={k} className={cn(MONO, "flex items-center gap-2 text-[12px] text-fg-2")}>
-                <input
-                  type="checkbox"
-                  aria-label={k}
-                  checked={draftParams[k] === "true"}
-                  onChange={(e) => setDraftParams({ ...draftParams, [k]: String(e.target.checked) })}
-                />
-                {k}
-              </label>
+            readOnly ? (
+              <ReadOnlyReason key={k}>
+                <span className={MONO}>
+                  {k} = {Array.isArray(v) ? v.join(", ") : typeof v === "object" ? JSON.stringify(v) : String(v)}
+                </span>
+              </ReadOnlyReason>
             ) : (
-              <label key={k} className={cn(MONO, "flex items-center gap-2 text-[12px] text-fg-2")}>
-                <span className="w-28 flex-none break-all">{k}</span>
-                <Input
-                  aria-label={k}
-                  inputMode={typeof v === "number" ? "numeric" : undefined}
-                  value={draftParams[k] ?? ""}
-                  onChange={(e) => setDraftParams({ ...draftParams, [k]: e.target.value })}
-                />
-              </label>
+              <RuleValueEditor
+                key={k}
+                ruleId={rule.id}
+                name={k}
+                value={draftParams[k] ?? v}
+                onChange={(nv) => setDraftParams((d) => ({ ...d, [k]: nv }))}
+                onError={(m) =>
+                  setParamErrors((e) => {
+                    const { [k]: _drop, ...rest } = e;
+                    return m ? { ...rest, [k]: m } : rest;
+                  })
+                }
+              />
             ),
           )}
-          {!parsed.ok && <p role="alert" className="text-[12px] text-st-blocked">{parsed.error}</p>}
-          {!locked && paramsDirty && !pending && (
+          {firstError && <p role="alert" className="text-[12px] text-st-blocked">{firstError}</p>}
+          {!readOnly && paramsDirty && !pending && (
             <Button
               size="sm"
               variant="outline"
               className="self-start"
-              onClick={() => parsed.ok && ask({ body: { params: parsed.value }, what: "Change params" })}
+              onClick={() => ask({ body: { params: cleaned }, what: "Change params" })}
             >
               Change params
             </Button>
@@ -300,13 +305,13 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
           onCancel={() => {
             setPending(null);
             setError(null);
-            setDraftParams(paramDrafts(params));
+            setDraftParams(structuredClone(params));
           }}
         />
       )}
       {error !== null && <ToggleError err={error} />}
 
-      <LastChange ruleId={rule.id} />
+      <RuleHistory ruleId={rule.id} />
     </div>
   );
 }
@@ -359,43 +364,14 @@ function ToggleError({ err }: { err: unknown }) {
   );
 }
 
-function LastChange({ ruleId }: { ruleId: string }) {
-  const { activeId } = useProjectCtx();
-  const { data: last } = useRuleToggleLastChange(activeId, ruleId);
-  if (!last) return null;
-  const why = typeof last.meta?.reason === "string" ? last.meta.reason : "";
-  return (
-    <span className={note} data-testid="rules-toggle-changed">
-      Changed by {last.actor_label || last.actor_id} {relTime(last.ts) ?? "at an unknown time"}
-      {why && <> — “{why}”</>}
-    </span>
-  );
-}
-
-function paramDrafts(params: Params): Record<string, string> {
-  return Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)]));
-}
-
-/** Drafts back to the template's own types; the server refuses a wrong type, so say it first. */
-function parseParams(
-  current: Params,
-  drafts: Record<string, string>,
-): { ok: true; value: Params } | { ok: false; error: string } {
+/** Drafts as they will be saved: list entries trimmed with blanks dropped, map rows without a key dropped. */
+function cleanParams(drafts: Params): Params {
   const out: Params = {};
-  for (const [k, v] of Object.entries(current)) {
-    const d = drafts[k] ?? String(v);
-    if (typeof v === "number") {
-      const n = Number(d.trim());
-      const whole = Number.isInteger(v);
-      if (d.trim() === "" || !Number.isFinite(n) || (whole && !Number.isInteger(n))) {
-        return { ok: false, error: `${k} must be ${whole ? "a whole number" : "a number"}.` };
-      }
-      out[k] = n;
-    } else if (typeof v === "boolean") {
-      out[k] = d === "true";
-    } else {
-      out[k] = d;
-    }
+  for (const [k, v] of Object.entries(drafts)) {
+    if (Array.isArray(v)) out[k] = v.map((x) => x.trim()).filter(Boolean);
+    else if (typeof v === "object" && v !== null) {
+      out[k] = Object.fromEntries(Object.entries(v).filter(([mk]) => mk.trim()).map(([mk, ml]) => [mk.trim(), ml]));
+    } else out[k] = v;
   }
-  return { ok: true, value: out };
+  return out;
 }
