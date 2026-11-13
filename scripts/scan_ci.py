@@ -483,6 +483,12 @@ def main(argv: list[str] | None = None) -> int:
             predicate={"name": PREDICATE, "passed": verdict.passed,
                        "detail": verdict.detail})
         errors = []
+        #: Ids this key was refused, decided after the loop exactly as `attest_ci.main`
+        #: decides them: a PR that MENTIONS another project's item (an `SA-1095` quoted from
+        #: an item description) is not a failed scan, unless nothing at all was written —
+        #: which is also what a broken key looks like.
+        refused: list[str] = []
+        wrote = 0
         for item_key in keys:
             try:
                 # `head_commit` on every run, pass or fail: an older pass must stop covering
@@ -492,10 +498,19 @@ def main(argv: list[str] | None = None) -> int:
                                      "evidence": [receipt]})
                 print(f"{item_key}: {PREDICATE} "
                       f"{'passed' if verdict.passed else 'failed'} at {args.head[:12]}")
+                wrote += 1
             except attest_ci.ItemMissing as e:
                 print(f"::warning title=scans_clean not attested::{e}")
+            except attest_ci.OutOfScope as e:
+                refused.append(str(e))
             except (urllib.error.URLError, RuntimeError, ValueError) as e:
                 errors.append(f"{item_key}: {e}")
+        for message in refused:
+            if wrote:
+                print(f"::warning title=scans_clean not attested::{message} — this key wrote "
+                      f"other items in this run, so that id belongs to another project")
+            else:
+                errors.append(message)
         for e in errors:
             print(f"::error title=scans_clean attestation failed::{e}")
         if errors:
