@@ -105,6 +105,35 @@ def collision_clusters(db: Session, items: list[Item], project_id: str | None) -
     return _partition([it.id for it in items], areas, predicted)
 
 
+def serialisation_preview(db: Session, project_id: str | None, prefixes: list[str]) -> dict:
+    """The open items a candidate `plan.exclusive_areas` value would serialise (GRPH-1597).
+
+    Open = not done. The clusters come from `collision_clusters` unchanged; within each
+    colliding cluster, an item is serialised when it hard-collides (`fleet.hard_collide`, with
+    the candidate prefixes as the hard areas) with another member. Nothing is written."""
+    from app.services import fleet as fleet_svc
+
+    hards = fleet_svc._hard_paths(prefixes)
+    pool = [it for it in items_svc.list_items(db, project_id=project_id) if it.status != "done"]
+    by_id = {it.id: it for it in pool}
+    clusters = collision_clusters(db, pool, project_id)
+    areas = {it.id: touch_areas(db, it, project_id, pool)[0] for it in pool}
+    hit: dict[str, set[str]] = {}
+    for c in clusters:
+        if not c["collides"]:
+            continue
+        for a in c["items"]:
+            for b in c["items"]:
+                if a == b:
+                    continue
+                shared = fleet_svc.hard_collide(areas[a], areas[b], hards)
+                if shared:
+                    hit.setdefault(a, set()).update(shared)
+    items = [{"id": by_id[i].key, "title": by_id[i].title, "status": by_id[i].status,
+              "areas": sorted(hit[i])} for i in sorted(hit)]
+    return {"prefixes": list(hards), "open_items": len(pool), "serialised": items}
+
+
 def _areas_for(db: Session, items: list[Item],
                project_id: str | None) -> tuple[dict[str, list[str]], dict[str, bool]]:
     """(areas, predicted) per item id — the partition's input, computed once.

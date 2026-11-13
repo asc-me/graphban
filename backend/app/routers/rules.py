@@ -18,6 +18,8 @@ from app.schemas import (ObservationBackfillOut, ObservationsOut,
                          RuleToggleWrite, UnmappedRefusalsOut)
 from app.security import authz
 from app.security.deps import get_current_user, get_user_or_agent_key
+from app.services import code_graph
+from app.services import collision
 from app.services import events as events_svc
 from app.services import observations as observations_svc
 from app.services import quotas
@@ -193,6 +195,25 @@ def set_project_rule_toggle(rule_id: str, body: RuleToggleWrite, project_id: str
 
 # Org rule toggles are served by the console (GBC-P8). `set_org_toggle` / `org_view` stay
 # for the box and for tests. The product routes are gone.
+
+# ---- rule path helpers (GRPH-1597) -------------------------------------------------------
+@router.get("/projects/{project_id}/paths/count")
+def project_path_counts(project_id: str, path: list[str] = Query(default=[]),
+                        db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Files each prefix or glob matches in the project's indexed code graph. `files` is null
+    (not 0) when the project has no indexed files."""
+    authz.require_readable(db, user.id, project_id)
+    return code_graph.path_counts(db, project_id, path)
+
+
+@router.get("/rules/exclusive_areas/preview")
+def exclusive_areas_preview(project_id: str = "core", path: list[str] = Query(default=[]),
+                            db: Session = Depends(get_db),
+                            user: User = Depends(get_current_user)):
+    """The open items the candidate prefixes would serialise. Read-only."""
+    authz.require_readable(db, user.id, project_id)
+    return collision.serialisation_preview(db, project_id, path)
+
 
 # ---- measurement (GRPH-1265 / PRD-P63 S5, D8, D9) ----------------------------------------
 # Read-only. Every measured value is {status, value, n, min_n, reason} (measured | insufficient
