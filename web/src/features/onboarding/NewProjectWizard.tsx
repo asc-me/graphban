@@ -159,8 +159,8 @@ export function NewProjectWizard({
   async function create() {
     setBusy(true);
     setError("");
+    let id = createdId;
     try {
-      let id = createdId;
       if (!id) {
         const p = await api.createProject({ name: name.trim(), tag: tagField.tag || undefined, accent });
         id = p.id;
@@ -173,7 +173,11 @@ export function NewProjectWizard({
       await qc.invalidateQueries({ queryKey: keys.projects });
       setReady(true);
     } catch {
-      setError("Could not create the project. Please try again.");
+      setError(
+        id
+          ? `${name.trim()} was created, but a follow-up step failed. Press Create project to retry it.`
+          : "Could not create the project. Please try again.",
+      );
     } finally {
       setBusy(false);
     }
@@ -282,9 +286,19 @@ export function NewProjectWizard({
                   <label htmlFor="pw-name" className={LABEL}>
                     Project name
                   </label>
-                  <Input id="pw-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Core Platform" />
+                  <Input
+                    id="pw-name"
+                    value={name}
+                    disabled={!!createdId}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="e.g. Core Platform"
+                  />
                 </div>
-                <TagField tag={tagField.tag} setTag={tagField.setTag} status={tagField.status} />
+                {createdId ? (
+                  <p className="font-mono text-[12px] text-faint">Tag {tagField.tag} is fixed once the project exists.</p>
+                ) : (
+                  <TagField tag={tagField.tag} setTag={tagField.setTag} status={tagField.status} />
+                )}
                 <div>
                   <span id="pw-accent" className={cn(LABEL, "mb-2")}>
                     Accent
@@ -296,6 +310,7 @@ export function NewProjectWizard({
                         type="button"
                         role="radio"
                         aria-checked={accent === c}
+                        disabled={!!createdId}
                         onClick={() => setAccent(c)}
                         aria-label={`accent ${c}`}
                         className="h-7 w-7 rounded-[8px] transition-transform hover:scale-110"
@@ -400,15 +415,19 @@ export function NewProjectWizard({
                         {k === "ACCENT" && <span className="h-3.5 w-3.5 rounded-[4px]" style={{ background: accent }} />}
                         {v}
                       </dd>
-                      <button
-                        type="button"
-                        aria-label={`Edit ${k.toLowerCase()}`}
-                        disabled={busy}
-                        onClick={() => go(st)}
-                        className="text-[12px] text-muted hover:text-fg"
-                      >
-                        Edit
-                      </button>
+                      {createdId && st === "identity" ? (
+                        <span className="text-[12px] text-faint">Created</span>
+                      ) : (
+                        <button
+                          type="button"
+                          aria-label={`Edit ${k.toLowerCase()}`}
+                          disabled={busy}
+                          onClick={() => go(st)}
+                          className="text-[12px] text-muted hover:text-fg"
+                        >
+                          Edit
+                        </button>
+                      )}
                     </div>
                   ))}
                 </dl>
