@@ -458,6 +458,14 @@ class Wave:
     #: the loop everything else waits on. One attempt per REVISION: the reap pushes again at the
     #: end of the wave, so a transient refusal costs the early publish and not the work.
     review_publish_tried: dict[str, str] = field(default_factory=dict)
+    #: branch -> the undeclared files an item on it was last held from review for
+    #: (GRPH-1591). A key, not a dedupe on its own: a hold is posted once per REVIEW EPISODE.
+    #: The server takes the item out of review when it records the hold, so seeing it in
+    #: review again means its builder moved it there again, and that is held again.
+    undeclared_held: dict[str, tuple] = field(default_factory=dict)
+    #: Branches whose last `undeclared_held` post the server refused (an older server does not
+    #: know the kind). The item stayed in review, so without this every tick would repost it.
+    undeclared_hold_refused: set[str] = field(default_factory=set)
     #: Set when this wave could not read an item's evidence, so it could not tell whether a
     #: commit of that item is already in the trunk (GRPH-1053). Empty means the check ran,
     #: or no push needed it. A push that went ahead anyway is not "nothing had landed".
@@ -1833,6 +1841,82 @@ def _send_back_conflicted(wave: Wave, client: Graphban | None, items: list[str],
                  kind="behind_conflict", branch=branch, reason=brief)
 
 
+def _held_for_undeclared(wave: Wave, child: Child, repo: Path, items: list[str],
+                         client: Graphban | None) -> bool:
+    """Whether a RUNNING child's item in `review` was sent back for undeclared files (GRPH-1591).
+
+    The PR gate (`_refuse_proposal`) runs at reap. A bound seat moves its item to review and
+    keeps working as a reviewer, so `_publish_in_review` pushed the branch and released the
+    item to `claim_review` while the gate had not yet looked. On GRPH-1587 the gate then
+    refused the PR for a stray `NewProjectWizard.tsx-E`, and the item sat in `review` with
+    no PR and no CI run until a planner diffed the branch by hand.
+
+    So the gate is applied here, the moment the item reaches review, against the item's
+    declaration as it stands now (`_note_touchpoints` re-reads it). A refusal is posted as
+    `undeclared_held`: the server returns the item to `in_progress` for its builder and
+    queues a directive naming the files, and the branch is neither pushed nor released.
+    Under `build.undeclared_files = warn` the PR is opened anyway, so nothing is held.
+    """
+    tree = Worktree(path=child.worktree, branch=child.branch, repo=repo, base=child.base)
+    try:
+        measured = tp_mod.measure(tree)
+    except (ValueError, OSError) as exc:
+        _note_once(wave, f"{child.branch}: touchpoints not measured before review ({exc})")
+        return False
+    wave.touched[child.branch] = tp_mod.including_stream(
+        child.adapter, measured, child.stdout_text())
+    wave.undeclared.pop(child.branch, None)
+    _note_touchpoints(wave, child, client)
+    missing = wave.undeclared.get(child.branch) or []
+    if not missing or _undeclared_mode(client) == "warn":
+        return False
+    _hold_undeclared(wave, client, items, child.branch, missing, in_review=set(items))
+    return True
+
+
+def _hold_undeclared(wave: Wave, client: Graphban | None, items: list[str], branch: str,
+                     missing: list[str], *, in_review: set[str] | None = None) -> None:
+    """Post `undeclared_held` for each item on a branch the touchpoint gate refused (GRPH-1591).
+
+    The reason is what the builder reads — as a directive while it is alive, as the resume
+    brief (`bounce_reason`) once it is not — so it names the files and both ways out.
+
+    Posted once per REVIEW EPISODE, not once per file list. A recorded hold takes the item
+    out of review, so a branch already held for these files is held again whenever one of
+    its items is in review now: its builder moved it back without fixing the branch, and
+    without a second hold it would sit in review with no PR, which is this bug again.
+    `in_review` is the caller's read of that; None means "not read", and the reap gate then
+    reads it itself, posting anyway when it cannot (a duplicate hold costs a note; a missed
+    one strands the item). A hold the server refused is not reposted for the same list: the
+    item never left review, so every tick would otherwise post it again.
+    """
+    key = tuple(missing)
+    if wave.undeclared_held.get(branch) == key:
+        if branch in wave.undeclared_hold_refused:
+            return
+        if in_review is None:
+            in_review = _ids_in_review(client)
+        if in_review is not None and not set(items) & in_review:
+            return
+    wave.undeclared_held[branch] = key
+    wave.undeclared_hold_refused.discard(branch)
+    refused_before = wave.observations_refused
+    ids = ", ".join(items)
+    brief = (
+        f"Branch {branch} changed file(s) outside every declared touchpoint: "
+        f"{_shown(missing)}. No PR is opened for it, so {ids} cannot be reviewed. "
+        "Remove the file(s) from the branch and commit, or, if they belong to the item, "
+        "declare them with update_item(touchpoints=[...]) and a note; run "
+        "`gbfleet check-touchpoints` and move the item to review again."
+    )
+    observe.emit("wait", branch=branch, kind="review_held_undeclared", detail=brief)
+    for item_id in items:
+        _observe(wave, client, item_id, "undeclared hold not recorded",
+                 kind="undeclared_held", branch=branch, reason=brief)
+    if wave.observations_refused != refused_before:
+        wave.undeclared_hold_refused.add(branch)
+
+
 def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) -> None:
     """Compare what this child CHANGED against what its items DECLARE (GRPH-785).
 
@@ -2355,6 +2439,10 @@ def _publish_in_review(wave: Wave, children: Sequence[Child],
         items = [i for i in (child.held_items or []) if i and i in in_review]
         if not items:
             continue
+        if _held_for_undeclared(wave, child, repo, items, client):
+            # Not marked tried: the builder fixes the branch (or only its declaration, which
+            # moves no head) and moves the item to review again, and that is re-judged here.
+            continue
         wave.review_publish_tried[child.branch] = head
         origin = _salvage_items(child)
         item = next((i for i in origin if i in items), items[0])
@@ -2764,6 +2852,10 @@ def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
         wave.unproposed[branch] = refused
         wave.failures.append(f"{branch}: not proposed — {refused}")
         _record_withheld(wave, client, items, branch, refused)
+        missing = wave.undeclared.get(branch) or []
+        if missing and undeclared_mode != "warn":
+            # GRPH-1591: without this the item went on to `review` with no PR to review.
+            _hold_undeclared(wave, client, items, branch, missing)
         _send_back_conflicted(wave, client, items, branch)
         return
     if len(items) > 1:
