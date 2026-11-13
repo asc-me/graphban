@@ -1151,6 +1151,15 @@ class SyncProjectState(BaseModel):
     last_push_reason: str | None = None
 
 
+class SyncPendingSignIn(BaseModel):
+    """A device-code sign-in in flight, as the link wizard resumes it (GRPH-1575)."""
+    console_url: str
+    user_code: str = ""
+    verification_url: str = ""
+    expires_at: str | None = None
+    interval: int | None = None
+
+
 class SyncStatusOut(BaseModel):
     """Everything the Sync/Link settings page renders — link state (never the key itself) plus
     per-project sync state derived from local truth."""
@@ -1177,6 +1186,9 @@ class SyncStatusOut(BaseModel):
     # baked in by SYNC_CLOUD_URL ("" when unset). Never a key or token.
     can_link: bool = False
     console_url_env: str = ""
+    # GRPH-1575: the sign-in in flight, shown only to a box admin — the code a person types,
+    # never the device code. None when nothing is in flight (or the viewer cannot link).
+    pending_sign_in: "SyncPendingSignIn | None" = None
 
 
 class SyncOrgIdentity(BaseModel):

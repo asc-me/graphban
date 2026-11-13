@@ -1355,6 +1355,15 @@ export interface SyncStatus {
   console_url_env?: string;
   /** The link's own answer: ok | refused | unknown; null when no credential is held. */
   state?: "ok" | "refused" | "unknown" | null;
+  /** GRPH-1575: the sign-in in flight (box admins only) — the code a person types, never the
+   *  device code. null when nothing is in flight. */
+  pending_sign_in?: {
+    console_url: string;
+    user_code: string;
+    verification_url: string;
+    expires_at?: string | null;
+    interval?: number | null;
+  } | null;
 }
 
 export interface LinkStartResult {

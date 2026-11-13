@@ -11,6 +11,7 @@ import {
   LinkToOrgWizard,
   resumeTarget,
   unreachableText,
+  useLinkFlow,
 } from "@/features/organization/LinkToOrgWizard";
 import { CONSOLE_URL } from "@/lib/routes";
 import type { SyncProjectState, SyncStatus } from "@/lib/types";
@@ -487,8 +488,68 @@ describe("LinkToOrgWizard", () => {
     it("signed in, nothing mapped, finished → Linked", () => expect(resumeTarget(nothingMapped, true)).toBeNull());
     it("mapped but never pushed → ④", () => expect(resumeTarget(neverPushed, false)).toBe(4));
     it("mapped and pushed → Linked", () => expect(resumeTarget(pushed, false)).toBeNull());
+    it("a linked box with a sign-in in flight → ② (GRPH-1575)", () =>
+      expect(resumeTarget({ ...pushed, sign_in_pending: true }, false)).toBe(2));
     it("a key link still holding its credential → Linked", () =>
       expect(resumeTarget({ ...base, linked: true, cloud_url: "https://c.dev", credential_set: true, legacy: true }, false)).toBeNull());
+  });
+});
+
+describe("resuming a sign-in in flight (GRPH-1575)", () => {
+  const inFlight: SyncStatus = {
+    ...signedIn,
+    sign_in_pending: true,
+    pending_sign_in: {
+      console_url: "https://c.dev", user_code: "MX54-RS6Y", verification_url: "https://c.dev/link",
+      expires_at: null, interval: 0.01,
+    },
+  };
+
+  it("opens at ② with the pending code, waiting, and polls — never a new code", async () => {
+    wizard(inFlight);
+    expect(document.querySelector('[data-rail-node="2"]')).toHaveAttribute("aria-current", "step");
+    expect(screen.getByTestId("user-code")).toHaveTextContent("MX54-RS6Y");
+    expect(screen.getByText("Waiting for you to approve it in the console.")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("SIGN-IN · WAITING");
+    expect(screen.queryByRole("button", { name: "Get a sign-in code" })).toBeNull();
+    await waitFor(() => expect(api.syncLinkPoll).toHaveBeenCalled());
+    expect(api.syncLinkStart).not.toHaveBeenCalled();
+  });
+
+  it("Sign in again (opened at ②) resumes the code in flight", () => {
+    wizard(inFlight, { initialStep: 2 });
+    expect(screen.getByTestId("user-code")).toHaveTextContent("MX54-RS6Y");
+  });
+
+  it("a code approved while no tab was open completes on the first poll and moves to ③", async () => {
+    api.syncLinkPoll.mockResolvedValue({ status: "approved", org: "Walk Org", email: "m2@walk.dev" });
+    const onLinked = vi.fn();
+    // A long interval: only the immediate first poll can answer within the test.
+    wizard({ ...inFlight, pending_sign_in: { ...inFlight.pending_sign_in!, interval: 60 } }, { onLinked });
+    await waitFor(() =>
+      expect(document.querySelector('[data-rail-node="3"]')).toHaveAttribute("aria-current", "step"),
+    );
+    expect(api.syncLinkPoll).toHaveBeenCalledTimes(1);
+    expect(onLinked).toHaveBeenCalled();
+    expect(document.querySelector('[data-rail-node="2"]')).toHaveAttribute("data-state", "done");
+  });
+
+  it("the link controller keeps the wizard open once the approval clears the pending flag", () => {
+    function Probe({ status }: { status: SyncStatus }) {
+      const flow = useLinkFlow(status);
+      return <span data-testid="probe">{flow.wizard ? `wizard@${flow.initialStep}` : "linked"}</span>;
+    }
+    const qc = new QueryClient();
+    const ui = (st: SyncStatus) => (
+      <QueryClientProvider client={qc}>
+        <Probe status={st} />
+      </QueryClientProvider>
+    );
+    const { rerender } = render(ui(inFlight));
+    expect(screen.getByTestId("probe")).toHaveTextContent("wizard@2");
+    // Approved: signed in, mapped and pushed — on its own that is the Linked window.
+    rerender(ui(signedIn));
+    expect(screen.getByTestId("probe")).toHaveTextContent("wizard@2");
   });
 });
 
