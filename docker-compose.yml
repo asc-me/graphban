@@ -50,6 +50,11 @@ services:
       # stack whatever they set it to. Passed through now so the documented knob
       # and the running process agree.
       TRUSTED_PROXY: ${TRUSTED_PROXY:-false}
+      # Browser push (P75 D4). Not forwarded before GRPH-1579, so keys set in .env never
+      # reached the API. Empty keys keep the "not set up on this deployment" state.
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@localhost}
       # Printed in the startup log: "open this to continue setup" (GRPH-P67 G3).
       PUBLIC_WEB_URL: ${PUBLIC_WEB_URL:-http://localhost:${WEB_PORT:-8080}}
       SEED_ON_START: ${SEED_ON_START:-false}

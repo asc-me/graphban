@@ -97,6 +97,34 @@ app port directly (GRPH-478) from sending one entry and choosing its bucket.
 `TRUSTED_PROXY` still works and now logs that its key is spoofable. `TRUSTED_HOPS` wins when
 both are set.
 
+## Browser push (optional)
+
+Browser push is off until a VAPID key pair is configured; the bell panel then says
+"Browser notifications are not set up on this deployment".
+
+1. Generate a key pair with the backend's own dependency (`cryptography`):
+
+   ```
+   python - <<'PY'
+   import base64
+   from cryptography.hazmat.primitives import serialization
+   from cryptography.hazmat.primitives.asymmetric import ec
+   k = ec.generate_private_key(ec.SECP256R1())
+   b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+   print("VAPID_PRIVATE_KEY=" + b64(k.private_numbers().private_value.to_bytes(32, "big")))
+   print("VAPID_PUBLIC_KEY=" + b64(k.public_key().public_bytes(
+       serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)))
+   PY
+   ```
+
+   (`py_vapid`'s `vapid --gen` also works.)
+2. Key formats: both keys are base64url strings; `VAPID_PRIVATE_KEY` may instead be the path
+   to a PEM file (it must be readable inside the api container).
+3. Set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT` (a `mailto:` or https URL)
+   in `.env`. Compose forwards all three to the api service.
+4. Restart the api so it reads them: `docker compose up -d api`.
+5. Open the bell panel: it should now offer "Notify me in this browser".
+
 ## Deploy
 
 ```bash

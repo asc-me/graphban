@@ -98,6 +98,7 @@ NOT_CODE: tuple[str, ...] = (
     ".gbfleet/servers",  # MCP server names for gbfleet drains, not code
     "docker-compose.yml",  # deployment wiring (service env/ports), not scanned code
     "start.sh",  # deployment wiring (launcher script), not scanned code
+    ".env.example",  # the Compose .env template (commented settings), not scanned code
     "LICENSE", "LICENSE.*", "COPYING", "NOTICE",
 )
 
