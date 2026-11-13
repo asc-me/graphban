@@ -100,6 +100,22 @@ describe("RuleValueEditor", () => {
     expect(screen.getByText("RISKY")).toBeInTheDocument();
   });
 
+  it("a number shows its unit and range and refuses a value below it; an undeclared number says so", async () => {
+    const user = userEvent.setup();
+    const spy = vi.fn();
+    const { unmount } = render(<Harness ruleId="x.y" name="min_tests_failed" initial={1} spy={spy} />);
+    expect(screen.getByText("failing tests")).toBeInTheDocument();
+    expect(screen.getByTestId("rules-number-range-min_tests_failed")).toHaveTextContent("Range: 1 or more failing tests.");
+    expect(screen.getByRole("button", { name: "Decrease min_tests_failed" })).toBeDisabled();
+    await user.clear(screen.getByLabelText("min_tests_failed"));
+    await user.type(screen.getByLabelText("min_tests_failed"), "0");
+    expect(screen.getByRole("alert")).toHaveTextContent("must be 1 or more failing tests");
+    expect(spy).not.toHaveBeenCalledWith(0);
+    unmount();
+    render(<Harness ruleId="x.y" name="mystery" initial={2} spy={() => {}} />);
+    expect(screen.getByTestId("rules-number-range-mystery")).toHaveTextContent("declares no unit or range");
+  });
+
   it("a map is a table of rows", async () => {
     const user = userEvent.setup();
     const spy = vi.fn();

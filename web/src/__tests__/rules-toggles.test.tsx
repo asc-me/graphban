@@ -15,7 +15,7 @@ import type { Event, GitopsView, RuleFlowRule, RulesFlow, RuleToggles } from "@/
 vi.mock("@/lib/api", () => ({
   api: {
     rulesFlow: vi.fn(), gitops: vi.fn(), config: vi.fn(), syncStatus: vi.fn(), events: vi.fn(),
-    ruleToggles: vi.fn(), setRuleToggle: vi.fn(),
+    ruleToggles: vi.fn(), setRuleToggle: vi.fn(), me: vi.fn(), members: vi.fn(),
   },
 }));
 vi.mock("@/features/ProjectContext", () => ({
@@ -80,7 +80,11 @@ beforeEach(() => {
   vi.mocked(api.syncStatus).mockResolvedValue({ linked: false, org: "" } as never);
   vi.mocked(api.ruleToggles).mockResolvedValue({ library_loaded: true, toggles: [] } satisfies RuleToggles);
   vi.mocked(api.events).mockResolvedValue(page([]));
+  vi.mocked(api.me).mockResolvedValue(ME as never);
+  vi.mocked(api.members).mockResolvedValue([{ user: ME, role: "owner", access: "write" }] as never);
 });
+
+const ME = { id: "u1", name: "Alex", handle: "alex", email: "", avatar: "", initials: "A" };
 
 describe("library rule toggles", () => {
   it("an on rule shows its switch, source, params and the primitive's level; no bulk enable", async () => {
@@ -156,6 +160,21 @@ describe("library rule toggles", () => {
     expect(within(row).queryByRole("switch")).toBeNull();
     expect(within(row).queryByLabelText("min_effort")).toBeNull();
     expect(within(row).getByTestId("rules-toggle-source")).toHaveTextContent("ORG");
+  });
+
+  it("a member who is not owner or admin sees the value as text with a link, never an input", async () => {
+    vi.mocked(api.members).mockResolvedValue([{ user: ME, role: "member", access: "write" }] as never);
+    const ins = await openReview([
+      lib("review.sabotage_required", { params: { value: { min_effort: 3 }, source: "project" } }),
+    ]);
+    const row = within(ins).getByTestId("rules-row-review.sabotage_required");
+    const ro = await within(row).findByTestId("rules-toggle-not-writable");
+    expect(ro).toHaveTextContent("only the project's owner or an admin");
+    expect(within(ro).getByRole("link", { name: "Ask an owner or admin" })).toHaveAttribute("href", "/settings/project/members");
+    expect(within(row).queryByRole("switch")).toBeNull();
+    expect(within(row).queryByLabelText("min_effort")).toBeNull();
+    expect(within(row).getByTestId("rules-toggle-params")).toHaveTextContent("min_effort = 3");
+    expect(within(row).queryByRole("button", { name: /Reset to/ })).toBeNull();
   });
 
   it("a change the org's lock refuses shows the server's refusal and its see rule link", async () => {

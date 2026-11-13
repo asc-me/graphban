@@ -56,6 +56,33 @@ export function enumFor(ruleId: string, param: string): EnumOption[] | undefined
   return ENUMS[`${ruleId}:${param}`];
 }
 
+/**
+ * A number param's unit and range. The server types a number param as `int` and declares no unit
+ * or range for it (`rule_pack.Param` carries a type only), so these are the bounds the primitive
+ * actually applies: `fleet.py` treats an effort below 0 as "any effort" and clamps
+ * `min_tests_failed` to at least 1. Neither has an upper bound. A number not listed here says that
+ * no unit or range is declared rather than inventing one.
+ */
+export interface NumberSpec {
+  unit: string;
+  min?: number;
+  max?: number;
+}
+const NUMBERS: Record<string, NumberSpec> = {
+  min_effort: { unit: "effort points", min: 0 },
+  min_tests_failed: { unit: "failing tests", min: 1 },
+};
+export function numberSpecFor(name: string): NumberSpec | undefined {
+  return NUMBERS[name];
+}
+
+function rangeText(spec: NumberSpec): string {
+  if (spec.min !== undefined && spec.max !== undefined) return `${spec.min}–${spec.max}`;
+  if (spec.min !== undefined) return `${spec.min} or more`;
+  if (spec.max !== undefined) return `up to ${spec.max}`;
+  return "no range";
+}
+
 export interface EditorProps {
   ruleId: string;
   name: string;
@@ -135,6 +162,7 @@ function BoolSwitch({ name, value, onChange }: EditorProps & { value: boolean })
 
 function NumberStepper({ name, value, onChange, onError }: EditorProps & { value: number }) {
   const whole = Number.isInteger(value);
+  const spec = numberSpecFor(name);
   const [text, setText] = React.useState(String(value));
   const [err, setErr] = React.useState<string | null>(null);
   React.useEffect(() => {
@@ -144,8 +172,11 @@ function NumberStepper({ name, value, onChange, onError }: EditorProps & { value
   function commit(t: string) {
     setText(t);
     const n = Number(t.trim());
-    if (t.trim() === "" || !Number.isFinite(n) || (whole && !Number.isInteger(n))) {
-      const m = `${name} must be ${whole ? "a whole number" : "a number"}.`;
+    let m: string | null = null;
+    if (t.trim() === "" || !Number.isFinite(n) || (whole && !Number.isInteger(n))) m = `${name} must be ${whole ? "a whole number" : "a number"}.`;
+    else if (spec && ((spec.min !== undefined && n < spec.min) || (spec.max !== undefined && n > spec.max)))
+      m = `${name} must be ${rangeText(spec)} ${spec.unit}.`;
+    if (m) {
       setErr(m);
       onError(m);
       return;
@@ -154,22 +185,34 @@ function NumberStepper({ name, value, onChange, onError }: EditorProps & { value
     onError(null);
     onChange(n);
   }
-  const step = (d: number) => {
-    const n = Number(text.trim());
-    commit(String((Number.isFinite(n) ? n : value) + d));
-  };
+  const current = Number(text.trim());
+  const base = Number.isFinite(current) ? current : value;
+  const step = (d: number) => commit(String(base + d));
+  const atMin = spec?.min !== undefined && base <= spec.min;
+  const atMax = spec?.max !== undefined && base >= spec.max;
   return (
     <div className="flex flex-col gap-1">
       <div className={cn(MONO, "flex items-center gap-2 text-[12px] text-fg-2")}>
         <span className="w-28 flex-none break-all">{name}</span>
-        <Button type="button" size="sm" variant="outline" aria-label={`Decrease ${name}`} onClick={() => step(-1)}>
+        <Button type="button" size="sm" variant="outline" aria-label={`Decrease ${name}`} disabled={atMin} onClick={() => step(-1)}>
           −
         </Button>
-        <Input aria-label={name} inputMode="numeric" value={text} onChange={(e) => commit(e.target.value)} />
-        <Button type="button" size="sm" variant="outline" aria-label={`Increase ${name}`} onClick={() => step(1)}>
+        <Input
+          aria-label={name}
+          inputMode="numeric"
+          value={text}
+          min={spec?.min}
+          max={spec?.max}
+          onChange={(e) => commit(e.target.value)}
+        />
+        <Button type="button" size="sm" variant="outline" aria-label={`Increase ${name}`} disabled={atMax} onClick={() => step(1)}>
           +
         </Button>
+        {spec && <span className="flex-none text-muted-2">{spec.unit}</span>}
       </div>
+      <span className={note} data-testid={`rules-number-range-${name}`}>
+        {spec ? `Range: ${rangeText(spec)} ${spec.unit}.` : "The rule pack declares no unit or range for this number."}
+      </span>
       {err && (
         <p role="alert" className="text-[12px] text-st-blocked">
           {err}

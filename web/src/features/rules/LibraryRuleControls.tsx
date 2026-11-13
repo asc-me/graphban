@@ -16,10 +16,12 @@ import { Input } from "@/components/ui/input";
 import { RefusalRuleLink } from "@/features/activity/RefusalRuleLink";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
-import { consoleHref } from "@/lib/routes";
+import { consoleHref, settingsPath } from "@/lib/routes";
 import { errorDetail, errorRuleId, isRefusal } from "@/lib/errors";
 import {
   useGitops,
+  useMe,
+  useMembers,
   useRuleToggles,
   useSetMemoryWriteMode,
   useSetRuleToggle,
@@ -133,8 +135,25 @@ export function MemoryWriteModeControl({ rule }: { rule: RuleFlowRule }) {
   );
 }
 
+/** Mirrors `rule_toggles.PROJECT_ADMIN_ROLES`: the roles that may set a project's rule toggle. */
+export const RULE_WRITER_ROLES = ["owner", "admin"];
+
+/**
+ * Whether this person can write the project's toggles, known up front so a member who can't
+ * sees text with a link instead of live editors that end in a 403 (`rules.toggle_needs_admin`).
+ * `null` while either read is outstanding or failed: the editors show and the server decides.
+ */
+export function useCanWriteRules(projectId: string): boolean | null {
+  const { data: me } = useMe();
+  const { data: members } = useMembers(projectId);
+  if (!me || !members) return null;
+  const role = members.find((m) => m.user.id === me.id)?.role;
+  return !!role && RULE_WRITER_ROLES.includes(role);
+}
+
 function ToggleBody({ rule }: { rule: RuleFlowRule }) {
   const { activeId } = useProjectCtx();
+  const canWrite = useCanWriteRules(activeId);
   const { data: gitops } = useGitops(activeId);
   const { data: toggles } = useRuleToggles(activeId);
   const toggle = toggles?.toggles.find((t) => t.rule_id === rule.id);
@@ -144,6 +163,8 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
   const on = rule.value === true;
   const params: Params = (rule.params?.value as Params | null) ?? {};
   const locked = !!rule.locked;
+  const notWritable = !locked && canWrite === false;
+  const readOnly = locked || notWritable;
 
   const [draftParams, setDraftParams] = React.useState<Params>(() => structuredClone(params));
   const [paramErrors, setParamErrors] = React.useState<Record<string, string>>({});
@@ -199,6 +220,12 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
             set by org {orgName} · locked.
           </ReadOnlyReason>
         </span>
+      ) : notWritable ? (
+        <span data-testid="rules-toggle-not-writable">
+          <ReadOnlyReason href={settingsPath("project/members")} linkText="Ask an owner or admin">
+            {on ? "On" : "Off"} · only the project's owner or an admin can change this rule.
+          </ReadOnlyReason>
+        </span>
       ) : (
         <button
           type="button"
@@ -228,11 +255,11 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
               testId="rules-toggle-params-source"
               inherits={inherits}
               disabled={saving || !!pending}
-              onReset={() => ask({ body: { params: null }, what: `Reset to ${inherits}` })}
+              onReset={readOnly ? undefined : () => ask({ body: { params: null }, what: `Reset to ${inherits}` })}
             />
           </div>
           {Object.entries(params).map(([k, v]) =>
-            locked ? (
+            readOnly ? (
               <ReadOnlyReason key={k}>
                 <span className={MONO}>
                   {k} = {Array.isArray(v) ? v.join(", ") : typeof v === "object" ? JSON.stringify(v) : String(v)}
@@ -255,7 +282,7 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
             ),
           )}
           {firstError && <p role="alert" className="text-[12px] text-st-blocked">{firstError}</p>}
-          {!locked && paramsDirty && !pending && (
+          {!readOnly && paramsDirty && !pending && (
             <Button
               size="sm"
               variant="outline"
