@@ -1,4 +1,5 @@
 /** Setup wizard (GRPH-1601). */
+import type * as React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -74,7 +75,7 @@ describe("SetupWizard", () => {
     expect(screen.getByRole("button", { name: "Set my own" })).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("confirms Exit only when an answer differs from its default", async () => {
+  it("exits without asking when every answer is still the default", async () => {
     const user = userEvent.setup();
     const onExit = vi.fn();
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
@@ -83,6 +84,69 @@ describe("SetupWizard", () => {
     expect(confirm).not.toHaveBeenCalled();
     expect(onExit).toHaveBeenCalledTimes(1);
     confirm.mockRestore();
+  });
+
+  it("asks before Exit discards a changed answer: declining keeps the wizard, accepting leaves", async () => {
+    const user = userEvent.setup();
+    const onExit = vi.fn();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    view({ onExit });
+    await setMergeEffort(user);
+    await user.click(screen.getByRole("button", { name: "Increase min_effort" }));
+    await user.click(screen.getByTestId("rules-wizard-exit"));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(onExit).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Set my own" })).toHaveAttribute("aria-pressed", "true");
+    confirm.mockReturnValue(true);
+    await user.click(screen.getByTestId("rules-wizard-exit"));
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(onExit).toHaveBeenCalledTimes(1);
+    confirm.mockRestore();
+  });
+
+  it("asks before an in-app link outside the wizard discards a changed answer", async () => {
+    const user = userEvent.setup();
+    const navigated = vi.fn((e: React.MouseEvent) => e.preventDefault());
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <a href="/items" onClick={navigated}>Items</a>
+        <SetupWizard flow={flow} narrow={false} onExit={() => {}} onApplied={() => {}} />
+      </QueryClientProvider>,
+    );
+    // Clean: the link goes through with no question.
+    await user.click(screen.getByRole("link", { name: "Items" }));
+    expect(confirm).not.toHaveBeenCalled();
+    expect(navigated).toHaveBeenCalledTimes(1);
+    await setMergeEffort(user);
+    await user.click(screen.getByRole("button", { name: "Increase min_effort" }));
+    // Dirty and declined: the router never sees the click.
+    await user.click(screen.getByRole("link", { name: "Items" }));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(navigated).toHaveBeenCalledTimes(1);
+    // Dirty and accepted: it goes through.
+    confirm.mockReturnValue(true);
+    await user.click(screen.getByRole("link", { name: "Items" }));
+    expect(navigated).toHaveBeenCalledTimes(2);
+    confirm.mockRestore();
+  });
+
+  it("applies the changed rules in one batch with one reason and reports them", async () => {
+    const user = userEvent.setup();
+    const onApplied = vi.fn();
+    vi.mocked(api.setRuleToggles).mockResolvedValue({} as never);
+    view({ onApplied });
+    await setMergeEffort(user);
+    await user.click(screen.getByRole("button", { name: "Increase min_effort" }));
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    await user.type(screen.getByLabelText("Reason"), "first setup");
+    await user.click(screen.getByTestId("rules-review-save"));
+    await waitFor(() => expect(onApplied).toHaveBeenCalledWith(["merge.gate"]));
+    expect(api.setRuleToggles).toHaveBeenCalledTimes(1);
+    expect(api.setRuleToggles).toHaveBeenCalledWith("core", {
+      toggles: [{ rule_id: "merge.gate", params: { min_effort: 4 } }],
+      reason: "first setup",
+    });
   });
 
   it("applies nothing when every answer is the default", async () => {

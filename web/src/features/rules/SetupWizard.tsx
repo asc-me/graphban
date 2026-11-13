@@ -4,7 +4,7 @@
  * skipped, and the page says why. Every question starts on "Keep the default". With no repo
  * detections yet, every question says "Nothing detected" and a person sets the value with the
  * shared editors. Answers live in this component's memory only: nothing is stored before Apply,
- * and Exit or a reload discards them (after a confirm when an answer differs from its default).
+ * and Exit, in-app navigation or a reload discards them (after a confirm when an answer differs from its default).
  * The last step is the shared review sheet with one reason; it saves through the batch write,
  * all-or-nothing. A refusal returns to the step holding the refused rule with the server's words,
  * and every answer and the reason are kept.
@@ -32,6 +32,8 @@ export const SKIPPED_STEPS: { id: string; title: string; reason: string }[] = [
   { id: "spec", title: "Spec", reason: "Skipped: nothing in Spec is repo-specific, so there is nothing to ask." },
   { id: "release", title: "Release", reason: "Skipped: Release is set when you deploy, not when you set up rules." },
 ];
+
+const LEAVE_PROMPT = "Leave setup? Your answers are not saved and will be discarded.";
 
 const isAskable = (r: RuleFlowRule) =>
   r.control === "toggle" && !r.unmeasured_reason && !r.locked && !!r.params && Object.keys(r.params.value ?? {}).length > 0;
@@ -102,8 +104,28 @@ export function SetupWizard({
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
 
+  // In-app navigation unmounts the wizard and would drop the answers silently. The app runs on a
+  // BrowserRouter (no useBlocker), so catch a click on any in-app link outside the wizard before
+  // the router sees it, and ask first. Declining cancels the navigation; the answers stay.
+  const region = React.useRef<HTMLDivElement | null>(null);
+  React.useEffect(() => {
+    if (!dirty) return;
+    const guard = (e: MouseEvent) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = e.target instanceof Element ? e.target.closest("a[href]") : null;
+      if (!(a instanceof HTMLAnchorElement) || region.current?.contains(a)) return;
+      if (a.target && a.target !== "_self") return;
+      if (a.origin !== window.location.origin) return;
+      if (window.confirm(LEAVE_PROMPT)) return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    document.addEventListener("click", guard, true);
+    return () => document.removeEventListener("click", guard, true);
+  }, [dirty]);
+
   function exit() {
-    if (dirty && !window.confirm("Leave setup? Your answers are not saved and will be discarded.")) return;
+    if (dirty && !window.confirm(LEAVE_PROMPT)) return;
     onExit();
   }
 
@@ -148,7 +170,7 @@ export function SetupWizard({
   const questions = step ? step.rules.filter(isAskable) : [];
 
   return (
-    <div className="absolute inset-0 z-20 overflow-y-auto bg-bg" data-testid="rules-setup-wizard" role="region" aria-label="Set up rules">
+    <div ref={region} className="absolute inset-0 z-20 overflow-y-auto bg-bg" data-testid="rules-setup-wizard" role="region" aria-label="Set up rules">
       <div className="mx-auto flex max-w-[720px] flex-col gap-4 p-5">
         <div className="flex items-center gap-2">
           <span className={cn(MONO, "text-[10px] font-semibold tracking-[0.06em] text-accent")}>SET UP RULES</span>
@@ -192,7 +214,7 @@ export function SetupWizard({
         {step && (
           <section className="flex flex-col gap-3" aria-label={`${step.title} questions`} data-testid={`rules-wizard-step-${step.id}`}>
             <h2 className="text-[16px] font-semibold">{step.title}</h2>
-            {questions.length === 0 && <p className="text-[12.5px] text-fg-2">Nothing to ask in {step.title}. Keep the defaults and go on.</p>}
+            {questions.length === 0 && <p className="text-body text-fg-2">Nothing to ask in {step.title}. Keep the defaults and go on.</p>}
             {questions.map((r) => {
               const custom = !!answers[r.id];
               const shown: Params = answers[r.id] ?? ((r.params?.value as Params | null) ?? {});
@@ -256,11 +278,11 @@ export function SetupWizard({
           <section className="flex flex-col gap-2" data-testid="rules-wizard-review-step">
             <h2 className="text-[16px] font-semibold">Review</h2>
             {changes.length === 0 ? (
-              <p className="text-[12.5px] text-fg-2" data-testid="rules-wizard-no-changes">
+              <p className="text-body text-fg-2" data-testid="rules-wizard-no-changes">
                 Every answer is "Keep the default", so there is nothing to apply.
               </p>
             ) : (
-              <p className="text-[12.5px] text-fg-2">Check the changes, give one reason, and apply them together.</p>
+              <p className="text-body text-fg-2">Check the changes, give one reason, and apply them together.</p>
             )}
           </section>
         )}
