@@ -46,6 +46,7 @@ const MONO = "font-mono";
 const note = "text-[11.5px] leading-snug text-muted";
 
 type Params = Record<string, RuleParamValue>;
+type Draft = string | string[];
 type Pending = { body: Omit<RuleToggleWrite, "reason">; what: string };
 
 export function LibraryRuleControls({ rule }: { rule: RuleFlowRule }) {
@@ -158,7 +159,7 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
   const params: Params = (rule.params?.value as Params | null) ?? {};
   const locked = !!rule.locked;
 
-  const [draftParams, setDraftParams] = React.useState<Record<string, string>>(() => paramDrafts(params));
+  const [draftParams, setDraftParams] = React.useState<Record<string, Draft>>(() => paramDrafts(params));
   const [pending, setPending] = React.useState<Pending | null>(null);
   const [reason, setReason] = React.useState("");
   const setProject = useSetRuleToggle(activeId);
@@ -230,11 +231,23 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
             <span className="flex-1" />
             <SourceChip source={rule.params?.source} testId="rules-toggle-params-source" />
           </div>
+          {!locked && (
+            <p className={note} data-testid="rules-toggle-params-hint">
+              To change a param, edit it here, then press “Change params”. You will be asked for a reason, which is the audit record.
+            </p>
+          )}
           {Object.entries(params).map(([k, v]) =>
             locked ? (
               <span key={k} className={cn(MONO, "text-[12px] text-fg-2")}>
-                {k} = {String(v)}
+                {k} = {Array.isArray(v) ? v.join(", ") || "(empty list)" : String(v)}
               </span>
+            ) : Array.isArray(v) ? (
+              <ListParam
+                key={k}
+                name={k}
+                entries={Array.isArray(draftParams[k]) ? (draftParams[k] as string[]) : v}
+                onChange={(next) => setDraftParams({ ...draftParams, [k]: next })}
+              />
             ) : rule.id === TEST_SCOPE_RULE && k === "mode" ? (
               <div key={k} role="radiogroup" aria-label="Where the test suites run" className="flex flex-col gap-1.5" data-testid="rules-test-scope">
                 {TEST_SCOPE_MODES.map((m) => (
@@ -244,7 +257,7 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
                       name={`${rule.id}-mode`}
                       value={m.value}
                       aria-label={m.label}
-                      checked={(draftParams[k] ?? String(v)) === m.value}
+                      checked={String(draftParams[k] ?? v) === m.value}
                       onChange={() => setDraftParams({ ...draftParams, [k]: m.value })}
                     />
                     <span>
@@ -259,7 +272,7 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
                 <input
                   type="checkbox"
                   aria-label={k}
-                  checked={draftParams[k] === "true"}
+                  checked={String(draftParams[k] ?? v) === "true"}
                   onChange={(e) => setDraftParams({ ...draftParams, [k]: String(e.target.checked) })}
                 />
                 {k}
@@ -270,7 +283,7 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
                 <Input
                   aria-label={k}
                   inputMode={typeof v === "number" ? "numeric" : undefined}
-                  value={draftParams[k] ?? ""}
+                  value={typeof draftParams[k] === "string" ? (draftParams[k] as string) : ""}
                   onChange={(e) => setDraftParams({ ...draftParams, [k]: e.target.value })}
                 />
               </label>
@@ -372,18 +385,50 @@ function LastChange({ ruleId }: { ruleId: string }) {
   );
 }
 
-function paramDrafts(params: Params): Record<string, string> {
-  return Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)]));
+function paramDrafts(params: Params): Record<string, Draft> {
+  return Object.fromEntries(Object.entries(params).map(([k, v]) => [k, Array.isArray(v) ? [...v] : String(v)]));
+}
+
+/** A list param: one row per entry, with add and remove (GRPH-1583). */
+function ListParam({ name, entries, onChange }: { name: string; entries: string[]; onChange: (next: string[]) => void }) {
+  return (
+    <div className={cn(MONO, "flex flex-col gap-1 text-[12px] text-fg-2")} role="group" aria-label={name} data-testid={`rules-param-list-${name}`}>
+      <span className="break-all">{name}</span>
+      {entries.length === 0 && <span className={note}>Empty list. Add an entry to fill it.</span>}
+      {entries.map((e, i) => (
+        <div key={i} className="flex items-center gap-2">
+          <Input
+            aria-label={`${name} entry ${i + 1}`}
+            value={e}
+            onChange={(ev) => onChange(entries.map((x, j) => (j === i ? ev.target.value : x)))}
+          />
+          <Button size="sm" type="button" variant="outline" aria-label={`Remove ${name} entry ${i + 1}`} onClick={() => onChange(entries.filter((_, j) => j !== i))}>
+            Remove
+          </Button>
+        </div>
+      ))}
+      <Button size="sm" type="button" variant="outline" className="self-start" aria-label={`Add ${name} entry`} onClick={() => onChange([...entries, ""])}>
+        Add entry
+      </Button>
+    </div>
+  );
 }
 
 /** Drafts back to the template's own types; the server refuses a wrong type, so say it first. */
 function parseParams(
   current: Params,
-  drafts: Record<string, string>,
+  drafts: Record<string, Draft>,
 ): { ok: true; value: Params } | { ok: false; error: string } {
   const out: Params = {};
   for (const [k, v] of Object.entries(current)) {
-    const d = drafts[k] ?? String(v);
+    if (Array.isArray(v)) {
+      // A list stays a list of strings; blank rows are dropped, and no rows is `[]`.
+      const d = drafts[k];
+      out[k] = (Array.isArray(d) ? d : v).map((x) => x.trim()).filter((x) => x !== "");
+      continue;
+    }
+    const raw = drafts[k] ?? String(v);
+    const d = Array.isArray(raw) ? raw.join(",") : raw;
     if (typeof v === "number") {
       const n = Number(d.trim());
       const whole = Number.isInteger(v);

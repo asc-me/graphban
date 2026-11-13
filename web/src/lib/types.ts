@@ -3373,7 +3373,7 @@ export interface RuleFlowRule {
 /** `services/rule_toggles.py:_resolve` — project → org → platform default (PRD-P63 D4). */
 export type RuleToggleSource = "project" | "org" | "platform default";
 
-export type RuleParamValue = string | number | boolean;
+export type RuleParamValue = string | number | boolean | string[];
 
 export interface RuleToggleValue<T> {
   value: T;
