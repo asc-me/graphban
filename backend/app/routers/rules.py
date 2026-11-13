@@ -5,7 +5,7 @@ these routes take a logged-in user, never an API key (PRD-P63 D10)."""
 import base64
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -244,7 +244,12 @@ def org_rules_platform_effect(org_id: str, db: Session = Depends(get_db),
     return rule_measure.platform_effect(db, org_id)
 # ---- promotion to the org (GRPH-1264 / PRD-P63 §10, S4) ----------------------------------
 class ProfileApply(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     reason: str = ""
+    #: Rule ids to leave as they are.
+    except_: list[str] = Field(default_factory=list, alias="except")
+    #: Apply to the rest when the org has locked a rule the profile names.
+    skip_locked: bool = False
 
 
 class ProfileAccept(BaseModel):
@@ -299,7 +304,7 @@ def apply_project_profile(profile_id: str, body: ProfileApply, project_id: str =
     """Apply the profile's rules to one project. Every plan (D11); a person's action (D13).
     Refused naming `rules.org_lock_holds` when the org has locked a rule it names."""
     return _org_call(rules_org.apply_project_profile, db, user, project_id, profile_id,
-                     reason=body.reason)
+                     reason=body.reason, except_=body.except_, skip_locked=body.skip_locked)
 
 
 @router.get("/rules/profiles/{profile_id}/drift")

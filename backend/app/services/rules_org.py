@@ -122,11 +122,15 @@ def _plan(profile_id: str) -> tuple[dict, dict[str, dict]]:
 
 
 def apply_project_profile(db: Session, user, project_id: str, profile_id: str, *,
-                          reason: str | None) -> dict:
+                          reason: str | None, except_: list[str] | None = None,
+                          skip_locked: bool = False) -> dict:
     """Apply a profile's rules to ONE project (D11 every plan, D13 a person's action): each
     rule's project toggle and params as the profile lists them, one `set_rule_toggle` event per
     rule plus one `apply_rule_profile` for the act. The project cannot lock, so `locked` is not
-    applied. Refused whole, before any write, when the org has locked a rule the profile names."""
+    applied. Rules in `except_` are left as they are. Refused whole, before any write, when the
+    org has locked a rule the profile names, unless `skip_locked`: then the rest is applied and
+    the locked rules are listed as skipped. Only rules whose effective value differs are
+    written; params the profile does not name keep their current value."""
     rule_toggles._require_person(db, user)
     # Who before what: a caller outside the project is refused as such, not for its reason.
     authz.require_writable(db, user.id, project_id)
@@ -135,25 +139,46 @@ def apply_project_profile(db: Session, user, project_id: str, profile_id: str, *
                       rule_id=rule_toggles.ADMIN_RULE)
     why = rule_toggles._reason(reason)
     prof, plan = _plan(profile_id)
+    excepted = sorted(set(except_ or []))
+    unknown = [rid for rid in excepted if rid not in plan]
+    if unknown:
+        raise Validation(f"except names rules profile {profile_id!r} does not pin: "
+                         + ", ".join(unknown), hint="nothing was applied")
+    plan = {rid: c for rid, c in plan.items() if rid not in excepted}
     locked = sorted(rid for rid in plan if rule_toggles.resolve(db, rid, project_id)["locked"])
-    if locked:
+    if locked and not skip_locked:
         raise Refused(409, f"profile {profile_id!r} names rules the org has locked: "
                       + ", ".join(locked) + "; a project cannot override them",
                       rule_id=rule_toggles.LOCK_RULE,
                       meta={"locked_rules": locked, "project_id": project_id},
                       hint="nothing was applied; ask an org admin to change the org's value "
-                           "or unlock the rule")
+                           "or unlock the rule, or apply with skip_locked")
+    plan = {rid: c for rid, c in plan.items() if rid not in locked}
+    written = []
     for rid, changes in sorted(plan.items()):
+        r = rule_toggles.resolve(db, rid, project_id)
+        write = {k: v for k, v in changes.items() if k not in ("locked", "params")}
+        if write.get("on") == r["on"]["value"]:
+            write.pop("on")
+        if "params" in changes:
+            want = {**r["params"]["value"], **changes["params"]}
+            if want != r["params"]["value"]:
+                write["params"] = changes["params"]
+        if not write:
+            continue
         rule_toggles.set_project_toggle(
-            db, project_id, rid, {k: v for k, v in changes.items() if k != "locked"},
+            db, project_id, rid, write,
             actor=user, reason=f"profile {profile_id} v{prof.get('version', '?')}: {why}")
+        written.append(rid)
     events_svc.record_user(
         db, user, action="apply_rule_profile", target_type="project", target_id=project_id,
         project_id=project_id,
         meta={"profile": profile_id, "profile_version": prof.get("version"),
               "pack_version": rule_pack.CURRENT.version, "reason": why, "rules": sorted(plan),
+              "written": written, "exceptions": excepted, "skipped": locked,
               "pins": _pins(prof)})
-    return {"project_id": project_id, "profile": profile_id, "applied": sorted(plan)}
+    return {"project_id": project_id, "profile": profile_id, "applied": written,
+            "excepted": excepted, "skipped_locked": locked}
 
 
 def project_drift(db: Session, user, project_id: str, profile_id: str) -> dict:
@@ -162,16 +187,21 @@ def project_drift(db: Session, user, project_id: str, profile_id: str) -> dict:
     cannot set it."""
     authz.require_readable(db, user.id, project_id)
     prof = _profile(profile_id)
+    ev = _last_applied(db, "project", project_id).get(profile_id)
+    meta = (ev.meta or {}) if ev else {}
+    intended = set(meta.get("exceptions", [])) | set(meta.get("skipped", []))
     rows = []
     for rid, pin in sorted(_pins(prof).items()):
+        if rid in intended:  # left out on purpose at apply: intended, not drift
+            continue
         if rid not in rule_toggles.LIBRARY or rule_toggles.LIBRARY[rid].unmeasured_reason:
             rows.append({"rule_id": rid, "kind": "unmeasured",
                          "detail": "the loaded library cannot enforce this rule"})
             continue
         want_on = pin.get("state", "on") == "on"
-        want_params = {**rule_toggles.LIBRARY[rid].default_params, **pin.get("params", {})}
         r = rule_toggles.resolve(db, rid, project_id)
         on, params = r["on"]["value"], r["params"]["value"]
+        want_params = {**params, **pin.get("params", {})}  # unnamed params are not drift
         if on != want_on:
             rows.append({"rule_id": rid, "kind": "weakening" if want_on else "changed",
                          "detail": f"pinned {'on' if want_on else 'off'}, is "
