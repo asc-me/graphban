@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 
 import { useConfig, useMyAlerts, useProjects, usePushStatus, usePushSubscribe, useReadAlert } from "@/lib/queries";
+import { relTime } from "@/lib/relTime";
 import { projectPath, rememberProjectTag } from "@/lib/routes";
 import type { AlertRow } from "@/lib/types";
 
@@ -69,6 +70,12 @@ function BrowserPush() {
       )}
     </div>
   );
+}
+
+function impactLabel(a: AlertRow): string {
+  if (a.impact === "drain_waiting") return "Drain waiting";
+  if (a.impact === "blocks" && a.ticket) return `Blocks ${a.ticket}`;
+  return "Question";
 }
 
 /**
@@ -153,11 +160,28 @@ export function AlertsBell() {
               }}
               className="block rounded-md p-2.5 hover:bg-surface-2"
             >
-              <div className={`text-[13px] ${a.read ? "text-fg-2" : "font-semibold"}`}>{a.question}</div>
+              <div className="flex items-center gap-1.5">
+                <span
+                  data-testid="alert-impact"
+                  className="flex-none rounded-md border border-st-blocked/40 bg-st-blocked/[0.08] px-1.5 py-0.5 font-mono text-[10px] text-st-blocked"
+                >
+                  {impactLabel(a)}
+                </span>
+                {!a.read && <span aria-label="unread" className="h-1.5 w-1.5 flex-none rounded-full bg-fg" />}
+                <div
+                  data-testid="alert-headline"
+                  className={`min-w-0 flex-1 truncate text-[13px] ${a.read ? "text-fg-2" : "font-semibold text-fg"}`}
+                >
+                  {a.title || a.question}
+                </div>
+              </div>
+              {a.title && a.title !== a.question && (
+                <div className="mt-0.5 line-clamp-2 text-[12px] text-muted">{a.question}</div>
+              )}
               <div className="mt-0.5 font-mono text-[10.5px] text-faint">
-                {[a.ticket, a.prd, a.asked_by && `asked by ${a.asked_by}`, a.created_at && new Date(a.created_at).toLocaleString()]
+                {[a.project_tag, a.created_at && <span key="age" title={new Date(a.created_at).toLocaleString()}>{relTime(a.created_at)}</span>, a.prd, a.asked_by && `asked by ${a.asked_by}`]
                   .filter(Boolean)
-                  .join(" · ")}
+                  .flatMap((x, i) => (i === 0 ? [x] : [" · ", x]))}
               </div>
             </Link>
           ))}
