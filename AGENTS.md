@@ -101,7 +101,7 @@ needs a person's own terminal (`sudo`, an interactive login).
   functions in `backend/app/services/`. Never duplicate domain logic in a router
   or tool handler.
 - **Schema is owned by Alembic** on Postgres (`backend/alembic/versions/`,
-  currently 0001–0199). SQLite/tests use `create_all`. Never edit an applied
+  currently 0001–0200). SQLite/tests use `create_all`. Never edit an applied
   migration; add a new one.
 - **AI providers only via `backend/app/providers/`** (`Embedder`/`ChatModel`/
   `Extractor` protocols, selected by `EMBED_PROVIDER`/`CHAT_PROVIDER`). Offline

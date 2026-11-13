@@ -99,31 +99,22 @@ both are set.
 
 ## Browser push (optional)
 
-Browser push is off until a VAPID key pair is configured; the bell panel then says
-"Browser notifications are not set up on this deployment".
+Browser push works out of the box. On its first start the api generates a VAPID key pair and
+keeps it in the database (`vapid_keys`; the private key is encrypted at rest when
+`SECRET_ENCRYPTION_KEY` is set). Every later start, every worker and every upgrade reuses that
+same pair, so existing browser subscriptions keep working. Open the bell panel and it offers
+"Notify me in this browser". The push `sub` claim is `mailto:` the first account's email.
 
-1. Generate a key pair with the backend's own dependency (`cryptography`):
+Set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT` in `.env` only to supply your
+own keys or contact (Compose forwards all three to the api; restart it with
+`docker compose up -d api`). With both keys set the stored pair is ignored and left alone.
+Both keys are base64url strings; `VAPID_PRIVATE_KEY` may instead be the path to a PEM file
+readable inside the api container. Changing the pair invalidates every existing browser
+subscription: people must click "Notify me in this browser" again.
 
-   ```
-   python - <<'PY'
-   import base64
-   from cryptography.hazmat.primitives import serialization
-   from cryptography.hazmat.primitives.asymmetric import ec
-   k = ec.generate_private_key(ec.SECP256R1())
-   b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()
-   print("VAPID_PRIVATE_KEY=" + b64(k.private_numbers().private_value.to_bytes(32, "big")))
-   print("VAPID_PUBLIC_KEY=" + b64(k.public_key().public_bytes(
-       serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)))
-   PY
-   ```
-
-   (`py_vapid`'s `vapid --gen` also works.)
-2. Key formats: both keys are base64url strings; `VAPID_PRIVATE_KEY` may instead be the path
-   to a PEM file (it must be readable inside the api container).
-3. Set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT` (a `mailto:` or https URL)
-   in `.env`. Compose forwards all three to the api service.
-4. Restart the api so it reads them: `docker compose up -d api`.
-5. Open the bell panel: it should now offer "Notify me in this browser".
+If the stored private key cannot be decrypted (for example `SECRET_ENCRYPTION_KEY` changed),
+the api logs an error, starts anyway, and the bell says browser notifications are not set up.
+It never replaces the stored pair on its own; restore the old key or supply your own pair.
 
 ## Deploy
 
