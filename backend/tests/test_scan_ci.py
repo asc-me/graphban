@@ -385,7 +385,7 @@ def test_gbfleet_servers_alone_is_not_code_and_not_never_run(repo, fakes):
     assert not v.results
 
 
-@pytest.mark.parametrize("path", ["docker-compose.yml", "start.sh"])
+@pytest.mark.parametrize("path", ["docker-compose.yml", "start.sh", ".env.example"])
 def test_deployment_wiring_is_not_code_and_not_never_run(repo, fakes, path):
     head = _pr(repo, {path: "changed\n"})
     v = _eval(repo, head)
