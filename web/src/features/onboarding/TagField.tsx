@@ -19,7 +19,11 @@ export type TagStatus =
   | { kind: "idle" }
   | { kind: "checking" }
   | { kind: "ok" }
-  | { kind: "unavailable"; reason: string };
+  | { kind: "unavailable"; reason: string }
+  | { kind: "error" };
+
+const TAG_FORMAT = /^[A-Z][A-Z0-9]{1,3}$/;
+const TAG_HINT = "2–4 letters or digits, starting with a letter";
 
 export function useTagField(name: string) {
   const [tag, setTagRaw] = React.useState("");
@@ -28,7 +32,7 @@ export function useTagField(name: string) {
 
   function setTag(next: string) {
     setTouched(true);
-    setTagRaw(next.toUpperCase().slice(0, 4));
+    setTagRaw(next.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4));
   }
 
   function reset() {
@@ -74,7 +78,7 @@ export function useTagField(name: string) {
           setStatus(r.available ? { kind: "ok" } : { kind: "unavailable", reason: r.reason });
         })
         .catch(() => {
-          if (!cancelled) setStatus({ kind: "idle" });
+          if (!cancelled) setStatus({ kind: "error" });
         });
     }, 250);
     return () => {
@@ -109,19 +113,23 @@ export function TagField({
         onChange={(e) => setTag(e.target.value)}
         placeholder="e.g. GRPH"
         maxLength={4}
-        aria-invalid={status.kind === "unavailable"}
+        aria-invalid={status.kind === "unavailable" || status.kind === "error" || (!!tag && !TAG_FORMAT.test(tag))}
         className="font-mono uppercase"
       />
       <p className="mt-1.5 font-mono text-[10px] text-faint" role="status">
-        {status.kind === "unavailable" ? (
+        {tag && !TAG_FORMAT.test(tag) ? (
+          <span className="text-danger">{TAG_HINT}</span>
+        ) : status.kind === "unavailable" ? (
           <span className="text-danger">{status.reason}</span>
+        ) : status.kind === "error" ? (
+          <span className="text-danger">Couldn’t check whether this tag is available. Edit it to retry.</span>
         ) : tag ? (
           <>
             Keys look like <span className="text-fg-2">{tag}-12</span>,{" "}
             <span className="text-fg-2">{tag}-R33</span>, <span className="text-fg-2">{tag}-P4</span>
           </>
         ) : (
-          "2–4 letters or digits, starting with a letter"
+          TAG_HINT
         )}
       </p>
     </div>

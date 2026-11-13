@@ -69,6 +69,36 @@ describe("New project wizard", () => {
     expect(next()).toBeDisabled();
   });
 
+  it("strips symbols from the tag as you type", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+    const tag = screen.getByLabelText("Tag");
+    await user.clear(tag);
+    await user.type(tag, "a-b !");
+    expect(tag).toHaveValue("AB");
+  });
+
+  it("shows the format hint, not the server string, for an invalid tag", async () => {
+    const user = userEvent.setup();
+    api.tagCheck.mockResolvedValue({ tag: "A", available: false, reason: "tag must be 2-4 characters (got 'A')" });
+    renderWizard();
+    const tag = screen.getByLabelText("Tag");
+    await user.clear(tag);
+    await user.type(tag, "a");
+    expect(screen.getByText("2–4 letters or digits, starting with a letter")).toBeInTheDocument();
+    await waitFor(() => expect(api.tagCheck).toHaveBeenCalled());
+    expect(screen.queryByText(/got 'A'/)).not.toBeInTheDocument();
+  });
+
+  it("shows a message when the availability check fails", async () => {
+    const user = userEvent.setup();
+    api.tagCheck.mockRejectedValue(new Error("network"));
+    renderWizard();
+    await user.type(screen.getByLabelText("Project name"), "Core Platform");
+    await waitFor(() => expect(screen.getByText(/Couldn’t check whether this tag is available/)).toBeInTheDocument());
+    expect(next()).toBeDisabled();
+  });
+
   it("skips an empty remote and blocks an invalid one", async () => {
     const user = userEvent.setup();
     renderWizard();
