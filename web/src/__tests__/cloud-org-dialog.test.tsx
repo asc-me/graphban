@@ -289,10 +289,65 @@ describe("Organization window, linked: the P67 overview (GRPH-1564, L3/L4)", () 
     mocks.syncStatus.mockResolvedValue(linked);
   });
 
-  const open = async (onOpenChange = vi.fn()) => {
+  // The window opens on the "Linked as" summary (design 2e); the overview is one click on.
+  const openSummary = async (onOpenChange = vi.fn()) => {
     wrapDialog(true, onOpenChange);
     return screen.findByRole("dialog", { name: "Linked to Ascme Labs" });
   };
+  const open = async (onOpenChange = vi.fn()) => {
+    const dialog = await openSummary(onOpenChange);
+    await userEvent.setup().click(await within(dialog).findByRole("button", { name: "Open org overview" }));
+    return dialog;
+  };
+
+  it("opens on the Linked as summary: heading, projects with state, local count, three buttons", async () => {
+    const dialog = await openSummary();
+    const summary = await within(dialog).findByTestId("linked-summary");
+    expect(summary).toHaveTextContent("Linked as");
+    expect(summary).toHaveTextContent("This deployment is linked to Ascme Labs as alex@acme.example.");
+    const rows = summary.querySelectorAll("[data-synced-project]");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveTextContent(`core→☁ CORE· ☁ SYNCED ${hhmm(PUSHED_AT)}`);
+    expect(within(summary).getByText("2 projects are local only.")).toBeInTheDocument();
+    expect(dialog.querySelector("#org-deployments")).toBeNull();
+    for (const n of ["Open org overview", "Choose projects", "Sign in again"]) {
+      expect(within(summary).getByRole("button", { name: n })).toBeInTheDocument();
+    }
+  });
+
+  it("Open org overview shows the overview; Choose projects opens ③; Sign in again opens ②", async () => {
+    const user = userEvent.setup();
+    mocks.syncCloudProjects.mockResolvedValue({ status: "ok", projects: [{ id: "c1", tag: "CORE", name: "Core" }], mapping: [] });
+    let dialog = await openSummary();
+    await user.click(await within(dialog).findByRole("button", { name: "Open org overview" }));
+    expect(await within(dialog).findByTestId("linked-panel")).toBeInTheDocument();
+  });
+
+  it("summary: Choose projects opens step ③", async () => {
+    const user = userEvent.setup();
+    mocks.syncCloudProjects.mockResolvedValue({ status: "ok", projects: [{ id: "c1", tag: "CORE", name: "Core" }], mapping: [] });
+    const dialog = await openSummary();
+    await user.click(await within(dialog).findByRole("button", { name: "Choose projects" }));
+    expect(await within(dialog).findByRole("combobox", { name: "Cloud project for core" })).toBeInTheDocument();
+  });
+
+  it("summary: Sign in again opens step ②", async () => {
+    const user = userEvent.setup();
+    const dialog = await openSummary();
+    await user.click(await within(dialog).findByRole("button", { name: "Sign in again" }));
+    expect(await within(dialog).findByRole("list", { name: "Link steps" })).toBeInTheDocument();
+    expect(within(dialog).queryByTestId("linked-summary")).toBeNull();
+  });
+
+  it("seat removed: red alert above the heading and Sign in again is primary", async () => {
+    mocks.syncStatus.mockResolvedValue({ ...linked, state: "refused" });
+    const dialog = await openSummary();
+    const summary = await within(dialog).findByTestId("linked-summary");
+    expect(within(summary).getByRole("alert")).toHaveTextContent("Your seat in Ascme Labs was removed. Nothing is syncing.");
+    expect(summary).toHaveTextContent("Anyone with a seat in Ascme Labs can sign this box in");
+    expect(within(summary).getByRole("button", { name: "Sign in again" }).className).toContain("bg-accent");
+    expect(within(summary).getByRole("button", { name: "Open org overview" }).className).not.toContain("bg-accent");
+  });
 
   it("names the org and the signed-in email, the synced project with its tag and time, and the local count", async () => {
     const dialog = await open();

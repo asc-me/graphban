@@ -164,3 +164,101 @@ export function LinkedPanel({
     </div>
   );
 }
+
+/** The "Linked as" summary (Org Link design 2e): shown once ④ is done, and when a finished
+ *  link is reopened. Open org overview leads on; the refused variants make Sign in again primary. */
+export function LinkedSummary({
+  status,
+  deploymentName,
+  readOnly = false,
+  busy = false,
+  onOpenOverview,
+  onChooseProjects,
+  onSignIn,
+}: {
+  status: SyncStatus;
+  /** This deployment's name in the org (the `here` row of /api/sync/org), when it was read. */
+  deploymentName?: string | null;
+  readOnly?: boolean;
+  busy?: boolean;
+  onOpenOverview: () => void;
+  onChooseProjects: () => void;
+  onSignIn: () => void;
+}) {
+  const org = status.org || "the org";
+  const refused = status.state === "refused";
+  const seatRemoved = refused && !status.legacy;
+  const keyRefused = refused && !!status.legacy;
+  const mapped = status.projects.filter((p) => p.mapped);
+  const local = status.projects.length - mapped.length;
+  const deployment = deploymentName || "this deployment";
+
+  return (
+    <div className="space-y-3" data-testid="linked-summary">
+      {seatRemoved && (
+        <p role="alert" className="text-body text-st-blocked">
+          Your seat in {org} was removed. Nothing is syncing.
+        </p>
+      )}
+      {keyRefused && (
+        <p role="alert" className="text-body text-st-blocked">
+          This link used a key. Sign in to keep syncing.
+        </p>
+      )}
+      <h3 className="text-[15px] font-semibold">
+        <span aria-hidden className="text-st-done">⛓ </span>
+        Linked as <span className="font-mono">{deployment}</span>
+      </h3>
+      <p className="text-body">
+        This deployment is linked to <strong className="font-semibold text-fg">{org}</strong>
+        {status.linked_email ? (
+          <>
+            {" as "}
+            <code className="font-mono text-[12px] text-fg">{status.linked_email}</code>
+          </>
+        ) : null}
+        .
+      </p>
+      <span className="font-mono text-meta text-faint">SYNCED PROJECTS</span>
+      <ul className="space-y-1">
+        {mapped.map((p) => {
+          const result = seatRemoved ? "refused" : p.last_push_result;
+          return (
+            <li key={p.project_id} data-synced-project className="flex items-baseline gap-2 text-body">
+              <span className="max-w-40 truncate font-mono">{p.name}</span>
+              {!seatRemoved && <span aria-hidden className="text-faint">→</span>}
+              {!seatRemoved && (
+                <span className="font-mono text-[10px] uppercase text-faint">☁ {cloudTagText(p.cloud_project_tag)}</span>
+              )}
+              {result === "ok" && p.last_push_at && (
+                <span className="font-mono text-[10px] uppercase text-st-done">· ☁ SYNCED {clockTime(p.last_push_at)}</span>
+              )}
+              {result === "refused" && <span className="font-mono text-[10px] uppercase text-st-blocked">☁ REFUSED</span>}
+              {result === "unknown" && <span className="font-mono text-[10px] uppercase text-faint">☁ UNKNOWN</span>}
+            </li>
+          );
+        })}
+      </ul>
+      <p className="text-small text-faint">
+        {local === 1 ? "1 project is local only." : `${local} projects are local only.`}
+      </p>
+      {seatRemoved && (
+        <p className="text-small text-faint">
+          Anyone with a seat in {org} can sign this box in. Your project choices are kept and
+          checked again.
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2 border-t border-line pt-3">
+        <Button size="sm" variant={refused ? "ghost" : "default"} onClick={onOpenOverview}>
+          Open org overview
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onChooseProjects} disabled={readOnly || busy}>
+          Choose projects
+        </Button>
+        <Button size="sm" variant={refused ? "default" : "ghost"} onClick={onSignIn} disabled={readOnly || busy}>
+          Sign in again
+        </Button>
+      </div>
+    </div>
+  );
+}
