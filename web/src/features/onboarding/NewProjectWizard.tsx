@@ -539,7 +539,7 @@ export function NewProjectWizard({
                       type="button"
                       onClick={copy}
                       className={cn(
-                        "h-[26px] rounded-[6px] border border-line bg-surface-2 px-2 font-mono text-small hover:border-control",
+                        "h-[26px] rounded-[6px] border border-control bg-surface-2 px-2 font-mono text-small hover:border-control",
                         copied ? "text-st-done" : "text-fg-2",
                       )}
                     >
@@ -571,7 +571,7 @@ export function NewProjectWizard({
                 type="button"
                 variant="outline"
                 size="sm"
-                className="h-[34px] border-line bg-transparent text-[13px]"
+                className="h-[34px] border-control bg-transparent text-[13px]"
                 disabled={idx <= 0 || busy}
                 onClick={() => go(STEPS[idx - 1])}
               >
@@ -579,7 +579,7 @@ export function NewProjectWizard({
               </Button>
             )}
             {ready && (
-              <Button type="button" variant="outline" size="sm" className="h-[34px] border-line bg-transparent text-[13px]" onClick={another}>
+              <Button type="button" variant="outline" size="sm" className="h-[34px] border-control bg-transparent text-[13px]" onClick={another}>
                 Create another
               </Button>
             )}
