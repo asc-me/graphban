@@ -483,3 +483,103 @@ def test_status_carries_the_code_in_flight_for_a_box_admin_and_never_the_device_
     assert _poll(client, auth).json()["status"] == "approved"
     body = _status(client, auth).json()
     assert body["signed_in"] is True and body["pending_sign_in"] is None
+
+
+# ---- re-sign-in revoke (GRPH-1576, GBC-88) -----------------------------------------------
+
+DEP_OLD = "dep-old-1"
+DEP_NEW = "dep-new-2"
+TOKEN_NEW = "gb_dep_newtokenNEWTOKEN"
+
+
+def _sign_in(client, auth, console, token, deployment_id):
+    _start(client, auth)
+    console.poll_answer = (200, {"status": "approved", "org": {"name": "Acme"},
+                                 "email": "e@a.dev", "token": token,
+                                 "deployment_id": deployment_id})
+    assert _poll(client, auth).json()["status"] == "approved"
+
+
+def _deployment_id() -> str:
+    with SessionLocal() as db:
+        return db.get(SyncLink, "instance").deployment_id
+
+
+def test_a_box_with_no_deployment_token_omits_previous_deployment_id(client, auth, console):
+    _start(client, auth)
+    (body,) = console.bodies("/device/start")
+    assert "previous_deployment_id" not in body
+
+
+def test_a_box_holding_a_token_sends_its_deployment_on_start(client, auth, console):
+    _sign_in(client, auth, console, TOKEN, DEP_OLD)
+    assert _deployment_id() == DEP_OLD
+    r = _start(client, auth)
+    assert r.json()["status"] == "started"
+    assert console.bodies("/device/start")[-1]["previous_deployment_id"] == DEP_OLD
+    _assert_no_secrets(r)
+
+
+def test_re_sign_in_replaces_the_deployment_and_the_next_start_names_the_new_one(
+        client, auth, console):
+    _sign_in(client, auth, console, TOKEN, DEP_OLD)
+    _sign_in(client, auth, console, TOKEN_NEW, DEP_NEW)
+    assert console.bodies("/device/start")[-1]["previous_deployment_id"] == DEP_OLD
+    assert _deployment_id() == DEP_NEW
+    _start(client, auth)
+    assert console.bodies("/device/start")[-1]["previous_deployment_id"] == DEP_NEW
+
+
+def test_an_approval_without_a_deployment_id_drops_the_old_one(client, auth, console):
+    """A console that predates GBC-88 says nothing: the old id would name a deployment the new
+    token is not, so it is dropped and the next start omits the field."""
+    _sign_in(client, auth, console, TOKEN, DEP_OLD)
+    _start(client, auth)
+    console.poll_answer = (200, {"status": "approved", "org": {"name": "Acme"},
+                                 "email": "e@a.dev", "token": TOKEN_NEW})
+    assert _poll(client, auth).json()["status"] == "approved"
+    assert _deployment_id() == ""
+    _start(client, auth)
+    assert "previous_deployment_id" not in console.bodies("/device/start")[-1]
+
+
+def test_unlink_forgets_the_deployment(client, auth, console):
+    _sign_in(client, auth, console, TOKEN, DEP_OLD)
+    assert client.delete("/api/sync/link", headers=auth).status_code == 200
+    assert _deployment_id() == ""
+    _start(client, auth)
+    assert "previous_deployment_id" not in console.bodies("/device/start")[-1]
+
+
+def test_after_re_sign_in_the_new_token_pushes_and_the_old_one_is_refused(
+        client, auth, console, monkeypatch):
+    """The console revokes DEP_OLD when it approves the re-sign-in: its token is then 401
+    token_revoked. The box must push with the new token, never the old one."""
+    client.post("/api/projects", json={"name": "Core", "id": "core"}, headers=auth)
+    _sign_in(client, auth, console, TOKEN, DEP_OLD)
+    with SessionLocal() as db:
+        db.merge(SyncProject(local_project_id="core", cloud_project_id="cloud-alpha"))
+        db.commit()
+    _sign_in(client, auth, console, TOKEN_NEW, DEP_NEW)
+    revoked = console.bodies("/device/start")[-1]["previous_deployment_id"]
+    assert revoked == DEP_OLD
+
+    auths: list[str] = []
+
+    def push_console(url, json=None, headers=None, timeout=None, **kw):
+        bearer = dict(headers or {}).get("Authorization", "")
+        auths.append(bearer)
+        req = httpx.Request("POST", url)
+        if bearer == f"Bearer {TOKEN}":
+            return httpx.Response(401, json={"reason": "token_revoked"}, request=req)
+        if bearer == f"Bearer {TOKEN_NEW}":
+            return httpx.Response(200, json={"pushed": 0, "edges": 0}, request=req)
+        return httpx.Response(401, json={"reason": "invalid_token"}, request=req)
+
+    monkeypatch.setattr(httpx, "post", push_console)
+    r = client.post("/api/sync/push", headers=auth, json={})
+    assert r.status_code == 200, r.text
+    assert auths and set(auths) == {f"Bearer {TOKEN_NEW}"}
+    out = {p["project_id"]: p for p in r.json()["projects"]}
+    assert out["core"]["status"] == "done"
+    assert _status(client, auth).json()["state"] == "ok"

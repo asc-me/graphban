@@ -436,6 +436,7 @@ def test_alembic_stays_single_head_with_0140_in_the_chain():
     cfg.set_main_option("script_location", str(_BACKEND / "alembic"))
     cfg.set_main_option("path_separator", "os")
     script = ScriptDirectory.from_config(cfg)
+    # 0199 (GRPH-1576, sync_link.deployment_id) on
     # 0198 (GRPH-1562, sync_project.cloud_project_tag) on
     # 0197 (GRPH-1528, push_subscriptions) on
     # 0196 (GRPH-1527, alerts) on
@@ -482,7 +483,8 @@ def test_alembic_stays_single_head_with_0140_in_the_chain():
     # on 0146 (GRPH-1137, decision waits) on 0145 (GRPH-1134, item done_at)
     # on 0144 (GRPH-1133, per-user UI preferences) on 0143
     # (GRPH-1127, scan finding grain); linear through 0140.
-    assert script.get_heads() == ["0198"]
+    assert script.get_heads() == ["0199"]
+    assert script.get_revision("0199").down_revision == "0198"
     assert script.get_revision("0198").down_revision == "0197"
     assert script.get_revision("0197").down_revision == "0196"
     assert script.get_revision("0195").down_revision == "0194"
