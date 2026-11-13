@@ -626,14 +626,24 @@ def undo(db: Session, item_id: str, *, actor=None, surface: str = "rest") -> dic
     return {"item": item.key, "undone": last.action, "event_id": ev.id}
 
 
-def triage_blockers(db: Session, project_id: str | None = None) -> list[dict]:
-    """Blocked items for triage, snoozed ones hidden. Decision waits carry question/options."""
+def triage_blockers(db: Session, project_id: str | None = None,
+                    include_open_questions: bool = False) -> list[dict]:
+    """Blocked items for triage, snoozed ones hidden. Decision waits carry question/options.
+
+    `include_open_questions` also lists unblocked items holding an open decision (GRPH-1606), so
+    Triage shows everything `question_state` calls waiting on a person; each item appears once.
+    """
     from app.models import utcnow
     from app.services import items as items_svc
 
     now = utcnow()
     out = []
-    for it in items_svc.list_items(db, project_id=project_id, status="blocked"):
+    cands = list(items_svc.list_items(db, project_id=project_id, status="blocked"))
+    if include_open_questions:
+        seen = {it.id for it in cands}
+        cands += [it for it in items_svc.list_items(db, project_id=project_id)
+                  if it.id not in seen and _open_decision_state(it) is not None]
+    for it in cands:
         until = _aware(it.snoozed_until)
         if until is not None and until > now:
             continue

@@ -1,17 +1,18 @@
 import { QUESTION_LABEL } from "@/features/tracker/QuestionStateBadge";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { FETCH_FAILED, PlannerError, TriageQueueSkeleton } from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
+import { tagFromPath } from "@/lib/routes";
 import { useTriageFeed } from "@/lib/queries";
 import type { DrainNote as DrainNoteData, TriageFeedRow } from "@/lib/types";
 
 import { TABS, actionsFor, answerTextAction, answeredMetaCopy, duplicateHintCopy, formatAge, inTab, rowTitle, type TriageAction, type Undo } from "./actions";
 import { DrainNote } from "./DrainNote";
-import { OPEN_ANSWER_EVENT, TriageDetail } from "./TriageDetail";
+import { OPEN_ANSWER_EVENT, TriageDetail, sourceHref } from "./TriageDetail";
 
 /**
  * Triage — one keyboard-driven queue across bugs, requests, blockers and collisions
@@ -69,6 +70,7 @@ function metaOf(r: TriageFeedRow): ReactNode {
 
 export function TriageView() {
   const { active } = useProjectCtx();
+  const { pathname } = useLocation();
   const projectId = active?.id ?? "";
   const qc = useQueryClient();
   const feedQ = useTriageFeed(projectId);
@@ -105,9 +107,10 @@ export function TriageView() {
       ?? rows.find((r) => r.kind === "blocker" && r.blocks?.id === selId)?.id
       ?? selId;
   }, [selId, feedQ.data]);
-  const sel = shown.find((r) => r.id === resolvedSel) ?? shown[0] ?? null;
   const linkMissing = !!linked && !!feedQ.data && !feedQ.isFetching
     && !(feedQ.data.rows).some((r) => r.id === linked || (r.kind === "blocker" && r.blocks?.id === linked));
+  // A linked key that is not in the feed selects nothing: never a different row (GRPH-1606).
+  const sel = shown.find((r) => r.id === resolvedSel) ?? (linkMissing ? null : (shown[0] ?? null));
   const actions = useMemo(() => (sel ? actionsFor(sel, projectId) : []), [sel, projectId]);
 
   const refresh = useCallback(
@@ -293,7 +296,9 @@ export function TriageView() {
 
       {linkMissing && (
         <div role="status" className="border-b border-line px-6 py-2 text-small text-muted">
-          {linked} isn't in your Triage.
+          {linked} is not waiting on a person any more.{" "}
+          <Link className="text-accent underline-offset-2 hover:underline"
+            to={sourceHref("decision", linked, tagFromPath(pathname)) ?? "/tracker"}>Open {linked}</Link>
         </div>
       )}
 
