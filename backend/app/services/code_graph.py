@@ -829,6 +829,37 @@ def area_matches(area: str, path: str) -> bool:
     return path.startswith(area.rstrip("/") + "/")
 
 
+def normalise_rule_path(raw: str) -> str:
+    """A rule path read the way the rules read it: trimmed, a trailing glob or slash ignored.
+
+    `db/migrations/**` and `db/migrations/` both mean the directory `db/migrations`, as in
+    `fleet._hard_paths`. Case is kept: graph paths are case-sensitive, so a count must be too."""
+    n = (raw or "").strip().rstrip("/")
+    while n.endswith("*") or n.endswith("/"):
+        n = n.rstrip("*").rstrip("/")
+    return n
+
+
+def path_counts(db: Session, project_id: str, paths: list[str]) -> dict:
+    """How many indexed files each prefix or glob matches (GRPH-1597).
+
+    `indexed` is False when the project has no file nodes at all; every `files` is then None —
+    "not indexed" is a distinct answer, never 0, because 0 would say "this path matches nothing"
+    about a project whose graph simply was never built. An entry that normalises to nothing
+    (`**`) is also None: it names no prefix, so there is no count to give."""
+    files = [n.path for n in list_nodes(db, project_id, kind="file")]
+    indexed = bool(files)
+    out = []
+    for raw in paths:
+        norm = normalise_rule_path(raw)
+        if not indexed or not norm:
+            count = None
+        else:
+            count = sum(1 for f in files if area_matches(norm, f))
+        out.append({"path": raw, "normalised": norm, "files": count})
+    return {"indexed": indexed, "paths": out}
+
+
 # ── structural queries (PRD-20 D8) ────────────────────────────────────────────
 #
 # The three questions a graph exists to answer — which node is load-bearing, which things move

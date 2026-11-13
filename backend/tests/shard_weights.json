@@ -322,6 +322,7 @@
 "tests/test_roster_scoped.py": 3.86,
 "tests/test_roster_view.py": 0.22,
 "tests/test_routing.py": 7.9,
+"tests/test_rule_path_counts.py": 0.84,
 "tests/test_rule_decision_sync.py": 0.84,
 "tests/test_rule_distinct_vendor.py": 0.84,
 "tests/test_rule_engine_evidence.py": 0.84,

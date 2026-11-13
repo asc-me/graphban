@@ -347,6 +347,54 @@ def test_apply_to_a_project_is_refused_whole_when_the_org_locks_a_rule(client, o
     assert toggles[RULE]["on"]["value"] is False
 
 
+def _apply_body(client, org, pid, body, headers=None):
+    return client.post("/api/rules/profiles/standard/apply", params={"project_id": pid},
+                       json={"reason": "adopt", **body}, headers=headers or org["owner"])
+
+
+def test_apply_except_leaves_a_rule_and_drift_reads_it_as_intended(client, org):
+    p = org["ps"][0]
+    r = _apply_body(client, org, p, {"except": [RULE]})
+    assert r.status_code == 200, r.text
+    assert r.json()["applied"] == [OTHER] and r.json()["excepted"] == [RULE]
+    assert _toggles(client, {"owner": org["owner"]}, p)[RULE]["on"]["source"] != "project"
+    ev = _events("apply_rule_profile")[-1].meta
+    assert ev["exceptions"] == [RULE] and ev["skipped"] == [] and ev["profile_version"] == "1"
+    d = client.get("/api/rules/profiles/standard/drift", params={"project_id": p},
+                   headers=org["owner"]).json()
+    assert d["state"] == "clean", d
+
+
+def test_apply_except_refuses_a_rule_the_profile_does_not_pin(client, org):
+    r = _apply_body(client, org, org["ps"][0], {"except": ["not.pinned"]})
+    assert r.status_code == 422, r.text
+    assert not _events("apply_rule_profile")
+
+
+def test_apply_skip_locked_applies_the_rest_and_lists_the_skipped(client, org):
+    _org_toggle(org, RULE, {"on": False, "locked": True, "reason": "freeze"})
+    p = org["ps"][0]
+    assert _apply_body(client, org, p, {}).status_code == 409
+    r = _apply_body(client, org, p, {"skip_locked": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["applied"] == [OTHER] and r.json()["skipped_locked"] == [RULE]
+    toggles = _toggles(client, {"owner": org["owner"]}, p)
+    assert toggles[RULE]["on"]["value"] is False
+    assert _events("apply_rule_profile")[-1].meta["skipped"] == [RULE]
+    d = client.get("/api/rules/profiles/standard/drift", params={"project_id": p},
+                   headers=org["owner"]).json()
+    assert d["state"] == "clean", d
+
+
+def test_apply_writes_only_rules_that_differ(client, org):
+    p = org["ps"][0]
+    assert _apply_body(client, org, p, {}).json()["applied"] == sorted([RULE, OTHER])
+    n = len(_events("set_rule_toggle"))
+    r = _apply_body(client, org, p, {})
+    assert r.status_code == 200 and r.json()["applied"] == []
+    assert len(_events("set_rule_toggle")) == n
+
+
 def test_apply_to_a_project_is_refused_for_an_api_key_or_the_engine(client, org):
     from fastapi import HTTPException
 
