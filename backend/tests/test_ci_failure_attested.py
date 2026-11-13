@@ -92,8 +92,36 @@ def test_mode_failed_posts_the_failed_receipt(monkeypatch):
 def test_the_failure_step_runs_only_when_ci_failed():
     steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["ci"]["steps"]
     step = next(s for s in steps if "--mode failed" in (s.get("run") or ""))
-    assert step.get("if") == "failure()", \
-        "the failed-run step must run on failure only, or it would contradict a green run"
+    assert "steps.gate_result.outcome == 'failure'" in step.get("if", ""), \
+        "the failed-run step must key on the result check, not on any step failing"
+    assert any(s.get("id") == "gate_result" for s in steps)
+
+
+def _timeout(*a, **kw):
+    raise TimeoutError("timed out")
+
+
+def test_a_ledger_timeout_in_post_head_exits_zero_and_attests_no_failure(monkeypatch, capsys):
+    sent = []
+    monkeypatch.setattr(attest_ci, "LEDGER_BACKOFF", 0)
+    monkeypatch.setattr(attest_ci, "call_tool", lambda *a, **kw: (sent.append(a), _timeout())[1])
+    monkeypatch.setenv("GRAPHBAN_URL", "http://gb.invalid")
+    monkeypatch.setenv("GRAPHBAN_GATE_KEY", "k")
+    monkeypatch.setattr(attest_ci.time, "sleep", lambda s: None)
+    rc = attest_ci.main(["--commit", HEAD, "--branch", "gb/x", "--mode", "head",
+                         "--text", "GRPH-1 fix"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert len(sent) == attest_ci.LEDGER_ATTEMPTS  # retried
+    assert "::warning" in out and "::error" not in out
+    assert all(a[3].get("evidence") is None for a in sent)  # no failure receipt written
+
+
+def test_a_client_error_is_not_transient_and_still_fails(monkeypatch):
+    import urllib.error
+    err = urllib.error.HTTPError("u", 401, "no", {}, None)
+    assert not attest_ci.is_transient(err)
+    assert attest_ci.is_transient(urllib.error.HTTPError("u", 503, "x", {}, None))
 
 
 # ---- the server's refusal -----------------------------------------------------------

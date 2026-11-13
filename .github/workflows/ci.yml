@@ -484,6 +484,7 @@ jobs:
     runs-on: [self-hosted, graphban-ledger]
     steps:
       - name: Fail if anything that ran did not pass
+        id: gate_result
         # `skipped` is a pass here and `failure`/`cancelled` are not. Checking the results
         # explicitly rather than trusting `needs.*.result == 'success'`, because a skipped
         # job is not a success and would fail the gate for the exact PRs the filters exist
@@ -532,7 +533,9 @@ jobs:
       # and reviewers wait instead of bouncing. `failure()` keeps this unreachable on a
       # green run, so it cannot mask the passing attestation below.
       - name: Record that this run failed
-        if: failure()
+        # Keyed on the result check, not bare failure(): a ledger hiccup in an attest step
+        # must not be posted as a red suite (GRPH-1590).
+        if: always() && steps.gate_result.outcome == 'failure'
         env:
           GRAPHBAN_URL: ${{ vars.GRAPHBAN_URL }}
           GRAPHBAN_GATE_KEY: ${{ secrets.GRAPHBAN_GATE_KEY }}
