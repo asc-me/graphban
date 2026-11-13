@@ -36,6 +36,8 @@ export interface RuleChange {
   params: ParamChange[];
   sourceBefore: string;
   sourceAfter: string;
+  /** A risk the change carries as a whole (Quick configure: a level turning a rule off). */
+  risk?: string;
 }
 
 export interface GitopsChange {
@@ -68,6 +70,7 @@ function ChangeNote({ change }: { change: RuleChange }) {
     else if (ids.length === 1) lines.push(`${ids[0]} would build alone in these areas.`);
     else lines.push(`${ids.slice(0, -1).join(", ")} and ${ids[ids.length - 1]} would build one at a time.`);
   }
+  if (change.risk) lines.push(change.risk);
   for (const p of change.params) if (p.risk) lines.push(p.risk);
   if (change.on) lines.push(change.on.after ? "Turned on, this rule starts holding for this project." : "Turned off, this rule stops holding for this project.");
   if (lines.length === 0) return null;
@@ -81,7 +84,7 @@ function ChangeNote({ change }: { change: RuleChange }) {
 }
 
 export function riskyRules(changes: StageChange[]): RuleChange[] {
-  return changes.filter((c): c is RuleChange => c.kind === "rule" && c.params.some((p) => !!p.risk));
+  return changes.filter((c): c is RuleChange => c.kind === "rule" && (!!c.risk || c.params.some((p) => !!p.risk)));
 }
 
 export function RuleReviewSheet({
@@ -93,6 +96,9 @@ export function RuleReviewSheet({
   narrow,
   onSave,
   onBack,
+  reasonPrefix,
+  onDrop,
+  footer,
 }: {
   changes: StageChange[];
   reason: string;
@@ -102,11 +108,18 @@ export function RuleReviewSheet({
   narrow: boolean;
   onSave: () => void;
   onBack: () => void;
+  /** Shown before the reason and sent with it (Quick configure: "applying Regulated 0.1.0:"). */
+  reasonPrefix?: string;
+  /** When set, each rule can be dropped from the change: the caller keeps its current value. */
+  onDrop?: (ruleId: string) => void;
+  /** Anything the caller must say under the changes, such as the rules it skips. */
+  footer?: React.ReactNode;
 }) {
   const dialog = useDialogBehavior<HTMLDivElement>(onBack, { trap: true });
   const risky = riskyRules(changes);
   const [confirmed, setConfirmed] = React.useState(false);
-  const needsReason = changes.some((c) => c.kind === "rule");
+  // A prefixed reason (applying a level) is always asked for: the act is recorded even when no rule moves.
+  const needsReason = reasonPrefix !== undefined || changes.some((c) => c.kind === "rule");
   const ready = !saving && (!needsReason || !!reason.trim()) && (risky.length === 0 || confirmed);
   return (
     <div className={cn("fixed inset-0 z-30 flex justify-center bg-black/50", narrow ? "items-end" : "items-center")}>
@@ -144,13 +157,31 @@ export function RuleReviewSheet({
                 source: {c.sourceBefore} → {c.sourceAfter}
               </span>
               <ChangeNote change={c} />
+              {onDrop && (
+                <button
+                  type="button"
+                  onClick={() => onDrop(c.ruleId)}
+                  data-testid={`rules-review-drop-${c.ruleId}`}
+                  className="self-start text-small text-muted hover:text-fg"
+                >
+                  Drop: keep its current value
+                </button>
+              )}
             </div>
           ),
         )}
+        {footer}
         {needsReason && (
           <label className="flex flex-col gap-1 text-[12px] text-fg-2">
             Why? One reason covers every rule above. It is the audit record.
-            <Input aria-label="Reason" autoFocus value={reason} placeholder="Say why, in a sentence" onChange={(e) => onReason(e.target.value)} />
+            {reasonPrefix ? (
+              <span className="flex items-center gap-1.5">
+                <span className={cn(MONO, "shrink-0 text-small text-muted")} data-testid="rules-review-reason-prefix">{reasonPrefix}</span>
+                <Input aria-label="Reason" autoFocus value={reason} placeholder="Say why, in a sentence" onChange={(e) => onReason(e.target.value)} />
+              </span>
+            ) : (
+              <Input aria-label="Reason" autoFocus value={reason} placeholder="Say why, in a sentence" onChange={(e) => onReason(e.target.value)} />
+            )}
           </label>
         )}
         {risky.length > 0 && (
