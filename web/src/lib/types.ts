@@ -3373,7 +3373,25 @@ export interface RuleFlowRule {
 /** `services/rule_toggles.py:_resolve` — project → org → platform default (PRD-P63 D4). */
 export type RuleToggleSource = "project" | "org" | "platform default";
 
-export type RuleParamValue = string | number | boolean;
+/** A param is the type of its template default: a list of strings and a table of string lists
+ *  (`plan.path_classes`) come through as themselves (GRPH-1598). */
+export type RuleParamValue = string | number | boolean | string[] | Record<string, string[]>;
+
+/** `GET /projects/{id}/paths/count` (GRPH-1597). `files` is null, never 0, when the graph cannot count. */
+export interface PathCount {
+  path: string;
+  normalised: string;
+  files: number | null;
+}
+export interface PathCounts {
+  indexed: boolean;
+  paths: PathCount[];
+}
+
+/** `GET /rules/exclusive_areas/preview`: the open items the candidate prefixes would serialise. */
+export interface SerialisationPreview {
+  serialised: { id: string; title?: string }[];
+}
 
 export interface RuleToggleValue<T> {
   value: T;

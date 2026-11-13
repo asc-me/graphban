@@ -78,7 +78,9 @@ import type {
   RuleSuggestion,
   RefusalCoverage,
   RulesFlow,
+  PathCounts,
   RuleToggle,
+  SerialisationPreview,
   RuleToggles,
   RuleToggleWrite,
   UnmappedRefusals,
@@ -1230,6 +1232,16 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
+  /** Files each prefix or glob matches in the indexed code graph; `files` is null when it can't count. */
+  pathCounts: (projectId: string, paths: string[]) =>
+    request<PathCounts>(
+      `/projects/${encodeURIComponent(projectId)}/paths/count?${paths.map((p) => `path=${encodeURIComponent(p)}`).join("&")}`,
+    ),
+  /** The open items these exclusive-area prefixes would serialise. Read-only. */
+  exclusiveAreasPreview: (projectId: string, paths: string[]) =>
+    request<SerialisationPreview>(
+      `/rules/exclusive_areas/preview?project_id=${encodeURIComponent(projectId)}${paths.map((p) => `&path=${encodeURIComponent(p)}`).join("")}`,
+    ),
   /** The project's memory write mode, a person's change with a reason (GRPH-1497). */
   setMemoryWriteMode: (projectId: string, body: { mode: string; reason: string }) =>
     request<Project>(`/projects/${encodeURIComponent(projectId)}/memory-write-mode`, {
