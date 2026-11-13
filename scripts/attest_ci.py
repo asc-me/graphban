@@ -27,6 +27,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -372,6 +373,31 @@ def covered_commits(base: str, head: str) -> list[str]:
     return [line.strip() for line in out.splitlines() if line.strip()]
 
 
+#: Attempts (and the base backoff in seconds) for a ledger that is slow or unreachable (GRPH-1590).
+LEDGER_ATTEMPTS = 3
+LEDGER_BACKOFF = 2.0
+
+
+def is_transient(exc: BaseException) -> bool:
+    """A timeout, a dropped connection or a 5xx: the ledger was not reachable, which says
+    nothing about the suite. A 4xx (bad key, bad payload) is NOT transient and still fails."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code >= 500
+    return isinstance(exc, OSError)  # URLError, TimeoutError, ConnectionError are all OSError
+
+
+def with_retry(fn, *, attempts: int = LEDGER_ATTEMPTS, backoff: float = LEDGER_BACKOFF,
+               sleep=time.sleep):
+    """Run `fn`, retrying transient errors with exponential backoff; re-raise the last one."""
+    for n in range(attempts):
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001 - classified just below
+            if not is_transient(e) or n == attempts - 1:
+                raise
+            sleep(backoff * (2 ** n))
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--commit", required=True)
@@ -449,10 +475,10 @@ def main(argv: list[str] | None = None) -> int:
     for item_key in keys:
         try:
             if args.mode == "head":
-                post_head(url, key, item_key, args.commit)
+                with_retry(lambda: post_head(url, key, item_key, args.commit))
                 print(f"{item_key}: head is now {args.commit[:12]}")
             else:
-                post(url, key, item_key, receipt)
+                with_retry(lambda: post(url, key, item_key, receipt))
                 print(f"{'recorded FAILED CI for' if args.mode == 'failed' else 'attested'} "
                       f"{item_key} at {args.commit[:12]}")
             wrote += 1
@@ -462,7 +488,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"::warning title=CI attestation skipped::{e}")
         except OutOfScope as e:
             refused.append(str(e))
-        except (urllib.error.URLError, RuntimeError, ValueError) as e:
+        except OSError as e:
+            if not is_transient(e):
+                failures.append(f"{item_key}: {e}")
+                continue
+            # GRPH-1590: an unreachable or slow ledger is not a red suite. Warn and move on;
+            # failing here reported passing runs as failed and reopened signed-off items.
+            print(f"::warning title=CI attestation skipped::{item_key}: ledger unreachable "
+                  f"after {LEDGER_ATTEMPTS} attempts ({e!r}); nothing recorded")
+        except (RuntimeError, ValueError) as e:
             # Every item is attempted before anything is reported. Stopping at the first
             # failure would leave a multi-item PR half attested with no record of which half.
             failures.append(f"{item_key}: {e}")
