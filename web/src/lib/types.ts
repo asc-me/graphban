@@ -1169,6 +1169,8 @@ export interface TriageAnsweredRow extends TriageFeedBase {
   /** "answered by <person>" or "answered from <source> by <agent>". */
   answered_by: string;
   drain: DrainNote;
+  /** The ticket the answered question blocked, so an alert's ticket key still finds the row (GRPH-1655). */
+  blocks?: { id: string; title: string };
 }
 
 export type TriageFeedRow =
