@@ -102,4 +102,65 @@ describe("RulesView setup wizard", () => {
     expect(api.applyRuleProfile).toHaveBeenCalledWith("core", "standard", { reason: "applying Standard 0.1.0: baseline", except: [], skip_locked: false });
     expect(screen.getByTestId("rules-chip-merge.gate")).toHaveAttribute("data-changed", "true");
   });
+
+  async function openDirtyWizard(user: ReturnType<typeof userEvent.setup>) {
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={["/rules"]}>
+          <RulesView />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await user.click(await screen.findByTestId("rules-open-wizard"));
+    await user.click(screen.getByRole("button", { name: "4. Merge" }));
+    await user.click(screen.getByRole("button", { name: "Set my own" }));
+    await user.click(screen.getByRole("button", { name: "Increase min_effort" }));
+  }
+
+  it("asks before Quick configure discards a changed answer: declining keeps the wizard, accepting opens Quick configure", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    await openDirtyWizard(user);
+    await user.click(screen.getByTestId("rules-open-quick"));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("rules-setup-wizard")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Set my own" })).toHaveAttribute("aria-pressed", "true");
+    confirm.mockReturnValue(true);
+    await user.click(screen.getByTestId("rules-open-quick"));
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(screen.queryByTestId("rules-setup-wizard")).toBeNull();
+    expect(screen.getByTestId("rules-quick-configure")).toBeInTheDocument();
+    confirm.mockRestore();
+  });
+
+  it("opens Quick configure without asking when no answer was changed", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={["/rules"]}>
+          <RulesView />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await user.click(await screen.findByTestId("rules-open-wizard"));
+    await user.click(screen.getByTestId("rules-open-quick"));
+    expect(confirm).not.toHaveBeenCalled();
+    expect(screen.getByTestId("rules-quick-configure")).toBeInTheDocument();
+    confirm.mockRestore();
+  });
+
+  it("asks on browser Back with a changed answer: declining keeps the wizard, accepting leaves", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    await openDirtyWizard(user);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("rules-setup-wizard")).toBeInTheDocument();
+    confirm.mockReturnValue(true);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    expect(confirm).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(screen.queryByTestId("rules-setup-wizard")).toBeNull());
+    confirm.mockRestore();
+  });
 });

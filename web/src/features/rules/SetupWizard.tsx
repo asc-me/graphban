@@ -46,11 +46,14 @@ export function SetupWizard({
   narrow,
   onExit,
   onApplied,
+  onDirtyChange,
 }: {
   flow: RulesFlow;
   narrow: boolean;
   onExit: () => void;
   onApplied: (ruleIds: string[]) => void;
+  /** Tells the page whether an answer differs from its default, so its own exits can ask first. */
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const { activeId } = useProjectCtx();
   const canWrite = useCanWriteRules(activeId);
@@ -93,6 +96,26 @@ export function SetupWizard({
   }, [answers, flow]);
 
   const dirty = changes.length > 0;
+  React.useEffect(() => {
+    onDirtyChange?.(dirty);
+    return () => onDirtyChange?.(false);
+  }, [dirty, onDirtyChange]);
+  // Browser Back/Forward: with an answer changed, hold a history entry so the first Back lands
+  // on it, ask, and either leave (discard) or push it again (keep the wizard and its answers).
+  React.useEffect(() => {
+    if (!dirty) return;
+    window.history.pushState(window.history.state, "");
+    const onPop = () => {
+      if (window.confirm(LEAVE_PROMPT)) {
+        onExit();
+      } else {
+        window.history.pushState(window.history.state, "");
+      }
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dirty]);
   // A reload discards the answers; warn first when one differs from its default.
   React.useEffect(() => {
     if (!dirty) return;
