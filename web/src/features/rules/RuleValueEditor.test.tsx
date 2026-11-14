@@ -163,4 +163,21 @@ describe("RuleSource", () => {
     expect(resetTarget("org", "Acme")).toBe("→ ORG Acme");
     expect(resetTarget("platform default", "Acme")).toBe("→ PLATFORM DEFAULT");
   });
+
+  it("list rows keep the input flexible and Remove inside the row (GRPH-1646)", async () => {
+    vi.mocked(api.pathCounts).mockResolvedValue({ indexed: false, paths: [] });
+    vi.mocked(api.exclusiveAreasPreview).mockResolvedValue({ serialised: [] });
+    const long = "services/very/long/path/segment/x";
+    render(<Harness ruleId="plan.exclusive_file_areas" name="paths" initial={[long, "db/migrations"]} spy={() => {}} />);
+    const rows = screen.getAllByTestId("rules-list-row");
+    expect(rows).toHaveLength(2);
+    const input = screen.getByLabelText("paths 1");
+    expect(input).toHaveValue(long);
+    expect(input.className).toContain("flex-1");
+    expect(input.className).toContain("min-w-0");
+    await waitFor(() => expect(screen.getAllByTestId("rules-path-count")[0]).toHaveTextContent("can't count"));
+    const remove = screen.getByRole("button", { name: "Remove paths 1" });
+    expect(rows[0].contains(remove)).toBe(true);
+    expect(remove.className).toContain("flex-none");
+  });
 });
