@@ -195,12 +195,18 @@ def test_a_short_partition_does_not_stop_anyone(git_repo: Path, tmp_path: Path, 
                 and json.loads(request.content)["params"]["name"] == "fleet_status":
             calls["n"] += 1
             server.reachable = not (3 <= calls["n"] <= 5)
+            if calls["n"] >= 6:
+                # GRPH-1608: the poll after reconnect has been answered, so the partition
+                # happened while the child was alive. Let it go now, rather than giving it
+                # a fixed 1.5 s that a loaded runner spends before the third poll.
+                (here / "release").write_text("", encoding="utf-8")
         return original(request)
 
     server._handle = handle
+    here = scripts["works_until_released"].parent
 
     wave = up(
-        git_repo, _seats(1), _factory(scripts, "works_then_waits"), server.client(),
+        git_repo, _seats(1), _factory(scripts, "works_until_released"), server.client(),
         state=state, workspace=workspace, poll=0.05, sleep=_bounded(),
     )
 
@@ -379,12 +385,18 @@ def test_a_partition_that_changed_nothing_reports_nothing(
                 and json.loads(request.content)["params"]["name"] == "fleet_status":
             calls["n"] += 1
             server.reachable = not (3 <= calls["n"] <= 5)
+            if calls["n"] >= 6:
+                # GRPH-1608: the poll after reconnect has been answered, so the partition
+                # happened while the child was alive. Let it go now, rather than giving it
+                # a fixed 1.5 s that a loaded runner spends before the third poll.
+                (here / "release").write_text("", encoding="utf-8")
         return original(request)
 
     server._handle = handle
+    here = scripts["works_until_released"].parent
 
     wave = up(
-        git_repo, _seats(1), _factory(scripts, "works_then_waits"), server.client(),
+        git_repo, _seats(1), _factory(scripts, "works_until_released"), server.client(),
         state=state, workspace=workspace, poll=0.05, sleep=_bounded(),
     )
 
