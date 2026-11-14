@@ -59,7 +59,8 @@ class Server:
     """Mints, and answers `get_context` as the deployed one does."""
 
     def __init__(self, *, writable=("core",), missing=(), refuse=None, issued=(),
-                 missing_for=None):
+                 missing_for=None, scope_for=None):
+        self.scope_for = dict(scope_for or {})
         self.writable, self.missing, self.refuse = list(writable), list(missing), refuse
         self.missing_for = dict(missing_for or {})
         self.minted = []
@@ -92,6 +93,7 @@ def _context(server):
             raise Refused(401, "invalid api key", "")
         missing = server.missing_for.get(self.api_key, server.missing)
         ctx = {"project_id": "core", "writable_projects": server.writable,
+               "key_project_id": server.scope_for.get(self.api_key, "core"),
                "missing_tiers": [{"tier": t} for t in missing]}
         return {"result": {"content": [{"text": json.dumps(ctx)}]}}
     return call
@@ -1455,3 +1457,27 @@ def test_the_image_manifest_lists_the_shipped_skills():
     manifest = json.loads((root / "backend/scripts/gban_skills.json").read_text())
     shipped = {p.name for p in (root / "cli/src/gban/skills").iterdir() if p.is_dir()}
     assert set(manifest["skills"]) == shipped
+
+
+def test_unscoped_configured_key_is_replaced_by_a_project_scoped_mint(tmp_path, wired):
+    """GRPH-1658: `until` refuses an unscoped key, so setup must not reuse one."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    server = Server(issued={"gb_sk_old"}, scope_for={"gb_sk_old": None})
+    home.write_text(json.dumps({"projects": {str(repo.resolve()): {"mcpServers": {
+        "graphban": {"type": "http", "url": URL, "headers": {"X-API-Key": "gb_sk_old"}}}}}}))
+    lines, code, made = _run(server, repo, home, wired=wired)
+    assert code == 0, lines
+    assert len(server.minted) == 1 and server.minted[0]["project_id"] == "core"
+    assert config.stored_supervisor_key("core") == "gb_sk_new1"
+
+
+def test_project_scoped_configured_key_is_still_reused(tmp_path, wired):
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    server = Server(issued={"gb_sk_old"})
+    home.write_text(json.dumps({"projects": {str(repo.resolve()): {"mcpServers": {
+        "graphban": {"type": "http", "url": URL, "headers": {"X-API-Key": "gb_sk_old"}}}}}}))
+    lines, code, made = _run(server, repo, home, wired=wired)
+    assert code == 0, lines
+    assert server.minted == [] and made.get("reused")
