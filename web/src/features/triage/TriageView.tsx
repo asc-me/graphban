@@ -104,11 +104,11 @@ export function TriageView() {
     if (!selId) return null;
     const rows = feedQ.data?.rows ?? [];
     return rows.find((r) => r.id === selId)?.id
-      ?? rows.find((r) => r.kind === "blocker" && r.blocks?.id === selId)?.id
+      ?? rows.find((r) => (r.kind === "blocker" || r.kind === "answered") && r.blocks?.id === selId)?.id
       ?? selId;
   }, [selId, feedQ.data]);
   const linkMissing = !!linked && !!feedQ.data && !feedQ.isFetching
-    && !(feedQ.data.rows).some((r) => r.id === linked || (r.kind === "blocker" && r.blocks?.id === linked));
+    && !(feedQ.data.rows).some((r) => r.id === linked || ((r.kind === "blocker" || r.kind === "answered") && r.blocks?.id === linked));
   // A linked key that is not in the feed selects nothing: never a different row (GRPH-1606).
   const sel = shown.find((r) => r.id === resolvedSel) ?? (linkMissing ? null : (shown[0] ?? null));
   const actions = useMemo(() => (sel ? actionsFor(sel, projectId) : []), [sel, projectId]);
@@ -129,7 +129,8 @@ export function TriageView() {
       try {
         const { result, undo, command, drain } = await action.run();
         setProcessed((p) => [...p, { row: sel, result, undo, command, drain }]);
-        setSelId(next?.id ?? null);
+        // An answered decision comes back as its own receipt row, so stay on it (GRPH-1655).
+        setSelId(action.answers ? sel.id : (next?.id ?? null));
         void refresh();
       } catch (e) {
         // The row stays: a failed action must not look processed.

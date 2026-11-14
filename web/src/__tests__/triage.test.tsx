@@ -214,6 +214,52 @@ describe("Triage inbox", () => {
     ...over,
   });
 
+  it("answering a question opened from an alert keeps the answered card selected (GRPH-1655)", async () => {
+    const ask: TriageFeedRow = {
+      ...blocker, id: "GRPH-906", blocks: { id: "CORE-3", title: "Ticket three" },
+      decision: { question: "Which store?", options: ["Postgres", "SQLite"] },
+    };
+    m.projectTriage.mockResolvedValueOnce(feed([ask, bug]));
+    m.projectTriage.mockResolvedValue(feed([answered({
+      id: "GRPH-906", blocks: { id: "CORE-3", title: "Ticket three" },
+    }), bug]));
+    m.answerBlocker.mockResolvedValueOnce({});
+    renderTriage("/p/CORE/triage?item=CORE-3");
+    await waitFor(() => expect(selected()).toHaveTextContent("blocks CORE-3"));
+    const user = userEvent.setup();
+    await user.keyboard("a");
+    await screen.findByTestId("answered-by");
+    expect(screen.getByText(/No drain is running for GRPH-P75/)).toBeInTheDocument();
+    expect(selected()).toHaveTextContent("which store?");
+  });
+
+  it("an own-words answer to a question opened from an alert keeps the answered card selected (GRPH-1655)", async () => {
+    const ask: TriageFeedRow = {
+      ...blocker, id: "GRPH-906", blocks: { id: "CORE-3", title: "Ticket three" },
+      decision: { question: "Which store?", options: [] },
+    };
+    m.projectTriage.mockResolvedValueOnce(feed([ask, bug]));
+    m.projectTriage.mockResolvedValue(feed([answered({
+      id: "GRPH-906", blocks: { id: "CORE-3", title: "Ticket three" },
+    }), bug]));
+    m.answerBlockerText.mockResolvedValueOnce({});
+    renderTriage("/p/CORE/triage?item=CORE-3");
+    const box = await screen.findByPlaceholderText(/The agent asked an open question/);
+    await userEvent.setup().type(box, "use redis{Enter}");
+    await waitFor(() => expect(m.answerBlockerText).toHaveBeenCalledWith("GRPH-906", "use redis"));
+    await screen.findByTestId("answered-by");
+    expect(selected()).toHaveTextContent("which store?");
+  });
+
+  it("a ticket key from an alert resolves to its answered row too (GRPH-1655)", async () => {
+    m.projectTriage.mockResolvedValue(feed([bug, answered({
+      id: "GRPH-906", blocks: { id: "CORE-3", title: "Ticket three" },
+    })]));
+    renderTriage("/p/CORE/triage?item=CORE-3");
+    await screen.findByTestId("answered-by");
+    expect(selected()).toHaveTextContent("which store?");
+  });
+
   it("an agent's answered row shows BY AN AGENT, its source line, quote and the restart command", async () => {
     m.projectTriage.mockResolvedValue(feed([answered()]));
     renderTriage();
