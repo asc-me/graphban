@@ -25,7 +25,7 @@ the **[design philosophy](design-philosophy.md)**.
 - Provide a single source of truth for dev items, decisions, and feedback.
 - Let AI agents deeply understand and act on project context via MCP.
 - Reduce context-switching and knowledge loss across projects.
-- Dogfood-able daily, self-hosted and on the hosted service.
+- Dogfood-able daily, on a box you run yourself (self-host). There is no hosted offering: every customer runs their own box, and the cloud is the console for the org plane.
 
 ## Target users
 
@@ -36,28 +36,34 @@ the **[design philosophy](design-philosophy.md)**.
 
 ## What's in the box
 
-A dark-only, keyboard-friendly web app with these areas (each has its own guide):
+A dark-only, keyboard-friendly web app. The left nav groups the project areas under
+**Plan**, **Build** and **Observe**, with Dashboard above them and Feedback Kit, Usage and
+Settings below. Not every area has its own guide; [docs/README.md](README.md) lists the
+guides that exist.
 
-- **Tracker** — one linear stream across six states, drag-reorder, inline status, detail panel.
-- **Agent memory** — searchable memory shards (pgvector), auto-extraction of lessons on
-  completion, a streaming AI chat sidebar grounded in project + memory context.
-- **Requests** — a triage queue plus a public embeddable feedback form with auto-duplicate
-  detection, and a Feedback Kit that generates a themeable widget.
-- **PRDs** — a list and a markdown editor with live preview, version history + diff, and AI
-  drafting commands.
-- **Links / Code graph / Dashboard / Roadmap / MCP Tools** — a typed-relationship graph, an
-  agent-described code map, project-health widgets, a phased roadmap (with a public share
-  link), and a live view of the MCP surface.
-- **Activity** — an audit ledger: every accepted mutation, attributed to the agent key or
-  user that made it.
-- **Settings / Profile** — switch AI providers, connect integrations, configure the project,
-  manage members and API keys.
+- **Plan** — **Triage** (overlaps and duplicates before work starts), the **Tracker**
+  ([guide](tracker.md)), **Requests** (a triage queue plus a public embeddable feedback form
+  with auto-duplicate detection), **Specs** (PRDs: a markdown editor with live preview,
+  version history + diff, and AI drafting commands), and the **Roadmap** (a phased roadmap
+  with a public share link).
+- **Build** — **Links** (a typed-relationship graph), **Code graph** (an agent-described code
+  map), **Stack**, **Rules**, **MCP Tools** (a live view of the MCP surface), **Fleet** and
+  **Outposts**.
+- **Observe** — **Memory** (searchable shards on pgvector, auto-extraction of lessons on
+  completion), **Lessons**, **Activity** (an audit ledger: every accepted mutation,
+  attributed to the agent key or user that made it), **Live** and **Harness**. A streaming AI
+  chat sidebar is grounded in project + memory context.
+- **Dashboard / Feedback Kit / Usage / Settings** — project-health widgets, a generator for a
+  themeable feedback widget, usage, and AI providers, integrations, project config, members
+  and API keys.
+- **Tracker** — the default layout is **Board**; **List** is the other. Both show the same six
+  statuses, with drag-reorder, inline status and a detail panel.
 - **Native MCP** — 78 tools over a JSON-RPC endpoint, authenticated by scoped API keys, with
   a typed error taxonomy (every failure carries a machine code + repair hint).
 
 ## Non-goals (current)
 
-- Full Kanban boards or complex Gantt.
+- Custom boards or Gantt. The six statuses have a Board layout (the default); what is out is user-defined boards and timeline views.
 - Advanced analytics / time tracking.
 - Native mobile apps (responsive web first).
 - Enterprise SSO / on-prem enterprise features.
