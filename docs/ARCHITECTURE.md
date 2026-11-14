@@ -10,8 +10,10 @@ fit and why.
 ```
                          ┌───────────────────────────── browser ─────────────────────────────┐
                          │  SPA (React 19 + TS, Tailwind v4, TanStack Query)                   │
-                         │  shell · tracker · memory/agent · requests · prds · links ·         │
-                         │  dashboard · roadmap · mcp · feedback-kit · settings · profile      │
+                         │  shell · dashboard · triage · tracker · requests · specs · roadmap · │
+                         │  links · code graph · stack · rules · mcp tools · fleet · outposts · │
+                         │  memory · lessons · activity · live · harness · feedback-kit ·       │
+                         │  settings · usage · profile · agent sidebar                          │
                          │  public: /embed/feedback  /embed/roadmap                            │
                          └───────────────┬───────────────────────────────┬────────────────────┘
                                          │ REST + SSE (JWT / refresh)     │ public (no auth, rate-limited)
@@ -135,8 +137,9 @@ web/src/
   lib/               api · publicApi · queries · types · meta · cn · markdown · diff
   components/ui/     shadcn-style primitives
   components/shell/  TopBar · ProjectBar · LeftNav · AgentSidebar · AppFrame
-  features/          auth · tracker · requests · memory(sidebar) · prds · links ·
-                     dashboard · roadmap · mcp · feedback · settings · profile
+  features/          auth · tracker · triage · requests · prds · roadmap · links · code ·
+                     stack · rules · mcp · fleet · memory · lessons · activity · live ·
+                     harness · dashboard · feedback · settings · usage · profile
 ```
 
 ## Deliberate boundaries (local slice)
