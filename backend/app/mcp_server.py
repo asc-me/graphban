@@ -3409,6 +3409,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 # "flag false" from "this server never heard of it". True only when the call
                 # asked for it — a true value with seat omitted is refused before this return.
                 "bound_only": bool(args.get("bound_only")),
+                # GRPH-1648: a seat minted on a key no supervisor of it could run on.
+                **({"warning": w} if code and (w := fleet_svc.seat_supervision_warning(key))
+                   else {}),
                 "brief": delegation_svc.brief(db, item, user_id=key.user_id)}
     if name == "assign_role":
         try:
@@ -3747,10 +3750,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         # the code is gone, and a planner that cannot confirm what it just minted cannot tell
         # a review-only wave from one that quietly is not (GRPH-988). `bound_only` is the
         # same kind of echo (GRPH-1089).
+        warning = fleet_svc.seat_supervision_warning(key)
         return {"enrolment_code": code, "role": row.role, "seat_id": row.id,
                 "review_only": bool(row.review_only),
                 "bound_only": bool(row.bound_only),
-                "expires_at": row.expires_at.isoformat() if row.expires_at else None}
+                "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+                # GRPH-1648: only when no supervisor on this key could record the seat.
+                **({"warning": warning} if warning else {})}
     if name == "fleet_status":
         minted_by = None
         if args.get("agent_id"):
