@@ -81,6 +81,10 @@ _NOT_SUBCOMMANDS = (
     "|and|or|but|if|so|than|then|that|this|these|those|which|while|when|whether"
     "|is|are|was|were|be|been|being|it|its|them|their|there|they"
     "|not|no|never|only|also|just|still|already|rather|instead"
+    # indefinite pronouns and determiners (GRPH-1644): "loading render nothing" is a UI
+    # assertion, and none of these is a subcommand of any CLI above
+    "|nothing|anything|something|everything|none|nobody|each|every|all|any|some|both"
+    "|either|neither|correctly|properly|fine|empty|blank"
 )
 
 #: The one base hit that is not a mutation. `kubectl port-forward` opens a tunnel.
