@@ -88,10 +88,31 @@ def ensure_venv(root: pathlib.Path, backend: pathlib.Path, *,
             print(f"install: could not create the venv:\n{p.stderr or p.stdout}",
                   file=sys.stderr)
             return 1, None
-    p = runner([str(python), "-m", "pip", "install", "-e", str(backend)],
+    # Held to the lock (GRPH-1615). `uv.lock` is the set pip-audit scans; a bare
+    # `pip install -e` keeps any dependency the venv already satisfies, so an upgraded box
+    # kept dnspython 2.9.0 after the lock moved to 2.9.2 for a CVE. `-c` makes a disagreeing
+    # installed version unsatisfied, and `check` refuses the install if anything still differs.
+    lock = backend / "uv.lock"
+    tool = backend / "scripts" / "lock_constraints.py"
+    if not lock.is_file() or not tool.is_file():
+        print(f"install: {lock if not lock.is_file() else tool} is missing — refusing to "
+              "install packages the security scan never saw", file=sys.stderr)
+        return 1, None
+    pins = root / "venv" / "graphban-constraints.txt"
+    p = runner([str(python), str(tool), "write", str(lock), str(pins)],
+               capture_output=True, text=True)
+    if p.returncode != 0:
+        print(f"install: could not read {lock}:\n{p.stderr or p.stdout}", file=sys.stderr)
+        return 1, None
+    p = runner([str(python), "-m", "pip", "install", "-c", str(pins), "-e", str(backend)],
                capture_output=True, text=True)
     if p.returncode != 0:
         print(f"install: pip install failed:\n{p.stderr or p.stdout}", file=sys.stderr)
+        return 1, None
+    p = runner([str(python), str(tool), "check", str(lock)], capture_output=True, text=True)
+    if p.returncode != 0:
+        print(f"install: the venv does not match {lock}:\n{p.stderr or p.stdout}",
+              file=sys.stderr)
         return 1, None
     return 0, python
 

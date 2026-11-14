@@ -267,23 +267,147 @@ def test_the_linux_user_scope_unit_omits_user(src, tmp_path):
     )
 
 
-def test_ensure_venv_creates_then_installs_the_backend(tmp_path):
-    """Skip the pip and the venv is a directory nobody can import `app` from."""
-    seen = []
+BACKEND = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(BACKEND / "scripts"))
+import lock_constraints as lc  # noqa: E402
 
-    def runner(cmd, **kw):
-        seen.append(cmd)
-        if "venv" in cmd:
-            python = tmp_path / "venv" / "bin" / "python"
+
+def _release_backend(tmp_path: pathlib.Path) -> pathlib.Path:
+    """A release's backend/ as the native host sees it: the real lock and the real tool."""
+    backend = tmp_path / "release" / "backend"
+    (backend / "scripts").mkdir(parents=True)
+    (backend / "uv.lock").write_bytes((BACKEND / "uv.lock").read_bytes())
+    (backend / "scripts" / "lock_constraints.py").write_bytes(
+        (BACKEND / "scripts" / "lock_constraints.py").read_bytes())
+    return backend
+
+
+class _Venv:
+    """A venv that behaves the way pip does about what is already there.
+
+    `pip install -e backend` leaves a dependency alone when the installed version satisfies
+    the project's range — that is how a box upgraded from 2026.11.20 kept dnspython 2.9.0.
+    Under `-c constraints`, only a version equal to the pin satisfies, so pip moves it.
+    The `write` and `check` steps run the real tool against the real lock.
+    """
+
+    def __init__(self, root: pathlib.Path, have: dict[str, str]):
+        self.root, self.have, self.seen = root, dict(have), []
+
+    def __call__(self, cmd, **kw):
+        self.seen.append(cmd)
+        ok = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd[1:3] == ["-m", "venv"]:
+            python = self.root / "venv" / "bin" / "python"
             python.parent.mkdir(parents=True)
             python.write_text("x", encoding="utf-8")
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        elif cmd[1:4] == ["-m", "pip", "install"]:
+            if "-c" in cmd:
+                text = pathlib.Path(cmd[cmd.index("-c") + 1]).read_text(encoding="utf-8")
+                pins = dict(line.split("==") for line in text.split())
+                for name in self.have:
+                    if name in pins:
+                        self.have[name] = pins[name]
+        elif cmd[1].endswith("lock_constraints.py") and cmd[2] == "write":
+            lc.write(pathlib.Path(cmd[3]), pathlib.Path(cmd[4]))
+        elif cmd[1].endswith("lock_constraints.py") and cmd[2] == "check":
+            bad = lc.drift(pathlib.Path(cmd[3]), self.have)
+            return types.SimpleNamespace(returncode=1 if bad else 0, stdout="",
+                                         stderr="\n".join(bad))
+        return ok
 
-    rc, python = gh.ensure_venv(tmp_path, tmp_path / "backend", runner=runner)
+
+def test_ensure_venv_creates_then_installs_the_backend(tmp_path):
+    """Skip the pip and the venv is a directory nobody can import `app` from."""
+    backend = _release_backend(tmp_path)
+    venv = _Venv(tmp_path, {})
+    rc, python = gh.ensure_venv(tmp_path, backend, runner=venv)
     assert rc == 0 and python is not None
-    assert any("-m" in c and "venv" in c for c in seen)
-    pip = next(c for c in seen if "pip" in c)
-    assert "-e" in pip and str(tmp_path / "backend") in pip
+    assert any("-m" in c and "venv" in c for c in venv.seen)
+    pip = next(c for c in venv.seen if "pip" in c)
+    assert "-e" in pip and str(backend) in pip
+
+
+def test_an_upgraded_venv_is_moved_to_the_lock(tmp_path):
+    """GRPH-1615. A box upgraded from 2026.11.20 holds dnspython 2.9.0; the lock pins 2.9.2
+    for CVE-2026-128089. After the venv refresh every locked package is the locked version.
+
+    Sabotage: drop `-c` from the pip call and the venv keeps 2.9.0 — `check` refuses and
+    this fails on rc. Drop the `check` call too and the version assertion fails."""
+    backend = _release_backend(tmp_path)
+    pins = lc.locked(backend / "uv.lock")
+    assert pins["dnspython"] == "2.9.2"
+    (tmp_path / "venv" / "bin").mkdir(parents=True)
+    (tmp_path / "venv" / "bin" / "python").write_text("x", encoding="utf-8")
+    stale = {name: "0.0.1" for name in pins} | {"dnspython": "2.9.0"}
+    venv = _Venv(tmp_path, stale)
+
+    rc, python = gh.ensure_venv(tmp_path, backend, runner=venv)
+
+    assert rc == 0, "the venv refresh refused"
+    assert venv.have["dnspython"] == "2.9.2"
+    assert venv.have == {name: pins[name] for name in stale}
+
+
+def test_a_venv_that_still_differs_from_the_lock_fails_the_install(tmp_path):
+    """pip exiting 0 is not the proof — the check after it is. Here pip ignores the
+    constraints; the install must refuse, which is what rolls an upgrade back."""
+    backend = _release_backend(tmp_path)
+    (tmp_path / "venv" / "bin").mkdir(parents=True)
+    (tmp_path / "venv" / "bin" / "python").write_text("x", encoding="utf-8")
+    venv = _Venv(tmp_path, {"dnspython": "2.9.0"})
+    real = venv.__call__
+
+    def pip_ignores_constraints(cmd, **kw):
+        if cmd[1:4] == ["-m", "pip", "install"]:
+            venv.seen.append(cmd)
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        return real(cmd, **kw)
+
+    rc, python = gh.ensure_venv(tmp_path, backend, runner=pip_ignores_constraints)
+    assert (rc, python) == (1, None)
+
+
+def test_a_release_without_a_lock_is_refused(tmp_path, capsys):
+    """No lock is not 'nothing to pin' — it is an install the scan never saw."""
+    backend = _release_backend(tmp_path)
+    (backend / "uv.lock").unlink()
+    venv = _Venv(tmp_path, {})
+    rc, python = gh.ensure_venv(tmp_path, backend, runner=venv)
+    assert (rc, python) == (1, None)
+    assert not any("pip" in c for c in venv.seen)
+    assert "uv.lock" in capsys.readouterr().err
+
+
+def test_lock_constraints_pins_every_registry_package_and_skips_the_project():
+    pins = lc.locked(BACKEND / "uv.lock")
+    text = lc.constraints(BACKEND / "uv.lock")
+    assert "graphban-api" not in pins
+    assert text.splitlines() == [f"{n}=={pins[n]}" for n in sorted(pins)]
+
+
+def test_lock_drift_names_a_mismatch_and_strict_names_an_unlocked_package():
+    lock = BACKEND / "uv.lock"
+    pins = lc.locked(lock)
+    assert lc.drift(lock, {"dnspython": pins["dnspython"], "pip": "25.0"}, strict=True) == []
+    assert lc.drift(lock, {"dnspython": "2.9.0"}) == [
+        f"dnspython 2.9.0 installed, uv.lock pins {pins['dnspython']}"]
+    assert lc.drift(lock, {"left-pad": "1.0"}) == []
+    assert lc.drift(lock, {"left-pad": "1.0"}, strict=True) == [
+        "left-pad 1.0 installed, not in uv.lock (the scan never saw it)"]
+    assert lc.drift(lock, {"graphban-api": "2026.11.23"}, strict=True) == []
+
+
+def test_the_image_installs_against_the_lock_and_checks_it():
+    """The Dockerfile is the other shipped install. It must build its constraints from the
+    lock, install under them, and fail the build if the image still differs (strict: a
+    fresh image has no excuse for a package the lock does not name)."""
+    df = (BACKEND / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY uv.lock" in df and "COPY scripts/lock_constraints.py" in df
+    write = df.index("lock_constraints.py write uv.lock")
+    install = df.index("pip install --no-cache-dir . -c")
+    check = df.index("lock_constraints.py check uv.lock --strict")
+    assert write < install < check
 
 
 # ---- upgrade composition --------------------------------------------------------------------

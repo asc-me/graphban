@@ -248,7 +248,11 @@ jobs:
       - run: python3 ../scripts/refusal_ratchet.py publish app/data/refusal_coverage.json "$GITHUB_SHA"
       # The gban skills manifest (GRPH-1194), written from cli/ the way the packer does.
       - run: python3 ../scripts/graphban_pack.py --skills-manifest app/data/gban_skills.json
-      - run: uv pip install .
+      # Held to uv.lock the way the Dockerfile is (GRPH-1615): the lock is what pip-audit scans.
+      - run: python3 scripts/lock_constraints.py write uv.lock "$RUNNER_TEMP/lock-constraints.txt"
+      - run: uv pip install . -c "$RUNNER_TEMP/lock-constraints.txt"
+      - name: The installed wheel's packages equal uv.lock
+        run: .venv/bin/python scripts/lock_constraints.py check uv.lock --strict
       - name: The installed wheel ships the refusal coverage
         run: |
           rm app/data/refusal_coverage.json

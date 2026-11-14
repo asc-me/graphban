@@ -290,6 +290,26 @@ server the deploy path, the Postgres role, the database, and the volume all stay
 
 ## Invariants (violating these has broken a deploy)
 
+- **Every shipped install is held to `backend/uv.lock`** (GRPH-1615). The lock is
+  what `pip-audit` scans (`scripts/scan_ci.py` exports it), so it has to be what
+  runs — otherwise `scans_clean` reads a file nothing installs from. We hold the
+  **install** to the lock rather than scanning the installed tree:
+  `backend/scripts/lock_constraints.py write` turns the lock into a pip constraints
+  file, the install runs under `-c`, and `lock_constraints.py check` fails it if any
+  installed package still differs from its pin.
+  - **Docker:** `backend/Dockerfile` builds with the constraints and runs
+    `check --strict` (no package the lock does not name either). Drift fails the build.
+  - **Native:** `scripts/graphban_host.py` install and upgrade refresh `root/venv` with
+    `pip install -c <constraints> -e backend`, then `check`. A plain `pip install -e`
+    keeps any dependency the venv already satisfies — a box upgraded from 2026.11.20
+    kept dnspython 2.9.0 after the lock moved to 2.9.2 for a CVE. A failed check fails
+    the venv refresh, and the upgrade rolls back. A release without `uv.lock` is refused.
+  - **CI:** the `backend-packaging` job installs the wheel the Dockerfile's way and runs
+    the same strict check.
+
+  To move a pin, change `uv.lock` (`uv lock --upgrade-package <name>`); the next build or
+  upgrade installs it.
+
 - **`--exclude .env`** — there is no local `.env`, so a bare `rsync --delete`
   would DELETE the server's `.env`. Then compose reverts to default ports (5432
   conflicts with the box's other Postgres) **and** the persisted Postgres volume
@@ -320,7 +340,7 @@ server the deploy path, the Postgres role, the database, and the volume all stay
 
   ```
   #20 [web stage-1 4/4] RUN echo "99504cf" > .../version.txt   CACHED
-  #28 [api 7/7] RUN pip install --no-cache-dir .               CACHED
+  #28 [api 7/7] RUN python /opt/lock/lock_constraints.py write uv.lock ...  CACHED
   ```
 
   That `echo` bakes the revision into the image. Seeing it `CACHED` **printing the
