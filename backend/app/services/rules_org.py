@@ -117,11 +117,29 @@ def project_profiles(db: Session, user, project_id: str) -> dict:
             "profiles": [{"id": pid, "title": profiles[pid].get("title", pid),
                           "summary": profiles[pid].get("summary", ""),
                           "version": profiles[pid].get("version"),
+                          "usable": not _repo_specific_pins(_pins(profiles[pid])),
+                          "unusable_reason": ("pins repo-specific rules: "
+                                              + "; ".join(_repo_specific_pins(_pins(profiles[pid]))))
+                          if _repo_specific_pins(_pins(profiles[pid])) else None,
                           "pins": [{"rule_id": rid, "state": pin.get("state", "on"),
                                     "params": pin.get("params", {}), "enforceable": _enforceable(rid)}
                                    for rid, pin in sorted(_pins(profiles[pid]).items())]}
                          for pid in order],
             "applied": applied}
+
+
+def _repo_specific_pins(pins: dict[str, dict]) -> list[str]:
+    """The pins that would overwrite a repo's own values: a level never touches exclusive areas,
+    generated files, path classes or the test-scope engines. Each entry names rule and param."""
+    out = []
+    for rid, pin in sorted(pins.items()):
+        params = pin.get("params") if isinstance(pin.get("params"), dict) else {}
+        if rid in (rule_toggles.EXCLUSIVE_AREAS_RULE, rule_toggles.GENERATED_FILES_RULE,
+                   rule_toggles.PATH_CLASSES_RULE):
+            out.append(f"{rid} ({', '.join(sorted(params)) or 'state'})")
+        elif rid == rule_toggles.TEST_SCOPE_RULE and "engines" in params:
+            out.append(f"{rid} (params.engines)")
+    return out
 
 
 def _pin_changes(rule_id: str, pin: dict) -> dict:
@@ -141,6 +159,10 @@ def _plan(profile_id: str) -> tuple[dict, dict[str, dict]]:
     pins = _pins(prof)
     if not pins:
         raise Validation(f"profile {profile_id!r} pins no rules")
+    repo = _repo_specific_pins(pins)
+    if repo:
+        raise Validation(f"profile {profile_id!r} pins repo-specific rules a level never touches: "
+                         + "; ".join(repo), hint="nothing was applied")
     bad = {rid: ("not in the library" if rid not in rule_toggles.LIBRARY
                  else rule_toggles.LIBRARY[rid].unmeasured_reason)
            for rid in pins

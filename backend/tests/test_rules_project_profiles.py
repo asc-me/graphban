@@ -117,3 +117,29 @@ def test_accept_keeps_exception_and_skips_lock_and_the_event_records_both(client
     assert meta["exceptions"] == [OTHER] and meta["skipped"] == [RULE]
     a = _get(client, org, p).json()["applied"]
     assert (a["version"], a["exceptions"], a["skipped"]) == ("2", [OTHER], [RULE])
+
+
+def _pin_repo_rule(pin_rule, pin):
+    from app.services import rule_pack as P
+    P.CURRENT.profiles["repo"] = {"id": "repo", "version": "1", "rules": {RULE: {"state": "on"}, pin_rule: pin}}
+
+
+@pytest.mark.parametrize("rule_id,pin", [
+    ("build.generated_files", {"state": "on", "params": {"paths": ["x/**"]}}),
+    ("plan.exclusive_areas", {"state": "on", "params": {"paths": ["a/"]}}),
+    ("plan.path_classes", {"state": "on"}),
+    ("build.test_scope", {"state": "on", "params": {"engines": ["sqlite"]}}),
+])
+def test_a_level_pinning_a_repo_specific_rule_is_refused_and_unusable(client, org, rule_id, pin):
+    from app.services import rule_pack as P
+    _pin_repo_rule(rule_id, pin)
+    try:
+        p = org["ps"][0]
+        r = client.post("/api/rules/profiles/repo/apply", params={"project_id": p},
+                        json={"reason": "x"}, headers=org["owner"])
+        assert r.status_code == 422 and "repo-specific" in r.text and rule_id in r.text, r.text
+        assert not _events("apply_rule_profile")
+        listed = next(x for x in _get(client, org, p).json()["profiles"] if x["id"] == "repo")
+        assert listed["usable"] is False and rule_id in listed["unusable_reason"]
+    finally:
+        P.CURRENT.profiles.pop("repo")
