@@ -143,7 +143,12 @@ export function RulesView() {
   const controlState = flow?.control.state ?? null;
   const fresh = !!flow && flow.model === null && controlState === "local";
   const orgName = useOrgName(gitops);
-  const openQuick = (s: QuickScreen) => { setSel(null); setWizard(false); setQuick(s); };
+  const wizardDirty = React.useRef(false);
+  const setWizardDirty = React.useCallback((d: boolean) => { wizardDirty.current = d; }, []);
+  const openQuick = (s: QuickScreen) => {
+    if (wizard && wizardDirty.current && !window.confirm("Leave setup? Your answers are not saved and will be discarded.")) return;
+    setSel(null); setWizard(false); setQuick(s);
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="rules-view">
@@ -254,6 +259,7 @@ export function RulesView() {
             flow={flow}
             narrow={narrow}
             onExit={() => setWizard(false)}
+            onDirtyChange={setWizardDirty}
             onApplied={(ids) => { setChanged(new Set(ids)); setWizard(false); setSel(null); }}
           />
         )}
