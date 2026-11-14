@@ -57,18 +57,43 @@ function repoSlug(repo: string): string {
   return repo.trim().replace(/^.*[:/]([^/]+\/[^/]+?)(\.git)?$/, "$1");
 }
 
-/** The WAI-ARIA radio group keyboard model (GRPH-1613): `prev`/`next` move the selection and
- *  wrap at the ends, and focus follows the checked option. A locked group ignores the keys. */
-function radioArrows<T>(
+/** The WAI-ARIA radio group keyboard model (GRPH-1613, GRPH-1618). ArrowRight/ArrowDown select
+ *  the next option and ArrowLeft/ArrowUp the previous, wrapping at the ends, on either axis as
+ *  the pattern says; Home and End go to the first and last. Disabled options are skipped, and
+ *  focus follows the checked option. A locked group ignores the keys. */
+export function radioArrows<T>(
   e: React.KeyboardEvent<HTMLElement>,
-  o: { values: readonly T[]; current: T; set: (v: T) => void; prev: string; next: string; locked?: boolean },
+  o: {
+    values: readonly T[];
+    current: T;
+    set: (v: T) => void;
+    locked?: boolean;
+    disabled?: (v: T) => boolean;
+  },
 ) {
   if (o.locked) return;
-  const step = e.key === o.next ? 1 : e.key === o.prev ? -1 : 0;
-  if (!step) return;
-  e.preventDefault();
   const n = o.values.length;
-  const i = (o.values.indexOf(o.current) + step + n) % n;
+  const usable = (i: number) => !o.disabled?.(o.values[i]);
+  const from = o.values.indexOf(o.current);
+  let i = -1;
+  if (e.key === "Home" || e.key === "End") {
+    const order = [...Array(n).keys()];
+    if (e.key === "End") order.reverse();
+    i = order.find(usable) ?? -1;
+  } else {
+    const step =
+      e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
+    if (!step) return;
+    for (let k = 1; k <= n; k++) {
+      const j = (((from + step * k) % n) + n) % n;
+      if (usable(j)) {
+        i = j;
+        break;
+      }
+    }
+  }
+  e.preventDefault();
+  if (i < 0 || i === from) return;
   o.set(o.values[i]);
   e.currentTarget.closest('[role="radiogroup"]')?.querySelectorAll<HTMLElement>('[role="radio"]')[i]?.focus();
 }
@@ -395,8 +420,6 @@ export function NewProjectWizard({
                             values: PROJECT_ACCENTS,
                             current: accent,
                             set: setAccent,
-                            prev: "ArrowLeft",
-                            next: "ArrowRight",
                             locked: !!createdId,
                           })
                         }
@@ -465,8 +488,6 @@ export function NewProjectWizard({
                             values: MODEL_IDS,
                             current: model,
                             set: setModel,
-                            prev: "ArrowUp",
-                            next: "ArrowDown",
                           })
                         }
                         className="grid grid-cols-[16px_minmax(0,1fr)] items-center gap-x-3 gap-y-[3px] px-3.5 py-3 text-left text-fg"

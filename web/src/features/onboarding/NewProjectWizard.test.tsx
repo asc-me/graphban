@@ -1,9 +1,10 @@
+import * as React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { NewProjectWizard } from "@/features/onboarding/NewProjectWizard";
+import { NewProjectWizard, radioArrows } from "@/features/onboarding/NewProjectWizard";
 
 function mockReducedMotion(reduce: boolean) {
   Object.defineProperty(window, "matchMedia", {
@@ -287,8 +288,18 @@ describe("New project wizard", () => {
       await user.keyboard("{ArrowUp}");
       expect(checked()).toHaveAccessibleName(/Cloud/);
       expect(checked()).toHaveFocus();
+      // GRPH-1618: the pattern's keys work on both axes — → is next and ← is previous here too.
       await user.keyboard("{ArrowRight}");
+      expect(checked()).toHaveAccessibleName(/Offline/);
+      expect(checked()).toHaveFocus();
+      await user.keyboard("{ArrowLeft}");
       expect(checked()).toHaveAccessibleName(/Cloud/);
+      await user.keyboard("{Home}");
+      expect(checked()).toHaveAccessibleName(/Offline/);
+      expect(checked()).toHaveFocus();
+      await user.keyboard("{End}");
+      expect(checked()).toHaveAccessibleName(/Cloud/);
+      expect(checked()).toHaveFocus();
     });
 
     it("moves the Accent selection with ← and →, wrapping at both ends, and focus follows", async () => {
@@ -305,8 +316,18 @@ describe("New project wizard", () => {
       await user.keyboard("{ArrowRight}");
       expect(checked()).toHaveAccessibleName("accent #a78bfa");
       expect(checked()).toHaveFocus();
+      // GRPH-1618: ↓ is next and ↑ is previous on this horizontal group too.
       await user.keyboard("{ArrowDown}");
+      expect(checked()).toHaveAccessibleName("accent #7ca2ff");
+      expect(checked()).toHaveFocus();
+      await user.keyboard("{ArrowUp}");
       expect(checked()).toHaveAccessibleName("accent #a78bfa");
+      await user.keyboard("{End}");
+      expect(checked()).toHaveAccessibleName("accent #ff8f8f");
+      expect(checked()).toHaveFocus();
+      await user.keyboard("{Home}");
+      expect(checked()).toHaveAccessibleName("accent #c6f24e");
+      expect(checked()).toHaveFocus();
     });
 
     it("is one Tab stop per group, on the checked option, and the next Tab leaves the group", async () => {
@@ -348,6 +369,48 @@ describe("New project wizard", () => {
       expect(checked()).toBe(locked);
       fireEvent.keyDown(locked, { key: "ArrowLeft" });
       expect(checked()).toBe(locked);
+      fireEvent.keyDown(locked, { key: "End" });
+      expect(checked()).toBe(locked);
+      fireEvent.keyDown(locked, { key: "ArrowDown" });
+      expect(checked()).toBe(locked);
+    });
+
+    it("skips a disabled option on every key, wrapping past it (GRPH-1618)", async () => {
+      const user = userEvent.setup();
+      const values = ["a", "b", "c", "d"] as const;
+      const off = new Set(["b", "d"]);
+      function Group() {
+        const [v, setV] = React.useState<(typeof values)[number]>("a");
+        return (
+          <div role="radiogroup" aria-label="g">
+            {values.map((x) => (
+              <button
+                key={x}
+                type="button"
+                role="radio"
+                aria-checked={v === x}
+                aria-label={x}
+                tabIndex={v === x ? 0 : -1}
+                onKeyDown={(e) => radioArrows(e, { values, current: v, set: setV, disabled: (y) => off.has(y) })}
+              />
+            ))}
+          </div>
+        );
+      }
+      render(<Group />);
+      screen.getByRole("radio", { name: "a" }).focus();
+      await user.keyboard("{ArrowRight}");
+      expect(checked()).toHaveAccessibleName("c");
+      expect(checked()).toHaveFocus();
+      await user.keyboard("{ArrowDown}");
+      expect(checked()).toHaveAccessibleName("a");
+      await user.keyboard("{ArrowLeft}");
+      expect(checked()).toHaveAccessibleName("c");
+      await user.keyboard("{End}");
+      expect(checked()).toHaveAccessibleName("c");
+      await user.keyboard("{Home}");
+      expect(checked()).toHaveAccessibleName("a");
+      expect(checked()).toHaveFocus();
     });
   });
 
