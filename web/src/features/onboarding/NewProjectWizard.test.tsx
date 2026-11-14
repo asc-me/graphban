@@ -217,6 +217,38 @@ describe("New project wizard", () => {
     expect(api.updateProject).toHaveBeenLastCalledWith("core", { repo_url: "git@github.com:acme/core.git" });
   });
 
+  it("after a partial failure the graphic does not say NOT CREATED or draw the broken line (GRPH-1612)", async () => {
+    const user = userEvent.setup();
+    api.updateProject.mockRejectedValueOnce(new Error("boom"));
+    renderWizard();
+    await toRepo(user);
+    await user.type(screen.getByLabelText("Git remote"), "git@github.com:acme/core.git");
+    await user.click(next());
+    await user.click(next());
+    await user.click(screen.getByRole("button", { name: /create project/i }));
+    await screen.findByText(/was created, but a follow-up step failed/);
+    expect(caption()).not.toBe("NOT CREATED");
+    expect(screen.getByTestId("pw-hero").querySelector('path[stroke-dasharray="4 6"]')).toBeNull();
+  });
+
+  it("re-reads the project list when Cancel closes the wizard after a partial failure (GRPH-1612)", async () => {
+    const user = userEvent.setup();
+    const invalidate = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    api.updateProject.mockRejectedValueOnce(new Error("boom"));
+    const onOpenChange = renderWizard();
+    await toRepo(user);
+    await user.type(screen.getByLabelText("Git remote"), "git@github.com:acme/core.git");
+    await user.click(next());
+    await user.click(next());
+    await user.click(screen.getByRole("button", { name: /create project/i }));
+    await screen.findByText(/was created, but a follow-up step failed/);
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ["projects"] });
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["projects"] });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    invalidate.mockRestore();
+  });
+
   it("locks the identity step after a partial failure so edits cannot be dropped", async () => {
     const user = userEvent.setup();
     api.updateProject.mockRejectedValueOnce(new Error("boom"));

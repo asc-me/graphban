@@ -239,6 +239,13 @@ export function NewProjectWizard({
     resetAll();
   }
 
+  /** Closing after a partial failure still leaves a real project behind, so the switcher
+   *  must re-read the list — the success path's invalidate never ran (GRPH-1612). */
+  function close(next: boolean) {
+    if (!next && createdId && !ready) void qc.invalidateQueries({ queryKey: keys.projects });
+    onOpenChange(next);
+  }
+
   function openProject() {
     setActiveId(createdId);
     onOpenChange(false);
@@ -266,10 +273,10 @@ export function NewProjectWizard({
     ["REPOSITORY", repo.trim() || "None yet", "repo", true],
     ["MODEL", MODEL_LABEL[model], "model", false],
   ];
-  const graphic = graphicFor({ step, name, tag: T, repo, repoOk, model, busy, created: ready, failed: !!error });
+  const graphic = graphicFor({ step, name, tag: T, repo, repoOk, model, busy, created: ready, failed: !!error && !createdId });
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={close}>
       <DialogContent
         className="flex h-[640px] max-h-[92vh] w-[960px] max-w-[96vw] overflow-hidden p-0"
         onKeyDown={onKeyDown}
@@ -556,7 +563,7 @@ export function NewProjectWizard({
 
           <footer data-testid="pw-footer" className="flex items-center gap-2 border-t border-line-2 py-3 pl-3.5 pr-4">
             {!ready && (
-              <Button type="button" variant="ghost" size="sm" className="h-[34px] text-[13px]" onClick={() => onOpenChange(false)}>
+              <Button type="button" variant="ghost" size="sm" className="h-[34px] text-[13px]" onClick={() => close(false)}>
                 Cancel
               </Button>
             )}
