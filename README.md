@@ -21,16 +21,20 @@ opt-in. The hosted multi-tenant service is a separate deployment
 
 ## What's built
 
+Nav areas: Tracker, Requests, Triage, Links, Code, Stack, Rules, Roadmap, Fleet, Outposts, Harness,
+Activity, Live, Memory, Lessons, PRDs, Feedback Kit, and Settings. Per-feature guides are listed in
+[docs/README.md](docs/README.md).
+
 | Area | Included |
 | --- | --- |
-| **Tracker** | Single linear stream · 6 states · drag-reorder · inline status · detail panel · quick filters |
+| **Tracker** | **Board** is the default layout, **List** the other · 6 states · drag-reorder · inline status · detail panel · quick filters |
 | **Agent / Memory** | Memory shards, **semantic search** (pgvector), re-embed on edit, import/export, **auto-extraction** of lessons on `done`, **streaming** agent chat (SSE) |
 | **Requests** | Triage queue · votes · link-to-item · **public embeddable feedback form** + **auto-duplicate detection** |
 | **PRDs** | List + editor with **live markdown preview**, version history + **diff**, AI commands (expand / risks / summarize), item links |
 | **Links** | Interactive force-directed graph of typed relationships (dependency / code / semantic / tag) |
 | **Dashboard** | KPI tiles, status distribution, request breakdown, recent activity |
 | **Roadmap** | MVP → Post-MVP → Later with progress; shareable read-only public link |
-| **MCP Tools** | **78 MCP tools** with per-tool call metering, params, and descriptions. The catalog is [docs/mcp.md](docs/mcp.md) |
+| **MCP catalog** | Per-tool call metering, params, and descriptions. Self-host opens it at Settings → Project → MCP (`/mcp-tools` redirects there). The catalog is [docs/mcp.md](docs/mcp.md) |
 | **Feedback Kit** | Themeable embeddable widget generator (accent / radius / types) with live preview + copy-paste snippet |
 | **Settings / Profile** | AI provider switch, GitHub/Drive connection config, project config, members, API keys; profile + project access |
 | **MCP** | JSON-RPC at `POST /api/mcp`, the same service layer as the UI. Tool names and the live count live in [docs/mcp.md](docs/mcp.md) |
@@ -124,9 +128,9 @@ curl -s http://localhost:8000/api/mcp \
        "params":{"name":"create_item","arguments":{"title":"From an agent","effort":2}}}'
 ```
 
-`tools/list` returns the tools this key can call — all 32 for a read+write key, or just the
-read tools for a read-only key (the manifest is scope-gated to keep it lean). Every call is metered and shows up on the **MCP Tools**
-page. The created item appears immediately in the web Tracker — agents and the UI share
+`tools/list` returns the tools this key can call — the 35-tool core manifest for a default
+read+write key, or 18 read tools for a read-only key (the manifest is scope- and tier-gated to
+keep it lean). Every call is metered and shows up in the MCP catalog (Settings → Project → MCP on self-host). The created item appears immediately in the web Tracker — agents and the UI share
 one service layer.
 
 ## Embeddable widgets & webhooks
@@ -135,7 +139,8 @@ one service layer.
   themeable, live duplicate detection). Configure + copy the iframe snippet in **Feedback Kit**.
 - **Public roadmap** — `GET /embed/roadmap` (read-only). "Copy public link" in the Roadmap view.
 - **GitHub issues webhook** — `POST /api/public/github/webhook` turns opened issues into
-  tracker items (rate-limited; real deployments add HMAC verification).
+  tracker items (rate-limited). The HMAC signature is checked when `GITHUB_WEBHOOK_SECRET` is set; an empty
+  secret accepts unsigned payloads.
 
 ## Local development (without Docker)
 
@@ -146,7 +151,7 @@ uv venv --python 3.12 .venv && source .venv/bin/activate
 uv pip install -e ".[dev]"
 export DATABASE_URL="sqlite:///./dev.db"     # zero-infra; create_all + seed on boot
 # …or Postgres (runs Alembic migrations):
-# export DATABASE_URL="postgresql+psycopg://graphban:graphban@localhost:5432/graphban"
+# export DATABASE_URL="postgresql+psycopg://agentledger:agentledger@localhost:5432/agentledger"
 uvicorn app.main:app --reload
 pytest            # full backend suite
 ```
