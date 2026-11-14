@@ -202,8 +202,15 @@ def _resolve(rule: LibraryRule, proj: RuleToggle | None, org: RuleToggle | None,
                 return {"value": copy.deepcopy(getattr(row, attr)), "source": source}
         return {"value": copy.deepcopy(default), "source": "platform default"}
 
+    # GRPH-1631: what a Reset (writing null) would land on — the org's value only when the org
+    # has a row that sets that field, else the platform default.
+    def inherits(attr: str) -> str:
+        return "org" if org is not None and getattr(org, attr) is not None else "platform default"
+
+    # Kept beside `on`/`params`, not inside them, so their `{value, source}` shape is unchanged.
     return {"rule_id": rule.id, "on": first("on", rule.default_on),
             "params": first("params", rule.default_params),
+            "inherits": {"on": inherits("on"), "params": inherits("params")},
             "locked": locked, "locked_by": org_id if locked else None}
 
 

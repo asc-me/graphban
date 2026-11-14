@@ -19,6 +19,7 @@ vi.mock("@/lib/api", () => ({
     members: vi.fn(),
     pathCounts: vi.fn(),
     exclusiveAreasPreview: vi.fn(),
+    syncStatus: vi.fn(),
   },
 }));
 vi.mock("@/features/ProjectContext", () => ({
@@ -117,6 +118,30 @@ describe("StageEditor", () => {
     expect(body.reason).toBe("tighten planning");
     expect(body.toggles.map((t) => t.rule_id)).toEqual(["plan.exclusive_areas", "build.test_scope"]);
     expect(body.toggles[0].params).toEqual({ paths: ["backend/", "web/"] });
+  });
+
+  it("Reset is in the draft: on/off and params go through the sheet naming the level they inherit", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.setRuleToggles).mockResolvedValue({ toggles: [] });
+    vi.mocked(api.ruleToggles).mockResolvedValue({
+      toggles: [
+        // org has a row for `on` only; the project set both.
+        { rule_id: "plan.exclusive_areas", on: { value: true, source: "project" }, params: { value: { paths: ["backend/"] }, source: "project" }, inherits: { on: "org", params: "platform default" } },
+      ],
+    } as never);
+    vi.mocked(api.syncStatus).mockResolvedValue({ org: "Acme" } as never);
+    view();
+    await user.click(await screen.findByTestId("rules-edit-reset-on-plan.exclusive_areas"));
+    await user.click(screen.getByTestId("rules-edit-reset-params-plan.exclusive_areas"));
+    await user.click(screen.getByRole("button", { name: /Review changes · 1/ }));
+    const sheet = await screen.findByTestId("rules-review-sheet");
+    expect(within(sheet).getByTestId("rules-review-reset-on")).toHaveTextContent("→ ORG Acme");
+    expect(within(sheet).getByTestId("rules-review-reset-params")).toHaveTextContent("→ PLATFORM DEFAULT");
+    await user.type(within(sheet).getByLabelText("Reason"), "back to inherit");
+    await user.click(within(sheet).getByTestId("rules-review-save"));
+    await waitFor(() => expect(api.setRuleToggles).toHaveBeenCalledTimes(1));
+    const [, body] = vi.mocked(api.setRuleToggles).mock.calls[0];
+    expect(body.toggles).toEqual([{ rule_id: "plan.exclusive_areas", on: null, params: null }]);
   });
 
   it("a refusal reopens the draft with the server's words on the rule, keeping the reason and the draft", async () => {

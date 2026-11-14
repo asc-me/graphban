@@ -30,7 +30,7 @@ import type { RuleFlowRule, RuleParamValue, RuleToggleWrite, TestScopeMode } fro
 
 import { useOrgName } from "./RuleEditors";
 import { RuleHistory } from "./RuleHistory";
-import { inheritsLabel, ReadOnlyReason, RuleSource, SourceChip } from "./RuleSource";
+import { inheritsFor, ReadOnlyReason, RuleSource } from "./RuleSource";
 import { registerEnum, RuleValueEditor } from "./RuleValueEditor";
 
 /** GRPH-1405: the test-scope rule's one choice. Mirrors `rule_toggles.TEST_SCOPE_MODES`. */
@@ -203,15 +203,22 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
   const cleaned = cleanParams(draftParams);
   const firstError = Object.values(paramErrors)[0];
   const paramsDirty = !firstError && JSON.stringify(cleaned) !== paramsKey;
-  const orgScoped = !!gitops?.org_id;
-  const inherits = inheritsLabel(orgScoped ? orgName : null);
+  const inherits = inheritsFor(toggle?.inherits?.params, orgName);
+  const onInherits = inheritsFor(toggle?.inherits?.on, orgName);
 
   return (
     <div className="flex flex-col gap-2 rounded-[8px] border border-[#2a333a] bg-bg p-2.5" data-testid="rules-toggle">
       <div className="flex items-center gap-2">
         <span className={cn(MONO, "text-[10px] text-muted-2")}>{on ? "ON" : "OFF"}</span>
         <span className="flex-1" />
-        <SourceChip source={rule.source} locked={locked} testId="rules-toggle-source" />
+        <RuleSource
+          source={rule.source}
+          locked={locked}
+          testId="rules-toggle-source"
+          inherits={onInherits}
+          disabled={saving || !!pending}
+          onReset={readOnly ? undefined : () => ask({ body: { on: null }, what: `Reset to ${onInherits}` })}
+        />
       </div>
 
       {locked ? (
