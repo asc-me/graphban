@@ -24,10 +24,11 @@ import {
   readOnlyCopy,
   SELECTS,
   toPatch,
+  useOrgName,
   type FieldKey,
 } from "./RuleEditors";
 import { RuleReviewSheet, type GitopsChange, type Params, type RuleChange, type StageChange } from "./RuleReviewSheet";
-import { ReadOnlyReason } from "./RuleSource";
+import { inheritsFor, ReadOnlyReason, resetTarget } from "./RuleSource";
 import { enumFor, RuleValueEditor } from "./RuleValueEditor";
 
 const MONO = "font-mono";
@@ -46,7 +47,7 @@ export function stageIsEditable(stage: RuleStage): boolean {
   return stageRules(stage).some((r) => isEditableLibrary(r) || isGitops(r));
 }
 
-type RuleDraft = { on?: boolean; params?: Params };
+type RuleDraft = { on?: boolean; params?: Params; resetOn?: boolean; resetParams?: boolean };
 
 export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narrow: boolean; onClose: () => void }) {
   const { activeId } = useProjectCtx();
@@ -55,6 +56,7 @@ export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narr
   const { data: toggles } = useRuleToggles(activeId);
   const saveRules = useSetRuleToggles(activeId);
   const saveGitops = useUpdateGitops(activeId);
+  const orgName = useOrgName(gitops);
 
   const [draft, setDraft] = React.useState<Record<string, RuleDraft>>({});
   const [gitopsDraft, setGitopsDraft] = React.useState<Record<string, string>>({});
@@ -88,11 +90,20 @@ export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narr
         sourceAfter: "project",
       };
       const entry: RuleToggleBatchEntry = { rule_id: r.id };
-      if (d.on !== undefined && d.on !== on) {
+      const t = toggles?.toggles.find((x) => x.rule_id === r.id);
+      if (d.resetOn && t?.on.source === "project") {
+        change.resets = { ...change.resets, on: resetTarget(t.on.inherits, orgName) };
+        entry.on = null;
+      }
+      if (d.resetParams && t?.params.source === "project") {
+        change.resets = { ...change.resets, params: resetTarget(t.params.inherits, orgName) };
+        entry.params = null;
+      }
+      if (entry.on === undefined && d.on !== undefined && d.on !== on) {
         change.on = { before: on, after: d.on };
         entry.on = d.on;
       }
-      if (d.params) {
+      if (d.params && entry.params === undefined) {
         const cleaned = cleanParams(d.params);
         const changed = Object.keys(cleaned).filter((k) => JSON.stringify(cleaned[k]) !== JSON.stringify(current[k]));
         if (changed.length > 0) {
@@ -104,7 +115,7 @@ export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narr
           }
         }
       }
-      if (change.on || change.params.length > 0) {
+      if (change.on || change.params.length > 0 || change.resets) {
         changes.push(change);
         entries.push(entry);
       }
@@ -120,7 +131,7 @@ export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narr
       changes.push(g);
     }
     return { changes, entries, patch };
-  }, [rules, draft, gitopsDraft, gitops]);
+  }, [rules, draft, gitopsDraft, gitops, toggles, orgName]);
 
   const firstParamError = Object.values(paramErrors)[0];
   const hasRuleErrors = Object.keys(ruleErrors).length + Object.keys(gitopsErrors).length > 0;
@@ -257,6 +268,26 @@ export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narr
                 >
                   <span className={cn("h-4 w-4 rounded-full", on ? "bg-accent" : "bg-muted")} />
                 </button>
+                {(["on", "params"] as const).map((field) => {
+                  const t = toggles?.toggles.find((x) => x.rule_id === r.id);
+                  const f = field === "on" ? t?.on : t?.params;
+                  if (!f || f.source !== "project" || (field === "params" && Object.keys(params).length === 0)) return null;
+                  const flag = field === "on" ? "resetOn" : "resetParams";
+                  const label = inheritsFor(f.inherits, orgName);
+                  const picked = !!d?.[flag];
+                  return (
+                    <button
+                      key={field}
+                      type="button"
+                      aria-pressed={picked}
+                      onClick={() => setDraft((x) => ({ ...x, [r.id]: { ...x[r.id], [flag]: !picked } }))}
+                      data-testid={`rules-edit-reset-${field}-${r.id}`}
+                      className="self-start text-[11.5px] text-accent underline"
+                    >
+                      {picked ? "Undo reset" : field === "on" ? `Reset on/off to ${label}` : `Reset params to ${label}`}
+                    </button>
+                  );
+                })}
                 {Object.entries(params).map(([k, v]) => (
                   <RuleValueEditor
                     key={k}

@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import { api } from "@/lib/api";
 import type { EffectivePredicate, RuleParamValue } from "@/lib/types";
 
-import { RuleSource } from "./RuleSource";
+import { inheritsFor, resetTarget, RuleSource } from "./RuleSource";
 import { RuleValueEditor } from "./RuleValueEditor";
 
 vi.mock("@/lib/api", () => ({ api: { pathCounts: vi.fn(), exclusiveAreasPreview: vi.fn() } }));
@@ -155,5 +155,12 @@ describe("RuleSource", () => {
     rerender(<RuleSource source="org" locked testId="s" inherits="the platform default" onReset={reset} />);
     expect(screen.queryByRole("button")).toBeNull();
     expect(screen.getByTestId("s")).toHaveTextContent("LOCKED");
+  });
+
+  it("names the org only when the org has a row; otherwise the platform default (GRPH-1631)", () => {
+    expect(inheritsFor("org", "Acme")).toBe("the Acme value");
+    expect(inheritsFor("platform default", "Acme")).toBe("the platform default");
+    expect(resetTarget("org", "Acme")).toBe("→ ORG Acme");
+    expect(resetTarget("platform default", "Acme")).toBe("→ PLATFORM DEFAULT");
   });
 });

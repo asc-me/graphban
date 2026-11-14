@@ -1847,6 +1847,8 @@ class RuleToggleValueOut(BaseModel):
     value: bool | dict | None = None
     #: `project` | `org` | `platform default` (PRD-P63 D4).
     source: str
+    #: GRPH-1631: what a Reset (null) lands on: `org` or `platform default`. Project reads only.
+    inherits: str | None = None
 
 
 class RuleToggleOut(BaseModel):
