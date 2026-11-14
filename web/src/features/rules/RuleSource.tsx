@@ -31,6 +31,16 @@ export function inheritsLabel(orgName: string | null): string {
   return orgName ? `the ${orgName} value` : "the platform default";
 }
 
+/** GRPH-1631: the label from the server's per-field `inherits` (the org has a row), not a guess from org membership. */
+export function inheritsFor(inherits: string | undefined, orgName: string | null): string {
+  return inheritsLabel(inherits === "org" ? orgName : null);
+}
+
+/** The review sheet's reset line: "→ ORG <name>" or "→ PLATFORM DEFAULT". */
+export function resetTarget(inherits: string | undefined, orgName: string | null): string {
+  return inherits === "org" && orgName ? `→ ORG ${orgName}` : "→ PLATFORM DEFAULT";
+}
+
 export function RuleSource({
   source,
   testId,

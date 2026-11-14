@@ -3396,6 +3396,8 @@ export interface SerialisationPreview {
 export interface RuleToggleValue<T> {
   value: T;
   source: RuleToggleSource;
+  /** What a Reset (null) would land on: the org's value, or the platform default (GRPH-1631). */
+  inherits?: "org" | "platform default";
 }
 
 export interface RuleToggle {

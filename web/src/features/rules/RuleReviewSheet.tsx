@@ -36,6 +36,8 @@ export interface RuleChange {
   params: ParamChange[];
   sourceBefore: string;
   sourceAfter: string;
+  /** GRPH-1631: set when the change hands a field back to inherit; "→ ORG <name>" or "→ PLATFORM DEFAULT". */
+  resets?: { on?: string; params?: string };
   /** A risk the change carries as a whole (Quick configure: a level turning a rule off). */
   risk?: string;
 }
@@ -153,6 +155,8 @@ export function RuleReviewSheet({
                   {p.name}: {showValue(p.before)} → {showValue(p.after)}
                 </span>
               ))}
+              {c.resets?.on && <span className={cn(MONO, "text-[12px] text-fg-2")} data-testid="rules-review-reset-on">reset on {c.resets.on}</span>}
+              {c.resets?.params && <span className={cn(MONO, "text-[12px] text-fg-2")} data-testid="rules-review-reset-params">reset params {c.resets.params}</span>}
               <span className={cn(MONO, "text-small text-muted")} data-testid="rules-review-source">
                 source: {c.sourceBefore} → {c.sourceAfter}
               </span>
