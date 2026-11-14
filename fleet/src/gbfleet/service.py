@@ -102,6 +102,35 @@ RESTART_SEC = 300
 #: immediate read reports "running" for a service that is already gone.
 SETTLE = 2.0
 
+#: How long past SETTLE `install` keeps watching a job it read as running (GRPH-1312). A
+#: startup refusal (a server name not in ~/.claude.json, a missing repo) exits 2 a moment
+#: after the first read, and that read reported "running" for a drain already dead. A healthy
+#: `until` is still running at the end of the window, so the cost is this long on success.
+HEALTH_WINDOW = 8.0
+HEALTH_POLL = 1.0
+
+
+def err_reason(name: str, *, limit: int = 400) -> str:
+    """The last thing the drain wrote to its err log, or "" (GRPH-1312).
+
+    `until` prints its refusal to stderr and exits; the unit appends stderr to
+    `<name>.err.log`. The last non-empty line is the newest run's last word, which is the
+    reason an operator went looking for. Read, never parsed: the line is quoted as written.
+    """
+    path = CONFIG_DIR / "logs" / f"{name}.err.log"
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, 2)
+            fh.seek(max(0, fh.tell() - 16384))
+            tail = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+    lines = [ln.strip() for ln in tail.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    last = lines[-1]
+    return last if len(last) <= limit else last[: limit - 1] + "…"
+
 #: What `until` is given if the operator passes nothing else. Nothing: an empty install is
 #: refused, because a service running `gbfleet until` with no server, project or repo is a
 #: crash loop with a unit file.
@@ -801,6 +830,14 @@ def install(plan: Plan, api_key: str) -> Installed:
     # from `status` one command later, describing the same healthy service two ways.
     time.sleep(SETTLE)
     state = status(plan.name, kind=plan.kind)
+    # GRPH-1312. One reading is a coin flip for a job that refuses at startup: it reads
+    # "running" and is gone a second later. Keep watching for the health window; a job that
+    # exits inside it is reported with its exit code and its err log's reason.
+    waited = 0.0
+    while state.running and waited < HEALTH_WINDOW:
+        time.sleep(HEALTH_POLL)
+        waited += HEALTH_POLL
+        state = status(plan.name, kind=plan.kind)
     if plan.kind == "systemd" and linger() is False:
         warnings.append(
             "this user has no linger, so systemd stops your services when your last session "
@@ -877,6 +914,9 @@ class Status:
     last_exit: int | None = None
     #: Windows logout policy, named rather than guessed (GRPH-852). Empty on POSIX.
     logon_policy: str = ""
+    #: Why it died, from the err log's last line, when it is not running and last exited
+    #: non-zero (GRPH-1312). Empty otherwise, and empty when the log is unreadable.
+    reason: str = ""
 
     @property
     def idle(self) -> bool:
@@ -899,7 +939,9 @@ class Status:
             return (f"{self.name}: idle between runs, last exit 0 ({where}, "
                     f"{self.unit_path})")
         exit_code = "unknown" if self.last_exit is None else str(self.last_exit)
-        return f"{self.name}: NOT running, last exit {exit_code} ({where}, {self.unit_path})"
+        said = f" — {self.reason}" if self.reason else ""
+        return (f"{self.name}: NOT running, last exit {exit_code} ({where}, "
+                f"{self.unit_path}){said}")
 
 
 def status(name: str = DEFAULT_NAME, *, kind: str = "") -> Status:
@@ -919,9 +961,11 @@ def status(name: str = DEFAULT_NAME, *, kind: str = "") -> Status:
         alive, detail, last_exit = _running_schtasks(name)
     else:
         alive, detail, last_exit = _running_systemd(name)
+    died = alive is False and last_exit not in (None, 0)
     return Status(name=name, kind=kind, installed=True, running=alive, unit_path=unit,
                   detail=detail, linger=linger(), path_env=_path_in(unit, kind),
-                  last_exit=last_exit, logon_policy=policy)
+                  last_exit=last_exit, logon_policy=policy,
+                  reason=err_reason(name) if died else "")
 
 
 def _path_in(unit: Path, kind: str) -> str:
