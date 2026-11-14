@@ -419,7 +419,7 @@ the only reason this is a fact rather than a guess:
 
 ```toml
 [mcp_servers.graphban]
-url = "https://cloud.graphban.dev/api/mcp"
+url = "http://box:8080/api/mcp"
 enabled = true
 
 [mcp_servers.graphban.headers]
@@ -631,7 +631,7 @@ silent or blamed on the wrong component. `gbfleet doctor` asks them all before a
 exists:
 
 ```
-gbfleet doctor --repo . --adapter grok --server https://cloud.graphban.dev
+gbfleet doctor --repo . --adapter grok --server http://box:8080
 ```
 
 ```
