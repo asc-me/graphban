@@ -108,6 +108,33 @@ describe("AlertsBell", () => {
     });
   });
 
+  it("refetches when the tab becomes visible again (GRPH-1654)", async () => {
+    state.feed = { unread: 0, alerts: [] };
+    mount();
+    await waitFor(() => expect(screen.getByTestId("alerts-count")).toHaveTextContent("0"));
+    state.feed = { unread: 3, alerts: [] };
+    window.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(screen.getByTestId("alerts-count")).toHaveTextContent("3"));
+  });
+
+  it("a service-worker alerts-changed message refetches the feed (GRPH-1654)", async () => {
+    const listeners: ((e: unknown) => void)[] = [];
+    Object.defineProperty(navigator, "serviceWorker", {
+      configurable: true,
+      value: {
+        addEventListener: (_: string, fn: (e: unknown) => void) => listeners.push(fn),
+        removeEventListener: () => {},
+      },
+    });
+    state.feed = { unread: 0, alerts: [] };
+    mount();
+    await waitFor(() => expect(screen.getByTestId("alerts-count")).toHaveTextContent("0"));
+    state.feed = { unread: 2, alerts: [] };
+    listeners.forEach((fn) => fn({ data: { type: "alerts-changed" } }));
+    await waitFor(() => expect(screen.getByTestId("alerts-count")).toHaveTextContent("2"));
+    delete (navigator as unknown as Record<string, unknown>).serviceWorker;
+  });
+
   it("a failed read says could not load alerts and never renders 0", async () => {
     state.fail = true;
     mount();

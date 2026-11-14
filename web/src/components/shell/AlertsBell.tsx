@@ -1,6 +1,7 @@
 import { Bell } from "lucide-react";
 import * as React from "react";
 import { createPortal } from "react-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
 import { useConfig, useMyAlerts, useProjects, usePushStatus, usePushSubscribe, useReadAlert } from "@/lib/queries";
@@ -95,6 +96,17 @@ function impactLabel(a: AlertRow): string {
  */
 export function AlertsBell() {
   const q = useMyAlerts();
+  const qc = useQueryClient();
+  // A push reaches the service worker, which tells open pages (GRPH-1654).
+  React.useEffect(() => {
+    const sw = typeof navigator !== "undefined" ? navigator.serviceWorker : undefined;
+    if (!sw?.addEventListener) return;
+    const onMessage = (e: MessageEvent) => {
+      if (e.data?.type === "alerts-changed") void qc.invalidateQueries({ queryKey: ["my-alerts"] });
+    };
+    sw.addEventListener("message", onMessage);
+    return () => sw.removeEventListener("message", onMessage);
+  }, [qc]);
   const { data: projects = [] } = useProjects();
   const { data: config } = useConfig();
   const hosted = config?.hosted_mode ?? false;

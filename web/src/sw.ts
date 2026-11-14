@@ -5,7 +5,7 @@ const sw = self as unknown as {
   addEventListener: (type: string, fn: (e: any) => void) => void;
   registration: { showNotification: (title: string, o: object) => Promise<void> };
   clients: {
-    matchAll: (o: object) => Promise<{ url: string; focus: () => Promise<unknown>; navigate?: (u: string) => Promise<unknown> }[]>;
+    matchAll: (o: object) => Promise<{ url: string; postMessage?: (m: unknown) => void; focus: () => Promise<unknown>; navigate?: (u: string) => Promise<unknown> }[]>;
     openWindow: (url: string) => Promise<unknown>;
   };
 };
@@ -17,12 +17,20 @@ sw.addEventListener("push", (event) => {
   } catch {
     data = { body: event.data ? event.data.text() : "" };
   }
+  // Tell open pages so the bell refetches without a reload (GRPH-1654).
+  const notifyClients = sw.clients
+    .matchAll({ type: "window", includeUncontrolled: true })
+    .then((wins) => wins.forEach((w) => w.postMessage?.({ type: "alerts-changed" })))
+    .catch(() => undefined);
   event.waitUntil(
-    sw.registration.showNotification(data.title ?? "A question needs a response", {
-      body: data.body ?? "",
-      tag: data.ticket,
-      data: { url: data.url ?? "/triage" },
-    }),
+    Promise.all([
+      sw.registration.showNotification(data.title ?? "A question needs a response", {
+        body: data.body ?? "",
+        tag: data.ticket,
+        data: { url: data.url ?? "/triage" },
+      }),
+      notifyClients,
+    ]),
   );
 });
 

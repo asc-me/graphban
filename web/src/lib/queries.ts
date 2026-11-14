@@ -1779,7 +1779,13 @@ export function useApiKeys() {
 
 /** The bell's feed. Polled so a hand-off shows up without a reload; a failure stays an error. */
 export function useMyAlerts() {
-  return useQuery({ queryKey: ["my-alerts"], queryFn: () => api.myAlerts(), refetchInterval: 30_000 });
+  return useQuery({
+    queryKey: ["my-alerts"],
+    queryFn: () => api.myAlerts(),
+    refetchInterval: 30_000,
+    // A backgrounded tab pauses the interval; refetch on return (this query only, GRPH-1654).
+    refetchOnWindowFocus: true,
+  });
 }
 
 export function usePushStatus() {
