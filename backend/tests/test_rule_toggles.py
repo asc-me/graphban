@@ -578,3 +578,19 @@ def test_generated_files_default_is_todays_list_and_a_list_param_is_accepted(lib
         "paths": ["client/generated/**"]}
     with pytest.raises(Exception):
         T._check_params(rule, {"paths": "client/generated/**"})
+
+
+# ---- GRPH-1631: what a Reset would inherit ---------------------------------------------------
+
+def test_inherits_names_org_only_when_the_org_has_a_row_for_that_field(client, org):
+    _put_project(client, org, org["a"], {"on": True, "params": {"min_tests_failed": 2},
+                                         "reason": "own"})
+    t = _toggles(client, org, org["a"])[RULE]
+    # The project is in an org, but the org has no row for this rule: reset lands on the default.
+    assert t["inherits"]["on"] == "platform default"
+    assert t["inherits"]["params"] == "platform default"
+
+    _put_org(client, org, {"on": False, "reason": "org on/off only"})
+    t = _toggles(client, org, org["a"])[RULE]
+    assert t["inherits"]["on"] == "org"
+    assert t["inherits"]["params"] == "platform default"  # the org set `on`, not params
