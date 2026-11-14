@@ -2450,6 +2450,46 @@ class AttestedTheBase(Exception):
     """The reviewer attested the commit its branch was cut FROM (GRPH-970)."""
 
 
+class AttestedAnUnknownCommit(Exception):
+    """The reviewer attested a commit that is not a known head of the item (GRPH-1282)."""
+
+
+def known_heads(item: Item, extra=None) -> list[str]:
+    """Every commit the ledger already knows this item's work by, newest-known first.
+
+    The adapter-observed head (`head_commit`), any commit an attestation other than a
+    sign-off names (CI, `fleet.worktree`'s is a base and is excluded by `cut_from_commits`
+    being checked first), a PR receipt's commit, and the builder's `gbfleet: committed`
+    notes. `extra` is evidence arriving with the call (a CI receipt posted with the
+    sign-off). Empty means nobody reported one, and the head check cannot run.
+    """
+    out: list[str] = []
+
+    def add(sha) -> None:
+        c = str(sha or "").strip().lower()
+        if items_svc._SHA.fullmatch(c) and c not in out:
+            out.append(c)
+
+    evidence = list(item.evidence or []) + [e for e in (extra or []) if isinstance(e, dict)]
+    add(getattr(item, "head_commit", ""))
+    for e in items_svc.attestation_receipts(evidence):
+        if e.get("adapter") not in ("fleet.sign_off", items_svc.WORKTREE_ADAPTER):
+            add(e.get("commit"))
+    for e in evidence:
+        if not isinstance(e, dict):
+            continue
+        if e.get("kind") == "url" and e.get("commit"):
+            add(e.get("commit"))
+        detail = str(e.get("detail") or "")
+        if items_svc.COMMITTED_MARKER in detail:
+            tail = detail[detail.index(items_svc.COMMITTED_MARKER)
+                          + len(items_svc.COMMITTED_MARKER):]
+            m = items_svc._SHA.search(tail)
+            if m:
+                add(m.group(1))
+    return out
+
+
 class ClauseCapability(Exception):
     """The reviewer did not declare a capability an acceptance clause requires (GRPH-1055).
 
@@ -3754,6 +3794,17 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
             "back with its builder via bounce."
         )
 
+    # THE COMMIT MUST BE ONE THE LEDGER KNOWS THIS ITEM BY (GRPH-1282). GRPH-1255 went to
+    # `done` on a sign_off naming `3a99b03348f8…`, which shared eight characters with the PR
+    # head `3a99b0330cb6…` and existed nowhere: every predicate passed because none of them
+    # asked whether the commit was real. A full SHA is compared whole; an abbreviation matches
+    # by prefix, the way `same_commit` reads a supervisor's base. A CI receipt arriving WITH
+    # this call counts (it needs the gate scope to post). The refusal itself is raised after
+    # the cooldown check below: a head CI has not answered yet is "wait for CI", not "unknown".
+    heads = known_heads(item, extra=evidence)
+    unknown_head = bool(commit and heads
+                        and not any(items_svc.same_commit(commit, h) for h in heads))
+
     # A waiver is only ever honoured on a predicate whose check COULD NOT RUN — never on one
     # that ran and failed. Waiving a real failure would launder it, which is the opposite of
     # what the override exists for (GRPH-1007).
@@ -3830,6 +3881,19 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
                             else "no supervisor recorded a base for this item, so the attested "
                                  "commit was NOT compared against one"),
                     waived=waived),
+                {"name": "commit_is_the_head",
+                 # Refused above on a mismatch, so a stored receipt only ever passed. When no
+                 # head is known the comparison did not run; `compared: false` would demand a
+                 # waiver on every sign-off of work no CI or supervisor reports, so the detail
+                 # carries that instead, and `compared` is only stamped when it ran.
+                 "passed": True,
+                 **({"compared": True} if heads else {}),
+                 "detail": (f"{commit[:12]} matches a known head of this item (of "
+                            f"{len(heads)}: {', '.join(h[:12] for h in heads[:3])})"
+                            if heads
+                            else "no head, CI attestation or builder commit is recorded for "
+                                 "this item, so the attested commit was NOT compared against "
+                                 "one")},
                 {"name": "acceptance_coverage",
                  "passed": True,
                  "detail": (f"all {len(clauses)} acceptance clause(s) have a named test "
@@ -3858,6 +3922,15 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # item's stored evidence plus what this call brings, and the citation is not stored yet.
     carried = items_svc.refuse_if_pr_cooling_down(db, item, list(evidence or []) + cited,
                                                   commit=commit)
+    if unknown_head:
+        raise AttestedAnUnknownCommit(
+            f"{item.key}: {commit[:12]} is not a commit this item is known by — the known "
+            f"head is {heads[0][:12]}"
+            + (f" (and {len(heads) - 1} other commit(s) CI or the builder recorded)"
+               if len(heads) > 1 else "")
+            + ". Attest the head of the branch you reviewed, exactly as `git rev-parse HEAD` "
+            "prints it; a commit nobody has recorded vouches for nothing the merge will find."
+        )
     if carried:
         # GRPH-1411: the gate let this through on a run attested on another item; the note
         # naming that run is stored with the verdict.
