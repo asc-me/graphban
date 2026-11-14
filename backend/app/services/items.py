@@ -1138,10 +1138,6 @@ class PRCINotGreen(PRCooldown):
     this subclass first and name the action instead (see mcp_server)."""
 
 
-#: What `fleet` writes on an item whose branch was pushed but not opened as a PR.
-SALVAGE_MARKER = "not proposed as a PR"
-
-
 class NoPRForBranch(PRCINotGreen):
     """`done` was asked for an item whose work is on a branch and has no PR (GRPH-1457).
 
@@ -1452,34 +1448,51 @@ def ci_run_in_progress(evidence, commits) -> dict | None:
     return live
 
 
-def _refuse_if_branch_has_no_pr(db, item, incoming_evidence) -> None:
-    """GRPH-1457: an item whose evidence names a branch needs a linked PR to reach `done`.
+def recorded_pr_url(item) -> str:
+    """A PR url recorded on the item outside its evidence (`github_url`, or a legacy `pr`
+    dict's `url`), or "". Only a pull/merge request counts: an issue link is not a PR."""
+    url = (getattr(item, "github_url", "") or "").strip()
+    if is_pr_url(url):
+        return url
+    pr = getattr(item, "pr", None)
+    url = str(pr.get("url") or "").strip() if isinstance(pr, dict) else ""
+    return url if is_pr_url(url) else ""
+
+
+#: The paths a no-PR refusal names, so "no PR" never reads as "no CI needed" (GRPH-1633).
+NO_PR_PATHS = (
+    "Open a PR for the branch (gbfleet proposes branches on `until`) or link its URL on the "
+    "item, let CI attest suite_green at its head, then retry. Work that landed some other way "
+    "(merged by hand, or in another repository) is closed by a project owner naming the merge "
+    "commit (owner close), not by a sign-off. An item with no code at all carries no branch "
+    "and no head commit, and this gate does not apply to it")
+
+
+def _refuse_if_branch_has_no_pr(db, item, incoming_evidence, commit=None) -> None:
+    """GRPH-1457, GRPH-1633: an item whose work is on a branch needs a linked PR to reach `done`.
 
     A missing PR used to read as "no PR needed": the cooldown and `suite_green` gate apply
-    only to an item with a linked PR, so a salvaged branch signed off before anyone proposed
-    it went `done` with no CI attestation and its code on no PR. Only ``linked is None``
-    reaches here, so no PR url is in the evidence; an owner's close is exempt, and so is an
-    item with a recorded PR (`pr`, `github_url`).
+    only to an item with a linked PR, so a branch nobody proposed went `done` with no CI
+    attestation and its code on no PR. GRPH-1457 closed that only for a branch carrying the
+    supervisor's salvage note; GRPH-1615 and GRPH-1614 went `done` from ordinary built
+    branches the same way. So the trigger is the work itself: a recorded `branch`, or a
+    `head_commit` the builder reported (or the commit the caller is completing at). Only ``linked is None`` reaches here, so no PR url is
+    in the evidence or on the item; an owner's close is exempt (the owner names the merge).
     """
     branch = (item.branch or "").strip()
-    if not branch or (item.github_url or "").strip() or (getattr(item, "pr", None) or ""):
+    head = (commit or item.head_commit or "").strip()
+    if not branch and not head:
         return
     merged = append_evidence(item.evidence, incoming_evidence)
-    # The evidence must NAME the unproposed branch: the supervisor's salvage receipt says
-    # "not proposed as a PR". An ordinary built item also has a branch and no PR yet, and the
-    # proposal that follows its build is not this gate's business.
-    if not any(isinstance(e, dict) and SALVAGE_MARKER in str(e.get("detail") or "")
-               for e in merged):
-        return
     if any(a.get("adapter") == OWNER_CLOSE_ADAPTER for a in valid_attestations(merged)):
         return
+    where = f"branch {branch}" if branch else f"commit {head[:12]}"
     record_refusal(db, item, predicate="pr_missing",
-                   detail=f"work is on branch {branch} and no PR is linked")
+                   detail=f"work is on {where} and no PR is linked")
     raise NoPRForBranch(
-        f"{item.key} cannot move to done: its work is on branch {branch} and no PR is linked. "
-        "A branch nobody proposed never reaches the base and no CI has attested it. Open a PR "
-        "for the branch (gbfleet proposes salvaged branches on `until`), or link its URL on "
-        "the item, then retry")
+        f"{item.key} cannot move to done: its work is on {where} and no PR is linked, so no CI "
+        f"run has attested {CI_PREDICATE} on it and nothing has reached the base. A missing PR "
+        f"is not a PR that needs no CI. " + NO_PR_PATHS)
 
 
 def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
@@ -1511,8 +1524,13 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
     """
     cooldown = max(0, int(getattr(settings, "pr_cooldown_seconds", 0) or 0))
     linked = pr_linked_at(incoming_evidence or [], item.pr_linked_at)
+    if linked is None and (recorded_pr_url(item) or pr_linked_at(item.evidence)):
+        # GRPH-1633: a PR recorded on the item without the stamp (on `github_url`, or a url
+        # receipt written before the stamp existed) is a linked PR and gets the CI gate. It
+        # used to exempt the item from the no-PR gate AND skip this one.
+        linked = utcnow()
     if cooldown and linked is None:
-        _refuse_if_branch_has_no_pr(db, item, incoming_evidence or [])
+        _refuse_if_branch_has_no_pr(db, item, incoming_evidence or [], commit)
     if not cooldown or linked is None:
         return []
     merged = append_evidence(item.evidence, incoming_evidence or [])

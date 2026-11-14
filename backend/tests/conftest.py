@@ -211,6 +211,19 @@ def _reset_rate_limit():
 
 
 @pytest.fixture(autouse=True)
+def _no_ci_deployment(monkeypatch):
+    # GRPH-1633: on a deployment with CI (a non-zero `pr_cooldown_seconds`), an item whose work
+    # is on a branch needs a linked PR, and the PR `suite_green`, before `done`. Most tests sign
+    # off a branch item to exercise something else, so the suite runs as the documented
+    # deployment with no CI (cooldown 0). Tests ABOUT the PR gates set a cooldown themselves
+    # (test_pr_cooldown, test_done_without_pr, ...), which this does not override.
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "pr_cooldown_seconds", 0, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _no_rule_library_sync(monkeypatch):
     # GRPH-1418: `get_db` re-reads the installed pack's sha at most every SYNC_TTL seconds, so
     # whether a request carries that statement depends on the wall clock. Statement-count tests

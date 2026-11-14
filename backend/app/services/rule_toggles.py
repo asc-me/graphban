@@ -124,7 +124,8 @@ PARAM_CHOICES: dict[str, dict[str, tuple[str, ...]]] = {
 
 #: GRPH-1426: the predicates a project's `done` needs, over the deployment's floor.
 DONE_PREDICATES_RULE = "merge.done_predicates"
-#: Required for any item with a linked PR (`items.refuse_if_pr_cooling_down`); locked in a set
+#: Required for any item with code: a branch or commit needs a linked PR and the PR needs CI
+#: (`items.refuse_if_pr_cooling_down`, GRPH-1633); locked in a set
 #: list until GRPH-1059 decides whether it can ever be dropped.
 CI_FLOOR_PREDICATE = "suite_green"
 
@@ -287,10 +288,11 @@ def path_classes(db: Session | None, project_id: str | None) -> dict[str, list[s
 
 def done_predicate_list(db: Session, project_id: str | None) -> list[dict]:
     """Each predicate `done` needs for a project with where it came from: `deployment` (the
-    environment setting, read live, and `suite_green` for an item with a linked PR) or
+    environment setting, read live, and `suite_green` for an item with code: a branch or commit
+    needs a linked PR, and the PR needs CI (GRPH-1633)) or
     `project` (added through `merge.done_predicates`). Unset follows the deployment."""
     out = [{"name": n, "source": "deployment"} for n in deployment_predicates()]
-    out.append({"name": CI_FLOOR_PREDICATE, "source": "deployment", "when": "item has a linked PR"}
+    out.append({"name": CI_FLOOR_PREDICATE, "source": "deployment", "when": "item has code (a branch or commit), which also needs a linked PR"}
                if CI_FLOOR_PREDICATE not in deployment_predicates() else None)
     out = [o for o in out if o]
     if DONE_PREDICATES_RULE in LIBRARY:
@@ -362,7 +364,7 @@ def _check_done_predicates(value: object) -> list[str]:
     if names:  # an empty list is "unset": the project follows the deployment
         for name, source in [(n, "deployment `required_predicates`") for n in
                              deployment_predicates()] + [
-                (CI_FLOOR_PREDICATE, "the CI floor for items with a linked PR")]:
+                (CI_FLOOR_PREDICATE, "the CI floor for items with code")]:
             if name not in names:
                 raise Validation(
                     f"{DONE_PREDICATES_RULE} cannot drop {name!r}: it is required by {source}",

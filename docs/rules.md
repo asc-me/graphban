@@ -158,7 +158,9 @@ re-checked. A predicate that did not run is not a pass, and it must be attested 
 `gate`-scope key.
 
 - **Unset (empty list):** the project follows the deployment's `REQUIRED_PREDICATES` live, plus
-  `suite_green` for an item with a linked PR (the PR cooldown gate). Today's behaviour.
+  `suite_green` for an item with code (the PR cooldown gate). An item whose work is on a branch or
+  at a commit needs a linked PR, and the PR needs `suite_green`; a missing PR is refused, not
+  read as "no CI needed" (GRPH-1633). Work that landed elsewhere is closed by an owner.
 - **Set:** the deployment's entries and `suite_green` are a floor. The list must contain all of
   them; a person may only add predicates, with a `reason`. A list that drops one is refused 422
   naming the predicate and its source.
