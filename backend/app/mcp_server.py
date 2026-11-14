@@ -193,8 +193,6 @@ TOOLS: list[dict[str, Any]] = [
                 "prd_section": {"type": "string"},
                 "question": {"type": "string", "description": "Asks a human."},
                 "options": {"type": "array", "items": {"type": "string"}},
-                # GRPH-1650. Optional: the caller is resolved from the connection when unsent.
-                "agent_id": {"type": "string"},
             },
             "required": ["title"],
         },
@@ -2302,6 +2300,10 @@ _FLEET_ONLY_ARGS = {
     }},
     # GRPH-807. Measured on a live instance: 177 agents, 27,391 tokens, of which ONE was live.
     # A planner polling a wave paid nearly twice the whole manifest, per poll.
+    # GRPH-1650. Fleet-only for the reason every entry here is: the core manifest has no
+    # headroom. A worker that sends no agent_id is still resolved from the connection's single
+    # live agent; the dispatcher reads an agent_id whether or not it was advertised.
+    "create_item": {"agent_id": {"type": "string"}},
     "fleet_status": {"view": {
         "type": "string", "enum": ["lean", "live", "full"],
         "description": "lean (default) drops display-only fields; live drops offline agents "

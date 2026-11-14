@@ -101,10 +101,14 @@ def _holding_agent(client, key, proj):
     return sid, me, work["id"]
 
 
-def test_create_item_schema_names_agent_id():
-    from app.mcp_server import TOOLS
-    spec = next(t for t in TOOLS if t["name"] == "create_item")
-    assert "agent_id" in spec["inputSchema"]["properties"]
+def test_create_item_agent_id_is_fleet_only():
+    """The core manifest has no headroom: `agent_id` is advertised to the fleet tier only.
+    A core caller is resolved from the connection (see the no-agent_id test below)."""
+    from app.mcp_server import TOOLS, _with_fleet_args
+    core = next(t for t in TOOLS if t["name"] == "create_item")
+    assert "agent_id" not in core["inputSchema"]["properties"]
+    fleet = next(t for t in _with_fleet_args(TOOLS) if t["name"] == "create_item")
+    assert "agent_id" in fleet["inputSchema"]["properties"]
 
 
 def test_question_over_mcp_without_agent_id_links_the_held_claim(client, auth, proj, db):
