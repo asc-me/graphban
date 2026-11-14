@@ -844,3 +844,26 @@ def apply_already_evidence(item: Item) -> None:
     if not _is_already_child(item):
         return
     # Intentionally no status write.
+
+
+def stage_patch(db: Session, user, project: Project, patch: dict) -> list[str]:
+    """Check the caller may write the project's gitops, apply `patch` to the row and file the
+    migration plan if the model changed -- all UNCOMMITTED, so a caller can put it in the same
+    transaction as another write (GRPH-1632). Raises `Refused`/HTTP 404/ValueError as the PATCH
+    route always did. Returns the changed field names."""
+    from fastapi import HTTPException
+
+    from app.config import settings
+    if settings.hosted_mode:
+        if not project.org_id:
+            raise HTTPException(404, "project not found")
+        authz.require_org_admin(db, user.id, project.org_id)
+    else:
+        if code_sync.link_status(db)["linked"]:
+            raise Refused(403, LINKED_PATCH_DETAIL, rule_id="gitops.owned_by_org")
+        authz.require_writable(db, user.id, project.id)
+    changed = apply_patch(project, patch)
+    # THE CALL (GRPH-631): filing lives in file_migration_plan, not a second create in a handler.
+    if "model" in changed and project.gitops_model:
+        file_migration_plan(db, project)
+    return changed

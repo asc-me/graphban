@@ -213,7 +213,7 @@ def apply_project_profile(db: Session, user, project_id: str, profile_id: str, *
                       hint="nothing was applied; ask an org admin to change the org's value "
                            "or unlock the rule, or apply with skip_locked")
     plan = {rid: c for rid, c in plan.items() if rid not in locked}
-    written = []
+    writes = []
     for rid, changes in sorted(plan.items()):
         r = rule_toggles.resolve(db, rid, project_id)
         write = {k: v for k, v in changes.items() if k not in ("locked", "params")}
@@ -223,12 +223,23 @@ def apply_project_profile(db: Session, user, project_id: str, profile_id: str, *
             want = {**r["params"]["value"], **changes["params"]}
             if want != r["params"]["value"]:
                 write["params"] = changes["params"]
-        if not write:
-            continue
-        rule_toggles.set_project_toggle(
-            db, project_id, rid, write,
-            actor=user, reason=f"profile {profile_id} v{prof.get('version', '?')}: {why}")
-        written.append(rid)
+        if write:
+            writes.append({"rule_id": rid, **write})
+    # One transaction (GRPH-1632): a refusal at any rule writes nothing and names that rule.
+    # The reason is the caller's, once; the profile and version are on the apply event.
+    if writes:
+        try:
+            rule_toggles.set_project_toggles(db, project_id, writes, actor=user, reason=why)
+        except rule_toggles.BatchRefused as e:
+            err = e.error
+            if isinstance(err, Refused):
+                err.detail = f"{e.rule_id}: {err.detail}"
+                err.meta = {**err.meta, "refused_rule": e.rule_id, "batch": True}
+                raise err from e
+            if isinstance(err, Validation):
+                raise Validation(f"{e.rule_id}: {err}", hint="nothing was applied") from e
+            raise
+    written = [w["rule_id"] for w in writes]
     events_svc.record_user(
         db, user, action="apply_rule_profile", target_type="project", target_id=project_id,
         project_id=project_id,

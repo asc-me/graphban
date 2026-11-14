@@ -143,3 +143,47 @@ def test_a_level_pinning_a_repo_specific_rule_is_refused_and_unusable(client, or
         assert listed["usable"] is False and rule_id in listed["unusable_reason"]
     finally:
         P.CURRENT.profiles.pop("repo")
+
+
+def _fail_on(monkeypatch, rule_id):
+    """Make the stage step refuse `rule_id` (GRPH-1632), as a bad param or a lock would."""
+    from app.errors import Validation
+    from app.services import rule_toggles as T
+
+    real = T._stage_project_toggle
+
+    def staged(db, project_id, rid, changes, user):
+        if rid == rule_id:
+            raise Validation("forced refusal")
+        return real(db, project_id, rid, changes, user)
+
+    monkeypatch.setattr(T, "_stage_project_toggle", staged)
+
+
+def test_a_refusal_on_the_last_rule_of_a_level_writes_nothing(client, org, monkeypatch):
+    from app.services import rule_toggles as T
+
+    p = org["ps"][0]
+    last = sorted([RULE, OTHER])[-1]
+    before = {t["rule_id"]: t["on"] for t in T.effective(_session(), p)}
+    n_events = len(_events("set_rule_toggle", "apply_rule_profile"))
+    _fail_on(monkeypatch, last)
+    r = _apply_project(client, org, p)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"].startswith(f"{last}: ") and "forced refusal" in r.json()["detail"]
+    after = {t["rule_id"]: t["on"] for t in T.effective(_session(), p)}
+    assert after == before  # the rule written first is back as it was
+    assert len(_events("set_rule_toggle", "apply_rule_profile")) == n_events
+    assert _get(client, org, p).json()["applied"] is None
+
+
+def test_the_audit_reason_is_written_once(client, org):
+    p = org["ps"][0]
+    assert _apply_project(client, org, p, reason="applying Standard v1: adopt").status_code == 200
+    reasons = [e.meta["reason"] for e in _events("set_rule_toggle")]
+    assert reasons and all(x == "applying Standard v1: adopt" for x in reasons)
+
+
+def _session():
+    from app.db import SessionLocal
+    return SessionLocal()

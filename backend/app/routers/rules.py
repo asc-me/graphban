@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
-from app.models import Organization, User
+from app.models import Organization, Project, User
 from app.errors import NotFound, Refused, Validation
 from app.schemas import (ObservationBackfillOut, ObservationsOut,
                          RecommendedRulesOut, RefusalCoverageOut, RuleSuggestionOut,
@@ -21,6 +21,7 @@ from app.security.deps import get_current_user, get_user_or_agent_key
 from app.services import code_graph
 from app.services import collision
 from app.services import events as events_svc
+from app.services import gitops as gitops_svc
 from app.services import observations as observations_svc
 from app.services import quotas
 from app.services import rule_pack
@@ -199,16 +200,32 @@ def set_project_rule_toggles(body: RuleToggleBatchWrite, project_id: str = "core
                              user: User = Depends(get_current_user)):
     """Several of a project's own values under one reason, all-or-nothing (GRPH-1594). One
     refusal rolls the whole batch back and names the rule it refused; nothing was applied.
-    Each rule changed gets its own `set_rule_toggle` event carrying the shared reason."""
+    Each rule changed gets its own `set_rule_toggle` event carrying the shared reason.
+    An optional `gitops` patch is applied in the same transaction (GRPH-1632): a refusal on
+    the patch or on any rule leaves both unwritten."""
     writes = [e.model_dump(exclude_unset=True) for e in body.toggles]
+    changed: list[str] = []
     try:
+        if body.gitops is not None:
+            project = db.get(Project, project_id)
+            if project is None:
+                raise HTTPException(404, "project not found")
+            try:
+                changed = gitops_svc.stage_patch(
+                    db, user, project,
+                    {k: getattr(body.gitops, k) for k in body.gitops.model_fields_set})
+            except ValueError as e:
+                raise HTTPException(422, str(e)) from e
         rule_toggles.set_project_toggles(db, project_id, writes, actor=user,
                                          reason=body.reason)
     except NotFound as e:
+        db.rollback()
         raise HTTPException(404, str(e)) from e
     except Validation as e:
+        db.rollback()
         raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
     except rule_toggles.BatchRefused as e:
+        db.rollback()
         err, prefix = e.error, f"{e.rule_id}: "
         if isinstance(err, Refused):
             # The server's own refusal, re-raised whole (its registry rule kept), naming the
@@ -219,6 +236,13 @@ def set_project_rule_toggles(body: RuleToggleBatchWrite, project_id: str = "core
         status = 404 if isinstance(err, NotFound) else 422
         raise HTTPException(status, prefix + str(err) + (
             f" — {err.hint}" if getattr(err, "hint", None) else "")) from e
+    except BaseException:
+        db.rollback()  # a gitops refusal (or anything else) leaves nothing staged
+        raise
+    if changed:
+        events_svc.record_user(
+            db, user, action="update_gitops", target_type="project", target_id=project_id,
+            project_id=project_id, meta={"fields": changed})
     by_id = {t["rule_id"]: t for t in rule_toggles.effective(db, project_id)}
     return {"toggles": [by_id[w["rule_id"]] for w in writes]}
 
