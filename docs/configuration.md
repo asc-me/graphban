@@ -4,11 +4,13 @@ Configuration is via environment variables. In Docker, set them in `.env` (copy 
 `.env.example`); locally, export them before running the API. The backend reads them through
 `backend/app/config.py` (pydantic-settings).
 
+This file is the environment variables only. Screens and per-box choices are in [settings.md](settings.md), rules are in [rules.md](rules.md), and putting the box on a network is in [deploy.md](deploy.md) and [native-install.md](native-install.md).
+
 ## Database
 
 | Var | Default | Notes |
 | --- | --- | --- |
-| `DATABASE_URL` | `postgresql+psycopg://graphban:graphban@localhost:5432/graphban` | Use `sqlite:///./dev.db` for zero-infra dev. Postgres runs Alembic migrations; SQLite uses `create_all`. |
+| `DATABASE_URL` | `postgresql+psycopg://agentledger:agentledger@localhost:5432/agentledger` | Use `sqlite:///./dev.db` for zero-infra dev. Postgres runs Alembic migrations; SQLite uses `create_all`. |
 
 ## Auth
 
@@ -21,7 +23,7 @@ Configuration is via environment variables. In Docker, set them in `.env` (copy 
 | `REQUIRE_STRONG_SECRET` | `false` | **Refuses to boot** on a weak or default `JWT_SECRET` rather than warning. Set it on anything exposed |
 | `MIN_PASSWORD_LENGTH` | `8` | Minimum on signup and password change |
 | `BCRYPT_ROUNDS` | `12` | bcrypt work factor for new password hashes, 4–31. Leave it at 12; a stored hash keeps its own cost, so this only affects hashes written after a change. The test suite runs at 4 |
-| `SIGNUP_MODE` | `open` | `open` or `invite_only`. **`open` means anyone who can reach the instance can create an account** — the hosted deployment runs `invite_only` |
+| `SIGNUP_MODE` | `open` | `open` or `invite_only`. **`open` means anyone who can reach the instance can create an account** ; `invite_only` is the setting for a box exposed to a network you do not control |
 | `PLATFORM_ADMIN_EMAILS` | *(empty)* | Comma-separated. Who reaches the operator plane. Empty means nobody, which is the safe default and not an oversight |
 | `ORG_REQUEST_TO` | *(empty)* | Comma-separated. Where a self-host user's "Request an org" is emailed (GRPH-1364). Empty falls back to `PLATFORM_ADMIN_EMAILS`; with neither set the request is refused (503) and no date is stored |
 | `SECRET_ENCRYPTION_KEY` | *(empty)* | At-rest encryption for stored provider keys. **Empty means BYOK credentials are stored unencrypted**; set it before anyone saves one |
@@ -47,8 +49,8 @@ mail is simply not sent, so an invite can be "issued" and never arrive.
 | Var | Default | Notes |
 | --- | --- | --- |
 | `SMTP_HOST` | *(empty)* | Empty disables sending entirely |
-| `SMTP_PORT` | `587` | |
-| `SMTP_USER` | *(empty)* | |
+| `SMTP_PORT` | `587` | Port of the SMTP server named by `SMTP_HOST`. Unused while `SMTP_HOST` is empty |
+| `SMTP_USER` | *(empty)* | Login name for the SMTP server. Empty means no login is attempted (an open relay or local MTA); when set, `SMTP_PASSWORD` is sent with it |
 | `SMTP_PASSWORD` | *(empty)* | |
 | `SMTP_FROM` | `Graphban <no-reply@graphban.dev>` | Envelope sender |
 | `SMTP_STARTTLS` | `true` | |
@@ -75,10 +77,10 @@ in-app alert works whether or not push does.
 | --- | --- | --- |
 | `HOSTED_MODE` | `false` | Multi-tenant posture: org gates on, first-run bootstrap refused, share links accept only the token |
 | *(plan grant)* | *(none)* | GRPH-1343. Not a setting: a self-hosted box reads its capacity plan (`require_capacity_routing`) from a signed plan grant installed with `POST /api/platform/plan-grant`, never from `org.plan`. Verified against `TRUSTED_PLAN_GRANT_KEYS` in `services/plan_grant.py` (compiled into the release; empty until the control plane's key exists, so every grant is refused) at startup and on install only. The grant's `org_id` must be the cloud org the box is linked to (or the box's only org). Hosted keeps reading `org.plan`. Each worker holds its own verdict: a grant installed on one reaches the others at their next start |
-| `LOG_LEVEL` | `INFO` | |
+| `LOG_LEVEL` | `INFO` | Python logging level for the API (`DEBUG`, `INFO`, `WARNING`, `ERROR`). An unrecognised value falls back to `INFO` |
 | `LOG_JSON` | `false` | Structured logs. On for anything with log search |
 | `REDIS_URL` | *(empty)* | Empty keeps rate-limit state in process, which is per-worker rather than per-deployment |
-| `SYNC_DIR` | `/data/sync` | Where the Drive/file sync writes |
+| `SYNC_DIR` | `/data/sync` | Directory the file sync writes to (blobs go under `blobs/` in it) unless a sync target configured in the app names its own folder. Default `/data/sync`; it must exist and be writable by the API, so mount a volume there |
 | `SYNC_CLOUD_URL`, `SYNC_API_KEY` | *(empty)* | Local → console code-graph push. Point the URL at the Graphban console. Until `cloud.graphban.dev` is that console, use `https://graphban-console-console-production-ascme-labs.unkey.app` |
 | `UPSTREAM_FEEDBACK_URL` | `https://feedback.asc-me.dev/api/public/requests` | Where `report_graphban_issue` sends |
 | `UPSTREAM_FEEDBACK_PROJECT` | `agentledger` | |
@@ -171,13 +173,13 @@ returns null and the shell leaves those links off. `pnpm dev` falls back to
 
 ## Wire names during the Graphban rename
 
-The product is being renamed from Graphban to Graphban. Every wire-facing name accepts
+The product is being renamed from Agentledger to Graphban. Every wire-facing name accepts
 **both** forms, and nothing that was ever valid stops working:
 
 | Surface | Produced now | Old — still accepted |
 | --- | --- | --- |
 | API key prefix | `gb_sk_` | `al_sk_` |
-| CLI console script | `graphban` (both installed) | `graphban` |
+| CLI console script | `graphban` (both installed) | `agentledger` |
 | CLI config | written to `~/.graphban/config.json`, `GRAPHBAN_CONFIG` | read from `~/.agentledger/config.json`, `AGENTLEDGER_CONFIG` |
 | MCP server name | `graphban` | — (the `mcp__*` tool namespace comes from *your* client config key, not from the server) |
 | Upstream report tool | `report_graphban_issue` | `report_agentledger_issue` (dispatches, not advertised) |
