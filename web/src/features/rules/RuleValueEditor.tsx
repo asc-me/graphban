@@ -240,12 +240,19 @@ function ListRows({ ruleId, name, value, onChange, counted }: EditorProps & { va
     <div className="flex flex-col gap-1.5" role="group" aria-label={name} data-testid={`rules-list-${name}`}>
       <span className={cn(MONO, "text-[10px] text-muted-2")}>{name}</span>
       {rows.map((r, i) => (
-        <div key={i} className="flex items-center gap-2">
-          <Input aria-label={`${name} ${i + 1}`} value={r} onChange={(e) => set(rows.map((x, j) => (j === i ? e.target.value : x)))} />
+        <div key={i} data-testid="rules-list-row" className="flex min-w-0 flex-col gap-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <Input
+              className="min-w-0 flex-1"
+              aria-label={`${name} ${i + 1}`}
+              value={r}
+              onChange={(e) => set(rows.map((x, j) => (j === i ? e.target.value : x)))}
+            />
+            <Button type="button" size="sm" variant="outline" className="flex-none" aria-label={`Remove ${name} ${i + 1}`} onClick={() => set(rows.filter((_, j) => j !== i))}>
+              Remove
+            </Button>
+          </div>
           {counted && <PathCountBadge projectId={activeId} path={r} />}
-          <Button type="button" size="sm" variant="outline" aria-label={`Remove ${name} ${i + 1}`} onClick={() => set(rows.filter((_, j) => j !== i))}>
-            Remove
-          </Button>
         </div>
       ))}
       <Button type="button" size="sm" variant="outline" className="self-start" onClick={() => set([...rows, ""])}>
@@ -272,9 +279,9 @@ function PathCountBadge({ projectId, path }: { projectId: string; path: string }
     warn = true;
   } else text = `${row.files} file${row.files === 1 ? "" : "s"}`;
   return (
-    <span data-testid="rules-path-count" className={cn(MONO, "flex-none text-small", warn ? "text-[#ffb454]" : "text-muted-2")}>
+    <span data-testid="rules-path-count" className={cn(MONO, "block min-w-0 max-w-full truncate text-small", warn ? "text-[#ffb454]" : "text-muted-2")}>
       {warn && "⚠ "}
-      {row?.normalised && row.normalised !== trimmed ? `${row.normalised} · ` : ""}
+      {row?.normalised && row.normalised !== trimmed ? `saved as ${row.normalised} · ` : ""}
       {text}
     </span>
   );
@@ -375,14 +382,15 @@ function MapTable({ name, value, onChange }: EditorProps & { value: Record<strin
     <div className="flex flex-col gap-1.5" role="group" aria-label={name} data-testid={`rules-map-${name}`}>
       <span className={cn(MONO, "text-[10px] text-muted-2")}>{name}</span>
       {rows.map(([k, list], i) => (
-        <div key={i} className="flex items-center gap-2">
-          <Input aria-label={`${name} key ${i + 1}`} value={k} onChange={(e) => write(rows.map((r, j) => (j === i ? [e.target.value, r[1]] : r)))} />
+        <div key={i} data-testid="rules-map-row" className="flex min-w-0 items-center gap-2">
+          <Input className="min-w-0 flex-1" aria-label={`${name} key ${i + 1}`} value={k} onChange={(e) => write(rows.map((r, j) => (j === i ? [e.target.value, r[1]] : r)))} />
           <Input
+            className="min-w-0 flex-1"
             aria-label={`${name} values ${i + 1}`}
             value={list.join(", ")}
             onChange={(e) => write(rows.map((r, j) => (j === i ? [r[0], e.target.value.split(",").map((s) => s.trim()).filter(Boolean)] : r)))}
           />
-          <Button type="button" size="sm" variant="outline" aria-label={`Remove ${name} row ${i + 1}`} onClick={() => write(rows.filter((_, j) => j !== i))}>
+          <Button type="button" size="sm" variant="outline" className="flex-none" aria-label={`Remove ${name} row ${i + 1}`} onClick={() => write(rows.filter((_, j) => j !== i))}>
             Remove
           </Button>
         </div>
