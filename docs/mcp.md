@@ -32,7 +32,7 @@ agent's writes are identical to a user's and appear instantly in the UI.
 - **Metering** — every `tools/call` increments a per-tool counter (the `mcp_tool_stats`
   table) surfaced on the **MCP Tools** view.
 - **Scope-gated manifest** — `tools/list` returns only the tools the key can call: a
-  read+write key sees all 32, a read-only key sees just the read tools. A read-only key
+  default read+write key sees 35 of the 78, a read-only key sees just the 18 read tools. A read-only key
   never pays for write-tool schemas it would only get `unauthorized` on (AL-78).
 - **Lean list rows** — `search_items` and `get_backlog` return a compact row
   (`id`/`title`/`status`, plus the ranking fields for the backlog) by default. Pass
@@ -146,8 +146,8 @@ that stops once the four dimensions are answered or deferred. The tool still wri
 The one-shot editor command (`POST /api/prds/{id}/ai` with `command=grill`) stays on the
 body-only prompt, which has no transcript and cannot know when to stop.
 
-**Every tool argues its role gate** (GRPH-516). 27 of the 78 tools are role-gated; the other
-49 are callable by every role. That was a *default* rather than a decision — `TOOLS` has had a
+**Every tool argues its role gate** (GRPH-516). 28 of the 78 tools are role-gated; the other
+50 are callable by every role. That was a *default* rather than a decision — `TOOLS` has had a
 completeness guard forcing each new tool to be classified as a quality gate or an authority
 one, and `TOOL_ROLES` had no equivalent, so forty tools arrived at "open to everyone" without
 anyone arguing for one of them. Some are certainly right; nobody could tell which from the
