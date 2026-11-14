@@ -138,33 +138,28 @@ def _toggle_events():
         db.close()
 
 
-def _sv(d):
-    """A toggle value without `inherits` (GRPH-1631 has its own test)."""
-    return {k: v for k, v in d.items() if k != "inherits"}
-
-
 # ---- D4: resolution at all three scopes ---------------------------------------------------
 
 def test_platform_default_when_nothing_is_set(client, org):
     t = _toggles(client, org, org["a"])[RULE]
-    assert _sv(t["on"]) == {"value": False, "source": "platform default"}
-    assert _sv(t["params"]) == {"value": {"min_tests_failed": 1}, "source": "platform default"}
+    assert t["on"] == {"value": False, "source": "platform default"}
+    assert t["params"] == {"value": {"min_tests_failed": 1}, "source": "platform default"}
     assert t["locked"] is False
 
 
 def test_org_value_reaches_every_project_and_a_project_overrides_its_own(client, org):
     assert _put_org(client, org, {"on": True, "reason": "P62 escapes"}).status_code == 200
     for pid in (org["a"], org["b"]):
-        assert _sv(_toggles(client, org, pid)[RULE]["on"]) == {"value": True, "source": "org"}
+        assert _toggles(client, org, pid)[RULE]["on"] == {"value": True, "source": "org"}
 
     r = _put_project(client, org, org["a"], {"on": False, "params": {"min_tests_failed": 2},
                                              "reason": "prototype"})
     assert r.status_code == 200, r.text
     a, b = _toggles(client, org, org["a"])[RULE], _toggles(client, org, org["b"])[RULE]
-    assert _sv(a["on"]) == {"value": False, "source": "project"}
-    assert _sv(a["params"]) == {"value": {"min_tests_failed": 2}, "source": "project"}
+    assert a["on"] == {"value": False, "source": "project"}
+    assert a["params"] == {"value": {"min_tests_failed": 2}, "source": "project"}
     # The org layer still holds for the project that did not override it.
-    assert _sv(b["on"]) == {"value": True, "source": "org"}
+    assert b["on"] == {"value": True, "source": "org"}
     assert b["params"]["source"] == "platform default"
 
 
@@ -173,7 +168,7 @@ def test_clearing_a_project_value_inherits_again(client, org):
     _put_project(client, org, org["a"], {"on": False, "reason": "r"})
     assert _put_project(client, org, org["a"], {"on": None, "reason": "back to the org"}
                         ).status_code == 200
-    assert _sv(_toggles(client, org, org["a"])[RULE]["on"]) == {"value": True, "source": "org"}
+    assert _toggles(client, org, org["a"])[RULE]["on"] == {"value": True, "source": "org"}
 
 
 def test_resolution_at_the_service_ignores_no_layer(library):
@@ -184,8 +179,8 @@ def test_resolution_at_the_service_ignores_no_layer(library):
     org_row = RuleToggle(rule_id=RULE, org_id="o", on=True)
     proj_row = RuleToggle(rule_id=RULE, project_id="p", params={"min_tests_failed": 3})
     r = T._resolve(rule, proj_row, org_row, "o")
-    assert _sv(r["on"]) == {"value": True, "source": "org"}
-    assert _sv(r["params"]) == {"value": {"min_tests_failed": 3}, "source": "project"}
+    assert r["on"] == {"value": True, "source": "org"}
+    assert r["params"] == {"value": {"min_tests_failed": 3}, "source": "project"}
     assert T._resolve(rule, None, None, None)["on"]["source"] == "platform default"
 
 
@@ -198,7 +193,7 @@ def test_a_locked_rule_refuses_a_project_override_with_its_rule_id(client, org):
                     ).status_code == 200
     t = _toggles(client, org, org["a"])[RULE]
     assert t["locked"] is True and t["locked_by"] == org["id"]
-    assert _sv(t["on"]) == {"value": True, "source": "org"}
+    assert t["on"] == {"value": True, "source": "org"}
     # Locking with no params set writes the default down, so the org is the source of both.
     assert t["params"]["source"] == "org"
 
@@ -217,9 +212,9 @@ def test_a_locked_rule_refuses_a_project_override_with_its_rule_id(client, org):
 def test_a_lock_hides_a_project_override_and_unlocking_gives_it_back(client, org):
     _put_project(client, org, org["a"], {"on": True, "reason": "ours"})
     _put_org(client, org, {"on": False, "locked": True, "reason": "org says off"})
-    assert _sv(_toggles(client, org, org["a"])[RULE]["on"]) == {"value": False, "source": "org"}
+    assert _toggles(client, org, org["a"])[RULE]["on"] == {"value": False, "source": "org"}
     _put_org(client, org, {"locked": False, "reason": "lifted"})
-    assert _sv(_toggles(client, org, org["a"])[RULE]["on"]) == {"value": True, "source": "project"}
+    assert _toggles(client, org, org["a"])[RULE]["on"] == {"value": True, "source": "project"}
 
 
 def test_an_org_change_to_a_locked_rule_cascades_as_one_event(client, org):
@@ -231,7 +226,7 @@ def test_an_org_change_to_a_locked_rule_cascades_as_one_event(client, org):
     assert r.status_code == 200, r.text
     assert sorted(r.json()["projects_changed"]) == sorted([org["a"], org["b"]])
     for pid in (org["a"], org["b"]):
-        assert _sv(_toggles(client, org, pid)[RULE]["on"]) == {"value": False, "source": "org"}
+        assert _toggles(client, org, pid)[RULE]["on"] == {"value": False, "source": "org"}
 
     events = _toggle_events()[before:]
     assert len(events) == 1
@@ -402,7 +397,7 @@ def test_the_mcp_read_carries_source_and_lock(client, org):
     out = res["structuredContent"]
     assert out["library_loaded"] is True
     t = out["toggles"][0]
-    assert t["rule_id"] == RULE and _sv(t["on"]) == {"value": True, "source": "org"}
+    assert t["rule_id"] == RULE and t["on"] == {"value": True, "source": "org"}
     assert t["locked"] is True
 
 
@@ -494,15 +489,15 @@ def test_org_read_inherited_adopted_and_locked(client, org):
     _put_org(client, org, {"on": True, "reason": "adopt"})
     _put_project(client, org, org["a"], {"on": False, "reason": "ours"})
     rule = _get_org(client, org).json()["rules"][0]
-    assert _sv(rule["on"]) == {"value": True, "source": "org"}
+    assert rule["on"] == {"value": True, "source": "org"}
     by = {p["project_id"]: p for p in rule["projects"]}
-    assert _sv(by[org["a"]]["on"]) == {"value": False, "source": "project"}
-    assert _sv(by[org["b"]]["on"]) == {"value": True, "source": "org"}
+    assert by[org["a"]]["on"] == {"value": False, "source": "project"}
+    assert by[org["b"]]["on"] == {"value": True, "source": "org"}
 
     _put_org(client, org, {"locked": True, "reason": "regulated"})
     rule = _get_org(client, org).json()["rules"][0]
     assert rule["locked"] is True
-    assert all(_sv(p["on"]) == {"value": True, "source": "org"} for p in rule["projects"])
+    assert all(p["on"] == {"value": True, "source": "org"} for p in rule["projects"])
 
 
 def test_org_read_with_no_projects_and_plan_gate(client, org):
@@ -592,10 +587,10 @@ def test_inherits_names_org_only_when_the_org_has_a_row_for_that_field(client, o
                                          "reason": "own"})
     t = _toggles(client, org, org["a"])[RULE]
     # The project is in an org, but the org has no row for this rule: reset lands on the default.
-    assert t["on"]["inherits"] == "platform default"
-    assert t["params"]["inherits"] == "platform default"
+    assert t["inherits"]["on"] == "platform default"
+    assert t["inherits"]["params"] == "platform default"
 
     _put_org(client, org, {"on": False, "reason": "org on/off only"})
     t = _toggles(client, org, org["a"])[RULE]
-    assert t["on"]["inherits"] == "org"
-    assert t["params"]["inherits"] == "platform default"  # the org set `on`, not params
+    assert t["inherits"]["on"] == "org"
+    assert t["inherits"]["params"] == "platform default"  # the org set `on`, not params

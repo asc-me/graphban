@@ -203,8 +203,8 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
   const cleaned = cleanParams(draftParams);
   const firstError = Object.values(paramErrors)[0];
   const paramsDirty = !firstError && JSON.stringify(cleaned) !== paramsKey;
-  const inherits = inheritsFor(toggle?.params.inherits, orgName);
-  const onInherits = inheritsFor(toggle?.on.inherits, orgName);
+  const inherits = inheritsFor(toggle?.inherits?.params, orgName);
+  const onInherits = inheritsFor(toggle?.inherits?.on, orgName);
 
   return (
     <div className="flex flex-col gap-2 rounded-[8px] border border-[#2a333a] bg-bg p-2.5" data-testid="rules-toggle">

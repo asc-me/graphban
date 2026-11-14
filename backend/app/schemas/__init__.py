@@ -1847,8 +1847,6 @@ class RuleToggleValueOut(BaseModel):
     value: bool | dict | None = None
     #: `project` | `org` | `platform default` (PRD-P63 D4).
     source: str
-    #: GRPH-1631: what a Reset (null) lands on: `org` or `platform default`. Project reads only.
-    inherits: str | None = None
 
 
 class RuleToggleOut(BaseModel):
@@ -1857,6 +1855,9 @@ class RuleToggleOut(BaseModel):
     title: str
     on: RuleToggleValueOut
     params: RuleToggleValueOut
+    #: GRPH-1631: per field (`on`, `params`), what a Reset (null) lands on: `org` when the org
+    #: has a row setting that field, else `platform default`.
+    inherits: dict[str, str] | None = None
     locked: bool
     locked_by: str | None = None
     #: `merge.done_predicates` only (GRPH-1426): each predicate `done` needs, with its source.

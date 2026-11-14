@@ -3396,9 +3396,10 @@ export interface SerialisationPreview {
 export interface RuleToggleValue<T> {
   value: T;
   source: RuleToggleSource;
-  /** What a Reset (null) would land on: the org's value, or the platform default (GRPH-1631). */
-  inherits?: "org" | "platform default";
 }
+
+/** What a Reset (null) would land on: the org's value, or the platform default (GRPH-1631). */
+export type RuleToggleInherits = "org" | "platform default";
 
 export interface RuleToggle {
   rule_id: string;
@@ -3406,6 +3407,8 @@ export interface RuleToggle {
   title: string;
   on: RuleToggleValue<boolean>;
   params: RuleToggleValue<Record<string, RuleParamValue>>;
+  /** Per field, what a Reset would inherit (GRPH-1631). */
+  inherits?: { on: RuleToggleInherits; params: RuleToggleInherits };
   locked: boolean;
   /** The org id holding the lock; null when unlocked. */
   locked_by: string | null;

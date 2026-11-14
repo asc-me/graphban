@@ -126,7 +126,7 @@ describe("StageEditor", () => {
     vi.mocked(api.ruleToggles).mockResolvedValue({
       toggles: [
         // org has a row for `on` only; the project set both.
-        { rule_id: "plan.exclusive_areas", on: { value: true, source: "project", inherits: "org" }, params: { value: { paths: ["backend/"] }, source: "project", inherits: "platform default" } },
+        { rule_id: "plan.exclusive_areas", on: { value: true, source: "project" }, params: { value: { paths: ["backend/"] }, source: "project" }, inherits: { on: "org", params: "platform default" } },
       ],
     } as never);
     vi.mocked(api.syncStatus).mockResolvedValue({ org: "Acme" } as never);

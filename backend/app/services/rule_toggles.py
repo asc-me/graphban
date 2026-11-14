@@ -207,8 +207,10 @@ def _resolve(rule: LibraryRule, proj: RuleToggle | None, org: RuleToggle | None,
     def inherits(attr: str) -> str:
         return "org" if org is not None and getattr(org, attr) is not None else "platform default"
 
-    return {"rule_id": rule.id, "on": {**first("on", rule.default_on), "inherits": inherits("on")},
-            "params": {**first("params", rule.default_params), "inherits": inherits("params")},
+    # Kept beside `on`/`params`, not inside them, so their `{value, source}` shape is unchanged.
+    return {"rule_id": rule.id, "on": first("on", rule.default_on),
+            "params": first("params", rule.default_params),
+            "inherits": {"on": inherits("on"), "params": inherits("params")},
             "locked": locked, "locked_by": org_id if locked else None}
 
 

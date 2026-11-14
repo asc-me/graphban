@@ -92,11 +92,11 @@ export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narr
       const entry: RuleToggleBatchEntry = { rule_id: r.id };
       const t = toggles?.toggles.find((x) => x.rule_id === r.id);
       if (d.resetOn && t?.on.source === "project") {
-        change.resets = { ...change.resets, on: resetTarget(t.on.inherits, orgName) };
+        change.resets = { ...change.resets, on: resetTarget(t.inherits?.on, orgName) };
         entry.on = null;
       }
       if (d.resetParams && t?.params.source === "project") {
-        change.resets = { ...change.resets, params: resetTarget(t.params.inherits, orgName) };
+        change.resets = { ...change.resets, params: resetTarget(t.inherits?.params, orgName) };
         entry.params = null;
       }
       if (entry.on === undefined && d.on !== undefined && d.on !== on) {
@@ -273,7 +273,7 @@ export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narr
                   const f = field === "on" ? t?.on : t?.params;
                   if (!f || f.source !== "project" || (field === "params" && Object.keys(params).length === 0)) return null;
                   const flag = field === "on" ? "resetOn" : "resetParams";
-                  const label = inheritsFor(f.inherits, orgName);
+                  const label = inheritsFor(t?.inherits?.[field], orgName);
                   const picked = !!d?.[flag];
                   return (
                     <button
