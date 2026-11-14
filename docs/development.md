@@ -22,7 +22,7 @@ uv pip install -e ".[dev]"           # add ".[dev,cloud]" for the Anthropic SDK
 # zero-infra (SQLite, create_all + seed on boot):
 export DATABASE_URL="sqlite:///./dev.db"
 # …or Postgres (runs Alembic migrations on boot):
-# export DATABASE_URL="postgresql+psycopg://graphban:graphban@localhost:5432/graphban"
+# export DATABASE_URL="postgresql+psycopg://agentledger:agentledger@localhost:5432/agentledger"
 
 uvicorn app.main:app --reload        # http://localhost:8000, OpenAPI at /docs
 pytest                               # full backend suite (runs on SQLite, offline)
