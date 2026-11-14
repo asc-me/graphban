@@ -49,7 +49,18 @@ export function stageIsEditable(stage: RuleStage): boolean {
 
 type RuleDraft = { on?: boolean; params?: Params; resetOn?: boolean; resetParams?: boolean };
 
-export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narrow: boolean; onClose: () => void }) {
+export function StageEditor({
+  stage,
+  narrow,
+  onClose,
+  prefill,
+}: {
+  stage: RuleStage;
+  narrow: boolean;
+  onClose: () => void;
+  /** A suggested gitops value to start the draft with (a refusal's "set this value"). */
+  prefill?: { rule: string; value: string } | null;
+}) {
   const { activeId } = useProjectCtx();
   const canWrite = useCanWriteRules(activeId);
   const { data: gitops } = useGitops(activeId);
@@ -59,7 +70,10 @@ export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narr
   const orgName = useOrgName(gitops);
 
   const [draft, setDraft] = React.useState<Record<string, RuleDraft>>({});
-  const [gitopsDraft, setGitopsDraft] = React.useState<Record<string, string>>({});
+  const [gitopsDraft, setGitopsDraft] = React.useState<Record<string, string>>(() => {
+    const f = prefill ? GITOPS_RULE_FIELDS[prefill.rule] : undefined;
+    return f && prefill ? { [f]: prefill.value } : {};
+  });
   const [paramErrors, setParamErrors] = React.useState<Record<string, string>>({});
   const [ruleErrors, setRuleErrors] = React.useState<Record<string, string>>({});
   const [gitopsErrors, setGitopsErrors] = React.useState<Record<string, string>>({});

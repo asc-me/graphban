@@ -43,6 +43,7 @@ import {
   quietLine,
   ruleLevel,
   sourceLabel,
+  toggleSourceLabel,
   stageLevel,
   stageRules,
   stageX,
@@ -53,13 +54,15 @@ import {
   type Level,
   type MapLayout,
 } from "./levels";
-import { LibraryRuleControls, MemoryWriteModeControl, useCanWriteRules } from "./LibraryRuleControls";
+import { MEMORY_WRITE_MODES, MemoryWriteModeControl, useCanWriteRules } from "./LibraryRuleControls";
 import { RecommendedSheet, UnmappedSheet, useDialogBehavior } from "./RefusalPanels";
-import { AdminGitopsLink, BudgetCapEditor, GITOPS_RULE_FIELDS, GitopsRuleEditor, useOrgName } from "./RuleEditors";
+import { AdminGitopsLink, BudgetCapEditor, GITOPS_RULE_FIELDS, useOrgName } from "./RuleEditors";
+import { RuleHistory } from "./RuleHistory";
 import { RuleLevelIcon } from "./RuleLevelIcon";
 import { QuickConfigure, QuickConfigureBar, type QuickScreen } from "./QuickConfigure";
 import { ChangedRulesContext, SetupWizard } from "./SetupWizard";
 import { StageEditor, stageIsEditable } from "./StageEditor";
+import { enumFor } from "./RuleValueEditor";
 
 const PACK_KEY = "pack";
 const stageKey = (id: string) => `s:${id}`;
@@ -284,7 +287,7 @@ export function RulesView() {
           <RulesCanvas flow={flow} sel={sel} onSelect={setSel} />
         )}
         {flow && sel && (
-          <Inspector flow={flow} sel={sel} sheet={narrow} focusRule={focusRule} prefill={prefill} onClose={() => setSel(null)} />
+          <Inspector flow={flow} sel={sel} focusRule={focusRule} prefill={prefill} onSelect={setSel} onClose={() => setSel(null)} />
         )}
         {sheet === "unmapped" && <UnmappedSheet returnTo={unmappedBtn} onClose={() => setSheet(null)} />}
         {sheet === "recommended" && <RecommendedSheet returnTo={recommendedBtn} onClose={() => setSheet(null)} onOpenValue={openValueSuggestion} />}
@@ -993,32 +996,82 @@ function NarrowList({
   );
 }
 
-// ── Inspector (frames 2a–2e) ───────────────────────────────────────────────────
+// ── Stage view (replaces the 400px inspector panel; GRPH-1659) ─────────────────
+
+/** A library rule's current value as text: lists comma-joined, enums by label, on/off. */
+function paramText(ruleId: string, name: string, v: unknown): string {
+  if (Array.isArray(v)) return v.length ? v.join(", ") : "none";
+  if (typeof v === "boolean") return v ? "on" : "off";
+  if (typeof v === "string") return enumFor(ruleId, name)?.find((o) => o.value === v)?.label ?? v;
+  if (v && typeof v === "object") {
+    return Object.entries(v as Record<string, unknown>)
+      .map(([k, x]) => `${k}: ${Array.isArray(x) ? x.join(", ") : String(x)}`)
+      .join("; ");
+  }
+  return String(v);
+}
+
+function StageStrip({ flow, sel, onSelect }: { flow: RulesFlow; sel: string; onSelect: (key: string | null) => void }) {
+  const pack = packOf(flow);
+  const items = [
+    ...flow.stages.map((s) => ({ key: stageKey(s.id), label: s.title })),
+    ...(pack ? [{ key: PACK_KEY, label: pack.title }] : []),
+  ];
+  return (
+    <nav aria-label="Stages" data-testid="rules-stage-strip" className="flex gap-1 overflow-x-auto border-b border-line px-4 py-2">
+      {items.map((it, i) => {
+        const on = it.key === sel;
+        return (
+          <React.Fragment key={it.key}>
+            {i > 0 && <span aria-hidden className="self-center text-muted-2">–</span>}
+            <button
+              type="button"
+              aria-current={on ? "true" : undefined}
+              data-testid={`rules-strip-${it.key}`}
+              onClick={() => onSelect(on ? null : it.key)}
+              className={cn(
+                "h-7 flex-none whitespace-nowrap rounded-[8px] border px-2.5 text-small",
+                on ? "border-accent font-semibold text-fg" : "border-control text-fg-2 hover:text-fg",
+              )}
+            >
+              {it.label}
+            </button>
+          </React.Fragment>
+        );
+      })}
+    </nav>
+  );
+}
 
 function Inspector({
   flow,
   sel,
-  sheet,
   focusRule,
   prefill,
+  onSelect,
   onClose,
 }: {
   flow: RulesFlow;
   sel: string;
-  sheet: boolean;
   focusRule: string | null;
   prefill: { rule: string; value: string } | null;
+  onSelect: (key: string | null) => void;
   onClose: () => void;
 }) {
   const dialog = useDialogBehavior<HTMLElement>(onClose);
-  const [editing, setEditing] = React.useState(false);
-  const { activeId } = useProjectCtx();
-  const canWrite = useCanWriteRules(activeId);
-  // Switching stage ends the draft with it; the draft is one stage's.
-  React.useEffect(() => setEditing(false), [sel]);
   const pack = sel === PACK_KEY ? packOf(flow) : null;
   const index = flow.stages.findIndex((s) => stageKey(s.id) === sel);
   const stage = index >= 0 ? flow.stages[index] : null;
+  const prefillHere = !!(prefill && stage && stageRules(stage).some((r) => r.id === prefill.rule && r.id in GITOPS_RULE_FIELDS));
+  const [editing, setEditing] = React.useState(prefillHere);
+  const { activeId } = useProjectCtx();
+  const canWrite = useCanWriteRules(activeId);
+  // Switching stage ends the draft with it; the draft is one stage's.
+  const first = React.useRef(true);
+  React.useEffect(() => {
+    if (first.current) { first.current = false; return; }
+    setEditing(false);
+  }, [sel]);
   if (!pack && !stage) return null;
 
   const title = pack ? pack.title : stage!.title;
@@ -1029,87 +1082,94 @@ function Inspector({
   const rules = stage ? weakestFirst(stageRules(stage)) : [];
 
   return (
-    <aside
+    <section role="region"
       ref={dialog.ref}
       tabIndex={-1}
-      onKeyDown={dialog.onKeyDown}
-      role="dialog"
+      onKeyDown={(e) => {
+        const t = e.target as HTMLElement;
+        if (e.key === "Escape" && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+        dialog.onKeyDown(e);
+      }}
       aria-label={`${title} ${pack ? "inspector" : "stage inspector"}`}
       data-testid="rules-inspector"
-      className={cn(
-        "z-10 flex flex-col overflow-hidden border border-line-2 bg-surface-2 shadow-2xl",
-        sheet
-          ? "absolute inset-x-0 bottom-0 max-h-[70%] rounded-t-[16px]"
-          : "absolute right-4 top-4 bottom-4 w-[400px] rounded-[16px]",
-      )}
+      className="absolute inset-0 z-10 flex flex-col overflow-hidden bg-bg"
     >
-      <div className="flex gap-3 border-b border-line px-4 py-3.5">
-        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-          <span className={cn(MONO, "text-meta tracking-[0.07em] text-muted-2")}>{kicker}</span>
-          <span className="text-[16px] font-semibold leading-tight">{title}</span>
-          <div className="flex flex-wrap items-center gap-2">
-            <StagePill level={level} />
-            {stage && <TallyLine rules={stageRules(stage)} />}
-            {pack && (
-              <span className={cn(MONO, "text-[10.5px] text-muted")}>
-                {pack.skills ? `${pack.skills.length} skills shipped with gban ${pack.skills_version ?? ""}`.trim() : "skill list not readable on this server"}
+      <StageStrip flow={flow} sel={sel} onSelect={onSelect} />
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        <div className="mx-auto flex w-full max-w-[880px] flex-col gap-3 px-4 py-4">
+          <div className="flex gap-3 border-b border-line pb-3.5">
+            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+              <span className={cn(MONO, "text-meta tracking-[0.07em] text-muted-2")}>{kicker}</span>
+              <span className="text-[16px] font-semibold leading-tight">{title}</span>
+              <div className="flex flex-wrap items-center gap-2">
+                <StagePill level={level} />
+                {stage && <TallyLine rules={stageRules(stage)} />}
+                {pack && (
+                  <span className={cn(MONO, "text-[10.5px] text-muted")}>
+                    {pack.skills ? `${pack.skills.length} skills shipped with gban ${pack.skills_version ?? ""}`.trim() : "skill list not readable on this server"}
+                  </span>
+                )}
+              </div>
+              {stage && <TallyBar rules={stageRules(stage)} />}
+              <span className="text-body leading-normal text-muted">{pack ? pack.summary : stage!.summary}</span>
+            </div>
+            <div className="flex flex-none items-start gap-2">
+              {stage && !editing && stageIsEditable(stage) && canWrite !== false && (
+                <button
+                  type="button"
+                  onClick={() => setEditing(true)}
+                  data-testid="rules-edit-stage"
+                  className="h-[30px] rounded-[8px] border border-control px-3 text-body font-semibold text-fg hover:border-accent"
+                >
+                  Edit {stage.title} rules
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label="Close inspector"
+                className="h-[30px] w-[30px] rounded-[8px] border border-control text-[15px] leading-none text-muted hover:text-fg"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+          {pack && <PackBody pack={pack} />}
+          {stage && editing && <StageEditor stage={stage} narrow={false} prefill={prefill} onClose={() => setEditing(false)} />}
+          {stage && !editing && level === "not_used" && (
+            <div className="flex flex-col gap-1 rounded-[8px] px-3 py-2.5" style={{ border: "1.5px dashed #1e242a" }}>
+              <LevelWord level="not_used" className="text-[10px]" />
+              <span className="text-[12px] leading-snug text-muted">
+                Every rule on this stage is not used by this project's model: {flow.model}. They stay drawn so you can see what would apply.
               </span>
-            )}
-          </div>
-          {stage && <TallyBar rules={stageRules(stage)} />}
-          <span className="text-body leading-normal text-muted">{pack ? pack.summary : stage!.summary}</span>
+            </div>
+          )}
+          {stage && rules.length === 0 && (
+            <div className="flex flex-col gap-1.5 rounded-[12px] p-3.5" style={{ border: "1.5px dashed #626c75" }} data-testid="rules-stage-empty">
+              <span className={cn(MONO, "text-[10px] font-semibold tracking-[0.06em] text-fg-2")}>NOTHING REGISTERED</span>
+              <span className="text-[13px] font-semibold">No rules registered for this stage yet</span>
+              <span className="text-[12px] leading-normal text-muted">
+                Nothing in the registry governs this stage yet. That isn't the same as nothing applying.
+              </span>
+            </div>
+          )}
+          {!editing && rules.length > 0 && (
+            <div className="flex flex-col divide-y divide-line">
+              {rules.map((r) => (
+                <RuleRow
+                  key={r.id}
+                  rule={r}
+                  version={flow.version}
+                  model={flow.model}
+                  focused={focusRule === r.id}
+                  canWrite={canWrite !== false}
+                />
+              ))}
+            </div>
+          )}
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close inspector"
-          className="h-7 w-7 flex-none rounded-[8px] border border-control text-[15px] leading-none text-muted hover:text-fg"
-        >
-          ×
-        </button>
       </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-3">
-        {pack && <PackBody pack={pack} />}
-        {stage && !editing && stageIsEditable(stage) && canWrite !== false && (
-          <button
-            type="button"
-            onClick={() => setEditing(true)}
-            data-testid="rules-edit-stage"
-            className="h-[30px] self-start rounded-[8px] border border-control px-3 text-body font-semibold text-fg hover:border-accent"
-          >
-            Edit {stage.title} rules
-          </button>
-        )}
-        {stage && editing && <StageEditor stage={stage} narrow={sheet} onClose={() => setEditing(false)} />}
-        {stage && !editing && level === "not_used" && (
-          <div className="flex flex-col gap-1 rounded-[8px] px-3 py-2.5" style={{ border: "1.5px dashed #1e242a" }}>
-            <LevelWord level="not_used" className="text-[10px]" />
-            <span className="text-[12px] leading-snug text-muted">
-              Every rule on this stage is not used by this project's model: {flow.model}. They stay drawn so you can see what would apply.
-            </span>
-          </div>
-        )}
-        {stage && rules.length === 0 && (
-          <div className="flex flex-col gap-1.5 rounded-[12px] p-3.5" style={{ border: "1.5px dashed #626c75" }} data-testid="rules-stage-empty">
-            <span className={cn(MONO, "text-[10px] font-semibold tracking-[0.06em] text-fg-2")}>NOTHING REGISTERED</span>
-            <span className="text-[13px] font-semibold">No rules registered for this stage yet</span>
-            <span className="text-[12px] leading-normal text-muted">
-              Nothing in the registry governs this stage yet. That isn't the same as nothing applying.
-            </span>
-          </div>
-        )}
-        {!editing && rules.map((r) => (
-          <RuleRow
-            key={r.id}
-            rule={r}
-            version={flow.version}
-            model={flow.model}
-            focused={focusRule === r.id}
-            prefill={prefill?.rule === r.id ? prefill.value : undefined}
-          />
-        ))}
-      </div>
-    </aside>
+    </section>
   );
 }
 
@@ -1134,21 +1194,23 @@ function PackBody({ pack }: { pack: RuleFlowRule }) {
   );
 }
 
+/** One rule, single column, read only: the current value is text. Editing is the stage editor's. */
 function RuleRow({
   rule,
   version,
   model,
   focused = false,
-  prefill,
+  canWrite,
 }: {
   rule: RuleFlowRule;
   version: string;
   model: string | null;
   focused?: boolean;
-  prefill?: string;
+  canWrite: boolean;
 }) {
   const level = ruleLevel(rule);
   const ref = React.useRef<HTMLDivElement | null>(null);
+  const [editing, setEditing] = React.useState(false);
   React.useEffect(() => {
     if (!focused) return;
     ref.current?.scrollIntoView?.({ block: "center" });
@@ -1156,10 +1218,28 @@ function RuleRow({
   }, [focused]);
   const quiet = quietLine(rule);
   const enforcer = enforcerText(rule, version);
-  const value = valueText(rule.value);
   const library = rule.control === "toggle";
+  const select = rule.control === "select";
+  const budget = rule.id === "plan.budget_cap";
   // A refused template is UNMEASURED, not a dimmed choice; an off rule is dimmed and still listed.
   const dim = !rule.used && !rule.unmeasured_reason;
+  // Rules the stage editor can't edit get their own Edit, which opens the existing editor here.
+  const ownEditor = select || (budget && rule.used);
+
+  let valueLine: string | null = null;
+  let source: string | null = null;
+  if (library && !rule.unmeasured_reason) {
+    const params = (rule.params?.value as Record<string, unknown> | null) ?? {};
+    const parts = Object.entries(params).map(([k, v]) => `${k}: ${paramText(rule.id, k, v)}`);
+    valueLine = [rule.value === true ? "on" : "off", ...parts].join(" · ");
+    source = toggleSourceLabel(rule.params?.source ?? rule.source);
+  } else if (select) {
+    valueLine = MEMORY_WRITE_MODES.find((m) => m.value === String(rule.value ?? "review"))?.label ?? String(rule.value ?? "review");
+  } else if (rule.truth === "db") {
+    valueLine = valueText(rule.value) ?? (budget ? null : "— no value");
+    source = sourceLabel(rule.source);
+  }
+
   return (
     <div
       ref={ref}
@@ -1168,88 +1248,87 @@ function RuleRow({
       data-focused={focused ? "true" : undefined}
       aria-current={focused ? "true" : undefined}
       tabIndex={focused ? -1 : undefined}
-      className="grid grid-cols-[100px_minmax(0,1fr)] gap-2.5 rounded-[12px] border border-[#2a333a] p-3"
-      style={focused ? { borderLeft: "4px solid #c6f24e" } : undefined}
+      className="flex flex-col gap-1.5 py-3"
+      style={focused ? { borderLeft: "4px solid #c6f24e", paddingLeft: 8 } : undefined}
     >
-      <span className="pt-0.5" style={{ opacity: dim ? 0.55 : 1 }}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1" style={{ opacity: dim ? 0.55 : 1 }}>
+        <span className="text-[13px] font-semibold leading-snug text-fg">{rule.title}</span>
         <LevelWord level={level} size={13} className="text-[10px]" />
-      </span>
-      <div className="flex min-w-0 flex-col gap-1.5">
-        <div className="flex flex-col gap-1.5" style={{ opacity: dim ? 0.55 : 1 }}>
-          <span className="text-[13px] font-semibold leading-snug text-fg">{rule.title}</span>
-          <span className="text-[12px] leading-snug text-muted">{rule.summary}</span>
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className={cn(MONO, "break-all text-[10.5px] text-fg-2")}>{rule.id}</span>
-            <span
-              className={cn(MONO, "rounded-[4px] px-1 text-[9px] tracking-[0.04em]")}
-              style={{
-                border: `1px solid ${rule.truth === "db" ? "#626c75" : "#2a333a"}`,
-                color: rule.truth === "db" ? "#e6e9ec" : "#8b949e",
-              }}
-            >
-              {rule.truth}
-            </span>
-          </div>
-          <EnforcerLink kind={rule.enforcer.kind} text={enforcer} url={rule.enforcer.url} />
-        </div>
-        {dim && (
-          <span className="text-[11.5px] leading-snug text-muted" data-testid="rules-row-not-used">
-            {rule.not_used_reason
-              ? `NOT USED — ${rule.not_used_reason}.`
-              : library
-              ? `NOT USED — ${rule.label ?? "turned off for this project"}. On, it is ${LEVELS[rule.enforcement].word}.`
-              : `Not used by this project's model${model ? `: ${model}` : ""}.`}
+        {source && (
+          <span data-testid="rules-source" className={cn(MONO, "rounded-[4px] border border-control px-1.5 text-meta tracking-[0.04em] text-fg-2")}>
+            {source}
           </span>
         )}
-        {quiet && <span className="text-[11.5px] leading-snug text-muted-2">{quiet}</span>}
-        {rule.used && rule.enforcement === "external" && (
-          <div className="flex flex-col gap-1 rounded-[8px] px-2.5 py-2" style={{ border: "3px double rgba(167,139,250,.45)" }}>
-            <span className={cn(MONO, "flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.06em] text-[#c9b8ff]")}>
-              <span className="h-[7px] w-[7px] rounded-full border-[1.5px] border-[#c9b8ff]" />
-              NOT VERIFIED
-            </span>
-            <span className="text-[11.5px] leading-snug text-fg-2">{externalText(rule)}</span>
-          </div>
-        )}
-        {rule.used && rule.enforcement === "checked" && (rule.last_result ? (
-          <div
-            data-testid="rules-result"
-            data-outcome={rule.last_result.outcome}
-            className="flex flex-col gap-0.5 rounded-[8px] px-2.5 py-[7px]"
-            style={{ border: "1.5px solid #626c75" }}
+        <span className={cn(MONO, "break-all text-[10.5px] text-fg-2")}>{rule.id}</span>
+        <span className={cn(MONO, "rounded-[4px] border border-[#2a333a] px-1 text-[9px] tracking-[0.04em] text-muted")}>{rule.truth}</span>
+        <span className="flex-1" />
+        {ownEditor && canWrite && !editing && (
+          <button
+            type="button"
+            data-testid={`rules-edit-row-${rule.id}`}
+            onClick={() => setEditing(true)}
+            className="h-6 rounded-[8px] border border-control px-2 text-small text-fg hover:border-accent"
           >
-            <span className={cn(MONO, "text-[10px] font-semibold tracking-[0.06em] text-fg-2")}>
-              {rule.last_result.outcome === "pass" ? "PASS" : "FAIL"} · last attested{" "}
-              {relTime(rule.last_result.at) ?? "at an unknown time"}
-            </span>
-            <span className="text-[11.5px] text-muted">{rule.last_result.item}</span>
-          </div>
-        ) : (
-          // No attestation on a merged item: said as such, never drawn as a pass.
-          <div
-            data-testid="rules-no-result"
-            className="flex flex-col gap-0.5 rounded-[8px] px-2.5 py-[7px]"
-            style={{
-              border: "1.5px dashed #626c75",
-              background: "repeating-linear-gradient(45deg,transparent 0 6px,rgba(139,148,158,.1) 6px 7px)",
-            }}
-          >
-            <span className={cn(MONO, "flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.06em] text-fg-2")}>
-              <span className="h-[7px] w-[7px] rounded-full border-[1.5px] border-muted" />
-              NO RESULT RECORDED
-            </span>
-            <span className="text-[11.5px] text-muted">Nothing has reported yet. That is not a pass.</span>
-          </div>
-        ))}
-        {rule.control === "select" ? (
-          <MemoryWriteModeControl rule={rule} />
-        ) : library ? (
-          <LibraryRuleControls rule={rule} />
-        ) : rule.truth === "db" && rule.id !== "plan.budget_cap" && (
-          <ValueBox rule={rule} value={value} prefill={prefill} />
+            Edit
+          </button>
         )}
-        {rule.id === "plan.budget_cap" && rule.used && <BudgetCapEditor />}
+        {editing && (
+          <button type="button" onClick={() => setEditing(false)} className="h-6 rounded-[8px] border border-control px-2 text-small text-fg-2">
+            Done
+          </button>
+        )}
       </div>
+      <span className="text-[12px] leading-snug text-muted" style={{ opacity: dim ? 0.55 : 1 }}>{rule.summary}</span>
+      {rule.unmeasured_reason && (
+        <span data-testid="rules-toggle-refused" className="text-[11.5px] leading-snug text-[#ff6b6b]">
+          UNMEASURED · TEMPLATE REFUSED — {rule.unmeasured_reason}
+        </span>
+      )}
+      {rule.locked && (
+        <span data-testid="rules-toggle-locked" className="text-[11.5px] leading-snug text-fg-2">
+          Locked: the org set this for every project; change it on the org console.
+        </span>
+      )}
+      {valueLine !== null && !editing && (
+        <span data-testid="rules-value" className={cn(MONO, "break-words text-[13px] font-semibold")} style={{ color: valueLine === "— no value" ? "#ff6b6b" : "#e6e9ec" }}>
+          {valueLine}
+        </span>
+      )}
+      {rule.id === "gitops.model" && <ModelWhere />}
+      <EnforcerLink kind={rule.enforcer.kind} text={enforcer} url={rule.enforcer.url} />
+      {dim && (
+        <span className="text-[11.5px] leading-snug text-muted" data-testid="rules-row-not-used">
+          {rule.not_used_reason
+            ? `NOT USED — ${rule.not_used_reason}.`
+            : library
+            ? `NOT USED — ${rule.label ?? "turned off for this project"}. On, it is ${LEVELS[rule.enforcement].word}.`
+            : `Not used by this project's model${model ? `: ${model}` : ""}.`}
+        </span>
+      )}
+      {quiet && <span className="text-[11.5px] leading-snug text-muted-2">{quiet}</span>}
+      {rule.used && rule.enforcement === "external" && (
+        <span className="text-[11.5px] leading-snug text-fg-2">
+          <span className={cn(MONO, "mr-2 text-[10px] font-semibold tracking-[0.06em] text-[#c9b8ff]")}>NOT VERIFIED</span>
+          {externalText(rule)}
+        </span>
+      )}
+      {rule.used && rule.enforcement === "checked" && (rule.last_result ? (
+        <span data-testid="rules-result" data-outcome={rule.last_result.outcome} className="text-[11.5px] text-muted">
+          <span className={cn(MONO, "mr-2 text-[10px] font-semibold tracking-[0.06em] text-fg-2")}>
+            {rule.last_result.outcome === "pass" ? "PASS" : "FAIL"} · last attested {relTime(rule.last_result.at) ?? "at an unknown time"}
+          </span>
+          {rule.last_result.item}
+        </span>
+      ) : (
+        // No attestation on a merged item: said as such, never drawn as a pass.
+        <span data-testid="rules-no-result" className="text-[11.5px] text-muted">
+          <span className={cn(MONO, "mr-2 text-[10px] font-semibold tracking-[0.06em] text-fg-2")}>NO RESULT RECORDED</span>
+          Nothing has reported yet. That is not a pass.
+        </span>
+      ))}
+      {library && !rule.unmeasured_reason && <RuleHistory ruleId={rule.id} />}
+      {editing && select && <MemoryWriteModeControl rule={rule} />}
+      {editing && budget && <BudgetCapEditor />}
     </div>
   );
 }
@@ -1298,44 +1377,6 @@ function ModelWhere() {
       )}
     </span>
   );
-}
-
-function ValueBox({ rule, value, prefill }: { rule: RuleFlowRule; value: string | null; prefill?: string }) {
-  const box = (
-          <div className="flex flex-col gap-2 rounded-[8px] border border-[#2a333a] bg-bg p-2.5">
-            <div className="flex items-center gap-2">
-              <span className={cn(MONO, "text-[10px] text-muted-2")}>{rule.id.split(".").pop()}</span>
-              <span className="flex-1" />
-              <span
-                className={cn(MONO, "rounded-[4px] px-1.5 text-meta tracking-[0.04em]")}
-                style={{
-                  border: `1px ${rule.source === "project" || rule.source === "org" ? "solid" : "dashed"} ${
-                    rule.source === "project" ? "rgba(167,139,250,.42)" : rule.source === "org" ? "#626c75" : "#ff6b6b"
-                  }`,
-                  color: rule.source === "project" ? "#c9b8ff" : rule.source === "org" ? "#dfe3e7" : "#ff6b6b",
-                }}
-              >
-                {sourceLabel(rule.source)}
-              </span>
-            </div>
-            <span
-              className={cn(MONO, "text-[13px] font-semibold")}
-              style={{ color: value === null ? "#ff6b6b" : "#e6e9ec" }}
-            >
-              {value ?? "— no value"}
-            </span>
-          </div>
-  );
-  const field = GITOPS_RULE_FIELDS[rule.id];
-  if (rule.id === "gitops.model") {
-    return (
-      <div className="flex flex-col gap-1.5">
-        {box}
-        <ModelWhere />
-      </div>
-    );
-  }
-  return field ? <GitopsRuleEditor rule={rule} field={field} fallback={box} prefill={prefill} /> : box;
 }
 
 function EnforcerLink({ kind, text, url }: { kind: string; text: string; url: string }) {

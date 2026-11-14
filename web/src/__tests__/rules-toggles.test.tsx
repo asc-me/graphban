@@ -15,7 +15,7 @@ import type { Event, GitopsView, RuleFlowRule, RulesFlow, RuleToggles } from "@/
 vi.mock("@/lib/api", () => ({
   api: {
     rulesFlow: vi.fn(), gitops: vi.fn(), config: vi.fn(), syncStatus: vi.fn(), events: vi.fn(),
-    ruleToggles: vi.fn(), setRuleToggle: vi.fn(), me: vi.fn(), members: vi.fn(),
+    ruleToggles: vi.fn(), setRuleToggle: vi.fn(), setRuleToggles: vi.fn(), me: vi.fn(), members: vi.fn(),
   },
 }));
 vi.mock("@/features/ProjectContext", () => ({
@@ -53,11 +53,6 @@ function gitops(org_id: string | null = null): GitopsView {
   };
 }
 
-/** What `request()` throws: the raw response body as the message. */
-function apiError(status: number, body: unknown) {
-  return Object.assign(new Error(JSON.stringify(body)), { status });
-}
-
 const page = (results: Partial<Event>[]) => ({ results, total: results.length }) as never;
 
 async function openReview(rules: RuleFlowRule[]) {
@@ -87,15 +82,14 @@ beforeEach(() => {
 const ME = { id: "u1", name: "Alex", handle: "alex", email: "", avatar: "", initials: "A" };
 
 describe("library rule toggles", () => {
-  it("an on rule shows its switch, source, params and the primitive's level; no bulk enable", async () => {
+  it("an on rule reads as text: on, its params and source, the primitive's level; no inputs", async () => {
     const ins = await openReview([lib("review.sabotage_required")]);
     const row = within(ins).getByTestId("rules-row-review.sabotage_required");
     expect(row).toHaveAttribute("data-level", "enforced");
     expect(row).toHaveTextContent("ENFORCED");
-    expect(within(row).getByRole("switch")).toHaveAttribute("aria-checked", "true");
-    expect(within(row).getByTestId("rules-toggle-source")).toHaveTextContent("PROJECT");
-    expect(within(row).getByTestId("rules-toggle-params-source")).toHaveTextContent("PLATFORM DEFAULT");
-    expect(within(row).getByLabelText("min_effort")).toHaveValue("3");
+    expect(within(row).getByTestId("rules-value")).toHaveTextContent("on · min_effort: 3");
+    expect(within(row).getByTestId("rules-source")).toHaveTextContent("PLATFORM DEFAULT");
+    expect(within(row).queryByRole("switch")).toBeNull();
     expect(screen.queryByRole("button", { name: /enable all/i })).toBeNull();
   });
 
@@ -106,46 +100,21 @@ describe("library rule toggles", () => {
     expect(row).toHaveAttribute("data-level", "not_used");
     expect(row).toHaveTextContent("NOT USED");
     expect(within(row).getByTestId("rules-row-not-used")).toHaveTextContent("turned off for this project");
-    expect(within(row).getByRole("switch")).toHaveAttribute("aria-checked", "false");
+    expect(within(row).getByTestId("rules-value")).toHaveTextContent("off");
   });
 
-  it("a change asks for a reason, then the row says who changed it and when", async () => {
+  it("editing happens in the stage editor: a change asks for a reason and writes the batch", async () => {
     const user = userEvent.setup();
-    vi.mocked(api.setRuleToggle).mockResolvedValue({} as never);
+    vi.mocked(api.setRuleToggles).mockResolvedValue({} as never);
     const ins = await openReview([lib("review.sabotage_required", { value: false, used: false })]);
+    await user.click(within(ins).getByTestId("rules-edit-stage"));
     await user.click(within(ins).getByRole("switch"));
-    expect(api.setRuleToggle).not.toHaveBeenCalled();
-    const submit = within(ins).getByRole("button", { name: "Turn on" });
-    expect(submit).toBeDisabled();
-    vi.mocked(api.events).mockResolvedValue(
-      page([{ id: 7, ts: new Date().toISOString(), actor_label: "Alex", actor_id: "u1", meta: { reason: "we ship sabotage" } }]),
-    );
-    await user.type(within(ins).getByLabelText("Reason"), "we ship sabotage");
-    await user.click(submit);
-    await waitFor(() =>
-      expect(api.setRuleToggle).toHaveBeenCalledWith("core", "review.sabotage_required", { on: true, reason: "we ship sabotage" }),
-    );
-    const changed = await within(ins).findByTestId("rules-toggle-changed");
-    expect(changed).toHaveTextContent("Changed by Alex");
-    expect(changed).toHaveTextContent("we ship sabotage");
-    expect(api.events).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: "core", action: "set_rule_toggle", targetType: "rule", targetId: "review.sabotage_required" }),
-    );
-  });
-
-  it("params are edited inline and written with a reason", async () => {
-    const user = userEvent.setup();
-    vi.mocked(api.setRuleToggle).mockResolvedValue({} as never);
-    const ins = await openReview([lib("review.sabotage_required")]);
-    const input = within(ins).getByLabelText("min_effort");
-    await user.clear(input);
-    await user.type(input, "5");
-    await user.click(within(ins).getByRole("button", { name: "Change params" }));
-    await user.type(within(ins).getByLabelText("Reason"), "bigger items only");
-    await user.click(within(ins).getByRole("button", { name: "Change params" }));
-    await waitFor(() =>
-      expect(api.setRuleToggle).toHaveBeenCalledWith("core", "review.sabotage_required", { params: { min_effort: 5 }, reason: "bigger items only" }),
-    );
+    expect(api.setRuleToggles).not.toHaveBeenCalled();
+    await user.click(within(ins).getByTestId("rules-review-open"));
+    await user.type(await screen.findByLabelText(/reason/i), "we ship sabotage");
+    await user.click(screen.getByRole("button", { name: /^save/i }));
+    await waitFor(() => expect(api.setRuleToggles).toHaveBeenCalled());
+    expect(JSON.stringify(vi.mocked(api.setRuleToggles).mock.calls[0])).toContain("we ship sabotage");
   });
 
   it("a rule locked by the org has no toggle and says who set it", async () => {
@@ -156,40 +125,9 @@ describe("library rule toggles", () => {
     });
     const ins = await openReview([lib("review.sabotage_required", { locked: true, source: "org" })]);
     const row = within(ins).getByTestId("rules-row-review.sabotage_required");
-    expect(await within(row).findByTestId("rules-toggle-locked")).toHaveTextContent("set by org acme · locked");
+    expect(await within(row).findByTestId("rules-toggle-locked")).toHaveTextContent("Locked: the org set this");
     expect(within(row).queryByRole("switch")).toBeNull();
     expect(within(row).queryByLabelText("min_effort")).toBeNull();
-    expect(within(row).getByTestId("rules-toggle-source")).toHaveTextContent("ORG");
-  });
-
-  it("a member who is not owner or admin sees the value as text with a link, never an input", async () => {
-    vi.mocked(api.members).mockResolvedValue([{ user: ME, role: "member", access: "write" }] as never);
-    const ins = await openReview([
-      lib("review.sabotage_required", { params: { value: { min_effort: 3 }, source: "project" } }),
-    ]);
-    const row = within(ins).getByTestId("rules-row-review.sabotage_required");
-    const ro = await within(row).findByTestId("rules-toggle-not-writable");
-    expect(ro).toHaveTextContent("only the project's owner or an admin");
-    expect(within(ro).getByRole("link", { name: "Ask an owner or admin" })).toHaveAttribute("href", "/settings/project/members");
-    expect(within(row).queryByRole("switch")).toBeNull();
-    expect(within(row).queryByLabelText("min_effort")).toBeNull();
-    expect(within(row).getByTestId("rules-toggle-params")).toHaveTextContent("min_effort = 3");
-    expect(within(row).queryByRole("button", { name: /Reset to/ })).toBeNull();
-  });
-
-  it("a change the org's lock refuses shows the server's refusal and its see rule link", async () => {
-    const user = userEvent.setup();
-    vi.mocked(api.setRuleToggle).mockRejectedValue(apiError(409, {
-      detail: "review.sabotage_required is locked by the org; a project cannot override it",
-      rule_id: "rules.org_lock_holds",
-    }));
-    const ins = await openReview([lib("review.sabotage_required")]);
-    await user.click(within(ins).getByRole("switch"));
-    await user.type(within(ins).getByLabelText("Reason"), "try it");
-    await user.click(within(ins).getByRole("button", { name: "Turn off" }));
-    const alert = await within(ins).findByTestId("rules-toggle-error");
-    expect(alert).toHaveTextContent("is locked by the org; a project cannot override it");
-    expect(within(alert).getByRole("link", { name: "see rule" })).toHaveAttribute("href", "/rules?rule=rules.org_lock_holds");
   });
 
   it("a template the loader refused is UNMEASURED with its reason and no toggle", async () => {

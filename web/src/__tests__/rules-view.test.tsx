@@ -335,7 +335,7 @@ describe("RulesView", () => {
     await user.keyboard("{ArrowRight}{ArrowRight}{ArrowRight}");
     expect(lb.getAttribute("aria-activedescendant")).toBe(screen.getByTestId("rules-stage-review").id);
     await user.keyboard("{Enter}");
-    expect(await screen.findByRole("dialog", { name: "Review stage inspector" })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Review stage inspector" })).toBeInTheDocument();
     expect(screen.getByTestId("rules-stage-review")).toHaveAttribute("aria-selected", "true");
     expect(screen.getByTestId("rules-stage-review")).toHaveAttribute(
       "aria-label",
@@ -374,7 +374,38 @@ describe("RulesView", () => {
 
   it("?stage=merge lands with Merge open (the Settings pointer)", async () => {
     renderAt("/rules?stage=merge");
-    expect(await screen.findByRole("dialog", { name: "Merge stage inspector" })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Merge stage inspector" })).toBeInTheDocument();
+  });
+
+  it("?stage=build opens the full-width view with the stage strip; close returns to the map (GRPH-1659)", async () => {
+    const user = userEvent.setup();
+    renderAt("/rules?stage=build");
+    const ins = await screen.findByTestId("rules-inspector");
+    const strip = within(ins).getByTestId("rules-stage-strip");
+    expect(within(strip).getByTestId("rules-strip-s:build")).toHaveAttribute("aria-current", "true");
+    expect(within(strip).getByTestId("rules-strip-s:merge")).not.toHaveAttribute("aria-current");
+    expect(ins).toHaveClass("inset-0");
+    await user.click(within(ins).getByRole("button", { name: "Close inspector" }));
+    await waitFor(() => expect(screen.queryByTestId("rules-inspector")).not.toBeInTheDocument());
+    expect(screen.getByTestId("rules-listbox")).toBeInTheDocument();
+  });
+
+  it("a strip click moves to another stage; clicking the selected stage closes the view", async () => {
+    const user = userEvent.setup();
+    renderAt("/rules?stage=build");
+    const ins = await screen.findByTestId("rules-inspector");
+    await user.click(within(ins).getByTestId("rules-strip-s:merge"));
+    expect(await screen.findByRole("region", { name: "Merge stage inspector" })).toBeInTheDocument();
+    await user.click(screen.getByTestId("rules-strip-s:merge"));
+    await waitFor(() => expect(screen.queryByTestId("rules-inspector")).not.toBeInTheDocument());
+  });
+
+  it("the read view renders values as text and has no inputs", async () => {
+    renderAt("/rules?stage=merge");
+    const ins = await screen.findByTestId("rules-inspector");
+    const row = within(ins).getByTestId("rules-row-gitops.base_branch");
+    expect(within(row).getByTestId("rules-value")).toHaveTextContent("main");
+    expect(ins.querySelectorAll("input, textarea, select")).toHaveLength(0);
   });
 
   it("a fresh project says the contract is unmeasured, and the banner opens Merge (6b)", async () => {
@@ -385,7 +416,7 @@ describe("RulesView", () => {
     expect(banner).toHaveTextContent("Your delivery contract is unmeasured.");
     expect(screen.getByTestId("rules-model")).toHaveTextContent("unmeasured");
     await user.click(within(banner).getByRole("button", { name: "Set it up in Merge" }));
-    expect(await screen.findByRole("dialog", { name: "Merge stage inspector" })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Merge stage inspector" })).toBeInTheDocument();
   });
 
   it("loading shows skeletons and a legend without counts (6c)", async () => {
@@ -422,7 +453,7 @@ describe("RulesView", () => {
       expect(within(list).getAllByRole("listitem")).toHaveLength(7);
       expect(within(screen.getByTestId("rules-stage-review")).getByTestId("rules-stage-pill")).toHaveTextContent("ADVISORY");
       await user.click(screen.getByTestId("rules-stage-review"));
-      expect(await screen.findByTestId("rules-inspector")).toHaveClass("bottom-0");
+      expect(await screen.findByTestId("rules-inspector")).toHaveClass("inset-0");
     });
   });
 });
