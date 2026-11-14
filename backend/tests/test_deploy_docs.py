@@ -208,7 +208,9 @@ def test_the_release_identity_check_covers_the_hosted_instance(tmp_path):
     assert "unknown" in section, (
         "the section does not say that git_sha=unknown is a failed verification rather than "
         "an acceptable default")
-    assert "does not cover the hosted instance" in section, (
+    # GRPH-1626: there is no hosted offering; the instance is named as the owner's Railway
+    # deployment. The fact asserted is unchanged: the alembic check does not reach it.
+    assert "does not cover the owner's Railway deployment" in section, (
         "the alembic check is self-host-only (no ssh, no docker compose on Railway) and the "
         "section no longer says so — an inapplicable step that reads as universal")
 
@@ -248,3 +250,32 @@ def test_the_rate_limit_probe_still_runs_when_the_endpoint_serves(tmp_path):
 
     assert any("never a 429" in ln for ln in out.splitlines()), (
         "the endpoint is serving 200 and the rate limit was not probed at all")
+
+
+def test_no_doc_presents_the_railway_deployment_as_the_product(tmp_path):
+    """GRPH-1626. The owner decided (2026-11-06) there is no hosted offering: every customer
+    runs their own box, and the cloud is the console. deploy-railway.md is the owner's own
+    deployment, kept; a customer install is deploy.md or native-install.md; and the fleet
+    adapter guide's examples are the reader's box.
+
+    Sabotage: restore "The hosted multi-tenant offering runs on Railway." as the opening, or
+    put `cloud.graphban.dev` back in a fleet-adapters example, and this fails."""
+    railway = _read("docs/deploy-railway.md")
+    opening = railway.split("\n## ", 1)[0]
+    assert "hosted multi-tenant offering" not in railway
+    assert "owner's own Railway deployment" in opening
+    assert "not\na customer install" in opening or "not a customer install" in opening
+    assert "[deploy.md](deploy.md)" in opening and "[native-install.md](native-install.md)" in opening
+    # The Railway steps that are still true of that deployment stay.
+    assert "## Before anything else: Postgres must have pgvector" in railway
+    assert "bootstrap-hosted" in railway
+
+    adapters = _read("docs/fleet-adapters.md")
+    assert "cloud.graphban.dev" not in adapters
+
+    deploy = _read("docs/deploy.md")
+    start = deploy.index("## Verify (release identity)")
+    verify = deploy[start:deploy.index("\n## ", start + 1)]
+    # The self-host check comes first and is the box's own /health; the cloud curl is labelled.
+    assert verify.index("localhost:8001/health") < verify.index("https://cloud.graphban.dev/health")
+    assert "Not a step of a customer install" in verify

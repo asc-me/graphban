@@ -1,8 +1,12 @@
 # Deploying on Railway
 
-The hosted multi-tenant offering runs on Railway. This is the single home for Railway
-specifics; `deploy.md` is the general runbook (build, release identity, recover, rollback)
-and applies here too.
+This is the layout of the owner's own Railway deployment (`cloud.graphban.dev`). **It is not
+a customer install.** There is no hosted offering: every customer runs their own box, and the
+cloud is the console. To install Graphban, follow [deploy.md](deploy.md) (Docker Compose) or
+[native-install.md](native-install.md) (launchd/systemd, no Docker).
+
+This file is the single home for that deployment's Railway specifics; `deploy.md` is the
+general runbook (build, release identity, recover, rollback) and applies here too.
 
 > **Moved, not copied (GRPH-36).** This lived inside `deploy.md` as a section. The item asked
 > for a `deploy-railway.md` "covering services, variables, and the pgvector requirement" —
@@ -42,7 +46,7 @@ If it prints nothing, the database is wrong. Nothing else in this document will 
 
 ## Services, and what the code already handles
 
-The hosted multi-tenant offering runs on Railway. The application code is Railway-ready;
+The owner's deployment runs on Railway. The application code is Railway-ready;
 provisioning the actual project/services is a separate, account-touching step.
 
 - **Two services, one repo.** `backend/railway.json` and `web/railway.json` declare a

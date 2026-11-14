@@ -4,8 +4,10 @@ How to deploy Graphban to the self-hosted LAN box, verify the exact revision
 went live, and recover when a deploy goes wrong. This is the proven path — every
 step here has been run in anger.
 
-> The hosted (Railway) path is separate and tracked under the `railway` items;
-> this runbook covers the current `rsync` + `docker compose` self-host deploy.
+> There is no hosted offering: every customer runs their own box, and this runbook is that
+> install (`rsync` + `docker compose`). The owner's own Railway deployment
+> (`cloud.graphban.dev`) is described in [deploy-railway.md](deploy-railway.md); it is not a
+> customer install.
 > A native launchd/systemd install (no Docker) is [native-install.md](native-install.md).
 > Cutting a named CalVer that Settings → Updates can Install is [release.md](release.md).
 
@@ -86,7 +88,7 @@ So nginx is unchanged — one template, appending everywhere — and the app cou
 | Where | Chain | `TRUSTED_HOPS` | The app reads |
 |---|---|---|---|
 | compose self-host | client → nginx → app | `1` (set in `docker-compose.yml`) | the last hop: the peer nginx saw, i.e. the client |
-| hosted (Railway) | client → edge → nginx → app | `2` | the second-from-last: what the edge saw |
+| Railway (the owner's deployment) | client → edge → nginx → app | `2` | the second-from-last: what the edge saw |
 
 Set it to the number of proxies in front of the app. Too high and it fails **closed** — the
 header is shorter than the chain, so it falls back to the socket peer and logs that either the
@@ -358,23 +360,25 @@ server the deploy path, the Postgres role, the database, and the volume all stay
 
 ## Verify (release identity)
 
-`/health` reports the exact running revision — always check it after a deploy. **Both
-instances, because the hosted one is where it matters most:** it serves tenants and there is
-no box to SSH into and check by hand (GRPH-426).
+`/health` reports the exact running revision — always check it after a deploy. On a
+self-hosted box the check is the box's own `/health`:
 
 ```bash
-# self-host
+# your box
 ssh ubuntu-srv 'curl -s http://localhost:8001/health'
 
-# hosted (Railway) — no ssh; the public endpoint IS the check
+# the owner's Railway deployment only (deploy-railway.md) — no ssh there, so the public
+# endpoint IS that deployment's check (GRPH-426). Not a step of a customer install.
 curl -s https://cloud.graphban.dev/health
 
 # {"status":"ok","service":"graphban-api","version":"YYYY.MM.N","git_sha":"<sha>","db":"ok"}
 ```
 
-Or run the whole smoke suite against either one, which checks this and more:
+Or run the whole smoke suite against your box, which checks this and more:
 
 ```bash
+scripts/smoke-deployment.sh            # your box: defaults to the compose stack's API
+# the owner's Railway deployment only:
 scripts/smoke-deployment.sh https://cloud.graphban.dev
 ```
 
@@ -404,7 +408,7 @@ ssh ubuntu-srv 'cd ~/agentledger && docker compose exec -T db \
   psql -U agentledger -d agentledger -tc "SELECT version_num FROM alembic_version;"'
 ```
 
-**This one does not cover the hosted instance**, said out loud rather than left to be
+**This one does not cover the owner's Railway deployment**, said out loud rather than left to be
 discovered at 3am: there is no `ssh` and no `docker compose` there. Use `railway connect
 Postgres` (or the database's own console) and run the same `SELECT`. The migrations
 themselves do run — the API applies them at startup on both instances — so what this check
@@ -451,7 +455,7 @@ undo — the DB stays migrated. Prefer additive, backward-compatible migrations 
 code rollback is always safe; if a destructive migration must ship, snapshot the
 volume first (`docker compose exec db pg_dump ...`).
 
-## Railway (hosted)
+## The owner's Railway deployment
 
 Moved to **[deploy-railway.md](deploy-railway.md)** — services, required variables, the
 pgvector requirement, the first-operator bootstrap, observability, and the scaling policy.
