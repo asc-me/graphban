@@ -170,11 +170,21 @@ def checklist_for(touchpoints: list | None, classes: dict | None = None) -> str 
     return checklist_match(touchpoints, classes)[0]
 
 
-def tier_for(previous: Delegation | None) -> dict:
+def _fleet():
+    from app.services import fleet as fleet_svc  # fleet imports this module
+    return fleet_svc
+
+
+def tier_for(previous: Delegation | None, needs: str | None = None) -> dict:
     """The suggestion, with its evidence. `none` when there is no history — cheap first.
     A prior attempt that ended in a bounce, a block or a lost lease suggests one tier up.
     Any other prior attempt (withdrawn, superseded, expired) suggests what was asked last
-    time, because nothing was learned from it."""
+    time, because nothing was learned from it.
+
+    `needs` is the tier the last bounce NAMED (GRPH-933). It outranks every inference, and its
+    basis is `needs_tier` so a harness can tell a reviewer's statement from a suggestion."""
+    if needs:
+        return {"value": needs, "basis": "needs_tier"}
     if previous is None:
         return {"value": "cheap", "basis": "none"}
     if previous.outcome in ("bounced", "blocked", "released"):
@@ -445,7 +455,7 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
         # to hand out reads all three in one place.
         "reach": reach_svc.describe(item.reach or reach_svc.REPO,
                                     reach_svc.signals(item.description)),
-        "tier": tier_for(prev_row),
+        "tier": tier_for(prev_row, _fleet().bounce_needs_tier(item)),
         "previous": previous,
         "attempts": attempts,
         "pinned": _pinned(item),

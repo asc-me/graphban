@@ -79,6 +79,7 @@ def _clients(
     observations_status: int = 200,
     observation_posts: list | None = None,
     agent_holdings: list | None = None,
+    brief_tier: dict | None = None,
 ):
     """Planner + supervisor clients sharing one mock Graphban.
 
@@ -167,7 +168,7 @@ def _clients(
         if tool == "get_item_details":
             return _mcp({"id": args.get("id"), "title": "seed", "status": "next", "brief": {
                 "lane": {"value": "backend", "basis": ["backend/app/x.py"]},
-                "tier": {"value": "cheap", "basis": "none"},
+                "tier": brief_tier or {"value": "cheap", "basis": "none"},
                 "text": "Item seed",
             }}, rid)
         if tool == "delegate":
@@ -1255,6 +1256,47 @@ def test_the_tier_flag_is_what_the_loop_requests(
         request="frontier",
     )
     assert [d["tier"] for d in delegations] == ["frontier"]
+
+
+def test_a_needs_tier_bounce_outranks_the_tier_flag(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-933. `--tier cheap`, but the last bounce said `needs_tier=frontier`: the loop
+    requests frontier, so a cheap child is not re-seated on work a reviewer said it cannot do.
+    Sabotage: drop the `needs_tier` override in `_delegate_next` — this reads cheap."""
+    workspace = tmp_path / "ws"
+    delegations: list = []
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7"]], delegations=delegations,
+        brief_tier={"value": "frontier", "basis": "needs_tier"},
+    )
+    run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+        request="cheap",
+    )
+    assert [d["tier"] for d in delegations] == ["frontier"]
+
+
+def test_a_suggested_tier_does_not_outrank_the_tier_flag(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-933. Only a bounce's NAMED tier outranks the flag; the bounced-one-tier-up
+    suggestion is still a suggestion, and `--tier cheap` stands (D5)."""
+    workspace = tmp_path / "ws"
+    delegations: list = []
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7"]], delegations=delegations,
+        brief_tier={"value": "frontier", "basis": "bounced"},
+    )
+    run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+        request="cheap",
+    )
+    assert [d["tier"] for d in delegations] == ["cheap"]
 
 
 def test_a_refused_delegation_does_not_stop_the_spawn(

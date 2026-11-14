@@ -786,9 +786,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "bounce",
         "description": (
-            "Send a reviewed item back to `next` with a required reason. Reserved for its "
-            "author for one lease period — they still hold the worktree — then opens to the "
-            "fleet."
+            "Send a reviewed item back to `next` with a reason, pinned to its author for one "
+            "lease. `needs_tier`: their tier cannot do it; unpinned, re-seated at that tier."
         ),
         "inputSchema": {
             "type": "object",
@@ -796,6 +795,7 @@ TOOLS: list[dict[str, Any]] = [
                 "id": {"type": "string"},
                 "agent_id": {"type": "string"},
                 "reason": {"type": "string"},
+                "needs_tier": {"type": "string"},
             },
             "required": ["id", "reason"],
         },
@@ -3576,7 +3576,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         try:
             item = fleet_svc.bounce(
                 db, item_id=keys.resolve_item(db, args["id"]) or args["id"],
-                agent_id=agent, reason=args["reason"])
+                agent_id=agent, reason=args["reason"], needs_tier=args.get("needs_tier"))
         except fleet_svc.NotInReview as e:
             raise errors.Conflict(str(e), hint=(
                 "a bounce is a review verdict; an item still being worked on is released with "
