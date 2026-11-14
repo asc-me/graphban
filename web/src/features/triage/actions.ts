@@ -12,6 +12,8 @@ export interface TriageAction {
   primary?: boolean;
   /** One of an agent's answer options: rendered full-width in the options list, never primary. */
   option?: boolean;
+  /** Answers a decision wait (an option or own words): the row comes back as its answered receipt, so it stays selected. */
+  answers?: boolean;
   /** Override and Merge only: the actions Undo does not reverse cleanly ask first. */
   confirm?: string;
   run: () => Promise<{ result: string; undo: Undo; command?: string; drain?: DrainNoteData }>;
@@ -79,7 +81,7 @@ const OPTION_KEYS = "abdfgh";
 export function answerTextAction(row: TriageFeedRow, text: string): TriageAction {
   const owner = row.kind === "blocker" ? (row.owner ?? "the agent") : "the agent";
   return {
-    key: "", label: "Send answer",
+    key: "", label: "Send answer", answers: true,
     run: async () => {
       const a = await api.answerBlockerText(row.id, text);
       return {
@@ -115,7 +117,7 @@ export function actionsFor(row: TriageFeedRow, projectId: string): TriageAction[
       // No option is primary: ↵ must not answer a human decision on the agent's behalf.
       // Options past the sixth have no key, but are never dropped.
       const options = row.decision.options.map<TriageAction>((o, i) => ({
-        key: OPTION_KEYS[i] ?? "", label: o, option: true,
+        key: OPTION_KEYS[i] ?? "", label: o, option: true, answers: true,
         run: async () => {
           const a = await api.answerBlocker(row.id, o);
           return {

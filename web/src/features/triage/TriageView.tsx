@@ -130,7 +130,7 @@ export function TriageView() {
         const { result, undo, command, drain } = await action.run();
         setProcessed((p) => [...p, { row: sel, result, undo, command, drain }]);
         // An answered decision comes back as its own receipt row, so stay on it (GRPH-1655).
-        setSelId(action.option ? sel.id : (next?.id ?? null));
+        setSelId(action.answers ? sel.id : (next?.id ?? null));
         void refresh();
       } catch (e) {
         // The row stays: a failed action must not look processed.

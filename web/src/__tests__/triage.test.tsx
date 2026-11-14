@@ -233,6 +233,24 @@ describe("Triage inbox", () => {
     expect(selected()).toHaveTextContent("which store?");
   });
 
+  it("an own-words answer to a question opened from an alert keeps the answered card selected (GRPH-1655)", async () => {
+    const ask: TriageFeedRow = {
+      ...blocker, id: "GRPH-906", blocks: { id: "CORE-3", title: "Ticket three" },
+      decision: { question: "Which store?", options: [] },
+    };
+    m.projectTriage.mockResolvedValueOnce(feed([ask, bug]));
+    m.projectTriage.mockResolvedValue(feed([answered({
+      id: "GRPH-906", blocks: { id: "CORE-3", title: "Ticket three" },
+    }), bug]));
+    m.answerBlockerText.mockResolvedValueOnce({});
+    renderTriage("/p/CORE/triage?item=CORE-3");
+    const box = await screen.findByPlaceholderText(/The agent asked an open question/);
+    await userEvent.setup().type(box, "use redis{Enter}");
+    await waitFor(() => expect(m.answerBlockerText).toHaveBeenCalledWith("GRPH-906", "use redis"));
+    await screen.findByTestId("answered-by");
+    expect(selected()).toHaveTextContent("which store?");
+  });
+
   it("a ticket key from an alert resolves to its answered row too (GRPH-1655)", async () => {
     m.projectTriage.mockResolvedValue(feed([bug, answered({
       id: "GRPH-906", blocks: { id: "CORE-3", title: "Ticket three" },
