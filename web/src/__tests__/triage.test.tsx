@@ -291,6 +291,26 @@ describe("Triage inbox", () => {
     expect(screen.queryByRole("button", { name: "Copy" })).not.toBeInTheDocument();
   });
 
+  it("a scheduled drain says it is between runs, with no command and no Copy (GRPH-1649)", async () => {
+    m.projectTriage.mockResolvedValue(feed([answered({
+      drain: {
+        status: "scheduled", prd: "GRPH-P75",
+        message: "The drain for GRPH-P75 is between runs. It will pick this ticket up on its next cycle.",
+        // A stray command on the payload must still not be drawn for a drain that will run.
+        command: "gban fleet until --prd GRPH-P75",
+      },
+    })]));
+    renderTriage();
+    const note = await screen.findByTestId("drain-note");
+    expect(note).toHaveTextContent("The drain for GRPH-P75 is between runs. It will pick this ticket up on its next cycle.");
+    expect(screen.getByTestId("drain-block")).toHaveAttribute("data-status", "scheduled");
+    expect(screen.getByTestId("drain-tag")).toHaveTextContent("GRPH-P75");
+    expect(screen.queryByText(/No drain is running/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Could not check/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/gban fleet until/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy" })).not.toBeInTheDocument();
+  });
+
   it("a failed drain read says it could not check, even if the payload carries a command", async () => {
     m.projectTriage.mockResolvedValue(feed([answered({
       drain: { status: "unknown", prd: null, message: "whatever", command: "gban fleet until --prd X" },

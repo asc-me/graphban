@@ -324,10 +324,73 @@ def presence_state(agent: Agent, *, lease_seconds: int = DEFAULT_LEASE_SECONDS,
     return agent.state if agent.state in STATES else "idle"
 
 
-#: `gbfleet service install` restarts a drain this often (launchd StartInterval), and the margin
-#: covers a slow cycle. A drain whose last agent was seen inside the sum is "scheduled", not gone.
-DRAIN_RESTART_INTERVAL_SECONDS = 300
+#: A service drain (`gbfleet service install --every N`) records its restart interval on the
+#: supervisor's own registration (GRPH-1649): `capabilities.drain = {service, every, prd}`.
+#: Between cycles it reads `scheduled` while its last record is inside `every` plus this margin,
+#: which covers the presence-stamp floor and the platform's restart jitter.
 DRAIN_RESTART_MARGIN_SECONDS = 120
+#: How far back a service record is looked for at all. Only bounds the read: a record older
+#: than its own `every + margin` is already stale, whatever this says.
+DRAIN_RECORD_HORIZON = timedelta(days=2)
+
+
+def drain_record(agent: Agent) -> dict | None:
+    """The service-drain record a supervisor declared at `register_agent`, or None.
+
+    `{"service": str, "every": int > 0, "prd": str | None, "stopped": bool}`. Anything that
+    is not that shape is no record — a registration that did not say it is a service is a
+    one-off `until`, which nothing restarts.
+    """
+    caps = agent.capabilities if isinstance(agent.capabilities, dict) else {}
+    raw = caps.get("drain")
+    if not isinstance(raw, dict):
+        return None
+    service = raw.get("service")
+    every = raw.get("every")
+    if not isinstance(service, str) or not service.strip():
+        return None
+    if isinstance(every, bool) or not isinstance(every, int) or every <= 0:
+        return None
+    prd = raw.get("prd")
+    return {"service": service.strip(), "every": every,
+            "prd": prd.strip() if isinstance(prd, str) and prd.strip() else None,
+            "stopped": raw.get("stopped") is True}
+
+
+def _scheduled_service(db: Session, project_id: str, prd_id: str | None,
+                       now: datetime) -> bool:
+    """Is a recorded service drain for this PRD between cycles (GRPH-1649)?
+
+    Per service name only its NEWEST registration counts: a later record supersedes an
+    earlier one, so a service whose last word was `stopped` is stopped. A record counts while
+    the supervisor was last seen within its own `every` plus the margin — the interval the
+    operator installed, never a constant. A drain scoped to another PRD does not count; an
+    unscoped one drains the whole project and does.
+    """
+    rows = db.execute(
+        select(Agent).where(Agent.project_id == project_id,
+                            Agent.enrolment_id.is_(None),
+                            Agent.last_seen_at >= now - DRAIN_RECORD_HORIZON)
+        .order_by(Agent.last_seen_at.desc())).scalars().all()
+    latest: dict[str, tuple[Agent, dict]] = {}
+    for agent in rows:
+        record = drain_record(agent)
+        if record is None or record["service"] in latest:
+            continue
+        latest[record["service"]] = (agent, record)
+    for agent, record in latest.values():
+        if record["stopped"] or agent.state == "quarantined":
+            continue
+        seen = _aware(agent.last_seen_at)
+        window = timedelta(seconds=record["every"] + DRAIN_RESTART_MARGIN_SECONDS)
+        if seen is None or now - seen > window:
+            continue
+        scope = record["prd"]
+        if prd_id is not None and scope is not None and scope != prd_id \
+                and keys_svc.resolve_prd(db, scope) != prd_id:
+            continue
+        return True
+    return False
 
 
 def drain_status(db: Session, project_id: str, prd_id: str | None, *,
@@ -335,32 +398,30 @@ def drain_status(db: Session, project_id: str, prd_id: str | None, *,
                  now: datetime | None = None) -> str:
     """`live | scheduled | not_live | unknown` — is a drain running for this PRD (GRPH-1529, P75 D5).
 
-    `scheduled` (GRPH-1649): nobody is in presence, but an agent on a seat for the PRD was last
-    seen inside the service restart interval plus a margin — a service drain between cycles,
-    which picks the ticket up on its next run. Past that window with no record it is `not_live`.
-
     Live means an agent on a seat scoped to `prd_id`, or on an unscoped seat in the project,
     is inside presence (`presence_state`, the one presence rule). A ticket with no PRD uses the
     project-wide state: any enrolled agent seen in the window. A read that raises is
     `unknown`, never `not_live`: "no drain" must not be said on a failed check.
+
+    `scheduled` (GRPH-1649): nothing is live, but a service drain the supervisor RECORDED
+    (`drain_record`) is between cycles — its last record is inside its own interval plus a
+    margin, and it will pick the ticket up on its next run. A one-off `until` that exited, a
+    finished child, or a service past its window or recorded as stopped is `not_live`.
     """
     now = now or datetime.now(timezone.utc)
     try:
         rows = db.execute(
             select(Agent, Enrolment.prd_id).join(Enrolment, Agent.enrolment_id == Enrolment.id)
             .where(Agent.project_id == project_id)).all()
-        window = timedelta(seconds=DRAIN_RESTART_INTERVAL_SECONDS + DRAIN_RESTART_MARGIN_SECONDS)
-        scheduled = False
         for agent, seat_prd in rows:
             if prd_id is not None and seat_prd not in (None, prd_id):
                 continue
             if presence_state(agent, lease_seconds=lease_seconds, now=now) in (
                     "idle", "working", "reviewing"):
                 return "live"
-            seen = _aware(agent.last_seen_at)
-            if seen is not None and agent.state != "quarantined" and now - seen <= window:
-                scheduled = True
-        return "scheduled" if scheduled else "not_live"
+        if _scheduled_service(db, project_id, prd_id, now):
+            return "scheduled"
+        return "not_live"
     except Exception:  # noqa: BLE001 — any failed read is "unknown", by contract
         return "unknown"
 

@@ -1146,7 +1146,10 @@ export interface TriageCollisionRow extends TriageFeedBase {
   recommendation: string;
 }
 
-/** Whether a drain will pick an answered ticket up (GRPH-1529). `unknown` is a failed read. */
+/**
+ * Whether a drain will pick an answered ticket up (GRPH-1529). `scheduled` is a recorded
+ * service drain between cycles (GRPH-1649). `unknown` is a failed read.
+ */
 export interface DrainNote {
   status: "live" | "scheduled" | "not_live" | "unknown";
   prd: string | null;
@@ -3681,7 +3684,7 @@ export interface AlertRow {
   title?: string;
   /** Derived impact (GRPH-1607): a live drain is held on it, a ticket is blocked, or neither. */
   impact?: "drain_waiting" | "blocks" | "question";
-  /** `live | not_live | unknown` — the drain-status read behind `impact`. */
+  /** `live | scheduled | not_live | unknown` — the drain-status read behind `impact`. */
   drain?: "live" | "scheduled" | "not_live" | "unknown";
   question: string;
   body: string;

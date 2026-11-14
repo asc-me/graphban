@@ -5,7 +5,10 @@ import type { DrainNote as DrainNoteData } from "@/lib/types";
 
 export const DRAIN_UNKNOWN = "Could not check for a running drain.";
 
-/** Anything but live / not_live is a failed read: never "no drain is running". */
+/**
+ * Anything but live / scheduled / not_live is a failed read: never "no drain is running".
+ * `scheduled` (GRPH-1649) is a recorded service drain between cycles: no command, it will run.
+ */
 export function drainStatusOf(drain: Partial<DrainNoteData> | null | undefined): "live" | "scheduled" | "not_live" | "unknown" {
   const st = drain?.status;
   return st === "live" || st === "scheduled" || st === "not_live" ? st : "unknown";
@@ -38,7 +41,10 @@ export function DrainNote({
         </div>
       )}
       <div className={`mt-1.5 flex items-start gap-2 rounded-md px-3 py-2 ${box}`}>
-        {(s === "live" || s === "scheduled") && <span aria-hidden className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-st-done" />}
+        {s === "live" && <span aria-hidden className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-st-done" />}
+        {s === "scheduled" && (
+          <span aria-hidden className="mt-1.5 h-2 w-2 shrink-0 rounded-full border border-st-done" />
+        )}
         {s === "not_live" && (
           <span aria-hidden className="mt-1.5 h-2 w-2 shrink-0 rounded-full border border-faint-2" />
         )}
