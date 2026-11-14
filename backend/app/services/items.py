@@ -2561,6 +2561,10 @@ def _is_claimable(it: Item, cutoff) -> bool:
         return False
     if it.blocker:
         return False
+    # GRPH-1650. A decision wait is a question for a person, never build work, whatever
+    # status it was filed in: a `backlog` wait was claimable and a drain delegated the QUESTION.
+    if any(str(t).lower() == "wait:decision" for t in (it.tags or [])):
+        return False
     stale = it.claimed_by is not None and it.claimed_at is not None and _aware(it.claimed_at) < cutoff
     if stale:
         return it.status in ("next", "backlog", "in_progress")

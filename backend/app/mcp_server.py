@@ -3016,8 +3016,14 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             options=args.get("options"),
             reporter={"name": "Agent", "handle": "mcp", "avatar": "#a78bfa"},
         )
+        wait_link = None
+        if args.get("question") or any(
+                str(t).lower() == "wait:decision" for t in (item.tags or [])):
+            wait_link = waits_svc.attach_to_claim(db, item, args.get("agent_id"))
         _idempotent_remember(db, args, "create_item", item.id)
         out = _item_dict(item)
+        if wait_link is not None:
+            out["wait_link"] = wait_link
         # GRPH-1393: a touchpoint matching nothing in the code graph is named, with the
         # closest real path, instead of being accepted silently.
         tw = touchpoint_check.warnings(db, item.project_id, args.get("touchpoints"))

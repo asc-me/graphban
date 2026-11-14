@@ -654,3 +654,31 @@ def triage_blockers(db: Session, project_id: str | None = None,
             row["decision"] = d
         out.append(row)
     return out
+
+
+def attach_to_claim(db: Session, wait: Item, agent_id: str | None) -> dict:
+    """GRPH-1650. A decision wait filed by an agent holding an `in_progress` claim: store the
+    wait `blocked`, link claimed item -> wait as a `dependency` (reason `wait:decision`) and
+    block the claimed item with `blocker` = the wait id, in one transaction.
+
+    A caller holding no claim gets no guessed link, and the reply says so.
+    """
+    from app.models import Link
+    from app.services import items as items_svc
+
+    held = items_svc.live_claim(db, agent_id) if agent_id else None
+    if held is None or held.status != "in_progress" or held.id == wait.id:
+        return {"linked": False,
+                "note": "no ticket was linked: the caller holds no in_progress claim. "
+                        "File the wait `blocked`, link the item to it as a dependency "
+                        "and set its blocker yourself."}
+    wait.status = "blocked"
+    db.add(Link(project_id=held.project_id, a=held.id, b=wait.id, type="dependency",
+                reason="wait:decision", confidence=1.0))
+    held.status = "blocked"
+    held.blocker = wait.id
+    db.commit()
+    db.refresh(wait)
+    return {"linked": True, "item": held.key, "wait": wait.key,
+            "note": f"{wait.key} stored blocked; {held.key} linked as dependent and blocked "
+                    f"on it. Stop and exit: answering {wait.key} releases {held.key}."}
