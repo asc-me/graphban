@@ -427,4 +427,18 @@ describe("docs overlay routes", () => {
       expect(auth?.b, path).toMatch(/not an LLM secret/);
     }
   });
+
+  it("fallback and tracker name Board and List; org-plane help says console", () => {
+    const fb = docFor("/nowhere");
+    expect(JSON.stringify(fb)).not.toMatch(/not boards/);
+    expect(fb.sections[0].b).toMatch(/Board is the default/);
+    expect(fb.sections[0].b).toMatch(/List is the other/);
+    expect(docFor("/tracker").tagline).toMatch(/Board.*List/);
+    for (const p of [adminPath("users"), adminPath("teams"), adminPath("billing"), orgPath("galaxy")]) {
+      expect(docFor(p).sections[0].b, p).toMatch(/console/);
+    }
+    const mcp = docFor("/mcp-tools").sections[0].b;
+    expect(mcp).not.toMatch(/shipped to every key/);
+    expect(mcp).toMatch(/read\+write key with no extra tiers/);
+  });
 });
