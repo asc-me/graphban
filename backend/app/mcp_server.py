@@ -2264,6 +2264,13 @@ _FLEET_ONLY_ARGS = {
                        "CI run as {repo, commit, run_url, conclusion}. Recorded as yours, "
                        "not as suite_green.",
     }},
+    # GRPH-933. Fleet-only for the reason every entry here is: the core manifest has no
+    # headroom (test_tool_tiers), and the tier a bounce names is only read by the fleet's
+    # brief and `gbfleet until`. The dispatcher accepts it whether or not it was advertised.
+    "bounce": {"needs_tier": {
+        "type": "string", "enum": ["cheap", "frontier"],
+        "description": "The author's tier cannot do this: no pin; re-seated at this tier.",
+    }},
     # GRPH-1031. Planner/supervisor retarget after a bounce. Fleet-only for the reason
     # every entry here is: the ceiling is measured on the base manifest, and a worker
     # must not be told it can rewrite identity. Empty is not a write.
@@ -3589,7 +3596,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         try:
             item = fleet_svc.bounce(
                 db, item_id=keys.resolve_item(db, args["id"]) or args["id"],
-                agent_id=agent, reason=args["reason"])
+                agent_id=agent, reason=args["reason"], needs_tier=args.get("needs_tier"))
         except fleet_svc.NotInReview as e:
             raise errors.Conflict(str(e), hint=(
                 "a bounce is a review verdict; an item still being worked on is released with "
