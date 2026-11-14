@@ -166,3 +166,76 @@ def test_an_answer_not_in_the_body_stays_behind(db):
     _answer(db, prd, "we decided something unwritten")
 
     assert prd_svc.grill_absorption(db, prd.id)["absorbed"] is False
+
+
+# ---- GRPH-1516: a fold the body states in its own markup is absorbed ----------------------
+
+
+def test_an_answer_the_section_states_in_markdown_is_absorbed(db):
+    """The P67 shape: the section was rewritten with `update_prd(section=…)` to state the
+    decision, in markdown, before the answer was recorded. Characters differ (`**`, backticks,
+    a bullet, a curly apostrophe); the words do not.
+
+    Sabotage: make `answer_in_body` return False and this is `absorbed: False`."""
+    prd = _prd(db, body="# Spec\n\n## Wire\n\nTBD.\n")
+    prd_svc.update_prd(db, prd.id, section="Wire", body=(
+        "- **The wire path is `/v1/systemone`.** It doesn’t change per head.\n"
+        "- The credential keeps one `model` field, with a hint.\n"))
+    _answer(db, prd, "The wire path is /v1/systemone. It doesn't change per head.")
+
+    out = prd_svc.grill_absorption(db, prd.id)
+
+    assert out["absorbed"] is True, out
+
+
+def test_two_answer_sentences_restated_in_two_places_are_absorbed(db):
+    prd = _prd(db, body=(
+        "# Spec\n\n## Goals\n\nSeats expire after thirty minutes.\n\n"
+        "## Non-goals\n\nThe grill classifier stays out.\n"))
+    _answer(db, prd, "The grill classifier stays out; seats expire after thirty minutes.")
+
+    assert prd_svc.grill_absorption(db, prd.id)["absorbed"] is True
+
+
+def test_one_sentence_missing_keeps_the_answer_behind(db):
+    """Every sentence has to be there: half a decision written down is not absorbed."""
+    prd = _prd(db, body="# Spec\n\n## Goals\n\nSeats expire after thirty minutes.\n")
+    _answer(db, prd, "Seats expire after thirty minutes. Reviewers may extend them once.")
+
+    out = prd_svc.grill_absorption(db, prd.id)
+    assert out["absorbed"] is False and out["answers_behind"] == 1
+
+
+def test_a_word_inside_a_longer_word_is_not_a_match(db):
+    """Matching on word boundaries: "use" is not absorbed by "reuse"."""
+    prd = _prd(db, body="# Spec\n\n## Goals\n\nWe reuse it.\n")
+    _answer(db, prd, "we use it")
+
+    assert prd_svc.grill_absorption(db, prd.id)["absorbed"] is False
+
+
+def test_answer_grill_reports_body_absorbed_through_the_tool(client, auth):
+    """The field the issue was filed against, read through `answer_grill` itself."""
+    key = client.post("/api/api-keys", json={"name": "grill-1516"},
+                      headers=auth).json()["plaintext"]
+
+    def call(tool, args):
+        res = client.post("/api/mcp", json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": tool, "arguments": args}},
+            headers={"X-API-Key": key}).json()["result"]
+        assert not res.get("isError"), res
+        return res["structuredContent"]
+
+    prd = call("create_prd", {"title": "Absorb", "project_id": "core",
+                              "body": "# Absorb\n\n## Decision\n\nTBD.\n"})
+    call("update_prd", {"prd_id": prd["id"], "section": "Decision",
+                        "body": "**Seats are single use.** A crash is recovered by reissue.\n"})
+    got = call("answer_grill", {"prd_id": prd["id"],
+                                "answer": "Seats are single use. A crash is recovered by reissue."})
+    assert got["body_absorbed"] is True, got
+    assert got["answers_body_has_not_absorbed"] == 0
+    behind = call("answer_grill", {"prd_id": prd["id"],
+                                   "answer": "Reviewers may never extend a seat."})
+    assert behind["body_absorbed"] is False
+    assert behind["answers_body_has_not_absorbed"] == 1
