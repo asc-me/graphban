@@ -407,7 +407,7 @@ def run(
                 wave.records = list(ent_mod.load() if records is None else records)
             except (ent_mod.EntitlementError, ValueError) as exc:
                 raise ConfigError(f"the entitlement registry could not be read: {exc}") from exc
-            identity = _identify(planner, repo, adapter, wave)
+            identity = _identify(planner, repo, adapter, wave, prd)
             wave.planner_agent_id = str(identity.get("agent_id") or identity.get("id") or "")
             _refresh_entitlement_registry(planner, wave)
             _preflight_observations(supervisor)
@@ -505,8 +505,30 @@ def _drain_live(wave, children, persist, planner, supervisor, limits, poll, slee
     return waited
 
 
+#: Set by the service unit (`service.SERVICE_NAME_ENV` / `SERVICE_EVERY_ENV`); named here
+#: rather than imported so `until` does not pull the service module in on every run.
+_SERVICE_NAME_ENV = "GBFLEET_SERVICE_NAME"
+_SERVICE_EVERY_ENV = "GBFLEET_SERVICE_EVERY"
+
+
+def service_drain(prd: str | None = None, environ=None) -> dict | None:
+    """The record this process declares when it runs as an installed service (GRPH-1649).
+
+    `{"service": name, "every": seconds, "prd": key or None}` when the unit set both variables
+    and the interval is a positive integer; None otherwise. A one-off `until` declares
+    nothing, because nothing restarts it: the server must not tell a person that drain will
+    pick their ticket up.
+    """
+    env = os.environ if environ is None else environ
+    name = (env.get(_SERVICE_NAME_ENV) or "").strip()
+    raw = (env.get(_SERVICE_EVERY_ENV) or "").strip()
+    if not name or not raw.isdigit() or int(raw) <= 0:
+        return None
+    return {"service": name, "every": int(raw), "prd": prd or None}
+
+
 def _identify(planner: Graphban, repo: Path, adapter: str = "",
-              wave: Wave | None = None) -> dict:
+              wave: Wave | None = None, prd: str | None = None) -> dict:
     """Register this process. A key that cannot mint is refused here, not after a wave.
 
     When the wave names entitlements the supervisor declares them too (GRPH-1258): the
@@ -516,6 +538,9 @@ def _identify(planner: Graphban, repo: Path, adapter: str = "",
     """
     label = f"gbfleet until ({adapter})" if adapter else "gbfleet until"
     ids = sorted({i for v in (wave.entitlements if wave else {}).values() for i in v})
+    # GRPH-1649: a service says so, with its interval, on the registration the server keeps.
+    drain = service_drain(prd)
+    extra = {"capabilities": {"drain": drain}} if drain else {}
     try:
         try:
             payload = planner.call(
@@ -524,6 +549,7 @@ def _identify(planner: Graphban, repo: Path, adapter: str = "",
                 role_hint="planner",
                 worktree=str(repo),
                 **({"entitlements": ids} if ids else {}),
+                **extra,
             )
         except ToolFailed as exc:
             if not ids or exc.code != "quota_exceeded":
@@ -535,6 +561,7 @@ def _identify(planner: Graphban, repo: Path, adapter: str = "",
                 label=label,
                 role_hint="planner",
                 worktree=str(repo),
+                **extra,
             )
     except NotPermitted as exc:
         raise ConfigError(str(exc)) from exc
@@ -1456,11 +1483,29 @@ def _loop(
         sleep(poll)
 
 
+def _stamp_service_exit(planner: Graphban, wave: Wave) -> None:
+    """A service's last word this cycle: one call carrying its agent id (GRPH-1649).
+
+    The server stamps presence on any call that names the caller, and a service drain's
+    record counts from that stamp until `every` plus a margin has passed. Registration alone
+    would date it from the START of a cycle that may have run for hours. Best effort: a
+    lost stamp makes the drain read stopped sooner, never live when it is not.
+    """
+    agent_id = getattr(wave, "planner_agent_id", "") or ""
+    if not agent_id or service_drain() is None:
+        return
+    try:
+        planner.call("fleet_status", agent_id=agent_id)
+    except (NotPermitted, ToolFailed, ServerUnreachable):
+        pass
+
+
 def _finish(
     wave: Wave, reason: str, exit_code: int, minted: int, planner: Graphban,
     *, review: list[str] | None = None, waits: list[str] | None = None,
     outside: list[str] | None = None, prd: str | None = None,
 ) -> Report:
+    _stamp_service_exit(planner, wave)
     if waits is None:
         try:
             waits = _wait_ids(planner)

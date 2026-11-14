@@ -108,6 +108,11 @@ SETTLE = 2.0
 _REQUIRED_ARGS = ("--repo",)
 
 API_KEY_ENV = "GBFLEET_API_KEY"
+#: Set in the unit so `until` can tell the server it runs as THIS service, restarted every
+#: `--every` seconds (GRPH-1649). That record is what lets an answered wait say "the drain is
+#: between runs" rather than "no drain is running". Neither is a secret.
+SERVICE_NAME_ENV = "GBFLEET_SERVICE_NAME"
+SERVICE_EVERY_ENV = "GBFLEET_SERVICE_EVERY"
 
 #: Shortest key the literal-in-unit check will look for. See `install`: below this a substring
 #: search over the unit is noise rather than evidence.
@@ -541,6 +546,8 @@ def _render_schtasks_runner(plan: Plan) -> str:
         f'if exist "{env}" for /f "usebackq eol=# tokens=1,* delims==" %%a in ("{env}") '
         f'do set "%%a=%%b"\r\n'
         f'set "PATH={path}"\r\n'
+        f'set "{SERVICE_NAME_ENV}={plan.name}"\r\n'
+        f'set "{SERVICE_EVERY_ENV}={plan.every}"\r\n'
         f'"{binary}" until {args}\r\n'
     )
 
@@ -649,6 +656,10 @@ WorkingDirectory={plan.repo}
 # The vendor CLIs are not on a supervisor's PATH. Captured from the shell that installed
 # this; without it every adapter resolution fails and the service busy-restarts.
 Environment=PATH={plan.path_env}
+# Which service this is and how often it restarts, declared by `until` to the server so an
+# answered wait reads "between runs" while the next cycle is due (GRPH-1649).
+Environment={SERVICE_NAME_ENV}={plan.name}
+Environment={SERVICE_EVERY_ENV}={plan.every}
 # The API key, in a file only this user can read. NEVER `Environment=` — a unit file is
 # world-readable, and `scripts/graphban_systemd.py:secrets_in` exists to keep it that way.
 EnvironmentFile={plan.env_path}
@@ -697,8 +708,11 @@ def _render_launchd(plan: Plan) -> bytes:
         "ThrottleInterval": plan.every,
         "StandardOutPath": str(plan.log_path),
         "StandardErrorPath": str(plan.err_path),
-        # PATH only. Nothing here is a secret and nothing here may become one.
-        "EnvironmentVariables": {"PATH": plan.path_env},
+        # PATH and the service's own name and interval (GRPH-1649). Nothing here is a secret
+        # and nothing here may become one.
+        "EnvironmentVariables": {"PATH": plan.path_env,
+                                 SERVICE_NAME_ENV: plan.name,
+                                 SERVICE_EVERY_ENV: str(plan.every)},
     }
     return plistlib.dumps(job, sort_keys=True)
 

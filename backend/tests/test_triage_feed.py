@@ -292,3 +292,152 @@ def test_blocked_open_decision_appears_once(client, auth, db):
                                question="Which store?", options=["a", "b"])
     ids = [r["id"] for r in _feed(client, auth)["rows"]]
     assert ids.count(it.key) == 1
+
+
+# --- GRPH-1649: a recorded service drain between cycles is scheduled, not absent -------------
+
+
+def _supervisor(db, num, last_seen, *, every=None, prd=None, service="P75W-P1",
+                stopped=False, state="idle"):
+    """A `gbfleet until` planner registration: no seat, and — when it runs as a service — the
+    `capabilities.drain` record the supervisor declares (service name, interval, PRD)."""
+    from app.models import Agent
+
+    caps = {}
+    if every is not None:
+        caps["drain"] = {"service": service, "every": every, "prd": prd,
+                         **({"stopped": True} if stopped else {})}
+    db.add(Agent(id=f"core-A{num}", project_id="core", number=num, label="gbfleet until",
+                 active_role="planner", capabilities=caps, state=state,
+                 last_seen_at=last_seen, registered_at=last_seen))
+    db.commit()
+
+
+def _seat_agent(db, prd, last_seen, num):
+    from app.models import Agent, Enrolment, utcnow
+
+    db.add(Enrolment(id=f"enr-sch-{num}", project_id="core", code_hash="x", role="worker",
+                     prd_id=prd.id, expires_at=utcnow() + timedelta(hours=1)))
+    db.flush()
+    db.add(Agent(id=f"core-A{num}", project_id="core", number=num, enrolment_id=f"enr-sch-{num}",
+                 state="idle", last_seen_at=last_seen))
+    db.commit()
+
+
+def test_recorded_service_drain_between_cycles_reads_scheduled_with_no_command(db):
+    from app.models import utcnow
+    from app.services import fleet as fleet_svc
+    from app.services import waits as waits_svc
+
+    prd, _, wait = _answered_pair(db)
+    # Exited idle-with-waits 200s ago; installed with --every 300, scoped to this PRD by key.
+    _supervisor(db, 91, utcnow() - timedelta(seconds=200), every=300, prd=prd.key)
+    assert fleet_svc.drain_status(db, "core", prd.id) == "scheduled"
+    note = waits_svc.drain_note(db, wait)
+    assert note["status"] == "scheduled"
+    assert "No drain is running" not in note["message"] and "next cycle" in note["message"]
+    assert "command" not in note
+
+
+def test_the_window_is_the_recorded_interval_not_a_constant(db):
+    from app.models import utcnow
+    from app.services import fleet as fleet_svc
+
+    prd, _, _ = _answered_pair(db)
+    # --every 900: 600s after its last cycle it is still scheduled.
+    _supervisor(db, 92, utcnow() - timedelta(seconds=600), every=900, service="slow")
+    assert fleet_svc.drain_status(db, "core", prd.id) == "scheduled"
+    # --every 60: 600s of silence is far past 60 + margin — that service is gone.
+    from app.models import Agent
+    db.delete(db.get(Agent, "core-A92"))
+    db.commit()
+    _supervisor(db, 93, utcnow() - timedelta(seconds=600), every=60, service="fast")
+    assert fleet_svc.drain_status(db, "core", prd.id) == "not_live"
+
+
+def test_unrecorded_or_stopped_drains_are_not_live_with_the_command(db):
+    from app.models import Agent, utcnow
+    from app.services import fleet as fleet_svc
+    from app.services import waits as waits_svc
+
+    prd, _, wait = _answered_pair(db)
+    recent = utcnow() - timedelta(seconds=200)
+    # A one-off `until` that exited (no service record) and a finished child on a seat for
+    # this PRD, both seen recently: nothing will restart either of them.
+    _supervisor(db, 94, recent)
+    _seat_agent(db, prd, recent, 95)
+    assert fleet_svc.drain_status(db, "core", prd.id) == "not_live"
+    note = waits_svc.drain_note(db, wait)
+    assert note["message"].startswith("No drain is running")
+    assert note["command"] == f"gban fleet until --prd {prd.key}"
+
+    # A service whose newest record says stopped is stopped, though an older cycle is recent.
+    _supervisor(db, 96, recent - timedelta(seconds=30), every=300)
+    assert fleet_svc.drain_status(db, "core", prd.id) == "scheduled"
+    _supervisor(db, 97, recent, every=300, stopped=True)
+    assert fleet_svc.drain_status(db, "core", prd.id) == "not_live"
+    db.delete(db.get(Agent, "core-A97"))
+    db.commit()
+
+    # Past its interval plus margin (booted out by hand: no record since) -> not_live.
+    db.get(Agent, "core-A96").last_seen_at = utcnow() - timedelta(
+        seconds=300 + fleet_svc.DRAIN_RESTART_MARGIN_SECONDS + 5)
+    db.commit()
+    assert fleet_svc.drain_status(db, "core", prd.id) == "not_live"
+
+
+def test_a_service_drain_for_another_prd_does_not_count_an_unscoped_one_does(db):
+    from app.models import Agent, utcnow
+    from app.services import fleet as fleet_svc
+    from app.services import prds as prds_svc
+
+    prd, _, _ = _answered_pair(db)
+    other = prds_svc.create_prd(db, project_id="core", title="Other", body="## A\n\nx\n")
+    recent = utcnow() - timedelta(seconds=100)
+    _supervisor(db, 98, recent, every=300, prd=other.key, service="other")
+    assert fleet_svc.drain_status(db, "core", prd.id) == "not_live"
+    assert fleet_svc.drain_status(db, "core", other.id) == "scheduled"
+    _supervisor(db, 99, recent, every=300, prd=None, service="whole-project")
+    assert fleet_svc.drain_status(db, "core", prd.id) == "scheduled"
+    # A quarantined supervisor's record does not count.
+    db.get(Agent, "core-A99").state = "quarantined"
+    db.commit()
+    assert fleet_svc.drain_status(db, "core", prd.id) == "not_live"
+
+
+def test_a_live_seat_still_wins_and_a_failed_read_is_unknown(db):
+    from app.models import utcnow
+    from app.services import fleet as fleet_svc
+    from app.services import waits as waits_svc
+
+    prd, _, wait = _answered_pair(db)
+    _supervisor(db, 100, utcnow() - timedelta(seconds=100), every=300)
+    _seat_agent(db, prd, utcnow(), 101)
+    assert fleet_svc.drain_status(db, "core", prd.id) == "live"
+
+    assert waits_svc.drain_note(db, wait, status="unknown")["status"] == "unknown"
+
+    class Boom:
+        def execute(self, *a, **k):
+            raise RuntimeError("db down")
+    assert fleet_svc.drain_status(Boom(), "core", prd.id) == "unknown"
+
+
+def test_register_agent_keeps_the_drain_record(client, auth, db):
+    """The record arrives on the supervisor's own `register_agent` and is stored as sent."""
+    from app.models import Agent
+    from app.services import fleet as fleet_svc
+
+    key = client.post("/api/api-keys", json={"name": "drain-sup", "project_id": "core"},
+                      headers=auth).json()["plaintext"]
+    r = client.post("/api/mcp", headers={"X-API-Key": key}, json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "register_agent", "arguments": {
+            "label": "gbfleet until", "role_hint": "planner", "project_id": "core",
+            "capabilities": {"drain": {"service": "P75W-P1", "every": 900, "prd": "CORE-P1"}}}}})
+    assert r.status_code == 200, r.text
+    res = r.json()["result"]
+    assert not res.get("isError"), res
+    agent = db.get(Agent, res["structuredContent"]["agent_id"])
+    assert fleet_svc.drain_record(agent) == {
+        "service": "P75W-P1", "every": 900, "prd": "CORE-P1", "stopped": False}
