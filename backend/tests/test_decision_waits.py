@@ -311,6 +311,33 @@ def test_a_person_answer_has_by_user_and_no_source(db):
     assert "agent" not in entry["by"] and entry["source"] == {}
 
 
+def test_brief_text_names_the_source_of_an_agent_answer_and_a_person_answer(db):
+    from app.services import delegation as delegation_svc
+
+    from app.services import prds as prds_svc
+
+    prd = prds_svc.create_prd(db, project_id="core", title="Store", body="## A\n\nuse redis\n")
+    original, wait = _pair(db, holder="GRPH-A1")
+    waits.answer_wait(db, wait.id, text="redis", agent="GRPH-A2",
+                      source={"kind": "prd", "ref": prd.key, "quote": "use redis"})
+    text = delegation_svc.brief(db, original)["text"]
+    assert f'-> redis (source: prd {prd.key}, "use redis")' in text
+
+    original1, wait1 = _pair(db, holder="GRPH-A1")
+    waits.answer_wait(db, wait1.id, text="redis", agent="GRPH-A2",
+                      source={"kind": "session", "quote": "q" * 300})
+    text1 = delegation_svc.brief(db, original1)["text"]
+    assert "source: session" in text1 and "q" * 120 + "…" in text1 and "q" * 121 not in text1
+
+    from types import SimpleNamespace
+
+    original2, wait2 = _pair(db)
+    waits.answer_wait(db, wait2.id, choice="redis", actor=SimpleNamespace(id="", handle="ruler"))
+    text2 = delegation_svc.brief(db, original2)["text"]
+    assert "-> redis (answered by ruler in Triage)" in text2
+    assert "source:" not in text2
+
+
 def test_a_done_wait_with_no_stored_answer_reads_unanswered_on_the_brief(db):
     from app.services import delegation as delegation_svc
 
