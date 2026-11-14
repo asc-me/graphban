@@ -3407,6 +3407,14 @@ export interface RuleToggle {
   locked: boolean;
   /** The org id holding the lock; null when unlocked. */
   locked_by: string | null;
+  /** Only on `merge.done_predicates`: each predicate `done` needs and where it came from. */
+  effective_predicates?: EffectivePredicate[];
+}
+
+export interface EffectivePredicate {
+  name: string;
+  source: "deployment" | "project";
+  when?: string;
 }
 
 export interface RuleToggles {

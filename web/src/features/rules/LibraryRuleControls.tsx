@@ -271,6 +271,7 @@ function ToggleBody({ rule }: { rule: RuleFlowRule }) {
                 ruleId={rule.id}
                 name={k}
                 value={draftParams[k] ?? v}
+                effectivePredicates={toggle?.effective_predicates}
                 onChange={(nv) => setDraftParams((d) => ({ ...d, [k]: nv }))}
                 onError={(m) =>
                   setParamErrors((e) => {

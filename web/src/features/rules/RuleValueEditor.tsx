@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { useExclusiveAreasPreview, usePathCounts } from "@/lib/queries";
-import type { RuleParamValue } from "@/lib/types";
+import type { EffectivePredicate, RuleParamValue } from "@/lib/types";
 
 const MONO = "font-mono";
 const note = "text-[11.5px] leading-snug text-muted";
@@ -27,6 +27,13 @@ export const GENERATED_FILES_DEFAULTS = [
 ];
 /** The CI floor every project's `done` needs (`rule_toggles.CI_FLOOR_PREDICATE`). */
 export const PREDICATE_FLOOR = ["suite_green"];
+
+/** The fixed rows: every `deployment` predicate the toggles read names, `suite_green` first. With
+ * no read (older API) the CI floor alone. */
+export function predicateFloor(effective?: EffectivePredicate[]): string[] {
+  const names = (effective ?? []).filter((p) => p.source === "deployment").map((p) => p.name);
+  return [...new Set([...PREDICATE_FLOOR, ...names])];
+}
 
 export interface EnumOption {
   value: string;
@@ -91,6 +98,8 @@ export interface EditorProps {
   onChange: (v: RuleParamValue) => void;
   /** Reports a draft that is not yet a value of the param's type (null clears). */
   onError: (message: string | null) => void;
+  /** `merge.done_predicates` only: the toggles read's `effective_predicates`, the source of the floor. */
+  effectivePredicates?: EffectivePredicate[];
 }
 
 const isMap = (v: RuleParamValue): v is Record<string, string[]> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -337,12 +346,13 @@ function GeneratedFiles(props: EditorProps & { value: string[] }) {
 /** Done predicates: the floor is fixed rows; additions are free text, `scans_clean` suggested. */
 function PredicateList(props: EditorProps & { value: string[] }) {
   const { value, onChange } = props;
-  const extras = value.filter((p) => !PREDICATE_FLOOR.includes(p));
-  const emit = (list: string[]) => onChange([...PREDICATE_FLOOR, ...list]);
+  const floor = predicateFloor(props.effectivePredicates);
+  const extras = value.filter((p) => !floor.includes(p));
+  const emit = (list: string[]) => onChange([...floor, ...list]);
   return (
     <div className="flex flex-col gap-1.5" data-testid="rules-predicates">
       <span className={cn(MONO, "text-[10px] text-muted-2")}>predicates</span>
-      {PREDICATE_FLOOR.map((p) => (
+      {floor.map((p) => (
         <span key={p} className={cn(MONO, "text-[12px] text-fg-2")} data-testid="rules-predicate-floor">
           {p} · required
         </span>
