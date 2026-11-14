@@ -11,7 +11,7 @@ import type { RuleFlowRule, RulesFlow } from "@/lib/types";
 import { SetupWizard } from "./SetupWizard";
 
 vi.mock("@/lib/api", () => ({
-  api: { setRuleToggles: vi.fn(), me: vi.fn(), members: vi.fn(), pathCounts: vi.fn(), exclusiveAreasPreview: vi.fn() },
+  api: { setRuleToggles: vi.fn(), ruleToggles: vi.fn(), me: vi.fn(), members: vi.fn(), pathCounts: vi.fn(), exclusiveAreasPreview: vi.fn() },
 }));
 vi.mock("@/features/ProjectContext", () => ({
   useProjectCtx: () => ({ activeId: "core", active: { id: "core" }, projects: [], setActiveId: () => {} }),
@@ -54,6 +54,39 @@ beforeEach(() => {
 });
 
 describe("SetupWizard", () => {
+  it("Set my own on done predicates shows the deployment floor and saves it with an addition", async () => {
+    const user = userEvent.setup();
+    const done = rule("merge.done_predicates", "merge", {});
+    (done.params as { value: unknown }).value = { predicates: ["suite_green"] };
+    const doneFlow = {
+      stages: flow.stages.map((s) => (s.id === "merge" ? { ...s, rules: [done] } : s)),
+    } as unknown as RulesFlow;
+    vi.mocked(api.ruleToggles).mockResolvedValue({
+      toggles: [{
+        rule_id: "merge.done_predicates",
+        effective_predicates: [{ name: "suite_green", source: "deployment" }, { name: "scans_clean", source: "deployment" }],
+      }],
+    } as never);
+    vi.mocked(api.setRuleToggles).mockResolvedValue({} as never);
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <SetupWizard flow={doneFlow} narrow={false} onExit={() => {}} onApplied={() => {}} />
+      </QueryClientProvider>,
+    );
+    await setMergeEffort(user);
+    await waitFor(() =>
+      expect(screen.getAllByTestId("rules-predicate-floor").map((e) => e.textContent)).toEqual(["suite_green · required", "scans_clean · required"]),
+    );
+    await user.click(screen.getByRole("button", { name: "Add entry" }));
+    await user.type(screen.getByLabelText("additions 1"), "docs_built");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    await user.type(screen.getByLabelText("Reason"), "floor");
+    await user.click(screen.getByTestId("rules-review-save"));
+    await waitFor(() => expect(api.setRuleToggles).toHaveBeenCalledTimes(1));
+    const [, body] = vi.mocked(api.setRuleToggles).mock.calls[0];
+    expect(body.toggles[0].params).toEqual({ predicates: ["suite_green", "scans_clean", "docs_built"] });
+  });
+
   it("walks Plan to Learn, skips Spec and Release with reasons, and starts on the default", async () => {
     view();
     expect(screen.getByRole("button", { name: "1. Plan" })).toBeInTheDocument();

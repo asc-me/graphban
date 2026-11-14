@@ -6,7 +6,7 @@ import * as React from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { api } from "@/lib/api";
-import type { RuleParamValue } from "@/lib/types";
+import type { EffectivePredicate, RuleParamValue } from "@/lib/types";
 
 import { RuleSource } from "./RuleSource";
 import { RuleValueEditor } from "./RuleValueEditor";
@@ -16,7 +16,7 @@ vi.mock("@/features/ProjectContext", () => ({
   useProjectCtx: () => ({ activeId: "core", active: { id: "core" }, projects: [], setActiveId: () => {} }),
 }));
 
-function Harness({ ruleId, name, initial, spy }: { ruleId: string; name: string; initial: RuleParamValue; spy: (v: RuleParamValue) => void }) {
+function Harness({ ruleId, name, initial, spy, effective }: { ruleId: string; name: string; initial: RuleParamValue; spy: (v: RuleParamValue) => void; effective?: EffectivePredicate[] }) {
   const [v, setV] = React.useState<RuleParamValue>(initial);
   return (
     <QueryClientProvider client={new QueryClient()}>
@@ -24,6 +24,7 @@ function Harness({ ruleId, name, initial, spy }: { ruleId: string; name: string;
         ruleId={ruleId}
         name={name}
         value={v}
+        effectivePredicates={effective}
         onChange={(nv) => {
           setV(nv);
           spy(nv);
@@ -79,6 +80,25 @@ describe("RuleValueEditor", () => {
     expect(screen.queryByRole("textbox")).toBeNull();
     await user.click(screen.getByRole("button", { name: /scans_clean/ }));
     expect(spy).toHaveBeenLastCalledWith(["suite_green", "scans_clean"]);
+  });
+
+  it("done predicates: a deployment floor of scans_clean is two fixed rows and adding docs_built saves all three", async () => {
+    const user = userEvent.setup();
+    const spy = vi.fn();
+    const effective: EffectivePredicate[] = [
+      { name: "scans_clean", source: "deployment" },
+      { name: "suite_green", source: "deployment", when: "item has a linked PR" },
+    ];
+    render(<Harness ruleId="merge.done_predicates" name="predicates" initial={["suite_green"]} spy={spy} effective={effective} />);
+    expect(screen.getAllByTestId("rules-predicate-floor").map((e) => e.textContent)).toEqual(["suite_green · required", "scans_clean · required"]);
+    await user.click(screen.getByRole("button", { name: "Add entry" }));
+    await user.type(screen.getByLabelText("additions 1"), "docs_built");
+    expect(spy).toHaveBeenLastCalledWith(["suite_green", "scans_clean", "docs_built"]);
+  });
+
+  it("done predicates: a box with no extra floor shows only suite_green", () => {
+    render(<Harness ruleId="merge.done_predicates" name="predicates" initial={["suite_green"]} spy={() => {}} effective={[{ name: "suite_green", source: "deployment", when: "item has a linked PR" }]} />);
+    expect(screen.getAllByTestId("rules-predicate-floor")).toHaveLength(1);
   });
 
   it("a number steps and rejects a non-whole value; a boolean is a switch; an enum marks the risky card", async () => {

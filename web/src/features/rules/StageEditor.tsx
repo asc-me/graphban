@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
-import { useGitops, useSetRuleToggles, useUpdateGitops } from "@/lib/queries";
+import { useGitops, useRuleToggles, useSetRuleToggles, useUpdateGitops } from "@/lib/queries";
 import type { GitopsPatch, RuleFlowRule, RuleStage, RuleToggleBatchEntry } from "@/lib/types";
 
 import { stageRules } from "./levels";
@@ -52,6 +52,7 @@ export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narr
   const { activeId } = useProjectCtx();
   const canWrite = useCanWriteRules(activeId);
   const { data: gitops } = useGitops(activeId);
+  const { data: toggles } = useRuleToggles(activeId);
   const saveRules = useSetRuleToggles(activeId);
   const saveGitops = useUpdateGitops(activeId);
 
@@ -262,6 +263,7 @@ export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narr
                     ruleId={r.id}
                     name={k}
                     value={shownParams[k] ?? v}
+                    effectivePredicates={toggles?.toggles.find((t) => t.rule_id === r.id)?.effective_predicates}
                     onChange={(nv) => setParam(r, k, nv)}
                     onError={(m) =>
                       setParamErrors((e) => {
