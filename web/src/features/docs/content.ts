@@ -44,7 +44,7 @@ const DEFAULT: DocEntry = {
   title: "Graphban",
   tagline: "Agent memory. Linear execution.",
   sections: [
-    { num: 1, h: "One linear stream", b: "Work lives in a single priority-ordered tracker, not boards. The left nav switches between the workspace views." },
+    { num: 1, h: "One linear stream", b: "Work lives in one priority-ordered tracker. Board is the default layout and List is the other; the left nav switches between the workspace views." },
     { num: 2, h: "Agent context", b: "The right sidebar (toggle “Agent”) holds searchable memory and a chat grounded in your project state." },
     { num: 3, h: "Same code path for agents", b: "Agents drive the app through MCP tools — identical to the UI, so their writes show up instantly." },
   ],
@@ -60,12 +60,13 @@ const CONTENT: Record<string, DocEntry> = {
   "/tracker": {
     badge: "TRACKER",
     title: "Tracker",
-    tagline: "One linear stream of work, priority + recency.",
+    tagline: "One linear stream of work, priority + recency — as a Board (default) or a List.",
     sections: [
       { num: 1, h: "Advance status", b: "Click a status dot on a row (or in the detail panel) and pick a new state. Done on a wait or an already-attested item PATCHes; anything else opens Close as merged so a project owner can record the merge commit instead of silently 409ing." },
       { num: 2, h: "Reorder", b: "Drag a row to change its position — the new order persists." },
-      { num: 3, h: "Filter & inspect", b: "Use the status chips to filter and the top-bar search to find by title or id. Click a row for its detail panel: description, blocker, PR, and linked memory." },
-      { num: 4, h: "Graduation checklist", b: "Saving a gitops model files a checklist on this stream: observe the remote, confirm HEAD, stop pushing to base, open one PR, prove the contract live, first tagged cut. Those are process, not code — they stall in review until evidenced (P23). Graphban does not run git." },
+      { num: 3, h: "Board and List", b: "Board is the default layout, with a column per status. List is the other layout: one priority-ordered row per item. Both show the same items, filters and detail panel." },
+      { num: 4, h: "Filter & inspect", b: "Use the status chips to filter and the top-bar search to find by title or id. Click a row for its detail panel: description, blocker, PR, and linked memory." },
+      { num: 5, h: "Graduation checklist", b: "Saving a gitops model files a checklist on this stream: observe the remote, confirm HEAD, stop pushing to base, open one PR, prove the contract live, first tagged cut. Those are process, not code — they stall in review until evidenced (P23). Graphban does not run git." },
     ],
     related: [
       { label: "MCP Tools", to: "/mcp-tools" },
@@ -247,7 +248,7 @@ const CONTENT: Record<string, DocEntry> = {
     title: "MCP Tools",
     tagline: "The tool surface agents call — with live metrics.",
     sections: [
-      { num: 1, h: "The surface", b: "78 live tools over a JSON-RPC endpoint (POST /api/mcp) — 35 core, shipped to every key, the rest by tier. Each card shows its params, description, and call count." },
+      { num: 1, h: "The surface", b: "78 live tools over a JSON-RPC endpoint (POST /api/mcp) — 35 core, which is what a read+write key with no extra tiers is shown (a read-only key does not get the write tools), the rest by tier. Each card shows its params, description, and call count." },
       { num: 2, h: "Authenticate agents", b: "Mint an API key in Settings → API keys, then call the endpoint with it. Looking for API keys? is that mint — Graphban keys, not an LLM secret. A seat on Fleet is a role for one session, not a key. Every call is metered here." },
       { num: 3, h: "Where keys come from", b: "Two paths, one key shape. Mint on Settings → API keys, or provision the first one without a browser: `graphban init` runs once on a virgin instance and creates the operator, the project, and its first key — `--key-scope` and `--key-tiers` are the same axes as the mint dialog. This page is the catalog; it does not mint keys." },
       { num: 4, h: "Scope and tiers", b: "A Project-scoped key points the agent's writes at one project; a Global key is unbound, so calls pass `project_id` (or fall back to the default). The connect snippets follow the key: where the harness supports scoping (Claude Code, Grok CLI), a project key gets `--scope project` and a global key `--scope user`. Tiers (prd / codegraph / fleet / misc) decide which specialist tools the agent can SEE in its manifest — visibility, not permission: scopes and roles decide what may be called. Keys are shown once and stored only as a hash; a lost key is a new mint." },
@@ -350,7 +351,7 @@ const CONTENT: Record<string, DocEntry> = {
     sections: [
       { num: 1, h: "Three kinds", b: "This page mints Graphban keys. LLM credentials (what the box runs on) live on AI Providers — Looking for LLM credentials? is that question. An agent key talks to MCP — read and write on items, memory, and code. A link key pushes a code graph from a local box into exactly one project and nothing else — same object Sync / Link mints. The name field is Link key name, not Key name. A gate key attests that work was checked so an item may reach done: for CI or a reviewer, never for the agent doing the work. Gate is minted with read+write+gate; gate alone cannot attest." },
       { num: 2, h: "Scope is the write target", b: "Project pins the agent's writes to the active project. Global is unbound — calls pass project_id or fall back to the default. Connect snippets follow the key: Claude Code and Grok CLI get --scope project or --scope user. Sync and gate always pin to one project. The picker is Link key target project, not Sync target — same label Cloud / Sync uses." },
-      { num: 3, h: "Advertisement is not permission", b: "An agent key ships the core tools. Tiers (PRDs, code-graph writes, fleet admin, occasional) opt in specialist tools because they cost manifest tokens every turn. A tool left out of tools/list is still callable; scopes and roles decide what may be called. Visibility is not the gate. The symptom of a missing tier is an agent that does not know a tool exists, never an error. The Fleet admin tier is for the supervisor or planner key — being in a fleet needs a seat, not this tier." },
+      { num: 3, h: "Advertisement is not permission", b: "An agent key shows the core tools it can use: a read+write key with no extra tiers sees the core set, and a read-only key does not get the write tools. Tiers (PRDs, code-graph writes, fleet admin, occasional) opt in specialist tools because they cost manifest tokens every turn. A tool left out of tools/list is still callable; scopes and roles decide what may be called. Visibility is not the gate. The symptom of a missing tier is an agent that does not know a tool exists, never an error. The Fleet admin tier is for the supervisor or planner key — being in a fleet needs a seat, not this tier." },
       { num: 4, h: "Shown once", b: "The plaintext is shown once and stored as a hash. A lost key is a new mint. Two paths, one key shape: mint here, or graphban init --key-scope / --key-tiers on a virgin instance." },
       { num: 5, h: "Minted with", b: "After the banner, Minted with on each row opens what that key was minted with: scopes, advertised MCP tool groups and how many tools its tools/list carries, project/global, expiry. The count is the server's, from the same manifest the key is shipped, so a key that shows 34 tools has no tier, whatever was intended at mint. Tools are listed for agent keys only — a link key and a gate key do not call MCP, so a tools line on them would name a capability they do not have. core is always named; no extra tiers is core-only, not missing." },
       { num: 6, h: "Seats are not keys", b: "A seat on Fleet grants a role for one session and expires. Put the API key in MCP config once; issue a seat per agent per wave. A wave-tagged key minted on Fleet is swept by End wave — it is labelled here so it cannot look like a hand-minted key." },
@@ -518,8 +519,9 @@ const CONTENT: Record<string, DocEntry> = {
     title: "Galaxy",
     tagline: "How this org's repos relate — every edge names the file that proves it.",
     sections: [
-      { num: 1, h: "Evidence, not similarity", b: "Two repos that both describe authentication are not related. Two repos where one's lockfile names the other are. Hover an edge for the file." },
-      { num: 2, h: "Stale is a filter, not absence", b: "Hiding stale edges does not mean the org has no internal dependencies. The empty state keys off what the org HAS, not what is currently drawn." },
+      { num: 1, h: "This is the console", b: "Galaxy is part of the org plane, and the org plane is the console, not a page of this app. This app redirects its paths to the matching console page; project-level help stays here." },
+      { num: 2, h: "Evidence, not similarity", b: "Two repos that both describe authentication are not related. Two repos where one's lockfile names the other are. Hover an edge for the file." },
+      { num: 3, h: "Stale is a filter, not absence", b: "Hiding stale edges does not mean the org has no internal dependencies. The empty state keys off what the org HAS, not what is currently drawn." },
     ],
   },
 
@@ -528,7 +530,8 @@ const CONTENT: Record<string, DocEntry> = {
     title: "Users & access",
     tagline: "Memberships and invites — the seat meter runs ahead of the table.",
     sections: [
-      { num: 1, h: "Seats include pending invites", b: "The meter counts memberships plus outstanding invites, so it looks ahead of the table. Showing the number without that is why the table looks like a lie." },
+      { num: 1, h: "This is the console", b: "Users & access is part of the org plane, and the org plane is the console, not a page of this app. This app redirects its paths to the matching console page; project-level help stays here." },
+      { num: 2, h: "Seats include pending invites", b: "The meter counts memberships plus outstanding invites, so it looks ahead of the table. Showing the number without that is why the table looks like a lie." },
     ],
   },
 
@@ -537,7 +540,7 @@ const CONTENT: Record<string, DocEntry> = {
     title: "Roles & permissions",
     tagline: "People-roles. Fleet roles are a seat, not a credential.",
     sections: [
-      { num: 1, h: "Not a missing page", b: "If you can open this, the speculative flag is on. A URL that 404s when the flag is off is the decision, not an oversight." },
+      { num: 1, h: "This is the console", b: "Roles & permissions is part of the org plane, and the org plane is the console, not a page of this app. This app redirects its paths to the matching console page; project-level help stays here." },
       { num: 2, h: "People, not fleet", b: "These are roles for people. Agent roles — planner, worker, reviewer — are a seat on Fleet, enforced at call time — not a credential. A change on this screen cannot grant or remove one. That word is an LLM provider row." },
     ],
     related: [
@@ -551,7 +554,8 @@ const CONTENT: Record<string, DocEntry> = {
     title: "Teams",
     tagline: "A grant writes real project memberships. It is not resolved later.",
     sections: [
-      { num: 1, h: "Grants materialize", b: "Setting a grant writes memberships now. Revoking one removes them. This is not a filter applied when someone asks for a page." },
+      { num: 1, h: "This is the console", b: "Teams is part of the org plane, and the org plane is the console, not a page of this app. This app redirects its paths to the matching console page; project-level help stays here." },
+      { num: 2, h: "Grants materialize", b: "Setting a grant writes memberships now. Revoking one removes them. This is not a filter applied when someone asks for a page." },
     ],
   },
 
@@ -570,7 +574,8 @@ const CONTENT: Record<string, DocEntry> = {
     title: "Org integrations",
     tagline: "Connector × project. There is no org-level GitHub toggle.",
     sections: [
-      { num: 1, h: "PlatformConfig is per project", b: "GitHub and Drive are real. Jira, Linear, Confluence, Trello are not on this row — they carry their own chip so a missing connection is not drawn as off." },
+      { num: 1, h: "This is the console", b: "Org integrations is part of the org plane, and the org plane is the console, not a page of this app. This app redirects its paths to the matching console page; project-level help stays here." },
+      { num: 2, h: "PlatformConfig is per project", b: "GitHub and Drive are real. Jira, Linear, Confluence, Trello are not on this row — they carry their own chip so a missing connection is not drawn as off." },
     ],
   },
 
@@ -579,7 +584,8 @@ const CONTENT: Record<string, DocEntry> = {
     title: "Billing",
     tagline: "Limits, and Checkout when self-serve is on.",
     sections: [
-      { num: 1, h: "Two modes", b: "Unset Stripe keys keep operator-assigned plans — that is not a broken billing page. When self-serve is on, Checkout upgrades Pro/Team and the portal manages the subscription. Enterprise is operator-assigned even then — Checkout is Pro/Team only, not a missing button; portal still if a customer exists. There is still no invoice list and no usage chart — OrgUsage holds one row per period. An operator can still assign a plan by hand." },
+      { num: 1, h: "This is the console", b: "Billing is part of the org plane, and the org plane is the console, not a page of this app. This app redirects its paths to the matching console page; project-level help stays here." },
+      { num: 2, h: "Two modes", b: "Unset Stripe keys keep operator-assigned plans — that is not a broken billing page. When self-serve is on, Checkout upgrades Pro/Team and the portal manages the subscription. Enterprise is operator-assigned even then — Checkout is Pro/Team only, not a missing button; portal still if a customer exists. There is still no invoice list and no usage chart — OrgUsage holds one row per period. An operator can still assign a plan by hand." },
     ],
   },
 
@@ -588,7 +594,7 @@ const CONTENT: Record<string, DocEntry> = {
     title: "Branding",
     tagline: "Speculative — gated on the route, not only the nav.",
     sections: [
-      { num: 1, h: "Not a missing page", b: "If you can open this, the speculative flag is on. A URL that 404s when the flag is off is the decision, not an oversight." },
+      { num: 1, h: "This is the console", b: "Branding is part of the org plane, and the org plane is the console, not a page of this app. This app redirects its paths to the matching console page; project-level help stays here." },
     ],
   },
 
@@ -599,8 +605,9 @@ const CONTENT: Record<string, DocEntry> = {
     title: "Operator",
     tagline: "Every tenant on this deployment, at a glance.",
     sections: [
-      { num: 1, h: "The same four counters", b: "Numbers here are summed from what an org sees on its own billing screen. A figure only the operator can see is a figure nobody can reconcile." },
-      { num: 2, h: "Orgs, users, licensing", b: "Issue a platform invite from Licensing. The first org appears here when it is redeemed — an empty list is a fresh install, not a fault." },
+      { num: 1, h: "This is the console", b: "The operator view is part of the org plane, and the org plane is the console, not a page of this app. This app redirects its paths to the matching console page; project-level help stays here." },
+      { num: 2, h: "The same four counters", b: "Numbers here are summed from what an org sees on its own billing screen. A figure only the operator can see is a figure nobody can reconcile." },
+      { num: 3, h: "Orgs, users, licensing", b: "Issue a platform invite from Licensing. The first org appears here when it is redeemed — an empty list is a fresh install, not a fault." },
     ],
   },
 };
