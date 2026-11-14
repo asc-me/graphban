@@ -704,3 +704,45 @@ def test_the_board_query_is_bounded(client, key, proj, db):
     board = dsvc.for_board(db, proj)[planner]
     assert board["closed"] == 13 and board["open"] == 1
     assert len(board["rows"]) == 1 + dsvc.BOARD_CLOSED_MAX
+
+
+# ---- GRPH-933: a bounce that names the tier the work needs --------------------------------
+
+def test_a_needs_tier_bounce_is_unpinned_and_briefs_that_tier(client, key, db):
+    """GRPH-933. A cheap builder bounced because it cannot produce the sabotage receipt: the
+    bounce names `needs_tier=frontier`, the cheap author is NOT pinned (it cannot fix it), the
+    brief says frontier with basis `needs_tier`, and a seat is minted at once.
+    Sabotage: drop `needs` from `tier_for` — the basis reads `bounced` and this fails."""
+    planner = _agent(client, key, "planner")
+    item, did, child = _linked(client, key, db, planner, "needs-tier", model="qwen", tier="cheap")
+    _ok(_mcp(client, key, "update_item", {"id": item, "status": "review", "agent_id": child}))
+    reviewer = _agent(client, key, "reviewer-nt", capabilities={"instance": "rev-nt"})
+    out = _ok(_mcp(client, key, "bounce", {
+        "id": item, "agent_id": reviewer, "needs_tier": "frontier",
+        "reason": "effort 13 needs a sabotage receipt the cheap tier cannot produce"}))
+    assert out["status"] == "next"
+    stored = _stored(db, item)
+    assert stored.bounce_pinned_to is None and stored.bounce_pinned_until is None
+    assert stored.bounce_reason.startswith("needs_tier=frontier: effort 13")
+    assert fleet_svc.bounce_needs_tier(stored) == "frontier"
+    brief = _details(client, key, item)["brief"]
+    assert brief["tier"] == {"value": "frontier", "basis": "needs_tier"}
+    assert brief["pinned"] is None
+    assert _ok(_delegate(client, key, item, planner, tier="frontier", seat=True))["enrolment_code"]
+
+
+def test_a_plain_bounce_names_no_tier_and_an_unknown_tier_is_refused(client, key, db):
+    """GRPH-933. Without `needs_tier` nothing changes (pinned, no marker); a tier outside
+    TIERS is a validation error and leaves the item in review."""
+    planner = _agent(client, key, "planner")
+    item, did, child = _bounced(client, key, db, planner, title="plain-tier")
+    stored = _stored(db, item)
+    assert fleet_svc.bounce_needs_tier(stored) is None and stored.bounce_pinned_to == child
+
+    item, did, child = _linked(client, key, db, planner, "bad-tier")
+    _ok(_mcp(client, key, "update_item", {"id": item, "status": "review", "agent_id": child}))
+    reviewer = _agent(client, key, "reviewer-bt", capabilities={"instance": "rev-bt"})
+    e = _err(_mcp(client, key, "bounce", {"id": item, "agent_id": reviewer,
+                                          "reason": "x", "needs_tier": "galaxy"}))
+    assert "needs_tier" in e["message"]
+    assert _stored(db, item).status == "review"

@@ -3200,8 +3200,18 @@ def reopen_on_red(db: Session, item: Item, arrived: list,
     check = pred.get("detail") or pred.get("name")
     reason = (f"{REOPEN_ON_RED_RULE}: CI failed {items_svc.CI_PREDICATE} at the signed-off head "
               f"{commit[:12]} — failing check: {check}; run: {run}")
+    # GRPH-933. A bounce that says the work needs another tier — a cheap builder cannot
+    # produce the sabotage receipt the gate asks for — is not one the author can fix. Pinning
+    # it back to them for a lease only delays the re-seat, and a plain prose reason left the
+    # next cheap child to fail the same gate. The tier is written where the brief and
+    # `gbfleet until` read it, so the item is re-seated at that tier rather than looping.
+    if needs_tier is not None:
+        from app.services.delegation import TIERS
+        needs_tier = needs_tier.strip()
+        if needs_tier not in TIERS:
+            raise ValueError(f"needs_tier must be one of {list(TIERS)}")
     release_reservations(db, item_id=item.id)
-    author = item.built_by
+    author = None if needs_tier else item.built_by
     item.status = "next"
     item.claimed_by = None
     item.claimed_at = None
@@ -3825,8 +3835,26 @@ def _require_bounceable(item: Item) -> None:
     _require_in_review(item, "bounce")
 
 
+#: The structured head of a bounce reason that names the tier the work needs (GRPH-933).
+NEEDS_TIER_PREFIX = "needs_tier="
+
+
+def bounce_needs_tier(item: Item) -> str | None:
+    """The tier the LAST bounce said this work needs, or None (GRPH-933).
+
+    Read from the kept reason's head, which `bounce` writes itself and nothing else does, so
+    it is a structured field in a string column rather than a guess at prose. Cleared by the
+    next bounce, which rewrites the reason.
+    """
+    reason = item.bounce_reason or ""
+    if not reason.startswith(NEEDS_TIER_PREFIX):
+        return None
+    tier = reason[len(NEEDS_TIER_PREFIX):].split(":", 1)[0].strip()
+    return tier or None
+
+
 def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
-           lease_seconds: int = DEFAULT_LEASE_SECONDS) -> Item:
+           lease_seconds: int = DEFAULT_LEASE_SECONDS, needs_tier: str | None = None) -> Item:
     """Send an item back to `next`, pinned to its AUTHOR for one lease period (D-f).
 
     The author still has the worktree, the branch and the context; handing half-finished work
@@ -3847,8 +3875,18 @@ def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
         # A bounce without a reason is a rejection the author cannot act on, and it costs
         # them a full cycle to discover that.
         raise ValueError("bounce requires a reason")
+    # GRPH-933. A bounce that says the work needs another tier — a cheap builder cannot
+    # produce the sabotage receipt the gate asks for — is not one the author can fix. Pinning
+    # it back to them for a lease only delays the re-seat, and a plain prose reason left the
+    # next cheap child to fail the same gate. The tier is written where the brief and
+    # `gbfleet until` read it, so the item is re-seated at that tier rather than looping.
+    if needs_tier is not None:
+        from app.services.delegation import TIERS
+        needs_tier = needs_tier.strip()
+        if needs_tier not in TIERS:
+            raise ValueError(f"needs_tier must be one of {list(TIERS)}")
     release_reservations(db, item_id=item.id)
-    author = item.built_by
+    author = None if needs_tier else item.built_by
     item.status = "next"
     item.claimed_by = None
     item.claimed_at = None
@@ -3865,7 +3903,7 @@ def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
                                 if author else None)
     # KEPT, not just demanded (GRPH-378). Requiring a reason and dropping it left the author
     # exactly where a reasonless bounce would — the rejection arrives, the fix does not.
-    item.bounce_reason = reason.strip()
+    item.bounce_reason = (f"{NEEDS_TIER_PREFIX}{needs_tier}: " if needs_tier else "") + reason.strip()
     from app.services import delegation as delegation_svc
     from app.services import harness as harness_svc
     if not unmerged:

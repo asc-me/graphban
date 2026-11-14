@@ -2420,7 +2420,18 @@ def _delegate_next(
             details = details_for[candidate]
             brief = details.get("brief") if isinstance(details.get("brief"), dict) else {}
             lane = str(((brief.get("lane") or {}).get("value")) or "backend")
-            want = str(request or ((brief.get("tier") or {}).get("value")) or "cheap")
+            suggested = brief.get("tier") if isinstance(brief.get("tier"), dict) else {}
+            want = str(request or suggested.get("value") or "cheap")
+            # GRPH-933. A bounce that NAMED the tier the work needs outranks `--tier`: the
+            # flag is a default for unknown work, and re-seating at a tier a reviewer has
+            # already said cannot do it is the loop this closes (a cheap child bounced for a
+            # sabotage receipt it cannot produce, re-seated cheap, bounced again).
+            if suggested.get("basis") == "needs_tier" and suggested.get("value") \
+                    and str(suggested["value"]) != want:
+                observe.emit("tier_raised", item=candidate,
+                             detail=f"{candidate}: last bounce needs_tier={suggested['value']}; "
+                                    f"requesting it instead of {want}")
+                want = str(suggested["value"])
             note = f"gbfleet until, wave {wave_name}"
             code: str | None = None
             try:
