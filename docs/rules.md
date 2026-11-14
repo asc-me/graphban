@@ -1,5 +1,33 @@
 # Rules
 
+## Using the Rules page
+
+**Rules** shows how work moves through the project and what holds each step. The seven stages
+are fixed and always drawn whole: Spec, Plan, Build, Review, Merge, Release, Learn. Each rule hangs
+off the stage it governs. A rule your gitops model does not use stays drawn, dimmed and marked
+NOT USED.
+
+**A stage is only as strong as its weakest rule.** Levels are shown by icon and word, never
+colour alone: ENFORCED (the server refuses), CHECKED (CI or a scan reports), EXTERNAL (held
+outside Graphban, not verified), ADVISORY (agents are told, nothing refuses) and UNMEASURED (no value).
+The legend counts every registered rule.
+
+Main actions:
+
+- **Click a stage** to open the inspector: its rules, weakest first, what enforces each, where
+  its truth lives, and the effective gitops value with its source.
+- **Quick configure** applies a strictness level in one step; **Set up rules** is the wizard that
+  asks about your repo. Both show the changes for one reason before applying, and leaving
+  mid-way asks before discarding your answers. They need a role that can change rules.
+- **Change a rule value** (for example the memory write mode or test scope) with a reason; the
+  change appears in the rule's history.
+
+Reading what you see: a checked rule with no result says "Nothing has reported yet. That is not
+a pass." "No rules registered for this stage yet" means none are registered, not that the stage
+is safe. If the org's gitops cannot be reached, no values are shown rather than guessed.
+
+The sections below are implementer notes.
+
 ## Installing a rule pack takes effect on every worker (GRPH-1418)
 
 A server can run several uvicorn workers, each with its own copy of the rule library. The
