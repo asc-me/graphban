@@ -183,3 +183,27 @@ def test_an_agent_key_cannot_write_a_batch(client, org):
     finally:
         db.close()
     assert _events() == []
+
+
+def test_a_gitops_patch_rides_the_batch_and_a_rule_refusal_leaves_it_unwritten(client, org):
+    from app.models import Project
+
+    pid = org["a"]
+    r = client.put("/api/rules/toggles", params={"project_id": pid}, headers=org["owner"],
+                   json={"toggles": [{"rule_id": A, "on": True}, {"rule_id": "no.such", "on": True}],
+                         "reason": "r", "gitops": {"base_branch": "release"}})
+    assert r.status_code == 404, r.text
+    db = _db()
+    try:
+        assert db.get(Project, pid).gitops_base_branch in (None, "")
+    finally:
+        db.close()
+    r = client.put("/api/rules/toggles", params={"project_id": pid}, headers=org["owner"],
+                   json={"toggles": [{"rule_id": A, "on": True}], "reason": "r",
+                         "gitops": {"base_branch": "release"}})
+    assert r.status_code == 200, r.text
+    db = _db()
+    try:
+        assert db.get(Project, pid).gitops_base_branch == "release"
+    finally:
+        db.close()

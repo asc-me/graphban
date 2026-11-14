@@ -64,8 +64,6 @@ export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narr
   const [reason, setReason] = React.useState("");
   const [sheetOpen, setSheetOpen] = React.useState(false);
   const [sheetError, setSheetError] = React.useState<string | null>(null);
-  // True when the rule batch saved but the gitops patch after it was refused: the copy must say so.
-  const [rulesSaved, setRulesSaved] = React.useState(false);
 
   const gitopsEditable = !!gitops && gitops.control.writable && gitops.control.state === "local";
   const rules = stageRules(stage);
@@ -154,32 +152,28 @@ export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narr
     setSheetError(null);
     setRuleErrors({});
     setGitopsErrors({});
-    setRulesSaved(false);
-    let savedRules = false;
-    if (entries.length > 0) {
-      try {
-        await saveRules.mutateAsync({ toggles: entries, reason: reason.trim() });
-      } catch (err) {
-        // All-or-nothing: nothing was saved. Back to the draft, the reason and the rest kept.
-        place(err);
-        if (entries.some((e) => errorDetail(err, "").startsWith(`${e.rule_id}: `))) setSheetOpen(false);
-        return;
-      }
-      setDraft({});
-      savedRules = true;
-    }
-    if (Object.keys(patch).length > 0) {
-      try {
+    const hasPatch = Object.keys(patch).length > 0;
+    // One outcome (GRPH-1632): the rule batch and the gitops patch go in one server call, so a
+    // refusal on either leaves both unwritten. A gitops-only change is its own single write.
+    try {
+      if (entries.length > 0) {
+        await saveRules.mutateAsync({ toggles: entries, reason: reason.trim(), ...(hasPatch ? { gitops: patch } : {}) });
+      } else if (hasPatch) {
         await saveGitops.mutateAsync(patch);
-      } catch (err) {
+      }
+    } catch (err) {
+      const detail = errorDetail(err, "");
+      const ruleHit = entries.some((e) => detail.startsWith(`${e.rule_id}: `));
+      if (hasPatch && !ruleHit) {
         const field = Object.keys(patch)[0];
         setGitopsErrors({ [field]: errorDetail(err, "Could not save gitops.") });
-        // The rule batch (if any) is already saved; only the gitops setting is left in the draft.
-        setRulesSaved(savedRules);
-        setSheetOpen(false);
-        return;
+      } else {
+        place(err);
       }
+      setSheetOpen(false);
+      return;
     }
+    setDraft({});
     setSheetOpen(false);
     onClose();
   }
@@ -204,11 +198,7 @@ export function StageEditor({ stage, narrow, onClose }: { stage: RuleStage; narr
         </Button>
       </div>
       {firstParamError && <p role="alert" className="text-[12px] text-st-blocked">{firstParamError}</p>}
-      {hasRuleErrors && rulesSaved && gitopsRefusal ? (
-        <p className="text-[12px] text-fg-2" data-testid="rules-draft-partly-saved">
-          The rule changes were saved; the gitops setting was refused: “{gitopsRefusal}”. Fix it below and review again.
-        </p>
-      ) : hasRuleErrors ? (
+      {hasRuleErrors ? (
         <p className="text-[12px] text-fg-2" data-testid="rules-draft-refused">
           Nothing was saved. Fix the {gitopsRefusal ? "gitops setting" : "rule"} below and review again; the rest of your draft is kept.
         </p>

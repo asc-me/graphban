@@ -277,23 +277,11 @@ def get_gitops(project_id: str, db: Session = Depends(get_db),
 def patch_gitops(project_id: str, body: GitopsPatch, db: Session = Depends(get_db),
                  user: User = Depends(get_current_user)):
     project = _load_project(db, project_id)
-    if settings.hosted_mode:
-        if not project.org_id:
-            raise HTTPException(404, "project not found")
-        authz.require_org_admin(db, user.id, project.org_id)
-    else:
-        if code_sync.link_status(db)["linked"]:
-            raise Refused(403, gitops.LINKED_PATCH_DETAIL, rule_id="gitops.owned_by_org")
-        authz.require_writable(db, user.id, project_id)
     try:
-        changed = gitops.apply_patch(project, {k: getattr(body, k) for k in body.model_fields_set})
+        changed = gitops.stage_patch(db, user, project,
+                                     {k: getattr(body, k) for k in body.model_fields_set})
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
-    # THE CALL (GRPH-631). Filing lives in gitops.file_migration_plan via items.create_item,
-    # not a second create in this handler. Deleting this branch leaves PATCH 200 and no
-    # checklist — the tests assert on GET /api/items, not on the helper.
-    if "model" in changed and project.gitops_model:
-        gitops.file_migration_plan(db, project)
     db.commit()
     db.refresh(project)
     events_svc.record_user(
