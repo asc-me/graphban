@@ -324,10 +324,20 @@ def presence_state(agent: Agent, *, lease_seconds: int = DEFAULT_LEASE_SECONDS,
     return agent.state if agent.state in STATES else "idle"
 
 
+#: `gbfleet service install` restarts a drain this often (launchd StartInterval), and the margin
+#: covers a slow cycle. A drain whose last agent was seen inside the sum is "scheduled", not gone.
+DRAIN_RESTART_INTERVAL_SECONDS = 300
+DRAIN_RESTART_MARGIN_SECONDS = 120
+
+
 def drain_status(db: Session, project_id: str, prd_id: str | None, *,
                  lease_seconds: int = DEFAULT_LEASE_SECONDS,
                  now: datetime | None = None) -> str:
-    """`live | not_live | unknown` — is a drain running for this PRD (GRPH-1529, P75 D5).
+    """`live | scheduled | not_live | unknown` — is a drain running for this PRD (GRPH-1529, P75 D5).
+
+    `scheduled` (GRPH-1649): nobody is in presence, but an agent on a seat for the PRD was last
+    seen inside the service restart interval plus a margin — a service drain between cycles,
+    which picks the ticket up on its next run. Past that window with no record it is `not_live`.
 
     Live means an agent on a seat scoped to `prd_id`, or on an unscoped seat in the project,
     is inside presence (`presence_state`, the one presence rule). A ticket with no PRD uses the
@@ -339,13 +349,18 @@ def drain_status(db: Session, project_id: str, prd_id: str | None, *,
         rows = db.execute(
             select(Agent, Enrolment.prd_id).join(Enrolment, Agent.enrolment_id == Enrolment.id)
             .where(Agent.project_id == project_id)).all()
+        window = timedelta(seconds=DRAIN_RESTART_INTERVAL_SECONDS + DRAIN_RESTART_MARGIN_SECONDS)
+        scheduled = False
         for agent, seat_prd in rows:
             if prd_id is not None and seat_prd not in (None, prd_id):
                 continue
             if presence_state(agent, lease_seconds=lease_seconds, now=now) in (
                     "idle", "working", "reviewing"):
                 return "live"
-        return "not_live"
+            seen = _aware(agent.last_seen_at)
+            if seen is not None and agent.state != "quarantined" and now - seen <= window:
+                scheduled = True
+        return "scheduled" if scheduled else "not_live"
     except Exception:  # noqa: BLE001 — any failed read is "unknown", by contract
         return "unknown"
 

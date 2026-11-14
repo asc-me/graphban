@@ -60,7 +60,7 @@ def alert_dict(db: Session, row: Alert) -> dict:
         from app.services import fleet as fleet_svc
 
         drain = fleet_svc.drain_status(db, wait.project_id, holder.prd_id if holder is not None else None)
-    impact = "drain_waiting" if drain == "live" else "blocks" if ticket is not None else "question"
+    impact = "drain_waiting" if drain in ("live", "scheduled") else "blocks" if ticket is not None else "question"
     project = db.get(Project, row.project_id)
     return {
         "id": row.id, "kind": row.kind, "project": row.project_id,

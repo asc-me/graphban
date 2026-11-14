@@ -6,8 +6,9 @@ import type { DrainNote as DrainNoteData } from "@/lib/types";
 export const DRAIN_UNKNOWN = "Could not check for a running drain.";
 
 /** Anything but live / not_live is a failed read: never "no drain is running". */
-export function drainStatusOf(drain: Partial<DrainNoteData> | null | undefined): "live" | "not_live" | "unknown" {
-  return drain?.status === "live" || drain?.status === "not_live" ? drain.status : "unknown";
+export function drainStatusOf(drain: Partial<DrainNoteData> | null | undefined): "live" | "scheduled" | "not_live" | "unknown" {
+  const st = drain?.status;
+  return st === "live" || st === "scheduled" || st === "not_live" ? st : "unknown";
 }
 
 /** The Processed line's compact form: a live drain's message joins the result sentence. */
@@ -22,7 +23,7 @@ export function DrainNote({
 }) {
   const s = drainStatusOf({ status } as Partial<DrainNoteData>);
   const [copyFailed, setCopyFailed] = useState(false);
-  const showProjectWide = (s === "live" || s === "not_live") && !prd;
+  const showProjectWide = (s === "live" || s === "scheduled" || s === "not_live") && !prd;
   const tag = prd ? prd : showProjectWide ? "PROJECT-WIDE · NO PRD" : null;
   const box = s === "unknown" ? "border border-dashed border-red-500/50 bg-red-500/[0.06]" : "border border-line bg-surface";
 
@@ -37,7 +38,7 @@ export function DrainNote({
         </div>
       )}
       <div className={`mt-1.5 flex items-start gap-2 rounded-md px-3 py-2 ${box}`}>
-        {s === "live" && <span aria-hidden className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-st-done" />}
+        {(s === "live" || s === "scheduled") && <span aria-hidden className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-st-done" />}
         {s === "not_live" && (
           <span aria-hidden className="mt-1.5 h-2 w-2 shrink-0 rounded-full border border-faint-2" />
         )}

@@ -292,3 +292,45 @@ def test_blocked_open_decision_appears_once(client, auth, db):
                                question="Which store?", options=["a", "b"])
     ids = [r["id"] for r in _feed(client, auth)["rows"]]
     assert ids.count(it.key) == 1
+
+
+# --- GRPH-1649: a service drain between cycles is scheduled, not absent ----------------------
+
+
+def _seat_agent(db, prd, last_seen, num):
+    from app.models import Agent, Enrolment, utcnow
+
+    db.add(Enrolment(id=f"enr-sch-{num}", project_id="core", code_hash="x", role="worker",
+                     prd_id=prd.id, expires_at=utcnow() + timedelta(hours=1)))
+    db.flush()
+    db.add(Agent(id=f"core-A{num}", project_id="core", number=num, enrolment_id=f"enr-sch-{num}",
+                 state="idle", last_seen_at=last_seen))
+    db.commit()
+
+
+def test_drain_between_cycles_is_scheduled_stopped_is_not_live_failed_read_is_unknown(db):
+    from app.models import utcnow
+    from app.services import fleet as fleet_svc
+    from app.services import waits as waits_svc
+
+    prd, _, wait = _answered_pair(db)
+    # Seen two minutes ago: past presence, inside the restart interval -> scheduled.
+    _seat_agent(db, prd, utcnow() - timedelta(seconds=200), 91)
+    assert fleet_svc.drain_status(db, "core", prd.id) == "scheduled"
+    note = waits_svc.drain_note(db, wait)
+    assert note["status"] == "scheduled" and "No drain is running" not in note["message"]
+    assert "command" not in note
+
+    # Seen long ago: nothing recorded within interval + margin -> not_live with the command.
+    from app.models import Agent
+    db.get(Agent, "core-A91").last_seen_at = utcnow() - timedelta(hours=1)
+    db.commit()
+    assert fleet_svc.drain_status(db, "core", prd.id) == "not_live"
+    assert waits_svc.drain_note(db, wait)["command"].startswith("gban fleet until")
+
+    # A failed read is unknown, never not_live.
+    assert waits_svc.drain_note(db, wait, status="unknown")["status"] == "unknown"
+    class Boom:
+        def execute(self, *a, **k):
+            raise RuntimeError("db down")
+    assert fleet_svc.drain_status(Boom(), "core", prd.id) == "unknown"
