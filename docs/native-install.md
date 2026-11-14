@@ -29,7 +29,7 @@ What it does, in order:
 
 1. Preflight — Postgres reachable, `vector` enabled, the API port free.
 2. Copies the release to `<root>/current`.
-3. Creates `<root>/venv` (outside the swapped release) and `pip install -e` the backend.
+3. Creates `<root>/venv` (outside the swapped release) and `pip install -e` the backend under constraints built from `backend/uv.lock`, then checks every locked package matches (see deploy.md, Invariants).
 4. Writes a LaunchDaemon or systemd system unit carrying `PORT`, `HOST` and `GIT_SHA`.
 5. Hands the unit to the supervisor and refuses if the job is not actually running.
 
