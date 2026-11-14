@@ -2257,6 +2257,12 @@ _FLEET_ONLY_ARGS = {
         "description": "Admit a predicate whose check COULD NOT run, as {predicate: reason} "
                        "— e.g. {\"commit_is_not_the_base\": \"built by hand, PR #913\"}. "
                        "Recorded on the receipt. Ignored for a predicate that ran and failed.",
+    }, "external_ci": {
+        # GRPH-1619. Only for an item tagged `repo:<owner/name>`: its CI never reports here.
+        "type": "object",
+        "description": "Item tagged `repo:<owner/name>` (work in another repo): cite that repo's "
+                       "CI run as {repo, commit, run_url, conclusion}. Recorded as yours, "
+                       "not as suite_green.",
     }},
     # GRPH-1031. Planner/supervisor retarget after a bounce. Fleet-only for the reason
     # every entry here is: the ceiling is measured on the base manifest, and a worker
@@ -3462,7 +3468,14 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             item = fleet_svc.sign_off(
                 db, item_id=keys.resolve_item(db, args["id"]) or args["id"],
                 agent_id=agent, evidence=args.get("evidence"), api_key=key,
-                commit=args.get("commit"), waive=args.get("waive"))
+                commit=args.get("commit"), waive=args.get("waive"),
+                external_ci=args.get("external_ci"))
+        except fleet_svc.ExternalCIRefused as e:
+            # GRPH-1619. Validation: the citation does not match the item or the commit.
+            raise errors.Validation(str(e), hint=(
+                "external_ci is for an item tagged `repo:<owner/name>` whose repo's CI does "
+                "not report here: pass {repo, commit, run_url, conclusion: 'success'} with "
+                "commit equal to this sign_off's commit"))
         except fleet_svc.WaiverShape as e:
             # `validation`, not `conflict`: the state is fine and the argument is malformed,
             # which is the one case here a caller fixes by changing its call rather than by
