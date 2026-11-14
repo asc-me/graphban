@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/lib/api";
 import type { RuleFlowRule, RuleProfiles, RulesFlow } from "@/lib/types";
 
-import { chipText, planFor, QuickConfigure, QuickConfigureBar, ruleIndex, type QuickScreen } from "./QuickConfigure";
+import { chipText, planFor, weakeningOf, QuickConfigure, QuickConfigureBar, ruleIndex, type QuickScreen } from "./QuickConfigure";
 
 vi.mock("@/lib/api", () => ({
   api: {
@@ -94,6 +94,16 @@ describe("planFor", () => {
     const applied = { profile: "regulated", version: "0.1.0", pack_version: "0.4.0", exceptions: ["a"], skipped: [], by: "u", at: "" };
     expect(chipText(applied, "Regulated", null)).toBe("Level: Regulated v0.1.0 · 1 exception");
     expect(chipText(applied, "Regulated", 2)).toBe("Level: Regulated v0.1.0 · 1 exception · drifted (2)");
+  });
+});
+
+describe("weakeningOf lists", () => {
+  const rule = { id: "merge.done_predicates", title: "Done predicates", value: true, params: { value: { predicates: ["suite_green", "scans_clean"] } } } as never;
+  const pin = (predicates: string[]) => ({ rule_id: "merge.done_predicates", state: "on", params: { predicates } }) as never;
+  it("flags a list that drops an entry, names it, and treats an emptied list as the floor", () => {
+    expect(weakeningOf(pin(["suite_green"]), rule)).toBe("WEAKENING: predicates drops scans_clean.");
+    expect(weakeningOf(pin([]), rule)).toBe("WEAKENING: predicates drops scans_clean.");
+    expect(weakeningOf(pin(["suite_green", "scans_clean", "x"]), rule)).toBeUndefined();
   });
 });
 

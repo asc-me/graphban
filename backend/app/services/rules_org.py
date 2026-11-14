@@ -218,6 +218,16 @@ def apply_project_profile(db: Session, user, project_id: str, profile_id: str, *
             "excepted": excepted, "skipped_locked": locked}
 
 
+def _loses_entries(now: dict, want: dict) -> bool:
+    """True when a list param now holds fewer entries than the level pinned (the hand edit
+    removed one); adding entries is not a loosening."""
+    for k, pinned in want.items():
+        cur = now.get(k)
+        if isinstance(pinned, list) and isinstance(cur, list) and any(e not in cur for e in pinned):
+            return True
+    return False
+
+
 def project_drift(db: Session, user, project_id: str, profile_id: str) -> dict:
     """How one project differs from the profile. A rule counts once however it differs;
     turning a pinned-on rule off is `weakening` (D13). The lock is not compared: a project
@@ -244,7 +254,8 @@ def project_drift(db: Session, user, project_id: str, profile_id: str) -> dict:
                          "detail": f"pinned {'on' if want_on else 'off'}, is "
                                    f"{'on' if on else 'off'} ({r['on']['source']})"})
         elif params != want_params:
-            rows.append({"rule_id": rid, "kind": "changed",
+            rows.append({"rule_id": rid,
+                         "kind": "weakening" if _loses_entries(params, want_params) else "changed",
                          "detail": f"pinned params {want_params}, are {params}"})
     title = prof.get("title", profile_id)
     n = len(rows)

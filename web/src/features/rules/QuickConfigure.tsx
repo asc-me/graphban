@@ -55,6 +55,9 @@ export function ruleIndex(flow: RulesFlow): Map<string, RuleFlowRule> {
   return new Map(flow.stages.flatMap((s) => s.rules).map((r) => [r.id, r]));
 }
 
+/** The predicates every deployment requires; an emptied `predicates` list falls back to these. */
+const CI_FLOOR: readonly string[] = ["suite_green"];
+
 const isOn = (r: RuleFlowRule) => r.value === true;
 const paramsOf = (r: RuleFlowRule) => (r.params?.value ?? {}) as Record<string, RuleParamValue>;
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -82,6 +85,12 @@ export function weakeningOf(pin: RuleProfilePin, rule: RuleFlowRule | undefined)
     if (opt?.risky) return `WEAKENING: ${k} becomes ${opt.label}. ${opt.explain}`;
     if (typeof after === "number" && typeof now[k] === "number" && after < (now[k] as number)) {
       return `WEAKENING: ${k} drops from ${now[k]} to ${after}.`;
+    }
+    if (Array.isArray(after) && Array.isArray(now[k])) {
+      // An emptied list follows the deployment, whose floor always holds the CI predicate.
+      const kept = after.length ? after : CI_FLOOR;
+      const lost = (now[k] as unknown[]).filter((e) => !kept.includes(e as string));
+      if (lost.length) return `WEAKENING: ${k} drops ${lost.join(", ")}.`;
     }
   }
   return undefined;

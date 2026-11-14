@@ -617,3 +617,12 @@ def _observe_more(pid):
         db.commit()
     finally:
         db.close()
+
+
+def test_a_list_param_that_loses_a_pinned_entry_is_weakening_and_adding_is_not():
+    """GRPH-1629: drift kind for list params."""
+    pinned = {"predicates": ["suite_green", "scans_clean"]}
+    assert RO._loses_entries({"predicates": ["suite_green"]}, pinned) is True
+    assert RO._loses_entries({"predicates": []}, pinned) is True
+    assert RO._loses_entries({"predicates": ["suite_green", "scans_clean", "extra"]}, pinned) is False
+    assert RO._loses_entries({"predicates": ["suite_green", "scans_clean"]}, pinned) is False
