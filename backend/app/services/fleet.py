@@ -2318,6 +2318,15 @@ class UncomparedPredicate(Exception):
     """
 
 
+class ExternalCIRefused(ValueError):
+    """`external_ci` on a sign_off that cannot stand as this item's CI evidence (GRPH-1619).
+
+    The item declares no other repo, the declared repo is this project's own, or the cited
+    run does not name that repo, the attested commit, or a successful conclusion. A
+    ValueError because the caller fixes it by changing the call (or by bouncing on a red run).
+    """
+
+
 class WaiverShape(ValueError):
     """`waive` arrived in a shape the server cannot read as {predicate: reason} (GRPH-1007).
 
@@ -3400,9 +3409,81 @@ def _predicate(name: str, *, compared: bool, detail: str, waived: dict) -> dict:
     return out
 
 
+_RUN_URL = re.compile(r"^https://", re.IGNORECASE)
+
+
+def _external_ci_receipt(db, item, agent_id: str, commit: str | None, cited) -> dict:
+    """The attestation a reviewer's `external_ci` citation becomes, or ExternalCIRefused.
+
+    `cited` is {repo, commit, run_url, conclusion}. Every field is checked against what the
+    server already knows: the repo against the item's `repo:` tag (and NOT this project's
+    own repo), the commit against the one this sign_off attests, the run URL against the
+    repo, and the conclusion must be `success` — a red run is a bounce, not a citation.
+    """
+    if isinstance(cited, str):
+        try:
+            cited = json.loads(cited)
+        except ValueError:
+            cited = None
+    if not isinstance(cited, dict):
+        raise ExternalCIRefused(
+            "external_ci must be an object {repo, commit, run_url, conclusion}")
+    repo = items_svc.external_repo(db, item)
+    if repo is None:
+        declared = items_svc.declared_repo(item)
+        raise ExternalCIRefused(
+            f"{item.key} cannot be signed off on external CI: "
+            + (f"the repo it declares ({declared}) is this project's own, and its CI reports "
+               "suite_green here — wait for that" if declared else
+               "it declares no other repo. An item whose work lives in another repository "
+               "carries a `repo:<owner/name>` tag; an in-repo item needs this repo's "
+               "suite_green"))
+    from app.services.projects import normalize_repo_url
+    raw_repo = str(cited.get("repo") or "").strip()
+    if raw_repo.count("/") == 1 and ":" not in raw_repo:
+        raw_repo = f"github.com/{raw_repo}"
+    try:
+        named = normalize_repo_url(raw_repo)
+    except ValueError:
+        named = None
+    if named != repo:
+        raise ExternalCIRefused(
+            f"external_ci.repo {cited.get('repo')!r} is not the repo {item.key} declares "
+            f"({repo})")
+    sha = str(cited.get("commit") or "").strip()
+    if not commit or not items_svc._COMMIT.match(sha) or not items_svc.same_commit(sha, commit):
+        raise ExternalCIRefused(
+            f"external_ci.commit {sha!r} must be the commit this sign_off attests "
+            f"({commit or 'none passed — pass commit=<head>'}), at least 7 hex characters")
+    run_url = str(cited.get("run_url") or "").strip()
+    host, owner_name = repo.split("/", 1)
+    if (not _RUN_URL.match(run_url) or any(ch.isspace() for ch in run_url)
+            or f"{host}/{owner_name}/".lower() not in run_url.lower() + "/"):
+        raise ExternalCIRefused(
+            f"external_ci.run_url {run_url!r} must be an https URL of a run in {repo}")
+    conclusion = str(cited.get("conclusion") or "").strip().lower()
+    if conclusion != "success":
+        raise ExternalCIRefused(
+            f"external_ci.conclusion is {conclusion or 'missing'!r}, not 'success': the "
+            f"external CI did not pass at {sha[:12]}. That is a bounce, not a citation")
+    return {
+        "kind": "attestation",
+        "adapter": items_svc.EXTERNAL_CI_ADAPTER,
+        "commit": commit,
+        "run_ref": run_url,
+        "predicates": [{
+            "name": items_svc.EXTERNAL_CI_PREDICATE,
+            "passed": True,
+            "detail": (f"{repo} CI run {run_url} concluded success at {sha[:12]}; cited by "
+                       f"reviewer {agent_id}. Not this repo's suite_green: {repo}'s CI does "
+                       "not report to Graphban"),
+        }],
+    }
+
+
 def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None = None,
              api_key=None, commit: str | None = None,
-             waive: dict | None = None) -> Item:
+             waive: dict | None = None, external_ci: dict | None = None) -> Item:
     """Take a reviewed item to `done`.
 
     The second of two independent gates on the invariant. `claim_review` already filters by
@@ -3684,11 +3765,23 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
             ],
         }])
         fresh, merged = fresh + attestation, merged + attestation
+    if external_ci:
+        # GRPH-1619: the deliverable is in a repo whose CI does not report to Graphban, so the
+        # reviewer cites that run. Recorded as the REVIEWER's receipt under its own adapter —
+        # never as `suite_green`, which only this repo's CI may attest.
+        cited = items_svc.normalize_evidence([_external_ci_receipt(db, item, agent_id, commit,
+                                                                   external_ci)])
+        fresh, merged = fresh + cited, merged + cited
+    else:
+        cited = []
     # THE CALL (GRPH-567). `update_item` already refuses `done` inside the cooldown;
     # this path used to write the status directly, so a reviewer who linked a PR and
     # signed it off in the same minute — the defect the cooldown tests name — sailed
     # through. Same helper, same message.
-    carried = items_svc.refuse_if_pr_cooling_down(db, item, evidence or [], commit=commit)
+    # The cited external run rides in with the caller's evidence: the cooldown re-reads the
+    # item's stored evidence plus what this call brings, and the citation is not stored yet.
+    carried = items_svc.refuse_if_pr_cooling_down(db, item, list(evidence or []) + cited,
+                                                  commit=commit)
     if carried:
         # GRPH-1411: the gate let this through on a run attested on another item; the note
         # naming that run is stored with the verdict.

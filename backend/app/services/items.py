@@ -1371,6 +1371,71 @@ def _carried_note(receipt: dict, commits) -> dict:
     }
 
 
+#: GRPH-1619. An item whose deliverable lives in ANOTHER repository declares it with a tag
+#: `repo:<host/owner/name>` (or `repo:<owner/name>`, read as GitHub). That repo's CI does not
+#: report to Graphban, so no `suite_green` can ever arrive for its head; a reviewer cites the
+#: external run instead, and `fleet.sign_off` records it under this adapter and predicate —
+#: never as `suite_green`, which stays this repo's CI's word alone.
+REPO_TAG_PREFIX = "repo:"
+EXTERNAL_CI_ADAPTER = "fleet.sign_off.external_ci"
+EXTERNAL_CI_PREDICATE = "external_ci_green"
+
+
+def declared_repo(item) -> str | None:
+    """The repo an item's `repo:` tag names, normalized (`github.com/owner/name`), or None.
+
+    A tag that does not read as a repo is not a declaration: the gate falls back to the
+    ordinary in-repo rules rather than guessing what was meant."""
+    from app.services.projects import normalize_repo_url
+
+    for t in item.tags or []:
+        t = str(t or "").strip()
+        if not t.lower().startswith(REPO_TAG_PREFIX):
+            continue
+        raw = t[len(REPO_TAG_PREFIX):].strip()
+        if raw.count("/") == 1 and "://" not in raw and ":" not in raw:
+            raw = f"github.com/{raw}"
+        try:
+            return normalize_repo_url(raw)
+        except ValueError:
+            return None
+    return None
+
+
+def external_repo(db, item) -> str | None:
+    """The OTHER repo this item's deliverable lives in, or None for an in-repo item.
+
+    None when nothing is declared, and None when the declared repo IS this project's own
+    `repo_url`: that repo's CI reports here, so `suite_green` is the only proof it gets."""
+    repo = declared_repo(item)
+    if repo is None:
+        return None
+    project = db.get(Project, item.project_id)
+    own = (getattr(project, "repo_url", None) or "").strip().lower() if project else ""
+    if own and own == repo:
+        return None
+    return repo
+
+
+def external_ci_green(db, item, evidence, commits) -> dict | None:
+    """The reviewer-cited external CI receipt at one of `commits`, for an external item only.
+
+    Read only through `external_repo`: an in-repo item carrying such a receipt (a tag
+    removed after sign_off, a hand-posted attestation) is NOT let through on it."""
+    repo = external_repo(db, item)
+    if repo is None:
+        return None
+    for a in valid_attestations(evidence):
+        if a.get("adapter") != EXTERNAL_CI_ADAPTER:
+            continue
+        names = {q.get("name") for q in a.get("predicates") or [] if q.get("passed") is True}
+        if EXTERNAL_CI_PREDICATE not in names:
+            continue
+        if any(same_commit(str(a.get("commit") or ""), c) for c in commits if c):
+            return a
+    return None
+
+
 def effective_required_predicates(db, project_id) -> list[str]:
     """The predicates `done` needs: the deployment's `required_predicates`, read live, plus the
     names the project added with the `merge.done_predicates` rule (GRPH-1426)."""
@@ -1384,6 +1449,10 @@ def refuse_if_predicates_missing(db, item, merged, head) -> None:
     `head`. Shared by `update_item` and `fleet.sign_off` (GRPH-1426): a sign-off passes the
     same gate. A predicate that did not run is not a pass."""
     required = effective_required_predicates(db, item.project_id)
+    # GRPH-1619: an item whose deliverable lives in another repo can never get this repo's
+    # `suite_green`; the reviewer's cited external run at the same head stands in for it.
+    if CI_PREDICATE in required and head and external_ci_green(db, item, merged, [head]):
+        required = [n for n in required if n != CI_PREDICATE]
     absent = missing_predicates(merged, required, commit=head or None)
     if absent:
         attested = sorted(attested_predicates(merged, commit=head or None))
@@ -1541,6 +1610,10 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
         return []
     commits = pr_commits(merged, commit, item.head_commit)
     if any(CI_PREDICATE in attested_predicates(merged, commit=c) for c in commits):
+        return []
+    # GRPH-1619: the PR is in another repo whose CI does not report here; a reviewer's cited
+    # external run at the head is the CI answer the cooldown was waiting for.
+    if external_ci_green(db, item, merged, commits):
         return []
     # GRPH-1404: `agent_full` says the builder's full suites are the proof and the PR's CI is
     # not required, so silence from CI does not block when full receipts exist on BOTH engines.
