@@ -52,3 +52,27 @@ def test_unknown_adapter_names_what_to_set(seen, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "--adapter" in err and "GBAN_ADAPTER" in err
     assert "argv" not in seen
+
+
+def test_until_prefers_the_cwd_project_over_the_login_default(seen, monkeypatch, capsys):
+    monkeypatch.setenv("GBAN_ADAPTER", "claude")
+    monkeypatch.delenv(config.PROJECT_ENV, raising=False)
+    monkeypatch.setattr("gban.cli._cwd_project", lambda args, configured: "p75-walk")
+    monkeypatch.setattr("gban.cli.config.settings", lambda: {"project": "agentledger"})
+    keys = []
+    monkeypatch.setattr("gban.cli.doctor_mod.resolve_supervisor_key",
+                        lambda project: keys.append(project) or "k")
+    assert main(["fleet", "until", "--prd", "P75W-P1"]) == 0
+    argv = seen["argv"]
+    assert argv[argv.index("--project") + 1] == "p75-walk"
+    assert keys == ["p75-walk"]
+    assert "p75-walk" in capsys.readouterr().err
+
+
+def test_until_with_a_named_project_skips_the_cwd(seen, monkeypatch):
+    monkeypatch.setenv("GBAN_ADAPTER", "claude")
+    monkeypatch.setattr("gban.cli._cwd_project",
+                        lambda *a: pytest.fail("asked the cwd"))
+    assert main(["fleet", "until", "--project", "p75-walk", "--prd", "P75W-P1"]) == 0
+    argv = seen["argv"]
+    assert argv.count("--project") == 1 and "p75-walk" in argv

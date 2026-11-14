@@ -183,7 +183,7 @@ def test_agent_answer_shows_source_quote_and_restart_command_on_the_row(client, 
     key = ticket.prd_key
     assert row["drain"] == {"status": "not_live", "prd": key,
                             "message": f"No drain is running for {key}.",
-                            "command": f"gban fleet until --prd {key}"}
+                            "command": f"gban fleet until --project core --prd {key}"}
     # Listed, but not waiting on anyone: it adds to no tab's count.
     assert f["counts"]["all"] == sum(r["kind"] != "answered" for r in f["rows"])
     assert f["waiting_on_person"] == 0
@@ -369,7 +369,7 @@ def test_unrecorded_or_stopped_drains_are_not_live_with_the_command(db):
     assert fleet_svc.drain_status(db, "core", prd.id) == "not_live"
     note = waits_svc.drain_note(db, wait)
     assert note["message"].startswith("No drain is running")
-    assert note["command"] == f"gban fleet until --prd {prd.key}"
+    assert note["command"] == f"gban fleet until --project core --prd {prd.key}"
 
     # A service whose newest record says stopped is stopped, though an older cycle is recent.
     _supervisor(db, 96, recent - timedelta(seconds=30), every=300)

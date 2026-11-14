@@ -608,7 +608,17 @@ def cmd_fleet(args) -> int:
     url = config.resolve(args.server, config.URL_ENV, "url")
     if url and "--server" not in argv:
         argv += ["--server", url]
-    project = config.resolve(args.project, config.PROJECT_ENV, "project")
+    named = _named_project(args, rest)
+    project = named or config.resolve(args.project, config.PROJECT_ENV, "project")
+    if rest[:1] == ["until"] and not named and "--prd" in rest:
+        # No project was named, so the login default would be used. The PRD belongs to the
+        # project the directory resolves to, which `setup` and `whoami` already agree on
+        # (GRPH-1660): prefer it, and say so.
+        here = _cwd_project(args, project)
+        if here and here != project:
+            print(f"{PROG}: using project {here!r} (this directory), not {project!r} "
+                  f"(the login default). Pass --project to choose.", file=sys.stderr)
+            project = here
     if project and "--project" not in argv:
         argv += ["--project", project]
     # Its exit code, unchanged. `gban` adds nothing and explains nothing: the supervisor's
@@ -620,6 +630,28 @@ def cmd_fleet(args) -> int:
     # session — a doctor PASS that does not predict `gban fleet` is the original lie.
     return subprocess.run(argv, env=doctor_mod.child_environment(
         doctor_mod.resolve_supervisor_key(project))).returncode
+
+
+def _named_project(args, rest: list[str]) -> str:
+    """A project the caller named: `--project` (before or after `fleet`) or the environment."""
+    for i, a in enumerate(rest):
+        if a == "--":
+            break
+        if a == "--project" and i + 1 < len(rest):
+            return rest[i + 1]
+        if a.startswith("--project="):
+            return a.split("=", 1)[1]
+    return (args.project or os.environ.get(config.PROJECT_ENV) or "").strip()
+
+
+def _cwd_project(args, configured: str) -> str:
+    """The project the cwd resolves to, or "" when it cannot be told (never fatal)."""
+    try:
+        client = authenticated(_server(args))
+        found, _ = setup_mod.resolve_project(client, Path.cwd(), "", configured)
+        return found
+    except (SystemExit, Exception):
+        return ""
 
 
 def _project(args, act: str) -> str:
