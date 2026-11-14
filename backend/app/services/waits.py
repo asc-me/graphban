@@ -321,7 +321,8 @@ def drain_note(db: Session, wait: Item, status: str | None = None) -> dict:
                            "It will pick this ticket up on its next cycle.")
     elif status == "not_live":
         note["message"] = f"No drain is running for {label}."
-        note["command"] = f"gban fleet until --prd {prd_key}" if prd_key else "gban fleet until"
+        note["command"] = (f"gban fleet until --project {wait.project_id} --prd {prd_key}"
+                           if prd_key else f"gban fleet until --project {wait.project_id}")
     else:
         note["message"] = "Could not check for a running drain."
     return note
