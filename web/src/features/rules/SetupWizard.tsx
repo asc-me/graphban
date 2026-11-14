@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
-import { useSetRuleToggles } from "@/lib/queries";
+import { useRuleToggles, useSetRuleToggles } from "@/lib/queries";
 import type { RuleFlowRule, RuleToggleBatchEntry, RulesFlow } from "@/lib/types";
 
 import { cleanParams, useCanWriteRules } from "./LibraryRuleControls";
@@ -55,6 +55,7 @@ export function SetupWizard({
   const { activeId } = useProjectCtx();
   const canWrite = useCanWriteRules(activeId);
   const save = useSetRuleToggles(activeId);
+  const { data: toggles } = useRuleToggles(activeId);
   const steps = WIZARD_STEPS.map((id) => flow.stages.find((s) => s.id === id)).filter((s): s is NonNullable<typeof s> => !!s);
   const [index, setIndex] = React.useState(0); // index === steps.length is the review step
   const [answers, setAnswers] = React.useState<Answers>({});
@@ -254,6 +255,7 @@ export function SetupWizard({
                         ruleId={r.id}
                         name={k}
                         value={shown[k]}
+                        effectivePredicates={toggles?.toggles.find((t) => t.rule_id === r.id)?.effective_predicates}
                         onChange={(nv) => setAnswer(r, k, nv)}
                         onError={(m) =>
                           setParamErrors((e) => {

@@ -12,6 +12,7 @@ import { StageEditor } from "./StageEditor";
 vi.mock("@/lib/api", () => ({
   api: {
     setRuleToggles: vi.fn(),
+    ruleToggles: vi.fn(),
     gitops: vi.fn(),
     updateGitops: vi.fn(),
     me: vi.fn(),
@@ -64,6 +65,36 @@ beforeEach(() => {
 });
 
 describe("StageEditor", () => {
+  it("done predicates show the deployment floor as fixed rows and save it with an addition", async () => {
+    const user = userEvent.setup();
+    const done = rule({ id: "merge.done_predicates", title: "Done predicates", stage: "merge", params: { value: { predicates: ["suite_green"] }, source: "platform default" } });
+    const merge = { id: "merge", title: "Merge", summary: "", state: "enforced", rules: [done] } as unknown as RuleStage;
+    vi.mocked(api.ruleToggles).mockResolvedValue({
+      toggles: [{
+        rule_id: "merge.done_predicates",
+        effective_predicates: [{ name: "suite_green", source: "deployment" }, { name: "scans_clean", source: "deployment" }],
+      }],
+    } as never);
+    vi.mocked(api.setRuleToggles).mockResolvedValue({ toggles: [] });
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <StageEditor stage={merge} narrow={false} onClose={() => {}} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(screen.getAllByTestId("rules-predicate-floor").map((e) => e.textContent)).toEqual(["suite_green · required", "scans_clean · required"]),
+    );
+    await user.click(screen.getByRole("button", { name: "Add entry" }));
+    await user.type(screen.getByLabelText("additions 1"), "docs_built");
+    await user.click(screen.getByRole("button", { name: /Review changes · 1/ }));
+    const sheet = await screen.findByTestId("rules-review-sheet");
+    await user.type(within(sheet).getByLabelText("Reason"), "floor");
+    await user.click(within(sheet).getByTestId("rules-review-save"));
+    await waitFor(() => expect(api.setRuleToggles).toHaveBeenCalledTimes(1));
+    const [, body] = vi.mocked(api.setRuleToggles).mock.calls[0];
+    expect(body.toggles[0].params).toEqual({ predicates: ["suite_green", "scans_clean", "docs_built"] });
+  });
+
   it("collects changes in one draft, shows before → after, asks for one reason and batch-saves", async () => {
     const user = userEvent.setup();
     vi.mocked(api.setRuleToggles).mockResolvedValue({ toggles: [] });
