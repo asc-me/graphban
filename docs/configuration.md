@@ -159,6 +159,8 @@ See [AI providers](ai-providers.md) for the details (and why embeddings are depl
 | `API_PORT` | `8000` |
 | `WEB_PORT` | `8080` |
 
+Compose forwards these from `.env` to the `api` service: `GIT_SHA`, `WEB_CONCURRENCY`, `JWT_SECRET`, `TRUSTED_HOPS`, `TRUSTED_PROXY`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`, `PUBLIC_WEB_URL`, `SEED_ON_START`, `CORS_ORIGINS`, `EMBED_DIM`, `EMBED_PROVIDER`, `CHAT_PROVIDER`, `OLLAMA_BASE_URL`, `OLLAMA_EMBED_MODEL`, `OLLAMA_CHAT_MODEL`, `OLLAMA_KEEP_ALIVE`, `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_EMBED_MODEL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `SYNC_CLOUD_URL`, `SYNC_API_KEY`. Any other variable in this document has no effect under compose until it is added to the `api` service's `environment:` (GRPH-1554).
+
 ## Frontend
 
 The dev server proxies `/api` to the backend; override the target with `VITE_API_PROXY`
