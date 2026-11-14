@@ -1067,9 +1067,12 @@ function Inspector({
   const { activeId } = useProjectCtx();
   const canWrite = useCanWriteRules(activeId);
   // Switching stage ends the draft with it; the draft is one stage's.
-  const first = React.useRef(true);
+  // Keyed on the previous selection, not a first-render flag: StrictMode's double effect must not
+  // drop a refusal's prefilled draft.
+  const prevSel = React.useRef(sel);
   React.useEffect(() => {
-    if (first.current) { first.current = false; return; }
+    if (prevSel.current === sel) return;
+    prevSel.current = sel;
     setEditing(false);
   }, [sel]);
   if (!pack && !stage) return null;
