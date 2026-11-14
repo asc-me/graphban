@@ -193,6 +193,8 @@ TOOLS: list[dict[str, Any]] = [
                 "prd_section": {"type": "string"},
                 "question": {"type": "string", "description": "Asks a human."},
                 "options": {"type": "array", "items": {"type": "string"}},
+                # GRPH-1650. Optional: the caller is resolved from the connection when unsent.
+                "agent_id": {"type": "string"},
             },
             "required": ["title"],
         },
@@ -3005,8 +3007,17 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         cached = _idempotent_get(db, args, "create_item", Item)
         if cached is not None:
             return _item_dict(cached)
+        # GRPH-1650. A decision wait filed by an agent holding a claim is stored, linked and
+        # blocks that claim in ONE transaction: the row is left uncommitted until
+        # `attach_to_claim` has written the link and the block. The caller is resolved the
+        # way every attributed call is (an `agent_id` on THIS credential, else the
+        # connection's single live agent) — a schema-following agent sends no agent_id.
+        is_wait = bool(args.get("question")) or any(
+            str(t).strip().lower() == "wait:decision" for t in (args.get("tags") or []))
+        caller = _agent_for_call(db, key, args, session_id) if is_wait else None
         item = items_svc.create_item(
             db,
+            commit=not is_wait,
             title=args["title"],
             description=args.get("description", ""),
             tags=args.get("tags", []),
@@ -3022,10 +3033,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             options=args.get("options"),
             reporter={"name": "Agent", "handle": "mcp", "avatar": "#a78bfa"},
         )
-        wait_link = None
-        if args.get("question") or any(
-                str(t).lower() == "wait:decision" for t in (item.tags or [])):
-            wait_link = waits_svc.attach_to_claim(db, item, args.get("agent_id"))
+        wait_link = waits_svc.attach_to_claim(db, item, caller) if is_wait else None
         _idempotent_remember(db, args, "create_item", item.id)
         out = _item_dict(item)
         if wait_link is not None:

@@ -671,6 +671,8 @@ def attach_to_claim(db: Session, wait: Item, agent_id: str | None) -> dict:
 
     held = items_svc.live_claim(db, agent_id) if agent_id else None
     if held is None or held.status != "in_progress" or held.id == wait.id:
+        db.commit()  # the wait itself, left uncommitted by an MCP caller for this one write
+        db.refresh(wait)
         return {"linked": False,
                 "note": "no ticket was linked: the caller holds no in_progress claim. "
                         "File the wait `blocked`, link the item to it as a dependency "
