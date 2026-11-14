@@ -2,6 +2,7 @@ import { cloudTagText, UNKNOWN_CLOUD_TAG, UNKNOWN_TAG_TOOLTIP } from "@/componen
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
+import { useProjects } from "@/lib/queries";
 import type { SyncStatus } from "@/lib/types";
 
 /** The Unlink line, shared by Settings → Sync / Link and the Organization window. */
@@ -191,17 +192,20 @@ export function LinkedSummary({
   const keyRefused = refused && !!status.legacy;
   const mapped = status.projects.filter((p) => p.mapped);
   const local = status.projects.length - mapped.length;
+  // SyncProjectState carries no local tag: read it from the projects list the client already has.
+  const { data: projects } = useProjects();
+  const localTag = (id: string, name: string) => projects?.find((x) => x.id === id)?.tag || name;
 
   return (
     <div className="space-y-3" data-testid="linked-summary">
       {seatRemoved && (
-        <p role="alert" className="rounded-md border border-[rgba(255,107,107,0.35)] bg-[rgba(255,107,107,0.06)] px-3 py-2 text-body font-semibold text-st-blocked">
-          <span aria-hidden>✕ </span>Your seat in {org} was removed. Nothing is syncing.
+        <p role="alert" className="rounded-md border border-[rgba(255,107,107,0.35)] bg-[rgba(255,107,107,0.06)] px-3 py-2 text-body font-semibold text-fg">
+          <span aria-hidden className="text-st-blocked">✕ </span>Your seat in {org} was removed. Nothing is syncing.
         </p>
       )}
       {keyRefused && (
-        <p role="alert" className="rounded-md border border-[rgba(255,107,107,0.35)] bg-[rgba(255,107,107,0.06)] px-3 py-2 text-body font-semibold text-st-blocked">
-          <span aria-hidden>✕ </span>This link used a key. Sign in to keep syncing.
+        <p role="alert" className="rounded-md border border-[rgba(255,107,107,0.35)] bg-[rgba(255,107,107,0.06)] px-3 py-2 text-body font-semibold text-fg">
+          <span aria-hidden className="text-st-blocked">✕ </span>This link used a key. Sign in to keep syncing.
         </p>
       )}
       <h3 className="text-[15px] font-semibold">
@@ -232,20 +236,24 @@ export function LinkedSummary({
             <li
               key={p.project_id}
               data-synced-project
-              className="flex items-center justify-between gap-2 rounded-md border border-line px-3 py-2 text-body"
+              className="flex items-center justify-between gap-2 rounded-md border border-line bg-surface px-3 py-2 text-body"
             >
-              <span className="flex min-w-0 items-baseline gap-2">
-                <span className="max-w-40 truncate font-mono">{p.name}</span>
-                {!seatRemoved && <span aria-hidden className="text-faint">→</span>}
-                {!seatRemoved && (
-                  <span className="font-mono text-[10px] uppercase text-faint">☁ {cloudTagText(p.cloud_project_tag)}</span>
-                )}
+              {/* Local tag → cloud tag in every state, the seat-removed one included (Org Link vDone). */}
+              <span className="flex min-w-0 items-baseline gap-2 font-mono" data-row-tags>
+                <span className="max-w-40 truncate uppercase">{localTag(p.project_id, p.name)}</span>
+                <span aria-hidden className="text-faint">→</span>
+                <span
+                  className="uppercase text-fg-2"
+                  title={cloudTagText(p.cloud_project_tag) === UNKNOWN_CLOUD_TAG ? UNKNOWN_TAG_TOOLTIP : undefined}
+                >
+                  {cloudTagText(p.cloud_project_tag)}
+                </span>
               </span>
               {result === "ok" && p.last_push_at && (
-                <span className="font-mono text-[10px] uppercase text-st-done">☁ SYNCED {clockTime(p.last_push_at)}</span>
+                <span className="font-mono text-[10px] font-semibold uppercase text-st-done">☁ SYNCED {clockTime(p.last_push_at)}</span>
               )}
-              {result === "refused" && <span className="font-mono text-[10px] uppercase text-st-blocked">☁ REFUSED</span>}
-              {result === "unknown" && <span className="font-mono text-[10px] uppercase text-faint">☁ UNKNOWN</span>}
+              {result === "refused" && <span className="font-mono text-[10px] font-semibold uppercase text-st-blocked">☁ REFUSED</span>}
+              {result === "unknown" && <span className="font-mono text-[10px] font-semibold uppercase text-faint">☁ UNKNOWN</span>}
             </li>
           );
         })}
