@@ -425,6 +425,12 @@ def verify(url: str, key: str, project: str) -> list[dict]:
                      f"{project} is writable" if project in writable else
                      f"the key cannot write {project} — you can read it but not write it, so "
                      "an agent on this key can claim nothing"))
+    if "key_project_id" in ctx and ctx["key_project_id"] != project:
+        # `gbfleet until` refuses a key with no project to bind its minted-by check to
+        # (GRPH-1658), so a reused cross-project key fails the Triage drain command.
+        out.append(_line("ledger", FAIL, "scope",
+                         "the key is not scoped to this project, and `gban fleet until` "
+                         "refuses an unscoped key"))
     missing = {_tier_id(t) for t in (ctx.get("missing_tiers") or [])}
     out.append(_line("ledger", PASS if "fleet" not in missing else FAIL, "fleet tools",
                      "delegate and mint_enrolment are in the manifest" if "fleet" not in missing
@@ -495,9 +501,10 @@ def run(client: Client, url: str, project: str, repo: Path, *, scope: str = "use
         # A key that cannot do the job is replaced, never patched: `tool_tiers` are fixed at
         # mint and there is no route that changes them.
         lines.append(_line("config", UNKNOWN, "credential",
-                           "the configured credential no longer works (revoked, or it cannot "
-                           "delegate), so a new one is being minted; if the old one still "
-                           "works, remove it in Settings → API keys"))
+                           "the configured credential no longer works (revoked, cannot "
+                           "delegate, or not scoped to this project), so a project-scoped "
+                           "one is being minted; if the old one still works, remove it in "
+                           "Settings → API keys"))
     if not key:
         try:
             minted = mint(client, project)
