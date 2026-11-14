@@ -3448,6 +3448,8 @@ export interface RuleToggleBatchEntry {
 export interface RuleToggleBatchWrite {
   toggles: RuleToggleBatchEntry[];
   reason: string;
+  /** The stage editor's gitops patch, applied in the same transaction (GRPH-1632). */
+  gitops?: GitopsPatch;
 }
 
 export interface RuleToggleBatchOut {

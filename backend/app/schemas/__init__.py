@@ -1902,6 +1902,9 @@ class RuleToggleBatchWrite(BaseModel):
     model_config = {"extra": "forbid"}
     toggles: list[RuleToggleBatchEntry]
     reason: str = ""
+    # The stage editor's gitops patch rides in the same call and transaction (GRPH-1632): a
+    # refusal on either side writes neither.
+    gitops: GitopsPatch | None = None
 
 
 class RuleToggleBatchOut(BaseModel):

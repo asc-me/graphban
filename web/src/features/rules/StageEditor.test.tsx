@@ -193,10 +193,9 @@ describe("StageEditor", () => {
     expect(api.setRuleToggles).not.toHaveBeenCalled();
   });
 
-  it("a gitops refusal after the rule batch saved says the rules were saved, not that nothing was", async () => {
+  it("rules and gitops save in one call, and a gitops refusal says nothing was saved", async () => {
     const user = userEvent.setup();
-    vi.mocked(api.setRuleToggles).mockResolvedValue({ toggles: [] });
-    vi.mocked(api.updateGitops).mockRejectedValue(
+    vi.mocked(api.setRuleToggles).mockRejectedValue(
       Object.assign(new Error(JSON.stringify({ detail: "reviewer_bar: forge needs a linked forge" })), { status: 422 }),
     );
     view();
@@ -205,10 +204,11 @@ describe("StageEditor", () => {
     await user.click(screen.getByRole("button", { name: /Review changes · 2/ }));
     await user.type(await screen.findByLabelText("Reason"), "mixed");
     await user.click(screen.getByTestId("rules-review-save"));
-    const note = await screen.findByTestId("rules-draft-partly-saved");
-    expect(note).toHaveTextContent("The rule changes were saved; the gitops setting was refused: “reviewer_bar: forge needs a linked forge”.");
-    expect(screen.queryByTestId("rules-draft-refused")).not.toBeInTheDocument();
+    expect(await screen.findByTestId("rules-draft-refused")).toHaveTextContent("Nothing was saved. Fix the gitops setting below");
+    expect(screen.queryByTestId("rules-draft-partly-saved")).not.toBeInTheDocument();
     expect(api.setRuleToggles).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(api.setRuleToggles).mock.calls[0][1]).toMatchObject({ gitops: { reviewer_bar: "forge" } });
+    expect(api.updateGitops).not.toHaveBeenCalled();
     expect(screen.getByTestId("rules-edit-gitops-error-reviewer_bar")).toHaveTextContent("forge needs a linked forge");
   });
 
