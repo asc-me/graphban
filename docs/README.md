@@ -66,7 +66,7 @@ One guide per area of the left nav that the guides above do not already cover.
 | [Release](release.md) | Stamp CalVer, pack `graphban-<tag>.tar.gz`, GitHub Release, UI Install |
 | [Releasing `gban` and `gbfleet`](releasing.md) | The two CLI packages, their tags and lifecycles |
 | [Self-host exposure](self-host-exposure.md) | Exposing the feedback API to the public internet |
-| [Deploy on Railway](deploy-railway.md) | The hosted multi-tenant deployment on Railway |
+| [Deploy on Railway](deploy-railway.md) | The owner's existing Railway deployment layout — not the customer install (see [Deploy](deploy.md) / [Native install](native-install.md)) |
 | [CI runners](ci-runners.md) | Our own CI machines and the workflows still on hosted runners |
 | [Token census](token-census.md) | Where an agent's tokens actually go |
 | [Implementation plan](IMPLEMENTATION_PLAN.md) | The original phase plan, kept as a record — see the roadmap for current status |
