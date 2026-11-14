@@ -351,12 +351,33 @@ def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[
             lines.append(f"Open question: {a['wait']} ({a['question']}) was closed with no "
                          "stored answer, so that question is still open.")
         else:
-            lines.append(f"Answered {a['wait']}: {a['question']} -> {a['answer']}")
+            lines.append(f"Answered {a['wait']}: {a['question']} -> {a['answer']}"
+                         f" ({_answer_source_text(a)})")
     if test_scope:
         lines.append(test_scope_line(test_scope, test_engines))
     if len(attempts) > 1:
         lines.append(f"Attempts so far: {len(attempts)}")
     return "\n".join(lines)
+
+
+_SOURCE_QUOTE_MAX = 120
+
+
+def _answer_source_text(a: dict) -> str:
+    """Where an answered decision came from, for the brief text. An agent answer names its
+    source kind, ref and quote (truncated); a person's answer names the user."""
+    by = a.get("by") if isinstance(a.get("by"), dict) else {}
+    src = a.get("source") if isinstance(a.get("source"), dict) else {}
+    if by.get("agent") or src:
+        parts = [f"source: {src.get('kind') or 'unknown'}"]
+        if src.get("ref"):
+            parts.append(str(src["ref"]))
+        quote = str(src.get("quote") or "").strip()
+        if len(quote) > _SOURCE_QUOTE_MAX:
+            quote = quote[:_SOURCE_QUOTE_MAX].rstrip() + "…"
+        text = " ".join(parts)
+        return f'{text}, "{quote}"' if quote else text
+    return f"answered by {by.get('user') or 'a person'} in Triage"
 
 
 def answered_decisions(db: Session, item: Item) -> list[dict]:
