@@ -918,3 +918,158 @@ def test_an_undeclared_hold_names_its_files_and_leaves_done_alone(client, auth, 
     assert got.status_code == 200, got.text
     db.expire_all()
     assert db.get(Item, item).status == "done"
+
+
+# ---- GRPH-1648: the start-up seat check and the mint-time warning ---------------------------
+
+
+def _seats(client, key, codes):
+    got = _post(client, key, kind="seats", seats=codes)
+    assert got.status_code == 200, got.text
+    return got.json()
+
+
+def _unscoped_planner(client, auth):
+    """An MCP planner's key: no project, no wave. The credential the waves found minting."""
+    return client.post("/api/api-keys", json={"name": "global", "tool_tiers": ["fleet", "prd"]},
+                       headers=auth).json()["plaintext"]
+
+
+def _mint(client, key, proj):
+    planner = _ok(client, key, "register_agent",
+                  {"label": "planner", "branch": "gb/obs", "role_hint": "planner",
+                   "project_id": proj})
+    assert planner["active_role"] == "planner", planner
+    seat = _ok(client, key, "mint_enrolment",
+               {"agent_id": planner["agent_id"], "role": "worker", "project_id": proj})
+    return planner, seat
+
+
+def test_the_seat_check_passes_the_minters_key_and_names_the_minter_to_any_other(
+        client, auth, db):
+    """Same user, same project, a different key: the seat is NOT recorded (a wave's children
+    hold its key, so "any key of mine" would let one plant another wave's base), and the
+    check says so before a child spawns: the minting agent and the key to run on.
+    The minter's own key passes. Nothing is written by the check."""
+    proj, hand, _planner = _project(client, auth)
+    setup, _ = _setup_key(client, auth, proj)
+    minter, seat = _mint(client, setup, proj)
+    assert "warning" not in seat, seat
+    code = seat["enrolment_code"]
+
+    mine = _seats(client, setup, [code])
+    assert mine["ok"] is True
+    assert mine["checked"] == [{"index": 0, "seat": mine["checked"][0]["seat"], "ok": True,
+                                "minted_by": minter["agent_id"]}]
+    assert code not in str(mine)
+
+    other = _seats(client, hand, [code])
+    assert other["ok"] is False
+    reason = other["checked"][0]["reason"]
+    assert minter["agent_id"] in reason
+    assert "run gbfleet on that key" in reason
+    assert code not in str(other)
+
+
+def test_a_seat_minted_on_an_unscoped_key_fails_the_check_and_the_mint_warned(client, auth, db):
+    """The waves' case: a planner over MCP on an unscoped key. Its own key 403s as a
+    supervisor, the project key 404s. The mint answers a warning naming the fix, and the
+    check names the minter and says the key is unscoped."""
+    proj, _hand, _planner = _project(client, auth)
+    setup, _ = _setup_key(client, auth, proj)
+    unscoped = _unscoped_planner(client, auth)
+    minter, seat = _mint(client, unscoped, proj)
+    assert "unscoped" in seat["warning"]
+    assert "gban setup" in seat["warning"]
+
+    got = _seats(client, setup, [seat["enrolment_code"]])
+    assert got["ok"] is False
+    reason = got["checked"][0]["reason"]
+    assert minter["agent_id"] in reason
+    assert "UNSCOPED" in reason and "gban setup" in reason
+    # The minter's own key cannot even ask: it is not a supervisor key.
+    assert _post(client, unscoped, kind="seats",
+                 seats=[seat["enrolment_code"]]).status_code == 403
+
+
+def test_delegate_with_a_seat_on_an_unscoped_key_warns(client, auth, db):
+    proj, hand, _planner = _project(client, auth)
+    unscoped = _unscoped_planner(client, auth)
+    planner = _ok(client, unscoped, "register_agent",
+                  {"label": "planner", "branch": "gb/obs", "role_hint": "planner",
+                   "project_id": proj})
+    item = _ok(client, hand, "create_item", {"title": "delegated", "status": "next"})["id"]
+    out = _ok(client, unscoped, "delegate",
+              {"agent_id": planner["agent_id"], "id": item, "lane": "backend",
+               "tier": "cheap", "seat": True})
+    assert out["enrolment_code"]
+    assert "unscoped" in out["warning"]
+    setup, _ = _setup_key(client, auth, proj)
+    sp = _ok(client, setup, "register_agent",
+             {"label": "planner2", "branch": "gb/obs", "role_hint": "planner"})
+    item2 = _ok(client, hand, "create_item", {"title": "delegated2", "status": "next"})["id"]
+    clean = _ok(client, setup, "delegate",
+                {"agent_id": sp["agent_id"], "id": item2, "lane": "backend",
+                 "tier": "cheap", "seat": True})
+    assert "warning" not in clean
+
+
+def test_another_users_seat_is_an_unknown_seat_and_its_item_still_404s(client, auth, db):
+    """Regression: the masked answer stays masked for a stranger, even one who is a
+    writing member of the same project. The seat check says `unknown seat`, exactly what an
+    invented code gets, and the observation is the 404 a missing item gets."""
+    from app.models import Membership
+
+    proj, hand, _planner = _project(client, auth)
+    setup, _ = _setup_key(client, auth, proj)
+    _minter, seat = _mint(client, setup, proj)
+    worker, item = _item(client, hand, title="theirs")
+    row = db.scalar(fleet_svc.select(fleet_svc.Enrolment)
+                    .where(fleet_svc.Enrolment.code_hash
+                           == fleet_svc._hash_code(seat["enrolment_code"])))
+    row.item_id = db.scalar(fleet_svc.select(Item.id).where(Item.key == item)) or item
+    db.commit()
+
+    r = client.post("/api/auth/register", json={
+        "name": "Other Person", "email": "other-1648@example.com", "handle": "other1648",
+        "password": "other-password"})
+    assert r.status_code == 201, r.text
+    other_auth = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    me = client.get("/api/auth/me", headers=other_auth).json()
+    db.add(Membership(user_id=me["id"], project_id=proj, role="admin", access="write"))
+    db.commit()
+    stranger, _ = _setup_key(client, other_auth, proj)
+
+    theirs = _seats(client, stranger, [seat["enrolment_code"]])
+    invented = _seats(client, stranger, ["WORKER-NOSUCH"])
+    assert theirs["checked"][0]["reason"] == "unknown seat"
+    assert theirs["checked"] == invented["checked"]
+    assert "minted_by" not in theirs["checked"][0]
+    cut = _post(client, stranger, item_id=item, kind="cut_from", branch="gb/obs", base=BASE)
+    assert cut.status_code == 404, cut.text
+    assert "no such item" in cut.text
+    # The owner's minting key does record it.
+    ok = _post(client, setup, item_id=item, kind="cut_from", branch="gb/obs", base=BASE)
+    assert ok.status_code == 200, ok.text
+
+
+def test_the_real_gbfleet_seat_check_reaches_the_route_and_reads_its_answer(client, auth, db):
+    """The body `gbfleet` sends (`item_id=""`, `kind="seats"`) is one the route validates,
+    and the answer is one it reads: the minter's key passes, another key of the same user
+    is refused naming the minter. A mock that answered whatever the body would stay green
+    while the real route 422'd, which is how GRPH-1346's first probe shipped."""
+    from gbfleet.seat import Seat
+    from gbfleet.supervisor import seats_unrecordable
+
+    proj, hand, _planner = _project(client, auth)
+    setup, _ = _setup_key(client, auth, proj)
+    minter, seat = _mint(client, setup, proj)
+    seats = [Seat(code=seat["enrolment_code"], server_url="http://testserver", api_key=setup)]
+    paths: list[str] = []
+    mine = Graphban(base_url="http://testserver", api_key=setup, transport=_Bridge(client, paths))
+    assert seats_unrecordable(mine, seats) == []
+    other = Graphban(base_url="http://testserver", api_key=hand, transport=_Bridge(client, paths))
+    refused = seats_unrecordable(other, seats)
+    assert len(refused) == 1 and minter["agent_id"] in refused[0], refused
+    assert seat["enrolment_code"] not in refused[0]
+    assert paths == ["/api/fleet/observations"] * 2

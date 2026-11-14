@@ -21,6 +21,16 @@ def telemetry_ack(request):
 
     if request.url.path == "/api/mcp":
         return None
+    if request.url.path == "/api/fleet/observations":
+        import json
+
+        body = json.loads(request.content or b"{}")
+        if body.get("kind") == "seats":
+            # GRPH-1648: the start-up seat check, answered as the real route answers a key
+            # that minted every seat. A test about a refused seat answers it itself.
+            return httpx.Response(200, json={"kind": "seats", "ok": True, "checked": [
+                {"index": i, "seat": "", "ok": True, "minted_by": "GRPH-P1"}
+                for i, _ in enumerate(body.get("seats") or [])]})
     return httpx.Response(200, json={"ok": True, "path": request.url.path})
 
 #: What the memory gate reads in a test that has not said otherwise (GRPH-842). Enough

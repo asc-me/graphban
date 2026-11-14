@@ -6038,6 +6038,49 @@ def _supervisor_wave_key(api_key) -> bool:
     return bool(getattr(api_key, "project_id", None))
 
 
+def _minter_keys(db: Session, seats) -> dict[str, "ApiKey | None"]:
+    """The credential each seat's minting agent registered on, by agent id."""
+    from app.models import ApiKey
+
+    ids = {s.minted_by for s in seats if s.minted_by}
+    if not ids:
+        return {}
+    agents = list(db.scalars(select(Agent).where(Agent.id.in_(ids))).all())
+    key_ids = {a.api_key_id for a in agents if a.api_key_id}
+    keys = ({k.id: k for k in db.scalars(select(ApiKey).where(ApiKey.id.in_(key_ids))).all()}
+            if key_ids else {})
+    return {a.id: keys.get(a.api_key_id) for a in agents}
+
+
+def _seat_user(seat, minters: dict) -> str | None:
+    """The user a seat was issued for: the minting agent's key owner, or the human issuer."""
+    if seat.minted_by:
+        k = minters.get(seat.minted_by)
+        return k.user_id if k is not None else None
+    return seat.issued_by
+
+
+def _key_supervises_seat(api_key, seat, minters: dict) -> bool:
+    """Whether this supervisor credential may record observations about `seat`'s work.
+
+    Either the seat's wave string is the key's wave, or the agent that minted it
+    authenticated with this very key; and a project-scoped key only ever matches a seat in
+    its own project. Deliberately NOT "any key of the same user": the children of a wave
+    hold its key, and that rule would let one plant a base on an item another wave cut.
+    A same-user seat this key cannot record is caught before a child spawns instead, by
+    `check_seats` (GRPH-1648), which names the key to run on.
+    """
+    key_project = getattr(api_key, "project_id", None)
+    if key_project and key_project != seat.project_id:
+        return False
+    fleet_wave = (getattr(api_key, "fleet_wave", None) or "").strip()
+    if seat.wave and fleet_wave and seat.wave == fleet_wave:
+        return True
+    key_id = getattr(api_key, "id", None)
+    minter_key = minters.get(seat.minted_by) if seat.minted_by else None
+    return bool(key_id and minter_key is not None and minter_key.id == key_id)
+
+
 def _wave_cut_item(db: Session, api_key, item: Item) -> bool:
     """Whether a seat from this credential's wave is how this item got a tree.
 
@@ -6046,9 +6089,9 @@ def _wave_cut_item(db: Session, api_key, item: Item) -> bool:
     would leave the route refusing the one caller it exists for. A seat counts when it
     is bound to the item, or its `consumed_by` is the item's claimer or author — the
     second is how a cluster sibling is covered at PR and salvage time, after the child
-    has claimed — AND either its wave string is the key's, or the agent that minted it
-    authenticated with this key. Revoked seats still count: a late receipt is the case
-    the route is for, and a revoke must not erase the base.
+    has claimed — AND `_key_supervises_seat` says this key may write about it. Revoked
+    seats still count: a late receipt is the case the route is for, and a revoke must
+    not erase the base.
 
     A project-scoped key only matches a seat in its own project. `next_wave` restarts
     at `wave-1` in every project, and `can_write` is the user's membership, so the wave
@@ -6068,19 +6111,84 @@ def _wave_cut_item(db: Session, api_key, item: Item) -> bool:
     ).all())
     if not seats:
         return False
-    key_id = getattr(api_key, "id", None)
-    fleet_wave = (api_key.fleet_wave or "").strip()
-    minters: dict[str, str | None] = {}
-    minter_ids = {s.minted_by for s in seats if s.minted_by}
-    if minter_ids and key_id:
-        for agent in db.scalars(select(Agent).where(Agent.id.in_(minter_ids))).all():
-            minters[agent.id] = agent.api_key_id
-    for seat in seats:
-        if seat.wave and seat.wave == fleet_wave:
-            return True
-        if seat.minted_by and minters.get(seat.minted_by) == key_id:
-            return True
-    return False
+    minters = _minter_keys(db, seats)
+    return any(_key_supervises_seat(api_key, seat, minters) for seat in seats)
+
+
+SETUP_KEY_FIX = ("run the planner, and `gbfleet up`/`until`, on the project-scoped key "
+                 "`gban setup` mints")
+
+
+def check_seats(db: Session, api_key, codes: Sequence[str]) -> dict:
+    """Can this supervisor credential record observations for each of these seats? (GRPH-1648)
+
+    The start-up check `gbfleet up` and `until` run before spawning a child. Read-only.
+    A seat this key's USER cannot see — an unknown code, another user's seat, a project the
+    user cannot write — answers `unknown seat`, the same for all three, so the check is no
+    better a probe than the 404 it replaces. A seat of the same user is explained: who
+    minted it, on what kind of key, and which key to run on instead.
+    """
+    from app.security import authz
+
+    rows: list[tuple[str, Enrolment | None]] = []
+    for code in codes:
+        c = (code or "").strip()
+        if not c:
+            continue
+        rows.append((c, db.scalar(select(Enrolment).where(Enrolment.code_hash == _hash_code(c)))))
+    minters = _minter_keys(db, [r for _, r in rows if r is not None])
+    user = getattr(api_key, "user_id", None)
+    key_project = getattr(api_key, "project_id", None)
+    out: list[dict] = []
+    for index, (_code, seat) in enumerate(rows):
+        # The index in the list sent, and the display fragment: never the code itself, which
+        # is a bearer token for as long as the seat lives.
+        if (seat is None or _seat_user(seat, minters) != user
+                or not authz.can_write(db, user, seat.project_id)):
+            out.append({"index": index, "seat": "", "ok": False, "reason": "unknown seat"})
+            continue
+        shown = {"index": index, "seat": seat.code_prefix}
+        if _key_supervises_seat(api_key, seat, minters):
+            out.append({**shown, "ok": True, "minted_by": seat.minted_by})
+            continue
+        minter_key = minters.get(seat.minted_by) if seat.minted_by else None
+        who = f"agent {seat.minted_by}" if seat.minted_by else "the Fleet view"
+        if key_project and key_project != seat.project_id:
+            why = (f"the seat was minted by {who} in project {seat.project_id}, and this key "
+                   f"is scoped to project {key_project}; run on a key scoped to "
+                   f"{seat.project_id}")
+        elif minter_key is not None and not minter_key.project_id:
+            why = (f"the seat was minted by {who} on an UNSCOPED key ({minter_key.prefix}), "
+                   f"which can never supervise its own seats, so no key can record this "
+                   f"wave; {SETUP_KEY_FIX}, and mint the seats again from there")
+        elif minter_key is not None:
+            why = (f"the seat was minted by {who} on another key ({minter_key.name}, "
+                   f"{minter_key.prefix}); run gbfleet on that key")
+        else:
+            why = (f"the seat was issued by {who} for wave {seat.wave or '(none)'}, and this "
+                   f"key is not that wave's key; run gbfleet on the key minted for it")
+        out.append({**shown, "ok": False, "minted_by": seat.minted_by, "reason": why})
+    return {"kind": "seats", "checked": out, "ok": all(r["ok"] for r in out)}
+
+
+def seat_supervision_warning(api_key) -> str | None:
+    """Why no supervisor will be able to record this key's seats, or None (GRPH-1648).
+
+    Returned beside the code by `mint_enrolment` and `delegate(seat=true)`. Not a refusal:
+    the seat still works for the child. But a seat is recorded only by its minter's key or
+    its wave's key, and this key fails the supervisor gate, so every base, lease and PR
+    receipt for it would be lost. `gbfleet up`/`until` refuse such seats at start-up.
+    """
+    if "planner" not in eligible_roles(api_key):
+        problem = "this key has no planner role"
+    elif not (getattr(api_key, "project_id", None)
+              or (getattr(api_key, "fleet_wave", None) or "").strip()):
+        problem = "this key is unscoped (it spans several projects)"
+    else:
+        return None
+    return (f"{problem}, so no supervisor can record observations (base, lease, PR) for the "
+            f"seats it mints, and `gbfleet up`/`until` will refuse them at start-up. Fix: "
+            f"{SETUP_KEY_FIX}, and mint the seats there")
 
 
 def _observation_receipt(kind: str, *, branch: str, base: str | None, url: str | None,
@@ -6320,8 +6428,12 @@ def _record_lease(db: Session, item: Item, *, branch: str, agent_id: str | None,
 def record_observation(db: Session, api_key, *, item_key: str, kind: str,
                        branch: str = "", base: str | None = None,
                        url: str | None = None, commit: str | None = None,
-                       reason: str | None = None, agent_id: str | None = None) -> dict:
+                       reason: str | None = None, agent_id: str | None = None,
+                       seats: Sequence[str] | None = None) -> dict:
     """Record one supervisor fact on an item this credential's wave cut.
+
+    `kind="seats"` writes nothing: it is the start-up check (`check_seats`, GRPH-1648),
+    on this route so the supervisor's path allow-list does not widen.
 
     Does not commit — the route does, matching `post_attempt`. A credential with no
     planner in its ceiling, or an unscoped key with no wave, is 403. An item this
@@ -6338,6 +6450,8 @@ def record_observation(db: Session, api_key, *, item_key: str, kind: str,
             "credential gban setup mints). A worker-only key and an unscoped key are "
             "refused here",
         )
+    if kind == "seats":
+        return check_seats(db, api_key, seats or [])
     named = (item_key or "").strip()
     if not named:
         raise ObservationError(422, "an observation names an item")

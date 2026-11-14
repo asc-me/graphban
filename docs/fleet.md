@@ -20,6 +20,21 @@ It has two tabs: **Fleet management** and **Harness config**.
 - **Ready work**: non-colliding work and why anything held back is waiting.
 - Prompt snippets and install steps for an all-in-one agent or planner, and supervisor setup.
 
+### Which key supervises a wave
+
+A supervisor (`gbfleet up` / `until`) records each child's base, lease and PR on
+`/api/fleet/observations`. It may record a seat only when it runs on the key that minted the
+seat, or on that seat's wave key. A planner on an **unscoped** key (one spanning several
+projects) mints seats that no supervisor can record, so run the planner on the project-scoped
+key `gban setup` mints, and run gbfleet on that key too. `mint_enrolment` and
+`delegate(seat=true)` return a `warning` when the calling key is unscoped (GRPH-1648).
+
+Before spawning anything, `up` and `until` ask the server whether this key can record every
+seat in the seats file. If it can't, they refuse to start and name the agent that minted the
+seat and the key to run on. If the route refuses this key outright mid-wave (403, or the
+masked 404), the supervisor reports it once, stops spawning and ends the wave not-ok, rather
+than printing a `FAILED` line per receipt.
+
 ## Harness config
 
 - **Tier map**: harness × tier, editable for this deployment. An override is stored beside the
