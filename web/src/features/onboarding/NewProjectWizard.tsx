@@ -37,6 +37,7 @@ const MODELS: { id: Model; title: string; sub: string; desc: string }[] = [
   { id: "ollama", title: "Local", sub: "Ollama", desc: "A model server on your network." },
   { id: "claude", title: "Cloud", sub: "Claude", desc: "Your Anthropic API key." },
 ];
+const MODEL_IDS = MODELS.map((m) => m.id);
 const MODEL_LABEL: Record<Model, string> = {
   offline: "Offline · stub",
   ollama: "Local · Ollama",
@@ -54,6 +55,22 @@ const TAG_RE = /^[A-Z][A-Z0-9]{1,3}$/;
 
 function repoSlug(repo: string): string {
   return repo.trim().replace(/^.*[:/]([^/]+\/[^/]+?)(\.git)?$/, "$1");
+}
+
+/** The WAI-ARIA radio group keyboard model (GRPH-1613): `prev`/`next` move the selection and
+ *  wrap at the ends, and focus follows the checked option. A locked group ignores the keys. */
+function radioArrows<T>(
+  e: React.KeyboardEvent<HTMLElement>,
+  o: { values: readonly T[]; current: T; set: (v: T) => void; prev: string; next: string; locked?: boolean },
+) {
+  if (o.locked) return;
+  const step = e.key === o.next ? 1 : e.key === o.prev ? -1 : 0;
+  if (!step) return;
+  e.preventDefault();
+  const n = o.values.length;
+  const i = (o.values.indexOf(o.current) + step + n) % n;
+  o.set(o.values[i]);
+  e.currentTarget.closest('[role="radiogroup"]')?.querySelectorAll<HTMLElement>('[role="radio"]')[i]?.focus();
 }
 
 const LABEL = "mb-1.5 block font-mono text-[10px] uppercase tracking-wide text-faint";
@@ -370,8 +387,19 @@ export function NewProjectWizard({
                         type="button"
                         role="radio"
                         aria-checked={accent === c}
+                        tabIndex={accent === c ? 0 : -1}
                         disabled={!!createdId}
                         onClick={() => setAccent(c)}
+                        onKeyDown={(e) =>
+                          radioArrows(e, {
+                            values: PROJECT_ACCENTS,
+                            current: accent,
+                            set: setAccent,
+                            prev: "ArrowLeft",
+                            next: "ArrowRight",
+                            locked: !!createdId,
+                          })
+                        }
                         aria-label={`accent ${c}`}
                         className="h-7 w-7 rounded-[8px] transition-transform hover:scale-110"
                         style={{
@@ -430,7 +458,17 @@ export function NewProjectWizard({
                         type="button"
                         role="radio"
                         aria-checked={on}
+                        tabIndex={on ? 0 : -1}
                         onClick={() => setModel(m.id)}
+                        onKeyDown={(e) =>
+                          radioArrows(e, {
+                            values: MODEL_IDS,
+                            current: model,
+                            set: setModel,
+                            prev: "ArrowUp",
+                            next: "ArrowDown",
+                          })
+                        }
                         className="grid grid-cols-[16px_minmax(0,1fr)] items-center gap-x-3 gap-y-[3px] px-3.5 py-3 text-left text-fg"
                       >
                         <RadioDot on={on} />

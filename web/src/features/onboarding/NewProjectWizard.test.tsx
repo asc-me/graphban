@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -263,6 +263,92 @@ describe("New project wizard", () => {
     await user.click(screen.getByRole("button", { name: "Back" }));
     await user.click(screen.getByRole("button", { name: "Back" }));
     expect(screen.getByLabelText("Project name")).toBeDisabled();
+  });
+
+  describe("radio groups follow the WAI-ARIA keyboard model (GRPH-1613)", () => {
+    const checked = () => screen.getAllByRole("radio").find((r) => r.getAttribute("aria-checked") === "true");
+    const tabStops = () => screen.getAllByRole("radio").filter((r) => r.tabIndex === 0);
+
+    it("moves the Model selection with ↑ and ↓, wrapping at both ends, and focus follows", async () => {
+      const user = userEvent.setup();
+      renderWizard();
+      await toRepo(user);
+      await user.click(next());
+      const offline = screen.getByRole("radio", { name: /Offline/ });
+      offline.focus();
+      await user.keyboard("{ArrowDown}");
+      expect(checked()).toHaveAccessibleName(/Local/);
+      expect(checked()).toHaveFocus();
+      await user.keyboard("{ArrowDown}");
+      expect(checked()).toHaveAccessibleName(/Cloud/);
+      await user.keyboard("{ArrowDown}");
+      expect(checked()).toHaveAccessibleName(/Offline/);
+      expect(checked()).toHaveFocus();
+      await user.keyboard("{ArrowUp}");
+      expect(checked()).toHaveAccessibleName(/Cloud/);
+      expect(checked()).toHaveFocus();
+      await user.keyboard("{ArrowRight}");
+      expect(checked()).toHaveAccessibleName(/Cloud/);
+    });
+
+    it("moves the Accent selection with ← and →, wrapping at both ends, and focus follows", async () => {
+      const user = userEvent.setup();
+      renderWizard();
+      const first = screen.getByRole("radio", { name: "accent #c6f24e" });
+      expect(first).toHaveAttribute("aria-checked", "true");
+      first.focus();
+      await user.keyboard("{ArrowLeft}");
+      expect(checked()).toHaveAccessibleName("accent #ff8f8f");
+      expect(checked()).toHaveFocus();
+      await user.keyboard("{ArrowRight}");
+      expect(checked()).toHaveAccessibleName("accent #c6f24e");
+      await user.keyboard("{ArrowRight}");
+      expect(checked()).toHaveAccessibleName("accent #a78bfa");
+      expect(checked()).toHaveFocus();
+      await user.keyboard("{ArrowDown}");
+      expect(checked()).toHaveAccessibleName("accent #a78bfa");
+    });
+
+    it("is one Tab stop per group, on the checked option, and the next Tab leaves the group", async () => {
+      const user = userEvent.setup();
+      renderWizard();
+      expect(tabStops()).toHaveLength(1);
+      expect(tabStops()[0]).toHaveAttribute("aria-checked", "true");
+      await user.click(screen.getByRole("radio", { name: "accent #7ca2ff" }));
+      expect(tabStops()).toEqual([screen.getByRole("radio", { name: "accent #7ca2ff" })]);
+      await user.tab();
+      expect(document.activeElement?.getAttribute("role")).not.toBe("radio");
+
+      await user.clear(screen.getByLabelText("Project name"));
+      await toRepo(user);
+      await user.click(next());
+      await user.click(screen.getByRole("radio", { name: /Cloud/ }));
+      expect(tabStops()).toEqual([screen.getByRole("radio", { name: /Cloud/ })]);
+      screen.getByRole("radio", { name: /Cloud/ }).focus();
+      await user.tab();
+      expect(document.activeElement?.getAttribute("role")).not.toBe("radio");
+    });
+
+    it("ignores the arrows on the Accent group once it is locked after a partial failure", async () => {
+      const user = userEvent.setup();
+      api.updateProject.mockRejectedValueOnce(new Error("boom"));
+      renderWizard();
+      await toRepo(user);
+      await user.type(screen.getByLabelText("Git remote"), "git@github.com:acme/core.git");
+      await user.click(next());
+      await user.click(next());
+      await user.click(screen.getByRole("button", { name: /create project/i }));
+      await screen.findByText(/was created, but a follow-up step failed/);
+      for (let i = 0; i < 3; i++) await user.click(screen.getByRole("button", { name: "Back" }));
+      const locked = screen.getByRole("radio", { name: "accent #c6f24e" });
+      expect(locked).toBeDisabled();
+      // A disabled radio cannot take focus in a browser; dispatch straight at it so the
+      // handler's own lock is what is under test.
+      fireEvent.keyDown(locked, { key: "ArrowRight" });
+      expect(checked()).toBe(locked);
+      fireEvent.keyDown(locked, { key: "ArrowLeft" });
+      expect(checked()).toBe(locked);
+    });
   });
 
   describe("matches the Project Wizard design (GRPH-1587)", () => {
