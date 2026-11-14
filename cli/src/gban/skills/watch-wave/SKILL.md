@@ -74,4 +74,4 @@ wave (attach a new loop, delete the old), or on `WAVE_IDLE`.
 
 Do not leave a loop running on an idle wave.
 
-A quiet child, a dropped lease, or an idle wave with items still `next` is reported here and cleared by `graphban-unstick`.
+A quiet child, a dropped lease, or an idle wave with items still `next` is reported here and cleared by `graphban-unstick`. A wave stuck on red CI is `graphban-red-ci`.

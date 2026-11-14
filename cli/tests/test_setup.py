@@ -1438,6 +1438,44 @@ def test_graphban_unstick_names_the_stuck_drain(tmp_path):
     assert any(n.endswith("skills/graphban-unstick/SKILL.md") for n in names), names[:20]
 
 
+def test_graphban_red_ci_applies_the_standing_decisions(tmp_path):
+    """GRPH-1538. The red-CI skill names the four classes with their signs and actions, as
+    AGENTS.md "Standing decisions" states them, forbids every way of buying green, asks for
+    sabotage-red evidence and a second reviewer on a test fix, is pointed to from the
+    unstick and watch skills, and ships in the wheel and through setup."""
+    body = " ".join(setup_mod.skill_source("graphban-red-ci").read_text(encoding="utf-8").split())
+    assert "`gh run view <run-id> --log-failed`" in body
+    for cls in ("**Regression.**", "**Load-sensitive test.**", "**Infra.**",
+                "**Stop and ask.**"):
+        assert cls in body, cls
+    # Signs, one per class.
+    assert "fails the same way every time" in body
+    assert "a time delta, a wall-clock budget or a `findBy` timeout" in body
+    assert "DNS, a runner that died, a cache or `setup-*` post step, an image pull" in body
+    assert "A security-scan finding, a migration" in body and "product behaviour" in body
+    # Actions, one per class.
+    assert "fix the code, not the test" in body and "`merge.reopen_on_red`" in body
+    assert "file or claim a test-fix item" in body
+    assert "rerun the job once" in body and "fails the same way twice, file the item" in body
+    assert "These are a person's call every time" in body
+    # Never, to get green.
+    for never in ("Never skip a test.", "Never raise a budget", "Never add a retry.",
+                  "Never shrink the runner pool."):
+        assert never in body, never
+    assert "sabotage-red evidence" in body and "second agent's review" in body
+    for slug in ("graphban-unstick", "watch-wave"):
+        other = " ".join(setup_mod.skill_source(slug).read_text(encoding="utf-8").split())
+        assert "graphban-red-ci" in other, slug
+    assert "graphban-red-ci" in setup_mod.shipped_slugs()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    setup_mod.install_skill(repo, "graphban-red-ci")
+    for dest in setup_mod.SKILL_DEST_DIRS:
+        assert (repo / dest / "graphban-red-ci" / "SKILL.md").is_file(), dest
+    names = _built_wheel_names(tmp_path)
+    assert any(n.endswith("skills/graphban-red-ci/SKILL.md") for n in names), names[:20]
+
+
 def test_graphban_work_names_the_lease_the_graph_and_prove():
     """The work skill must warn that a silent long command drops the lease, send
     changed paths to describe_code, call a receipt a test line, and hand
