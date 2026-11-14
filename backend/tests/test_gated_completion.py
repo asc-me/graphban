@@ -356,7 +356,9 @@ def test_sign_off_with_a_commit_mints_a_valid_attestation(db):
     # not worthless, but a reader could not see it from the receipt.
     assert {p["name"] for p in att["predicates"]} == {
         "independent_review", "adversarial_evidence", "acceptance_coverage",
-        "commit_is_not_the_base", "reviewer_diversity"}
+        "commit_is_not_the_base", "reviewer_diversity",
+        # GRPH-1282: whether the attested commit is one this item is known by.
+        "commit_is_the_head"}
 
 
 def test_sign_off_without_a_commit_attests_nothing_and_adds_nothing(db):
