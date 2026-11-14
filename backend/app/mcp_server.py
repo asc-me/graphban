@@ -2307,6 +2307,10 @@ _FLEET_ONLY_ARGS = {
     }},
     # GRPH-807. Measured on a live instance: 177 agents, 27,391 tokens, of which ONE was live.
     # A planner polling a wave paid nearly twice the whole manifest, per poll.
+    # GRPH-1650. Fleet-only for the reason every entry here is: the core manifest has no
+    # headroom. A worker that sends no agent_id is still resolved from the connection's single
+    # live agent; the dispatcher reads an agent_id whether or not it was advertised.
+    "create_item": {"agent_id": {"type": "string"}},
     "fleet_status": {"view": {
         "type": "string", "enum": ["lean", "live", "full"],
         "description": "lean (default) drops display-only fields; live drops offline agents "
@@ -3012,8 +3016,17 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         cached = _idempotent_get(db, args, "create_item", Item)
         if cached is not None:
             return _item_dict(cached)
+        # GRPH-1650. A decision wait filed by an agent holding a claim is stored, linked and
+        # blocks that claim in ONE transaction: the row is left uncommitted until
+        # `attach_to_claim` has written the link and the block. The caller is resolved the
+        # way every attributed call is (an `agent_id` on THIS credential, else the
+        # connection's single live agent) — a schema-following agent sends no agent_id.
+        is_wait = bool(args.get("question")) or any(
+            str(t).strip().lower() == "wait:decision" for t in (args.get("tags") or []))
+        caller = _agent_for_call(db, key, args, session_id) if is_wait else None
         item = items_svc.create_item(
             db,
+            commit=not is_wait,
             title=args["title"],
             description=args.get("description", ""),
             tags=args.get("tags", []),
@@ -3029,8 +3042,11 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             options=args.get("options"),
             reporter={"name": "Agent", "handle": "mcp", "avatar": "#a78bfa"},
         )
+        wait_link = waits_svc.attach_to_claim(db, item, caller) if is_wait else None
         _idempotent_remember(db, args, "create_item", item.id)
         out = _item_dict(item)
+        if wait_link is not None:
+            out["wait_link"] = wait_link
         # GRPH-1393: a touchpoint matching nothing in the code graph is named, with the
         # closest real path, instead of being accepted silently.
         tw = touchpoint_check.warnings(db, item.project_id, args.get("touchpoints"))
