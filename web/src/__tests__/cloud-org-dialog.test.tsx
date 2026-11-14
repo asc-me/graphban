@@ -311,7 +311,10 @@ describe("Organization window, linked: the P67 overview (GRPH-1564, L3/L4)", () 
     expect(summary).toHaveTextContent("This deployment is linked to Ascme Labs as alex@acme.example.");
     const rows = summary.querySelectorAll("[data-synced-project]");
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toHaveTextContent(`core→☁ CORE☁ SYNCED ${hhmm(PUSHED_AT)}`);
+    // Local tag (from the projects list, not the sync row's name) → cloud tag (GRPH-1614).
+    await waitFor(() => expect(rows[0]).toHaveTextContent(`CORE→CORE☁ SYNCED ${hhmm(PUSHED_AT)}`));
+    expect(rows[0].querySelector("[data-row-tags]")).not.toHaveTextContent("core");
+    expect(rows[0]).toHaveClass("bg-surface");
     expect(within(summary).getByText("2 projects are local only.")).toBeInTheDocument();
     expect(dialog.querySelector("#org-deployments")).toBeNull();
     for (const n of ["Open org overview", "Choose projects", "Sign in again"]) {
@@ -331,6 +334,31 @@ describe("Organization window, linked: the P67 overview (GRPH-1564, L3/L4)", () 
     expect(alert).toHaveTextContent("✕ Your seat in Ascme Labs was removed");
     expect(alert).toHaveClass("border");
     expect(within(summary).getAllByRole("button")[0]).toHaveTextContent("Sign in again");
+  });
+
+  it("summary, seat removed: a synced row still reads local tag → cloud tag, then ☁ REFUSED", async () => {
+    mocks.syncStatus.mockResolvedValue({ ...linked, state: "refused", legacy: false });
+    const dialog = await openSummary();
+    const summary = await within(dialog).findByTestId("linked-summary");
+    const rows = summary.querySelectorAll("[data-synced-project]");
+    expect(rows).toHaveLength(1);
+    await waitFor(() => expect(rows[0]).toHaveTextContent("CORE→CORE☁ REFUSED"));
+    expect(rows[0].querySelector("[data-row-tags]")).not.toHaveTextContent("core");
+  });
+
+  it.each([
+    ["seat removed", false, "Your seat in Ascme Labs was removed. Nothing is syncing."],
+    ["old key refused", true, "This link used a key. Sign in to keep syncing."],
+  ])("summary, %s: only the ✕ is red; the alert text is the normal foreground, semibold", async (_, legacy, text) => {
+    mocks.syncStatus.mockResolvedValue({ ...linked, state: "refused", legacy });
+    const dialog = await openSummary();
+    const alert = within(await within(dialog).findByTestId("linked-summary")).getByRole("alert");
+    expect(alert).toHaveTextContent(`✕ ${text}`);
+    expect(alert).toHaveClass("text-fg", "font-semibold");
+    expect(alert).not.toHaveClass("text-st-blocked");
+    const cross = alert.querySelector("span[aria-hidden]")!;
+    expect(cross).toHaveTextContent("✕");
+    expect(cross).toHaveClass("text-st-blocked");
   });
 
   it("summary: no 'this deployment' name in the heading while the deployment name is unknown", async () => {
