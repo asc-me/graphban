@@ -111,7 +111,7 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
          "enforced", _src("app/services/gitops.py", "refuse_already_progress"), "code"),
     Rule("gitops.owned_by_org", "build", "Gitops owned by the org",
          "On a linked instance the git process is set by the org admin; project edits are refused.",
-         "enforced", _src("app/routers/projects.py", "Refused"), "code", scope="org"),
+         "enforced", _src("app/services/gitops.py", "Refused"), "code", scope="org"),
     Rule("sync.link_needs_box_admin", "build", "Linking the box needs a box admin",
          "Linking, re-pointing or unlinking this deployment's cloud org is done by the box's "
          "operator or an owner/admin of one of their projects, not by any member.",
