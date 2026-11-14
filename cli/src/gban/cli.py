@@ -551,6 +551,30 @@ def cmd_stack(args) -> int:
     return 0
 
 
+ADAPTER_ENV = "GBAN_ADAPTER"
+
+
+def _until_with_adapter(rest: list[str]) -> list[str] | None:
+    """`gbfleet until` requires --adapter; Triage's drain note shows the command without it.
+
+    Fill it from the flag (already there), $GBAN_ADAPTER, the settings file's `adapter`, or
+    `claude` when that binary is on PATH. Otherwise say which value is missing and how to set
+    it, rather than letting argparse print usage. Only args before a `--` are ours to read.
+    """
+    own = rest[:rest.index("--")] if "--" in rest else rest
+    if any(a == "--adapter" or a.startswith("--adapter=") for a in own):
+        return rest
+    adapter = (os.environ.get(ADAPTER_ENV) or config.settings().get("adapter") or "").strip()
+    if not adapter and shutil.which("claude"):
+        adapter = "claude"
+    if not adapter:
+        print(f"{PROG}: `{PROG} fleet until` needs --adapter (the agent vendor to run, e.g. "
+              f"claude) and none is configured. Pass --adapter <vendor>, set ${ADAPTER_ENV}, "
+              f"or add \"adapter\" to {config.home() / config.SETTINGS_FILE}.", file=sys.stderr)
+        return None
+    return [rest[0], "--adapter", adapter, *rest[1:]]
+
+
 def cmd_fleet(args) -> int:
     """A subprocess, never an import (D5).
 
@@ -576,6 +600,10 @@ def cmd_fleet(args) -> int:
     rest = list(args.rest)
     if rest[:1] == ["--"]:
         rest = rest[1:]
+    if rest[:1] == ["until"]:
+        rest = _until_with_adapter(rest)
+        if rest is None:
+            return EXIT_REFUSED
     argv = [binary, *rest]
     url = config.resolve(args.server, config.URL_ENV, "url")
     if url and "--server" not in argv:
