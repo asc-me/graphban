@@ -115,6 +115,11 @@ def _clients(
                 return httpx.Response(observations_status, text=(
                     "this credential is not a supervisor key: recording a cut needs planner "
                     "among its roles, and either a fleet wave or a project-scoped key"))
+            if body["kind"] == "seats":
+                # GRPH-1648: the start-up seat check, as the route answers the minter's key.
+                return httpx.Response(200, json={"kind": "seats", "ok": True, "checked": [
+                    {"index": i, "seat": "", "ok": True}
+                    for i, _ in enumerate(body.get("seats") or [])]})
             if body["item_id"] == "__gbfleet_probe_no_such_item__":
                 return httpx.Response(404, json={"detail": "no such item"})
             return httpx.Response(200, json={"recorded": True})
