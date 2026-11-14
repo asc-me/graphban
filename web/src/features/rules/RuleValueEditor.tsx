@@ -281,7 +281,7 @@ function PathCountBadge({ projectId, path }: { projectId: string; path: string }
   return (
     <span data-testid="rules-path-count" className={cn(MONO, "block min-w-0 max-w-full truncate text-small", warn ? "text-[#ffb454]" : "text-muted-2")}>
       {warn && "⚠ "}
-      {row?.normalised && row.normalised !== trimmed ? `saved as ${row.normalised} · ` : ""}
+      {row?.normalised && row.normalised !== trimmed ? `counted as ${row.normalised} · ` : ""}
       {text}
     </span>
   );
