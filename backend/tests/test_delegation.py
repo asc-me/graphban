@@ -746,3 +746,17 @@ def test_a_plain_bounce_names_no_tier_and_an_unknown_tier_is_refused(client, key
                                           "reason": "x", "needs_tier": "galaxy"}))
     assert "needs_tier" in e["message"]
     assert _stored(db, item).status == "review"
+
+
+def test_needs_tier_is_advertised_to_the_fleet_tier_only():
+    """GRPH-933. `needs_tier` rides `_FLEET_ONLY_ARGS`: the core manifest every key pays for
+    has no headroom (test_tool_tiers), and only the fleet's brief and `gbfleet until` read it.
+    The dispatcher accepts it from any caller (test above), advertised or not."""
+    from app import mcp_server
+
+    def bounce_props(tools):
+        return next(t for t in tools if t["name"] == "bounce")["inputSchema"]["properties"]
+
+    assert "needs_tier" not in bounce_props(mcp_server.TOOLS)
+    fleet = bounce_props(mcp_server._with_fleet_args(mcp_server.TOOLS))
+    assert fleet["needs_tier"]["enum"] == list(dsvc.TIERS)

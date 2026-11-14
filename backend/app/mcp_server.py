@@ -786,8 +786,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "bounce",
         "description": (
-            "Send a reviewed item back to `next` with a reason, pinned to its author for one "
-            "lease. `needs_tier`: their tier cannot do it; unpinned, re-seated at that tier."
+            "Send a reviewed item back to `next` with a required reason. Reserved for its "
+            "author for one lease period — they still hold the worktree — then opens to the "
+            "fleet."
         ),
         "inputSchema": {
             "type": "object",
@@ -795,7 +796,6 @@ TOOLS: list[dict[str, Any]] = [
                 "id": {"type": "string"},
                 "agent_id": {"type": "string"},
                 "reason": {"type": "string"},
-                "needs_tier": {"type": "string"},
             },
             "required": ["id", "reason"],
         },
@@ -2257,6 +2257,13 @@ _FLEET_ONLY_ARGS = {
         "description": "Admit a predicate whose check COULD NOT run, as {predicate: reason} "
                        "— e.g. {\"commit_is_not_the_base\": \"built by hand, PR #913\"}. "
                        "Recorded on the receipt. Ignored for a predicate that ran and failed.",
+    }},
+    # GRPH-933. Fleet-only for the reason every entry here is: the core manifest has no
+    # headroom (test_tool_tiers), and the tier a bounce names is only read by the fleet's
+    # brief and `gbfleet until`. The dispatcher accepts it whether or not it was advertised.
+    "bounce": {"needs_tier": {
+        "type": "string", "enum": ["cheap", "frontier"],
+        "description": "The author's tier cannot do this: no pin; re-seated at this tier.",
     }},
     # GRPH-1031. Planner/supervisor retarget after a bounce. Fleet-only for the reason
     # every entry here is: the ceiling is measured on the base manifest, and a worker
