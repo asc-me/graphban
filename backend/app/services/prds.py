@@ -3001,6 +3001,29 @@ def grill_state(db: Session, prd_id: str) -> dict:
     }
 
 
+_WORD = re.compile(r"\w+", re.UNICODE)
+_SENTENCE_END = re.compile(r"(?<=[.!?;])\s+|\n+")
+
+
+def _words(text: str | None) -> str:
+    """Lower-case words joined by single spaces: markdown, quotes and punctuation dropped."""
+    return " ".join(_WORD.findall((text or "").lower()))
+
+
+def answer_in_body(answer: str | None, body_words: str) -> bool:
+    """Whether every sentence of `answer` appears, word for word, in the body (GRPH-1516).
+
+    `body_words` is `f" {_words(body)} "`. A sentence of one word ("Yes.") says nothing a
+    body could be checked for, so it is skipped; an answer made only of those is matched
+    whole. An empty answer is never absorbed.
+    """
+    whole = _words(answer)
+    if not whole:
+        return False
+    parts = [w for w in (_words(p) for p in _SENTENCE_END.split(answer or "")) if " " in w]
+    return all(f" {p} " in body_words for p in (parts or [whole]))
+
+
 def grill_absorption(db: Session, prd_id: str) -> dict:
     """Has the BODY been edited since the grill last said something?
 
@@ -3038,15 +3061,15 @@ def grill_absorption(db: Session, prd_id: str) -> dict:
     edited = _aware(edited)
     # An answer whose words are already in the body is absorbed even when it was recorded
     # after the body edit (the skill folds first, then records). Still staleness, not
-    # correctness: this is a verbatim-text match, whitespace and case folded.
-    def _norm(x):
-        return " ".join((x or "").split()).lower()
-
-    body_text = _norm(prd.body)
+    # correctness: a word-for-word match, but on WORDS (GRPH-1516). Comparing characters
+    # failed every real fold: the section says `**Wire path** is \`/v1/systemone\`` where the
+    # answer said "Wire path is /v1/systemone", or restates the answer's two sentences in
+    # two places. So case, whitespace, punctuation and markdown marks are ignored, and each
+    # sentence of the answer has to appear in the body on its own.
+    body_words = f" {_words(prd.body)} "
 
     def _in_body(t):
-        text = _norm(getattr(t, "text", None))
-        return bool(text) and text in body_text
+        return answer_in_body(getattr(t, "text", None), body_words)
 
     behind = [
         t
