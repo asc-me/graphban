@@ -401,7 +401,8 @@ def backup(path: Path, now: float | None = None) -> Path:
         n += 1
         copy = path.with_name(f"{path.name}.bak-{stamp}-{n}")
     shutil.copy2(path, copy)
-    os.chmod(copy, 0o600)
+    # `chmod 0600` alone is a no-op on NTFS; the ACL is what keeps the key owner-only there.
+    config._make_private(copy)
     return copy
 
 

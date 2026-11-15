@@ -1714,7 +1714,7 @@ def test_user_scope_backs_up_an_entry_pointing_elsewhere_and_names_both(
     assert code == 0, lines
     [saved] = list(no_grok_config.parent.glob("config.toml.bak-*"))
     assert saved.read_text() == before, "the backup is not the file that was replaced"
-    assert (saved.stat().st_mode & 0o777) == 0o600, "the backup holds a key; owner-only"
+    assert config.is_private(saved), "the backup holds a key; owner-only"
     now = tomllib.loads(no_grok_config.read_text())
     assert str(repo) in now["mcp_servers"]["gbfleet"]["args"]
     [named] = [l for l in lines if l["name"] == "replaced"]
@@ -1772,3 +1772,17 @@ def test_user_scope_backs_up_a_claude_entry_for_another_project(tmp_path, wired)
     assert saved.read_text() == before
     [named] = [l for l in lines if l["name"] == "replaced"]
     assert "graphban-rules" in named["detail"] and "core" in named["detail"]
+
+
+def test_backup_restricts_with_the_platform_aware_helper(tmp_path, monkeypatch):
+    """`chmod 0600` is a no-op on NTFS, so the backup must go through the ACL-aware helper."""
+    src = tmp_path / "config.toml"
+    src.write_text("[mcp_servers.graphban]\n")
+    seen = []
+    real = config._make_private
+    monkeypatch.setattr(config, "_make_private", lambda p: (seen.append(Path(p)), real(p)))
+
+    copy = setup_mod.backup(src)
+
+    assert seen == [copy], "the backup was not restricted with config._make_private"
+    assert config.is_private(copy)
