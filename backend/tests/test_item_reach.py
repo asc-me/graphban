@@ -550,6 +550,28 @@ def test_a_platform_name_used_as_english_is_not_a_command():
     assert reach_svc.signals("render deploy"), "a real subcommand must still fire"
 
 
+def test_a_ui_assertion_that_says_render_nothing_is_not_a_command():
+    """GRPH-1644. GBC-125's acceptance line drew platform-command, and `delegate` refused the
+    bound seat for hours. The trigger was not "rail", "docked" or "remount" (the matcher wants
+    the whole platform name followed by whitespace) but `render nothing`: `render` is
+    Render.com's CLI, and "nothing" was not in the grammar list. Indefinite pronouns and
+    determiners are English after the name, never a subcommand.
+
+    Sabotage: drop `nothing` from `_NOT_SUBCOMMANDS` and the quoted line fires again."""
+    quoted = ("- Web test: org with `is_demo: true` renders the panel; `false` and loading "
+              "render nothing; the rail button closes an open panel and reopens a closed one "
+              "(docked and sheet); selected tab survives a remount; a throwing `localStorage` "
+              "still renders; …")
+    assert reach_svc.signals(quoted) == []
+    for phrase in ("it should render nothing", "the list must render everything",
+                   "rows render correctly", "an empty org may render none"):
+        assert not reach_svc.signals(phrase), phrase
+
+    fired = reach_svc.signals("Run `railway up` to redeploy")
+    assert [s["rule"] for s in fired] == ["platform-command"]
+    assert reach_svc.signals("render deploy"), "a real subcommand must still fire"
+
+
 def test_a_capitalised_word_after_a_platform_name_is_not_a_subcommand():
     """GRPH-1187. Every one of these CLIs takes a lowercase subcommand. Compiling the whole
     pattern with `re.I` let `[a-z]` match `E`, so the UI label in "render Edit" read as a CLI
