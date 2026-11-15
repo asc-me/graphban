@@ -17,6 +17,7 @@ These tests exist because the failure they describe is invisible when it happens
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tomllib
 from pathlib import Path
@@ -1659,13 +1660,16 @@ def test_project_scoped_configured_key_is_still_reused(tmp_path, wired):
 # ---- scope boundaries (GRPH-1661) ------------------------------------------------------------
 
 def _grok_pointing_at(path: Path, repo: str, project: str, key: str = "gb_sk_main") -> str:
+    # TOML-escaped: a Windows path is all backslashes, and `"C:\Users\..."` raw in a basic
+    # string is a parse error, so the fixture would plant a file no reader can see an entry in.
+    q = setup_mod._toml_string
     text = (
         '[ui]\nmax_thoughts_width = 120\n\n'
         '[mcp_servers.graphban]\nurl = "http://gb.invalid/api/mcp"\nenabled = true\n\n'
-        f'[mcp_servers.graphban.headers]\nX-API-Key = "{key}"\n\n'
+        f'[mcp_servers.graphban.headers]\nX-API-Key = {q(key)}\n\n'
         '[mcp_servers.gbfleet]\ncommand = "gbfleet"\n'
-        f'args = ["mcp", "--repo", "{repo}", "--server", "http://gb.invalid", '
-        f'"--project", "{project}"]\nenabled = true\n'
+        f'args = ["mcp", "--repo", {q(repo)}, "--server", "http://gb.invalid", '
+        f'"--project", {q(project)}]\nenabled = true\n'
     )
     path.write_text(text)
     return text
@@ -1716,6 +1720,26 @@ def test_user_scope_backs_up_an_entry_pointing_elsewhere_and_names_both(
     [named] = [l for l in lines if l["name"] == "replaced"]
     for part in (str(main), "agentledger", str(repo), "core", str(saved)):
         assert part in named["detail"], (part, named["detail"])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a backslash is a separator there, not a name")
+def test_user_scope_backs_up_an_entry_whose_repo_path_has_a_backslash(
+        tmp_path, wired, no_grok_config):
+    """The Windows CI failure, on any OS: a backslash in the old repo path (every Windows path
+    has them) must still be read back as an entry pointing elsewhere, and saved (GRPH-1661)."""
+    main, repo, home = tmp_path / "ma\\in", tmp_path / "other", tmp_path / ".claude.json"
+    main.mkdir()
+    repo.mkdir()
+    before = _grok_pointing_at(no_grok_config, str(main), "agentledger")
+    assert tomllib.loads(before)["mcp_servers"]["gbfleet"]["args"][2] == str(main)
+
+    lines, code, _ = _run(Server(), repo, home, scope="user", wired=wired)
+
+    assert code == 0, lines
+    [saved] = list(no_grok_config.parent.glob("config.toml.bak-*"))
+    assert saved.read_text() == before
+    [named] = [l for l in lines if l["name"] == "replaced"]
+    assert str(main) in named["detail"], named["detail"]
 
 
 def test_user_scope_rewriting_the_same_target_makes_no_backup(
