@@ -1357,7 +1357,9 @@ def completeness(db: Session, prd: Prd) -> dict:
         aliases = [title] + ([renames[title]] if title in renames else [])
         its = [it for a in aliases for it in by_section.get(a, [])]
         claimed.update(aliases)
-        delivered = sum(1 for it in its if it.status == "done")
+        # `delivered`, not `status == "done"`: a duplicate or superseded item is done but
+        # carries no work, so it must not make a section look delivered (GRPH-1671).
+        delivered = sum(1 for it in its if it.delivered)
         if not its:
             state = _ABSENT
         elif delivered == len(its):
@@ -1545,7 +1547,7 @@ def evidence_rollup(db: Session, prd: Prd) -> dict:
     for title in parse_sections(base.body):
         aliases = [title] + ([renames[title]] if title in renames else [])
         delivered = [it for a in aliases for it in by_section.get(a, [])
-                     if it.status == "done"]
+                     if it.delivered]
         kinds = Counter(e.get("kind", "note") for it in delivered for e in (it.evidence or []))
         falsifiable = sum(kinds[k] for k in FALSIFIABLE_EVIDENCE)
         unfalsifiable = sum(kinds[k] for k in UNFALSIFIABLE_EVIDENCE)
@@ -1675,7 +1677,7 @@ def classify_work(db: Session, item: Item, *, force: bool = False) -> "WorkClass
     self-flags. The ambiguous middle is recorded with `needs_review` and deferred to
     sign-off, which is AL-227's memory triage shape — the same problem, one domain over.
     """
-    if not item.prd_id or item.status != "done":
+    if not item.prd_id or not item.delivered:  # a resolved item did no work (GRPH-1671)
         return None
     prd = db.get(Prd, item.prd_id)
     base = baseline_of(db, item.prd_id) if prd is not None else None
@@ -1803,7 +1805,7 @@ def classifications(db: Session, prd: Prd, *, refresh: bool = True) -> list[dict
     # silently cost N model calls. The reader sees the gap and decides whether to spend
     # them, which is the same choice the stale/lazy split already makes.
     for it in items_svc.list_items(db, project_id=prd.project_id):
-        if it.prd_id != prd.id or it.status != "done" or it.id in seen:
+        if it.prd_id != prd.id or not it.delivered or it.id in seen:
             continue
         out.append({
             "item": it.key, "outcome": "unclassified",
@@ -1915,7 +1917,7 @@ def close_report(db: Session, prd: Prd) -> dict:
         titles.update(e["from"] for e in h["events"] if e["change"] == "renamed")
         titles.update(e["to"] for e in h["events"] if e["change"] == "renamed")
         linked = [it for t in titles for it in by_section.get(t, [])]
-        delivered = [it for it in linked if it.status == "done"]
+        delivered = [it for it in linked if it.delivered]
         # Classified once, from the ORIGIN title's own text, and reused for both fields
         # below — they must never disagree about whether a section was framing.
         _origin_buildable = is_implementable_section(

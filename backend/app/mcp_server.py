@@ -2282,6 +2282,13 @@ _FLEET_ONLY_ARGS = {
         # GRPH-1398. The fleet tier is where touchpoints are written and narrowed, and the core
         # manifest has no headroom. The dispatcher accepts it whether or not it was advertised.
         "touchpoints_remove": {"type": "array", "items": {"type": "string"}},
+        # GRPH-1671. Planner-only, so fleet-only for the reason every entry here is.
+        "resolution": {
+            "type": "object",
+            "description": "Planner: close as done with no attestation. {kind: duplicate|"
+                           "superseded, of: item (or PRD), reason}. A duplicate's item must "
+                           "be done.",
+        },
     },
     # GRPH-1061. A tests scan's counts. Fleet-only for the reason every entry here is: the
     # ceiling had no room for it, and `record_scan` is a worker tool (fleet.py gates it to
@@ -2506,6 +2513,42 @@ def _validate_args(name: str, args: dict[str, Any]) -> None:
                 raise errors.Validation(
                     f"{field} must be {label}", hint=f"got {type(value).__name__}"
                 )
+
+
+def _resolve_item_call(db, args, key, allowed, defer) -> dict:
+    """`update_item(resolution=...)`: close as a duplicate or superseded (GRPH-1671).
+
+    Planner-only, checked here because the service is principal-free (as `owner_close` is on
+    the REST side). Nothing else may ride on the call: a resolution is the whole write, so a
+    title or status sent with it would be either ignored or half-applied."""
+    res = args["resolution"]
+    if not isinstance(res, dict):
+        raise errors.Validation("resolution is an object: {kind, of, reason}")
+    others = sorted(k for k in args
+                    if k not in ("id", "agent_id", "resolution", "status") and args[k] is not None)
+    if others or args.get("status") not in (None, "done"):
+        raise errors.Validation(
+            "resolution is the whole write; send it alone (status may be omitted or `done`), "
+            f"not with {', '.join(others) or 'status=' + str(args.get('status'))}")
+    if not _caller_is_planner(db, key, args.get("agent_id")):
+        raise errors.Refused(
+            403, "closing an item as a duplicate or superseded skips the completion gate, so "
+                 "only a planner (or the project owner, in the web app) may do it",
+            rule_id=items_svc.RESOLUTION_RULE, target=("item", str(args["id"])))
+    agent = args.get("agent_id")
+    try:
+        item = items_svc.resolve_item(
+            db, args["id"], kind=str(res.get("kind") or ""), of=str(res.get("of") or ""),
+            reason=str(res.get("reason") or ""),
+            actor=fleet_svc.caller_identity(agent, key),
+            actor_agent=agent or None, defer=defer)
+    except items_svc.ResolutionRefused as e:
+        raise errors.Refused(409, str(e), rule_id=items_svc.RESOLUTION_RULE,
+                             meta={"reason": e.reason},
+                             target=("item", str(args["id"]))) from e
+    if item is None:
+        raise errors.NotFound(f"item not found: {args['id']}")
+    return _item_dict(item)
 
 
 def _caller_is_planner(db, key, agent_id) -> bool:
@@ -3055,6 +3098,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         return out
     if name == "update_item":
         _scoped_item(db, args["id"], allowed)
+        if args.get("resolution") is not None:
+            return _resolve_item_call(db, args, key, allowed, defer)
         if "reach" in args:
             # GRPH-832. Refused rather than ignored. `reach` is not in `update_item`'s field
             # whitelist, so passing it here would have written nothing and returned 200 — and

@@ -631,6 +631,13 @@ class OwnerCloseIn(BaseModel):
     pr_url: str | None = None
 
 
+class ResolveIn(BaseModel):
+    """Body for POST /api/items/{id}/resolve (GRPH-1671)."""
+    kind: str
+    of: str
+    reason: str = ""
+
+
 class ReorderIn(BaseModel):
     ordered_ids: list[str]
 
@@ -678,6 +685,9 @@ class ItemOut(ORMModel):
     #: `checking` | `response_needed` | null (GRPH-P75 D1), from `waits.question_state` via the
     #: `Item.question_state` property, so the web never computes it a second time.
     question_state: str | None = None
+    #: Closed as a duplicate or superseded (GRPH-1671): `{kind, of, reason, by, at}`; null on
+    #: every item that was not. A resolved item is done but delivered nothing.
+    resolution: dict | None = None
 
     @field_validator("decision", mode="before")
     @classmethod

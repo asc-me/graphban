@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { errorDetail } from "@/lib/errors";
-import { useItem, useOwnerClose } from "@/lib/queries";
+import { useItem, useOwnerClose, useResolveItem } from "@/lib/queries";
 import type { EvidenceReceipt, Item } from "@/lib/types";
 
 function existingPrUrl(item: Item, evidence: EvidenceReceipt[] = []): string {
@@ -20,6 +20,31 @@ function existingPrUrl(item: Item, evidence: EvidenceReceipt[] = []): string {
   }
   return "";
 }
+
+/** How the owner is closing it. `merged` records the merge (GRPH-1030); the other two close
+ * it as done with nothing delivered, pointing at the work that replaced it (GRPH-1671). */
+type Mode = "merged" | "duplicate" | "superseded";
+
+const MODES: { id: Mode; label: string }[] = [
+  { id: "merged", label: "Merged" },
+  { id: "duplicate", label: "Duplicate" },
+  { id: "superseded", label: "Superseded" },
+];
+
+const TITLES: Record<Mode, string> = {
+  merged: "Close as merged",
+  duplicate: "Close as duplicate",
+  superseded: "Close as superseded",
+};
+
+const DESCRIPTIONS: Record<Mode, string> = {
+  merged:
+    "Records the merge commit and who closed it. This is an owner close, not a reviewer sign-off.",
+  duplicate:
+    "Points at the finished item that already did this work. Nothing is counted as delivered here.",
+  superseded:
+    "Points at the item or PRD that replaced this one. Nothing is counted as delivered here.",
+};
 
 export function OwnerCloseDialog({
   item,
@@ -31,18 +56,26 @@ export function OwnerCloseDialog({
   onClose: () => void;
 }) {
   const close = useOwnerClose();
+  const resolve = useResolveItem();
   // The list row carries no evidence (GRPH-1228); a PR link may sit in a receipt.
   const { data: detail } = useItem(item?.id, open);
+  const [mode, setMode] = React.useState<Mode>("merged");
   const [commit, setCommit] = React.useState("");
   const [prUrl, setPrUrl] = React.useState("");
+  const [of, setOf] = React.useState("");
+  const [reason, setReason] = React.useState("");
   const [error, setError] = React.useState("");
 
   React.useEffect(() => {
     if (!open || !item) return;
+    setMode("merged");
     setCommit("");
     setPrUrl(existingPrUrl(item));
+    setOf("");
+    setReason("");
     setError("");
     close.reset();
+    resolve.reset();
   }, [open, item?.id]); // eslint-disable-line react-hooks/exhaustive-deps -- reset only on open/item
 
   React.useEffect(() => {
@@ -51,19 +84,34 @@ export function OwnerCloseDialog({
     setPrUrl((cur) => cur || url);
   }, [open, item?.id, detail]); // eslint-disable-line react-hooks/exhaustive-deps -- fill only an empty field
 
+  const ready =
+    mode === "merged"
+      ? !!commit.trim()
+      : !!of.trim() && (mode === "duplicate" || !!reason.trim());
+  const pending = close.isPending || resolve.isPending;
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!item || !commit.trim()) return;
+    if (!item || !ready) return;
     setError("");
     try {
-      await close.mutateAsync({
-        id: item.id,
-        commit: commit.trim(),
-        pr_url: prUrl.trim() || undefined,
-      });
+      if (mode === "merged") {
+        await close.mutateAsync({
+          id: item.id,
+          commit: commit.trim(),
+          pr_url: prUrl.trim() || undefined,
+        });
+      } else {
+        await resolve.mutateAsync({
+          id: item.id,
+          kind: mode,
+          of: of.trim(),
+          reason: reason.trim() || undefined,
+        });
+      }
       onClose();
     } catch (err) {
-      setError(errorDetail(err, "Could not close this item as merged."));
+      setError(errorDetail(err, `Could not ${TITLES[mode].toLowerCase()}.`));
     }
   }
 
@@ -71,36 +119,85 @@ export function OwnerCloseDialog({
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Close as merged</DialogTitle>
+          <DialogTitle>{TITLES[mode]}</DialogTitle>
           <DialogDescription>
-            Records the merge commit and who closed it. This is an owner close, not a
-            reviewer sign-off.
+            {DESCRIPTIONS[mode]}
             {item ? ` ${item.id}` : ""}
           </DialogDescription>
         </DialogHeader>
+        <div role="radiogroup" aria-label="How it closed" className="flex gap-1.5">
+          {MODES.map((m) => (
+            <Button
+              key={m.id}
+              type="button"
+              role="radio"
+              aria-checked={mode === m.id}
+              variant={mode === m.id ? "default" : "outline"}
+              size="sm"
+              onClick={() => {
+                setMode(m.id);
+                setError("");
+              }}
+            >
+              {m.label}
+            </Button>
+          ))}
+        </div>
         <form onSubmit={submit} className="space-y-3">
-          <label className="block space-y-1">
-            <span className="font-mono text-[10.5px] uppercase tracking-wide text-faint">
-              Merge commit
-            </span>
-            <Input
-              placeholder="sha that landed on the base"
-              value={commit}
-              onChange={(e) => setCommit(e.target.value)}
-              autoFocus
-              required
-            />
-          </label>
-          <label className="block space-y-1">
-            <span className="font-mono text-[10.5px] uppercase tracking-wide text-faint">
-              PR url
-            </span>
-            <Input
-              placeholder="https://github.com/org/repo/pull/123"
-              value={prUrl}
-              onChange={(e) => setPrUrl(e.target.value)}
-            />
-          </label>
+          {mode === "merged" ? (
+            <>
+              <label className="block space-y-1">
+                <span className="font-mono text-[10.5px] uppercase tracking-wide text-faint">
+                  Merge commit
+                </span>
+                <Input
+                  placeholder="sha that landed on the base"
+                  value={commit}
+                  onChange={(e) => setCommit(e.target.value)}
+                  autoFocus
+                  required
+                />
+              </label>
+              <label className="block space-y-1">
+                <span className="font-mono text-[10.5px] uppercase tracking-wide text-faint">
+                  PR url
+                </span>
+                <Input
+                  placeholder="https://github.com/org/repo/pull/123"
+                  value={prUrl}
+                  onChange={(e) => setPrUrl(e.target.value)}
+                />
+              </label>
+            </>
+          ) : (
+            <>
+              <label className="block space-y-1">
+                <span className="font-mono text-[10.5px] uppercase tracking-wide text-faint">
+                  {mode === "duplicate" ? "Duplicate of" : "Superseded by"}
+                </span>
+                <Input
+                  placeholder={
+                    mode === "duplicate" ? "the finished item, e.g. GRPH-1668" : "item or PRD id"
+                  }
+                  value={of}
+                  onChange={(e) => setOf(e.target.value)}
+                  autoFocus
+                  required
+                />
+              </label>
+              <label className="block space-y-1">
+                <span className="font-mono text-[10.5px] uppercase tracking-wide text-faint">
+                  {mode === "duplicate" ? "Note (optional)" : "Why"}
+                </span>
+                <Input
+                  placeholder={mode === "duplicate" ? "" : "what replaced it, in one line"}
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  required={mode === "superseded"}
+                />
+              </label>
+            </>
+          )}
           {error && (
             <p className="text-small text-st-blocked" role="alert">
               {error}
@@ -110,8 +207,8 @@ export function OwnerCloseDialog({
             <Button type="button" variant="outline" size="sm" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" size="sm" disabled={!commit.trim() || close.isPending}>
-              Close as merged
+            <Button type="submit" size="sm" disabled={!ready || pending}>
+              {TITLES[mode]}
             </Button>
           </div>
         </form>

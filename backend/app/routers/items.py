@@ -9,7 +9,7 @@ from app import errors
 from app.db import get_db
 from app.models import User
 from app.schemas import (
-    ItemCreate, ItemOut, ItemUpdate, ItemWritten, OwnerCloseIn, ReorderIn, SnoozeIn, WaitAnswerIn,
+    ItemCreate, ItemOut, ItemUpdate, ItemWritten, OwnerCloseIn, ReorderIn, ResolveIn, SnoozeIn, WaitAnswerIn,
     item_list_row,
 )
 from app.security import authz
@@ -266,6 +266,33 @@ def owner_close(
         raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(422, str(e))
+    if item is None:
+        raise HTTPException(404, "item not found")
+    return item
+
+
+@router.post("/{item_id}/resolve", response_model=ItemOut)
+def resolve_item(
+    item_id: str,
+    body: ResolveIn,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Close an item as a duplicate or superseded, as the project owner (GRPH-1671). JWT only:
+    it skips the completion gate, so it has its own route and owner check, as owner-close
+    does, rather than riding on PATCH."""
+    existing = items_svc.get_item(db, item_id)
+    if existing is None:
+        raise HTTPException(404, "item not found")
+    authz.require_project_owner(db, user.id, existing.project_id)
+    try:
+        item = items_svc.resolve_item(
+            db, item_id, kind=body.kind, of=body.of, reason=body.reason,
+            actor=str(user.handle or user.name or user.id), defer=background.add_task)
+    except items_svc.ResolutionRefused as e:
+        raise errors.Refused(409, str(e), rule_id=items_svc.RESOLUTION_RULE,
+                             meta={"reason": e.reason}, target=("item", existing.id))
     if item is None:
         raise HTTPException(404, "item not found")
     return item

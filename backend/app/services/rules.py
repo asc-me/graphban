@@ -130,6 +130,11 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
     Rule("reach.acknowledge_signals", "plan", "Reach signals need an acknowledgement",
          "Work whose text suggests a running system needs acknowledge_reach=true to delegate.",
          "enforced", _src("app/services/delegation.py", "Refused"), "code"),
+    Rule("close.resolution_points_at_the_work", "review", "A duplicate points at finished work",
+         "An item closed as a duplicate or superseded skips the attestation only because it "
+         "names the work that replaced it: a duplicate's target must be done, in the same "
+         "project, and the agent holding the item cannot close it this way.",
+         "enforced", _src("app/services/items.py", "ResolutionRefused"), "code"),
     Rule("review.not_own_work", "review", "Not your own work",
          "The agent that built an item cannot sign it off.",
          "enforced", _src("app/services/fleet.py", "SelfReview"), "code"),

@@ -772,8 +772,22 @@ class Item(Base):
     # on a `wait:decision` item. NULL on every other item. `answer` is written once by
     # `waits.answer_wait`; `notify` names the live holders to tell, `notified` those told.
     decision: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Closed WITHOUT delivering anything (GRPH-1671): `{kind, of, reason, by, at}`, where
+    # `kind` is `duplicate` or `superseded` and `of` is the item (or, for superseded, the PRD)
+    # that carries the work instead. NULL on every item that was not closed this way. Written
+    # only by `items.resolve_item`, cleared when the item leaves `done`. A resolved item is
+    # `done` but never `delivered` — see the property below.
+    resolution: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Hide this blocker from triage until then (GRPH-1137). NULL = not snoozed.
     snoozed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    @property
+    def delivered(self) -> bool:
+        """`done` AND carrying work (GRPH-1671). An item closed as a duplicate or as
+        superseded is `done` so it leaves the board, but it delivered nothing: the item its
+        `resolution` points at carries the delivery. Every count of what a PRD section has
+        delivered reads this, never `status == "done"` alone."""
+        return self.status == "done" and not self.resolution
 
     # The backstop for the mint path (services/items.py): even if minting is bypassed
     # or two agents race, the database refuses a duplicate number within a project.
