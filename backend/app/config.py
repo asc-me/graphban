@@ -347,6 +347,15 @@ class Settings(BaseSettings):
     vapid_private_key: str = ""
     vapid_subject: str = "mailto:admin@localhost"
 
+    # The box's own certificate authority (GRPH-1634). `tls_dir` is where the current leaf
+    # (`box.crt`) and key (`box.key`) are written for the front end; empty writes nothing.
+    # `tls_reload_url`, when set, is POSTed to after a write so the front end reloads.
+    tls_dir: str = ""
+    tls_reload_url: str = ""
+    tls_reissue_debounce_seconds: int = 300
+    # How often the leader re-checks the leaf (renewal, debounced names); `0` disables.
+    tls_sync_seconds: int = 300
+
     # LLM call spans (GRPH-225). How long `llm_call_spans` rows live; 0 or negative
     # keeps everything. The table is telemetry, not the ledger — unbounded growth of
     # per-call rows is the difference between a cost panel and an ops incident.
