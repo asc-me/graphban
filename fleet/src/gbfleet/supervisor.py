@@ -2798,8 +2798,13 @@ def _proposal_items(tree: Worktree, child: Child | None) -> list[str]:
     proposed as B's: one PR titled for B carrying A's files. Every item the child ever held
     and a commit names goes in, so `propose_branch` splits the branch one PR per item. An
     item it held and never committed for stays out — `split_by_item` would refuse the whole
-    branch for it. With fewer than two named, the old reading stands, and the single-item
-    gate in `propose_branch` refuses a branch carrying another item's commits.
+    branch for it.
+
+    One named is enough (GRPH-1657). A bound child built GRPH-1562, then was handed GRPH-933
+    by `claim_next` and released it unbuilt; at reap `held_items` was [GRPH-933], and the
+    branch was proposed for an item it carries nothing for and withheld as "carries commits
+    for GRPH-1562". With none named, the old reading stands, and the single-item gate in
+    `propose_branch` refuses a branch carrying another item's commits.
     """
     held = [i for i in ((child.held_items if child else []) or []) if i]
     if child is None or not tree.base:
@@ -2808,7 +2813,7 @@ def _proposal_items(tree: Worktree, child: Child | None) -> list[str]:
     named: list[str] = []
     for _sha, ids in wt_mod.attributed_commits(tree.repo, tree.branch, tree.base, known):
         named += [i for i in ids if i in known and i not in named]
-    if len(named) > 1:
+    if named:
         return [i for i in known if i in named]
     return held
 
