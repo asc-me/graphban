@@ -171,8 +171,14 @@ def test_status_reports_https_url_with_published_port(db, monkeypatch):
 
 
 def test_status_https_url_is_null_when_leaf_not_ready(db, monkeypatch):
+    """Names are seeded and the CA exists, but the leaf was never issued (first sync not yet
+    run, or issuance failed): no HTTPS address may be advertised (GRPH-1664 bounce)."""
+    tls_names.seed_auto_names(db)
+    row = tls_ca.ensure_ca(db)
+    assert row is not None and not row.leaf_cert  # CA exists, leaf not yet issued
     monkeypatch.setattr(tls_ca, "sync_leaf", lambda db: "skipped")
     out = tls_ca.status(db)
+    assert out["names"], "names must be seeded so only the missing leaf decides"
     assert out["ready"] is False
     assert out["https_url"] is None
 
