@@ -76,6 +76,9 @@ services:
       # Local -> console code-graph push and link (GRPH-1554). Empty leaves the box unlinked.
       SYNC_CLOUD_URL: ${SYNC_CLOUD_URL:-}
       SYNC_API_KEY: ${SYNC_API_KEY:-}
+      # Optional token for the update check's GitHub API calls (GRPH-1663). Empty is
+      # unauthenticated (60/hour shared per public IP).
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-${GRAPHBAN_GITHUB_TOKEN:-}}
     volumes:
       # Drive sync target. Point SYNC_HOST_DIR at a Google Drive Desktop folder to reach Drive.
       - ${SYNC_HOST_DIR:-./sync}:/data/sync

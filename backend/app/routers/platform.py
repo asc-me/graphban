@@ -92,7 +92,7 @@ def update_check(refresh: bool = False, db: Session = Depends(get_db),
     running tag and, when a newer cut exists, the latest — empty is not
     unknown. JWT so it is a Settings fact, not a public oracle beyond
     `/health`. Bounded by a 5 s total deadline; a definite answer is cached for
-    a minute and `?refresh=true` bypasses the cache.
+    10 minutes and `?refresh=true` bypasses the cache, not GitHub's rate-limit backoff.
     """
     out = dict(instance_update.check_cached(refresh=refresh))
     latest = out.get("latest")

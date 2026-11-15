@@ -30,6 +30,7 @@ def _old_version(monkeypatch):
     from app.services import instance_update
     monkeypatch.setattr(instance_update, "running",
                         lambda: {"version": "2026.10.0", "git_sha": "abc"})
+    instance_update.reset_github_state()  # no ETag/release/backoff leaks between tests
 
 
 @pytest.fixture()

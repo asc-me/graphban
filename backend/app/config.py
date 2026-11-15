@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # The insecure fallback secret. Anyone knowing it can mint tokens for any user, so
@@ -86,6 +86,12 @@ class Settings(BaseSettings):
     # verify inbound GitHub webhook HMAC when set; trust X-Forwarded-For only behind a
     # known proxy; refuse to start on a weak/default JWT secret when required.
     github_webhook_secret: str = ""
+    # Optional token for the box's update check (GRPH-1663). Unauthenticated GitHub REST
+    # calls share 60/hour per public IP; a token raises that to 5000. Sent as a Bearer
+    # header to api.github.com only — never to the release-asset download. Empty is the
+    # unauthenticated default.
+    github_token: str = Field(
+        default="", validation_alias=AliasChoices("GITHUB_TOKEN", "GRAPHBAN_GITHUB_TOKEN"))
     # Where newer rule packs are discovered (GRPH-1334): a GitHub releases feed (JSON list)
     # whose releases are tagged `pack-v<version>` with `graphban-rules-<version>.tar` and
     # `.tar.sig` assets. Self-hosters can mirror it; tests point it at a fixture.

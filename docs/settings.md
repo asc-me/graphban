@@ -22,6 +22,15 @@ Native apply fetches the GitHub Release tarball and starts
 no native tree means `apply` is false, not a green Install. Hosted has Check
 and no Install.
 
+GitHub's REST budget (GRPH-1663): a definite answer is cached 10 minutes; requests
+send the stored ETag and a 304 reuses it (304s are not counted); on a 403/429 that
+says the budget is spent (`X-RateLimit-Remaining: 0`) no call is made before
+`X-RateLimit-Reset`, and the check reports “GitHub rate limit: retry after HH:MM
+(box clock)” — **Check for updates** does not bypass that. Install reuses the release
+the last successful check advertised, so it makes no GitHub API call. Set
+`GITHUB_TOKEN` ([configuration.md](configuration.md)) to lift the 60/hour
+unauthenticated limit.
+
 Three states: **current** (the page says this box is on the latest release),
 **available**, **unknown**. Unknown is not current: a failed feed fetch, or a
 running version that is still `0.1.0`, must not look up to date.
