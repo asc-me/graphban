@@ -2241,7 +2241,123 @@ def review_block_reason(db: Session, *, agent_id: str, project_id: str | None = 
         return (f"every item awaiting review is already being reviewed — by "
                 f"{', '.join(sorted(set(taken)))}; a claim lapses "
                 f"{DEFAULT_LEASE_SECONDS // 60} minutes after it is taken, held or not")
+    # GRPH-1652. Every other rule `claim_review` filters by. "Nothing awaiting" with an item
+    # in review is the sentence that kept GBC-136 unreviewed: three reviewers were told the
+    # queue was empty while a rule they could not see withheld the one item in it.
+    # Your own work is left out of the sentence: for a lone agent "nothing awaiting a second
+    # pair of eyes" is the correct answer (it is still listed in `withheld`).
+    withheld = [w for w in review_withheld(db, agent_id=agent_id, project_id=project_id)
+                if w["rule"] != WITHHELD_OWN_WORK]
+    if withheld:
+        return ("nothing you may take: " + "; ".join(
+            f"{w['item']} withheld ({w['rule']}): {w['reason']}" for w in withheld))
     return "no item awaiting a second pair of eyes"
+
+
+# Rule names `review_withheld` reports (GRPH-1652). Stable strings: a reviewer or an operator
+# reads them to decide whether to wait, mint a seat, or go and find a supervisor.
+WITHHELD_OWN_WORK = "own_work"
+WITHHELD_YOUR_DELEGATION = "delegated_by_you"
+WITHHELD_HELD = "held_by_reviewer"
+WITHHELD_NOT_INDEPENDENT = "not_independent"
+WITHHELD_PUBLISH_PENDING = "publish_pending"
+WITHHELD_NOTHING_TO_READ = "nothing_to_read"
+WITHHELD_OUT_OF_SCOPE = "outside_seat_scope"
+WITHHELD_CAPABILITY = "missing_capability"
+
+
+def review_withholding(db: Session, it: Item, *, agent_id: str, me: Agent | None,
+                       scope: str, lease_seconds: int = DEFAULT_LEASE_SECONDS
+                       ) -> tuple[str, str] | None:
+    """Why `claim_review` will not hand `it` to this caller, as (rule, reason) — None if it will.
+
+    **THE ONE DEFINITION** `claim_review` filters by and `review_withheld` reports from
+    (GRPH-1652). They used to be two: the filter lived inline in `claim_review` and the
+    explanation was a hand-kept subset in `review_block_reason`, which knew about authorship,
+    holds, independence and capabilities but not `publish_pending`, the handoff, or the seat's
+    scope. GBC-136 sat in `review` with `review_claimed_by: null` while three reviewers were
+    told "no item awaiting a second pair of eyes"; the rule that withheld it was one the
+    explanation did not know existed. Rules are checked in the order the filter applied them.
+    """
+    # The ban, keyed on AUTHORSHIP rather than on role. The obvious attack on a dynamic role
+    # system is to promote a worker to reviewer while it holds its own item; it does not work,
+    # because an agent's id does not change when its role does.
+    if it.built_by == agent_id:
+        return WITHHELD_OWN_WORK, "you built it"
+    # PRD-36 D19: never hand a delegator its own delegation to review.
+    if delegated_by(db, it, agent_id):
+        return WITHHELD_YOUR_DELEGATION, f"you delegated it to its builder {it.built_by}"
+    # Already being reviewed by somebody else — while their claim is still LIVE. A reviewer
+    # that went silent releases it, the same way a worker's lease releases.
+    holder = review_claim_holder(it, lease_seconds=lease_seconds)
+    if holder is not None and holder != agent_id:
+        return WITHHELD_HELD, (f"{holder} holds its review; the claim lapses "
+                               f"{lease_seconds // 60} minutes after it was taken")
+    # And separate enough for the review to mean anything (GRPH-361) — including from a
+    # credential that sent the item without claiming it (GRPH-848). Same rule `sign_off`
+    # applies, so a reviewer is never leased an item it will then be refused.
+    if me is not None and not independent_of_built_by(db, me, it.built_by):
+        return WITHHELD_NOT_INDEPENDENT, (
+            f"you are not independent of its builder {it.built_by or '(unrecorded)'}: "
+            "same credential and session, or one call tree")
+    # GRPH-754: and its branch is actually READABLE. An item goes to `review` when the child
+    # says so, but the branch is published when its supervisor reaps it a few seconds later —
+    # and a reviewer handed the item inside that window fetches a 404 and bounces work that is
+    # fine. Withheld only while a supervisor is known to be coming; an unsupervised item is
+    # never withheld, because nothing would ever arrive to release it.
+    if harness_svc.publish_pending(db, it):
+        return WITHHELD_PUBLISH_PENDING, (
+            f"a supervisor launched its latest attempt and has not reported branch "
+            f"{(it.branch or '').strip() or '(none)'} published. Released when the supervisor "
+            "reports the push, when CI attests a passed suite_green on that branch, or when "
+            "the item leaves review")
+    # GRPH-946: and there is something to read at all. An item with no branch and no PR url
+    # cannot be reviewed, only bounced for being unreadable — which is how SA-575's real
+    # defects went unreviewed. Rows that predate the `update_item` gate land here.
+    if not items_svc.reviewable_handoff(it):
+        return WITHHELD_NOTHING_TO_READ, "it has no branch and no PR url to read"
+    # GRPH-827: and inside the scope this seat was minted for. Review is scoped for the same
+    # reason building is — and the reviewer is the half that can also SIGN OFF.
+    if not items_svc.in_scope(it, scope):
+        return WITHHELD_OUT_OF_SCOPE, (
+            f"your seat is scoped to {scope}; it belongs to {it.prd_id or 'no PRD'}")
+    # GRPH-1055: and this reviewer declared every capability a clause asked for. A fleet child
+    # is refused `gh` (`shim.py` DEFAULT_DENY) and used to be handed the clause anyway; five of
+    # them left SA-667 without resolving it.
+    missing = missing_clause_capabilities(me.capabilities if me is not None else None,
+                                          it.description or "")
+    if missing:
+        return WITHHELD_CAPABILITY, (
+            "an acceptance clause needs " + ", ".join(f"`{n}`" for n in sorted(missing))
+            + ", which you did not declare")
+    return None
+
+
+def review_withheld(db: Session, *, agent_id: str, project_id: str | None = None,
+                    lease_seconds: int = DEFAULT_LEASE_SECONDS,
+                    skip: list[str] | None = None) -> list[dict]:
+    """Every in-review item `claim_review` would not hand this caller, each with the rule.
+
+    `[{item, title, rule, reason}]`, in queue order. Items the caller passed in `skip` are left
+    out: it declined them itself. An empty list beside an empty claim means the queue really is
+    empty for everybody, which is the only case "nothing awaiting review" may be said.
+    """
+    me = db.get(Agent, agent_id)
+    scope = items_svc.seat_scope(db, agent_id)
+    stmt = select(Item).where(Item.status == "review")
+    if project_id:
+        stmt = stmt.where(Item.project_id == project_id)
+    declined = set(skip or [])
+    out: list[dict] = []
+    for it in db.scalars(stmt.order_by(Item.sort_order, Item.number)).all():
+        if it.id in declined or it.key in declined:
+            continue
+        why = review_withholding(db, it, agent_id=agent_id, me=me, scope=scope,
+                                 lease_seconds=lease_seconds)
+        if why is not None:
+            out.append({"item": it.key or it.id, "title": it.title or "",
+                        "rule": why[0], "reason": why[1]})
+    return out
 
 
 def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
@@ -2279,42 +2395,8 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
         # Declined this round — see `claim_next`. A reviewer that must refuse the top item
         # (its own work) otherwise gets it back on every call and never sees the rest.
         if it.id not in declined and it.key not in declined
-        # The ban, keyed on AUTHORSHIP rather than on role. The obvious attack on a dynamic
-        # role system is to promote a worker to reviewer while it holds its own item; it does
-        # not work, because an agent's id does not change when its role does.
-        if it.built_by != agent_id
-        # PRD-36 D19: never hand a delegator its own delegation to review.
-        and not delegated_by(db, it, agent_id)
-        # Already being reviewed by somebody else — while their claim is still LIVE. A
-        # reviewer that went silent releases it, the same way a worker's lease releases.
-        and (review_claim_holder(it, lease_seconds=lease_seconds) or agent_id) == agent_id
-        # And separate enough for the review to mean anything (GRPH-361) — including from a
-        # credential that sent the item without claiming it (GRPH-848). Same rule `sign_off`
-        # applies, so a reviewer is never leased an item it will then be refused.
-        and (me is None or independent_of_built_by(db, me, it.built_by))
-        # GRPH-754: and its branch is actually READABLE. An item goes to `review` when the
-        # child says so, but the branch is published when its supervisor reaps it a few
-        # seconds later — and a reviewer handed the item inside that window fetches a 404 and
-        # bounces work that is fine. Measured on the deployed instance, twice. Withheld only
-        # while a supervisor is known to be coming and only for a grace period; an unsupervised
-        # item is never withheld, because nothing would ever arrive to release it.
-        and not harness_svc.publish_pending(db, it)
-        # GRPH-946: and there is something to read at all. An item with no branch and no PR
-        # url cannot be reviewed, only bounced for being unreadable — which is how SA-575's
-        # real defects went unreviewed. Rows that predate the `update_item` gate land here.
-        and items_svc.reviewable_handoff(it)
-        # GRPH-827: and inside the scope this seat was minted for. Review is scoped for the
-        # same reason building is — a wave provisioned for one PRD reviewing another PRD's
-        # work is the same escape wearing the reviewer's hat, and the reviewer is the half
-        # that can also SIGN OFF. Unscoped seats are unaffected.
-        and items_svc.in_scope(it, scope)
-        # GRPH-1055: and this reviewer declared every capability a clause asked for. A fleet
-        # child is refused `gh` (`shim.py` DEFAULT_DENY) and used to be handed the clause
-        # anyway; five of them left SA-667 without resolving it. Skipping it here is what
-        # stops the idle-review loop. The queue marks an item no live reviewer can check as
-        # needing a human, which is the other half — an absence of claimants must not read
-        # as an empty queue.
-        and reviewer_can_check(me, it)
+        and review_withholding(db, it, agent_id=agent_id, me=me, scope=scope,
+                               lease_seconds=lease_seconds) is None
     ]
     if not candidates:
         return None
