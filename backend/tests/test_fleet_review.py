@@ -130,6 +130,8 @@ def test_a_lone_agent_cannot_review_its_own_work(client, agent_key, db):
 
     assert out["claimed"] is False
     assert out["reason"] == "no item awaiting a second pair of eyes"
+    # GRPH-1652: still named, by item and rule.
+    assert [w["rule"] for w in out["withheld"]] == ["own_work"]
 
 
 def test_two_agents_can_review_each_other(client, agent_key, db):
