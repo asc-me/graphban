@@ -126,7 +126,8 @@ def update_apply(body: UpdateApplyIn, _: User = Depends(get_current_user)):
     JWT operator only — not MCP. Compose: host helper starts `deploy.sh`.
     Native: fetch the GitHub tarball and start `graphban_host.py upgrade`.
     Returns 202 when that has started; this process is about to stop. Hosted
-    403. No apply path 503. Tag that is not the advertised cut 409.
+    403. No apply path 503. Feed could not be asked 503. Tag that is not the
+    advertised cut 409.
     """
     got = instance_update.apply(body.tag)
     if not got.get("ok"):
