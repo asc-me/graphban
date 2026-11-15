@@ -573,13 +573,13 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
-  // `refresh` bypasses the server's one-minute cache (the Check button).
   // P83 tier 1: the box's own certificate authority. Public material only; no key route exists.
   httpsStatus: () => request<HttpsStatus>("/https"),
   httpsAddName: (name: string) =>
     request<HttpsStatus>("/https/names", { method: "POST", body: JSON.stringify({ name }) }),
   httpsRemoveName: (name: string) =>
     request<HttpsStatus>(`/https/names/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  // `refresh` bypasses the server's one-minute cache (the Check button).
   updateCheck: (refresh = false) =>
     request<UpdateCheck>(`/platform/update-check${refresh ? "?refresh=true" : ""}`),
   // The current Install's steps, from its log. Bounded per call: the API is recreated near

@@ -13,7 +13,10 @@ import { Button } from "@/components/ui/button";
 import { useHttpsNames, useHttpsStatus } from "@/lib/queries";
 import type { HttpsStatus } from "@/lib/api";
 
-export type Trust = "checking" | "trusted" | "untrusted" | "unknown";
+// There is no "untrusted" state on purpose. A browser gives a page no way to tell a refused
+// certificate from an unreachable address: both reject the same opaque fetch. So the only
+// answers this browser can give are "trusted" (the fetch went through) and "Can't tell".
+export type Trust = "checking" | "trusted" | "unknown";
 type Os = "macOS" | "Windows" | "iOS" | "Android" | "Linux";
 
 const OS_TABS: Os[] = ["macOS", "Windows", "iOS", "Android", "Linux"];
@@ -90,7 +93,6 @@ function Label({ children }: { children: React.ReactNode }) {
 const CHIP: Record<Trust, string> = {
   checking: "Checking…",
   trusted: "Trusted by this browser",
-  untrusted: "Not trusted by this browser yet",
   unknown: "Can't tell",
 };
 

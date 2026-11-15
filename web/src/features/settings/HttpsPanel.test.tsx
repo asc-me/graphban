@@ -3,7 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { HttpsPanel, httpsAddress } from "@/features/settings/HttpsPanel";
+import { HttpsPanel, detectOs, httpsAddress, probeTrust } from "@/features/settings/HttpsPanel";
 import { api } from "@/lib/api";
 import type { HttpsStatus } from "@/lib/api";
 
@@ -106,5 +106,130 @@ describe("HttpsPanel", () => {
     expect(screen.getByText(/Not available with this box's own certificate/)).toBeInTheDocument();
     expect(container.textContent).not.toMatch(/PRIVATE KEY|private_key|key_pem/);
     expect(vi.mocked(api.httpsStatus)).toHaveBeenCalled();
+  });
+
+  it("shows the loading state while the status is pending", async () => {
+    vi.mocked(api.httpsStatus).mockReturnValue(new Promise(() => {}));
+    mount();
+    expect(screen.getByText("Loading HTTPS settings…")).toBeInTheDocument();
+    expect(screen.queryByTestId("trust-chip")).toBeNull();
+  });
+
+  it("shows Checking… on the chip while the probe is pending", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockReturnValue(new Promise(() => {})));
+    mount();
+    await screen.findByTestId("trust-chip");
+    await userEvent.click(screen.getAllByRole("button", { name: "Check again" })[0]);
+    expect(screen.getByTestId("trust-chip")).toHaveTextContent("Checking…");
+    expect(screen.getByTestId("trust-chip")).not.toHaveTextContent("Trusted by this browser");
+  });
+
+  it("answers Can't tell when the probe times out", async () => {
+    vi.useFakeTimers();
+    try {
+      // A fetch that never settles on its own; only the abort signal ends it.
+      vi.stubGlobal("fetch", vi.fn((_u: string, init: RequestInit) => new Promise((_r, reject) => {
+        init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      })));
+      let result: string | undefined;
+      const p = probeTrust("https://box.home", 5000).then((r) => { result = r; });
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(result).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      await p;
+      expect(result).toBe("unknown");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("puts the chip at Can't tell, not Trusted, when the page's probe times out", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      vi.stubGlobal("fetch", vi.fn((_u: string, init: RequestInit) => new Promise((_r, reject) => {
+        init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      })));
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      mount();
+      await screen.findByTestId("trust-chip");
+      await user.click(screen.getAllByRole("button", { name: "Check again" })[0]);
+      expect(screen.getByTestId("trust-chip")).toHaveTextContent("Checking…");
+      await vi.advanceTimersByTimeAsync(5000);
+      await waitFor(() => expect(screen.getByTestId("trust-chip")).toHaveTextContent("Can't tell"));
+      expect(screen.getByTestId("trust-chip")).not.toHaveTextContent("Trusted by this browser");
+      expect(screen.getByText(/The check from this browser failed/)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows the refused block's keep-using-http line", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("cert")));
+    mount();
+    await screen.findByTestId("trust-chip");
+    await userEvent.click(screen.getAllByRole("button", { name: "Check again" })[0]);
+    const refused = await screen.findByTestId("trust-refused");
+    expect(refused).toHaveTextContent("This browser still doesn't trust the box. Two ways out:");
+    expect(refused).toHaveTextContent(`You can keep using http://${window.location.host} on this device.`);
+    expect(screen.getByRole("link", { name: "Bring your own certificate" })).toHaveAttribute("href", "#bring-your-own");
+    expect(screen.getByRole("link", { name: "Graphban Cloud" })).toHaveAttribute("href", "#graphban-cloud");
+  });
+
+  it("shows the Add-a-name help text", async () => {
+    mount();
+    expect(await screen.findByText(
+      "Add any host name or address you reach this box by. The box finds the ones you already use automatically.",
+    )).toBeInTheDocument();
+  });
+
+  it("shows the reissue message after adding a name", async () => {
+    vi.mocked(api.httpsAddName).mockResolvedValue(status());
+    mount();
+    await userEvent.type(await screen.findByLabelText("Add a name"), "nas.lan");
+    await userEvent.click(screen.getByRole("button", { name: "Add a name" }));
+    expect(await screen.findByText(
+      "The certificate was reissued with the new list. Devices that trust the box keep trusting it.",
+    )).toBeInTheDocument();
+    expect(vi.mocked(api.httpsAddName)).toHaveBeenCalledWith("nas.lan");
+  });
+
+  it("shows the reissue message after removing a name", async () => {
+    vi.mocked(api.httpsRemoveName).mockResolvedValue(status());
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "Remove" }));
+    expect(await screen.findByText(/The certificate was reissued with the new list/)).toBeInTheDocument();
+    expect(vi.mocked(api.httpsRemoveName)).toHaveBeenCalledWith("box.home");
+  });
+
+  it("shows an add error as an alert, with no reissue message", async () => {
+    vi.mocked(api.httpsAddName).mockRejectedValue(new Error("not a valid host name"));
+    mount();
+    await userEvent.type(await screen.findByLabelText("Add a name"), "bad name");
+    await userEvent.click(screen.getByRole("button", { name: "Add a name" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("not a valid host name");
+    expect(screen.queryByText(/The certificate was reissued/)).toBeNull();
+  });
+
+  it("shows a remove error as an alert", async () => {
+    vi.mocked(api.httpsRemoveName).mockRejectedValue(new Error("remove refused"));
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "Remove" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("remove refused");
+  });
+
+  it("picks the OS tab from the browser platform", async () => {
+    expect(detectOs("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)")).toBe("iOS");
+    expect(detectOs("Mozilla/5.0 (Linux; Android 14; Pixel 8)")).toBe("Android");
+    expect(detectOs("Mozilla/5.0 (Windows NT 10.0; Win64; x64)")).toBe("Windows");
+    expect(detectOs("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)")).toBe("macOS");
+    expect(detectOs("Mozilla/5.0 (X11; Linux x86_64)")).toBe("Linux");
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)");
+    try {
+      mount();
+      expect(await screen.findByRole("tab", { name: "iOS" })).toHaveAttribute("aria-selected", "true");
+      expect(screen.getByText(/Certificate Trust Settings/)).toBeInTheDocument();
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });
