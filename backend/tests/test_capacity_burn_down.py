@@ -59,6 +59,22 @@ def test_a_stated_reset_in_the_past_rolls_forward_by_the_cadence():
     assert len(b["series"]) == 15  # 00:00 … 13:00 hourly, then now
 
 
+def test_a_monthly_reset_on_the_31st_stated_months_ahead_keeps_its_day():
+    """GRPH-1507. Walking back from the previous boundary carried the month-end clamp: Jan 31
+    2027, stated three months ahead, walked back Dec 31 -> Nov 30 -> Oct 30, so this period
+    read Oct 30 -> Nov 30. From the anchor it is
+    Oct 31 -> Nov 30: November is clamped because it has no 31st, October is not."""
+    b = burn_down(_row(next_reset_at=datetime(2027, 1, 31, tzinfo=timezone.utc)), [], NOW,
+                  state="available")
+    assert b["start"] == "2026-10-31T00:00:00+00:00", b["start"]
+    assert b["end"] == "2026-11-30T00:00:00+00:00", b["end"]
+    later = datetime(2026, 12, 5, tzinfo=timezone.utc)
+    b = burn_down(_row(next_reset_at=datetime(2027, 3, 31, tzinfo=timezone.utc)), [], later,
+                  state="available")
+    assert (b["start"], b["end"]) == ("2026-11-30T00:00:00+00:00",
+                                      "2026-12-31T00:00:00+00:00"), "December keeps the 31st"
+
+
 def test_runs_out_early_is_graded_on_the_last_three_days():
     ev = [_spend(datetime(2026, 11, 2, tzinfo=timezone.utc), 1_000_000),
           _spend(datetime(2026, 11, 7, tzinfo=timezone.utc), 3_000_000),
@@ -128,4 +144,37 @@ def test_unreachable_keeps_the_state_it_last_reported(client, org):
         assert (h["state"], h["last_known_state"]) == ("unreachable", "available")
     finally:
         db.rollback()
+        db.close()
+
+
+def test_items_routed_counts_only_claims_inside_the_window(client, org):
+    """GRPH-1507. The window is filtered in the query. A claim eight days old is outside the
+    week and is not counted; a reservation inside it is not a claim and is not counted."""
+    from app.db import SessionLocal
+    from app.models import RoutingDecision
+    from app.services import headroom
+
+    owner = org["owner"]
+    inside = client.post("/api/items", json={"title": "routed", "project_id": org["project"]["id"]},
+                         headers=owner).json()["id"]
+    old = client.post("/api/items", json={"title": "old", "project_id": org["project"]["id"]},
+                      headers=owner).json()["id"]
+    now = datetime.now(timezone.utc)
+    db = SessionLocal()
+    try:
+        db.add_all([
+            RoutingDecision(item_id=inside, kind="claim", reason="r",
+                            created_at=now - timedelta(days=1)),
+            RoutingDecision(item_id=inside, kind="claim", reason="again",
+                            created_at=now - timedelta(days=2)),
+            RoutingDecision(item_id=old, kind="claim", reason="r",
+                            created_at=now - timedelta(days=8)),
+            RoutingDecision(item_id=old, kind="reservation", reason="r",
+                            created_at=now - timedelta(days=1)),
+        ])
+        db.commit()
+        week = (now - timedelta(days=7), now)
+        assert headroom._items_routed(db, org["id"], *week) == 1
+        assert headroom._items_routed(db, org["id"], now - timedelta(days=9), now) == 2
+    finally:
         db.close()
