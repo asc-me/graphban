@@ -261,9 +261,9 @@ def test_the_entrypoint_stops_uvicorn_reconfiguring_logging_underneath_it():
         "logging is configured after uvicorn starts, which is the bug this module exists for"
 
 
-def test_the_bind_stays_ipv4_because_nginx_resolves_ipv4_only():
-    """A cross-file invariant that only prose held. `web/nginx.conf.template` sets
-    `ipv6=off` on its resolver because uvicorn binds 0.0.0.0, and says whoever changes the
+def test_the_bind_stays_ipv4_because_the_front_end_assumes_ipv4():
+    """A cross-file invariant that only prose held. `web/Caddyfile` notes
+    that uvicorn binds 0.0.0.0, and says whoever changes the
     bind must change that too. Nothing enforced it: an entrypoint reading HOST from the
     environment would let the two drift with no diff to review, and nginx would resolve an
     AAAA record pointing at an address nothing is listening on.
@@ -276,10 +276,10 @@ def test_the_bind_stays_ipv4_because_nginx_resolves_ipv4_only():
     src = inspect.getsource(serve.main)
     assert 'host="0.0.0.0"' in src, "the bind is no longer a hardcoded IPv4 address"
 
-    template = pathlib.Path(__file__).resolve().parents[2] / "web" / "nginx.conf.template"
-    assert "ipv6=off" in template.read_text(), (
-        "nginx no longer resolves IPv4-only; if that was deliberate the bind above has to "
-        "change with it, and this test is the pair"
+    caddyfile = pathlib.Path(__file__).resolve().parents[2] / "web" / "Caddyfile"
+    assert "uvicorn binds 0.0.0.0 (IPv4 only)" in caddyfile.read_text(), (
+        "the front end no longer documents the IPv4-only bind; if the bind changed, update "
+        "web/Caddyfile in the same commit, and this test is the pair"
     )
 
 

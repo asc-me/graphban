@@ -28,7 +28,7 @@ from app.main import (
     _mount_spa,
 )
 
-NGINX = pathlib.Path(__file__).resolve().parents[2] / "web" / "nginx.conf.template"
+NGINX = pathlib.Path(__file__).resolve().parents[2] / "web" / "Caddyfile"
 
 
 @pytest.fixture()
@@ -134,7 +134,7 @@ def test_the_header_set_matches_the_one_nginx_sends():
     """
     conf = NGINX.read_text(encoding="utf-8")
     for name, value in SPA_SECURITY_HEADERS.items():
-        assert f'add_header {name} "{value}"' in conf, (
+        assert f'{name} "{value}"' in conf, (
             f"{name} does not match what nginx sends, so the two paths have diverged"
         )
 

@@ -1,0 +1,140 @@
+# The web image's front end (GRPH-1635, P83 D1). Caddy replaces nginx; `docker-entrypoint.sh`
+# starts it. Everything here is read from the environment at config load:
+#   PORT           plain-HTTP listener (80 in the image; compose publishes ${WEB_PORT:-8080})
+#   HTTPS_PORT     the box's HTTPS listener (8443 in the image; compose publishes ${WEB_HTTPS_PORT:-8443})
+#   API_SCHEME / API_UPSTREAM   where /api, /health and org subdomains are proxied
+#   HTTPS_SNIPPET  https.on.caddy or https.off.caddy, chosen by the entrypoint (HOSTED_MODE => off)
+#   ASK_URL        the API's on-demand TLS allowlist endpoint
+#   REDIRECT_CHECK_URI   empty (default): never redirect HTTP to HTTPS; else the API path asked first
+#
+# Behaviour carried over from nginx.conf.template, because each line was paid for by an outage:
+#
+# UPSTREAM RE-RESOLUTION (GRPH-523). Caddy dials a hostname upstream through the Go resolver on
+# every new connection, so a redeployed backend (new address, same name) is followed without a
+# restart — there is no cached address to go stale. The Railway outage of 2026-08-26 was nginx
+# pinning one at load. `web/verify-upstream-reresolution.sh` proves it against this image.
+# `dial_timeout` bounds how long a dead address can hang a request. Resolution may return an AAAA
+# record, but uvicorn binds 0.0.0.0 (IPv4 only): Caddy's dialer falls back to the A record, and
+# whoever changes that bind should still change this file in the same commit.
+#
+# THE UPSTREAM PATH IS FORWARDED UNCHANGED. No `rewrite`, no `uri` directive and no path on the
+# upstream address: /api/items?x=1 reaches the API as /api/items?x=1.
+#
+# X-FORWARDED-FOR APPENDS. The API reads TRUSTED_HOPS hops from the right (docs/deploy.md).
+# `trusted_proxies 0.0.0.0/0` makes Caddy keep an inbound X-Forwarded-For and append the peer it
+# saw, as nginx's $proxy_add_x_forwarded_for did, so one hop from the right is the real client
+# and a spoofed prefix stays to the left of it.
+{
+	admin localhost:2019
+	auto_https off
+	grace_period 10s
+	servers {
+		trusted_proxies static 0.0.0.0/0 ::/0
+	}
+	on_demand_tls {
+		ask {$ASK_URL}
+	}
+}
+
+(security_headers) {
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		Content-Security-Policy "frame-ancestors 'self' https:"
+	}
+}
+
+# STRUCTURED ACCESS LOG (GRPH-33). The PATH only: the public share link's credential travels as
+# `?token=...`, so the query is cut from `uri` (leaving the path) and the request headers are deleted from every line.
+(access_log) {
+	log {
+		output stdout
+		format filter {
+			wrap json
+			request>uri regexp \?.*$ ""
+			request>headers delete
+			request>tls delete
+			resp_headers delete
+		}
+	}
+}
+
+(proxy_headers) {
+	header_up X-Real-IP {remote_host}
+	header_up X-Forwarded-Proto {scheme}
+	header_up X-Request-ID {http.request.uuid}
+}
+
+# One site body for both listeners.
+(front) {
+	import security_headers
+	import access_log
+
+	# PRD-43 D8: org subdomains serve public surfaces only; the API resolves the org from Host.
+	# `cloud.graphban.dev` is the hosted SPA and must not be proxied.
+	@org {
+		host *.graphban.dev
+		not host cloud.graphban.dev
+	}
+	handle @org {
+		reverse_proxy {$API_SCHEME}://{$API_UPSTREAM} {
+			import proxy_headers
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 120s
+				write_timeout 120s
+			}
+		}
+	}
+
+	# MUST exceed fleet.MAX_WAIT_SECONDS (60) and llm_timeout_seconds (90): a parked
+	# claim_cluster must get its answer, not a 504. 120s is the ceiling the old edge used.
+	handle /api/* {
+		reverse_proxy {$API_SCHEME}://{$API_UPSTREAM} {
+			header_up Host {$API_UPSTREAM}
+			import proxy_headers
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 120s
+				write_timeout 120s
+			}
+		}
+	}
+
+	handle /health {
+		reverse_proxy {$API_SCHEME}://{$API_UPSTREAM} {
+			header_up Host {$API_UPSTREAM}
+			import proxy_headers
+		}
+	}
+
+	# Vite content-hashes everything under /assets/, so these cache indefinitely. A missing
+	# file is a 404, never the SPA shell.
+	handle /assets/* {
+		root * /usr/share/caddy/html
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+
+	# SPA fallback. index.html is the one unhashed file and it names the bundle, and
+	# version.txt is the release identity: neither may be cached.
+	handle {
+		root * /usr/share/caddy/html
+		header Cache-Control "no-cache"
+		try_files {path} {path}/ /index.html
+		file_server
+	}
+}
+
+# Plain HTTP stays exactly as before. `import redirect_to_https` is empty unless the entrypoint
+# sets REDIRECT_CHECK_URI: the API then decides (tier 2/3 active and the switch on) by answering
+# a redirect to the BOX ADDRESS it configured — never the request's Host, which a caller picks.
+# `forward_auth` passes a 2xx through and returns any other response, a 3xx included, to the
+# client, so the API answering 204 means "serve over http".
+http://:{$PORT} {
+	import {$REDIRECT_SNIPPET}
+	import front
+}
+
+import {$HTTPS_SNIPPET}

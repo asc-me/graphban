@@ -54,8 +54,8 @@ provisioning the actual project/services is a separate, account-touching step.
   directories `backend/` and `web/`; each picks up its `railway.json`.
 - **`$PORT`.** Both images honor Railway's injected `$PORT` — the API via
   `python -m app.serve` (which reads `$PORT`; it exists so logging is configured before
-  uvicorn's first line — see Observability below), the web via nginx's envsubst template
-  (`nginx.conf.template`, `listen ${PORT}`). Locally (`docker compose`) the defaults
+  uvicorn's first line — see Observability below), the web via Caddy
+  (`web/Caddyfile`, `http://:{$PORT}`; set `HOSTED_MODE` so no HTTPS listener starts). Locally (`docker compose`) the defaults
   (8000 / 80) keep working unchanged.
 - **`DATABASE_URL`.** Railway's Postgres hands out a `postgres://…` URL; config rewrites
   `postgres://` / `postgresql://` to the psycopg3 driver automatically — paste it as-is.
@@ -127,13 +127,14 @@ platform.
 **What you get.** One JSON object per line, from both services:
 
 ```
-nginx    {"ts":"…","request_id":"604a1378…","method":"GET","path":"/api/public/roadmap",
-          "status":404,"duration_s":0.003,"upstream_status":"404","upstream_time":"0.002"}
+caddy    {"level":"info","ts":…,"logger":"http.log.access.log0","msg":"handled request",
+          "request":{"method":"GET","uri":"/api/public/roadmap",…},"status":404,"duration":0.003,
+          "uuid":"604a1378…"}
 backend   {"ts":"…","level":"INFO","logger":"graphban.access","request_id":"604a1378…",
           "http":{"method":"GET","path":"/api/public/roadmap","status":404,"duration_ms":1.9}}
 ```
 
-**The `request_id` is the same on both.** nginx generates it and forwards it as
+**The `request_id` is the same on both (Caddy's `uuid`).** nginx generates it and forwards it as
 `X-Request-ID`; the API honours an inbound one and echoes it on the response. So a search
 for one id returns the full path of a request across the hop — which is where the
 2026-08-26 outage actually lived, and the pair to compare there is `status` against
@@ -222,12 +223,12 @@ curl -sI https://acme.graphban.dev/mobile/feedback | head -1
 # Expected: HTTP/2 200 (if acme org exists and feedback is enabled)
 ```
 
-### nginx behavior
+### Caddy behavior
 
-The `web/nginx.conf.template` has a `server_name *.graphban.dev` block that proxies all
+The `web/Caddyfile` has an `@org` matcher for `*.graphban.dev` that proxies all
 requests to the backend with the original Host header. The backend's `host_router` (mounted
 at root level) resolves the org and returns 404 for unknown orgs, paths, or disabled
-surfaces. The catch-all `server_name _` block continues to serve the SPA for
+surfaces. The default handler continues to serve the SPA for
 `cloud.graphban.dev` and other hosts. Unknown org labels do **not** fall through to the SPA.
 
 ### Not this section

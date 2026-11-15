@@ -251,7 +251,7 @@
 "tests/test_model_reload_visibility.py": 0.38,
 "tests/test_mutation_probe.py": 2.83,
 "tests/test_named_project_resolution.py": 0.7,
-"tests/test_nginx_upstream.py": 0.07,
+"tests/test_caddy_front_end.py": 0.07,
 "tests/test_number_minting.py": 0.53,
 "tests/test_observability.py": 0.8,
 "tests/test_observations.py": 2.69,

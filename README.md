@@ -167,7 +167,7 @@ pnpm typecheck
 
 ## Deploying
 
-Two services from one repo — the API (`backend/`) and an nginx-served SPA (`web/`), each with
+Two services from one repo — the API (`backend/`) and a Caddy-served SPA (`web/`), each with
 its own `railway.json`. The general runbook is **[docs/deploy.md](docs/deploy.md)** (build,
 release identity, invariants, recover, rollback); Railway specifics live in
 **[docs/deploy-railway.md](docs/deploy-railway.md)**. A native launchd/systemd install (no

@@ -40,11 +40,14 @@ services:
       # uvicorn workers; 0 = min(4, cpu_count), 1 = single process (GRPH-1241).
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-0}
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me-in-production-0123456789abcdef}
-      # One proxy in front (nginx), so the rate limiter reads one hop from the RIGHT of
-      # X-Forwarded-For — what nginx actually observed, rather than the client-supplied
+      # One proxy in front (Caddy), so the rate limiter reads one hop from the RIGHT of
+      # X-Forwarded-For — what Caddy actually observed, rather than the client-supplied
       # prefix it appends to (GRPH-553). This is the value that makes per-IP limits
       # per-IP on the self-host; leaving it 0 means every caller shares one bucket.
       TRUSTED_HOPS: ${TRUSTED_HOPS:-1}
+      # Where the box CA writes box.crt/box.key. The web container reloads Caddy itself when
+      # they change, so TLS_RELOAD_URL stays empty (GRPH-1635).
+      TLS_DIR: /etc/graphban/tls
       # Deprecated, and it was never forwarded here at all before GRPH-553 — so the
       # flag docs/deploy.md told an operator to consider had no effect on this
       # stack whatever they set it to. Passed through now so the documented knob
@@ -87,6 +90,8 @@ services:
       # Default is an empty local dir — no socket, Install stays disabled. Not
       # the Docker socket. See docs/deploy.md.
       - ${GRAPHBAN_APPLY_DIR:-./.graphban-apply}:/run/graphban-apply
+      # The box certificate the CA writes for the web container to serve (GRPH-1635).
+      - box_tls:/etc/graphban/tls
     depends_on:
       db:
         condition: service_healthy
@@ -103,7 +108,14 @@ services:
       - api
     ports:
       - "${WEB_PORT:-8080}:80"
+      # The box's HTTPS listener (GRPH-1635). Serves the certificate the API's box CA writes
+      # into the shared `box_tls` volume; the Caddy admin API is NOT published.
+      - "${WEB_HTTPS_PORT:-8443}:8443"
+    volumes:
+      - box_tls:/etc/graphban/tls:ro
 
 volumes:
+  # The box certificate the API writes (TLS_DIR) and the web container serves (GRPH-1635).
+  box_tls:
   # Frozen: renaming this key orphans the existing volume and reads as data loss.
   agentledger_pgdata:
