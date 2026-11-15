@@ -58,8 +58,14 @@ def is_valid(name: str) -> bool:
     return 0 < len(name) <= 253 and all(_LABEL.match(p) for p in name.split("."))
 
 
+# RFC 1918, link-local and ULA — the ranges a seen Host may be in. Not `ip.is_private`, which
+# also counts documentation and benchmarking ranges.
+PRIVATE_NETWORKS = tuple(ipaddress.ip_network(r) for r in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "fc00::/7", "fe80::/10"))
+
+
 def is_private_ip(ip) -> bool:
-    return not ip.is_loopback and (ip.is_private or ip.is_link_local)
+    return any(ip.version == n.version and ip in n for n in PRIVATE_NETWORKS)
 
 
 def interface_addresses() -> list[str]:

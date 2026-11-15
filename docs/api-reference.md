@@ -59,7 +59,7 @@ Five public surfaces are mounted on the org host: `/{path_id}/feedback`,
 | GET | `/api/me/push` | JWT | Whether browser push is set up on this deployment (GRPH-1528): `{configured, public_key}`. `configured` is false only when no key pair resolved: neither both `VAPID_*` keys nor the pair the server generates and stores on first start (GRPH-1582) |
 | POST | `/api/me/push/subscribe` | JWT | Register this browser's Web Push subscription (`{endpoint, keys: {p256dh, auth}}`); the same endpoint is one row. 503 when push is not configured. Returns the `GET /api/me/push` body |
 | POST | `/api/me/push/unsubscribe` | JWT | Remove the caller's subscription for `{endpoint}`. Returns the `GET /api/me/push` body |
-| GET | `/api/https` | JWT | The box's own certificate authority (GRPH-1634): `{tier: "box-ca", ready, names: [{name, source: auto\|operator, origin}], max_names, covered_names, leaf_not_after, ca_not_after, ca_certificate_path}`. Never a private key |
+| GET | `/api/https` | JWT | The box's own certificate authority (GRPH-1634): `{tier: "box-ca", ready, names: [{name, source: auto\|operator, origin}], outside_constraints (names the CA's Name Constraints, fixed at creation, do not permit), max_names, covered_names, leaf_not_after, ca_not_after, ca_certificate_path}`. Never a private key |
 | GET | `/api/https/ca.crt` | none | The public CA certificate (PEM) to install on a device |
 | POST | `/api/https/names` | JWT (self-host operator) | Add an operator name `{name}`; 422 with the reason for loopback, invalid, or the 33rd name. Returns the status body |
 | DELETE | `/api/https/names/{name}` | JWT (self-host operator) | Remove an operator name; 422 for an automatic name, 404 if absent |

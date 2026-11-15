@@ -275,10 +275,17 @@ async def lifespan(app: FastAPI):
     if is_leader and settings.question_sweep_seconds > 0:
         sweep_task = asyncio.create_task(_question_sweep_loop())
 
+    # Box certificate re-sync (GRPH-1634): renews the leaf and covers names that were debounced.
+    # Leader-only, `0` disables.
+    tls_task = None
+    if is_leader and settings.tls_sync_seconds > 0:
+        tls_task = asyncio.create_task(_tls_sync_loop())
+
     try:
         yield
     finally:
-        for task in (retry_task, export_task, judge_task, update_task, grant_task, sweep_task):
+        for task in (retry_task, export_task, judge_task, update_task, grant_task, sweep_task,
+                     tls_task):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -341,6 +348,28 @@ async def _question_sweep_loop() -> None:
         except Exception:  # noqa: BLE001
             logger.warning("question sweep pass failed", exc_info=True)
         await asyncio.sleep(settings.question_sweep_seconds)
+
+
+def _tls_sync_pass() -> None:
+    from app.services import tls_ca
+
+    db = SessionLocal()
+    try:
+        tls_ca.sync_leaf(db)
+    finally:
+        db.close()
+
+
+async def _tls_sync_loop() -> None:
+    """Re-check the box certificate on a timer. Same properties as `_plan_grant_loop`."""
+    while True:
+        await asyncio.sleep(settings.tls_sync_seconds)
+        try:
+            await asyncio.to_thread(_tls_sync_pass)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.warning("box certificate sync pass failed", exc_info=True)
 
 
 async def _plan_grant_loop() -> None:

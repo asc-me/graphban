@@ -75,3 +75,9 @@ def test_33rd_name_refused_and_removal_rules(db):
     with pytest.raises(tls_names.NameRefused, match="automatic"):
         tls_names.remove_operator(db, "auto.lan")
     assert tls_names.allowed(db, "auto.lan")
+
+
+@pytest.mark.parametrize("host", ["192.0.2.10", "198.18.0.1", "100.64.0.1", "8.8.8.8",
+                                  "2001:db8::1"])
+def test_non_rfc1918_addresses_not_added_from_host(db, host):
+    assert tls_names.add_seen_host(db, host) is False

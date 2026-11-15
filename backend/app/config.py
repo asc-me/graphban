@@ -347,6 +347,8 @@ class Settings(BaseSettings):
     tls_dir: str = ""
     tls_reload_url: str = ""
     tls_reissue_debounce_seconds: int = 300
+    # How often the leader re-checks the leaf (renewal, debounced names); `0` disables.
+    tls_sync_seconds: int = 300
 
     # LLM call spans (GRPH-225). How long `llm_call_spans` rows live; 0 or negative
     # keeps everything. The table is telemetry, not the ledger — unbounded growth of

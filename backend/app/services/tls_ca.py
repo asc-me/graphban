@@ -13,8 +13,9 @@ verified here — do not rely on this as a security boundary.
 
 The leaf is re-issued when the name set changes (at most once per
 `TLS_REISSUE_DEBOUNCE_SECONDS`; a change inside the window waits for the next sync) and
-before it expires. There is no scheduler: `sync_leaf` runs at startup and whenever a new name
-is seen or the status is read.
+before it expires. `sync_leaf` runs at startup, whenever a new name
+is seen, the status is read, and on the leader's `TLS_SYNC_SECONDS` loop (so a name
+debounced inside the window is still covered once it passes).
 """
 from __future__ import annotations
 
@@ -45,8 +46,7 @@ CA_DAYS = 3650
 LEAF_DAYS = 90
 RENEW_BEFORE = timedelta(days=30)
 
-PRIVATE_RANGES = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16",
-                  "fc00::/7", "fe80::/10")
+PRIVATE_RANGES = tuple(str(n) for n in tls_names.PRIVATE_NETWORKS)
 
 
 def _now() -> datetime:
@@ -232,17 +232,41 @@ def status(db: Session) -> dict:
     """The settings-page read. Public material only."""
     sync_leaf(db)
     row = db.get(TlsAuthority, _ROW_ID)
+    names = tls_names.list_names(db)
     return {
         "tier": "box-ca",
         "ready": bool(row and row.leaf_cert),
         "names": [{"name": n.name, "source": n.source, "origin": n.origin}
-                  for n in tls_names.list_names(db)],
+                  for n in names],
+        "outside_constraints": outside_constraints(row, [n.name for n in names]),
         "max_names": tls_names.MAX_NAMES,
         "covered_names": json.loads(row.leaf_names) if row else [],
         "leaf_not_after": _aware(row.leaf_not_after).isoformat() if row and row.leaf_not_after else None,
         "ca_not_after": _aware(row.ca_not_after).isoformat() if row else None,
         "ca_certificate_path": "/api/https/ca.crt",
     }
+
+
+def outside_constraints(row: TlsAuthority | None, names: list[str]) -> list[str]:
+    """Names the CA's Name Constraints do not permit. The constraints are fixed when the CA is
+    made, so a name added later (a single-label host, an operator's public name) can fall
+    outside them; a client that enforces constraints on a user-installed root rejects those."""
+    if row is None:
+        return []
+    nc = x509.load_pem_x509_certificate(row.ca_cert.encode()).extensions.get_extension_for_class(
+        x509.NameConstraints).value
+    nets = [g.value for g in nc.permitted_subtrees if isinstance(g, x509.IPAddress)]
+    dns = [g.value.lstrip(".") for g in nc.permitted_subtrees if isinstance(g, x509.DNSName)]
+    out = []
+    for n in names:
+        ip = tls_names._ip(n)
+        if ip is not None:
+            ok = any(ip.version == net.version and ip in net for net in nets)
+        else:
+            ok = any(n == d or n.endswith("." + d) for d in dns)
+        if not ok:
+            out.append(n)
+    return out
 
 
 def ca_certificate_pem(db: Session) -> str | None:

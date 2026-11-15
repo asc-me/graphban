@@ -131,3 +131,29 @@ def test_api_never_returns_a_private_key_and_ask_endpoint(client, db, auth):
     assert client.get("/api/https/ask", params={"domain": "bank.com"}).status_code == 404
     assert client.get("/api/https/ask", params={"domain": "ubuntu-srv"},
                       headers={"X-Forwarded-For": "8.8.8.8"}).status_code == 403
+
+
+def test_status_flags_names_outside_the_name_constraints(db):
+    """Constraints are fixed at creation: a single-label host seen later is served but flagged.
+    Whether Chrome/Safari enforce Name Constraints on a user-installed root is NOT verified
+    here — the constraints are defence in depth only (GRPH-1634)."""
+    tls_names.seed_auto_names(db)
+    tls_ca.ensure_ca(db)
+    tls_names.add_seen_host(db, "nas")
+    tls_names.add_seen_host(db, "printer.lan")
+    tls_names.add_seen_host(db, "10.1.2.3")
+    out = tls_ca.status(db)["outside_constraints"]
+    assert out == ["nas"]
+
+
+def test_sync_pass_covers_a_debounced_name(db, monkeypatch):
+    from app import main
+
+    tls_names.seed_auto_names(db)
+    tls_ca.sync_leaf(db)
+    tls_names.add_seen_host(db, "late.lan")
+    assert tls_ca.sync_leaf(db) == "debounced"
+    monkeypatch.setattr(settings, "tls_reissue_debounce_seconds", 0)
+    main._tls_sync_pass()
+    db.expire_all()
+    assert "late.lan" in __import__("json").loads(db.get(TlsAuthority, "box").leaf_names)
