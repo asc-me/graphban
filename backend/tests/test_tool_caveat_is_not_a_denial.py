@@ -40,6 +40,13 @@ def test_a_disclosed_uncommitted_tool_is_not_a_denial(receipt):
     "though the rest is delivered.",
     f"Clause {CLAUSE}: delivered, but I skipped the Postgres run. The checker is not "
     "committed.",
+    # A bare `it` in the sentence that claims delivery may be the deliverable: ambiguous,
+    # so it refuses (review bounce on 502bdf96).
+    f"Clause {CLAUSE}: delivered; the uncommitted checker passed, but it cannot be "
+    "published yet.",
+    f"{CLAUSE} is implemented, the uncommitted script ran, but it cannot be published yet.",
+    f"Clause {CLAUSE}: delivered; the checker is not committed and it cannot be published "
+    "yet.",
 ])
 def test_a_receipt_that_really_denies_its_clause_still_refuses(receipt):
     """The control. A disclosure is not a pass: a denial about the DELIVERABLE in the same

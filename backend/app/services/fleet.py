@@ -2921,8 +2921,11 @@ _UNCOMMITTED = re.compile(
 _TOOL_NOUN = re.compile(
     r"\b(?:checker|check script|script|verifier|tool|harness|helper|test file|"
     r"artefact|artifact|probe|scratch test)s?\b")
-#: Where the phrase holding a denial word stops: a sentence end, `;`, `,`, a bracket, a dash.
-_PHRASE_BREAK = re.compile(r"[.!?;,()—–]|\s-\s")
+#: Where the phrase holding a denial word stops: a sentence end, `;`, `,`, a bracket, a dash,
+#: or a conjunction that opens a new clause on a pronoun — "the checker is not committed and
+#: it cannot be published" is two subjects, and `it` must not borrow the checker's phrase.
+_PHRASE_BREAK = re.compile(
+    r"[.!?;,()—–]|\s-\s|\s(?:and|but|or|so|yet|though|although|while)\s(?=its?\b)")
 
 
 def _discloses_uncommitted_tool(low: str, clause: str) -> bool:
@@ -2942,14 +2945,33 @@ def _discloses_uncommitted_tool(low: str, clause: str) -> bool:
 
 def _about_the_tool(residue: str, start: int, end: int) -> bool:
     """Whether the phrase holding the denial word at `[start, end)` is about a verification
-    artefact — names one, or refers back to one with `it`/`its` — rather than the
-    deliverable (GRPH-1019). Who the denial is about decides, not how far away it sits."""
+    artefact rather than the deliverable (GRPH-1019). Who the denial is about decides, not
+    how far away it sits.
+
+    The phrase is about the tool when it NAMES one (`the checker cannot resolve X`). A bare
+    `it`/`its` is ambiguous — in "delivered; the uncommitted checker passed, but it cannot be
+    published yet" `it` is the deliverable — so a pronoun is read as the tool's only in a
+    sentence that is wholly about the tool: one that names the tool or discloses it is not
+    committed, and makes no delivery claim of its own (the GRPH-1005 shape, "It is not
+    committed …; the literals it cannot resolve are allowlisted"). A pronoun in the sentence
+    that claims delivery could be the deliverable, and an ambiguous denial still refuses
+    (review bounce on 502bdf96).
+    """
     breaks_before = [m.end() for m in _PHRASE_BREAK.finditer(residue, 0, start)]
     lo = breaks_before[-1] if breaks_before else 0
     after = _PHRASE_BREAK.search(residue, end)
     hi = after.start() if after else len(residue)
     phrase = residue[lo:hi]
-    return bool(_TOOL_NOUN.search(phrase) or re.search(r"\bits?\b", phrase))
+    if _TOOL_NOUN.search(phrase):
+        return True
+    if not re.search(r"\bits?\b", phrase):
+        return False
+    ends_before = [m.end() for m in _SENTENCE_END.finditer(residue, 0, start)]
+    s_lo = ends_before[-1] if ends_before else 0
+    s_after = _SENTENCE_END.search(residue, end)
+    sentence = residue[s_lo:s_after.end() if s_after else len(residue)]
+    return bool((_TOOL_NOUN.search(sentence) or _UNCOMMITTED.search(sentence))
+                and not _AFFIRMS_DELIVERY.search(sentence))
 
 
 #: Why a receipt was read as denying its clause, stated at the point of refusal rather than
