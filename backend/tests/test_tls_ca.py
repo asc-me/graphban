@@ -130,7 +130,7 @@ def test_api_never_returns_a_private_key_and_ask_endpoint(client, db, auth):
     assert client.get("/api/https/ask", params={"domain": "ubuntu-srv"}).status_code == 200
     assert client.get("/api/https/ask", params={"domain": "bank.com"}).status_code == 404
     assert client.get("/api/https/ask", params={"domain": "ubuntu-srv"},
-                      headers={"X-Forwarded-For": "8.8.8.8"}).status_code == 403
+                      headers={"X-Forwarded-For": "8.8.8.8"}).status_code == 404
 
 
 def test_status_flags_names_outside_the_name_constraints(db):

@@ -20,7 +20,8 @@ router = APIRouter(prefix="/https", tags=["https"])
 
 def _operator(user: User = Depends(get_current_user)) -> User:
     if settings.hosted_mode:
-        raise HTTPException(403, "This is a hosted instance: its operator manages certificates.")
+        raise HTTPException(404, "the box certificate is a self-hosted feature; a hosted "
+                                 "deployment's operator manages its certificates")
     return user
 
 
@@ -80,8 +81,8 @@ def _internal(request: Request) -> bool:
 @router.get("/ask")
 def ask(request: Request, domain: str = "", db: Session = Depends(get_db)):
     """Caddy on-demand TLS: 200 when `domain` is on the allowlist, 404 otherwise."""
-    if not _internal(request):
-        raise HTTPException(403, "internal only")
+    if not _internal(request):  # 404, not 403: from outside the endpoint does not exist
+        raise HTTPException(404, "Not Found")
     if not tls_names.allowed(db, domain):
         raise HTTPException(404, "name not on the allowlist")
     return {"allowed": True}
