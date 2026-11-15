@@ -31,6 +31,19 @@ gban setup --auto   # …for every project whose repository is here or beside he
 Then restart the harness so it reads the new config, and an agent can `delegate(seat=true)`
 and `spawn`.
 
+**Setup checks the key Claude Code will actually load, not only the file it wrote.** Claude
+Code loads each MCP server by name from the highest scope that declares it: the local project
+entry in `~/.claude.json` (`projects[<repo>].mcpServers`), then the repository's `.mcp.json`,
+then the user-scope top-level `mcpServers`. So `graphban` and `gbfleet` can come from
+different files with different keys — the planner mints seats on one, the supervisor polls
+them with the other, and every observation fails (404 on the key that did not mint; 403 "not
+a supervisor key" on an unscoped one). `gban setup` prints an `effective graphban` and an
+`effective gbfleet` line naming the file each comes from, by fingerprint, never the key; it
+FAILs when the two differ, and when the `graphban` key is unscoped or pinned to another
+project even if they match. Running it is the repair: it writes both servers, with one
+project-scoped key, into the local project entry, which shadows the stale one. It never
+deletes the user-scope entry, which other projects may rely on (GRPH-1653).
+
 **An agent can drive all of this.** The `graphban-delegation` skill runs `gban whoami` and
 `gban setup` itself; the only thing it hands back is `! gban login`, because that one needs a
 terminal. It then carries the setup the rest of the way and tells you when to restart. Everything below is what those two commands do and what to read when one of

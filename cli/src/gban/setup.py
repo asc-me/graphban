@@ -27,6 +27,7 @@ a write: a PASS report with no supervisor server is a lie.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -117,10 +118,12 @@ class Dest:
 
 
 def shadowing_entry(repo: Path, home: Path | None = None) -> bool:
-    """Does the user file already declare our server for this repository?
+    """Does the user file already declare either of our servers for this repository?
 
-    If it does, the repository's `.mcp.json` cannot be read however correct it is, so a setup
-    that wrote there and reported success would be reporting a fiction.
+    If it does, the repository's `.mcp.json` cannot be read for that server however correct
+    it is, so a setup that wrote there and reported success would be reporting a fiction.
+    EITHER server, not only `graphban`: a local entry holding only `gbfleet` keeps its key
+    for the supervisor while `.mcp.json` hands the planner another (GRPH-1653).
     """
     path = home or claude_home()
     try:
@@ -128,7 +131,8 @@ def shadowing_entry(repo: Path, home: Path | None = None) -> bool:
     except (OSError, ValueError):
         return False
     entry = (blob.get("projects") or {}).get(str(repo.resolve()), {})
-    return LEDGER_SERVER in (entry.get("mcpServers") or {})
+    declared = entry.get("mcpServers") or {}
+    return LEDGER_SERVER in declared or FLEET_SERVER in declared
 
 
 def tracked_by_git(path: Path) -> bool:
@@ -163,7 +167,8 @@ def target(repo: Path, scope: str, home: Path | None = None) -> tuple[str, Path,
     user = home or claude_home()
     if scope == "project" and shadowing_entry(repo, home):
         return ("user", user,
-                f"{user} already declares {LEDGER_SERVER} for this repository and outranks "
+                f"{user} already declares {LEDGER_SERVER} or {FLEET_SERVER} for this "
+                "repository and outranks "
                 ".mcp.json, so the project file could not be read")
     if scope == "project":
         return "project", repo / ".mcp.json", ""
@@ -426,11 +431,15 @@ def verify(url: str, key: str, project: str) -> list[dict]:
                      f"the key cannot write {project} — you can read it but not write it, so "
                      "an agent on this key can claim nothing"))
     if "key_project_id" in ctx and ctx["key_project_id"] != project:
-        # `gbfleet until` refuses a key with no project to bind its minted-by check to
-        # (GRPH-1658), so a reused cross-project key fails the Triage drain command.
+        # Writes and sees `delegate`, and still cannot supervise the seats it mints: the
+        # supervisor's routes want a key pinned to this project (GRPH-1653). Reusing it
+        # would write the defect back in on every run.
+        # `gbfleet until` also refuses such a key (GRPH-1658).
+        why = ("the key is unscoped — it spans several projects"
+               if ctx["key_project_id"] is None else
+               f"the key is pinned to {ctx['key_project_id']}, not {project}")
         out.append(_line("ledger", FAIL, "scope",
-                         "the key is not scoped to this project, and `gban fleet until` "
-                         "refuses an unscoped key"))
+                         f"{why}, and `gban fleet until` refuses it"))
     missing = {_tier_id(t) for t in (ctx.get("missing_tiers") or [])}
     out.append(_line("ledger", PASS if "fleet" not in missing else FAIL, "fleet tools",
                      "delegate and mint_enrolment are in the manifest" if "fleet" not in missing
@@ -457,6 +466,155 @@ def existing_key(path: Path, scope: str, repo: Path) -> str:
     servers = ((blob.get("projects") or {}).get(str(repo.resolve()), {}).get("mcpServers")
                if scope == "user" else blob.get("mcpServers")) or {}
     return _key_from_servers(servers)
+
+
+# ---- what Claude Code actually loads -----------------------------------------------------------
+#
+# Every check above reads a key from the file setup wrote. Claude Code does not load "the file
+# setup wrote": it loads each server by name from the highest scope that declares it — the
+# local project entry in ~/.claude.json, then the repository's .mcp.json, then the user-scope
+# top-level `mcpServers`. So `graphban` and `gbfleet` can come from different files with
+# different keys, and every file can look right on its own while the planner mints seats on
+# key A and the supervisor polls them with key B: 404 on B, which did not mint them, and 403
+# "not a supervisor key" on A when A is unscoped (GRPH-1653). These lines report the pair
+# Claude Code will actually hold.
+
+#: Claude Code's precedence, highest first. The label is what a person greps for.
+CLAUDE_SCOPES = ("local", "project", "user")
+
+
+@dataclass(frozen=True)
+class Effective:
+    """One server as Claude Code will load it: the key it carries and where it came from."""
+
+    key: str
+    scope: str
+    path: Path
+
+    def source(self) -> str:
+        if self.scope == "local":
+            return f"the local project entry in {self.path}"
+        if self.scope == "project":
+            return str(self.path)
+        return f"the user-scope mcpServers in {self.path}"
+
+
+def fingerprint(key: str) -> str:
+    """Enough to tell two keys apart and to find one in Settings → API keys, never the key.
+
+    The display prefix is what the server already shows (`gb_sk_` plus four, apikey.py); the
+    digest separates two keys that share it.
+    """
+    if not key:
+        return "(no key)"
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
+    shown = key[: len("gb_sk_") + 4] if key.startswith("gb_sk_") else ""
+    return f"{shown}… sha256:{digest}" if shown else f"sha256:{digest}"
+
+
+def _server_key(name: str, spec) -> str:
+    """The key THIS server sends — not `_key_from_servers`' fallback, which would read the
+    other server's key and call the pair consistent."""
+    if not isinstance(spec, dict):
+        return ""
+    if name == LEDGER_SERVER:
+        return str((spec.get("headers") or {}).get("X-API-Key") or "")
+    return str((spec.get("env") or {}).get(doctor_mod.SUPERVISOR_KEY_ENV) or "")
+
+
+def _servers_in(path: Path, local_for: Path | None = None) -> dict:
+    try:
+        blob = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(blob, dict):
+        return {}
+    if local_for is not None:
+        blob = (blob.get("projects") or {}).get(str(local_for.resolve())) or {}
+    servers = blob.get("mcpServers") if isinstance(blob, dict) else None
+    return servers if isinstance(servers, dict) else {}
+
+
+def claude_effective(repo: Path, home: Path | None = None) -> dict[str, Effective]:
+    """Resolve `graphban` and `gbfleet` the way Claude Code does: the first scope in
+    CLAUDE_SCOPES that declares the server wins, whatever its key looks like."""
+    user = home or claude_home()
+    mcp = repo / ".mcp.json"
+    scopes = (("local", user, _servers_in(user, local_for=repo)),
+              ("project", mcp, _servers_in(mcp)),
+              ("user", user, _servers_in(user)))
+    out: dict[str, Effective] = {}
+    for name in (LEDGER_SERVER, FLEET_SERVER):
+        for scope, path, servers in scopes:
+            if name in servers:
+                out[name] = Effective(_server_key(name, servers[name]), scope, path)
+                break
+    return out
+
+
+def _ask_context(url: str, key: str, project: str) -> tuple[dict | None, str]:
+    try:
+        got = Client(url, api_key=key).call(
+            "POST", "/api/mcp",
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+             "params": {"name": "get_context", "arguments": {"project_id": project}}})
+    except (Unreachable, Refused) as exc:
+        return None, str(exc)
+    try:
+        return json.loads(got["result"]["content"][0]["text"]), ""
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None, "the server answered get_context in a shape this version cannot read"
+
+
+def effective_lines(url: str, project: str, repo: Path, home: Path | None = None) -> list[dict]:
+    """The pair Claude Code will hold, judged as a pair (GRPH-1653)."""
+    eff = claude_effective(repo, home)
+    lines: list[dict] = []
+    for name in (LEDGER_SERVER, FLEET_SERVER):
+        got = eff.get(name)
+        if got is None:
+            lines.append(_line("claude", FAIL, f"effective {name}",
+                               "Claude Code declares no such server for this repository in "
+                               "any scope it reads (local project entry, .mcp.json, user)"))
+        elif not got.key:
+            lines.append(_line("claude", FAIL, f"effective {name}",
+                               f"loaded from {got.source()}, which carries no key"))
+        else:
+            lines.append(_line("claude", PASS, f"effective {name}",
+                               f"{fingerprint(got.key)} from {got.source()}"))
+    ledger, fleet = eff.get(LEDGER_SERVER), eff.get(FLEET_SERVER)
+    if not (ledger and ledger.key):
+        return lines
+    if fleet and fleet.key and fleet.key != ledger.key:
+        lines.append(_line(
+            "claude", FAIL, "effective keys",
+            f"Claude Code loads {LEDGER_SERVER} with {fingerprint(ledger.key)} from "
+            f"{ledger.source()} and {FLEET_SERVER} with {fingerprint(fleet.key)} from "
+            f"{fleet.source()}. Seats the planner mints on the first are invisible to the "
+            "supervisor on the second (404), and an unscoped key cannot supervise at all "
+            f"(403). `gban setup` writes both into the local project entry, which outranks "
+            "every other scope; the user-scope entry is left for other projects"))
+    ctx, why = _ask_context(url, ledger.key, project)
+    if ctx is None:
+        lines.append(_line("claude", FAIL, "effective scope",
+                           f"{LEDGER_SERVER}'s key {fingerprint(ledger.key)} from "
+                           f"{ledger.source()} is unusable: {why}"))
+    elif "key_project_id" not in ctx:
+        lines.append(_line("claude", UNKNOWN, "effective scope",
+                           "the server's get_context does not say which project the key is "
+                           "pinned to, so whether it can supervise its own seats is unchecked"))
+    elif ctx["key_project_id"] != project:
+        what = ("unscoped — it spans several projects" if ctx["key_project_id"] is None
+                else f"pinned to {ctx['key_project_id']}, not {project}")
+        lines.append(_line("claude", FAIL, "effective scope",
+                           f"{LEDGER_SERVER}'s key {fingerprint(ledger.key)} from "
+                           f"{ledger.source()} is {what}, so the supervisor cannot observe "
+                           "the seats it mints (403 \"not a supervisor key\"). `gban setup` "
+                           "writes a project-scoped key into the local project entry"))
+    else:
+        lines.append(_line("claude", PASS, "effective scope",
+                           f"{LEDGER_SERVER}'s key is scoped to {project}"))
+    return lines
 
 
 # ---- the act ---------------------------------------------------------------------------------
@@ -542,15 +700,15 @@ def run(client: Client, url: str, project: str, repo: Path, *, scope: str = "use
                 continue
             profile = grok_sandbox_profile(grok or grok_home())
             if profile:
-                home = Path.home()
+                user_home = Path.home()
                 lines.append(_line("config", UNKNOWN, "sandbox",
                                    f"Grok's [sandbox] profile = {profile!r} is inherited by "
                                    "gbfleet and every child it spawns: a claude child reads "
                                    "'Not logged in' (the Keychain is unreachable from inside), "
                                    "qwen-code and cursor-agent die writing ~/.qwen and "
                                    "~/.cursor unless a custom profile grants them (extends = "
-                                   f'"workspace", read_write = ["{home / ".qwen"}", '
-                                   f'"{home / ".cursor"}"]), and a grok child runs --sandbox '
+                                   f'"workspace", read_write = ["{user_home / ".qwen"}", '
+                                   f'"{user_home / ".cursor"}"]), and a grok child runs --sandbox '
                                    "off inside this one. `gbfleet doctor --adapter <vendor>` "
                                    "gives the verdict per vendor (GRPH-838)"))
         if dest.scope == "project" and gitignore.usable(repo) and not _ignored_in(repo, dest.path):
@@ -577,6 +735,7 @@ def run(client: Client, url: str, project: str, repo: Path, *, scope: str = "use
         lines.append(_line("config", PASS, "credential",
                            f"already configured in {paths} and it works"))
     lines += verify(url, key, project)
+    lines += effective_lines(url, project, repo, home or claude_home())
     lines += skill(repo)
     lines += supervisor(install)
     worst = max((doctor_mod.SEVERITY[l["status"]] for l in lines), default=0)
