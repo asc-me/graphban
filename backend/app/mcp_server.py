@@ -756,7 +756,7 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Lease an item in review you did NOT build. `claimed` is false if it is yours or "
             "needs `gh` or `human-only` you did not declare; do not bounce. `branch` is the diff. "
-            "`withheld` names each in-review item not handed to you, with its rule."
+            "`withheld`: what you were not handed, and why."
         ),
         "inputSchema": {
             "type": "object",
