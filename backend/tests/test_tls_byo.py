@@ -168,9 +168,35 @@ def test_redirect_targets_box_address_not_host(client, auth, db):
     r = client.get("/api/https/redirect-check", follow_redirects=False,
                    headers={"Host": "evil.example", "X-Forwarded-Uri": "/x?y=1", "X-Forwarded-For": "1.2.3.4"})
     assert r.status_code == 307
-    assert r.headers["location"] == "https://graphban.acme.com/x?y=1"
+    assert r.headers["location"] == f"https://graphban.acme.com:{settings.web_https_port}/x?y=1"
     client.put("/api/https/redirect", headers=auth, json={"enabled": False})
     assert client.get("/api/https/redirect-check", follow_redirects=False).status_code == 204
+
+
+def test_redirect_carries_published_https_port(db, monkeypatch):
+    cert, key = make_cert()
+    tls_byo.upload(db, cert, key, "graphban.acme.com")
+    monkeypatch.setattr(settings, "web_https_port", 8443)
+    assert tls_byo.redirect_target(db, "/") == "https://graphban.acme.com:8443/"
+    monkeypatch.setattr(settings, "web_https_port", 443)
+    assert tls_byo.redirect_target(db, "/") == "https://graphban.acme.com/"
+
+
+def test_api_and_health_never_redirect(db):
+    cert, key = make_cert()
+    tls_byo.upload(db, cert, key, "graphban.acme.com")
+    assert tls_byo.redirect_target(db, "/api/items") is None
+    assert tls_byo.redirect_target(db, "/api") is None
+    assert tls_byo.redirect_target(db, "/health") is None
+    assert tls_byo.redirect_target(db, "/settings") is not None
+
+
+def test_letsencrypt_probe_uses_published_port(db, monkeypatch):
+    monkeypatch.setattr(settings, "web_https_port", 9443)
+    tls_byo.request_letsencrypt(db, "graphban.acme.com", NOW)
+    seen = []
+    tls_byo.check_letsencrypt(db, NOW, probe=lambda d, p: seen.append(p))
+    assert seen == [9443]
 
 
 def test_redirect_unavailable_with_own_certificate(client, auth, db):

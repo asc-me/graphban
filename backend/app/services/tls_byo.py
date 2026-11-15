@@ -260,8 +260,8 @@ def check_letsencrypt(db: Session, now: datetime | None = None, probe=_serving_p
     row = _row(db)
     if row is None or row.kind != "letsencrypt" or row.state not in ("pending", "failed"):
         return
-    port = int(os.environ.get("HTTPS_PORT", "8443") or 8443)
-    reason = probe(row.box_address, port)
+    # The published HTTPS port (WEB_HTTPS_PORT), as the API sees it — not the web container's.
+    reason = probe(row.box_address, settings.web_https_port)
     if reason is None:
         row.state, row.reason = "active", ""
         db.commit()
@@ -287,12 +287,27 @@ def set_redirect(db: Session, enabled: bool) -> None:
     db.commit()
 
 
+# Never redirected: agent and CLI configs that point at http:// must keep working (httpx does
+# not follow redirects by default). Caddy's redirect snippet exempts them too.
+_NO_REDIRECT_PREFIXES = ("/api/", "/health")
+
+
 def redirect_target(db: Session, uri: str) -> str | None:
-    """Where plain http should go, or None to serve it. Built from the stored box address."""
+    """Where plain http should go, or None to serve it. Built from the stored box address and
+    the box's published HTTPS port — nothing listens on 443 unless WEB_HTTPS_PORT says so."""
+    uri = uri if uri.startswith("/") else "/" + uri
+    path = uri.split("?", 1)[0]
+    if path == "/api" or path.startswith(_NO_REDIRECT_PREFIXES):
+        return None
     row = _row(db)
     if row is None or row.state != "active" or not row.redirect_on:
         return None
-    return f"https://{row.box_address}{uri if uri.startswith('/') else '/' + uri}"
+    host = row.box_address
+    if ":" in host:  # IPv6 literal
+        host = f"[{host}]"
+    port = settings.web_https_port
+    authority = host if port == 443 else f"{host}:{port}"
+    return f"https://{authority}{uri}"
 
 
 def custom_status(db: Session, now: datetime | None = None) -> dict | None:

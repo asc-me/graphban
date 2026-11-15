@@ -52,7 +52,10 @@ removes the per-device step.
   tier; the settings page says it arrives with a public certificate.
 - **With a public certificate (tier 2 or 3),** HTTP redirects to HTTPS by default, and the
   operator can turn the redirect off in Settings. For an uploaded certificate the redirect goes
-  to the box address the certificate covers, never to the Host header.
+  to the box address the certificate covers, never to the Host header, on the box's published
+  HTTPS port (`WEB_HTTPS_PORT`, default 8443; no port in the address when it is 443).
+- **`/api` and `/health` are never redirected,** so agent and CLI configs that point at
+  `http://` keep working.
 
 Under the hood Caddy asks the API before redirecting (`REDIRECT_CHECK_URI`, default
 `/api/https/redirect-check`); empty means never.
