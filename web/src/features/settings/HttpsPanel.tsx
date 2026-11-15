@@ -12,6 +12,7 @@ import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { useHttpsNames, useHttpsStatus } from "@/lib/queries";
 import type { HttpsStatus } from "@/lib/api";
+import { BringYourOwn, LetsEncrypt, RedirectSwitch } from "@/features/settings/https/CertificateSections";
 
 // There is no "untrusted" state on purpose. A browser gives a page no way to tell a refused
 // certificate from an unreachable address: both reject the same opaque fetch. So the only
@@ -63,10 +64,6 @@ export function detectOs(ua = typeof navigator === "undefined" ? "" : navigator.
 import { httpsAddress, probeTrust } from "@/lib/https";
 export { DEFAULT_HTTPS_PORT, httpsAddress, probeTrust } from "@/lib/https";
 
-function Label({ children }: { children: React.ReactNode }) {
-  return <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-faint">{children}</div>;
-}
-
 const CHIP: Record<Trust, string> = {
   checking: "Checking…",
   trusted: "Trusted by this browser",
@@ -116,9 +113,11 @@ function HttpsBody({ data }: { data: HttpsStatus }) {
         </div>
         <p className="text-[13px] text-fg-2">{data.names.length} names covered</p>
         {renew ? <p className="text-[13px] text-fg-2">Renews on {renew}</p> : null}
-        <p className="text-[13px] text-fg-2">
-          Plain http:// requests are not redirected to HTTPS with this box's own certificate.
-        </p>
+        {data.custom && ["active", "expiring-soon"].includes(data.custom.state) ? null : (
+          <p className="text-[13px] text-fg-2">
+            Plain http:// requests are not redirected to HTTPS with this box's own certificate.
+          </p>
+        )}
         <div className="flex items-center gap-2">
           <span data-testid="trust-chip" data-trust={trust}
             className="rounded border border-line px-2 py-0.5 text-[12px]">{CHIP[trust]}</span>
@@ -134,12 +133,9 @@ function HttpsBody({ data }: { data: HttpsStatus }) {
       <TrustDevice address={address} refused={refused} onCheck={check} caPath={data.ca_certificate_path} />
       <Names data={data} />
 
-      <section aria-label="Redirect" className="space-y-1">
-        <Label>Redirect http to https</Label>
-        <p className="text-[13px] text-muted">
-          Not available with this box's own certificate. It arrives with a public certificate.
-        </p>
-      </section>
+<BringYourOwn custom={data.custom} />
+      <LetsEncrypt custom={data.custom} />
+      <RedirectSwitch custom={data.custom} />
 
       <details>
         <summary className="cursor-pointer text-[13px] font-semibold">Advanced</summary>

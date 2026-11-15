@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 362 of the 362. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 366 of the 366. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -64,6 +64,11 @@ Five public surfaces are mounted on the org host: `/{path_id}/feedback`,
 | POST | `/api/https/names` | JWT (self-host operator) | Add an operator name `{name}`; 422 with the reason for loopback, invalid, or the 33rd name. Returns the status body |
 | DELETE | `/api/https/names/{name}` | JWT (self-host operator) | Remove an operator name; 422 for an automatic name, 404 if absent |
 | GET | `/api/https/ask` | internal only | Caddy on-demand TLS `ask` (`?domain=`): 200 if the name is on the allowlist, else 404. 404 from a non-private client or a proxied request (`X-Forwarded-For`), as if it did not exist |
+| POST | `/api/https/certificate` | JWT (self-host operator) | Bring your own certificate (GRPH-1637): `{certificate, key, box_address}` (PEM). 422 `{message, reasons: [{code, message}]}` naming each failed check separately — key does not match, address not covered, expired. An address that does not resolve here and a wildcard are accepted with `warnings`. Served with no restart. The key is stored encrypted and never returned. Returns the status body, whose `custom` block is the tier 2/3 state |
+| DELETE | `/api/https/certificate` | JWT (self-host operator) | Stop using the uploaded or Let's Encrypt certificate: files and key removed, back to the box's own certificate, redirect off. 404 when neither is in use |
+| POST | `/api/https/letsencrypt` | JWT (self-host operator) | Ask for a Let's Encrypt certificate for a public `{domain}` through Caddy ACME: `custom.state` pending, failed (with `reason`, current certificate still served) or active. 422 for a domain that is not public |
+| PUT | `/api/https/redirect` | JWT (self-host operator) | `{enabled}`: the plain-http redirect to the box address. 422 `redirect_unavailable` while the box serves its own certificate |
+| GET | `/api/https/redirect-check` | none (Caddy `forward_auth`) | 204 to serve a plain-http request; 307 to the stored box address (never the request's Host) while the redirect is on
 | GET | `/api/auth/me/onboarding` | JWT | `{onboarding}`: the caller's quick-start progress (`quickstart_finished_at`, `quickstart_dismissed_at`, …), readable before any project exists. `null` is a new user, which is what opens the quick-start dialog; existing users were backfilled as finished. UI progress only — no setup step reads it (GRPH-1361) |
 | PATCH | `/api/auth/me/onboarding` | JWT | `{mark: quickstart_finished\|quickstart_dismissed\|tour_completed\|tour_offered}` stamps `<mark>_at` and returns the merged document. Finish clears the top-bar chip; Finish later stops the dialog opening by itself. `tour_completed` (the app tour's Finish) also takes `skipped_stops`, the `data-tour` ids that user's nav had no anchor for, stored as `tour_skipped_stops` (at most 20 ids of 1–40 characters; GRPH-1363). `tour_offered` records that the one-time "Take the tour" toast was shown to a backfilled user (GRPH-1444). Any other mark or field, or `skipped_stops` with another mark, is 422 (GRPH-1361) |
 | POST | `/api/auth/me/org-request` | JWT | `{name, email, note?}` — Request an org from a self-host deployment (GRPH-1364). Emails the operator (`ORG_REQUEST_TO`, else `PLATFORM_ADMIN_EMAILS`), then stamps `org_requested_at` and returns `{onboarding}`; a repeat overwrites the date. 422 for a blank name or an invalid email; 503, with nothing stored, when no operator address is configured or the relay fails |

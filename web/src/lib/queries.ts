@@ -1820,6 +1820,22 @@ export function useHttpsNames() {
   };
 }
 
+/** Tier 2/3: upload, Let's Encrypt, stop using, and the redirect switch. Each returns the new status. */
+export function useHttpsCertificate() {
+  const qc = useQueryClient();
+  const done = () => qc.invalidateQueries({ queryKey: keys.https });
+  return {
+    upload: useMutation({
+      mutationFn: (v: { certificate: string; key: string; address: string }) =>
+        api.httpsUpload(v.certificate, v.key, v.address),
+      onSuccess: done,
+    }),
+    letsEncrypt: useMutation({ mutationFn: (d: string) => api.httpsLetsEncrypt(d), onSuccess: done }),
+    stop: useMutation({ mutationFn: () => api.httpsStopUsing(), onSuccess: done }),
+    redirect: useMutation({ mutationFn: (on: boolean) => api.httpsRedirect(on), onSuccess: done }),
+  };
+}
+
 /**
  * Where the secure address of this box is, seen from this page (P83 D6). `onHttp`: the page is
  * open over plain http. `address`: the https:// address, only when the box says HTTPS is ready

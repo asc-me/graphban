@@ -8,6 +8,7 @@ export HTTPS_SNIPPET="${CONF}/https.on.caddy"
 case "$(printf %s "${HOSTED_MODE:-}" | tr 'A-Z' 'a-z')" in
   1|true|yes|on) export HTTPS_SNIPPET="${CONF}/https.off.caddy" ;;
 esac
+export REDIRECT_CHECK_URI="${REDIRECT_CHECK_URI-/api/https/redirect-check}"
 if [ -n "${REDIRECT_CHECK_URI:-}" ] && [ "${HTTPS_SNIPPET}" = "${CONF}/https.on.caddy" ]; then
   export REDIRECT_SNIPPET="${CONF}/redirect.on.caddy"
 else
@@ -27,7 +28,7 @@ caddy run --config "${CONF}/Caddyfile" --adapter caddyfile &
 CADDY=$!
 trap 'kill $CADDY 2>/dev/null' TERM INT
 
-stamp() { cat "${TLS_DIR}/box.crt" "${TLS_DIR}/box.key" 2>/dev/null | cksum; }
+stamp() { cat "${TLS_DIR}/box.crt" "${TLS_DIR}/box.key" "${TLS_DIR}"/acme/*.caddy 2>/dev/null | cksum; }
 
 if [ "${HOSTED_MODE:-}" != "" ] && [ "${HTTPS_SNIPPET}" = "${CONF}/https.off.caddy" ] && [ -z "${WAIT_FOR_CERT:-}" ]; then
   wait $CADDY

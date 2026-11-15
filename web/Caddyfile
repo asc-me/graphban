@@ -138,3 +138,8 @@ http://:{$PORT} {
 }
 
 import {$HTTPS_SNIPPET}
+
+# Let's Encrypt (GRPH-1637): the API writes acme/le.caddy into the TLS directory when the operator
+# asks for a public domain; the entrypoint's watcher reloads Caddy and Caddy's ACME issues and
+# renews it. An empty glob imports nothing.
+import /etc/graphban/tls/acme/*.caddy

@@ -188,10 +188,18 @@ export function hasSession(): boolean {
 /** GET /me/push. `subscription_origins` (the origins this user has push subscriptions at) is read when present. */
 export type PushStatusWithOrigins = PushStatus & { subscription_origins?: string[] };
 export interface HttpsName { name: string; source: string; origin: string }
+export interface HttpsCustom {
+  kind: "upload" | "letsencrypt"; state: "active" | "expiring-soon" | "expired" | "pending" | "failed";
+  box_address: string; subject: string; not_after: string | null; warnings: string[];
+  reason: string; redirect_on: boolean;
+}
+export interface HttpsRefusal { code: string; message: string }
 export interface HttpsStatus {
+  custom?: HttpsCustom | null;
   tier: string; ready: boolean; names: HttpsName[]; outside_constraints: string[];
   max_names: number; covered_names: string[]; leaf_not_after: string | null;
   ca_not_after: string | null; ca_certificate_path: string;
+  https_port?: number; https_url?: string | null;
 }
 
 class ApiError extends Error {
@@ -579,6 +587,15 @@ export const api = {
   httpsStatus: () => request<HttpsStatus>("/https"),
   httpsAddName: (name: string) =>
     request<HttpsStatus>("/https/names", { method: "POST", body: JSON.stringify({ name }) }),
+  httpsUpload: (certificate: string, key: string, box_address: string) =>
+    request<HttpsStatus>("/https/certificate", {
+      method: "POST", body: JSON.stringify({ certificate, key, box_address }),
+    }),
+  httpsLetsEncrypt: (domain: string) =>
+    request<HttpsStatus>("/https/letsencrypt", { method: "POST", body: JSON.stringify({ domain }) }),
+  httpsStopUsing: () => request<HttpsStatus>("/https/certificate", { method: "DELETE" }),
+  httpsRedirect: (enabled: boolean) =>
+    request<HttpsStatus>("/https/redirect", { method: "PUT", body: JSON.stringify({ enabled }) }),
   httpsRemoveName: (name: string) =>
     request<HttpsStatus>(`/https/names/${encodeURIComponent(name)}`, { method: "DELETE" }),
   // `refresh` bypasses the server's one-minute cache (the Check button).
