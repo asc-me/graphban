@@ -127,6 +127,18 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
 
+    # The box's own certificate authority and leaf (GRPH-1634). Never fatal.
+    db = SessionLocal()
+    try:
+        from app.services import tls_ca
+
+        tls_ca.ensure_ca(db)
+        tls_ca.sync_leaf(db)
+    except Exception:  # noqa: BLE001
+        logger.error("box certificate authority ensure failed", exc_info=True)
+    finally:
+        db.close()
+
     # LLM span retention (GRPH-225), once before serving and never fatal: janitorial
     # work on telemetry does not justify taking the box down, and a boot that dies on
     # a DELETE is exactly the "unhandled error takes down every self-host install"
@@ -553,6 +565,33 @@ app.add_middleware(
 # every downstream log line carries it (AL-56).
 app.add_middleware(RequestIdMiddleware)
 
+
+_seen_hosts: set[str] = set()
+
+
+@app.middleware("http")
+async def box_cert_host_middleware(request, call_next):
+    """The first time a Host is seen, offer it to the box certificate's name allowlist
+    (GRPH-1634). Later requests with the same Host cost one set lookup."""
+    host = request.headers.get("host", "")
+    if host and host not in _seen_hosts and len(_seen_hosts) < 256:
+        _seen_hosts.add(host)
+        from starlette.concurrency import run_in_threadpool
+
+        def _offer() -> None:
+            from app.services import tls_ca
+
+            db = SessionLocal()
+            try:
+                tls_ca.see_host(db, host)
+            except Exception:  # noqa: BLE001
+                logger.warning("seen-host offer failed", exc_info=True)
+            finally:
+                db.close()
+
+        await run_in_threadpool(_offer)
+    return await call_next(request)
+
 # REST API under /api; MCP endpoint at /api/mcp.
 API = "/api"
 app.include_router(auth.router, prefix=API)
@@ -565,6 +604,8 @@ from app.routers import machines as machines_routes  # noqa: E402
 app.include_router(machines_routes.router, prefix=API)
 from app.routers import me_alerts as me_alerts_routes  # noqa: E402
 app.include_router(me_alerts_routes.router, prefix=API)
+from app.routers import https as https_routes  # noqa: E402
+app.include_router(https_routes.router, prefix=API)
 app.include_router(projects.router, prefix=API)
 app.include_router(items.router, prefix=API)
 app.include_router(requests.router, prefix=API)
