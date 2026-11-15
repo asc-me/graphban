@@ -45,14 +45,15 @@ from . import worktree as wt_mod
 from .adapters import AdapterError, Tuning
 from .tiers import TierTable
 from . import matrix as matrix_mod
-from .client import Graphban
+from .client import Graphban, ToolFailed
 from .lock import Acquired, Holder, describe_holder
 from .seat import Seat
 from .spawn import Child, LaunchFailed, Reason, stop
 from .progress import NEVER_WROTE
 from . import adopt as adopt_mod
+from . import observe
 from .supervisor import (
-    Limits, LaunchFactory, Partition, Wave, WaveBase, _tree_for, item_status,
+    Limits, LaunchFactory, Partition, Wave, WaveBase, _reap_exited, _tree_for, item_status,
     resolve_wave_base, start_one, watch_tick,
 )
 
@@ -678,31 +679,46 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
                 lane=args.get("lane") or "any", tier=tier, matrix=fleet.matrix)),
         )
 
+        started: list[Child] = []
+
         def remember(child: Child) -> None:
+            started.append(child)
             fleet.children.append(child)
             adopt_mod.persist(adopt_mod.children_path(fleet.repo), fleet.children)
 
-        child = start_one(
-            tree, seat,
-            fleet.launch_for(
-                adapter,
-                model,
-                _checked_tuning(adapter, Tuning(
-                    fallback_model=args.get("fallback_model") or "",
-                    effort=args.get("effort") or "",
-                    turns=str(args.get("turns") or ""),
-                    window=str(args.get("window") or ""),
-                )),
-            ),
-            fleet.client, fleet.limits,
-            fleet.partition, workspace=fleet.workspace, wave_name=wave,
-            slot=slot, on_spawned=remember,
-            debug_file=(
-                fleet.workspace / "logs" / f"{wave}-{slot}" / "debug.log"
-                if args.get("debug")
-                else None
-            ),
-        )
+        try:
+            child = start_one(
+                tree, seat,
+                fleet.launch_for(
+                    adapter,
+                    model,
+                    _checked_tuning(adapter, Tuning(
+                        fallback_model=args.get("fallback_model") or "",
+                        effort=args.get("effort") or "",
+                        turns=str(args.get("turns") or ""),
+                        window=str(args.get("window") or ""),
+                    )),
+                ),
+                fleet.client, fleet.limits,
+                fleet.partition, workspace=fleet.workspace, wave_name=wave,
+                slot=slot, on_spawned=remember,
+                debug_file=(
+                    fleet.workspace / "logs" / f"{wave}-{slot}" / "debug.log"
+                    if args.get("debug")
+                    else None
+                ),
+            )
+        except ToolFailed as exc:
+            # GRPH-1669. The roster read in the registration wait answered with a tool error.
+            # `start_one` has stopped the child; reap it now — salvage, push — rather than
+            # leave it to a watch tick that is failing on the same read. The caller gets a
+            # tool error and this server keeps serving.
+            _reap_exited(fleet.wave, started, fleet.client,
+                         base_branch=fleet.base.ref if fleet.base is not None else "")
+            adopt_mod.persist(adopt_mod.children_path(fleet.repo), fleet.children)
+            raise ValueError(
+                f"spawn stopped: the roster read failed ({exc}); the child it started "
+                "was stopped and reaped") from exc
         # What this child was launched with, so the exit report can say whether it stopped AT
         # its budget or finished early — the same turn count read two ways otherwise. Only
         # this path knows it: `up` builds its Tuning elsewhere and leaves the field null,
@@ -835,7 +851,8 @@ def handle(fleet: Fleet, message: dict) -> dict | None:
         return _ok(id_, call_tool(fleet, name, params.get("arguments") or {}))
     except LookupError:
         return _rpc_error(id_, METHOD_NOT_FOUND, f"no such tool {name!r}")
-    except (LaunchFailed, AdapterError, wt_mod.BranchExists, wt_mod.GitError, ValueError) as exc:
+    except (LaunchFailed, AdapterError, wt_mod.BranchExists, wt_mod.GitError, ValueError,
+            ToolFailed) as exc:
         # Everything a tool can legitimately fail with, reported as a tool result. The
         # adapter name and the child's stderr are already in these messages (D-a).
         return _tool_error(id_, str(exc))
@@ -863,7 +880,14 @@ def serve(fleet: Fleet, stdin: TextIO | None = None, stdout: TextIO | None = Non
         # First pass immediately, then on `poll`. `wait` rather than sleep so close
         # of stdin does not spend a full interval being tidy.
         while not halt.is_set():
-            fleet.tick()
+            try:
+                fleet.tick()
+            except Exception as exc:  # noqa: BLE001 — the watcher must outlive one bad tick
+                # GRPH-1669. A tool error from `fleet_status` used to end this thread, and
+                # with it the wall clock, the reap and the push for every child. Logged,
+                # and the next tick retries.
+                observe.emit("watch_retry", detail=str(exc))
+                print(f"gbfleet mcp: watch tick failed, retrying: {exc}", file=sys.stderr)
             halt.wait(poll)
 
     watcher = threading.Thread(target=_ticks, name="gbfleet-watch", daemon=True)

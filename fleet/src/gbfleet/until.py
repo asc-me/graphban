@@ -47,7 +47,8 @@ from .supervisor import (
     _declared_into,
     DEFAULT_MAX_WORKERS, LaunchFactory, Limits, Merger, Wave, WaveBase,
     _reap_all, _rooted, _report_exits, _start, item_status, publish_salvaged,
-    resolve_wave_base, seats_refusal, seats_unrecordable, watch_tick,
+    record_server_error, resolve_wave_base, seats_refusal, seats_unrecordable,
+    server_failed, watch_tick,
 )
 
 #: Planner-held tools. `register_agent` is how this process gets an `agent_id` to mint
@@ -437,6 +438,16 @@ def run(
                 merge=merge,
                 wave_base=chosen_base,
               )
+            except ToolFailed as exc:
+                # GRPH-1669. A roster read (`fleet_status`) answered with a tool error.
+                # Stop the children this wave started and reap them — salvage and publish
+                # what they did — so nothing is left running with nobody watching it.
+                stopped = server_failed(wave, children, exc)
+                if stopped:
+                    _report_exits(stopped, supervisor, wave, ledger=planner)
+                _reap_all(wave, children, client=planner, base_branch=chosen_base.ref)
+                persist()
+                raise
             except CapError as exc:
                 # GRPH-1438. A cap exit stops SPAWNING; it must not abandon a child that is
                 # still running. Design chosen: wait here, keep reaping, and exit only after
@@ -477,6 +488,13 @@ def run(
         if exc.reason == "capacity":
             _report_capacity_utilization(planner, wave)
         return Report(ok=False, reason=exc.reason, exit=1, detail=str(exc), wave=wave,
+                      minted=minted, spawned=len(wave.spawned))
+    except ToolFailed as exc:
+        # GRPH-1669. One FAILED line naming the tool and the server's message, not a
+        # traceback. Recorded here too for an error raised before the loop had children.
+        record_server_error(wave, exc)
+        wave.reason = "server_error"
+        return Report(ok=False, reason="server_error", exit=1, detail=str(exc), wave=wave,
                       minted=minted, spawned=len(wave.spawned))
     except watchdog_mod.Stalled as exc:
         wave.reason = "stall"
