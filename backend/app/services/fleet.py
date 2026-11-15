@@ -759,6 +759,18 @@ def status_state(agent: Agent, *, ttl_seconds: int | None = None,
     return "stale" if (now - at).total_seconds() > ttl else "reported"
 
 
+#: Most ids bound in one IN list. SQLite allows 32,766 parameters per statement and Postgres
+#: 65,535; a roster query that binds an id per agent (or two) must stay under both however
+#: many agents a project has accumulated (GRPH-1668).
+ROSTER_BATCH = 10_000
+
+
+def _batches(ids: Sequence[str]) -> list[Sequence[str]]:
+    """`ids` in slices of at most ROSTER_BATCH, so an IN list never outgrows the driver."""
+    ids = list(ids)
+    return [ids[i:i + ROSTER_BATCH] for i in range(0, len(ids), ROSTER_BATCH)]
+
+
 def list_agents(db: Session, project_id: str | None = None, *,
                 lease_seconds: int = DEFAULT_LEASE_SECONDS,
                 now: datetime | None = None, where=None, limit: int | None = None,
@@ -807,9 +819,14 @@ def list_agents(db: Session, project_id: str | None = None, *,
     if agents:
         ids = [a.id for a in agents]
         mine = set(ids)
-        rows = db.scalars(select(Item).where(
-            or_(Item.claimed_by.in_(ids), Item.review_claimed_by.in_(ids)))).all()
-        for it in rows:
+        # In batches: two parameters per agent overflowed Postgres's 65,535-parameter limit
+        # once the project passed 32,767 agents, and every propose_allocation 500ed (GRPH-1668).
+        rows: dict[str, Item] = {}
+        for batch in _batches(ids):
+            for it in db.scalars(select(Item).where(
+                    or_(Item.claimed_by.in_(batch), Item.review_claimed_by.in_(batch)))).all():
+                rows[it.id] = it
+        for it in rows.values():
             if it.claimed_by in mine:
                 held.setdefault(it.claimed_by, []).append((it, "build"))
             if it.review_claimed_by in mine:
@@ -1019,18 +1036,18 @@ def roster_view(payload: dict, view: str) -> dict:
 
 
 def _assigned_for(db: Session, agents: list[Agent]) -> dict[str, dict]:
-    """`{agent_id: {item, state, held_by}}` for every agent on a bound seat. Two queries
-    whatever the roster size. `claimed` when the agent holds the seat's item; `taken` with
+    """`{agent_id: {item, state, held_by}}` for every agent on a bound seat. Two queries per
+    `_batches` slice of the roster (GRPH-1668). `claimed` when the agent holds the seat's item; `taken` with
     the holder otherwise — the same word the registration reply used."""
     seat_ids = [a.enrolment_id for a in agents if a.enrolment_id]
     if not seat_ids:
         return {}
-    seats = {s.id: s for s in db.scalars(select(Enrolment).where(
-        Enrolment.id.in_(seat_ids), Enrolment.item_id.isnot(None))).all()}
+    seats = {s.id: s for batch in _batches(seat_ids) for s in db.scalars(select(Enrolment).where(
+        Enrolment.id.in_(batch), Enrolment.item_id.isnot(None))).all()}
     if not seats:
         return {}
-    items = {i.id: i for i in db.scalars(select(Item).where(
-        Item.id.in_({s.item_id for s in seats.values()}))).all()}
+    items = {i.id: i for batch in _batches(sorted({s.item_id for s in seats.values()}))
+             for i in db.scalars(select(Item).where(Item.id.in_(batch))).all()}
     out: dict[str, dict] = {}
     for a in agents:
         seat = seats.get(a.enrolment_id) if a.enrolment_id else None
