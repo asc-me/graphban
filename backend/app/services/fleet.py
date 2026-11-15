@@ -2921,11 +2921,34 @@ _UNCOMMITTED = re.compile(
 _TOOL_NOUN = re.compile(
     r"\b(?:checker|check script|script|verifier|tool|harness|helper|test file|"
     r"artefact|artifact|probe|scratch test)s?\b")
-#: Where the phrase holding a denial word stops: a sentence end, `;`, `,`, a bracket, a dash,
-#: or a conjunction that opens a new clause on a pronoun — "the checker is not committed and
-#: it cannot be published" is two subjects, and `it` must not borrow the checker's phrase.
-_PHRASE_BREAK = re.compile(
-    r"[.!?;,()—–]|\s-\s|\s(?:and|but|or|so|yet|though|although|while)\s(?=its?\b)")
+#: Where the phrase holding a denial word stops: a sentence end, `;`, `,`, a bracket, a dash.
+_PHRASE_BREAK = re.compile(r"[.!?;,()—–]|\s-\s")
+#: Between a subject and the denial word, a sign that the denial has a subject of its own
+#: (GRPH-1019 bounce on 872a95b9): a determiner opening another noun phrase ("the checker
+#: passed but THE TABLE cannot …"), a clause-opening conjunction or complementiser not
+#: directly followed by the denial word ("the checker passed BUT tables cannot …" — while
+#: "is not committed and cannot resolve" keeps one subject), or a reporting verb whose
+#: object is a new clause ("the checker SHOWS tables cannot …").
+_OTHER_SUBJECT = (
+    r"\b(?:a|an|the|this|these|those|our|my|their)\s+\S"
+    r"|\b(?:and|but|or|so|yet|though|although|while|whereas|because|that|which|who|"
+    r"where|when|if)\b(?!\s+(?:also\s+|still\s+|so\s+)?{denial})"
+    r"|\b(?:shows?|showed|says?|said|reports?|reported|finds?|found|confirms?|confirmed|"
+    r"proves?|proved|means?|meant|tells?|told|indicates?|indicated)\b")
+
+#: A pronoun standing for the tool: `it`/`its`, directly before the denial word.
+_PRONOUN = re.compile(r"\bits?\b")
+
+
+def _nearest_subject_is(between: str, denial: str) -> bool:
+    """Whether nothing in `between` — the text from a subject to the denial word — gives
+    the denial a subject of its own. A relative `that`/`which` directly after the subject
+    ("the checker that verified it …") is the subject's own clause, not a new one."""
+    head = re.match(r"\s*(?:that|which)\b", between)
+    body = between[head.end():] if head else between
+    # The denial word is appended so a conjunction directly before it ("… and cannot")
+    # can be told from one that opens a clause with a subject of its own.
+    return not re.search(_OTHER_SUBJECT.replace("{denial}", re.escape(denial)), body + denial)
 
 
 def _discloses_uncommitted_tool(low: str, clause: str) -> bool:
@@ -2944,27 +2967,32 @@ def _discloses_uncommitted_tool(low: str, clause: str) -> bool:
 
 
 def _about_the_tool(residue: str, start: int, end: int) -> bool:
-    """Whether the phrase holding the denial word at `[start, end)` is about a verification
-    artefact rather than the deliverable (GRPH-1019). Who the denial is about decides, not
-    how far away it sits.
+    """Whether the denial word at `[start, end)` is about a verification artefact rather
+    than the deliverable (GRPH-1019). Who the denial is about decides, not how far away it
+    sits — and who it is about is its NEAREST SUBJECT.
 
-    The phrase is about the tool when it NAMES one (`the checker cannot resolve X`). A bare
-    `it`/`its` is ambiguous — in "delivered; the uncommitted checker passed, but it cannot be
-    published yet" `it` is the deliverable — so a pronoun is read as the tool's only in a
-    sentence that is wholly about the tool: one that names the tool or discloses it is not
-    committed, and makes no delivery claim of its own (the GRPH-1005 shape, "It is not
-    committed …; the literals it cannot resolve are allowlisted"). A pronoun in the sentence
-    that claims delivery could be the deliverable, and an ambiguous denial still refuses
+    The denial is the tool's when, inside its phrase, the last tool noun before it is its
+    nearest subject: no other noun phrase, clause-opening conjunction or reporting verb in
+    between (`the checker cannot resolve X`, `the checker that verified it is not committed
+    and cannot resolve X`). A tool noun elsewhere in the phrase is not enough: in "the
+    uncommitted checker passed but the table cannot be published" the denial is the
+    table's (review bounce on 872a95b9).
+
+    A bare `it` is the weakest attribution, so it counts only directly before the denial
+    word and only in a sentence wholly about the tool: one that names the tool or discloses
+    it is not committed, and makes no delivery claim of its own (the GRPH-1005 shape, "It is
+    not committed …; the literals it cannot resolve are allowlisted"). In the sentence that
+    claims delivery `it` could be the deliverable, and an ambiguous denial still refuses
     (review bounce on 502bdf96).
     """
     breaks_before = [m.end() for m in _PHRASE_BREAK.finditer(residue, 0, start)]
     lo = breaks_before[-1] if breaks_before else 0
-    after = _PHRASE_BREAK.search(residue, end)
-    hi = after.start() if after else len(residue)
-    phrase = residue[lo:hi]
-    if _TOOL_NOUN.search(phrase):
+    denial = residue[start:end]
+    tools = list(_TOOL_NOUN.finditer(residue, lo, start))
+    if tools and _nearest_subject_is(residue[tools[-1].end():start], denial):
         return True
-    if not re.search(r"\bits?\b", phrase):
+    pronouns = list(_PRONOUN.finditer(residue, lo, start))
+    if not pronouns or residue[pronouns[-1].end():start].strip():
         return False
     ends_before = [m.end() for m in _SENTENCE_END.finditer(residue, 0, start)]
     s_lo = ends_before[-1] if ends_before else 0

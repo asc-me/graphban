@@ -47,6 +47,21 @@ def test_a_disclosed_uncommitted_tool_is_not_a_denial(receipt):
     f"{CLAUSE} is implemented, the uncommitted script ran, but it cannot be published yet.",
     f"Clause {CLAUSE}: delivered; the checker is not committed and it cannot be published "
     "yet.",
+    # A named deliverable between the tool and the denial word is the denial's subject,
+    # whatever tool noun shares its phrase (review bounce on 872a95b9).
+    f"Clause {CLAUSE}: delivered; the uncommitted checker passed but the table cannot be "
+    "published yet.",
+    f"Clause {CLAUSE}: delivered; the uncommitted checker shows the table cannot be "
+    "published yet.",
+    f"Clause {CLAUSE}: delivered; per the uncommitted checker the table cannot be "
+    "published yet.",
+    # The same with no determiner: a clause-opening conjunction or a reporting verb.
+    f"Clause {CLAUSE}: delivered; the uncommitted checker passed but tables cannot be "
+    "published yet.",
+    f"Clause {CLAUSE}: delivered; the uncommitted checker shows tables cannot be published.",
+    # A relative clause on a pronoun does not make the tool the subject.
+    f"Clause {CLAUSE}: delivered; the checker is uncommitted, the table it reads cannot be "
+    "published.",
 ])
 def test_a_receipt_that_really_denies_its_clause_still_refuses(receipt):
     """The control. A disclosure is not a pass: a denial about the DELIVERABLE in the same
