@@ -278,6 +278,50 @@ def test_r3_fires_only_when_beaten_at_family_level_across_two_families(
     assert len(cards[0]["draft"]["families"]) >= 2
 
 
+def test_r3_reads_a_harness_model_top_default_as_the_cells_it_names(
+        client, key, db, proj, auth):
+    """GRPH-977. A top default of `claude:sonnet` found no family rates when R3 matched the
+    harness only, so a beaten model-level default drafted nothing. The reorder keeps the
+    entry as written."""
+    user = client.get("/api/auth/me", headers=auth).json()
+    planner = _agent(client, key, "planner")
+    db.add(FleetProfile(id="fp_s4_hm", user_id=user["id"], project_id=proj,
+                        defaults=["claude:sonnet", "gbagent"], weights={}, excludes=[]))
+    db.commit()
+    res = _resolution("claude:sonnet", "gbagent:qwen3.6")
+    for fam, tp in (("a", "backend/alembic/versions/x.py"), ("b", "backend/app/services/x.py")):
+        for i in range(8):
+            _attempt(client, key, db, planner, f"{fam}-cl{i}", vendor="claude", model="sonnet",
+                     outcome="signed_off" if i < 3 else "bounced", touchpoints=[tp],
+                     resolution=res)
+            _attempt(client, key, db, planner, f"{fam}-gb{i}", vendor="gbagent", model="qwen3.6",
+                     touchpoints=[tp], resolution=res)
+    cards = _by_rule(_cards(client, auth, proj), "R3")
+    assert cards, cards
+    assert cards[0]["draft"]["defaults"] == ["gbagent", "claude:sonnet"]
+
+
+def test_r3_a_model_level_top_default_can_be_beaten_by_its_own_harness(
+        client, key, db, proj, auth):
+    """GRPH-977. `claude:sonnet` on top names sonnet only, so claude:opus is a rival like any
+    other — and goes in as `claude:opus`, not as `claude`, which would admit sonnet too."""
+    user = client.get("/api/auth/me", headers=auth).json()
+    planner = _agent(client, key, "planner")
+    db.add(FleetProfile(id="fp_s4_same", user_id=user["id"], project_id=proj,
+                        defaults=["claude:sonnet", "gbagent"], weights={}, excludes=[]))
+    db.commit()
+    res = _resolution("claude:sonnet", "claude:opus")
+    for fam, tp in (("a", "backend/alembic/versions/x.py"), ("b", "backend/app/services/x.py")):
+        for i in range(8):
+            _attempt(client, key, db, planner, f"{fam}-so{i}", vendor="claude", model="sonnet",
+                     outcome="signed_off" if i < 3 else "bounced", touchpoints=[tp],
+                     resolution=res)
+            _attempt(client, key, db, planner, f"{fam}-op{i}", vendor="claude", model="opus",
+                     touchpoints=[tp], resolution=res)
+    cards = _by_rule(_cards(client, auth, proj), "R3")
+    assert [c["draft"]["defaults"] for c in cards] == [["claude:opus", "claude:sonnet", "gbagent"]]
+
+
 # ---- 11: org cards name projects ------------------------------------------------------------
 
 def test_org_scope_cards_name_the_projects(client, auth, db):

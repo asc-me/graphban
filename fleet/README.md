@@ -610,7 +610,7 @@ divvy no longer decides what its children claim. The outcome comes back through 
 `src/gbfleet/matrix.toml`, a committed table of harness × model × lane × tier rows
 with a status (`verified`, `unverified`, `failed`, `unregistered`) and the item that proved
 it — facts only, reviewed like code. Resolution runs in a fixed order: the rows for the
-tier → the project's policy (`local_only`, `allowed_harnesses`) → the user's profile (an ordered allowlist of harnesses, weights
+tier → the project's policy (`local_only`, `allowed_harnesses`) → the user's profile (an ordered allowlist of harnesses or `harness:model` keys, weights
 over `cost`/`quality`/`latency`/`locality`, excludes) → `failed` rows out → what this
 machine has installed → score → ties (verified first, then the user's own order, then the
 row's `order`). Profile and policy come from the server: `gbfleet mcp` and `gbfleet until`
