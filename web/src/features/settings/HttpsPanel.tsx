@@ -60,16 +60,24 @@ export function detectOs(ua = typeof navigator === "undefined" ? "" : navigator.
 }
 
 /**
+ * The HTTPS port every shipped install listens on: Compose publishes ${WEB_HTTPS_PORT:-8443}
+ * (docker-compose.yml, web/Dockerfile HTTPS_PORT=8443) and the native install runs Caddy with
+ * HTTPS_PORT=8443 (docs/native-install.md). This is an assumption: GRPH-1664 (backend:
+ * https_url/https_port in GET /api/https) replaces it with the port the box actually reports.
+ */
+export const DEFAULT_HTTPS_PORT = 8443;
+
+/**
  * The HTTPS address of this box. On an https page that is this page's own origin, port included.
  * On a plain-http page the HTTPS listener is on its own port (P83 D1), which this API does not
- * report yet; until the serving item passes `httpsPort`, the standard https port is assumed.
+ * report yet; `httpsPort` overrides it, otherwise the shipped default (8443) is assumed.
  */
 export function httpsAddress(
   loc: Pick<Location, "protocol" | "hostname" | "origin"> = window.location,
-  httpsPort?: number,
+  httpsPort: number = DEFAULT_HTTPS_PORT,
 ): string {
   if (loc.protocol === "https:") return loc.origin;
-  return httpsPort && httpsPort !== 443 ? `https://${loc.hostname}:${httpsPort}` : `https://${loc.hostname}`;
+  return httpsPort === 443 ? `https://${loc.hostname}` : `https://${loc.hostname}:${httpsPort}`;
 }
 
 /** Opens the HTTPS address from this browser. Any rejection or timeout is "unknown". */

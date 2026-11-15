@@ -78,7 +78,23 @@ describe("HttpsPanel", () => {
     expect(httpsAddress({ protocol: "http:", hostname: "box.home", origin: "http://box.home:8080" }, 8443))
       .toBe("https://box.home:8443");
     expect(httpsAddress({ protocol: "http:", hostname: "box.home", origin: "http://box.home:8080" }))
+      .toBe("https://box.home:8443");
+    expect(httpsAddress({ protocol: "http:", hostname: "box.home", origin: "http://box.home:8080" }, 443))
       .toBe("https://box.home");
+  });
+
+  it("shows and probes the :8443 HTTPS address on a plain-http page", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({});
+    vi.stubGlobal("fetch", fetchSpy);
+    vi.stubGlobal("location", { ...window.location, protocol: "http:", hostname: "ubuntu-srv",
+      host: "ubuntu-srv:8080", origin: "http://ubuntu-srv:8080" });
+    mount();
+    await screen.findByTestId("trust-chip");
+    expect(screen.getAllByText("https://ubuntu-srv:8443").length).toBeGreaterThan(0);
+    expect(screen.queryByText("https://ubuntu-srv")).toBeNull();
+    await userEvent.click(screen.getAllByRole("button", { name: "Check again" })[0]);
+    await waitFor(() => expect(screen.getByTestId("trust-chip")).toHaveTextContent("Trusted by this browser"));
+    expect(String(fetchSpy.mock.calls[0][0])).toMatch(/^https:\/\/ubuntu-srv:8443\//);
   });
 
   it("renders names with Remove only on operator rows", async () => {
