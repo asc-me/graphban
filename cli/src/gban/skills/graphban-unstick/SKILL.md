@@ -20,6 +20,7 @@ Name the item first. A stuck drain is one item, one holder, one timer. Run `flee
 - Salvage note with no pull URL — the branch is the work. Find the branch and leave it. Do not delete or rebuild it.
 - Live child with empty holdings — the child is running and holds nothing. That is not an idle wave, and `WAVE_IDLE` does not mean done while it keeps the drain open. Report it. Do not fix it from `watch-wave`.
 - `WAVE_IDLE` while items are still `next` — a collision or a pin holds them. Name what holds them.
+- Red CI — the drain holds on a red PR, or a head with no `suite_green`. Triage it with `graphban-red-ci`. Do not skip, retry or rebudget a test to get green.
 
 ## Do not
 
