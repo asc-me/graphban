@@ -1164,8 +1164,12 @@ def _service(args) -> int:
         return 0
     code = "unknown" if done.state is None or done.state.last_exit is None \
         else done.state.last_exit
-    print(f"{plan.name}: NOT running, last exit {code} — "
-          f"{done.detail or 'the supervisor gave no reason'}", file=sys.stderr)
+    # GRPH-1312: the err log's last line is the drain's own reason; the loader's output
+    # (`done.detail`) is launchctl/systemctl talking, and usually says nothing.
+    why = ((done.state.reason if done.state is not None else "")
+           or service_mod.err_reason(plan.name) or done.detail
+           or "the supervisor gave no reason")
+    print(f"{plan.name}: NOT running, last exit {code} — {why}", file=sys.stderr)
     print(f"        {plan.err_path} is where it said why", file=sys.stderr)
     return 1
 
