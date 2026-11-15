@@ -4,9 +4,9 @@ import { createPortal } from "react-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
-import { useConfig, useMyAlerts, useProjects, usePushStatus, usePushSubscribe, useReadAlert } from "@/lib/queries";
+import { useConfig, useMyAlerts, useProjects, usePushStatus, usePushSubscribe, useReadAlert, useSecureAddress } from "@/lib/queries";
 import { relTime } from "@/lib/relTime";
-import { projectPath, rememberProjectTag } from "@/lib/routes";
+import { projectPath, rememberProjectTag, settingsPath } from "@/lib/routes";
 import type { AlertRow } from "@/lib/types";
 
 function b64ToBytes(b64: string): Uint8Array {
@@ -24,6 +24,7 @@ const pushSupported = () =>
  */
 function BrowserPush() {
   const status = usePushStatus();
+  const secure = useSecureAddress();
   const subscribe = usePushSubscribe();
   const [done, setDone] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -34,11 +35,14 @@ function BrowserPush() {
   // Service workers (so Web Push) exist only in a secure context: HTTPS or localhost.
   if (typeof window !== "undefined" && window.isSecureContext === false) {
     return (
-      <div className="border-t border-line p-3 text-[12px] text-muted">
-        Browser notifications need this site on HTTPS. In-app alerts still work.{" "}
-        <a className="underline" href="https://github.com/asc-me/graphban/blob/main/docs/deploy.md#browser-push-optional" target="_blank" rel="noreferrer">
-          Why?
-        </a>
+      <div data-testid="push-insecure" className="border-t border-line p-3 text-[12px] text-muted">
+        Browser notifications need this site on HTTPS. In-app alerts still work.
+        <div className="mt-1.5 flex gap-3">
+          {secure.address && (
+            <a className="underline" href={secure.address}>Open the secure address</a>
+          )}
+          <Link className="underline" to={settingsPath("deployment/https")}>HTTPS settings</Link>
+        </div>
       </div>
     );
   }
@@ -48,6 +52,10 @@ function BrowserPush() {
   if (Notification.permission === "denied") {
     return <div className="border-t border-line p-3 text-[12px] text-muted">Notifications are blocked for this site in your browser settings.</div>;
   }
+  const origins = status.data.subscription_origins ?? [];
+  const moved =
+    typeof window !== "undefined" && window.location.protocol === "https:" &&
+    origins.some((o) => o.startsWith("http:")) && !origins.includes(window.location.origin);
   if (done) return <div className="border-t border-line p-3 text-[12px] text-muted">Notifications are on in this browser.</div>;
   const enable = async () => {
     setError(null);
@@ -72,6 +80,11 @@ function BrowserPush() {
   };
   return (
     <div className="border-t border-line p-3">
+      {moved && (
+        <p data-testid="push-moved" className="mb-1.5 text-[12px] text-muted">
+          You turned on notifications at the old http address. Turn them on again here.
+        </p>
+      )}
       <button type="button" onClick={enable} className="rounded-md border border-control px-2.5 py-1 text-[12px] hover:border-control-hover">
         Notify me in this browser
       </button>

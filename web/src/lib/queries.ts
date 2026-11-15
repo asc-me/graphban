@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { api } from "./api";
+import { httpsAddress, probeTrust } from "@/lib/https";
 import type { OnboardingMark, SetupConfirm } from "./types";
 import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, Item, ItemDetail, LessonFilters, LogExportPatch, RequestItem, RuleProfileApplyWrite, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
 
@@ -1817,4 +1818,24 @@ export function useHttpsNames() {
     add: useMutation({ mutationFn: (n: string) => api.httpsAddName(n), onSuccess: done }),
     remove: useMutation({ mutationFn: (n: string) => api.httpsRemoveName(n), onSuccess: done }),
   };
+}
+
+/**
+ * Where the secure address of this box is, seen from this page (P83 D6). `onHttp`: the page is
+ * open over plain http. `address`: the https:// address, only when the box says HTTPS is ready
+ * (never guessed from a failed read). `trusted` is "unknown" until a probe from this browser succeeds.
+ */
+export function useSecureAddress(probe = false) {
+  const status = useHttpsStatus();
+  const onHttp = typeof window !== "undefined" && window.location.protocol === "http:";
+  const available = !!status.data?.ready && status.data.names.length > 0;
+  const address = available ? httpsAddress(window.location) : null;
+  const trust = useQuery({
+    queryKey: ["https-trust", address],
+    queryFn: () => probeTrust(address as string),
+    enabled: probe && onHttp && !!address,
+    staleTime: 0,
+    retry: false,
+  });
+  return { onHttp, address, trusted: trust.data === "trusted", trustKnown: trust.data !== undefined };
 }
