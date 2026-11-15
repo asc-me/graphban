@@ -2903,7 +2903,11 @@ def denial_in(clause: str, line: str) -> str:
         word = m.group(1)
         if word == "failed" and expected_failure_clause(clause):
             continue
-        if tool_caveat and _about_the_tool(residue, m.start(), m.end()):
+        # Only `cannot` — the GRPH-1005 shape, a limit of the tool. `failed` and `skipped`
+        # with the tool as subject report the verification's own outcome on the
+        # deliverable: negative evidence about the clause, not a caveat (review bounce on
+        # 77a6b5cc).
+        if word == "cannot" and tool_caveat and _about_the_tool(residue, m.start(), m.end()):
             continue
         return word
     return ""
@@ -2936,6 +2940,14 @@ _OTHER_SUBJECT = (
     r"|\b(?:shows?|showed|says?|said|reports?|reported|finds?|found|confirms?|confirmed|"
     r"proves?|proved|means?|meant|tells?|told|indicates?|indicated)\b")
 
+#: A word that may sit directly after the tool noun without becoming a subject of its own:
+#: an auxiliary or adverb continuing the tool's own predicate ("the checker IS not
+#: committed and cannot …", "the script STILL cannot …").
+_SUBJECT_CONTINUES = re.compile(
+    r"is|isn't|was|wasn't|are|aren't|were|weren't|has|hasn't|have|haven't|had|hadn't|"
+    r"does|doesn't|did|didn't|do|don't|will|won't|would|can|could|should|may|might|must|"
+    r"still|also|itself|themselves|alone|just|simply|currently|therefore|then|here|not")
+
 #: A pronoun standing for the tool: `it`/`its`, directly before the denial word.
 _PRONOUN = re.compile(r"\bits?\b")
 
@@ -2946,6 +2958,12 @@ def _nearest_subject_is(between: str, denial: str) -> bool:
     ("the checker that verified it …") is the subject's own clause, not a new one."""
     head = re.match(r"\s*(?:that|which)\b", between)
     body = between[head.end():] if head else between
+    # A bare word directly after the tool noun that is not an auxiliary or adverb makes the
+    # tool noun a modifier: in "the checker TABLES cannot …" the head noun is the subject
+    # (review bounce on 77a6b5cc).
+    first = re.match(r"\s*([a-z'’]+)", between)
+    if not head and first and not _SUBJECT_CONTINUES.fullmatch(first.group(1)):
+        return False
     # The denial word is appended so a conjunction directly before it ("… and cannot")
     # can be told from one that opens a clause with a subject of its own.
     return not re.search(_OTHER_SUBJECT.replace("{denial}", re.escape(denial)), body + denial)

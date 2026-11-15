@@ -62,6 +62,15 @@ def test_a_disclosed_uncommitted_tool_is_not_a_denial(receipt):
     # A relative clause on a pronoun does not make the tool the subject.
     f"Clause {CLAUSE}: delivered; the checker is uncommitted, the table it reads cannot be "
     "published.",
+    # A tool that FAILED on or SKIPPED the deliverable is negative evidence about the
+    # clause, not a caveat about the tool: only `cannot` is exempt (review bounce on
+    # 77a6b5cc).
+    f"Clause {CLAUSE}: delivered; the uncommitted checker failed on the table.",
+    f"Clause {CLAUSE}: delivered; the uncommitted checker skipped the table.",
+    # A bare noun after the tool noun is a compound whose head is the real subject.
+    f"Clause {CLAUSE}: delivered; the uncommitted checker tables cannot be published.",
+    f"Clause {CLAUSE}: delivered; the uncommitted checker table cannot be published.",
+    f"Clause {CLAUSE}: delivered; the uncommitted script table cannot be published.",
 ])
 def test_a_receipt_that_really_denies_its_clause_still_refuses(receipt):
     """The control. A disclosure is not a pass: a denial about the DELIVERABLE in the same
