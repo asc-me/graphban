@@ -2928,6 +2928,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             "project_id": pid,
             "project_name": proj.name if proj else None,
             "key_project_id": key.project_id,  # None => global key; agent should pass project_id
+            # GRPH-1317. The roles this credential may hold. `planner` is what the
+            # supervisor's observations route requires, and `gban doctor`/`gban setup` read
+            # it here rather than learning it from a 403 mid-wave.
+            "eligible_roles": list(fleet_svc.eligible_roles(key)),
             "scopes": key.scopes,
             "readable_projects": readable,
             "writable_projects": authz.key_writable_ids(db, key),
