@@ -11,6 +11,7 @@ def _offline_tag_feed(monkeypatch):
     """REST tests look up fetch_tag at call time. Do not hit GitHub."""
     monkeypatch.setattr(svc, "fetch_tag", lambda tag: None)
     svc._cache.update(at=0.0, payload=None)
+    svc.reset_github_state()
 
 
 def test_placeholder_version_is_unknown_even_when_the_feed_matches():
@@ -756,3 +757,128 @@ def test_compose_log_does_not_take_native_stage_lines():
     text = "=== apply T x 1\n==> stopping the service\n"
     got = svc.parse_progress(text, "compose")
     assert "stop" not in [s["key"] for s in got["steps"]]
+
+
+# --- GitHub REST budget (GRPH-1663) -----------------------------------------------------
+
+_LATEST_BODY = {
+    "tag_name": "2026.11.28",
+    "html_url": "https://github.com/asc-me/graphban/releases/tag/2026.11.28",
+    "body": "notes",
+    "assets": [{"name": "graphban-2026.11.28.tar.gz",
+                "browser_download_url": "https://github.com/asc-me/graphban/releases/"
+                                        "download/2026.11.28/graphban-2026.11.28.tar.gz"}],
+}
+
+
+class _GH:
+    """A recording stand-in for httpx.get: answers per URL, keeps every call."""
+
+    def __init__(self, answer):
+        self.calls = []
+        self.answer = answer
+
+    def __call__(self, url, *a, headers=None, **k):
+        self.calls.append((url, dict(headers or {})))
+        code, hdrs, body = self.answer(url, headers or {})
+        return svc.httpx.Response(code, headers=hdrs, json=body,
+                                  request=svc.httpx.Request("GET", url))
+
+    def api_calls(self):
+        return [c for c in self.calls if c[0].startswith("https://api.github.com/")]
+
+
+def test_token_goes_to_the_api_and_not_to_the_asset_download(monkeypatch):
+    monkeypatch.setattr(svc.settings, "github_token", "ghp_secret")
+    gh = _GH(lambda url, h: (200, {}, _LATEST_BODY))
+    monkeypatch.setattr(svc.httpx, "get", gh)
+    rel = svc.fetch_latest()
+    blob_gh = _GH(lambda url, h: (200, {}, {}))
+    monkeypatch.setattr(svc.httpx, "get", blob_gh)
+    svc._download_asset(rel["asset"])
+    assert gh.calls[0][1]["Authorization"] == "Bearer ghp_secret"
+    assert blob_gh.calls[0][0].startswith("https://github.com/")
+    assert "Authorization" not in blob_gh.calls[0][1]
+
+
+def test_no_token_sends_no_authorization(monkeypatch):
+    monkeypatch.setattr(svc.settings, "github_token", "")
+    gh = _GH(lambda url, h: (200, {}, _LATEST_BODY))
+    monkeypatch.setattr(svc.httpx, "get", gh)
+    assert svc.fetch_latest()["tag"] == "2026.11.28"
+    assert "Authorization" not in gh.calls[0][1]
+
+
+def test_a_304_with_the_stored_etag_returns_the_cached_release(monkeypatch):
+    def answer(url, h):
+        if h.get("If-None-Match") == '"abc"':
+            return 304, {"ETag": '"abc"'}, None
+        return 200, {"ETag": '"abc"'}, _LATEST_BODY
+    gh = _GH(answer)
+    monkeypatch.setattr(svc.httpx, "get", gh)
+    first = svc.fetch_latest()
+    second = svc.fetch_latest()
+    assert "If-None-Match" not in gh.calls[0][1]
+    assert gh.calls[1][1]["If-None-Match"] == '"abc"'
+    assert second == first and second["tag"] == "2026.11.28"
+
+
+def test_a_spent_budget_makes_no_further_call_before_the_reset(monkeypatch):
+    reset = int(_time.time()) + 1800
+    gh = _GH(lambda url, h: (403, {"X-RateLimit-Remaining": "0",
+                                   "X-RateLimit-Reset": str(reset)}, {}))
+    monkeypatch.setattr(svc.httpx, "get", gh)
+    run = {"version": "2026.11.27", "git_sha": "x"}
+    first = svc.check_cached()
+    n = len(gh.calls)
+    assert n >= 1
+    again = svc.check_cached(refresh=True)  # the Check button does not bypass it
+    assert len(gh.calls) == n
+    hhmm = _time.strftime("%H:%M", _time.localtime(reset))
+    for got in (first, again):
+        assert got["state"] == "unknown"
+        assert got["feed_error"] == f"GitHub rate limit: retry after {hhmm} (box clock)"
+    assert svc.check(run=run, hosted=False)["state"] == "unknown"
+    assert len(gh.calls) == n
+
+
+def test_the_backoff_ends_at_the_reset(monkeypatch):
+    gh = _GH(lambda url, h: (403, {"X-RateLimit-Remaining": "0",
+                                   "X-RateLimit-Reset": str(int(_time.time()) + 60)}, {}))
+    monkeypatch.setattr(svc.httpx, "get", gh)
+    assert svc.fetch_latest() is None
+    svc._backoff["until"] = _time.time() - 1  # the reset has passed
+    gh.answer = lambda url, h: (200, {}, _LATEST_BODY)
+    assert svc.fetch_latest()["tag"] == "2026.11.28"
+
+
+def test_a_403_with_budget_left_does_not_back_off(monkeypatch):
+    gh = _GH(lambda url, h: (403, {"X-RateLimit-Remaining": "12"}, {}))
+    monkeypatch.setattr(svc.httpx, "get", gh)
+    assert svc.fetch_latest() is None
+    assert svc.fetch_latest() is None
+    assert len(gh.calls) == 2
+
+
+def test_apply_after_a_successful_check_makes_no_api_call(monkeypatch):
+    monkeypatch.setattr(svc, "fetch_tag", _real_fetch_tag)
+    monkeypatch.setattr(svc, "running", lambda: {"version": "2026.11.27", "git_sha": "x"})
+    monkeypatch.setattr(svc, "helper_present", lambda path=None: False)
+    monkeypatch.setattr(svc, "native_present", lambda root=None: True)
+    monkeypatch.setattr(svc.settings, "hosted_mode", False)
+
+    def answer(url, h):
+        if url == svc.FEED_URL:
+            return 200, {}, _LATEST_BODY
+        return 200, {}, {"tag_name": "2026.11.27", "body": "old"}
+    gh = _GH(answer)
+    monkeypatch.setattr(svc.httpx, "get", gh)
+    assert svc.check_cached(refresh=True)["state"] == "available"
+    before = len(gh.api_calls())
+    started = []
+    got = svc.apply("2026.11.28",
+                    native_start=lambda tag, asset: started.append((tag, asset)) or
+                    {"ok": True, "sha": "s"})
+    assert got["ok"] is True and got["status"] == 202
+    assert started == [("2026.11.28", _LATEST_BODY["assets"][0]["browser_download_url"])]
+    assert len(gh.api_calls()) == before
