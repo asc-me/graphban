@@ -472,10 +472,130 @@ def harness_entries(repo: Path) -> list[dict]:
     return out
 
 
+def repo_projects(repo: Path) -> list[str]:
+    """The projects this repository's `gbfleet` entries name, from every harness file setup
+    writes. An entry counts when its `--repo` is this repository: Grok's user file holds one
+    entry for the whole machine, and the one there may belong to another checkout."""
+    import tomllib
+    from gban import setup  # lazy: setup imports this module
+
+    here = repo.resolve()
+
+    def read(path: Path, toml: bool) -> dict:
+        try:
+            text = path.read_text(encoding="utf-8")
+            got = tomllib.loads(text) if toml else json.loads(text)
+        except (OSError, ValueError):
+            return {}
+        return got if isinstance(got, dict) else {}
+
+    claude_user = (read(setup.claude_home(), False).get("projects") or {}).get(str(here)) or {}
+    found = [
+        (claude_user.get("mcpServers") or {}).get(setup.FLEET_SERVER),
+        (read(repo / ".mcp.json", False).get("mcpServers") or {}).get(setup.FLEET_SERVER),
+        (read(repo / ".grok" / "config.toml", True).get("mcp_servers") or {})
+        .get(setup.FLEET_SERVER),
+        (read(setup.grok_home(), True).get("mcp_servers") or {}).get(setup.FLEET_SERVER),
+    ]
+    out: list[str] = []
+    for spec in found:
+        if not isinstance(spec, dict):
+            continue
+        args = [str(a) for a in (spec.get("args") or [])]
+
+        def after(flag: str) -> str:
+            return args[args.index(flag) + 1] if flag in args[:-1] else ""
+
+        named_repo, named = after("--repo"), after("--project")
+        try:
+            ours = not named_repo or Path(named_repo).resolve() == here
+        except (OSError, ValueError):
+            ours = False
+        if named and ours and named not in out:
+            out.append(named)
+    return out
+
+
+def key_context(url: str, key: str, project: str) -> dict | str:
+    """`get_context` as `key` sees it, or why it could not be read. The key never leaves
+    this function in any message."""
+    try:
+        got = Client(url, api_key=key).call(
+            "POST", "/api/mcp",
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+             "params": {"name": "get_context", "arguments": {"project_id": project}}})
+        ctx = json.loads(got["result"]["content"][0]["text"])
+    except Refused as exc:
+        return f"the server refused it ({exc.status})"
+    except Unreachable as exc:
+        return f"the server could not be asked ({exc})"
+    except (KeyError, IndexError, TypeError, ValueError):
+        return "get_context answered in a shape this version cannot read"
+    return ctx if isinstance(ctx, dict) else "get_context answered in a shape this version cannot read"
+
+
+def stored_key_lines(url: str, project: str, repo: Path) -> list[dict]:
+    """What the key `gban setup` stored is FOR: its project and whether it holds planner
+    (GRPH-1317). Never the key itself.
+
+    `gbfleet until` hands this key to the observations route, which wants planner and a
+    project scope. A key that lacked either cost a wave its base, lease and PR records, and
+    nothing here could say which. Reported for this repository's project — the one its
+    `gbfleet` entry names — as well as the login default, because the two differ in every
+    repository but the one `gban login` was run in.
+    """
+    here = repo_projects(repo)
+    wanted = list(dict.fromkeys([*here, *([project] if project else [])]))
+    out: list[dict] = []
+    for name in wanted:
+        where = "this repository's project" if name in here else "the login default"
+        key = config.stored_supervisor_key(name)
+        if not key:
+            if name in here:
+                out.append(_line("local", UNKNOWN, "stored key",
+                                 f"{name} ({where}): no supervisor key stored — "
+                                 f"`gban setup --project {name}` stores one"))
+            continue
+        if not url:
+            out.append(_line("local", UNKNOWN, "stored key",
+                             f"{name} ({where}): stored, not checked — no server configured"))
+            continue
+        ctx = key_context(url, key, name)
+        if isinstance(ctx, str):
+            out.append(_line("local", UNKNOWN, "stored key", f"{name} ({where}): {ctx}"))
+            continue
+        scoped = ctx.get("key_project_id")
+        scope_ok = scoped == name
+        scope_text = (f"scoped to {scoped}" if scoped else "unscoped (spans several projects)")
+        if "eligible_roles" in ctx:
+            roles = [str(r) for r in ctx.get("eligible_roles") or []]
+            planner = "planner" in roles
+            role_text = (f"roles {', '.join(roles) or 'none'}; "
+                         f"planner {'yes' if planner else 'NO'}")
+        else:
+            planner = None
+            role_text = "planner unknown (this server does not report a key's roles)"
+        if scope_ok and planner:
+            status = PASS
+        elif not scope_ok or planner is False:
+            status = FAIL
+        else:
+            status = UNKNOWN
+        why = ""
+        if status == FAIL:
+            why = (" — the observations route refuses it, so `gban fleet until` records no "
+                   f"base, lease or PR; `gban setup --project {name}` mints one that works")
+        out.append(_line("local", status, "stored key",
+                         f"{name} ({where}): {scope_text}; {role_text}{why}"))
+    return out
+
+
 def run(url: str, project: str, api_key: str = "",
         repo: Path | None = None) -> tuple[list[dict], int]:
+    here = repo or Path.cwd()
     lines = (ledger(url, project) + local(url, project, api_key)
-             + gitignore.check(repo or Path.cwd()) + harness_entries(repo or Path.cwd()))
+             + gitignore.check(here) + harness_entries(here)
+             + stored_key_lines(url, project, here))
     worst = max((SEVERITY[l["status"]] for l in lines), default=0)
     # FAIL exits 1, UNKNOWN exits 0: "could not check" is not "broken", and a doctor that
     # failed a script because a laptop lacked `gbfleet` would stop being run.
