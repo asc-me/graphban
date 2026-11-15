@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { api } from "./api";
-import { httpsAddress, probeTrust } from "@/features/settings/HttpsPanel";
+import { httpsAddress, probeTrust } from "@/lib/https";
 import type { OnboardingMark, SetupConfirm } from "./types";
 import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, Item, ItemDetail, LessonFilters, LogExportPatch, RequestItem, RuleProfileApplyWrite, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
 

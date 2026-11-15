@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +13,10 @@ const ready = { tier: "box-ca", ready: true, names: [{ name: "box", source: "aut
 function mount() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<QueryClientProvider client={qc}><MemoryRouter><SecureAddressNote /></MemoryRouter></QueryClientProvider>);
+}
+
+async function settle() {
+  for (let i = 0; i < 5; i++) await act(() => new Promise((r) => setTimeout(r, 0)));
 }
 
 beforeEach(() => {
@@ -51,7 +55,21 @@ describe("SecureAddressNote", () => {
     expect(screen.queryByTestId("secure-address-note")).toBeNull();
     first.unmount();
     mount();
-    await waitFor(() => expect(api.httpsStatus).toHaveBeenCalledTimes(2));
+    // The note renders only once the trust probe settles: wait for the remount's probe (the
+    // second fetch), then let its promise and the query update flush before asserting absence.
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(2));
+    await settle();
     expect(screen.queryByTestId("secure-address-note")).toBeNull();
+  });
+
+  it("a remount without the stored dismissal shows the note again (control for the test above)", async () => {
+    const first = mount();
+    await userEvent.click(await screen.findByRole("button", { name: "Dismiss" }));
+    first.unmount();
+    localStorage.clear();
+    mount();
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(2));
+    await settle();
+    expect(screen.getByTestId("secure-address-note")).toBeInTheDocument();
   });
 });
