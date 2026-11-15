@@ -1,4 +1,4 @@
-import { SetupStatusCard } from "@/features/home/SetupStatusCard";
+import { SecureAddressNote, SetupStatusCard } from "@/features/home/SetupStatusCard";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { ProjectHome } from "@/features/projecthome/ProjectHome";
 
@@ -12,6 +12,7 @@ export function HomeView() {
   const { active } = useProjectCtx();
   return (
     <>
+      <div className="px-5 pt-4 empty:hidden"><SecureAddressNote /></div>
       {active?.id ? (
         <div className="px-5 pt-4">
           <SetupStatusCard projectId={active.id} />
