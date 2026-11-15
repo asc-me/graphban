@@ -167,6 +167,13 @@ def _write_atomic(path: str, data: str, mode: int) -> None:
         raise
 
 
+def reload_front_end() -> None:
+    if settings.tls_reload_url:
+        import httpx
+
+        httpx.post(settings.tls_reload_url, timeout=5)
+
+
 def publish_leaf(row: TlsAuthority) -> bool:
     """Write the current leaf and key where the front end loads them, then ask it to reload."""
     if not settings.tls_dir or not row.leaf_cert:
@@ -178,10 +185,7 @@ def publish_leaf(row: TlsAuthority) -> bool:
             return False
         _write_atomic(os.path.join(settings.tls_dir, "box.crt"), row.leaf_cert, 0o644)
         _write_atomic(os.path.join(settings.tls_dir, "box.key"), key, 0o600)
-        if settings.tls_reload_url:
-            import httpx
-
-            httpx.post(settings.tls_reload_url, timeout=5)
+        reload_front_end()
         return True
     except Exception:  # noqa: BLE001 - best effort; the next sync tries again
         log.warning("tls: could not publish the box certificate", exc_info=True)
@@ -195,6 +199,9 @@ def sync_leaf(db: Session, now: datetime | None = None) -> str:
     row = ensure_ca(db)
     if row is None:
         return "no-ca"
+    from app.services import tls_byo  # lazy: tls_byo imports this module
+
+    tls_byo.check_expiry(db, now)
     names = sorted(n.name for n in tls_names.list_names(db))
     if not names:
         return "no-names"
@@ -216,7 +223,9 @@ def sync_leaf(db: Session, now: datetime | None = None) -> str:
         log.error("tls: could not issue the box certificate", exc_info=True)
         db.rollback()
         return "failed"
-    publish_leaf(row)
+    from app.services import tls_byo
+
+    tls_byo.publish(db, row)
     return "issued"
 
 
@@ -231,10 +240,14 @@ def see_host(db: Session, raw_host: str) -> bool:
 def status(db: Session) -> dict:
     """The settings-page read. Public material only."""
     sync_leaf(db)
+    from app.services import tls_byo
+
+    custom = tls_byo.custom_status(db)
     row = db.get(TlsAuthority, _ROW_ID)
     names = tls_names.list_names(db)
     return {
-        "tier": "box-ca",
+        "tier": "box-ca" if custom is None or custom["state"] in ("expired", "pending", "failed") else custom["kind"],
+        "custom": custom,
         "ready": bool(row and row.leaf_cert),
         "names": [{"name": n.name, "source": n.source, "origin": n.origin}
                   for n in names],

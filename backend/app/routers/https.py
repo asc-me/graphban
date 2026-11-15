@@ -6,6 +6,7 @@ from __future__ import annotations
 import ipaddress
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -13,7 +14,7 @@ from app.config import settings
 from app.db import get_db
 from app.models import User
 from app.security.deps import get_current_user
-from app.services import tls_ca, tls_names
+from app.services import tls_byo, tls_ca, tls_names
 
 router = APIRouter(prefix="/https", tags=["https"])
 
@@ -27,6 +28,59 @@ def _operator(user: User = Depends(get_current_user)) -> User:
 
 class NameIn(BaseModel):
     name: str
+
+
+class UploadIn(BaseModel):
+    certificate: str
+    key: str
+    box_address: str
+
+
+class LetsEncryptIn(BaseModel):
+    domain: str
+
+
+class RedirectIn(BaseModel):
+    enabled: bool
+
+
+def _refused(e: tls_byo.Refused) -> HTTPException:
+    return HTTPException(422, {"message": str(e), "reasons": e.reasons})
+
+
+@router.post("/certificate")
+def upload_certificate(body: UploadIn, db: Session = Depends(get_db), user: User = Depends(_operator)):
+    try:
+        tls_byo.upload(db, body.certificate, body.key, body.box_address)
+    except tls_byo.Refused as e:
+        raise _refused(e)
+    return tls_ca.status(db)
+
+
+@router.post("/letsencrypt")
+def request_letsencrypt(body: LetsEncryptIn, db: Session = Depends(get_db), user: User = Depends(_operator)):
+    try:
+        tls_byo.request_letsencrypt(db, body.domain)
+    except tls_byo.Refused as e:
+        raise _refused(e)
+    return tls_ca.status(db)
+
+
+@router.delete("/certificate")
+def stop_using(db: Session = Depends(get_db), user: User = Depends(_operator)):
+    """Stop using the uploaded or Let's Encrypt certificate: files and key removed."""
+    if not tls_byo.stop(db):
+        raise HTTPException(404, "no uploaded or Let's Encrypt certificate to stop using")
+    return tls_ca.status(db)
+
+
+@router.put("/redirect")
+def set_redirect(body: RedirectIn, db: Session = Depends(get_db), user: User = Depends(_operator)):
+    try:
+        tls_byo.set_redirect(db, body.enabled)
+    except tls_byo.Refused as e:
+        raise HTTPException(409, {"message": str(e), "reasons": e.reasons})
+    return tls_ca.status(db)
 
 
 @router.get("")
@@ -86,3 +140,15 @@ def ask(request: Request, domain: str = "", db: Session = Depends(get_db)):
     if not tls_names.allowed(db, domain):
         raise HTTPException(404, "name not on the allowlist")
     return {"allowed": True}
+
+
+@router.get("/redirect-check")
+def redirect_check(request: Request, db: Session = Depends(get_db)):
+    """Caddy's `forward_auth` for plain http: 204 serves the request; a 307 redirects it. The
+    target is the stored box address — never the Host the caller sent. Not gated like `ask`:
+    Caddy's reverse proxy adds X-Forwarded-For, and the answer (serve, or go to the box
+    address) is nothing a caller could not see by opening the page."""
+    target = tls_byo.redirect_target(db, request.headers.get("x-forwarded-uri") or "/")
+    if target is None:
+        return Response(status_code=204)
+    return RedirectResponse(target, status_code=307)

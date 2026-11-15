@@ -54,7 +54,21 @@ removes the per-device step.
   operator can turn the redirect off in Settings. For an uploaded certificate the redirect goes
   to the box address the certificate covers, never to the Host header.
 
-Under the hood Caddy asks the API before redirecting (`REDIRECT_CHECK_URI`); empty means never.
+Under the hood Caddy asks the API before redirecting (`REDIRECT_CHECK_URI`, default
+`/api/https/redirect-check`); empty means never.
+
+## Tier 2: bring your own certificate, and Let's Encrypt
+
+Upload a certificate chain and its key (PEM) and name the **box address**. Exactly three things
+refuse it, each reported on its own: the key does not match the certificate, the certificate does
+not cover the box address, the certificate has expired. An address that does not resolve to this
+box yet, and a wildcard certificate, are warnings, not refusals. It is served straight away.
+
+With 30 days or fewer left the page says *expiring soon*. At expiry the box returns to its own
+certificate, the redirect turns off, and the page says *your certificate expired on …*. **Stop
+using** deletes the uploaded files and the key and does the same. Let's Encrypt (a public domain)
+shows pending, failed (with the reason; the current certificate keeps serving) or active; it
+renews itself and has no expiring-soon state.
 
 While HTTP stays on, agent and CLI configs that point at `http://` keep working. `gban doctor`
 reports the box's HTTPS address when your server URL is `http://` and the box reports one, and

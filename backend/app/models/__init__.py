@@ -2519,6 +2519,28 @@ class TlsName(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class TlsCustom(Base):
+    """Tier 2/3 certificate (GRPH-1637, P83 D3): an uploaded chain + key, or a Let's Encrypt
+    request. One row under the fixed id `box`. The uploaded key goes through
+    `security.secrets.encrypt`; no API returns it. `state` is active | expired | pending |
+    failed. `redirect_on` is the http->https switch, meaningful only while a tier 2/3 is active."""
+
+    __tablename__ = "tls_custom"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String)  # upload | letsencrypt
+    state: Mapped[str] = mapped_column(String)
+    box_address: Mapped[str] = mapped_column(String)
+    cert_chain: Mapped[str] = mapped_column(Text, default="")
+    cert_key: Mapped[str] = mapped_column(Text, default="")
+    subject: Mapped[str] = mapped_column(String, default="")
+    not_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    warnings: Mapped[str] = mapped_column(Text, default="[]")  # JSON list of codes
+    redirect_on: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class IdempotencyKey(Base):
     """Maps an agent-supplied idempotency key to the resource a create tool produced,
     so a retried call returns the original resource instead of a duplicate."""

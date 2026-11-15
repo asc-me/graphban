@@ -526,7 +526,14 @@ so `TRUSTED_HOPS=1` still reads the real client.
 - The Caddy **admin API** listens on `localhost:2019` inside the container and is not published.
 - **HTTP is redirected to HTTPS only when the API says so**: set `REDIRECT_CHECK_URI` to an API
   path that answers 2xx to serve over http, or a 3xx to the box address (never the request's
-  Host). Unset (the default) means never redirect.
+  Host). The default is `/api/https/redirect-check` (GRPH-1637): the API redirects only while an
+  uploaded or Let's Encrypt certificate is active and the operator's redirect switch is on. Set
+  `REDIRECT_CHECK_URI=` (empty) to never redirect.
+- **Bring your own certificate / Let's Encrypt** (GRPH-1637): an uploaded chain and key are
+  written to `box.crt`/`box.key` and served after a Caddy reload, no restart; the key is stored
+  encrypted and never returned. A Let's Encrypt request writes `acme/le.caddy` into the TLS
+  directory, which the Caddyfile imports; Caddy's ACME issues and renews it, so the domain must
+  reach this box on ports 80/443 for the challenge (publish them on the web container).
 - **Hosted** (`HOSTED_MODE=true`, Railway) keeps HTTP-only behind the platform's TLS: no HTTPS
   listener and no redirect. `PORT` and `API_UPSTREAM` behave as before.
 

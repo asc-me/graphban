@@ -1818,3 +1818,19 @@ export function useHttpsNames() {
     remove: useMutation({ mutationFn: (n: string) => api.httpsRemoveName(n), onSuccess: done }),
   };
 }
+
+/** Tier 2/3: upload, Let's Encrypt, stop using, and the redirect switch. Each returns the new status. */
+export function useHttpsCertificate() {
+  const qc = useQueryClient();
+  const done = () => qc.invalidateQueries({ queryKey: keys.https });
+  return {
+    upload: useMutation({
+      mutationFn: (v: { certificate: string; key: string; address: string }) =>
+        api.httpsUpload(v.certificate, v.key, v.address),
+      onSuccess: done,
+    }),
+    letsEncrypt: useMutation({ mutationFn: (d: string) => api.httpsLetsEncrypt(d), onSuccess: done }),
+    stop: useMutation({ mutationFn: () => api.httpsStopUsing(), onSuccess: done }),
+    redirect: useMutation({ mutationFn: (on: boolean) => api.httpsRedirect(on), onSuccess: done }),
+  };
+}
