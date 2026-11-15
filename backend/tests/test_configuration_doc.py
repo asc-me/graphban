@@ -129,3 +129,46 @@ def test_the_doc_only_names_settings_that_exist():
         var_cell = line.split("|")[1]
         cited |= {m.group(1) for m in re.finditer(r"`([A-Z][A-Z0-9_]{3,})`", var_cell)}
     assert not (cited - known), f"documented but not a setting: {sorted(cited - known)}"
+
+
+# ---- GRPH-1554: what the document says compose forwards, compose forwards -----------------
+
+_ROOT = DOC.parents[1]
+_FORWARDS = "Compose forwards these from `.env` to the `api` service:"
+
+
+def _compose_api_forwarded() -> set[str]:
+    """Names the compose `api` service takes from the environment: `NAME: ${NAME...}`."""
+    text = (_ROOT / "docker-compose.yml").read_text()
+    api = text[text.index("\n  api:"):text.index("\n  web:")]
+    env = api[api.index("environment:"):api.index("volumes:")]
+    return {k for k, v in re.findall(r"^\s+([A-Z0-9_]+):\s*\$\{([A-Z0-9_]+)", env, re.M)
+            if k == v}
+
+
+def _documented_forwarded() -> list[str]:
+    line = next(ln for ln in DOC.read_text().splitlines() if ln.startswith(_FORWARDS))
+    return re.findall(r"`([A-Z0-9_]+)`", line.split(":", 1)[1].split(".", 1)[0])
+
+
+def test_every_variable_the_doc_marks_compose_settable_is_forwarded():
+    """`SYNC_CLOUD_URL` and `SYNC_API_KEY` were documented and silently dropped: set in `.env`,
+    absent inside the container (the TRUSTED_PROXY class, GRPH-553).
+
+    Sabotage: delete `SYNC_API_KEY` from the api service's environment and this fails."""
+    documented = _documented_forwarded()
+    assert {"SYNC_CLOUD_URL", "SYNC_API_KEY"} <= set(documented)
+    missing = sorted(set(documented) - _compose_api_forwarded())
+    assert not missing, f"documented as forwarded by compose, but not: {missing}"
+
+
+def test_the_forwarded_list_names_everything_compose_forwards():
+    """The reverse: a variable compose forwards that the list omits is one an operator cannot
+    find out they can set."""
+    assert set(_documented_forwarded()) == _compose_api_forwarded()
+
+
+def test_env_example_lists_the_console_link_variables():
+    example = (_ROOT / ".env.example").read_text()
+    for name in ("SYNC_CLOUD_URL", "SYNC_API_KEY"):
+        assert re.search(rf"^{name}=", example, re.M), name
