@@ -2971,6 +2971,100 @@ def acceptance_covered(clauses: list[str], evidence: list[dict]
     return not uncovered and not contradicted, uncovered, contradicted
 
 
+#: What `near_match` means, said in the refusal so it is not a mystery threshold (GRPH-1020).
+NEAR_MATCH_RULE = (
+    "a receipt that carries the clause's words in the same order once case, quotes, "
+    "backticks, dashes and other punctuation are ignored — or carries every word of the "
+    "clause up to its first dash")
+
+#: Where a clause's tail starts: an em/en dash, or a spaced ASCII dash.
+_CLAUSE_TAIL = re.compile(r"\s*(?:[—–]|\s-{1,2}\s)")
+
+
+def _words(text: str) -> tuple[str, list[int]]:
+    """`text` as lowercase alphanumeric words joined by single spaces, and for each
+    character of that string the index in `text` it came from (a joining space maps to
+    the start of the next word)."""
+    out: list[str] = []
+    where: list[int] = []
+    gap = False
+    for i, ch in enumerate(text):
+        if ch.isalnum():
+            if gap and out:
+                out.append(" ")
+                where.append(i)
+            out.append(ch.lower())
+            where.append(i)
+            gap = False
+        else:
+            gap = True
+    return "".join(out), where
+
+
+def near_match(clause: str, details: list[str]) -> str | None:
+    """The span of a receipt that names `clause` approximately, or None (GRPH-1020).
+
+    Coverage is an exact case-insensitive substring, and the usual reason a clause reads
+    as unnamed is that the receipt paraphrased it: `'no override'` for `"no override"`,
+    backticks dropped from `` `PYTHONPATH=src` ``, an em-dash tail left off. Those are
+    two different states — "no test names this" and "a test names it, not verbatim" —
+    and reporting both as the first sends a reviewer to write a test that already exists.
+
+    The span is cut from the receipt as written, so the refusal can show the difference.
+    Only a whole-word match counts: `scope` does not near-match inside `telescope`.
+    """
+    full, _ = _words(clause)
+    candidates = [full] if full else []
+    head = _CLAUSE_TAIL.split(clause, maxsplit=1)[0]
+    head_words, _ = _words(head)
+    if head != clause and len(head_words.split()) >= 3 and head_words not in candidates:
+        candidates.append(head_words)
+    for detail in details:
+        words, where = _words(detail or "")
+        padded = f" {words} "
+        for cand in candidates:
+            at = padded.find(f" {cand} ")
+            if at < 0:
+                continue
+            start, end = where[at], where[at + len(cand) - 1] + 1
+            return detail[start:end]
+    return None
+
+
+def clause_differences(clause: str, span: str) -> str:
+    """What separates a receipt's `span` from the clause, in a few words (GRPH-1020)."""
+    import difflib
+
+    diffs: list[str] = []
+    sm = difflib.SequenceMatcher(None, clause.lower(), span.lower(), autojunk=False)
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op == "equal":
+            continue
+        want, got = clause[i1:i2], span[j1:j2]
+        if op == "delete":
+            diffs.append(f"missing {want!r}")
+        elif op == "insert":
+            diffs.append(f"extra {got!r}")
+        else:
+            diffs.append(f"{got!r} where the clause has {want!r}")
+    if len(diffs) > 6:
+        diffs = diffs[:6] + [f"and {len(diffs) - 6} more"]
+    return ", ".join(diffs) or "differs only in case"
+
+
+def describe_near_misses(clauses: list[str], evidence: list[dict]) -> dict[str, str]:
+    """For each clause a `{kind: test}` receipt names approximately, the sentence saying
+    how it differs. A clause no receipt mentions at all is absent here (GRPH-1020)."""
+    details = [str(e.get("detail") or "") for e in (evidence or [])
+               if isinstance(e, dict) and e.get("kind") == "test" and e.get("detail")]
+    out: dict[str, str] = {}
+    for c in clauses:
+        span = near_match(c, details)
+        if span is not None:
+            out[c] = f'"{c}" — the receipt reads "{span}" ({clause_differences(c, span)})'
+    return out
+
+
 def needs_reviewer_visual(clause: str) -> bool:
     """A clause about a screenshot is about something a reviewer has to LOOK at (GRPH-945)."""
     return "screenshot" in clause.lower()
@@ -3769,10 +3863,23 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
                     f'"{denial_in(c, line)}"'
                     for c, line in contradicted.items())
                 + ". " + DENIAL_RULE)
-        if uncovered:
+        # GRPH-1020: a clause a receipt named NOT verbatim is a different state from one
+        # nothing names, and saying "no named test" for it sends the reviewer to write a
+        # test that exists. The near-miss is reported apart, with what differs.
+        near = describe_near_misses(uncovered, merged)
+        own_near = describe_near_misses(builder_only, fresh)
+        absent = [c for c in uncovered if c not in near]
+        if absent:
             problems.append(
-                f"{len(uncovered)} acceptance clause(s) with no named test: "
-                + "; ".join(f'"{c}"' for c in uncovered))
+                f"{len(absent)} acceptance clause(s) with no named test: "
+                + "; ".join(f'"{c}"' for c in absent))
+        if near or own_near:
+            both = {**near, **own_near}
+            problems.append(
+                f"{len(both)} acceptance clause(s) named only approximately — coverage needs "
+                "the clause text verbatim (case-insensitive), and a near-match is "
+                f"{NEAR_MATCH_RULE}. Copy each clause exactly: " + "; ".join(both.values()))
+        builder_only = [c for c in builder_only if c not in own_near]
         if builder_only:
             problems.append(
                 f"{len(builder_only)} acceptance clause(s) named only by evidence the reviewer "
