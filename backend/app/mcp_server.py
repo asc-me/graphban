@@ -3567,6 +3567,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                     "worktree — not the commit it was cut from; if `git log base..HEAD` is "
                     "empty there is nothing to review and this belongs in a bounce"),
             ) from e
+        except fleet_svc.AttestedAnUnknownCommit as e:
+            # GRPH-1282: a commit the ledger has never seen for this item.
+            raise errors.Refused(
+                409, str(e), rule_id="review.attest_the_head", meta=_who, hint=(
+                    "attest the head of the branch you reviewed — `git rev-parse HEAD` in the "
+                    "worktree, the full SHA — not a commit typed from memory"),
+            ) from e
         except fleet_svc.UncomparedPredicate as e:
             # The caller may sign this off, the receipt simply would not stand behind it.
             raise errors.Refused(
