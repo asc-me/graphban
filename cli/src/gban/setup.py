@@ -507,6 +507,14 @@ def verify(url: str, key: str, project: str) -> list[dict]:
                f"the key is pinned to {ctx['key_project_id']}, not {project}")
         out.append(_line("ledger", FAIL, "scope",
                          f"{why}, and `gban fleet until` refuses it"))
+    if "eligible_roles" in ctx and "planner" not in (ctx.get("eligible_roles") or []):
+        # GRPH-1317. The observations route wants planner. A key found in a harness file
+        # that lacks it passed every check above, was stored as the supervisor key, and
+        # `gbfleet until` then recorded no base, lease or PR. Failing here means it is
+        # replaced by a fresh mint, which holds planner, rather than reused.
+        out.append(_line("ledger", FAIL, "roles",
+                         "the key does not hold planner, so it cannot supervise the seats "
+                         "it mints; `gban fleet until` would record nothing with it"))
     missing = {_tier_id(t) for t in (ctx.get("missing_tiers") or [])}
     out.append(_line("ledger", PASS if "fleet" not in missing else FAIL, "fleet tools",
                      "delegate and mint_enrolment are in the manifest" if "fleet" not in missing

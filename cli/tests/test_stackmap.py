@@ -749,7 +749,7 @@ def test_a_monorepo_keeps_packages_comments_and_every_provenance(tmp_path):
     assert any("root component" in warning for warning in warnings)
     assert "1 produced nothing" in coverage
     assert "5 commented template keys skipped" in coverage
-    assert "source was not scanned" in coverage
+    assert "source files scanned for raw HTTP calls" in coverage
     for secret in (
         "sagaforge-password", "://", "generate-with-openssl", "AUTH_SECRET",
         "ENCRYPTION_KEY", "CREEM_WEBHOOK_SECRET", "XAI_MODEL", "SSO_ISSUER",
@@ -920,7 +920,7 @@ def test_dry_run_says_nothing_was_posted(isolated, monkeypatch, capsys, fake_ser
     captured = capsys.readouterr()
     assert fake_server["requests"] == []
     assert "gban: dry run, nothing posted" in captured.err
-    assert "source was not scanned" in captured.err
+    assert "source files scanned for raw HTTP calls" in captured.err
     assert "files read" in captured.err
     assert "posted demo" not in captured.err
     assert json.loads(captured.out)["project_id"] == "demo"
@@ -940,3 +940,113 @@ def test_a_refused_post_prints_the_reasons_and_not_the_record(isolated, monkeypa
     assert "edges[2].to: unresolved node" in captured.err
     assert "mapped_sha: unknown is not a commit" in captured.err
     assert "posted demo" not in captured.err
+
+
+# ---- raw HTTP calls in source (GRPH-1464) ----------------------------------------------------
+
+def _raw_http_app(root: Path) -> Path:
+    repo = root / "rawapp"
+    (repo / "api" / "app").mkdir(parents=True)
+    (repo / "api" / "tests").mkdir()
+    (repo / "web" / "src").mkdir(parents=True)
+    (repo / "api" / "pyproject.toml").write_text(
+        '[project]\nname = "api"\ndependencies = ["stripe>=5"]\n', encoding="utf-8")
+    (repo / "api" / ".env.example").write_text(
+        "BILLING_URL=https://billing.partner.io/v1\n", encoding="utf-8")
+    (repo / "web" / "package.json").write_text(
+        '{"name": "web", "dependencies": {}}\n', encoding="utf-8")
+    (repo / "api" / "app" / "geo.py").write_text(
+        "import requests\n"
+        "API = 'https://docs.not-a-call.io/readme'\n"
+        "def where(ip):\n"
+        "    return requests.get(f'https://ipinfo.io/{ip}/json?token=x', timeout=5)\n"
+        "def pay():\n"
+        "    return requests.post('https://api.stripe.com/v1/charges')\n"
+        "def bill():\n"
+        "    return requests.post('https://billing.partner.io/v1/invoices')\n"
+        "# requests.get('https://commented.out.io/')\n"
+        "def demo():\n"
+        "    return requests.get('https://api.example.com/x')\n",
+        encoding="utf-8")
+    (repo / "api" / "tests" / "test_geo.py").write_text(
+        "requests.get('https://only-in-tests.io/')\n", encoding="utf-8")
+    (repo / "web" / "src" / "weather.ts").write_text(
+        "export const w = () => fetch(`https://api.weather.dev/today`);\n"
+        "export const again = () => fetch('https://ipinfo.io/me');\n",
+        encoding="utf-8")
+    _commit(repo)
+    return repo
+
+
+def test_a_raw_http_call_the_table_does_not_match_is_an_edge_naming_its_file(tmp_path):
+    repo = _raw_http_app(tmp_path)
+    record, _warnings, coverage = stackmap.build_record(repo)
+
+    ipinfo = _edge(record, "api", "ipinfo.io", "https")
+    assert ipinfo["label"] == stackmap.RAW_HTTP_LABEL
+    assert ipinfo["provenance"] == {"file": "api/app/geo.py",
+                                    "rule": stackmap.RAW_HTTP_RULE, "line": 4}
+    assert _node(record, "external", "ipinfo.io")["provenance"]["file"] == "api/app/geo.py"
+    weather = _edge(record, "web", "api.weather.dev", "https")
+    assert weather["provenance"]["file"] == "web/src/weather.ts"
+    # The same host from a second deployable is a second edge, not a merged one.
+    assert _edge(record, "web", "ipinfo.io", "https")["provenance"]["line"] == 2
+
+    hosts = {n["id"] for n in record["external"] + record["unresolved"]}
+    # Not calls, or not the app's: a constant, a comment, an example host, a test file.
+    for host in ("docs.not-a-call.io", "commented.out.io", "api.example.com",
+                 "only-in-tests.io"):
+        assert host not in hosts, host
+    text = canonical(record)
+    assert "://" not in text and "token=x" not in text and "/charges" not in text
+    assert "2 source files scanned for raw HTTP calls, 3 call(s) mapped" in coverage
+
+
+def test_a_call_the_parser_already_maps_is_unchanged(tmp_path, monkeypatch):
+    """api.stripe.com is the stripe row's domain (manifest), and billing.partner.io is the
+    env template's host: neither gains a node, an edge, or a provenance from the source."""
+    repo = _raw_http_app(tmp_path)
+    record, _, _ = stackmap.build_record(repo)
+    monkeypatch.setattr(stackmap, "_walk_source", lambda *a, **k: 0)
+    parser_only, _, _ = stackmap.build_record(repo)
+
+    raw = [e for e in record["edges"] if e["provenance"]["rule"] == stackmap.RAW_HTTP_RULE]
+    rest = [e for e in record["edges"] if e not in raw]
+    assert rest == parser_only["edges"], "the source pass changed an edge the parser drew"
+    assert {e["to"] for e in raw} == {"ipinfo.io", "api.weather.dev"}
+    for edge in rest:
+        assert all(p["rule"] != stackmap.RAW_HTTP_RULE for p in edge["provenances"])
+    assert "api.stripe.com" not in {n["id"] for n in record["external"]}
+    assert _edge(record, "api", "billing.partner.io", "https")["provenance"]["file"] \
+        == "api/.env.example"
+
+
+def test_the_same_tree_gives_the_same_record_with_raw_http_calls(tmp_path):
+    repo = _raw_http_app(tmp_path)
+    first, _, _ = stackmap.build_record(repo)
+    second, _, _ = stackmap.build_record(repo)
+    assert canonical(first) == canonical(second)
+    assert any(e["provenance"]["rule"] == stackmap.RAW_HTTP_RULE for e in first["edges"])
+
+
+@pytest.mark.parametrize("line,host", [
+    ("r = httpx.get('https://a.svc.io/x')", "a.svc.io"),
+    ("const r = await axios.post(\"https://b.svc.io/y\", body)", "b.svc.io"),
+    ("resp, err := http.Get(\"https://c.svc.io/z\")", "c.svc.io"),
+    ("req, _ := http.NewRequest(\"POST\", \"https://d.svc.io/\", nil)", "d.svc.io"),
+    ("res = Net::HTTP.get(URI(\"https://e.svc.io/\"))", "e.svc.io"),
+    ("urllib.request.urlopen('http://f.svc.io/')", "f.svc.io"),
+])
+def test_raw_http_calls_reads_each_language_shape(line, host):
+    assert [h for _, _, h in stackmap.raw_http_calls(line)] == [host]
+
+
+@pytest.mark.parametrize("line", [
+    "BASE = 'https://g.svc.io/'",
+    "requests.get(f'https://{host}/x')",
+    "fetch(`https://${base}/x`)",
+    "requests.get('http://localhost:8000/')",
+    "// fetch('https://h.svc.io/')",
+])
+def test_raw_http_calls_skips_what_is_not_a_call_to_a_named_host(line):
+    assert stackmap.raw_http_calls(line) == []

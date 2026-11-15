@@ -755,7 +755,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "claim_review",
         "description": (
             "Lease an item in review you did NOT build. `claimed` is false if it is yours or "
-            "needs `gh` or `human-only` you did not declare; do not bounce. `branch` is the diff."
+            "needs `gh` or `human-only` you did not declare; do not bounce. `branch` is the diff. "
+            "`withheld`: what you were not handed, and why."
         ),
         "inputSchema": {
             "type": "object",
@@ -1857,7 +1858,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "properties": {
             "claimed": {"type": "boolean"}, "item": {"type": ["object", "null"]},
             "branch": {"type": "string"}, "worker_agent": {"type": ["string", "null"]},
-            "reason": {"type": "string"},
+            "reason": {"type": "string"}, "withheld": {"type": "array"},
         },
     },
     "sign_off": _ITEM_SCHEMA,
@@ -2971,6 +2972,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             "project_id": pid,
             "project_name": proj.name if proj else None,
             "key_project_id": key.project_id,  # None => global key; agent should pass project_id
+            # GRPH-1317. The roles this credential may hold. `planner` is what the
+            # supervisor's observations route requires, and `gban doctor`/`gban setup` read
+            # it here rather than learning it from a 403 mid-wave.
+            "eligible_roles": list(fleet_svc.eligible_roles(key)),
             "scopes": key.scopes,
             "readable_projects": readable,
             "writable_projects": authz.key_writable_ids(db, key),
@@ -3526,11 +3531,15 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # phrasing it as a failure would send a solo agent hunting for a bug.
             # The reason matters more than the refusal: "nothing waiting" and "waiting, but
             # you are not independent of it" send an operator to opposite places.
+            # GRPH-1652: and NAME what was withheld, by item and rule. An item in review that
+            # nobody is handed is otherwise indistinguishable from an empty queue.
             return {"claimed": False, "item": None, "branch": "", "worker_agent": None,
                     "reason": fleet_svc.review_block_reason(
-                        db, agent_id=args.get("agent_id") or agent, project_id=pid)}
+                        db, agent_id=args.get("agent_id") or agent, project_id=pid),
+                    "withheld": fleet_svc.review_withheld(
+                        db, agent_id=agent, project_id=pid, skip=args.get("skip"))}
         return {"claimed": True, "item": _item_dict(item), "branch": item.branch or "",
-                "worker_agent": item.claimed_by, "reason": ""}
+                "worker_agent": item.claimed_by, "reason": "", "withheld": []}
     if name == "sign_off":
         _scoped_item(db, args["id"], allowed)
         agent = fleet_svc.caller_identity(args.get("agent_id"), key)

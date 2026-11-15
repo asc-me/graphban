@@ -80,6 +80,10 @@ class Reason(str, Enum):
     #: revision (GRPH-987) and to review other work (PRD-39). The push guard refuses a
     #: review push that would clobber a commit already in the trunk.
     ITEM_LANDED = "item_landed"
+    #: The server answered the supervisor's roster read with a tool error (GRPH-1669). A
+    #: child the supervisor cannot see is one nobody supervises: no wall clock, no reap, no
+    #: push. Stopped rather than orphaned.
+    SERVER_ERROR = "server_error"
 
 
 class AttachedProcess:

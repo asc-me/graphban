@@ -33,7 +33,7 @@ nothing, and nothing here ever READS the ledger's scan cells — a clean row som
 credential wrote is not evidence this run checked anything.
 
     GRAPHBAN_URL=... GRAPHBAN_GATE_KEY=... python scripts/scan_ci.py \
-        --base "$BASE_SHA" --head "$HEAD_SHA" --branch "$REF" --text "$PR_TITLE $PR_BODY"
+        --base "$BASE_SHA" --head "$HEAD_SHA" --branch "$REF" --title "$PR_TITLE" --body "$PR_BODY"
 """
 from __future__ import annotations
 
@@ -438,7 +438,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--base", default="", help="pull_request.base.sha")
     ap.add_argument("--head", required=True, help="pull_request.head.sha")
     ap.add_argument("--branch", default="")
-    ap.add_argument("--text", default="", help="PR title/body/branch to scan for item keys")
+    ap.add_argument("--text", default="",
+                    help="legacy: text in which EVERY item key binds (see attest_ci.bound_keys)")
+    ap.add_argument("--title", default="", help="PR title; every item key in it binds")
+    ap.add_argument("--body", default="",
+                    help="PR body; only `Attests:` and closing references bind (GRPH-1541)")
     ap.add_argument("--run-url", default="")
     # Every re-run of a run shares its run_id; the attempt is what keeps a manual re-run's
     # receipt from being dropped as identical to an earlier one (GRPH-1113).
@@ -462,7 +466,18 @@ def main(argv: list[str] | None = None) -> int:
 
     url = os.environ.get("GRAPHBAN_URL", "").strip()
     key = os.environ.get("GRAPHBAN_GATE_KEY", "").strip()
-    keys = attest_ci.item_keys(args.text, args.branch)
+    # GRPH-1541: a bare mention in the body binds nothing — the same rule as suite_green.
+    keys, mentioned = attest_ci.bound_keys(title=args.title, body=args.body,
+                                           branch=args.branch, text=args.text)
+    # The item's own PR still attaches when its body only mentions it: its recorded branch
+    # is this head branch (GRPH-1409's lookup, which scans lacked until GRPH-1541).
+    if url and key and attest_ci.declared(args.title, args.body, args.text, args.branch) is None:
+        for extra in attest_ci.items_on_branch(url, key, args.branch):
+            if extra not in keys:
+                print(f"{extra}: recorded branch is {args.branch}; attesting it too")
+                keys.append(extra)
+    for skipped in (k for k in mentioned if k not in keys):
+        print(f"{skipped}: only mentioned in the PR body, not attesting it")
     if not url or not key:
         print("::warning title=scans_clean not attested::GRAPHBAN_URL or GRAPHBAN_GATE_KEY is "
               "not set, so this scan attested nothing.")
@@ -479,7 +494,7 @@ def main(argv: list[str] | None = None) -> int:
                       f"{row['path']}: {e}")
         receipt = attest_ci.receipt(
             commit=args.head, branch=args.branch, run_url=args.run_url,
-            run_attempt=args.run_attempt, matched=attest_ci.matched_by(args.text),
+            run_attempt=args.run_attempt, matched=attest_ci.matched_by(args.title, args.body, args.text),
             predicate={"name": PREDICATE, "passed": verdict.passed,
                        "detail": verdict.detail})
         errors = []

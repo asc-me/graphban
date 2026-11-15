@@ -882,3 +882,76 @@ def test_apply_after_a_successful_check_makes_no_api_call(monkeypatch):
     assert got["ok"] is True and got["status"] == 202
     assert started == [("2026.11.28", _LATEST_BODY["assets"][0]["browser_download_url"])]
     assert len(gh.api_calls()) == before
+
+
+# ── GRPH-1673: the advertised-tag cache is per worker process ────────────────────────────
+
+def _native_box(monkeypatch, running="2026.11.27"):
+    monkeypatch.setattr(svc, "fetch_tag", _real_fetch_tag)
+    monkeypatch.setattr(svc, "running", lambda: {"version": running, "git_sha": "x"})
+    monkeypatch.setattr(svc, "helper_present", lambda path=None: False)
+    monkeypatch.setattr(svc, "native_present", lambda root=None: True)
+    monkeypatch.setattr(svc.settings, "hosted_mode", False)
+
+
+def _this_worker_last_saw(tag):
+    """Seed THIS process's cache as if its feed last advertised `tag` — what a worker that
+    ran an earlier Check holds while another worker's Check has seen a newer cut."""
+    body = {**_LATEST_BODY, "tag_name": tag, "assets": []}
+    with svc._lock:
+        svc._by_tag[tag] = svc._parse_release(body)
+        svc._advertised["tag"] = tag
+
+
+def test_install_on_a_worker_holding_an_older_cut_asks_the_feed(monkeypatch):
+    """Seen on ubuntu-srv: Check on one worker saw 2026.11.31, Install landed on a worker
+    whose cache still said 2026.11.30 — the running version — and refused with "no
+    advertised cut". Sabotage: drop the `rel.get("tag") != want` arm in _check_for_apply
+    and this returns 409 again."""
+    _native_box(monkeypatch, running="2026.11.27")
+    _this_worker_last_saw("2026.11.27")
+    gh = _GH(lambda url, h: (200, {}, _LATEST_BODY) if url == svc.FEED_URL
+             else (200, {}, {"tag_name": "2026.11.27", "body": "old"}))
+    monkeypatch.setattr(svc.httpx, "get", gh)
+    started = []
+    got = svc.apply("2026.11.28",
+                    native_start=lambda tag, asset: started.append(tag) or {"ok": True, "sha": "s"})
+    assert got["ok"] is True and got["status"] == 202, got
+    assert started == ["2026.11.28"]
+    assert svc.FEED_URL in [c[0] for c in gh.calls]
+
+
+def test_a_tag_the_fresh_feed_does_not_advertise_is_still_refused(monkeypatch):
+    _native_box(monkeypatch)
+    _this_worker_last_saw("2026.11.27")
+    monkeypatch.setattr(svc.httpx, "get", _GH(lambda url, h: (200, {}, _LATEST_BODY)))
+    started = []
+    got = svc.apply("2026.12.01",
+                    native_start=lambda tag, asset: started.append(tag) or {"ok": True})
+    assert got["ok"] is False and got["status"] == 409
+    assert got["error"] == "tag is not the advertised cut"
+    assert started == []
+
+
+def test_a_cached_record_for_the_requested_tag_makes_no_call(monkeypatch):
+    _native_box(monkeypatch)
+    with svc._lock:
+        svc._by_tag["2026.11.28"] = svc._parse_release(_LATEST_BODY)
+        svc._advertised["tag"] = "2026.11.28"
+    gh = _GH(lambda url, h: (200, {}, {"tag_name": "2026.11.27", "body": "old"}))
+    monkeypatch.setattr(svc.httpx, "get", gh)
+    got = svc.apply("2026.11.28", native_start=lambda tag, asset: {"ok": True, "sha": "s"})
+    assert got["ok"] is True
+    assert svc.FEED_URL not in [c[0] for c in gh.calls]
+
+
+def test_a_feed_that_cannot_be_asked_is_not_nothing_to_install(monkeypatch):
+    """Inside a rate-limit backoff the feed is not asked; the refusal must say so rather
+    than claim there is no cut (503, retryable), and never start an install."""
+    _native_box(monkeypatch)
+    with svc._lock:
+        svc._backoff["until"] = __import__("time").time() + 600
+    monkeypatch.setattr(svc.httpx, "get", _GH(lambda url, h: (200, {}, _LATEST_BODY)))
+    got = svc.apply("2026.11.28", native_start=lambda tag, asset: {"ok": True})
+    assert got["ok"] is False and got["status"] == 503
+    assert "could not confirm" in got["error"]

@@ -1786,3 +1786,33 @@ def test_backup_restricts_with_the_platform_aware_helper(tmp_path, monkeypatch):
 
     assert seen == [copy], "the backup was not restricted with config._make_private"
     assert config.is_private(copy)
+
+# ---- planner, for the supervisor (GRPH-1317) --------------------------------------------------
+
+def test_a_configured_key_without_planner_is_replaced_not_stored(tmp_path, wired, monkeypatch):
+    """A key in the harness file that writes the project, is scoped to it and sees `fleet`
+    passed verify, was stored as the supervisor key, and `gbfleet until` then had every
+    observations write refused: it lacked planner."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    home.write_text(json.dumps({"projects": {str(repo.resolve()): {"mcpServers": {
+        "graphban": {"headers": {"X-API-Key": "gb_sk_workeronly"}}}}}}))
+    server = Server(issued={"gb_sk_workeronly"})
+    roles = {"gb_sk_workeronly": ["worker"]}
+    inner = _context(server)
+
+    def call(self, method, path, body=None):
+        got = inner(self, method, path, body)
+        ctx = json.loads(got["result"]["content"][0]["text"])
+        ctx["eligible_roles"] = roles.get(self.api_key, ["planner", "worker"])
+        return {"result": {"content": [{"text": json.dumps(ctx)}]}}
+
+    monkeypatch.setattr(setup_mod.Client, "call", call)
+    lines, code, made = setup_mod.run(server, URL, "core", repo, scope="user", install=False,
+                                      home=home)
+
+    assert code == 0, lines
+    assert made.get("minted"), "a key without planner was reused"
+    assert len(server.minted) == 1
+    stored = config.stored_supervisor_key("core")
+    assert stored and stored != "gb_sk_workeronly"

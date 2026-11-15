@@ -381,6 +381,10 @@ class Wave:
     #: still never started; `until` (D1) writes `idle-with-waits` when only typed
     #: human waits remain.
     reason: str = ""
+    #: GRPH-1669. The tool error a roster or allocation read answered with, once one has.
+    #: Set by `server_failed`; the wave stops on it with one FAILED line naming the tool and
+    #: the server's message, rather than a traceback and no summary.
+    server_error: str = ""
     #: GRPH-1247, GRPH-1372. What the vendor said is out of quota this wave, keyed by the
     #: stored entitlement's name — or by the adapter name when the launch used no record (the
     #: default login): {"entitlement" ("" for none), "adapter", "vendor" (the record's vendor
@@ -625,6 +629,43 @@ def _read_allocation(client: Graphban, wave: Wave) -> AllocationRead | None:
         wave.offline = True
         wave.failures.append(f"server unreachable: {exc}")
         return None
+    except ToolFailed as exc:
+        # GRPH-1669. The server answered, with an error. Not D-i's partition — there is no
+        # ceiling to wait out — but the allocation is unknown, so the wave stops here.
+        record_server_error(wave, exc)
+        return None
+
+
+def record_server_error(wave: Wave, exc: ToolFailed) -> None:
+    """Remember the first tool error a supervisor read answered with, as ONE failure line.
+
+    Idempotent: the reads after the first one fail the same way, and a page of identical
+    FAILED lines buries the one that says what happened. `str(exc)` names the tool and the
+    server's message (`fleet_status: error: internal error`).
+    """
+    if wave.server_error:
+        return
+    wave.server_error = str(exc)
+    wave.failures.append(f"server error: {exc}")
+    observe.emit("server_error", tool=getattr(exc, "tool", ""), detail=str(exc))
+
+
+def server_failed(wave: Wave, children: Sequence[Child], exc: ToolFailed) -> list[Child]:
+    """A roster or allocation read failed with a tool error mid-wave: record it once and
+    stop every running child (GRPH-1669). Returns the children it stopped.
+
+    Stopped rather than left running: the supervisor is about to exit, and a child it no
+    longer watches is the orphan this exists to prevent — nobody enforces its wall clock,
+    nobody reaps its tree, nobody pushes its work. The caller reaps them, which salvages
+    and publishes what they did.
+    """
+    record_server_error(wave, exc)
+    stopped: list[Child] = []
+    for child in children:
+        if child.running:
+            stop(child, Reason.SERVER_ERROR)
+            stopped.append(child)
+    return stopped
 
 
 def _rooted(repo: Path | str, workspace: Path | str | None) -> tuple[Path, Path]:
@@ -892,6 +933,11 @@ def up(
             # spends money to produce a process nobody can account for.
             _park(wave, list(seats), "server unreachable; no child was started")
             return wave
+        if wave.server_error:
+            # GRPH-1669. The allocation read came back as a tool error. Nothing started.
+            _park(wave, list(seats), "server error; no child was started")
+            wave.reason = "server-error"
+            return wave
 
         problems = seats_unrecordable(client, seats)
         if problems:
@@ -998,9 +1044,16 @@ def up(
             persist()
             return len(wave.spawned) > spawned_before
 
-        refill()
-        _wait_out(wave, children, limits, client, poll=poll, sleep=sleep, debug=debug,
-                  persist=persist, merger=merger, base_branch=base, refill=refill)
+        try:
+            refill()
+            _wait_out(wave, children, limits, client, poll=poll, sleep=sleep, debug=debug,
+                      persist=persist, merger=merger, base_branch=base, refill=refill)
+        except ToolFailed as exc:
+            # GRPH-1669. `fleet_status` (registration wait or watch tick) answered with an
+            # error. Stop with one FAILED line, and stop the children too: falling through to
+            # the reap below with them still running would remove trees they are writing.
+            server_failed(wave, children, exc)
+            wave.reason = "server-error"
         # A seat still in `pending` was neither started nor named. Leaving it
         # there reports a clean wave — unused stays 0 — which is the silent
         # drop this command exists to make loud.
@@ -1014,8 +1067,12 @@ def up(
             # merge it was asked for to the next run.
             merger.tick(wave)
 
-        wave.after = _read_allocation(client, wave)
-        if not wave.failures and not wave.offline:
+        if not wave.server_error:
+            # Not again after a tool error: it would fail the same way, as a second line.
+            wave.after = _read_allocation(client, wave)
+        if wave.server_error:
+            wave.reason = "server-error"
+        elif not wave.failures and not wave.offline:
             # A clean exit that still dropped seats is the failure this command
             # exists to not look like. `ok` is false for any reason but the two
             # idle ones, so the process exits non-zero and the report names them.
@@ -1215,11 +1272,19 @@ def start_one(
     # a partition lasting the whole window is recorded as never-registered rather than
     # lease-lapsed. Slightly the wrong word for the right outcome: a child with no
     # identity has no claim either way (D-i).
-    await_registration(
-        child,
-        lambda: _roster(client, partition) or {},
-        window=registration_window(limits, launch),
-    )
+    try:
+        await_registration(
+            child,
+            lambda: _roster(client, partition) or {},
+            window=registration_window(limits, launch),
+        )
+    except ToolFailed:
+        # GRPH-1669. The roster read answered with a tool error, so this child's
+        # registration cannot be confirmed and nothing will supervise it. Stop it before the
+        # error leaves: `on_spawned` already put it on the caller's record, so the caller
+        # reaps it. Left running, it outlived the `gbfleet mcp` that started it with ppid 1.
+        stop(child, Reason.SERVER_ERROR)
+        raise
     return child
 
 
@@ -2733,8 +2798,13 @@ def _proposal_items(tree: Worktree, child: Child | None) -> list[str]:
     proposed as B's: one PR titled for B carrying A's files. Every item the child ever held
     and a commit names goes in, so `propose_branch` splits the branch one PR per item. An
     item it held and never committed for stays out — `split_by_item` would refuse the whole
-    branch for it. With fewer than two named, the old reading stands, and the single-item
-    gate in `propose_branch` refuses a branch carrying another item's commits.
+    branch for it.
+
+    One named is enough (GRPH-1657). A bound child built GRPH-1562, then was handed GRPH-933
+    by `claim_next` and released it unbuilt; at reap `held_items` was [GRPH-933], and the
+    branch was proposed for an item it carries nothing for and withheld as "carries commits
+    for GRPH-1562". With none named, the old reading stands, and the single-item gate in
+    `propose_branch` refuses a branch carrying another item's commits.
     """
     held = [i for i in ((child.held_items if child else []) or []) if i]
     if child is None or not tree.base:
@@ -2743,7 +2813,7 @@ def _proposal_items(tree: Worktree, child: Child | None) -> list[str]:
     named: list[str] = []
     for _sha, ids in wt_mod.attributed_commits(tree.repo, tree.branch, tree.base, known):
         named += [i for i in ids if i in known and i not in named]
-    if len(named) > 1:
+    if named:
         return [i for i in known if i in named]
     return held
 

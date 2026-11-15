@@ -332,12 +332,20 @@ def cached_release(tag: str) -> dict | None:
     return _by_tag.get(_TAG_PREFIX.sub("", (tag or "").strip()))
 
 
-def _check_for_apply(*, hosted: bool | None = None) -> dict:
-    """`check()` for apply: when the feed last advertised a tag, reuse that record and
-    make no api.github.com call, so Install works whenever Check already succeeded."""
+def _check_for_apply(*, hosted: bool | None = None, tag: str = "") -> dict:
+    """`check()` for apply: when THIS process's feed last advertised the requested tag,
+    reuse that record and make no api.github.com call, so Install works whenever Check
+    already succeeded here.
+
+    The cache is per process, and the API runs several workers (GRPH-1673). Check can land
+    on one worker and Install on another whose last advertised tag is older — often the
+    version now running, which reads as `current` and refused the install with "no
+    advertised cut". So a cached record is reused only when it IS the tag being installed;
+    otherwise ask the feed again and decide on that answer."""
     advertised = _advertised["tag"]
     rel = _by_tag.get(advertised) if advertised else None
-    if rel is None:
+    want = _TAG_PREFIX.sub("", (tag or "").strip())
+    if rel is None or (want and rel.get("tag") != want):
         return check(hosted=hosted)
     return check(fetch=lambda: rel, fetch_running=cached_release, hosted=hosted)
 
@@ -469,12 +477,18 @@ def apply(tag: str, *, check_fn=None, send=None, native_start=None,
     Compose: host helper runs deploy.sh. Native: fetch tarball, start upgrade.
     Waiting for either to finish is wrong: both stop this process.
     """
-    payload = (check_fn or _check_for_apply)(hosted=hosted)
+    payload = (check_fn(hosted=hosted) if check_fn is not None
+               else _check_for_apply(hosted=hosted, tag=tag))
     if payload["hosted"]:
         return {"ok": False, "status": 403, "error": "hosted instances are updated by the operator"}
     if not payload.get("apply"):
         return {"ok": False, "status": 503,
                 "error": "no apply path — compose helper is not running, and this is not a native install"}
+    if payload["state"] == "unknown" and payload.get("feed_error"):
+        # Not "nothing to install": the feed could not be asked (rate-limit backoff, no
+        # network). Say that, so a retry later reads as the fix (GRPH-1673).
+        return {"ok": False, "status": 503,
+                "error": f"could not confirm the cut to install: {payload['feed_error']}"}
     if payload["state"] != "available":
         return {"ok": False, "status": 409, "error": "no advertised cut to install"}
     latest = (payload.get("latest") or {}).get("tag") or ""

@@ -434,6 +434,55 @@ def test_a_restricted_directory_is_still_usable_by_its_owner(tmp_path: Path):
         assert mode & 0o100, f"the owner's execute bit is gone: {oct(mode)}"
 
 
+def test_a_windows_directory_grant_is_inherited_by_what_is_already_inside(
+        tmp_path: Path, monkeypatch):
+    """GRPH-1662. `icacls <dir> /inheritance:r /grant:r <user>:(F)` re-propagates the
+    directory's ACL to its children, and a bare `(F)` is not inheritable — so a log that
+    only had inherited entries was left with none its owner could read. A directory's grant
+    carries `(OI)(CI)`; a file's does not, since a file has nothing to hand it down to.
+
+    Driven through a fake `icacls` so the argv is pinned on every platform; the real-ACL
+    half is `test_a_file_already_inside_a_restricted_directory_stays_readable`.
+
+    Sabotage: drop the `(OI)(CI)` in `restrict_to_owner` and the directory assertion fails.
+    """
+    d = tmp_path / "config"
+    d.mkdir()
+    f = d / "drain.env"
+    f.write_text("k", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kw):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(hostos, "WINDOWS", True)
+    monkeypatch.setenv("USERNAME", "alex")
+    monkeypatch.setattr(hostos.subprocess, "run", fake_run)
+    monkeypatch.setattr(hostos, "is_owner_only", lambda p: True)
+
+    hostos.restrict_to_owner(d)
+    hostos.restrict_to_owner(f)
+    grants = [c[c.index("/grant:r") + 1] for c in calls if "/grant:r" in c]
+    assert grants == ["alex:(OI)(CI)(F)", "alex:(F)"], grants
+
+
+@pytest.mark.skipif(not hostos.WINDOWS, reason="Windows ACL inheritance")
+def test_a_file_already_inside_a_restricted_directory_stays_readable(
+        tmp_path: Path):  # pragma: no cover - Windows only
+    """The real-ACL half of GRPH-1662: a file that existed before its directory was
+    restricted, and had only inherited entries, can still be read by its owner after."""
+    d = tmp_path / "config"
+    (d / "logs").mkdir(parents=True)
+    log = d / "logs" / "drain.err.log"
+    log.write_text("the reason\n", encoding="utf-8")
+
+    assert hostos.restrict_to_owner(d) is True
+    assert hostos.is_owner_only(d)
+    assert log.read_text(encoding="utf-8") == "the reason\n"
+    log.write_text("appended\n", encoding="utf-8")
+
+
 def test_a_restricted_file_does_not_get_the_directory_mode(tmp_path: Path):
     """The control on the split. Handing every path `0o700` would also make both tests
     above pass, while quietly marking every seat file executable."""

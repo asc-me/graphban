@@ -346,14 +346,17 @@ def _burn_period(row: Entitlement, now: datetime) -> tuple[str, datetime, dateti
     if period is None:
         return (f"reset cadence {row.reset_cadence!r} is not daily, weekly or monthly, "
                 "so the period cannot be placed" if cadence else "no reset cadence stated")
-    end = _aware(row.next_reset_at)
+    # Every boundary is the ANCHOR stepped n periods, both ways (GRPH-1507). Stepping from
+    # the previous boundary instead carries a month-end clamp forward: a monthly reset on the
+    # 31st stated months ahead walked back Jan 31 -> Dec 31 -> Nov 30 -> Oct 30 and stayed
+    # on the 30th. From the anchor, only the month that lacks a 31st is clamped.
+    anchor = _aware(row.next_reset_at)
     n = 0
-    while end <= now:
+    while _step(period, anchor, n) <= now:
         n += 1
-        end = _step(period, _aware(row.next_reset_at), n)
-    while _step(period, end, -1) > now:  # a reset stated far ahead: walk back to now's period
-        end = _step(period, end, -1)
-    return period, _step(period, end, -1), end
+    while _step(period, anchor, n - 1) > now:  # a reset stated far ahead: walk back to now's
+        n -= 1
+    return period, _step(period, anchor, n - 1), _step(period, anchor, n)
 
 
 def burn_down(row: Entitlement, events: list[EntitlementEvent], now: datetime, *,
@@ -461,10 +464,15 @@ def _items_routed(db: Session, org_id: str, start: datetime, end: datetime) -> i
     router writes a claim row for every routed claim, so this zero is a measured zero."""
     from app.models import Item, RoutingDecision
 
-    rows = db.scalars(select(RoutingDecision).join(Item, Item.id == RoutingDecision.item_id)
-                      .join(Project, Project.id == Item.project_id)
-                      .where(Project.org_id == org_id, RoutingDecision.kind == "claim")).all()
-    return len({r.item_id for r in rows if start <= _aware(r.created_at) < end})
+    # The window is in the query (GRPH-1507): filtering it in Python loaded every claim the
+    # org ever made, a scan that grows with the routing history.
+    ids = db.scalars(select(RoutingDecision.item_id).distinct()
+                     .join(Item, Item.id == RoutingDecision.item_id)
+                     .join(Project, Project.id == Item.project_id)
+                     .where(Project.org_id == org_id, RoutingDecision.kind == "claim",
+                            RoutingDecision.created_at >= start,
+                            RoutingDecision.created_at < end)).all()
+    return len(set(ids))
 
 
 def capacity(db: Session, org_id: str, *, now: datetime | None = None) -> dict:

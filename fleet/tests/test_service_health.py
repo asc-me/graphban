@@ -30,11 +30,9 @@ def _readings(name, kind, script, *, says=""):
     """A `status` that answers each call with the next scripted (running, last_exit).
 
     `says` is what the drain writes to its err log as it dies. It is written at the reading
-    that first finds the job dead, not before `install`, because that is when a real drain
-    writes it. On Windows the order matters: `install` restricts the config directory with
-    `icacls /inheritance:r`, which leaves a log that already existed under it with no entry
-    its owner can read, so the reason came back "" (the Windows CI failure this was bounced
-    for).
+    that first finds the job dead, because that is when a real drain writes it. A log that
+    already existed before `install` is the other order, and has its own test
+    (`test_a_log_written_before_install_is_still_read_after_it`, GRPH-1662).
     """
     left = list(script)
     said: list[str] = []
@@ -94,6 +92,26 @@ def test_a_drain_that_exits_2_inside_the_health_window_fails_the_install(
     assert "NOT running, last exit 2" in err
     assert REFUSAL in err
     assert "the supervisor gave no reason" not in err
+
+
+def test_a_log_written_before_install_is_still_read_after_it(
+        git_repo: Path, monkeypatch, quick):
+    """GRPH-1662. `install` restricts the config directory, and on Windows that ran
+    `icacls /inheritance:r` with a non-inheritable grant, leaving a log that already
+    existed under it with no entry its owner could read — `err_reason` came back "".
+    The log is written FIRST here, which is the order a re-install meets.
+
+    Sabotage (Windows CI): drop `(OI)(CI)` from `hostos.restrict_to_owner` and the reason
+    reads "".
+    """
+    plan = _plan(git_repo, kind="systemd")
+    _write_err(plan.name, REFUSAL + "\n")
+    monkeypatch.setattr(service, "status",
+                        _readings(plan.name, "systemd", [(True, None), (False, 2)]))
+    done = service.install(plan, KEY)
+    assert done.state is not None and done.state.last_exit == 2
+    assert done.state.reason == REFUSAL
+    assert service.err_reason(plan.name) == REFUSAL
 
 
 def test_a_drain_still_running_at_the_end_of_the_window_is_installed(
