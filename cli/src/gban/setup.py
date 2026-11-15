@@ -31,7 +31,9 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
+import time
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -197,10 +199,19 @@ def destinations(repo: Path, scope: str, home: Path, grok: Path) -> tuple[list[D
     else:
         dests.append(Dest("claude", claude_scope, claude_path, "json"))
 
-    if grok.exists():
+    if grok.exists() and scope != "project":
         dests.append(Dest("grok", "user", grok, "toml"))
 
     if scope == "project":
+        # GRPH-1661. `--scope project` writes beside the repo and nothing else. Grok's user
+        # file has ONE `mcp_servers` table for every repository, so writing it here repointed
+        # the operator's main repo at this one — and `--auto` did it once per sibling.
+        untouched = [str(p) for p in (home, grok) if p.exists()
+                     and not any(d.path == p for d in dests)]
+        if untouched:
+            lines.append(_line("config", PASS, "user config",
+                               f"left alone: {', '.join(untouched)} — --scope project writes "
+                               "only beside the repository"))
         grok_proj = repo / ".grok" / "config.toml"
         if tracked_by_git(grok_proj):
             lines.append(_line("config", FAIL, "target",
@@ -337,6 +348,62 @@ def write_grok_toml(path: Path, servers: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body, encoding="utf-8")
     os.chmod(path, 0o600)
+
+
+def _fleet_target(spec: dict | None) -> tuple[str, str] | None:
+    """`(repo, project)` a `gbfleet` server entry points at, from its `--repo`/`--project`."""
+    if not isinstance(spec, dict):
+        return None
+    args = [str(a) for a in (spec.get("args") or [])]
+
+    def after(flag: str) -> str:
+        return args[args.index(flag) + 1] if flag in args[:-1] else ""
+
+    found = (after("--repo"), after("--project"))
+    return found if any(found) else None
+
+
+def _same_target(old: tuple[str, str], repo: Path, project: str) -> bool:
+    """Compared resolved: `.` and the absolute path are one repository, not a replacement."""
+    was_repo, was_project = old
+    try:
+        same_repo = Path(was_repo).resolve() == repo.resolve()
+    except (OSError, ValueError):
+        same_repo = was_repo == str(repo)
+    return same_repo and was_project == project
+
+
+def existing_target(dest: Dest, repo: Path) -> tuple[str, str] | None:
+    """What the entry this write would replace points at, or None when there is none."""
+    try:
+        text = dest.path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        if dest.dialect == "toml":
+            servers = tomllib.loads(text).get("mcp_servers") or {}
+        else:
+            blob = json.loads(text)
+            if dest.scope == "user":
+                blob = ((blob.get("projects") or {}).get(str(repo.resolve())) or {})
+            servers = blob.get("mcpServers") or {}
+    except (ValueError, tomllib.TOMLDecodeError, AttributeError):
+        return None
+    return _fleet_target(servers.get(FLEET_SERVER))
+
+
+def backup(path: Path, now: float | None = None) -> Path:
+    """A timestamped copy beside `path`, owner-only: it holds the credential the file did."""
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+    copy = path.with_name(f"{path.name}.bak-{stamp}")
+    n = 1
+    while copy.exists():
+        n += 1
+        copy = path.with_name(f"{path.name}.bak-{stamp}-{n}")
+    shutil.copy2(path, copy)
+    # `chmod 0600` alone is a no-op on NTFS; the ACL is what keeps the key owner-only there.
+    config._make_private(copy)
+    return copy
 
 
 def write_dest(dest: Dest, repo: Path, servers: dict) -> None:
@@ -728,12 +795,31 @@ def run(client: Client, url: str, project: str, repo: Path, *, scope: str = "use
                                "the repository"))
             continue
         servers = entries(url, project, key, repo, workspace=workspace)
+        replaced = None
+        if dest.scope == "user":
+            # GRPH-1661. A user file's entry is shared state: Grok's `mcp_servers` serves every
+            # repository. Replacing one that points somewhere else is saved first and named.
+            old = existing_target(dest, repo)
+            if old is not None and not _same_target(old, repo, project):
+                try:
+                    replaced = (old, backup(dest.path))
+                except OSError as exc:
+                    lines.append(_line("config", FAIL, dest.harness,
+                                       f"not replacing the entry in {dest.path}: the backup "
+                                       f"failed ({exc})"))
+                    continue
         try:
             write_dest(dest, repo, servers)
         except OSError as exc:
             lines.append(_line("config", FAIL, dest.harness,
                                f"could not write {dest.path}: {exc}"))
             continue
+        if replaced is not None:
+            (was_repo, was_project), saved = replaced
+            lines.append(_line("config", UNKNOWN, "replaced",
+                               f"{dest.path} pointed {FLEET_SERVER} at repo {was_repo or '?'} "
+                               f"project {was_project or '?'}; it now points at repo {repo} "
+                               f"project {project}. The old file is saved as {saved}"))
         extra = f" workspace {workspace}" if workspace else ""
         lines.append(_line("config", PASS, "written",
                            f"{LEDGER_SERVER} and {FLEET_SERVER} in {dest.path} "
