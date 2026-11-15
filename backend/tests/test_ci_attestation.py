@@ -629,3 +629,123 @@ def test_a_failed_runs_receipt_carries_its_range_too():
                                        commits=["b" * 40, "c" * 40])
     assert rec["range"] == ["b" * 40, "c" * 40]
     assert rec["predicates"][0]["passed"] is False
+
+
+# ---- GRPH-1541: a bare mention in the body attaches nothing ------------------------------
+#
+# asc-me/graphban#1597 changed only AGENTS.md, on `docs/standing-decisions`. Its body said
+# "GRPH-1536 has worked examples", and the ledger attached `suite_green` and `scans_clean` at
+# 33ad34d4 to GRPH-1536 — whose work is on `ci/self-hosted-runners`. That receipt could have
+# satisfied `merge.done_predicates` for code that never ran.
+
+class _Recorder:
+    """A Graphban that accepts every write and keeps the arguments."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    @property
+    def written(self) -> list[str]:
+        return [c["id"] for c in self.calls]
+
+    def __call__(self, url, key, arguments, *, timeout=15.0):
+        self.calls.append(arguments)
+
+
+@pytest.fixture()
+def ledger(monkeypatch):
+    """`(server, branches)`: writes are recorded; `branches` maps an item to its recorded
+    branch, which is what `items_on_branch` asks the server for."""
+    server, branches = _Recorder(), {}
+
+    def search(url, key, **arguments):
+        if arguments.get("status") != "review":
+            return []
+        return [{"id": k, "branch": b} for k, b in branches.items()]
+
+    monkeypatch.setattr(attest_ci, "_call", server)
+    monkeypatch.setattr(attest_ci, "_search_items", search)
+    monkeypatch.setenv("GRAPHBAN_URL", "http://gb.invalid")
+    monkeypatch.setenv("GRAPHBAN_GATE_KEY", "gb_sk_test")
+    return server, branches
+
+
+def _pr(title, body, branch, mode="attest"):
+    return attest_ci.main(["--commit", "3" * 40, "--branch", branch, "--mode", mode,
+                           "--title", title, "--body", body])
+
+
+def test_a_body_mention_on_another_branch_attaches_nothing(ledger, capsys):
+    """The #1597 repro, in every mode that writes to the item."""
+    server, branches = ledger
+    branches["GRPH-1536"] = "ci/self-hosted-runners"
+
+    for mode in ("attest", "head", "started", "failed"):
+        assert _pr("Docs: standing decisions in AGENTS.md",
+                   "Standing decisions for agents. GRPH-1536 has worked examples.",
+                   "docs/standing-decisions", mode=mode) == 0
+    assert server.written == [], f"a bare body mention was attested: {server.written}"
+    assert "GRPH-1536: only mentioned in the PR body" in capsys.readouterr().out
+
+
+def test_the_items_own_pr_still_attaches_through_its_branch_as_prose(ledger):
+    """The `matched: prose` path the fix must keep: the item's own PR, whose body only
+    mentions it, attaches because the item's recorded branch IS this head."""
+    server, branches = ledger
+    branches["GRPH-1536"] = "ci/self-hosted-runners"
+
+    assert _pr("CI on self-hosted runners", "Moves the jobs. See GRPH-1536 for why.",
+               "ci/self-hosted-runners") == 0
+    assert server.written == ["GRPH-1536"]
+    receipt = server.calls[0]["evidence"][0]
+    assert receipt["matched"] == "prose"
+    assert receipt["branch"] == "ci/self-hosted-runners"
+
+
+@pytest.mark.parametrize("title,body", [
+    ("GRPH-1536: CI on self-hosted runners", ""),
+    ("CI on self-hosted runners (GRPH-1536)", ""),
+    ("CI on self-hosted runners", "Fixes GRPH-1536"),
+    ("CI on self-hosted runners", "This closes: GRPH-1536."),
+    ("CI on self-hosted runners", "resolves GRPH-1536 and mentions GRPH-9"),
+    ("CI on self-hosted runners", "Background only.\nAttests: GRPH-1536\n"),
+])
+def test_a_closing_reference_or_the_title_binds(ledger, title, body):
+    server, _ = ledger
+    assert _pr(title, body, "some/other-branch") == 0
+    assert server.written == ["GRPH-1536"]
+
+
+def test_an_id_in_the_head_branch_name_binds(ledger):
+    server, _ = ledger
+    assert _pr("Tidy", "mentions GRPH-9", "fix/GRPH-1536-runners") == 0
+    assert server.written == ["GRPH-1536"]
+
+
+def test_bound_keys_separates_claims_from_mentions():
+    bound, mentioned = attest_ci.bound_keys(
+        title="GRPH-1: thing", body="Fixes GRPH-2. GRPH-3 explains why; see also GRPH-1.",
+        branch="gb/x")
+    assert bound == ["GRPH-1", "GRPH-2"]
+    assert mentioned == ["GRPH-3"]
+    assert attest_ci.bound_keys(body="UTF-8 fixes SHA-1") == ([], [])
+
+
+def test_the_legacy_text_argument_keeps_its_meaning():
+    """`--text` could not tell title from body; a caller that never split it is unchanged."""
+    assert attest_ci.bound_keys(text="Mentions GRPH-3 only") == (["GRPH-3"], [])
+
+
+def test_no_workflow_step_hands_the_body_over_as_title_text():
+    """The control on the wiring. The script can only tell a body mention from a claim if the
+    workflow passes the two apart; `--text "$PR_TITLE $PR_BODY"` restores the #1597 bug with
+    every unit test above still green."""
+    workflow = WORKFLOW.read_text()
+    assert "$PR_BODY" in workflow
+    for job in yaml.safe_load(workflow)["jobs"].values():
+        for step in job.get("steps") or []:
+            run = step.get("run") or ""
+            if "attest_ci.py" in run or "scan_ci.py" in run:
+                assert "--text" not in run, f"{step.get('name')}: passes --text"
+                if "$PR_BODY" in run:
+                    assert '--body "$PR_BODY"' in run, step.get("name")
