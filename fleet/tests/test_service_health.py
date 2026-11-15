@@ -26,13 +26,25 @@ REFUSAL = ("gbfleet until: browser, browser-use not in ~/.claude.json. Refusing 
            "spawning without it")
 
 
-def _readings(name, kind, script):
-    """A `status` that answers each call with the next scripted (running, last_exit)."""
+def _readings(name, kind, script, *, says=""):
+    """A `status` that answers each call with the next scripted (running, last_exit).
+
+    `says` is what the drain writes to its err log as it dies. It is written at the reading
+    that first finds the job dead, not before `install`, because that is when a real drain
+    writes it. On Windows the order matters: `install` restricts the config directory with
+    `icacls /inheritance:r`, which leaves a log that already existed under it with no entry
+    its owner can read, so the reason came back "" (the Windows CI failure this was bounced
+    for).
+    """
     left = list(script)
+    said: list[str] = []
 
     def fake(n, kind=""):
         running, last = left.pop(0) if len(left) > 1 else left[0]
         died = running is False and last not in (None, 0)
+        if died and says and not said:
+            _write_err(n, says)
+            said.append(n)
         return service.Status(
             name=n, kind=kind or "systemd", installed=True, running=running,
             last_exit=last, unit_path=service.unit_path_for(n, kind or "systemd"),
@@ -41,7 +53,11 @@ def _readings(name, kind, script):
 
 
 @pytest.fixture()
-def quick(monkeypatch):
+def quick(monkeypatch, tmp_path):
+    # A config tree of this test's own. The suite's shared one may already hold a `logs/`
+    # made before `install` ran `icacls` over its parent, and on Windows that strips the
+    # only entries it had (see `_readings`).
+    monkeypatch.setattr(service, "CONFIG_DIR", tmp_path / "gbfleet-config")
     monkeypatch.setattr(service, "_run", lambda cmd, timeout=20.0: (0, ""))
     monkeypatch.setattr(service, "SETTLE", 0)
     monkeypatch.setattr(service, "HEALTH_POLL", 0.001)
@@ -58,10 +74,10 @@ def _write_err(name: str, text: str) -> None:
 def test_a_drain_that_exits_2_inside_the_health_window_fails_the_install(
         git_repo: Path, monkeypatch, quick, capsys):
     plan = _plan(git_repo, kind="systemd")
-    _write_err(plan.name, "an older run's noise\n" + REFUSAL + "\n\n")
     monkeypatch.setattr(service, "status",
                         _readings(plan.name, "systemd", [(True, None), (True, None),
-                                                         (False, 2)]))
+                                                         (False, 2)],
+                                  says="an older run's noise\n" + REFUSAL + "\n\n"))
     done = service.install(plan, KEY)
     assert done.running is False
     assert done.state is not None and done.state.last_exit == 2
@@ -70,7 +86,8 @@ def test_a_drain_that_exits_2_inside_the_health_window_fails_the_install(
     monkeypatch.setenv(service.API_KEY_ENV, KEY)
     monkeypatch.setattr(service, "make_plan", lambda rest, **kw: plan)
     monkeypatch.setattr(service, "status",
-                        _readings(plan.name, "systemd", [(True, None), (False, 2)]))
+                        _readings(plan.name, "systemd", [(True, None), (False, 2)],
+                                  says=REFUSAL + "\n"))
     code = main(["service", "install", "--", *_args(git_repo)])
     err = capsys.readouterr().err
     assert code == 1, "a drain that died at startup was reported as installed"
