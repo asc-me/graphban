@@ -175,3 +175,20 @@ def test_status_https_url_is_null_when_leaf_not_ready(db, monkeypatch):
     out = tls_ca.status(db)
     assert out["ready"] is False
     assert out["https_url"] is None
+
+
+def test_status_brackets_an_ipv6_primary_name(db, monkeypatch):
+    class _N:
+        name = "fd00::1"
+    assert tls_ca._https_url([_N()], 8443) == "https://[fd00::1]:8443"
+
+
+def test_compose_forwards_the_https_port_to_the_api():
+    """The bounce: the web service mapped ${WEB_HTTPS_PORT} but the api never received it,
+    so https_url said :8443 whatever the operator set (GRPH-1664)."""
+    import re
+    from pathlib import Path
+    text = (Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text()
+    api = text[text.index("\n  api:"):text.index("\n  web:")]
+    env = api[api.index("environment:"):api.index("volumes:")]
+    assert re.search(r"^\s+WEB_HTTPS_PORT:\s*\$\{WEB_HTTPS_PORT:-8443\}", env, re.M)
