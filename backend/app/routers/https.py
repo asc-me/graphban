@@ -44,7 +44,7 @@ class RedirectIn(BaseModel):
     enabled: bool
 
 
-def _refused(e: tls_byo.Refused) -> HTTPException:
+def _refused(e: tls_byo.CertificateRefused) -> HTTPException:
     return HTTPException(422, {"message": str(e), "reasons": e.reasons})
 
 
@@ -52,7 +52,7 @@ def _refused(e: tls_byo.Refused) -> HTTPException:
 def upload_certificate(body: UploadIn, db: Session = Depends(get_db), user: User = Depends(_operator)):
     try:
         tls_byo.upload(db, body.certificate, body.key, body.box_address)
-    except tls_byo.Refused as e:
+    except tls_byo.CertificateRefused as e:
         raise _refused(e)
     return tls_ca.status(db)
 
@@ -61,7 +61,7 @@ def upload_certificate(body: UploadIn, db: Session = Depends(get_db), user: User
 def request_letsencrypt(body: LetsEncryptIn, db: Session = Depends(get_db), user: User = Depends(_operator)):
     try:
         tls_byo.request_letsencrypt(db, body.domain)
-    except tls_byo.Refused as e:
+    except tls_byo.CertificateRefused as e:
         raise _refused(e)
     return tls_ca.status(db)
 
@@ -78,8 +78,10 @@ def stop_using(db: Session = Depends(get_db), user: User = Depends(_operator)):
 def set_redirect(body: RedirectIn, db: Session = Depends(get_db), user: User = Depends(_operator)):
     try:
         tls_byo.set_redirect(db, body.enabled)
-    except tls_byo.Refused as e:
-        raise HTTPException(409, {"message": str(e), "reasons": e.reasons})
+    except tls_byo.CertificateRefused as e:
+        # No uploaded or Let's Encrypt certificate to redirect to: the same unprocessable
+        # request as the other certificate checks here, not a fleet-policy refusal.
+        raise _refused(e)
     return tls_ca.status(db)
 
 

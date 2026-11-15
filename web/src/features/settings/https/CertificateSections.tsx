@@ -32,7 +32,7 @@ function DropZone({ label, value, onText }: { label: string; value: string; onTe
         onChange={async (e) => { const f = e.target.files?.[0]; if (f) onText(await f.text()); }} />
       <textarea aria-label={label} rows={3} value={value} onChange={(e) => onText(e.target.value)}
         placeholder="-----BEGIN …-----"
-        className="w-full rounded border border-control bg-transparent px-2 py-1 font-mono text-[11px]" />
+        className="w-full rounded border border-control bg-transparent px-2 py-1 font-mono text-small" />
     </div>
   );
 }
@@ -119,7 +119,7 @@ function UploadState({ c }: { c: HttpsCustom }) {
         <p className="font-semibold">Back on the box's own certificate</p>
         <p>{c.reason.charAt(0).toUpperCase() + c.reason.slice(1)}.</p>
         <p className="text-muted">
-          Previous file: {c.subject} <span className="rounded border border-line px-1 text-[11px]">EXPIRED</span>{" "}
+          Previous file: {c.subject} <span className="rounded border border-line px-1 text-small">EXPIRED</span>{" "}
           {day(c.not_after)}
         </p>
       </div>

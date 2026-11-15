@@ -59,21 +59,21 @@ def codes(exc):
 def test_mismatched_key_refused_alone(db):
     cert, _ = make_cert()
     _, other = make_cert()
-    with pytest.raises(tls_byo.Refused) as e:
+    with pytest.raises(tls_byo.CertificateRefused) as e:
         tls_byo.upload(db, cert, other, "graphban.acme.com")
     assert codes(e) == ["key_mismatch"]
 
 
 def test_uncovered_address_refused_alone(db):
     cert, key = make_cert()
-    with pytest.raises(tls_byo.Refused) as e:
+    with pytest.raises(tls_byo.CertificateRefused) as e:
         tls_byo.upload(db, cert, key, "other.acme.com")
     assert codes(e) == ["address_not_covered"]
 
 
 def test_expired_certificate_refused_alone(db):
     cert, key = make_cert(days=10, start=datetime.now(timezone.utc) - timedelta(days=40))
-    with pytest.raises(tls_byo.Refused) as e:
+    with pytest.raises(tls_byo.CertificateRefused) as e:
         tls_byo.upload(db, cert, key, "graphban.acme.com")
     assert codes(e) == ["expired"]
     assert "expired on" in e.value.reasons[0]["message"]
@@ -82,7 +82,7 @@ def test_expired_certificate_refused_alone(db):
 def test_all_three_reported_separately(db):
     cert, _ = make_cert(days=10, start=datetime.now(timezone.utc) - timedelta(days=40))
     _, other = make_cert()
-    with pytest.raises(tls_byo.Refused) as e:
+    with pytest.raises(tls_byo.CertificateRefused) as e:
         tls_byo.upload(db, cert, other, "other.acme.com")
     assert sorted(codes(e)) == ["address_not_covered", "expired", "key_mismatch"]
 
@@ -176,7 +176,8 @@ def test_redirect_targets_box_address_not_host(client, auth, db):
 def test_redirect_unavailable_with_own_certificate(client, auth, db):
     tls_ca.sync_leaf(db)
     r = client.put("/api/https/redirect", headers=auth, json={"enabled": True})
-    assert r.status_code == 409
+    assert r.status_code == 422
+    assert r.json()["detail"]["reasons"][0]["code"] == "redirect_unavailable"
     assert client.get("/api/https/redirect-check", follow_redirects=False).status_code == 204
 
 
@@ -199,5 +200,5 @@ def test_letsencrypt_pending_failed_active(db):
 
 def test_letsencrypt_refuses_addresses(db):
     for bad in ("192.168.1.5", "box.local", "singlelabel"):
-        with pytest.raises(tls_byo.Refused):
+        with pytest.raises(tls_byo.CertificateRefused):
             tls_byo.request_letsencrypt(db, bad)

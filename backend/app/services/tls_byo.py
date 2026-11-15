@@ -43,7 +43,7 @@ LE_PENDING_TIMEOUT = timedelta(minutes=10)
 ACME_SNIPPET = os.path.join("acme", "le.caddy")
 
 
-class Refused(ValueError):
+class CertificateRefused(ValueError):
     """The upload cannot be used. `reasons` is a list of {code, message}, one per cause."""
 
     def __init__(self, reasons: list[dict]):
@@ -85,22 +85,22 @@ def _covering(names: list[str], address: str) -> str | None:
 
 
 def inspect(chain_pem: str, key_pem: str, box_address: str, now: datetime | None = None) -> dict:
-    """Check an upload. Returns {subject, not_after, warnings}; raises Refused."""
+    """Check an upload. Returns {subject, not_after, warnings}; raises CertificateRefused."""
     now = now or _now()
     address = tls_names.normalise(box_address)
     reasons: list[dict] = []
     if not address or not tls_names.is_valid(address) or "*" in address:
-        raise Refused([{"code": "bad_address", "message": f"{box_address!r} is not a valid box address"}])
+        raise CertificateRefused([{"code": "bad_address", "message": f"{box_address!r} is not a valid box address"}])
     try:
         certs = x509.load_pem_x509_certificates(chain_pem.encode())
         if not certs:
             raise ValueError
     except ValueError:
-        raise Refused([{"code": "bad_certificate", "message": "the certificate file is not a PEM certificate"}])
+        raise CertificateRefused([{"code": "bad_certificate", "message": "the certificate file is not a PEM certificate"}])
     try:
         key = serialization.load_pem_private_key(key_pem.encode(), password=None)
     except (ValueError, TypeError):
-        raise Refused([{"code": "bad_key", "message": "the key file is not an unencrypted PEM private key"}])
+        raise CertificateRefused([{"code": "bad_key", "message": "the key file is not an unencrypted PEM private key"}])
     leaf = certs[0]
     pub = lambda k: k.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
     if pub(leaf.public_key()) != pub(key.public_key()):
@@ -115,7 +115,7 @@ def inspect(chain_pem: str, key_pem: str, box_address: str, now: datetime | None
         reasons.append({"code": "expired",
                         "message": f"the certificate expired on {not_after.date().isoformat()}"})
     if reasons:
-        raise Refused(reasons)
+        raise CertificateRefused(reasons)
     warnings = []
     if hit and hit.startswith("*."):
         warnings.append("wildcard")
@@ -226,7 +226,7 @@ def request_letsencrypt(db: Session, domain: str, now: datetime | None = None) -
     name = tls_names.normalise(domain)
     if (not name or not tls_names.is_valid(name) or tls_names._ip(name) is not None
             or "." not in name or name.endswith(tls_names.LOCAL_SUFFIXES)):
-        raise Refused([{"code": "bad_address",
+        raise CertificateRefused([{"code": "bad_address",
                         "message": "Let's Encrypt needs a public domain name, not an address or a local name"}])
     row = _row(db)
     if row is None:
@@ -280,7 +280,7 @@ def tier_active(db: Session) -> bool:
 def set_redirect(db: Session, enabled: bool) -> None:
     row = _row(db)
     if row is None or row.state != "active":
-        raise Refused([{"code": "redirect_unavailable",
+        raise CertificateRefused([{"code": "redirect_unavailable",
                         "message": "the redirect needs a public or uploaded certificate; the box's "
                                    "own certificate cannot redirect"}])
     row.redirect_on = enabled
