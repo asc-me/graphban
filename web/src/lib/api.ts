@@ -185,6 +185,13 @@ export function hasSession(): boolean {
   return !!accessToken || !!getRefreshToken();
 }
 
+export interface HttpsName { name: string; source: string; origin: string }
+export interface HttpsStatus {
+  tier: string; ready: boolean; names: HttpsName[]; outside_constraints: string[];
+  max_names: number; covered_names: string[]; leaf_not_after: string | null;
+  ca_not_after: string | null; ca_certificate_path: string;
+}
+
 class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -567,6 +574,12 @@ export const api = {
       body: JSON.stringify(body),
     }),
   // `refresh` bypasses the server's one-minute cache (the Check button).
+  // P83 tier 1: the box's own certificate authority. Public material only; no key route exists.
+  httpsStatus: () => request<HttpsStatus>("/https"),
+  httpsAddName: (name: string) =>
+    request<HttpsStatus>("/https/names", { method: "POST", body: JSON.stringify({ name }) }),
+  httpsRemoveName: (name: string) =>
+    request<HttpsStatus>(`/https/names/${encodeURIComponent(name)}`, { method: "DELETE" }),
   updateCheck: (refresh = false) =>
     request<UpdateCheck>(`/platform/update-check${refresh ? "?refresh=true" : ""}`),
   // The current Install's steps, from its log. Bounded per call: the API is recreated near

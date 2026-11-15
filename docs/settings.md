@@ -8,7 +8,9 @@
 Self-host Settings groups instance-wide items under **This box** (do not rename that
 group). AI providers is which model the box runs on (GRPH-625); Cloud / Sync is
 instance-wide; unlinked Gitops is this project's process; Updates is whether this box is
-on the published stable cut; Log export is where the box's telemetry goes (GRPH-966).
+on the published stable cut; HTTPS (`/settings/deployment/https`, self-host only) is the
+box's own certificate: status, trusting it on a device, the names it covers (max 32), and the
+current CA download — never a private key (GRPH-1636); Log export is where the box's telemetry goes (GRPH-966).
 
 ### Updates
 
