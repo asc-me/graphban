@@ -1,0 +1,1 @@
+# No HTTPS listener: Railway (HOSTED_MODE) keeps TLS at its own edge.

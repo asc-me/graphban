@@ -1,0 +1,4 @@
+forward_auth {$API_SCHEME}://{$API_UPSTREAM} {
+	uri {$REDIRECT_CHECK_URI}
+	header_up Host {$API_UPSTREAM}
+}
