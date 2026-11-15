@@ -47,7 +47,7 @@ from .supervisor import (
     _declared_into,
     DEFAULT_MAX_WORKERS, LaunchFactory, Limits, Merger, Wave, WaveBase,
     _reap_all, _rooted, _report_exits, _start, item_status, publish_salvaged,
-    resolve_wave_base, watch_tick,
+    resolve_wave_base, seats_refusal, seats_unrecordable, watch_tick,
 )
 
 #: Planner-held tools. `register_agent` is how this process gets an `agent_id` to mint
@@ -411,6 +411,11 @@ def run(
             wave.planner_agent_id = str(identity.get("agent_id") or identity.get("id") or "")
             _refresh_entitlement_registry(planner, wave)
             _preflight_observations(supervisor)
+            # GRPH-1648. The seats file's seats were minted by somebody else's planner; a
+            # key that cannot record them would run the whole wave unrecorded.
+            problems = seats_unrecordable(supervisor, pool)
+            if problems:
+                raise ConfigError(seats_refusal(problems))
             try:
               result = _loop(
                 wave, children, occupied, persist,
@@ -1180,6 +1185,10 @@ def _loop(
             rechecked = time.monotonic()
             _recheck_holds(planner, held, delegated, repo, base)
 
+        if wave.receipts_blocked:
+            # GRPH-1648. The route refused this key outright mid-wave; every child spawned
+            # from here would run unrecorded. The CapError path waits for the live ones.
+            raise CapError("receipts", wave.receipts_blocked)
         try:
             need = _wanted_workers(planner, supervisor, live_n=len(live),
                                    max_workers=limits.max_workers, prd=prd)

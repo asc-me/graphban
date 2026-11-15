@@ -30,10 +30,12 @@ from typing import Callable, Iterable, Sequence
 
 from . import adopt as adopt_mod
 from .heartbeat import keep as keep_leases
+from .heartbeat import note_refused
 from . import worktree as wt_mod
 from . import adapters
 from .adapters import explain_exit
-from .client import Graphban, NotPermitted, ProtocolError, ServerUnreachable, ToolFailed
+from .client import (Graphban, NotPermitted, ObservationRefused, ProtocolError,
+                     ServerUnreachable, ToolFailed)
 from . import headroom as headroom_mod
 from gbagent.config import SetupFailed, prepare
 from .headroom import Headroom
@@ -254,6 +256,10 @@ class Wave:
     #: (GRPH-1346). Also in `failures`, one line each, but a count is what the summary can
     #: key `ok` on: a wave whose every record was dropped must not read as clean.
     observations_refused: int = 0
+    #: Set once when the observations route refuses this key outright (401/403/404,
+    #: GRPH-1648): every later receipt would be refused the same way, so no further child
+    #: is spawned and the refusal is reported once, not per call. Empty means not blocked.
+    receipts_blocked: str = ""
     #: Seats handed in but never redeemed, because the wave stopped, the machine was
     #: full, the server was unreachable, or `--max-children` was already spent. Not a
     #: seat that was merely past `--max-workers`: those run when a slot frees
@@ -756,6 +762,63 @@ def _no_slot_reason(limits: Limits, children: Sequence[Child]) -> str:
     )
 
 
+#: Why a seat was not started after the observations route refused this key (GRPH-1648).
+RECEIPTS_PARKED = "receipts aren't being recorded on this key; no child was started"
+
+
+def seats_unrecordable(client, seats: Sequence[Seat]) -> list[str]:
+    """Why this key could not record observations for these seats; empty when it can.
+
+    GRPH-1648. Asks the server (`kind="seats"` on the observations route, which writes
+    nothing) whether this credential may record each seat's base, lease and PR. A planner
+    that minted the seats on another key — or on an unscoped key, which no supervisor can
+    ever record for — used to surface only as one masked `404 no such item` per receipt,
+    after the children were already building.
+
+    A check that did not run is a problem too, not a pass: an older server answers 422 and
+    a refused key 403. Only a server that never answered (no status) is left to the
+    allocation read, which already parks every seat when the server is unreachable.
+    """
+    codes = [s.code for s in seats if getattr(s, "code", "")]
+    if client is None or not codes:
+        return []
+    try:
+        reply = client.post_observation(item_id="", kind="seats", seats=codes)
+    except ObservationRefused as exc:
+        if exc.status is None:
+            return []
+        if exc.status in (401, 403):
+            return ["this key cannot record observations at all: recording needs the planner "
+                    "role AND either a fleet wave or a project-scoped key (the one `gban "
+                    f"setup` mints). Server said: {exc}"]
+        return [f"could not check whether this key can record these seats: the server "
+                f"answered HTTP {exc.status}. Server said: {exc}"]
+    checked = reply.get("checked") if isinstance(reply, dict) else None
+    if not isinstance(checked, list):
+        return ["could not check whether this key can record these seats: the server's "
+                "answer named no seats"]
+    out: list[str] = []
+    for row in checked:
+        if not isinstance(row, dict) or row.get("ok"):
+            continue
+        index = row.get("index")
+        # The line in the seats file and the server's display fragment, never the code: a
+        # seat is a bearer token while it lives, and this line reaches the observe log.
+        line = index + 1 if isinstance(index, int) else "?"
+        out.append(f"seat #{line} ({row.get('seat') or 'unknown'}): "
+                   f"{row.get('reason') or 'refused'}")
+    if len(checked) < len(codes) and not out:
+        out.append("could not check every seat: the server answered for "
+                   f"{len(checked)} of {len(codes)}")
+    return out
+
+
+def seats_refusal(problems: list[str]) -> str:
+    """The one message `up` and `until` refuse to start with (GRPH-1648)."""
+    return ("refusing to start: this key cannot record observations (base, lease, PR) for "
+            "every seat, so the wave would run unrecorded. " + "; ".join(problems))
+
+
 def up(
     repo: Path,
     seats: Sequence[Seat],
@@ -830,6 +893,18 @@ def up(
             _park(wave, list(seats), "server unreachable; no child was started")
             return wave
 
+        problems = seats_unrecordable(client, seats)
+        if problems:
+            # GRPH-1648. Before any child: a wave whose receipts this key cannot record
+            # builds, reviews and merges with no base, no lease and no PR on the ledger.
+            refusal = seats_refusal(problems)
+            wave.failures.append(refusal)
+            observe.emit("wait", kind="seats_unrecordable", detail=refusal)
+            _park(wave, list(seats), "this key cannot record this seat's receipts; "
+                  "no child was started")
+            wave.reason = "seats-unrecordable"
+            return wave
+
         children: list[Child] = list(leftover)
         roster_path = adopt_mod.children_path(repo, state)
         # Seats past the concurrent cap stay here and start when a child exits
@@ -879,6 +954,10 @@ def up(
             if wave.offline or wave.partition.offline:
                 _park(wave, pending, "server unreachable; no child was started")
                 return False
+            if wave.receipts_blocked:
+                # GRPH-1648. A child spawned now would build with nothing recording it.
+                _park(wave, pending, RECEIPTS_PARKED)
+                return False
             for child in children:
                 if child.branch:
                     occupied.add(child.branch)
@@ -910,6 +989,8 @@ def up(
             if len(wave.failures) > fail_before or len(wave.gated) > gated_before:
                 if len(wave.gated) > gated_before:
                     reason = wave.gated[-1]
+                elif wave.receipts_blocked:
+                    reason = RECEIPTS_PARKED
                 else:
                     reason = "wave stopped: the launch failure is the same for every later seat"
                 _park(wave, pending, reason)
@@ -2690,8 +2771,7 @@ def _observe(wave: Wave, client: Graphban | None, item_id: str, failure: str,
     try:
         client.post_observation(item_id=item_id, **payload)
     except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missing receipt
-        wave.observations_refused += 1
-        wave.failures.append(f"{item_id}: {failure} ({exc})")
+        note_refused(wave, item_id, failure, exc)
 
 
 def _record_salvage_receipt(wave: Wave, client: Graphban | None, items: list[str],

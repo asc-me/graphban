@@ -17,6 +17,37 @@ import time
 from . import observe
 from . import worktree as wt_mod
 
+#: HTTP statuses that mean THIS KEY will never record a receipt for this wave (GRPH-1648):
+#: 403 is a key that cannot supervise, 404 the masked "a seat this key did not cut". Neither
+#: clears by retrying, so the second and later ones are counted, not printed.
+RECEIPTS_BLOCKED = (401, 403, 404)
+
+
+def note_refused(wave, item_id: str, failure: str, exc: Exception) -> None:
+    """Record a refused observation on `wave`. One line for a key that cannot record.
+
+    A transient refusal (a 5xx, a dropped connection) is one failure line each, as before.
+    A 401/403/404 means every receipt this wave posts will be refused the same way. The
+    first sets `wave.receipts_blocked`, which stops further spawns, and says so ONCE; the
+    rest only bump the count. Before this a wave printed 27 `FAILED ... 404` lines and kept
+    spawning children whose bases, leases and PRs nobody recorded.
+    """
+    wave.observations_refused += 1
+    status = getattr(exc, "status", None)
+    if status not in RECEIPTS_BLOCKED:
+        wave.failures.append(f"{item_id}: {failure} ({exc})")
+        return
+    if getattr(wave, "receipts_blocked", ""):
+        return
+    wave.receipts_blocked = (
+        f"receipts aren't being recorded: the observations route refused {item_id} with "
+        f"HTTP {status}, and will refuse every base, lease and PR receipt on this key the "
+        "same way. No more children are spawned. Run gbfleet on the key that minted the "
+        f"seats (or the project-scoped key `gban setup` mints). Server said: {exc}")
+    wave.failures.append(wave.receipts_blocked)
+    observe.emit("wait", kind="receipts_blocked", detail=wave.receipts_blocked)
+
+
 #: Until a roster has said. Same idea as gbagent's fallback: short enough that one
 #: missed post is still inside the presence TTL (three intervals), and not so short
 #: that a tick posts on every poll.
@@ -107,8 +138,7 @@ def keep(wave, children, client, *, now: float | None = None) -> None:
                         and _still_in_progress(client, item_id)):
                     _note_lapsed_live(wave, child, item_id)
             except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missed beat
-                wave.observations_refused += 1
-                wave.failures.append(f"{item_id}: lease not extended ({exc})")
+                note_refused(wave, item_id, "lease not extended", exc)
         child.lease_kept_at = moment
 
 

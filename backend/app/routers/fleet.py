@@ -589,7 +589,7 @@ class ObservationIn(BaseModel):
     (GRPH-973) is still refused — not stored, and not given a second path.
     """
 
-    item_id: str
+    item_id: str = ""
     kind: str
     branch: str = ""
     base: str | None = None
@@ -597,6 +597,8 @@ class ObservationIn(BaseModel):
     commit: str | None = None
     reason: str | None = None
     agent_id: str | None = None
+    #: Enrolment codes for `kind="seats"`, the start-up check (GRPH-1648). Nothing written.
+    seats: list[str] | None = None
 
 
 @router.post("/observations")
@@ -614,7 +616,7 @@ def post_observation(body: ObservationIn, db: Session = Depends(get_db),
         out = fleet_svc.record_observation(
             db, key, item_key=body.item_id, kind=body.kind, branch=body.branch,
             base=body.base, url=body.url, commit=body.commit, reason=body.reason,
-            agent_id=body.agent_id,
+            agent_id=body.agent_id, seats=body.seats,
         )
     except fleet_svc.ObservationError as exc:
         raise HTTPException(exc.status, str(exc)) from exc
