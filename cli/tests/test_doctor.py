@@ -833,3 +833,36 @@ def test_doctor_fails_when_the_graphban_entry_is_gone_from_claude_json(home, mon
     found = [l for l in lines if l["name"] == "claude mcp"]
     assert code == 1 and found[0]["status"] == "FAIL"
     assert str(cfg) in found[0]["detail"]
+
+
+# ---- GRPH-1640: the HTTPS address -------------------------------------------------------------
+
+class _HttpsServer(_Server):
+    def __init__(self, https=None, https_error=None):
+        super().__init__()
+        self.https, self.https_error = https, https_error
+
+    def call(self, method, path, body=None):
+        if path == "/api/https":
+            if self.https_error is not None:
+                raise self.https_error
+            return self.https
+        return super().call(method, path, body)
+
+
+def test_doctor_prints_the_https_address_for_an_http_url(home, monkeypatch):
+    server = _HttpsServer(https={"https_url": "https://gb.local:8443"})
+    lines, _ = _lines(monkeypatch, server, home)
+    https = [l for l in lines if l["name"] == "https"]
+    assert len(https) == 1 and https[0]["status"] == doctor.PASS
+    assert "https://gb.local:8443" in https[0]["detail"]
+    assert "keep working while http stays on" in https[0]["detail"]
+
+
+def test_doctor_says_cant_tell_when_the_https_status_call_fails(home, monkeypatch):
+    server = _HttpsServer(https_error=Unreachable("connection refused"))
+    lines, _ = _lines(monkeypatch, server, home)
+    https = [l for l in lines if l["name"] == "https"]
+    assert https[0]["status"] == doctor.UNKNOWN
+    assert "can't tell" in https[0]["detail"]
+    assert "no HTTPS" not in https[0]["detail"]

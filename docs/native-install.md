@@ -105,6 +105,8 @@ moment an upgrade replaces the tree, which is why the unit carries it.
 
 ## HTTPS on a native install
 
+See [https.md](https.md) for the tiers, device trust and the redirect rule.
+
 The API serves plain HTTP itself. To add the box's HTTPS listener, run a single
 [Caddy](https://caddyserver.com/docs/install) binary beside it with the repository's
 `web/Caddyfile` and `web/https.on.caddy`/`https.off.caddy`/`redirect.*.caddy` next to it:

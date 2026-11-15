@@ -11,6 +11,7 @@ fully offline with `docker compose up`.
 - **[Design philosophy](design-philosophy.md)** — the harness-engineering principles the codebase is built to, and how they're enforced
 - **[Getting started](getting-started.md)** — install, run, first login, a guided tour
 - **[Native install](native-install.md)** — launchd / systemd team server, no Docker
+- **[HTTPS](https.md)** — the three tiers, trusting the box per device, the redirect rule and the HTTPS port
 - **[Release](release.md)** — stamp a CalVer, publish the tarball, Install from Settings
 - **[Architecture](ARCHITECTURE.md)** — how the system fits together and why
 

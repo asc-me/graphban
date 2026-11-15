@@ -509,6 +509,8 @@ the cloud stamps `org_id` from the credential, never the payload.
 
 ## HTTPS port and the Caddy front end (GRPH-1635)
 
+See [https.md](https.md) for the tiers, device trust and the redirect rule.
+
 The `web` image runs **Caddy**, not nginx. It carries over what the nginx front end did: the SPA
 with history fallback, the `/api` and `/health` proxy to `API_UPSTREAM` (re-resolved on each
 connection, so a redeployed backend is followed), `/version.txt`, and `X-Forwarded-For` appended

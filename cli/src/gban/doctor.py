@@ -71,6 +71,7 @@ def ledger(url: str, project: str) -> list[dict]:
         out.append(_line("ledger", UNKNOWN, "project", str(exc)))
         return out
 
+    out.extend(_https_lines(client, url))
     agents = fleet.get("agents") or []
     live = [a for a in agents if a.get("state") != "offline"]
     out.append(_line("ledger", PASS, "project",
@@ -88,6 +89,24 @@ def ledger(url: str, project: str) -> list[dict]:
             out.append(_line("ledger", FAIL, f"agent {agent.get('id')}",
                              f"refused {refusal['tool']}{times} — {refusal.get('reason', '')}"))
     return out
+
+
+def _https_lines(client, url: str) -> list[dict]:
+    """GRPH-1640 (P83 D6): for an http:// server URL, say where the box's HTTPS address is.
+
+    A status call that fails says "can't tell" (UNKNOWN), never "no HTTPS"."""
+    if not url.startswith("http://"):
+        return []
+    try:
+        status = client.call("GET", "/api/https")
+    except (Refused, Unreachable) as exc:
+        return [_line("ledger", UNKNOWN, "https",
+                      f"can't tell whether the box has an HTTPS address: {exc}")]
+    address = (status or {}).get("https_url") or ""
+    if not address:
+        return [_line("ledger", PASS, "https", "the box reports no HTTPS address")]
+    return [_line("ledger", PASS, "https",
+                  f"{address} — agent and CLI configs on http keep working while http stays on")]
 
 
 def local(url: str, project: str, api_key: str) -> list[dict]:
