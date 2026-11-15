@@ -833,3 +833,71 @@ def test_doctor_fails_when_the_graphban_entry_is_gone_from_claude_json(home, mon
     found = [l for l in lines if l["name"] == "claude mcp"]
     assert code == 1 and found[0]["status"] == "FAIL"
     assert str(cfg) in found[0]["detail"]
+
+
+# ---- GRPH-1640: the HTTPS address -------------------------------------------------------------
+
+class _HttpsServer(_Server):
+    def __init__(self, https=None, https_error=None):
+        super().__init__()
+        self.https, self.https_error = https, https_error
+
+    def call(self, method, path, body=None):
+        if path == "/api/https":
+            if self.https_error is not None:
+                raise self.https_error
+            return self.https
+        return super().call(method, path, body)
+
+
+def test_doctor_prints_the_https_address_for_an_http_url(home, monkeypatch):
+    server = _HttpsServer(https={"https_url": "https://gb.local:8443"})
+    lines, _ = _lines(monkeypatch, server, home)
+    https = [l for l in lines if l["name"] == "https"]
+    assert len(https) == 1 and https[0]["status"] == doctor.PASS
+    assert "https://gb.local:8443" in https[0]["detail"]
+    assert "keep working while http stays on" in https[0]["detail"]
+
+
+def test_doctor_says_cant_tell_when_the_https_status_call_fails(home, monkeypatch):
+    server = _HttpsServer(https_error=Unreachable("connection refused"))
+    lines, _ = _lines(monkeypatch, server, home)
+    https = [l for l in lines if l["name"] == "https"]
+    assert https[0]["status"] == doctor.UNKNOWN
+    assert "can't tell" in https[0]["detail"]
+    assert "no HTTPS" not in https[0]["detail"]
+
+
+# The shape tls_ca.status() returns today: no `https_url`. The box may well serve HTTPS
+# (the box CA listener on WEB_HTTPS_PORT), so the answer is "can't tell", never "no HTTPS".
+_REAL_SHAPED_STATUS = {
+    "tier": "box-ca", "ready": True,
+    "names": [{"name": "gb.local", "source": "auto", "origin": "hostname"}],
+    "outside_constraints": [], "max_names": 32, "covered_names": ["gb.local"],
+    "leaf_not_after": "2027-01-01T00:00:00+00:00", "ca_not_after": "2036-01-01T00:00:00+00:00",
+    "ca_certificate_path": "/api/https/ca.crt",
+}
+
+
+def test_doctor_says_cant_tell_when_the_status_has_no_https_address(home, monkeypatch):
+    server = _HttpsServer(https=_REAL_SHAPED_STATUS)
+    lines, _ = _lines(monkeypatch, server, home)
+    https = [l for l in lines if l["name"] == "https"]
+    assert len(https) == 1 and https[0]["status"] == doctor.UNKNOWN
+    assert "can't tell" in https[0]["detail"]
+    assert "no HTTPS" not in https[0]["detail"]
+
+
+def test_doctor_says_cant_tell_when_the_https_status_is_refused(home, monkeypatch):
+    server = _HttpsServer(https_error=Refused(404, "not found"))
+    lines, _ = _lines(monkeypatch, server, home)
+    https = [l for l in lines if l["name"] == "https"]
+    assert https[0]["status"] == doctor.UNKNOWN and "can't tell" in https[0]["detail"]
+
+
+def test_doctor_has_no_https_line_for_an_https_server_url(home, monkeypatch):
+    server = _HttpsServer(https={"https_url": "https://gb.local:8443"})
+    monkeypatch.setattr("gban.doctor.authenticated", lambda url: server)
+    monkeypatch.setattr("gban.doctor.shutil.which", lambda name: None)
+    lines, _ = doctor.run("https://gb.invalid", "core", "", repo=home)
+    assert not [l for l in lines if l["name"] == "https"]
