@@ -2894,13 +2894,130 @@ def denial_in(clause: str, line: str) -> str:
     # "and not the key" is not contradicted by every receipt that quotes it (GRPH-1029 /
     # REPU-579). Residue is what the reviewer wrote around the quote.
     residue = _SKIP_COUNT.sub(" ", _ZERO_FAILED.sub(" ", scope.replace(clause.lower(), " ")))
-    m = _NEGATIVE_EVIDENCE.search(residue)
-    if not m:
-        return ""
-    word = m.group(1)
-    if word == "failed" and expected_failure_clause(clause):
-        return ""
-    return word
+    # GRPH-1019: a receipt that says the clause IS delivered and discloses an UNCOMMITTED
+    # verification artefact is not denying the deliverable when its denial word is about
+    # that artefact. Computed once for the line, not the scope: the disclosure is the
+    # receipt's, whichever sentence it sits in.
+    tool_caveat = _discloses_uncommitted_tool(low, clause.lower())
+    for m in _NEGATIVE_EVIDENCE.finditer(residue):
+        word = m.group(1)
+        if word == "failed" and expected_failure_clause(clause):
+            continue
+        # Only `cannot` — the GRPH-1005 shape, a limit of the tool. `failed` and `skipped`
+        # with the tool as subject report the verification's own outcome on the
+        # deliverable: negative evidence about the clause, not a caveat (review bounce on
+        # 77a6b5cc).
+        if word == "cannot" and tool_caveat and _about_the_tool(residue, m.start(), m.end()):
+            continue
+        return word
+    return ""
+
+
+#: A receipt saying its clause was delivered: `delivered`, `is implemented`, `ships` —
+#: never `not delivered`, which `_NEGATIVE_EVIDENCE` reads as the denial it is (GRPH-1019).
+_AFFIRMS_DELIVERY = re.compile(
+    r"(?<!not )(?<!n't )\b(?:delivered|implemented|shipped|merged)\b")
+#: A receipt disclosing that something it used is not part of the change.
+_UNCOMMITTED = re.compile(
+    r"\b(?:uncommitted|not committed|isn't committed|not checked in|not in the diff|"
+    r"outside (?:this item's |the item's |the )?touchpoints)\b")
+#: What a verification artefact is called: the tool, not the deliverable.
+_TOOL_NOUN = re.compile(
+    r"\b(?:checker|check script|script|verifier|tool|harness|helper|test file|"
+    r"artefact|artifact|probe|scratch test)s?\b")
+#: Where the phrase holding a denial word stops: a sentence end, `;`, `,`, a bracket, a dash.
+_PHRASE_BREAK = re.compile(r"[.!?;,()—–]|\s-\s")
+#: Between a subject and the denial word, a sign that the denial has a subject of its own
+#: (GRPH-1019 bounce on 872a95b9): a determiner opening another noun phrase ("the checker
+#: passed but THE TABLE cannot …"), a clause-opening conjunction or complementiser not
+#: directly followed by the denial word ("the checker passed BUT tables cannot …" — while
+#: "is not committed and cannot resolve" keeps one subject), or a reporting verb whose
+#: object is a new clause ("the checker SHOWS tables cannot …").
+_OTHER_SUBJECT = (
+    r"\b(?:a|an|the|this|these|those|our|my|their)\s+\S"
+    r"|\b(?:and|but|or|so|yet|though|although|while|whereas|because|that|which|who|"
+    r"where|when|if)\b(?!\s+(?:also\s+|still\s+|so\s+)?{denial})"
+    r"|\b(?:shows?|showed|says?|said|reports?|reported|finds?|found|confirms?|confirmed|"
+    r"proves?|proved|means?|meant|tells?|told|indicates?|indicated)\b")
+
+#: A word that may sit directly after the tool noun without becoming a subject of its own:
+#: an auxiliary or adverb continuing the tool's own predicate ("the checker IS not
+#: committed and cannot …", "the script STILL cannot …").
+_SUBJECT_CONTINUES = re.compile(
+    r"is|isn't|was|wasn't|are|aren't|were|weren't|has|hasn't|have|haven't|had|hadn't|"
+    r"does|doesn't|did|didn't|do|don't|will|won't|would|can|could|should|may|might|must|"
+    r"still|also|itself|themselves|alone|just|simply|currently|therefore|then|here|not")
+
+#: A pronoun standing for the tool: `it`/`its`, directly before the denial word.
+_PRONOUN = re.compile(r"\bits?\b")
+
+
+def _nearest_subject_is(between: str, denial: str) -> bool:
+    """Whether nothing in `between` — the text from a subject to the denial word — gives
+    the denial a subject of its own. A relative `that`/`which` directly after the subject
+    ("the checker that verified it …") is the subject's own clause, not a new one."""
+    head = re.match(r"\s*(?:that|which)\b", between)
+    body = between[head.end():] if head else between
+    # A bare word directly after the tool noun that is not an auxiliary or adverb makes the
+    # tool noun a modifier: in "the checker TABLES cannot …" the head noun is the subject
+    # (review bounce on 77a6b5cc).
+    first = re.match(r"\s*([a-z'’]+)", between)
+    if not head and first and not _SUBJECT_CONTINUES.fullmatch(first.group(1)):
+        return False
+    # The denial word is appended so a conjunction directly before it ("… and cannot")
+    # can be told from one that opens a clause with a subject of its own.
+    return not re.search(_OTHER_SUBJECT.replace("{denial}", re.escape(denial)), body + denial)
+
+
+def _discloses_uncommitted_tool(low: str, clause: str) -> bool:
+    """Whether a receipt asserts its clause is delivered AND discloses that a verification
+    artefact behind it is not committed (GRPH-1019).
+
+    GRPH-1005's builder wrote "delivered, verified by a doc-driven claim checker … It is not
+    committed (a new test file is outside this item's touchpoints); the four literals it
+    cannot resolve from a checkout are allowlisted". Two reviewers could not sign the merged,
+    green item: `cannot` read as the clause being undelivered. A builder who omitted the
+    sentence would have passed — the gate rewarded silence.
+    """
+    residue = low.replace(clause, " ")
+    return bool(_AFFIRMS_DELIVERY.search(residue) and _UNCOMMITTED.search(residue)
+                and _TOOL_NOUN.search(residue))
+
+
+def _about_the_tool(residue: str, start: int, end: int) -> bool:
+    """Whether the denial word at `[start, end)` is about a verification artefact rather
+    than the deliverable (GRPH-1019). Who the denial is about decides, not how far away it
+    sits — and who it is about is its NEAREST SUBJECT.
+
+    The denial is the tool's when, inside its phrase, the last tool noun before it is its
+    nearest subject: no other noun phrase, clause-opening conjunction or reporting verb in
+    between (`the checker cannot resolve X`, `the checker that verified it is not committed
+    and cannot resolve X`). A tool noun elsewhere in the phrase is not enough: in "the
+    uncommitted checker passed but the table cannot be published" the denial is the
+    table's (review bounce on 872a95b9).
+
+    A bare `it` is the weakest attribution, so it counts only directly before the denial
+    word and only in a sentence wholly about the tool: one that names the tool or discloses
+    it is not committed, and makes no delivery claim of its own (the GRPH-1005 shape, "It is
+    not committed …; the literals it cannot resolve are allowlisted"). In the sentence that
+    claims delivery `it` could be the deliverable, and an ambiguous denial still refuses
+    (review bounce on 502bdf96).
+    """
+    breaks_before = [m.end() for m in _PHRASE_BREAK.finditer(residue, 0, start)]
+    lo = breaks_before[-1] if breaks_before else 0
+    denial = residue[start:end]
+    tools = list(_TOOL_NOUN.finditer(residue, lo, start))
+    if tools and _nearest_subject_is(residue[tools[-1].end():start], denial):
+        return True
+    pronouns = list(_PRONOUN.finditer(residue, lo, start))
+    if not pronouns or residue[pronouns[-1].end():start].strip():
+        return False
+    ends_before = [m.end() for m in _SENTENCE_END.finditer(residue, 0, start)]
+    s_lo = ends_before[-1] if ends_before else 0
+    s_after = _SENTENCE_END.search(residue, end)
+    sentence = residue[s_lo:s_after.end() if s_after else len(residue)]
+    return bool((_TOOL_NOUN.search(sentence) or _UNCOMMITTED.search(sentence))
+                and not _AFFIRMS_DELIVERY.search(sentence))
 
 
 #: Why a receipt was read as denying its clause, stated at the point of refusal rather than
@@ -2921,7 +3038,12 @@ DENIAL_RULE = (
     "repeat the clause and names no other one (`the pin lapses after timeout` / "
     "`NOT DELIVERED, no clock`, or `clause — 12 passed` / `NOT DELIVERED`). If the "
     "clause IS delivered, say so in a new `{kind: test}` receipt, in the sentence that "
-    "names it, and keep the caveat in a sentence of its own"
+    "names it, and keep the caveat in a sentence of its own. If the caveat is about a "
+    "verification tool rather than the deliverable — a checker or script that is not "
+    "committed — write that the clause is delivered and that the tool is not committed, "
+    "naming the tool (`the checker cannot resolve X`), and the denial word is read as "
+    "the tool's (GRPH-1019); better still, put the tool's caveat in a `{kind: note}` and "
+    "keep the clause receipt to what is committed"
 )
 
 
