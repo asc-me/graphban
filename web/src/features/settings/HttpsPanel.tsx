@@ -234,7 +234,7 @@ function Names({ data }: { data: HttpsStatus }) {
         e.preventDefault();
         if (name.trim() && !full) add.mutate(name.trim(), { onSuccess: () => setName("") });
       }}>
-        <input aria-label="Add a name" className="flex-1 rounded border border-line bg-transparent px-2 py-1 text-[13px]"
+        <input aria-label="Add a name" className="flex-1 rounded border border-control bg-transparent px-2 py-1 text-[13px]"
           value={name} onChange={(e) => setName(e.target.value)} placeholder="box.example.com or 192.168.1.20" />
         <Button type="submit" disabled={full || !name.trim()}>Add a name</Button>
       </form>
