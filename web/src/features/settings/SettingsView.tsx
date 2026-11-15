@@ -8,6 +8,7 @@ import { Input, Textarea } from "@/components/ui/input";
 import { McpToolsView } from "@/features/mcp/McpToolsView";
 import { MachinesPanel } from "@/features/settings/MachinesPanel";
 import { CredentialsPanel } from "@/features/settings/CredentialsPanel";
+import { HttpsPanel } from "@/features/settings/HttpsPanel";
 import { GitopsPanel } from "@/features/settings/GitopsPanel";
 import { LogExportPanel } from "@/features/settings/LogExportPanel";
 import { UpdatesPanel } from "@/features/settings/UpdatesPanel";
@@ -42,6 +43,7 @@ const SELF_HOST_NAV: { group: string; items: { to: string; label: string; end?: 
     items: [
       { to: settingsPath("deployment/providers"), label: "AI providers" },
       { to: settingsPath("deployment/sync"), label: "Cloud / Sync" },
+      { to: settingsPath("deployment/https"), label: "HTTPS" },
       { to: settingsPath("deployment/gitops"), label: "Gitops" },
       { to: settingsPath("deployment/updates"), label: "Updates" },
       // Log export is here and NOT under "This project": one collector endpoint, one exporter
@@ -132,6 +134,7 @@ function SelfHostPane({ pathname }: { pathname: string }) {
       </>
     );
   }
+  if (pathname.startsWith(settingsPath("deployment/https"))) return <HttpsPanel />;
   if (pathname.startsWith(settingsPath("deployment/updates"))) return <UpdatesPanel />;
   if (pathname.startsWith(settingsPath("deployment/log-export"))) return <LogExportPanel />;
   if (pathname.startsWith(settingsPath("deployment/sync"))) return <SyncLinkPanel />;

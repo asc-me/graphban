@@ -51,6 +51,7 @@ export const keys = {
    *  per-deployment choice: the same committed catalog resolves differently in two projects. */
   fleetTierMap: (projectId?: string) => ["fleet-tier-map", projectId] as const,
   updateCheck: ["update-check"] as const,
+  https: ["https"] as const,
   autoUpdate: ["auto-update"] as const,
   rulePack: ["rule-pack"] as const,
   rulePackAvailable: ["rule-pack-available"] as const,
@@ -1802,4 +1803,18 @@ export function useReadAlert() {
     mutationFn: (id: string) => api.readAlert(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["my-alerts"] }),
   });
+}
+
+/** The box's HTTPS status. No cache: a stale names list after a reissue is the lie to avoid. */
+export function useHttpsStatus() {
+  return useQuery({ queryKey: keys.https, queryFn: () => api.httpsStatus(), staleTime: 0, retry: false });
+}
+
+export function useHttpsNames() {
+  const qc = useQueryClient();
+  const done = () => qc.invalidateQueries({ queryKey: keys.https });
+  return {
+    add: useMutation({ mutationFn: (n: string) => api.httpsAddName(n), onSuccess: done }),
+    remove: useMutation({ mutationFn: (n: string) => api.httpsRemoveName(n), onSuccess: done }),
+  };
 }
