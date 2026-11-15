@@ -151,6 +151,22 @@ export function ItemDetailPanel({
             </div>
           )}
 
+          {item.resolution && (
+            <div
+              data-testid="item-resolution"
+              className="rounded-[10px] border border-line-2 bg-surface-2 px-3 py-2.5 text-body text-fg-2"
+            >
+              <span className="font-mono text-[10px] uppercase tracking-wide">
+                {item.resolution.kind === "duplicate" ? "Duplicate of " : "Superseded by "}
+              </span>
+              <span className="font-mono">{item.resolution.of}</span>
+              {item.resolution.reason ? ` · ${item.resolution.reason}` : ""}
+              <span className="block text-small text-muted">
+                Closed by {item.resolution.by}. Nothing was delivered here.
+              </span>
+            </div>
+          )}
+
           {detail?.bounce_reason && (
             <div className="rounded-[10px] border border-[rgba(224,179,74,0.3)] bg-[rgba(224,179,74,0.07)] px-3 py-2.5 text-body text-[#e0b34a]">
               <span className="font-mono text-[10px] uppercase tracking-wide">Bounced · </span>

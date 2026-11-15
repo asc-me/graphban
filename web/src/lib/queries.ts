@@ -1127,6 +1127,25 @@ export function useOwnerClose() {
   });
 }
 
+/** Close as a duplicate or superseded, as the project owner (GRPH-1671). */
+export function useResolveItem() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      kind,
+      of,
+      reason,
+    }: {
+      id: string;
+      kind: "duplicate" | "superseded";
+      of: string;
+      reason?: string;
+    }) => api.resolveItem(id, { kind, of, reason }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.items }),
+  });
+}
+
 export function useCreateItem(projectId: string) {
   const qc = useQueryClient();
   return useMutation({

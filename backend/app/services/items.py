@@ -1757,6 +1757,124 @@ def set_reach(db: Session, item: Item, value: str) -> Item:
     return item
 
 
+#: How an item can be closed without delivering anything (GRPH-1671).
+RESOLUTION_KINDS = ("duplicate", "superseded")
+#: The rule a refused resolution cites (services/rules.py).
+RESOLUTION_RULE = "close.resolution_points_at_the_work"
+
+
+class ResolutionRefused(ValueError):
+    """A close-as-duplicate/superseded the item or its pointer does not allow (GRPH-1671).
+
+    `reason` is a stable code the boundary carries into the refusal: `already_done`,
+    `bad_kind`, `target_missing`, `target_self`, `target_other_project`,
+    `target_not_done`, `reason_required`, `claim_holder`, `typed_wait`."""
+
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
+
+
+def resolve_item(db: Session, item_id: str, *, kind: str, of: str, reason: str = "",
+                 actor: str, actor_agent: str | None = None, defer=None) -> Item | None:
+    """Close an item as a duplicate of another, or as superseded, WITHOUT an attestation
+    (GRPH-1671).
+
+    The completion gate asks for proof that work was checked. A duplicate did no work, so
+    the gate could never open and the item sat in `blocked` forever. This is the one path
+    that closes without that proof, and it is narrow on purpose:
+
+    - `duplicate` points at another item in the same project that is itself `done` — its
+      own attestation (or its own resolution) is what vouches for the work. Pointing at
+      unfinished work is refused, or "duplicate of" would be a way round review.
+    - `superseded` points at the item or PRD that replaced it, which need not be done yet,
+      and needs a reason.
+    - `actor_agent`, when an agent is calling, must not hold this item's build or review
+      claim: the builder cannot close its own work this way. WHO may call at all (a
+      planner, or the project owner) is the boundary's check — services stay
+      principal-free, as `owner_close` does.
+
+    The item is `done` but never `delivered` (`Item.delivered`): completeness and the close
+    report count the item `of` points at, not this one.
+    """
+    item = get_item(db, item_id)
+    if item is None:
+        return None
+    if item.status == "done":
+        raise ResolutionRefused("already_done", f"{item.key} is already done")
+    if kind not in RESOLUTION_KINDS:
+        raise ResolutionRefused(
+            "bad_kind", f"resolution kind must be one of {', '.join(RESOLUTION_KINDS)}, "
+                        f"not {kind!r}")
+    from app.services.waits import wait_tags_on
+    if wait_tags_on(item):
+        raise ResolutionRefused(
+            "typed_wait", f"{item.key} is a typed human wait; clear it the way a wait clears "
+                          "(answer it, or mark it done when the person has acted)")
+    if actor_agent and actor_agent in {item.claimed_by, item.review_claimed_by}:
+        raise ResolutionRefused(
+            "claim_holder", f"{actor_agent} holds {item.key}'s "
+            f"{'build' if actor_agent == item.claimed_by else 'review'} claim; the agent "
+            "working an item cannot close it as a duplicate or superseded. Release it, and "
+            "let a planner or the project owner close it")
+    why = (reason or "").strip()
+    if kind == "superseded" and not why:
+        raise ResolutionRefused(
+            "reason_required", "superseded needs a one-line reason: what replaced it and why")
+    ref = (of or "").strip()
+    target_item = None
+    target_prd = None
+    tid = keys.resolve_item(db, ref) if ref else None
+    if tid:
+        target_item = db.get(Item, tid)
+    elif ref and kind == "superseded":
+        from app.models import Prd
+        pid = keys.resolve_prd(db, ref)
+        target_prd = db.get(Prd, pid) if pid else None
+    if target_item is None and target_prd is None:
+        raise ResolutionRefused(
+            "target_missing",
+            f"{ref or '(nothing)'} is not an item" + (" or PRD" if kind == "superseded" else "")
+            + " — name the one that carries the work")
+    target_project = (target_item or target_prd).project_id
+    if target_project != item.project_id:
+        raise ResolutionRefused(
+            "target_other_project", f"{ref} is in another project; a resolution points at "
+                                    f"work in {item.key}'s own project")
+    if target_item is not None and target_item.id == item.id:
+        raise ResolutionRefused("target_self", f"{item.key} cannot resolve to itself")
+    if kind == "duplicate" and target_item is None:
+        raise ResolutionRefused("target_missing", f"a duplicate points at an item, not {ref}")
+    if kind == "duplicate" and target_item.status != "done":
+        raise ResolutionRefused(
+            "target_not_done",
+            f"{target_item.key} is {target_item.status}, not done. A duplicate points at work "
+            "that has been finished and checked; until it is, close this one as superseded "
+            "or leave it open")
+    resolution = {
+        "kind": kind,
+        "of": target_item.key if target_item is not None else target_prd.key,
+        "reason": why,
+        "by": actor,
+        "at": utcnow().isoformat(),
+    }
+    out = update_item(db, item.id, defer=defer, status="done", resolution=resolution)
+    if out is None:
+        return None
+    from app.services import delegation as delegation_svc
+    from app.services import fleet as fleet_svc
+    fleet_svc.release_reservations(db, item_id=out.id)
+    out.claimed_by = None
+    out.claimed_at = None
+    out.review_claimed_by = None
+    out.review_claimed_at = None
+    out.review_takes = 0
+    delegation_svc.on_outcome(db, out, "released")
+    db.commit()
+    db.refresh(out)
+    return out
+
+
 def owner_close(db: Session, item_id: str, *, closer: dict, commit: str,
                 pr_url: str | None = None, defer=None) -> Item | None:
     """Close an item whose work is on the base, as a signed-in project owner (GRPH-1030).
@@ -1942,6 +2060,11 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
     # without CI, which is the opposite of "a human emptied it".
     if _completing and _wait_tags_on(item):
         _completing = False
+    # GRPH-1671. A duplicate or superseded item delivered nothing, so there is nothing to
+    # attest. Only `resolve_item` passes `resolution`, after checking what it points at;
+    # neither the MCP `update_item` field list nor the REST PATCH schema carries it.
+    if _completing and fields.get("resolution"):
+        _completing = False
     if _completing:
         merged_for_gate = append_evidence(item.evidence, fields.get("evidence") or [])
         # THE STALENESS CHECK (GRPH-555). An attestation names the commit it vouches for,
@@ -2035,6 +2158,13 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
                 "github_url", "assignee", "prd_id", "prd_section", "fidelity", "kind"):
         if key in fields and fields[key] is not None:
             setattr(item, key, fields[key])
+    # GRPH-1671. Written only with the `done` it justifies (`resolve_item`), and dropped the
+    # moment the item leaves `done`: a reopened duplicate is open work again, and must face
+    # the completion gate like any other item when it next closes.
+    if fields.get("resolution") and item.status == "done":
+        item.resolution = fields["resolution"]
+    elif item.status != "done" and item.resolution:
+        item.resolution = None
     # GRPH-1031. `branch` is identity, not branding: a worker rewriting it under a live
     # reviewer is how GRPH-946's "reviewer has nothing to read" comes back. The CALL
     # gate (planner/supervisor only) lives in `fleet.check_tool_role`; this half is
@@ -2490,6 +2620,11 @@ def item_dict(item: Item) -> dict:
         # only on a decision wait; `notify` bookkeeping stays server-side. Reply-only.
         from app.services.waits import decision_dict
         out["decision"] = decision_dict(item)
+    if item.resolution:
+        # Closed as a duplicate or superseded (GRPH-1671): `{kind, of, reason, by, at}`.
+        # Present only when set, like `decision`, so a done item that delivered work and one
+        # that delivered nothing never read alike. Reply-only.
+        out["resolution"] = dict(item.resolution)
     qs = item.question_state
     if qs:
         # Present only when set (GRPH-P75 D1), like `branch`: one function, every surface.

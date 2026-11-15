@@ -775,6 +775,8 @@ export const api = {
     request<Item>(`/items/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   ownerClose: (id: string, body: { commit: string; pr_url?: string }) =>
     request<Item>(`/items/${id}/owner-close`, { method: "POST", body: JSON.stringify(body) }),
+  resolveItem: (id: string, body: { kind: "duplicate" | "superseded"; of: string; reason?: string }) =>
+    request<Item>(`/items/${id}/resolve`, { method: "POST", body: JSON.stringify(body) }),
   reorderItems: (orderedIds: string[]) =>
     request<Item[]>("/items/reorder", {
       method: "PATCH",

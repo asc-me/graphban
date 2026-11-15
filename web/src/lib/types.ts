@@ -776,6 +776,17 @@ export interface Item {
   done_at: string | null;
   /** Absent unless an open decision wait, or a ticket blocked on one. */
   question_state?: QuestionState | null;
+  /** Closed as a duplicate or superseded (GRPH-1671): done, but delivered nothing. */
+  resolution?: ItemResolution | null;
+}
+
+export interface ItemResolution {
+  kind: "duplicate" | "superseded";
+  /** The item (or, for superseded, the PRD) that carries the work instead. */
+  of: string;
+  reason: string;
+  by: string;
+  at: string;
 }
 
 /** The full record: `GET /items/{id}`, or the list with `?fields=full`. The project list

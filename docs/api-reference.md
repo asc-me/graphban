@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 366 of the 366. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 367 of the 367. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -194,6 +194,7 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | POST | `/api/items/{id}/snooze` | JWT (write) | Body `{until}`; hides the blocker from triage until then. |
 | POST | `/api/items/{id}/undo` | JWT (write) | Undo the newest blocker action on the item; 409 once anything else changed it. Escalate's email cannot be unsent. |
 | POST | `/api/items/{id}/owner-close` | JWT (project owner) | Close a hand-merged item. Body: `{commit, pr_url?}`. Writes an `owner.close` attestation, not `fleet.sign_off`. |
+| POST | `/api/items/{id}/resolve` | JWT (project owner) | Close an item as a duplicate or superseded, with no attestation. Body: `{kind: duplicate\|superseded, of, reason?}`. A duplicate's `of` must be a done item in the same project; superseded may name an item or PRD and needs `reason`. Stored as `resolution`; the item is done but never counted as delivered. 409 `close.resolution_points_at_the_work` names why. |
 
 ## Requests
 

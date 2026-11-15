@@ -46,6 +46,10 @@ vi.mock("@/lib/api", () => ({
     links: vi.fn(async () => servedLinks),
     updateItem: vi.fn(async (id: string, body: Partial<Item>) => ({ ...items[0], id, ...body })),
     ownerClose: vi.fn(async (id: string) => ({ ...items[0], id, status: "done" as const })),
+    resolveItem: vi.fn(async (id: string, body: { kind: string; of: string }) => ({
+      ...items[0], id, status: "done" as const,
+      resolution: { kind: body.kind, of: body.of, reason: "", by: "alex", at: "" },
+    })),
     reorderItems: vi.fn(async () => items),
     // Opening the detail panel mounts the assistant, which asks for these on mount.
     assistantProviders: vi.fn(async () => ({ providers: [] })),
@@ -235,6 +239,47 @@ describe("TrackerView", () => {
     await waitFor(() =>
       expect(api.ownerClose).toHaveBeenCalledWith("AL-01", { commit: "abcdef1", pr_url: undefined }),
     );
+  });
+
+  it("closes as a duplicate of the finished item, with no commit (GRPH-1671)", async () => {
+    const user = userEvent.setup();
+    const { api } = await import("@/lib/api");
+    renderTracker();
+    const row = (await screen.findByText("In progress thing")).closest("div")!;
+    const statusBtn = within(row).getByRole("button", { name: /Actions for/ });
+    statusBtn.focus();
+    await user.keyboard("{Enter}");
+    await user.click(await screen.findByRole("menuitem", { name: /Set Done/ }));
+    await screen.findByRole("heading", { name: /Close as merged/ });
+    await user.click(screen.getByRole("radio", { name: "Duplicate" }));
+    expect(screen.getByRole("heading", { name: /Close as duplicate/ })).toBeInTheDocument();
+    const submit = screen.getByRole("button", { name: /^Close as duplicate$/ });
+    expect(submit).toBeDisabled();
+    await user.type(screen.getByPlaceholderText(/the finished item/), "AL-02");
+    await user.click(submit);
+    await waitFor(() =>
+      expect(api.resolveItem).toHaveBeenCalledWith("AL-01", {
+        kind: "duplicate", of: "AL-02", reason: undefined,
+      }),
+    );
+    expect(api.ownerClose).not.toHaveBeenCalled();
+  });
+
+  it("superseded needs a reason before it can be sent (GRPH-1671)", async () => {
+    const user = userEvent.setup();
+    renderTracker();
+    const row = (await screen.findByText("In progress thing")).closest("div")!;
+    const statusBtn = within(row).getByRole("button", { name: /Actions for/ });
+    statusBtn.focus();
+    await user.keyboard("{Enter}");
+    await user.click(await screen.findByRole("menuitem", { name: /Set Done/ }));
+    await screen.findByRole("heading", { name: /Close as merged/ });
+    await user.click(screen.getByRole("radio", { name: "Superseded" }));
+    await user.type(screen.getByPlaceholderText(/item or PRD id/), "AL-02");
+    const submit = screen.getByRole("button", { name: /^Close as superseded$/ });
+    expect(submit).toBeDisabled();
+    await user.type(screen.getByPlaceholderText(/what replaced it/), "narrower item");
+    expect(submit).toBeEnabled();
   });
 });
 

@@ -21,6 +21,9 @@ LEAN_FIELDS = {
     "blocker", "date", "reporter", "pr", "github_url", "assignee", "claimed_by", "prd_id",
     "prd_section", "reach", "fidelity", "kind", "created_at", "updated_at", "done_at", "decision",
     "snoozed_until", "question_state", "has_attestation",
+    # GRPH-1671: the board shows "Duplicate of X" from the list row, so it rides lean; null
+    # on every item that was not closed that way.
+    "resolution",
 }
 
 
