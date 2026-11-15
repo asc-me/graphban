@@ -3,7 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { HttpsPanel } from "@/features/settings/HttpsPanel";
+import { HttpsPanel, httpsAddress } from "@/features/settings/HttpsPanel";
 import { api } from "@/lib/api";
 import type { HttpsStatus } from "@/lib/api";
 
@@ -52,9 +52,33 @@ describe("HttpsPanel", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({}));
     mount();
     await screen.findByTestId("trust-chip");
-    expect(screen.getByTestId("trust-chip")).toHaveTextContent("Not trusted by this browser yet");
+    expect(screen.getByTestId("trust-chip")).toHaveTextContent("Can't tell");
     await userEvent.click(screen.getAllByRole("button", { name: "Check again" })[0]);
     await waitFor(() => expect(screen.getByTestId("trust-chip")).toHaveTextContent("Trusted by this browser"));
+  });
+
+  it("starts at Can't tell on an https page before any probe has run", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    vi.stubGlobal("location", { ...window.location, protocol: "https:", hostname: "box.home",
+      host: "box.home:8443", origin: "https://box.home:8443" });
+    mount();
+    const chip = await screen.findByTestId("trust-chip");
+    expect(chip).toHaveTextContent("Can't tell");
+    expect(chip).not.toHaveTextContent("Trusted by this browser");
+    expect(chip).toHaveAttribute("data-trust", "unknown");
+    expect(screen.queryByText(/The check from this browser failed/)).toBeNull();
+    expect(screen.queryByTestId("trust-refused")).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps the port in the HTTPS address", () => {
+    expect(httpsAddress({ protocol: "https:", hostname: "box.home", origin: "https://box.home:8443" }))
+      .toBe("https://box.home:8443");
+    expect(httpsAddress({ protocol: "http:", hostname: "box.home", origin: "http://box.home:8080" }, 8443))
+      .toBe("https://box.home:8443");
+    expect(httpsAddress({ protocol: "http:", hostname: "box.home", origin: "http://box.home:8080" }))
+      .toBe("https://box.home");
   });
 
   it("renders names with Remove only on operator rows", async () => {

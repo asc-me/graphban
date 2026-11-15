@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 import { useHttpsNames, useHttpsStatus } from "@/lib/queries";
 import type { HttpsStatus } from "@/lib/api";
 
-export type Trust = "unchecked" | "checking" | "trusted" | "untrusted" | "unknown";
+export type Trust = "checking" | "trusted" | "untrusted" | "unknown";
 type Os = "macOS" | "Windows" | "iOS" | "Android" | "Linux";
 
 const OS_TABS: Os[] = ["macOS", "Windows", "iOS", "Android", "Linux"];
@@ -56,8 +56,17 @@ export function detectOs(ua = typeof navigator === "undefined" ? "" : navigator.
   return "Linux";
 }
 
-export function httpsAddress(loc: Pick<Location, "hostname"> = window.location): string {
-  return `https://${loc.hostname}`;
+/**
+ * The HTTPS address of this box. On an https page that is this page's own origin, port included.
+ * On a plain-http page the HTTPS listener is on its own port (P83 D1), which this API does not
+ * report yet; until the serving item passes `httpsPort`, the standard https port is assumed.
+ */
+export function httpsAddress(
+  loc: Pick<Location, "protocol" | "hostname" | "origin"> = window.location,
+  httpsPort?: number,
+): string {
+  if (loc.protocol === "https:") return loc.origin;
+  return httpsPort && httpsPort !== 443 ? `https://${loc.hostname}:${httpsPort}` : `https://${loc.hostname}`;
 }
 
 /** Opens the HTTPS address from this browser. Any rejection or timeout is "unknown". */
@@ -79,7 +88,6 @@ function Label({ children }: { children: React.ReactNode }) {
 }
 
 const CHIP: Record<Trust, string> = {
-  unchecked: "Not trusted by this browser yet",
   checking: "Checking…",
   trusted: "Trusted by this browser",
   untrusted: "Not trusted by this browser yet",
@@ -103,8 +111,9 @@ export function HttpsPanel() {
 
 function HttpsBody({ data }: { data: HttpsStatus }) {
   const address = httpsAddress();
-  const [trust, setTrust] = React.useState<Trust>(
-    window.location.protocol === "https:" ? "trusted" : "unchecked");
+  // Nothing has been checked yet, so the answer is "Can't tell" — even on an https page, where the
+  // user may simply have clicked through the browser's certificate warning.
+  const [trust, setTrust] = React.useState<Trust>("unknown");
   const [probed, setProbed] = React.useState(false);
   const check = async () => {
     setTrust("checking");
@@ -136,7 +145,7 @@ function HttpsBody({ data }: { data: HttpsStatus }) {
             className="rounded border border-line px-2 py-0.5 text-[12px]">{CHIP[trust]}</span>
           <Button onClick={check}>Check again</Button>
         </div>
-        {trust === "unknown" ? (
+        {refused ? (
           <p className="text-[13px] text-fg-2">
             The check from this browser failed, so there's no answer. Check again, or trust this box on this device below.
           </p>
