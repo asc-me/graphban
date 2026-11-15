@@ -2488,6 +2488,37 @@ class VapidKey(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class TlsAuthority(Base):
+    """The box's own certificate authority and its current server leaf (GRPH-1634, P83 D2).
+    One row under the fixed id `box`, so workers starting at once race to one winner. Both
+    private keys are stored through `security.secrets.encrypt`; no API returns either."""
+
+    __tablename__ = "tls_authority"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    ca_cert: Mapped[str] = mapped_column(Text)
+    ca_key: Mapped[str] = mapped_column(Text)
+    ca_not_after: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    leaf_cert: Mapped[str] = mapped_column(Text, default="")
+    leaf_key: Mapped[str] = mapped_column(Text, default="")
+    leaf_names: Mapped[str] = mapped_column(Text, default="[]")  # JSON list the leaf covers
+    leaf_not_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    leaf_issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TlsName(Base):
+    """A name the box's certificate covers and Caddy may ask for (GRPH-1634). `source` is
+    auto|operator; `origin` is hostname | network address | seen as Host | operator."""
+
+    __tablename__ = "tls_names"
+
+    name: Mapped[str] = mapped_column(String, primary_key=True)
+    source: Mapped[str] = mapped_column(String)
+    origin: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class IdempotencyKey(Base):
     """Maps an agent-supplied idempotency key to the resource a create tool produced,
     so a retried call returns the original resource instead of a duplicate."""
