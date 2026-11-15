@@ -142,6 +142,12 @@ Three properties worth knowing, each of which is a bug this command exists to no
   outside the repository cannot be committed. Re-running a working setup still
   *repairs* a missing `gbfleet` entry and a missing `--workspace`; reuse skips a mint,
   never a write.
+- **`--scope project` touches nothing outside the repository** (GRPH-1661). It writes
+  `.mcp.json` and `.grok/config.toml` beside the repo and says it left `~/.claude.json` and
+  `~/.grok/config.toml` alone. Grok's user file has one `mcp_servers` table for every
+  repository, so writing it from a scratch repo repointed the main one. When `--scope user`
+  replaces a user-level `gbfleet` entry pointing at a different repository or project, the
+  file is first saved as `<file>.bak-<timestamp>` and the line names the old and new targets.
 - **`--auto` matches, and says so.** A project carries no repository link — no remote, no
   path — so `--auto` compares your project ids and names against this directory, what is in
   it, and its siblings. One level, never a recursive walk. Two directories answering to one

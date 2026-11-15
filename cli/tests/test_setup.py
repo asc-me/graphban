@@ -1654,3 +1654,97 @@ def test_project_scoped_configured_key_is_still_reused(tmp_path, wired):
     lines, code, made = _run(server, repo, home, wired=wired)
     assert code == 0, lines
     assert server.minted == [] and made.get("reused")
+
+
+# ---- scope boundaries (GRPH-1661) ------------------------------------------------------------
+
+def _grok_pointing_at(path: Path, repo: str, project: str, key: str = "gb_sk_main") -> str:
+    text = (
+        '[ui]\nmax_thoughts_width = 120\n\n'
+        '[mcp_servers.graphban]\nurl = "http://gb.invalid/api/mcp"\nenabled = true\n\n'
+        f'[mcp_servers.graphban.headers]\nX-API-Key = "{key}"\n\n'
+        '[mcp_servers.gbfleet]\ncommand = "gbfleet"\n'
+        f'args = ["mcp", "--repo", "{repo}", "--server", "http://gb.invalid", '
+        f'"--project", "{project}"]\nenabled = true\n'
+    )
+    path.write_text(text)
+    return text
+
+
+def test_project_scope_leaves_the_user_grok_and_claude_configs_alone(
+        tmp_path, wired, no_grok_config):
+    """`--scope project` in a scratch repo repointed the operator's user-level Grok entry at
+    the scratch repo, its key and a workspace later deleted (GRPH-1661)."""
+    main, repo, home = tmp_path / "main", tmp_path / "scratch", tmp_path / ".claude.json"
+    main.mkdir()
+    repo.mkdir()
+    before_grok = _grok_pointing_at(no_grok_config, str(main), "agentledger")
+    home.write_text(json.dumps({"projects": {str(main.resolve()): {"mcpServers": {
+        "graphban": {"headers": {"X-API-Key": "gb_sk_main"}}}}}}))
+    before_claude = home.read_text()
+
+    lines, code, _ = _run(Server(), repo, home, scope="project", wired=wired)
+
+    assert code == 0, lines
+    assert no_grok_config.read_text() == before_grok, "the user-level Grok config was rewritten"
+    assert home.read_text() == before_claude, "the user-level Claude config was rewritten"
+    assert not list(no_grok_config.parent.glob("config.toml.bak-*"))
+    assert (repo / ".mcp.json").exists()
+    proj = tomllib.loads((repo / ".grok" / "config.toml").read_text())
+    assert str(repo) in proj["mcp_servers"]["gbfleet"]["args"]
+    said = [l for l in lines if l["name"] == "user config"]
+    assert said and str(no_grok_config) in said[0]["detail"] and str(home) in said[0]["detail"]
+    assert "left alone" in said[0]["detail"]
+    assert not any(str(no_grok_config) in l["detail"] for l in lines if l["name"] == "written")
+
+
+def test_user_scope_backs_up_an_entry_pointing_elsewhere_and_names_both(
+        tmp_path, wired, no_grok_config):
+    main, repo, home = tmp_path / "main", tmp_path / "other", tmp_path / ".claude.json"
+    main.mkdir()
+    repo.mkdir()
+    before = _grok_pointing_at(no_grok_config, str(main), "agentledger")
+
+    lines, code, _ = _run(Server(), repo, home, scope="user", wired=wired)
+
+    assert code == 0, lines
+    [saved] = list(no_grok_config.parent.glob("config.toml.bak-*"))
+    assert saved.read_text() == before, "the backup is not the file that was replaced"
+    assert (saved.stat().st_mode & 0o777) == 0o600, "the backup holds a key; owner-only"
+    now = tomllib.loads(no_grok_config.read_text())
+    assert str(repo) in now["mcp_servers"]["gbfleet"]["args"]
+    [named] = [l for l in lines if l["name"] == "replaced"]
+    for part in (str(main), "agentledger", str(repo), "core", str(saved)):
+        assert part in named["detail"], (part, named["detail"])
+
+
+def test_user_scope_rewriting_the_same_target_makes_no_backup(
+        tmp_path, wired, no_grok_config):
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    _grok_pointing_at(no_grok_config, str(repo), "core")
+
+    lines, code, _ = _run(Server(), repo, home, scope="user", wired=wired)
+
+    assert code == 0, lines
+    assert not list(no_grok_config.parent.glob("config.toml.bak-*"))
+    assert not [l for l in lines if l["name"] == "replaced"]
+
+
+def test_user_scope_backs_up_a_claude_entry_for_another_project(tmp_path, wired):
+    """Claude's user file keys entries by repository, so the replacement it can make is the
+    PROJECT this repository's supervisor points at."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    home.write_text(json.dumps({"projects": {str(repo.resolve()): {"mcpServers": {
+        "gbfleet": {"command": "gbfleet",
+                    "args": ["mcp", "--repo", str(repo), "--project", "graphban-rules"]}}}}}))
+    before = home.read_text()
+
+    lines, code, _ = _run(Server(), repo, home, scope="user", wired=wired)
+
+    assert code == 0, lines
+    [saved] = list(home.parent.glob(".claude.json.bak-*"))
+    assert saved.read_text() == before
+    [named] = [l for l in lines if l["name"] == "replaced"]
+    assert "graphban-rules" in named["detail"] and "core" in named["detail"]
