@@ -20,9 +20,17 @@ def db(client):
 @pytest.fixture(autouse=True)
 def fake_net(monkeypatch):
     monkeypatch.setattr(tls_names, "interface_addresses", lambda: ["100.101.102.103"])
-    monkeypatch.setattr(tls_names.socket, "getaddrinfo",
-                        lambda name, *a, **k: [(2, 1, 6, "", ("100.101.102.103", 0))]
-                        if name == "box.example.org" else [(2, 1, 6, "", ("93.184.216.34", 0))])
+    # Fake only the names under test: the patch is process-wide, and the Postgres driver
+    # resolves `localhost` through the same function.
+    real = tls_names.socket.getaddrinfo
+    fake = {"box.example.org": "100.101.102.103", "bank.com": "93.184.216.34"}
+
+    def getaddrinfo(name, *a, **k):
+        if name in fake:
+            return [(2, 1, 6, "", (fake[name], 0))]
+        return real(name, *a, **k)
+
+    monkeypatch.setattr(tls_names.socket, "getaddrinfo", getaddrinfo)
 
 
 def names(db):
