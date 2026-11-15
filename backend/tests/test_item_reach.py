@@ -550,6 +550,33 @@ def test_a_platform_name_used_as_english_is_not_a_command():
     assert reach_svc.signals("render deploy"), "a real subcommand must still fire"
 
 
+def test_render_as_a_ui_verb_in_prose_is_not_a_command():
+    """GRPH-1336. GRPH-1335, a pure web/ item, was refused every delegate because
+    "render could-not-check as current" read as the Render CLI plus a subcommand. A modal
+    opening a hyphenated compound is grammar; `render the card` is an article; `renders
+    each state` is not the bare platform name at all. Each one alone, so one regression
+    is one red line.
+
+    Sabotage: drop the modal verbs from `_NOT_SUBCOMMANDS` and the first phrase fires.
+    """
+    for prose in ("the badge should render could-not-check as current",
+                  "render could-not-check as current",
+                  "render the card",
+                  "the view renders each state"):
+        assert not reach_svc.signals(prose), prose
+
+
+@pytest.mark.parametrize("text", [
+    "Run `render deploys create` to ship it",
+    "```sh\nrender deploys create\n```",
+])
+def test_render_deploys_create_in_a_code_span_or_fenced_block_still_fires(text):
+    """GRPH-1336. The narrowing is grammar only: the real Render command, in a code span or
+    a fenced shell block, is still a platform command."""
+    found = reach_svc.signals(text)
+    assert [s["rule"] for s in found] == ["platform-command"], found
+
+
 def test_a_ui_assertion_that_says_render_nothing_is_not_a_command():
     """GRPH-1644. GBC-125's acceptance line drew platform-command, and `delegate` refused the
     bound seat for hours. The trigger was not "rail", "docked" or "remount" (the matcher wants

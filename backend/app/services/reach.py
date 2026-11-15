@@ -85,6 +85,10 @@ _NOT_SUBCOMMANDS = (
     # assertion, and none of these is a subcommand of any CLI above
     "|nothing|anything|something|everything|none|nobody|each|every|all|any|some|both"
     "|either|neither|correctly|properly|fine|empty|blank"
+    # modal verbs (GRPH-1336): "render could-not-check as current" is a UI assertion, and
+    # `\b` sits at the hyphen, so a modal opening a hyphenated compound is grammar too.
+    # No CLI above takes a modal as a subcommand.
+    "|can|could|will|would|shall|should|may|might|must"
 )
 
 #: The one base hit that is not a mutation. `kubectl port-forward` opens a tunnel.
