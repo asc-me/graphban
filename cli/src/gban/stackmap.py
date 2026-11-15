@@ -1020,6 +1020,9 @@ class _Builder:
         self.files_read: list[str] = []
         self.produced: set[str] = set()
         self.commented_skipped = 0
+        #: The raw-HTTP pass (GRPH-1464): source files it read, and edges it added.
+        self.sources_scanned = 0
+        self.raw_http_edges = 0
         # Manifest `name` → component id, for workspace: links that name a package.
         self.by_package: dict[str, str] = {}
         # Which compose services name an env variable, and which read a template
@@ -1135,7 +1138,8 @@ class _Builder:
             f"coverage: {len(self.files_read)} files read, "
             f"{empty} produced nothing, "
             f"{self.commented_skipped} commented template keys skipped; "
-            f"source was not scanned"
+            f"{self.sources_scanned} source files scanned for raw HTTP calls, "
+            f"{self.raw_http_edges} call(s) mapped"
         )
 
     def _note_env(self, node: dict, env: str) -> None:
@@ -1768,6 +1772,92 @@ def find_root(start: Path) -> Path:
     return start
 
 
+# ── raw HTTP calls in source (GRPH-1464, P55 §7 S4) ─────────────────────────
+
+
+#: Source the raw-HTTP pass reads. Manifests, compose and templates are the parser's.
+_SOURCE_SUFFIXES = frozenset({
+    ".py", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts", ".go", ".rb",
+})
+#: A call into an HTTP client on the line. The URL literal must be on the same line: a
+#: URL in a constant or a docstring is not a call, and guessing which variable reaches
+#: which call is the agent's job, not a parser's.
+_HTTP_CALL = re.compile(
+    r"(?:\b(?:requests|httpx|aiohttp|urllib3?|session|client|axios|got|ky|superagent|"
+    r"needle|HTTParty|Faraday|RestClient)\b[\w.]*\s*\("
+    r"|\b(?:urlopen|fetch|ClientSession|AsyncClient|Request)\s*\("
+    r"|\bhttp\.(?:Get|Post|PostForm|Head|NewRequest(?:WithContext)?)\s*\("
+    r"|\bNet::HTTP\b|\bURI(?:\.parse)?\s*\()"
+)
+_URL_LITERAL = re.compile(r"[\"'`](https?)://([^/\"'`\s:?#]+)")
+#: Hosts that are documentation or tests, never a service the app calls.
+_EXAMPLE_HOSTS = re.compile(
+    r"(?:^|\.)(?:example\.(?:com|org|net)|invalid|test|localhost|local)$", re.IGNORECASE)
+_TEST_PATH = re.compile(
+    r"(?:^|/)(?:tests?|__tests__|spec|e2e|fixtures?|testdata)/"
+    r"|(?:^|/)test_[^/]*$|_test\.(?:py|go|rb)$|\.(?:test|spec)\.[cm]?[jt]sx?$")
+_SOURCE_COMMENT = re.compile(r"^\s*(?:#|//|/\*|\*)")
+RAW_HTTP_RULE = "source.http-call"
+RAW_HTTP_LABEL = "HTTP call"
+
+
+def _is_source(path: Path, rel: str) -> bool:
+    return path.suffix.lower() in _SOURCE_SUFFIXES and not _TEST_PATH.search(rel)
+
+
+def raw_http_calls(text: str) -> list[tuple[int, str, str]]:
+    """`(line, protocol, host)` for each URL literal on a line that calls an HTTP client.
+
+    Only the host is kept: path, query and userinfo are dropped here, so nothing in a URL
+    beyond the service it names can reach the record. Interpolated hosts (`${base}`,
+    `{host}`) are not hosts and are skipped.
+    """
+    found: list[tuple[int, str, str]] = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if _SOURCE_COMMENT.match(line) or not _HTTP_CALL.search(line):
+            continue
+        for match in _URL_LITERAL.finditer(line):
+            host = match.group(2).lower().rstrip(".")
+            if not host or any(ch in host for ch in "${}<>%"):
+                continue
+            if host in _LOCAL_HOSTS or _EXAMPLE_HOSTS.search(host) or "." not in host:
+                continue
+            found.append((lineno, _SCHEME.get(match.group(1).lower(), "https"), host))
+    return found
+
+
+def _walk_source(builder: _Builder, path: Path, mapped: set[str]) -> int:
+    """Edges for raw HTTP calls the parser could not see. Returns how many it added.
+
+    A host the known-SDK table matches is left to the table, and a host the parser
+    already put on the map (compose, a manifest, an env template) is left as the parser
+    drew it: this pass adds what was missing and changes nothing that was there.
+    """
+    text = _read_text(path)
+    if text is None:
+        return 0
+    file = _rel(path, builder.repo)
+    calls = raw_http_calls(text)
+    if not calls:
+        return 0
+    directory = file.rsplit("/", 1)[0] if "/" in file else ""
+    owner = builder.owner(directory)
+    added = 0
+    for lineno, protocol, host in calls:
+        if host in mapped or match_domain(host, builder.table["sdk"]) \
+                or match_domain(host, builder.table["env"]):
+            continue
+        if owner is None:
+            builder.warnings.append(
+                f"{file}:{lineno}: calls {host}, and no deployable owns this file")
+            continue
+        prov = _provenance(file, RAW_HTTP_RULE, lineno)
+        target = builder.add_external(host, host, prov)
+        builder.add_edge(owner, target, protocol, RAW_HTTP_LABEL, prov)
+        added += 1
+    return added
+
+
 def build_record(start: Path, *, project_id: str = "") -> tuple[dict, list[str], str]:
     """The record, warnings, and a coverage line.
 
@@ -1789,8 +1879,11 @@ def build_record(start: Path, *, project_id: str = "") -> tuple[dict, list[str],
     manifests: list[Path] = []
     templates: list[Path] = []
     deploys: list[Path] = []
+    sources: list[Path] = []
     for path in files:
         rel = _rel(path, repo)
+        if _is_source(path, rel):
+            sources.append(path)
         if _is_compose(path):
             builder.files_read.append(rel)
             compose.append(path)
@@ -1830,6 +1923,13 @@ def build_record(start: Path, *, project_id: str = "") -> tuple[dict, list[str],
         _walk_env_template(builder, path)
     for path in deploys:
         _walk_deploy(builder, path)
+    # LAST, and against a snapshot: a host any parser rule already drew stays as it drew
+    # it (GRPH-1464). Hosts this pass opens are not in the snapshot, so two files calling
+    # one new host are one node with two provenances, the same as the parser's edges.
+    mapped = builder._ids()
+    builder.sources_scanned = len(sources)
+    for path in sources:
+        builder.raw_http_edges += _walk_source(builder, path, mapped)
     if not (builder.components or builder.infra or builder.external or builder.unresolved):
         raise MapError(
             "nothing to map: no compose service, Dockerfile, package, or known dependency")
