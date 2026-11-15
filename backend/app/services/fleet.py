@@ -2894,13 +2894,62 @@ def denial_in(clause: str, line: str) -> str:
     # "and not the key" is not contradicted by every receipt that quotes it (GRPH-1029 /
     # REPU-579). Residue is what the reviewer wrote around the quote.
     residue = _SKIP_COUNT.sub(" ", _ZERO_FAILED.sub(" ", scope.replace(clause.lower(), " ")))
-    m = _NEGATIVE_EVIDENCE.search(residue)
-    if not m:
-        return ""
-    word = m.group(1)
-    if word == "failed" and expected_failure_clause(clause):
-        return ""
-    return word
+    # GRPH-1019: a receipt that says the clause IS delivered and discloses an UNCOMMITTED
+    # verification artefact is not denying the deliverable when its denial word is about
+    # that artefact. Computed once for the line, not the scope: the disclosure is the
+    # receipt's, whichever sentence it sits in.
+    tool_caveat = _discloses_uncommitted_tool(low, clause.lower())
+    for m in _NEGATIVE_EVIDENCE.finditer(residue):
+        word = m.group(1)
+        if word == "failed" and expected_failure_clause(clause):
+            continue
+        if tool_caveat and _about_the_tool(residue, m.start(), m.end()):
+            continue
+        return word
+    return ""
+
+
+#: A receipt saying its clause was delivered: `delivered`, `is implemented`, `ships` —
+#: never `not delivered`, which `_NEGATIVE_EVIDENCE` reads as the denial it is (GRPH-1019).
+_AFFIRMS_DELIVERY = re.compile(
+    r"(?<!not )(?<!n't )\b(?:delivered|implemented|shipped|merged)\b")
+#: A receipt disclosing that something it used is not part of the change.
+_UNCOMMITTED = re.compile(
+    r"\b(?:uncommitted|not committed|isn't committed|not checked in|not in the diff|"
+    r"outside (?:this item's |the item's |the )?touchpoints)\b")
+#: What a verification artefact is called: the tool, not the deliverable.
+_TOOL_NOUN = re.compile(
+    r"\b(?:checker|check script|script|verifier|tool|harness|helper|test file|"
+    r"artefact|artifact|probe|scratch test)s?\b")
+#: Where the phrase holding a denial word stops: a sentence end, `;`, `,`, a bracket, a dash.
+_PHRASE_BREAK = re.compile(r"[.!?;,()—–]|\s-\s")
+
+
+def _discloses_uncommitted_tool(low: str, clause: str) -> bool:
+    """Whether a receipt asserts its clause is delivered AND discloses that a verification
+    artefact behind it is not committed (GRPH-1019).
+
+    GRPH-1005's builder wrote "delivered, verified by a doc-driven claim checker … It is not
+    committed (a new test file is outside this item's touchpoints); the four literals it
+    cannot resolve from a checkout are allowlisted". Two reviewers could not sign the merged,
+    green item: `cannot` read as the clause being undelivered. A builder who omitted the
+    sentence would have passed — the gate rewarded silence.
+    """
+    residue = low.replace(clause, " ")
+    return bool(_AFFIRMS_DELIVERY.search(residue) and _UNCOMMITTED.search(residue)
+                and _TOOL_NOUN.search(residue))
+
+
+def _about_the_tool(residue: str, start: int, end: int) -> bool:
+    """Whether the phrase holding the denial word at `[start, end)` is about a verification
+    artefact — names one, or refers back to one with `it`/`its` — rather than the
+    deliverable (GRPH-1019). Who the denial is about decides, not how far away it sits."""
+    breaks_before = [m.end() for m in _PHRASE_BREAK.finditer(residue, 0, start)]
+    lo = breaks_before[-1] if breaks_before else 0
+    after = _PHRASE_BREAK.search(residue, end)
+    hi = after.start() if after else len(residue)
+    phrase = residue[lo:hi]
+    return bool(_TOOL_NOUN.search(phrase) or re.search(r"\bits?\b", phrase))
 
 
 #: Why a receipt was read as denying its clause, stated at the point of refusal rather than
@@ -2921,7 +2970,12 @@ DENIAL_RULE = (
     "repeat the clause and names no other one (`the pin lapses after timeout` / "
     "`NOT DELIVERED, no clock`, or `clause — 12 passed` / `NOT DELIVERED`). If the "
     "clause IS delivered, say so in a new `{kind: test}` receipt, in the sentence that "
-    "names it, and keep the caveat in a sentence of its own"
+    "names it, and keep the caveat in a sentence of its own. If the caveat is about a "
+    "verification tool rather than the deliverable — a checker or script that is not "
+    "committed — write that the clause is delivered and that the tool is not committed, "
+    "naming the tool (`the checker cannot resolve X`), and the denial word is read as "
+    "the tool's (GRPH-1019); better still, put the tool's caveat in a `{kind: note}` and "
+    "keep the clause receipt to what is committed"
 )
 
 
