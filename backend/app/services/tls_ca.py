@@ -237,6 +237,16 @@ def see_host(db: Session, raw_host: str) -> bool:
     return added
 
 
+def _https_url(names, port: int) -> str | None:
+    """The box's HTTPS address from its primary (first-listed) name, with the published port."""
+    if not names:
+        return None
+    host = names[0].name
+    if ":" in host:  # IPv6 literal
+        host = f"[{host}]"
+    return f"https://{host}:{port}"
+
+
 def status(db: Session) -> dict:
     """The settings-page read. Public material only."""
     sync_leaf(db)
@@ -245,10 +255,13 @@ def status(db: Session) -> dict:
     custom = tls_byo.custom_status(db)
     row = db.get(TlsAuthority, _ROW_ID)
     names = tls_names.list_names(db)
+    ready = bool(row and row.leaf_cert)
     return {
         "tier": "box-ca" if custom is None or custom["state"] in ("expired", "pending", "failed") else custom["kind"],
         "custom": custom,
-        "ready": bool(row and row.leaf_cert),
+        "ready": ready,
+        "https_port": settings.web_https_port,
+        "https_url": _https_url(names, settings.web_https_port) if ready else None,
         "names": [{"name": n.name, "source": n.source, "origin": n.origin}
                   for n in names],
         "outside_constraints": outside_constraints(row, [n.name for n in names]),

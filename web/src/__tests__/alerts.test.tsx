@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AlertsBell } from "@/components/shell/AlertsBell";
 
-const state: { feed: unknown; fail: boolean; push: unknown } = { feed: null, fail: false, push: null };
+const state: { feed: unknown; fail: boolean; push: unknown; https: unknown } = { feed: null, fail: false, push: null, https: null };
 const subscribed: unknown[] = [];
 vi.mock("@/lib/api", () => ({
   api: {
@@ -18,6 +18,10 @@ vi.mock("@/lib/api", () => ({
     projects: async () => [{ id: "prj_other", tag: "OTH" }],
     config: async () => ({ hosted_mode: true }),
     pushStatus: async () => state.push,
+    httpsStatus: async () => {
+      if (!state.https) throw new Error("no https");
+      return state.https;
+    },
     pushSubscribe: async (sub: unknown) => {
       subscribed.push(sub);
       return state.push;
@@ -193,12 +197,40 @@ describe("AlertsBell", () => {
       mount();
       await userEvent.click(await screen.findByRole("button", { name: /alerts/i }));
       expect(await screen.findByText(/need this site on HTTPS/i)).toBeInTheDocument();
-      expect(screen.getByRole("link", { name: /why\?/i })).toHaveAttribute(
-        "href",
-        "https://github.com/asc-me/graphban/blob/main/docs/deploy.md#browser-push-optional",
-      );
+      expect(screen.getByRole("link", { name: "HTTPS settings" })).toHaveAttribute("href", "/settings/deployment/https");
+      expect(screen.queryByRole("link", { name: /open the secure address/i })).toBeNull();
       expect(screen.queryByText(/does not support push/i)).toBeNull();
       expect(screen.queryByRole("button", { name: /notify me in this browser/i })).toBeNull();
+    });
+
+    it("on http with an HTTPS address offers the secure address and the settings link", async () => {
+      state.push = { configured: true, public_key: "AQAB" };
+      state.https = { ready: true, names: [{ name: "box", source: "auto", origin: "" }] };
+      Object.defineProperty(window, "isSecureContext", { value: false, configurable: true });
+      mount();
+      await userEvent.click(await screen.findByRole("button", { name: /alerts/i }));
+      expect(await screen.findByText(/need this site on HTTPS/i)).toBeInTheDocument();
+      expect(await screen.findByRole("link", { name: "Open the secure address" })).toHaveAttribute("href", expect.stringMatching(/^https:\/\//));
+      expect(screen.getByRole("link", { name: "HTTPS settings" })).toBeInTheDocument();
+      state.https = null;
+    });
+
+    it("on https with a subscription only at the old http origin says moved", async () => {
+      state.push = { configured: true, public_key: "AQAB", subscription_origins: ["http://box.home"] };
+      Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
+      const orig = window.location;
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: { protocol: "https:", origin: "https://box.home:8443", hostname: "box.home", host: "box.home:8443" },
+      });
+      try {
+        mount();
+        await userEvent.click(await screen.findByRole("button", { name: /alerts/i }));
+        expect(await screen.findByText(/old http address\. Turn them on again here\./i)).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: /notify me in this browser/i })).toBeInTheDocument();
+      } finally {
+        Object.defineProperty(window, "location", { configurable: true, value: orig });
+      }
     });
 
     it("on a secure context without PushManager says the browser does not support push", async () => {

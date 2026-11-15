@@ -2,7 +2,7 @@ import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { MachineState } from "@/features/settings/MachinesPanel";
-import { useProjectSetup } from "@/lib/queries";
+import { useProjectSetup, useSecureAddress } from "@/lib/queries";
 import { relTime } from "@/lib/relTime";
 import type { SetupMachineReport, SetupStep } from "@/lib/types";
 import { settingsPath } from "@/lib/routes";
@@ -191,5 +191,48 @@ function MachineReportRow({ row }: { row: SetupMachineReport }) {
         </ul>
       ) : null}
     </li>
+  );
+}
+
+const SECURE_DISMISS_KEY = "al.secureAddress.dismissed";
+
+/**
+ * Home line (P83 D6): on http with an HTTPS address, point at the secure address for browser
+ * notifications. Untrusted box certificate: say to trust it first, address as plain text.
+ * Dismiss is per browser (localStorage).
+ */
+export function SecureAddressNote() {
+  const { onHttp, address, trusted, trustKnown } = useSecureAddress(true);
+  const [dismissed, setDismissed] = React.useState(() => {
+    try {
+      return localStorage.getItem(SECURE_DISMISS_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  if (dismissed || !onHttp || !address || !trustKnown) return null;
+  const dismiss = () => {
+    try {
+      localStorage.setItem(SECURE_DISMISS_KEY, "1");
+    } catch {
+      /* private mode: hide for this visit */
+    }
+    setDismissed(true);
+  };
+  const untrusted = !trusted;
+  return (
+    <section data-testid="secure-address-note" data-state={untrusted ? "untrusted" : "trusted"}
+      className="mb-4 flex items-center gap-2 rounded-lg border border-line p-3 text-[13px] text-fg-2">
+      <p className="flex-1">
+        {untrusted ? (
+          <>Trust this box on this device to use <span className="font-mono">{address}</span></>
+        ) : (
+          <>Use the secure address for browser notifications: <a className="underline" href={address}>{address}</a></>
+        )}
+        {" · "}
+        <Link className="underline" to={settingsPath("deployment/https")}>HTTPS settings</Link>
+      </p>
+      <Button variant="ghost" size="sm" onClick={dismiss}>Dismiss</Button>
+    </section>
   );
 }

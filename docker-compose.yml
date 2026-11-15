@@ -48,6 +48,10 @@ services:
       # Where the box CA writes box.crt/box.key. The web container reloads Caddy itself when
       # they change, so TLS_RELOAD_URL stays empty (GRPH-1635).
       TLS_DIR: /etc/graphban/tls
+      # The published HTTPS port (the web service maps it below). The API builds the box's
+      # `https_url` from it for /api/https; not forwarding it would report :8443 whatever
+      # the operator set — the GRPH-553/GRPH-1579 class (GRPH-1664).
+      WEB_HTTPS_PORT: ${WEB_HTTPS_PORT:-8443}
       # Deprecated, and it was never forwarded here at all before GRPH-553 — so the
       # flag docs/deploy.md told an operator to consider had no effect on this
       # stack whatever they set it to. Passed through now so the documented knob

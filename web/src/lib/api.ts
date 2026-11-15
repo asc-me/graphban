@@ -185,6 +185,8 @@ export function hasSession(): boolean {
   return !!accessToken || !!getRefreshToken();
 }
 
+/** GET /me/push. `subscription_origins` (the origins this user has push subscriptions at) is read when present. */
+export type PushStatusWithOrigins = PushStatus & { subscription_origins?: string[] };
 export interface HttpsName { name: string; source: string; origin: string }
 export interface HttpsCustom {
   kind: "upload" | "letsencrypt"; state: "active" | "expiring-soon" | "expired" | "pending" | "failed";
@@ -197,6 +199,7 @@ export interface HttpsStatus {
   tier: string; ready: boolean; names: HttpsName[]; outside_constraints: string[];
   max_names: number; covered_names: string[]; leaf_not_after: string | null;
   ca_not_after: string | null; ca_certificate_path: string;
+  https_port?: number; https_url?: string | null;
 }
 
 class ApiError extends Error {
@@ -486,7 +489,7 @@ export const api = {
   me: () => request<User>("/auth/me"),
   /** The signed-in user's open alerts and unread count (GRPH-1527). */
   myAlerts: () => request<AlertsFeed>("/me/alerts"),
-  pushStatus: () => request<PushStatus>("/me/push"),
+  pushStatus: () => request<PushStatusWithOrigins>("/me/push"),
   pushSubscribe: (sub: { endpoint: string; keys: { p256dh: string; auth: string } }) =>
     request<PushStatus>("/me/push/subscribe", { method: "POST", body: JSON.stringify(sub) }),
   pushUnsubscribe: (endpoint: string) =>
