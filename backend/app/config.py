@@ -252,6 +252,10 @@ class Settings(BaseSettings):
     # Anthropic auth is read from ANTHROPIC_API_KEY by the SDK.
     anthropic_model: str = "claude-opus-4-8"
 
+    # The published HTTPS port of the box (compose maps ${WEB_HTTPS_PORT:-8443}); reported
+    # in the /api/https status as part of `https_url`.
+    web_https_port: int = 8443
+
     # Public embeddable feedback form (Phase 2).
     public_submit_enabled: bool = True
 

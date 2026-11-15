@@ -157,3 +157,21 @@ def test_sync_pass_covers_a_debounced_name(db, monkeypatch):
     main._tls_sync_pass()
     db.expire_all()
     assert "late.lan" in __import__("json").loads(db.get(TlsAuthority, "box").leaf_names)
+
+
+def test_status_reports_https_url_with_published_port(db, monkeypatch):
+    monkeypatch.setattr(settings, "web_https_port", 9443)
+    tls_names.seed_auto_names(db)
+    tls_ca.ensure_ca(db)
+    out = tls_ca.status(db)
+    assert out["ready"] is True
+    assert out["https_port"] == 9443
+    primary = tls_names.list_names(db)[0].name
+    assert out["https_url"] == f"https://{primary}:9443"
+
+
+def test_status_https_url_is_null_when_leaf_not_ready(db, monkeypatch):
+    monkeypatch.setattr(tls_ca, "sync_leaf", lambda db: "skipped")
+    out = tls_ca.status(db)
+    assert out["ready"] is False
+    assert out["https_url"] is None
