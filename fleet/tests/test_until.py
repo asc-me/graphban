@@ -69,7 +69,7 @@ def _clients(
     delegate_fails: str | None = None,
     calls: list | None = None,
     bound_seats: bool = False,
-    bound_refused: bool = False,
+    bound_refused: bool | str = False,
     pinned_ticks: int = 0,
     sticky_clusters: bool = False,
     gitops: dict | None = None,
@@ -181,7 +181,8 @@ def _clients(
             if delegate_fails:
                 return _error(delegate_fails, f"refused ({delegate_fails})", rid)
             if bound_refused and args.get("seat"):
-                return _error("conflict", "areas are reserved by GRPH-A9", rid)
+                return _error("conflict", bound_refused if isinstance(bound_refused, str)
+                              else "areas are reserved by GRPH-A9", rid)
             if pinned_left[0] > 0 and args.get("seat"):
                 pinned_left[0] -= 1
                 return _error("conflict", "GRPH-7 is pinned to its author GRPH-A1 after a bounce "
@@ -1424,6 +1425,35 @@ def test_a_refused_bound_seat_does_not_fall_back_to_unbound(
     # available, and the next tick will retry after the pin lapses or the holder releases.
     assert result.spawned == 0, "a refused bound seat should not spawn an unbound child"
     assert "mint_enrolment" not in calls, "no unbound fallback means no mint_enrolment"
+
+
+def test_an_idle_run_names_the_ready_item_whose_delegation_was_refused(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1336. The GRPH-P63 drain had one ready item, the server refused its delegation
+    on reach every cycle, and the run ended `idle` with `spawned: 0` — the refusal only in
+    the observe log. Idle must not read as "nothing to do": the summary's `gated` names the
+    item and the server's reason.
+
+    Sabotage: drop the `_note_refused` call in `run` and `gated` is empty.
+    """
+    workspace = tmp_path / "ws"
+    why = ("GRPH-7 has reach=repo but its text reads like work on a deployed system "
+           "(platform-command)")
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7"]],
+        bound_seats=True, bound_refused=why,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=2,
+    )
+    payload = result.as_json()
+    assert payload["spawned"] == 0
+    refused = [g for g in payload["gated"] if g.startswith("GRPH-7:")]
+    assert len(refused) == 1, payload["gated"]
+    assert "delegation refused" in refused[0] and "platform-command" in refused[0]
 
 
 def test_a_pinned_item_spawns_nothing_until_the_server_stops_reporting_the_pin(

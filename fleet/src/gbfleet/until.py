@@ -1251,6 +1251,8 @@ def _loop(
                                               request, prd, repo, base, held=held,
                                               merger=merger, bound_out=flags,
                                               live=live, owners=owners)
+            for refused_item, why in flags.get("refused", ()):
+                _note_refused(wave, refused_item, why)
             if seed is None and flags.get("pinned_until"):
                 # GRPH-1332. A bounced item is reserved for its live author: a wait, not
                 # idle. The pin ends with its expiry or the author going offline, so this is
@@ -2528,6 +2530,12 @@ def _delegate_next(
                         bound_out["pinned_until"] = stamp
                     continue
                 observe.emit("bound_seat_refused", item=candidate, detail=str(exc))
+                # GRPH-1336. Marked delegated so the loop does not spin on it — which also
+                # means the run can end `idle` with this item still ready. Handed back so
+                # the summary names it: idle must not read as "nothing to do" when a ready
+                # item was refused (a reach refusal held one for three hours unseen).
+                if bound_out is not None:
+                    bound_out.setdefault("refused", []).append((candidate, str(exc)))
                 delegated.add(candidate)
                 continue
             except (NotPermitted, ServerUnreachable) as exc:
@@ -2545,6 +2553,18 @@ def _delegate_next(
 #: poll for as long as it lasts, and the JSON summary is not a log — the observe stream has
 #: every one of them.
 GATED_MAX = 20
+
+
+def _note_refused(wave: Wave, item: str, reason: str) -> None:
+    """A ready item whose delegation the server refused, as one `gated` line (GRPH-1336).
+
+    `gated` is the summary's list of what held work back. Without this line a drain whose
+    only ready item was refused on every cycle ended `idle` with `spawned: 0`, and the
+    refusal was visible only by grepping the observe log for `bound_seat_refused`.
+    """
+    line = f"{item}: delegation refused: {reason}"
+    if line not in wave.gated and len(wave.gated) < GATED_MAX:
+        wave.gated.append(line)
 
 
 def _no_room(wave: Wave, room: Headroom, live_n: int) -> bool:
