@@ -102,9 +102,12 @@ def _https_lines(client, url: str) -> list[dict]:
     except (Refused, Unreachable) as exc:
         return [_line("ledger", UNKNOWN, "https",
                       f"can't tell whether the box has an HTTPS address: {exc}")]
-    address = (status or {}).get("https_url") or ""
+    address = (status or {}).get("https_url") if isinstance(status, dict) else None
     if not address:
-        return [_line("ledger", PASS, "https", "the box reports no HTTPS address")]
+        # A box that does not name its HTTPS address may still serve one (the box CA's
+        # listener on WEB_HTTPS_PORT predates this field), so absence is not "no HTTPS".
+        return [_line("ledger", UNKNOWN, "https",
+                      "can't tell: this box does not report its HTTPS address yet")]
     return [_line("ledger", PASS, "https",
                   f"{address} — agent and CLI configs on http keep working while http stays on")]
 
