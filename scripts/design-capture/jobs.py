@@ -15,7 +15,8 @@ def dump(name, base, jobs, login=ALEX):
 # Self-host, seeded: the populated variant of every flat route.
 routes = {
     "home": "/home", "tracker": "/tracker", "requests": "/requests", "triage": "/triage", "prds": "/prds",
-    "roadmap": "/roadmap", "links": "/links", "code": "/code", "fleet-v2": "/fleet.v2", "fleet-v1": "/fleet.v1",
+    "roadmap": "/roadmap", "links": "/links", "code": "/code", "fleet-manage": "/fleet?tab=manage",
+    "fleet-harness": "/fleet?tab=harness",
     "outposts": "/outposts", "harness": "/harness", "memory-review": "/memory-review", "lessons": "/lessons",
     "activity": "/activity", "live": "/live",
     "settings-providers": "/settings/deployment/providers", "settings-gitops": "/settings/deployment/gitops",
@@ -28,7 +29,7 @@ routes = {
 dump("jobs-self.json", SELF, [{"name": k, "path": v, "variant": "populated"} for k, v in routes.items()])
 
 # Hosted: fresh project GRPH (the empty variants) plus org, org admin, operator, hosted settings.
-views = ["tracker", "requests", "triage", "prds", "roadmap", "links", "code", "fleet.v2", "fleet.v1", "outposts",
+views = ["tracker", "requests", "triage", "prds", "roadmap", "links", "code", "fleet", "outposts",
          "harness", "memory-review", "lessons", "activity", "live"]
 hosted = [{"name": "h-" + v.replace(".", "-"), "path": "/p/GRPH/" + v, "variant": "empty"} for v in views]
 hosted.append({"name": "h-project-home", "path": "/p/GRPH", "variant": "populated"})
@@ -53,13 +54,13 @@ extra = [
     {"name": "requests-open", "path": "/requests", "variant": "populated", "clicks": ["text=Memory search returns stale"]},
     {"name": "chat-tab", "path": "/home", "variant": "populated", "clicks": ["button:has-text('Chat')"]},
 ]
-for v in ["home", "tracker", "requests", "prds", "roadmap", "fleet.v2", "harness", "lessons", "memory-review", "code",
+for v in ["home", "tracker", "requests", "prds", "roadmap", "fleet", "harness", "lessons", "memory-review", "code",
           "triage", "live"]:
     for var in ["loading", "error"]:
         extra.append({"name": f"{v.replace('.', '-')}--{var}", "path": "/" + v, "variant": var})
 dump("jobs-extra.json", SELF, extra)
 
-# Component markup lifted from live pages, plus the Fleet.v1 tabs.
+# Component markup lifted from live pages, plus the Fleet management sub-tabs.
 dump("jobs-x.json", SELF, [
     {"name": "x-tracker", "path": "/tracker", "variant": "populated", "extract": {
         "btn-primary": "button:has-text('New item')",
@@ -77,8 +78,8 @@ dump("jobs-x.json", SELF, [
      "extract": {"dialog": "[role=dialog]"}},
     {"name": "x-home", "path": "/home", "variant": "populated", "extract": {
         "cards": "main a:has-text('Triage'), main a:has-text('Code graph')"}},
-    {"name": "fleet-v1-wave", "path": "/fleet.v1", "variant": "populated", "clicks": ["main button:has-text('Wave')"]},
-    {"name": "fleet-v1-work", "path": "/fleet.v1", "variant": "populated", "clicks": ["main button:has-text('Work')"]},
+    {"name": "fleet-wave", "path": "/fleet?tab=manage", "variant": "populated", "clicks": ["main button:has-text('Wave')"]},
+    {"name": "fleet-work", "path": "/fleet?tab=manage", "variant": "populated", "clicks": ["main button:has-text('Work')"]},
 ])
 
 # Unauthed. The public :token pages get a dummy token, so they capture their real not-found state.
