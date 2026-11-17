@@ -727,6 +727,18 @@ def _publish_digests_on_sync(db: Session, url: str, key: str) -> dict | None:
         return {"published": [], "error": f"{type(e).__name__}: {e}"}
 
 
+def _pull_triage_on_sync(db: Session, url: str, key: str) -> dict | None:
+    """Console team-triage decisions (GRPH-1679). Never fatal to the graph push."""
+    from app.services import triage
+
+    try:
+        out = triage.pull_decisions(db, cloud_url=url, api_key=key)
+    except Exception as e:  # noqa: BLE001
+        db.rollback()
+        return {"pulled": False, "error": f"{type(e).__name__}: {e}"}
+    return None if out.get("pulled") is False else out
+
+
 def _sync_tail(db: Session, url: str, key: str) -> dict:
     """Rule decisions, the org-view push, then the digests. All run after any graph batches."""
     out = {
@@ -736,6 +748,9 @@ def _sync_tail(db: Session, url: str, key: str) -> dict:
     digests = _publish_digests_on_sync(db, url, key)
     if digests is not None:
         out["digests"] = digests
+    decisions = _pull_triage_on_sync(db, url, key)
+    if decisions is not None:
+        out["triage_decisions"] = decisions
     return out
 
 

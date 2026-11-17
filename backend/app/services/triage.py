@@ -282,3 +282,184 @@ def feed(db: Session, project_id: str) -> dict:
     on_person = sum(r.get("question_state") == waits_svc.RESPONSE_NEEDED for r in rows)
     return {"rows": rows, "counts": counts, "failed_sources": failed,
             "waiting_on_person": on_person}
+
+
+# ---- Console team-triage decisions (GRPH-1679) ----
+#
+# A manager decides in the console; the box that owns the item reads the decision on each sync,
+# applies it through the same service functions the box's own triage UI calls, and reports
+# `applied` or `refused` back. The box initiates both calls.
+
+DECISIONS_FEATURE_PATH = "/api/sync/triage-decisions"
+DECISION_TYPES = ("accept", "duplicate_of", "park", "decline", "assign_team")
+APPLIED_ACTION = "triage_decision_applied"
+_TIMEOUT = 30.0
+
+
+class DecisionRefused(Exception):
+    def __init__(self, reason: str, detail: str = ""):
+        super().__init__(detail or reason)
+        self.reason = reason
+        self.detail = detail or reason
+
+
+def _author_label(decision: dict) -> str:
+    a = decision.get("author")
+    if isinstance(a, dict):
+        return str(a.get("name") or a.get("email") or a.get("id") or "console")
+    return str(a or "console")
+
+
+def _decision_applied_before(db: Session, decision_id: str) -> bool:
+    from sqlalchemy import select
+    from app.models import Event
+
+    for e in db.scalars(select(Event).where(Event.action == APPLIED_ACTION)):
+        if (e.meta or {}).get("decision_id") == decision_id:
+            return True
+    return False
+
+
+def _find_target(db: Session, key: str):
+    rid = keys.resolve_request(db, key)
+    req = db.get(Request, rid or key)
+    if req is not None:
+        return req
+    iid = keys.resolve_item(db, key)
+    return db.get(Item, iid or key)
+
+
+def _check_unmoved(target, decision: dict) -> None:
+    """The decision was made against the status the console saw. If the item moved since,
+    the manager decided about something that no longer exists in that form."""
+    seen = decision.get("status")
+    if seen is not None and seen != target.status:
+        raise DecisionRefused("item_moved", f"{target.key} is now {target.status}, was {seen}")
+
+
+def _apply_one(db: Session, target, decision: dict) -> dict:
+    kind = decision.get("decision")
+    reason = str(decision.get("reason") or "")
+    if kind not in DECISION_TYPES:
+        raise DecisionRefused("unknown_decision", f"unknown decision {kind!r}")
+    _check_unmoved(target, decision)
+    is_req = isinstance(target, Request)
+    try:
+        if kind in ("accept", "park"):
+            status = "next" if kind == "accept" else "backlog"
+            if is_req:
+                req_svc.accept_request(db, target.id, status=status)
+            else:
+                items_svc.update_item(db, target.id, status=status)
+        elif kind == "decline":
+            if not is_req:
+                raise DecisionRefused("unsupported_target", "an item cannot be declined")
+            req_svc.decline_request(db, target.id, reason=reason)
+        elif kind == "assign_team":
+            team = str(decision.get("team") or "").strip()
+            if not team:
+                raise DecisionRefused("bad_decision", "assign_team needs a team")
+            if is_req:
+                target.meta = {**(target.meta or {}), "team": team}
+                db.commit()
+            else:
+                tags = [t for t in (target.tags or []) if not str(t).startswith("team:")]
+                items_svc.update_item(db, target.id, tags=tags + [f"team:{team}"])
+        else:  # duplicate_of
+            _apply_duplicate(db, target, decision)
+    except req_svc.ActionRefused as e:
+        db.rollback()
+        raise DecisionRefused("refused", str(e))
+    except ValueError as e:
+        db.rollback()
+        raise DecisionRefused("refused", str(e))
+    return {"decision": kind}
+
+
+def _apply_duplicate(db: Session, target, decision: dict) -> None:
+    ref = decision.get("duplicate_of")
+    remote = isinstance(ref, dict) and ref.get("deployment")
+    from app.models import Link
+
+    if remote:
+        # The other item lives on another deployment: record where, not a local link.
+        note = {"deployment": str(ref["deployment"]), "id": str(ref.get("id") or "")}
+        if isinstance(target, Request):
+            target.meta = {**(target.meta or {}), "duplicate_of": note}
+            db.commit()
+            req_svc.decline_request(db, target.id, reason=f"duplicate of {note['deployment']}:{note['id']}")
+        else:
+            db.add(Link(project_id=target.project_id, a=target.key,
+                        b=f"{note['deployment']}:{note['id']}", type="semantic",
+                        reason="duplicate_of (remote deployment)"))
+            db.commit()
+        return
+    key = str(ref.get("id") if isinstance(ref, dict) else ref or "")
+    other = _find_target(db, key) if key else None
+    if other is None or other.project_id != target.project_id:
+        raise DecisionRefused("bad_decision", f"duplicate target {key!r} not found")
+    if isinstance(target, Request):
+        req_svc.merge_request(db, target.id, other.id)
+    else:
+        db.add(Link(project_id=target.project_id, a=target.key, b=other.key,
+                    type="semantic", reason="duplicate_of"))
+        db.commit()
+
+
+def apply_decision(db: Session, decision: dict) -> dict:
+    """Apply one console decision. Returns the report row: `{id, result, reason?}`.
+
+    Idempotent on the decision id: a retried sync that delivers it again reports `applied`
+    without touching the item a second time.
+    """
+    from app.services import events as events_svc
+
+    did = str(decision.get("id") or "")
+    if not did:
+        return {"id": did, "result": "refused", "reason": "bad_decision"}
+    if _decision_applied_before(db, did):
+        return {"id": did, "result": "applied"}
+    target = _find_target(db, str(decision.get("target") or ""))
+    if target is None:
+        return {"id": did, "result": "refused", "reason": "not_found"}
+    try:
+        out = _apply_one(db, target, decision)
+    except DecisionRefused as e:
+        return {"id": did, "result": "refused", "reason": e.reason}
+    events_svc.record(
+        db, actor_type="console", actor_label=_author_label(decision), surface="rest",
+        action=APPLIED_ACTION, target_type="request" if isinstance(target, Request) else "item",
+        target_id=target.key, project_id=target.project_id,
+        meta={"decision_id": did, "decision": out["decision"], "author": _author_label(decision)})
+    return {"id": did, "result": "applied"}
+
+
+def pull_decisions(db: Session, *, cloud_url: str, api_key: str) -> dict:
+    """BOX: read pending decisions per project, apply each, report the results."""
+    import httpx
+    from sqlalchemy import select
+    from app.models import Project
+
+    base, headers = cloud_url.rstrip("/") + DECISIONS_FEATURE_PATH, {"X-API-Key": api_key}
+    out = {"applied": 0, "refused": 0, "errors": []}
+    for project in list(db.scalars(select(Project).order_by(Project.name, Project.id))):
+        name = (project.name or "").strip()
+        if not name:
+            continue
+        resp = httpx.get(base, params={"project": name}, headers=headers, timeout=_TIMEOUT)
+        if resp.status_code == 404:
+            return {"pulled": False, "reason": "console does not serve triage decisions"}
+        resp.raise_for_status()
+        body = resp.json()
+        rows = body.get("decisions") if isinstance(body, dict) else None
+        results = [apply_decision(db, d) for d in (rows or []) if isinstance(d, dict)]
+        if not results:
+            continue
+        try:
+            httpx.post(f"{base}/applied", headers=headers, timeout=_TIMEOUT,
+                       json={"project": name, "results": results}).raise_for_status()
+        except Exception as e:  # noqa: BLE001 — still pending on the console; retried next sync
+            out["errors"].append({"project": name, "error": f"{type(e).__name__}: {e}"})
+        for r in results:
+            out["applied" if r["result"] == "applied" else "refused"] += 1
+    return out
