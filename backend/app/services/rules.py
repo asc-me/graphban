@@ -116,6 +116,10 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
          "Linking, re-pointing or unlinking this deployment's cloud org is done by the box's "
          "operator or an owner/admin of one of their projects, not by any member.",
          "enforced", _src("app/routers/sync.py", "refuse_unless_box_admin"), "code", scope="org"),
+    Rule("sync.publish_to_org_needs_admin", "build", "Publish to org needs a project admin",
+         "Turning a project's publish-to-org switches (specs, item digests) off or on is done by "
+         "its owner or an admin, not by any member.",
+         "enforced", _src("app/routers/projects.py", "set_publish_to_org"), "code"),
     Rule("setup.posture_needs_instance_admin", "build", "The instance posture needs an instance admin",
          "Whether this box's secrets and signup are safe to expose is read only by its operator "
          "(hosted) or an owner of one of its projects (self-host); anyone else learns nothing.",

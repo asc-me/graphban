@@ -177,7 +177,8 @@ def set_publish_to_org(
     """Turn what a linked box publishes to the org on or off (GRPH-1674). Owner or admin."""
     authz.require_writable(db, user.id, project_id)
     if authz.project_role(db, user.id, project_id) not in ("owner", "admin"):
-        raise HTTPException(403, "requires the project owner or an admin")
+        raise Refused(403, "changing publish to org requires the project owner or an admin",
+                      rule_id="sync.publish_to_org_needs_admin")
     project = db.get(Project, project_id)
     if project is None:
         raise HTTPException(404, "project not found")
