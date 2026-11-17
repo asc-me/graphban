@@ -715,11 +715,23 @@ def _push_box_on_sync(db: Session, url: str, key: str) -> dict:
         return {"pushed": False, "error": f"{type(e).__name__}: {e}"}
 
 
+def _publish_digests_on_sync(db: Session, url: str, key: str) -> dict:
+    """Team-triage digests ride the sync too (GRPH-1678). Never fatal to the graph push."""
+    from app.services import digest_publish
+
+    try:
+        return digest_publish.publish_digests(db, cloud_url=url, api_key=key)
+    except Exception as e:  # noqa: BLE001
+        db.rollback()
+        return {"published": [], "error": f"{type(e).__name__}: {e}"}
+
+
 def _sync_tail(db: Session, url: str, key: str) -> dict:
-    """Rule decisions, then the org-view push. Both run after any graph batches."""
+    """Rule decisions, the org-view push, then the digests. All run after any graph batches."""
     return {
         "rules": _pull_rules_on_sync(db, url, key),
         "box": _push_box_on_sync(db, url, key),
+        "digests": _publish_digests_on_sync(db, url, key),
     }
 
 
