@@ -739,6 +739,18 @@ def _publish_specs_on_sync(db: Session, url: str, key: str) -> dict | None:
         return {"published": [], "purged": [], "error": f"{type(e).__name__}: {e}"}
 
 
+def _pull_specs_on_sync(db: Session, url: str, key: str) -> dict | None:
+    """Other deployments' specs and console revisions are read on the same sync (GRPH-1677).
+    Never fatal to the graph push. None when the console does not serve specs."""
+    from app.services import spec_pull
+
+    try:
+        return spec_pull.pull_specs(db, cloud_url=url, api_key=key)
+    except Exception as e:  # noqa: BLE001
+        db.rollback()
+        return {"remote": [], "applied": [], "conflicts": [], "error": f"{type(e).__name__}: {e}"}
+
+
 def _sync_tail(db: Session, url: str, key: str) -> dict:
     """Rule decisions, the org-view push, specs, then the digests. All run after any graph batches."""
     out = {
@@ -748,6 +760,9 @@ def _sync_tail(db: Session, url: str, key: str) -> dict:
     specs = _publish_specs_on_sync(db, url, key)
     if specs is not None:
         out["specs"] = specs
+    pulled = _pull_specs_on_sync(db, url, key)
+    if pulled is not None:
+        out["specs_pull"] = pulled
     digests = _publish_digests_on_sync(db, url, key)
     if digests is not None:
         out["digests"] = digests

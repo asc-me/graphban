@@ -242,6 +242,24 @@ function LibraryBody({
             </ul>
           </Group>
         )}
+        {(data.remote_prds ?? []).length > 0 && (
+          <Group heading="From other deployments (read-only)">
+            <ul className="space-y-1.5">
+              {(data.remote_prds ?? []).map((r) => (
+                <li
+                  key={r.id}
+                  data-testid={`spec-row-remote-${r.id}`}
+                  className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm"
+                >
+                  <Id title={r.id} />
+                  <Title>{r.title}</Title>
+                  <span className="font-mono text-[10px] text-muted-2">home: {r.home || "unknown"}</span>
+                  <span className="font-mono text-[10px] text-muted-2">{r.version.slice(0, 8)}</span>
+                </li>
+              ))}
+            </ul>
+          </Group>
+        )}
         {constraints.length > 0 && (
           <Group heading="Set constraints">
             <ul className="space-y-1.5">

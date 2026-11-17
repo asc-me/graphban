@@ -1716,6 +1716,17 @@ export interface SpecLibrary {
   preamble: SpecLibraryPreamble | null;
   documents: SpecLibraryDocument[];
   conflict_ids: string[];
+  /** Specs whose home is another deployment (GRPH-1677): read-only here. Absent on an older box. */
+  remote_prds?: SpecLibraryRemotePrd[];
+}
+
+/** A spec owned by another deployment. `home` names it; `version` is the published hash. */
+export interface SpecLibraryRemotePrd {
+  id: string;
+  title: string;
+  home: string;
+  version: string;
+  read_only: true;
 }
 
 /** What one Drive sync run reports. The conflict record page reads it from router state. */
