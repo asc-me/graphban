@@ -715,11 +715,23 @@ def _push_box_on_sync(db: Session, url: str, key: str) -> dict:
         return {"pushed": False, "error": f"{type(e).__name__}: {e}"}
 
 
+def _publish_specs_on_sync(db: Session, url: str, key: str) -> dict:
+    """Specs (PRDs) publish on the same sync (GRPH-1676). Never fatal to the graph push."""
+    from app.services import spec_publish
+
+    try:
+        return spec_publish.publish_specs(db, cloud_url=url, api_key=key)
+    except Exception as e:  # noqa: BLE001 — the graph push already landed; never undo it
+        db.rollback()
+        return {"published": [], "purged": [], "error": f"{type(e).__name__}: {e}"}
+
+
 def _sync_tail(db: Session, url: str, key: str) -> dict:
-    """Rule decisions, then the org-view push. Both run after any graph batches."""
+    """Rule decisions, the org-view push, then specs. All run after any graph batches."""
     return {
         "rules": _pull_rules_on_sync(db, url, key),
         "box": _push_box_on_sync(db, url, key),
+        "specs": _publish_specs_on_sync(db, url, key),
     }
 
 

@@ -2296,6 +2296,23 @@ class CodeSyncState(Base):
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class SpecPublish(Base):
+    """The version of each PRD this box last published to the console (GRPH-1676).
+
+    One row per published PRD: the `base_hash` the console confirmed. A PRD whose current
+    hash differs is published on the next sync; a row whose PRD is gone, or whose project
+    stopped publishing specs, is purged from the console and then dropped here. The project
+    name rides on the row because a purge must still name the project after it is deleted."""
+
+    __tablename__ = "spec_publish"
+
+    prd_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String, index=True)
+    project_name: Mapped[str] = mapped_column(String, default="", server_default="")
+    base_hash: Mapped[str] = mapped_column(String, default="", server_default="")
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class SyncProject(Base):
     """A local project mapped to a cloud project (GRPH-1517, P67 L4). A project with no row is
     local only. `last_push_result` is `ok | refused | unknown`, with `last_push_reason`; both
