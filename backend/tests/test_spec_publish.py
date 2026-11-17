@@ -21,15 +21,23 @@ def db(client):
 
 
 class _Resp:
-    def __init__(self, status=200):
+    def __init__(self, status=200, body=None):
         self.status_code = status
+        self._body = body
+
+    def json(self):
+        return self._body
 
 
 @pytest.fixture()
 def console(monkeypatch):
     """Record every spec call; linked box. `console.status` sets the next answers."""
     calls: list[tuple[str, dict, dict]] = []
-    state = {"status": 200}
+    state = {"status": 200, "config": {"features": ["specs"]}}
+
+    def get(url, timeout=None):
+        assert url == f"{URL}/api/config"
+        return _Resp(200, state["config"])
 
     def post(url, json=None, headers=None, timeout=None):
         assert url == f"{URL}/api/sync/specs"
@@ -41,6 +49,7 @@ def console(monkeypatch):
         calls.append(("DELETE", json, headers))
         return _Resp(state["status"])
 
+    monkeypatch.setattr(spec_publish.httpx, "get", get)
     monkeypatch.setattr(spec_publish.httpx, "post", post)
     monkeypatch.setattr(spec_publish.httpx, "request", request)
     monkeypatch.setattr(code_sync, "link_status", lambda _db: {"linked": True})
@@ -175,3 +184,48 @@ def test_the_sync_tail_carries_the_spec_publish(client, auth, db, console, monke
     monkeypatch.setattr(code_sync, "_push_box_on_sync", lambda *a: {})
     out = code_sync._sync_tail(db, URL, KEY)
     assert prd["id"] in out["specs"]["published"]
+
+
+def test_a_console_that_does_not_advertise_specs_gets_nothing(client, auth, db, console,
+                                                             monkeypatch):
+    """An older console keeps working unchanged: no POST, no DELETE, no specs key."""
+    _setup(client, auth)
+    console.status["config"] = {"features": ["item_digests"]}
+    assert _sync(db) is None
+    assert console.mine() == [] and db.scalars(select(SpecPublish)).first() is None
+    monkeypatch.setattr(code_sync, "_pull_rules_on_sync", lambda *a: {})
+    monkeypatch.setattr(code_sync, "_push_box_on_sync", lambda *a: {})
+    monkeypatch.setattr(code_sync, "_publish_digests_on_sync", lambda *a: None)
+    assert code_sync._sync_tail(db, URL, KEY) == {"rules": {}, "box": {}}
+
+
+def test_a_probe_failure_reads_as_not_served(client, auth, db, console, monkeypatch):
+    _setup(client, auth)
+
+    def boom(url, timeout=None):
+        raise spec_publish.httpx.ConnectError("down")
+
+    monkeypatch.setattr(spec_publish.httpx, "get", boom)
+    assert _sync(db) is None and console.mine() == []
+
+
+def test_a_404_from_the_ingest_is_not_served_not_a_failure(client, auth, db, console):
+    """Advertised, then rolled back: the 404 is not retried as a failure every sync."""
+    _, prd = _setup(client, auth)
+    console.status["status"] = 404
+    assert _sync(db) is None
+    assert db.get(SpecPublish, prd["id"]) is None
+    console.status["status"] = 200
+    out = _sync(db)
+    assert prd["id"] in out["published"] and "failed" not in out
+
+
+def test_a_404_on_purge_keeps_the_row_for_a_console_that_serves_specs(client, auth, db,
+                                                                     console):
+    _, prd = _setup(client, auth)
+    _sync(db)
+    db.delete(db.get(Prd, prd["id"]))
+    db.commit()
+    console.status["status"] = 404
+    assert _sync(db) is None
+    assert db.get(SpecPublish, prd["id"]) is not None  # purged once the console serves it

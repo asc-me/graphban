@@ -15,6 +15,17 @@ What was published lives in `spec_publish` (one row per PRD, written only after 
 accepted it), so a failed call is retried on the next sync and a restart re-sends nothing.
 An unlinked box publishes nothing and purges nothing: whether to purge is a question about
 the org, and an unlinked box has no org to ask.
+
+An older console must keep working unchanged: nothing is sent unless the console's public
+`/api/config` advertises `specs`, and a 404 from the ingest (advertised, then rolled back)
+reads as "not served" too. In both cases `publish_specs` returns None, records nothing more,
+and the sync result carries no `specs` key.
+
+The published unit is the version, and the version is the body (`base_hash`). A change to the
+title, status, grill state or decomposed items with the body unchanged is not a new version,
+so it is not re-sent: the console's copy of those fields is as of the last body edit. That is
+deliberate — the `Idempotency-Key` is per (prd_id, base_hash), so a console would treat such
+a resend as a replay of the version it already holds.
 """
 from __future__ import annotations
 
@@ -31,6 +42,25 @@ logger = logging.getLogger("graphban.spec_publish")
 
 _TIMEOUT = 30.0
 _PATH = "/api/sync/specs"
+SPECS_FEATURE = "specs"
+
+
+class NotServed(Exception):
+    """The console answered 404 on the specs ingest: it does not serve specs."""
+
+
+def console_serves_specs(cloud_url: str) -> bool:
+    """Has the console advertised `specs` on its public `/api/config`? Anything else (an older
+    console, an error, a body that is not JSON) is False, and nothing is sent."""
+    from app.services import box_push
+
+    try:
+        resp = httpx.get(f"{cloud_url.rstrip('/')}/api/config", timeout=box_push._PROBE_TIMEOUT)
+        if getattr(resp, "status_code", None) != 200:
+            return False
+        return box_push._advertises(resp.json(), SPECS_FEATURE)
+    except Exception:  # noqa: BLE001 — a probe failure means "not served", never an error
+        return False
 
 
 def idempotency_key(prd_id: str, base_hash: str) -> str:
@@ -70,18 +100,30 @@ def _delete(base: str, api_key: str, row: SpecPublish) -> httpx.Response:
 
 
 def _accepted(resp: httpx.Response) -> bool:
-    """2xx is accepted. (A purge also takes a 404: the console already holds nothing.)"""
+    """2xx is accepted. A 404 is not a refusal but "specs not served" (see NotServed)."""
     return 200 <= resp.status_code < 300
 
 
-def publish_specs(db: Session, *, cloud_url: str, api_key: str) -> dict:
+def publish_specs(db: Session, *, cloud_url: str, api_key: str) -> dict | None:
     """Publish changed PRDs and purge withdrawn ones. One failure never stops the rest:
-    it is reported, nothing is recorded for it, and the next sync tries again."""
+    it is reported, nothing is recorded for it, and the next sync tries again.
+
+    None when the console does not serve specs (not advertised, or a 404 from the ingest)."""
+    try:
+        return _publish_specs(db, cloud_url=cloud_url, api_key=api_key)
+    except NotServed:
+        db.rollback()
+        return None
+
+
+def _publish_specs(db: Session, *, cloud_url: str, api_key: str) -> dict:
     from app.services import box_push, code_sync
     from app.services import prds as prd_svc
 
     if code_sync.link_status(db)["linked"] is not True:
         return {"published": [], "purged": [], "reason": "not linked"}
+    if not console_serves_specs(cloud_url):
+        raise NotServed()
     base = cloud_url.rstrip("/")
     recorded = {r.prd_id: r for r in db.scalars(select(SpecPublish))}
     wanted: dict[str, tuple[Prd, Project]] = {}
@@ -103,7 +145,9 @@ def publish_specs(db: Session, *, cloud_url: str, api_key: str) -> dict:
         except (httpx.HTTPError, OSError) as e:
             failed.append({"prd_id": prd_id, "op": "purge", "error": type(e).__name__})
             continue
-        if _accepted(resp) or resp.status_code == 404:
+        if resp.status_code == 404:
+            raise NotServed()
+        if _accepted(resp):
             db.delete(row)
             db.commit()
             purged.append(prd_id)
@@ -122,6 +166,8 @@ def publish_specs(db: Session, *, cloud_url: str, api_key: str) -> dict:
         except (httpx.HTTPError, OSError) as e:
             failed.append({"prd_id": prd_id, "op": "publish", "error": type(e).__name__})
             continue
+        if resp.status_code == 404:
+            raise NotServed()
         if not _accepted(resp):
             logger.warning("console refused the spec %s: %s", prd_id, resp.status_code)
             failed.append({"prd_id": prd_id, "op": "publish", "status": resp.status_code})

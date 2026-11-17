@@ -727,8 +727,9 @@ def _publish_digests_on_sync(db: Session, url: str, key: str) -> dict | None:
         return {"published": [], "error": f"{type(e).__name__}: {e}"}
 
 
-def _publish_specs_on_sync(db: Session, url: str, key: str) -> dict:
-    """Specs (PRDs) publish on the same sync (GRPH-1676). Never fatal to the graph push."""
+def _publish_specs_on_sync(db: Session, url: str, key: str) -> dict | None:
+    """Specs (PRDs) publish on the same sync (GRPH-1676). Never fatal to the graph push.
+    None when the console does not serve specs: the sync result is then unchanged."""
     from app.services import spec_publish
 
     try:
@@ -743,8 +744,10 @@ def _sync_tail(db: Session, url: str, key: str) -> dict:
     out = {
         "rules": _pull_rules_on_sync(db, url, key),
         "box": _push_box_on_sync(db, url, key),
-        "specs": _publish_specs_on_sync(db, url, key),
     }
+    specs = _publish_specs_on_sync(db, url, key)
+    if specs is not None:
+        out["specs"] = specs
     digests = _publish_digests_on_sync(db, url, key)
     if digests is not None:
         out["digests"] = digests
