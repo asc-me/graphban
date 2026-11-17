@@ -526,6 +526,28 @@ def test_an_mcp_tool_call_tags_its_spans_mcp_colon_tool(client, auth):
     assert tagged, f"no tagged embed span; saw {[(r.kind, r.feature) for r in _spans()][-8:]}"
 
 
+def test_a_dashed_uuid_x_request_id_still_writes_its_spans(client, auth):
+    """GRPH-1694, end to end. A caller sent a 36-char dashed UUID as X-Request-ID; it went
+    into request_id_var verbatim and then into llm_call_spans.request_id (String(32)).
+    Postgres refused the INSERT and the span — the call's whole cost record — was lost.
+    SQLite does not enforce varchar length, so there the claim is the stored length."""
+    key = client.post("/api/api-keys", json={"name": "meter-rid"}, headers=auth).json()["plaintext"]
+    sent = str(uuid.uuid4())
+    assert len(sent) == 36
+    r = client.post("/api/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                      "params": {"name": "add_memory",
+                                                 "arguments": {"text": "a request-id lesson " + sent,
+                                                               "scope": "global"}}},
+                    headers={"X-API-Key": key, "X-Request-ID": sent})
+    assert r.status_code == 200 and not r.json()["result"].get("isError")
+    used = r.headers["x-request-id"]
+    assert len(used) <= 32 and used == uuid.UUID(sent).hex
+
+    mine = [s for s in _spans() if s.request_id == used]
+    assert mine, "no span carries this request's id — the span write was dropped"
+    assert all(len(s.request_id) <= 32 for s in mine)
+
+
 # ------------------------------------------------ an empty answer is a failed span
 def test_an_empty_stream_is_a_failed_span_not_a_free_success(client):
     """The live defect (2026-09-03): a fallback provider's stream ended with no content
