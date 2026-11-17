@@ -773,11 +773,15 @@ def apply_decisions(db: Session, record: dict) -> RuleDecisionPull:
     return pull
 
 
-def apply_project_profiles(db: Session, entries: object) -> dict:
+def apply_project_profiles(db: Session, entries: object, *, report_only: bool = False) -> dict:
     """BOX (contract v2): apply each pulled per-project profile to its named project only. A
     project overrides the org-wide profile for itself, never for another project; rules the org
     has locked hold and are left alone. A project this box does not hold is `not_on_box`; a
-    profile this box cannot apply is `refused`, and neither stops the other entries."""
+    profile this box cannot apply is `refused`, and neither stops the other entries.
+
+    `report_only` writes nothing and records no event: it rebuilds the same report for a version
+    already applied whose report never reached the console, so a retried report still names
+    each per-project apply and each `not_on_box`."""
     from types import SimpleNamespace
 
     from app.models import Project
@@ -796,6 +800,10 @@ def apply_project_profiles(db: Session, entries: object) -> dict:
             continue
         try:
             profile, plan = _plan(str(profile_id))
+            if report_only:
+                out["applied"].append({"project_id": pid, "profile": profile_id,
+                                       "version": version})
+                continue
             written = []
             for rid, changes in sorted(plan.items()):
                 before = rule_toggles.resolve(db, rid, pid)

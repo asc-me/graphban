@@ -68,3 +68,29 @@ def test_an_org_lock_holds_against_a_project_profile(client, org, monkeypatch): 
     db = _db()
     code_sync.pull_rule_decisions(db, cloud_url="https://c", api_key="k")
     assert T.resolve(db, RULE, pid)["on"]["value"] is False
+
+
+def test_a_failed_report_is_retried_with_its_per_project_result(client, org, monkeypatch):  # noqa: F811
+    _self_host(monkeypatch)
+    pid = _box_project(client, org["owner"])
+    rec = _v2([{"project_id": pid, "profile": {"id": "standard", "version": "1"}},
+               {"project_id": "gone", "profile": {"id": "standard", "version": "1"}}])
+    gets, posts = _wire(monkeypatch, rec)
+
+    def down(url, **k):
+        raise code_sync.httpx.ConnectError("console down")
+    monkeypatch.setattr(code_sync.httpx, "post", down)
+    db = _db()
+    first = code_sync.pull_rule_decisions(db, cloud_url="https://c", api_key="k")
+    assert first["reported"] is False
+    monkeypatch.setattr(code_sync.httpx, "post",
+                        lambda url, **k: posts.append(k["json"]) or Resp())
+    out = code_sync.pull_rule_decisions(db, cloud_url="https://c", api_key="k")
+    assert out["changed"] is False and out["reported"] is True
+    assert posts == [{"org_id": "org_cloud", "version": "v1",
+                      "project_profiles_applied": [
+                          {"project_id": pid, "profile": "standard", "version": "1"}],
+                      "not_on_box": ["gone"]}]
+    # Once reported, a further pull of the same version re-reports nothing per-project.
+    code_sync.pull_rule_decisions(db, cloud_url="https://c", api_key="k")
+    assert "project_profiles_applied" not in posts[-1]

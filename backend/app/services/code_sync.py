@@ -763,8 +763,11 @@ def pull_rule_decisions(db: Session, *, cloud_url: str = "", api_key: str = "") 
     if changed:
         pull = rules_org.apply_decisions(db, record)
     per_project = None
-    if changed and isinstance(record.get("project_profiles"), list):
-        per_project = rules_org.apply_project_profiles(db, record["project_profiles"])
+    if isinstance(record.get("project_profiles"), list) and (changed or not pull.reported):
+        # A version applied earlier whose report failed: rebuild its per-project report
+        # without re-applying, so the retried report is the one the first would have been.
+        per_project = rules_org.apply_project_profiles(
+            db, record["project_profiles"], report_only=not changed)
     body = {"org_id": pull.org_id, "version": pull.applied_version}
     if per_project is not None:
         body["project_profiles_applied"] = per_project["applied"]
