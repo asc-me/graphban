@@ -527,3 +527,29 @@ def release_ref_view(db: Session, project_id: str | None) -> dict:
     if project.release_ref:
         return {"ref": project.release_ref, "source": "project"}
     return {"ref": None, "source": "unmeasured"}
+
+
+PUBLISH_FLAGS = {"specs": "publish_specs", "item_digests": "publish_item_digests"}
+
+
+def set_publish_to_org(db: Session, project: Project, flags: dict[str, bool], *, actor) -> dict[str, bool]:
+    """Apply publish-to-org flags (GRPH-1674); returns `{flag: new_value}` for the ones that CHANGED.
+
+    Each change records a `publish_to_org` activity event naming who changed which flag, and
+    commits. Owner/admin is the caller's check (the REST route). Turning a flag off is what the
+    spec / digest publishers (GRPH-1676 / GRPH-1678) purge on; they ask `box_push.publish_enabled`.
+    """
+    from app.services import events as events_svc
+
+    changed: dict[str, bool] = {}
+    for name, value in flags.items():
+        col = PUBLISH_FLAGS[name]
+        if bool(getattr(project, col)) != value:
+            setattr(project, col, value)
+            changed[name] = value
+    db.commit()
+    for name, value in changed.items():
+        events_svc.record_user(db, actor, action="publish_to_org", target_type="project",
+                               target_id=project.id, project_id=project.id,
+                               meta={"flag": name, "value": value, "by": actor.id})
+    return changed

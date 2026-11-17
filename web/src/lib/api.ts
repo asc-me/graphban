@@ -1452,6 +1452,8 @@ export const api = {
 
   updateProject: (id: string, body: Partial<Project>) =>
     request<Project>(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  setPublishToOrg: (id: string, body: { specs?: boolean; item_digests?: boolean }) =>
+    request<Project>(`/projects/${id}/publish-to-org`, { method: "PUT", body: JSON.stringify(body) }),
   members: (id: string) => request<Member[]>(`/projects/${id}/members`),
 
   chat: (message: string, projectId?: string) =>

@@ -182,3 +182,19 @@ def push_box_view(db: Session, *, cloud_url: str, api_key: str) -> dict:
     _refused_key = None
     return {"pushed": True, "projects": [p["project"] for p in body["projects"]],
             "idempotency_key": key}
+
+
+def publish_enabled(db: Session, project_id: str, flag: str) -> bool:
+    """May this box publish `flag` ("specs" | "item_digests") for this project? (GRPH-1674)
+
+    False on an unlinked box whatever the flags say, and False when the project opted out.
+    Every spec or digest publish path asks this before it makes a call.
+    """
+    from app.services import code_sync, projects as projects_svc
+
+    if code_sync.link_status(db)["linked"] is not True:
+        return False
+    project = db.get(Project, project_id)
+    if project is None:
+        return False
+    return bool(getattr(project, projects_svc.PUBLISH_FLAGS[flag]))

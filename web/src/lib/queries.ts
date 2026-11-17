@@ -1072,6 +1072,14 @@ export function useUpdateGitops(projectId: string) {
   });
 }
 
+export function useSetPublishToOrg(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { specs?: boolean; item_digests?: boolean }) => api.setPublishToOrg(projectId, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.projects }),
+  });
+}
+
 export function useMembers(projectId: string) {
   return useQuery({ queryKey: ["members", projectId], queryFn: () => api.members(projectId), enabled: !!projectId });
 }

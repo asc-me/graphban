@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 367 of the 367. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 368 of the 368. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -91,6 +91,7 @@ Five public surfaces are mounted on the org host: `/{path_id}/feedback`,
 | POST | `/api/projects/{id}/retag` | JWT (write) | Move the project's tag. One UPDATE + one tag-history row + one audit event; **no other row in the database changes**. Retired tags are never reusable |
 | PATCH | `/api/projects/{id}` | JWT | Update project config. **Not** the tag — changing that has to record tag history |
 | PUT | `/api/projects/{id}/memory-write-mode` | JWT (write, person only) | The Rules page's change of `memory.write_mode` (`review`\|`auto`\|`trusted`). `{mode, reason}`; an empty reason is 422, an agent key is refused (`rules.person_adopts`). Recorded in the rule history as a `set_rule_toggle` event with old and new values (GRPH-1497). A `memory_write_mode` change through the PATCH above is recorded the same way, its `memory_write_mode_reason` optional |
+| PUT | `/api/projects/{id}/publish-to-org` | JWT (owner or admin) | What a linked box publishes to the org for this project: `{specs?, item_digests?}` (bool, either or both; both default on). Any other member is 403. Each change is a `publish_to_org` activity event naming who changed which flag. An unlinked box publishes nothing whatever these say (GRPH-1674) |
 | GET | `/api/projects/{id}/members` | JWT | List members (role/access) |
 | GET | `/api/projects/{id}/triage` | JWT | Unified triage inbox: untriaged requests (bug/feature/enhancement, with likely duplicate and suggested PRD), blocked items (decision question/options or `waiting_on`) and unanswered collision clusters (`id` keyed by member set, `risk` serialize\|blocked). Blockers sort first; `counts` per tab (all/bugs/requests/blockers/collisions). Snoozed and decided rows are absent. A failing source is named in `failed_sources` while the others still return |
 | GET | `/api/projects/{id}/gitops` | JWT | Live delivery contract (fetches the org when this box is linked). Unset is unmeasured, not `main` |

@@ -33,6 +33,8 @@ export interface Project {
   embed_model: string;
   /** Normalized repository (`github.com/acme/app`); null = never set (GRPH-1365). */
   repo_url?: string | null;
+  /** What a linked box publishes to the org for this project (GRPH-1674); both default on. */
+  publish_to_org?: { specs: boolean; item_digests: boolean };
   // Memory auto-triage toggles (AL-227).
   memory_auto_reject: boolean;
   memory_write_mode: string;
