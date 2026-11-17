@@ -750,12 +750,17 @@ def pr_selector(item: dict) -> str:
     new PR while the first still names the old one, and taking the first match checked the
     stale PR forever (GRPH-1218). So the receipt for `branch` wins, and without one the
     newest receipt does.
+
+    One branch can also carry several receipts: a bounce reuses the branch and a fresh PR
+    replaces the closed one. The LAST receipt for `branch` is the live PR; the first named
+    a closed PR and held every dependent forever (GRPH-1687).
     """
     pr = item.get("pr")
     if isinstance(pr, str) and pr.strip():
         return pr.strip()
     branch = str(item.get("branch") or "").strip()
     latest = ""
+    for_branch = ""
     for e in item.get("evidence") or []:
         if not isinstance(e, dict) or e.get("kind") != "url":
             continue
@@ -764,8 +769,8 @@ def pr_selector(item: dict) -> str:
             continue
         latest = url
         if branch and _receipt_branch(str(e.get("detail") or "")) == branch:
-            return url
-    return latest or branch
+            for_branch = url
+    return for_branch or latest or branch
 
 
 def pr_receipts(item: dict) -> list[str]:

@@ -744,6 +744,18 @@ def test_two_receipts_and_no_branch_selects_the_latest():
     assert propose_mod.pr_selector(item).endswith("/pull/9")
 
 
+def test_a_branch_with_two_receipts_selects_its_latest_pr():
+    """GRPH-1687. After a bounce the drain reuses `gb/w` and opens #9 in place of the closed
+    #8, so the branch carries two receipts. The live PR is the later one; a hold that asks
+    about #8 waits forever on a PR that will never merge.
+
+    Sabotage: return on the first receipt for the branch again — this selects #8 and fails."""
+    item = {"branch": "gb/w", "evidence": [_opened(8, "gb/w"), _opened(9, "gb/w"),
+                                           _opened(10, "gb/other")]}
+
+    assert propose_mod.pr_selector(item).endswith("/pull/9")
+
+
 def test_a_branch_no_receipt_names_falls_back_to_the_latest_receipt():
     item = {"branch": "gb/other", "evidence": [_opened(8, "gb/old"), _opened(9, "gb/new")]}
 
