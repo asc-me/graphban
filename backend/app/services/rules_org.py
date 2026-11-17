@@ -771,3 +771,56 @@ def apply_decisions(db: Session, record: dict) -> RuleDecisionPull:
     db.add(pull)
     db.commit()
     return pull
+
+
+def apply_project_profiles(db: Session, entries: object) -> dict:
+    """BOX (contract v2): apply each pulled per-project profile to its named project only. A
+    project overrides the org-wide profile for itself, never for another project; rules the org
+    has locked hold and are left alone. A project this box does not hold is `not_on_box`; a
+    profile this box cannot apply is `refused`, and neither stops the other entries."""
+    from types import SimpleNamespace
+
+    from app.models import Project
+
+    out: dict = {"applied": [], "not_on_box": [], "refused": []}
+    actor = SimpleNamespace(id=None)   # the pull is no person's act; the event says so
+    for e in entries if isinstance(entries, list) else []:
+        if not isinstance(e, dict) or not e.get("project_id"):
+            continue
+        pid = e["project_id"]
+        prof = e.get("profile")
+        profile_id = prof.get("id") if isinstance(prof, dict) else prof
+        version = (prof.get("version") if isinstance(prof, dict) else None) or e.get("version")
+        if db.get(Project, pid) is None:
+            out["not_on_box"].append(pid)
+            continue
+        try:
+            profile, plan = _plan(str(profile_id))
+            written = []
+            for rid, changes in sorted(plan.items()):
+                before = rule_toggles.resolve(db, rid, pid)
+                if before["locked"]:
+                    continue
+                changes = {k: v for k, v in changes.items() if k != "locked"}
+                if changes.get("on") == before["on"]["value"]:
+                    changes.pop("on", None)
+                if "params" in changes and (
+                        {**before["params"]["value"], **changes["params"]}
+                        == before["params"]["value"]):
+                    changes.pop("params")
+                if changes:
+                    rule_toggles._stage_project_toggle(db, pid, rid, changes, actor)
+                    db.flush()
+                    written.append(rid)
+            db.commit()
+        except (NotFound, Validation, Refused) as err:
+            db.rollback()
+            out["refused"].append({"project_id": pid, "profile": profile_id, "reason": str(err)})
+            continue
+        events_svc.record(
+            db, actor_type="system", actor_label="rule-decision pull", surface="sync",
+            action="apply_rule_profile", target_type="project", target_id=pid, project_id=pid,
+            meta={"profile": profile_id, "profile_version": version or profile.get("version"),
+                  "source": "org rule decisions v2", "written": written})
+        out["applied"].append({"project_id": pid, "profile": profile_id, "version": version})
+    return out

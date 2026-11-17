@@ -748,6 +748,13 @@ def pull_rule_decisions(db: Session, *, cloud_url: str = "", api_key: str = "") 
         return {"pulled": False, "reason": "no organization for this credential"}
     resp.raise_for_status()
     record = resp.json()
+    # Contract v2 (per-project profile applies): ask for it only when the console advertises it,
+    # so a console without v2 is pulled exactly as before.
+    if _advertises_v2(record):
+        resp = httpx.get(f"{base}/api/sync/rule-decisions", params={"contract": 2},
+                         headers=headers, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        record = resp.json()
     # Nothing published yet: version is null, not "0". Do not apply and do not report.
     if not isinstance(record, dict) or record.get("version") is None:
         return {"pulled": False, "reason": "nothing published"}
@@ -755,13 +762,32 @@ def pull_rule_decisions(db: Session, *, cloud_url: str = "", api_key: str = "") 
     changed = pull is None or pull.applied_version != record.get("version")
     if changed:
         pull = rules_org.apply_decisions(db, record)
+    per_project = None
+    if changed and isinstance(record.get("project_profiles"), list):
+        per_project = rules_org.apply_project_profiles(db, record["project_profiles"])
+    body = {"org_id": pull.org_id, "version": pull.applied_version}
+    if per_project is not None:
+        body["project_profiles_applied"] = per_project["applied"]
+        body["not_on_box"] = per_project["not_on_box"]
     try:
         httpx.post(f"{base}/api/sync/rule-decisions/applied", headers=headers, timeout=_TIMEOUT,
-                   json={"org_id": pull.org_id, "version": pull.applied_version}
-                   ).raise_for_status()
+                   json=body).raise_for_status()
         pull.reported = True
         db.commit()
     except (httpx.HTTPError, OSError):
         pass  # reported stays False; the next pull reports it
-    return {"pulled": True, "version": pull.applied_version, "changed": changed,
-            "reported": pull.reported}
+    out = {"pulled": True, "version": pull.applied_version, "changed": changed,
+           "reported": pull.reported}
+    if per_project is not None:
+        out.update(project_profiles_applied=per_project["applied"],
+                   not_on_box=per_project["not_on_box"],
+                   project_profiles_refused=per_project["refused"])
+    return out
+
+
+def _advertises_v2(record: object) -> bool:
+    """The console names the rule-decision contracts it serves; absent means v1 only."""
+    if not isinstance(record, dict):
+        return False
+    c = record.get("contracts", record.get("contract"))
+    return 2 in c if isinstance(c, list) else c == 2
