@@ -208,3 +208,29 @@ def test_a_failed_report_is_retried_next_sync_without_reapplying(client, auth, d
     assert len(db.scalars(select(Event).where(Event.action == triage.APPLIED_ACTION)).all()) == 1
     db.expire_all()
     assert db.query(Item).filter(Item.title == "Retry").one().status == "next"
+
+
+def test_sync_tail_reports_a_triage_transport_error(monkeypatch):
+    """A transport error raised by the pull is surfaced in the sync result, not dropped."""
+    from app.services import code_sync, triage
+
+    def boom(db, cloud_url, api_key):
+        raise ConnectionError("console unreachable")
+
+    monkeypatch.setattr(triage, "pull_decisions", boom)
+
+    class _DB:
+        def rollback(self):
+            pass
+
+    out = code_sync._pull_triage_on_sync(_DB(), "https://console", "k")
+    assert out == {"pulled": False, "error": "ConnectionError: console unreachable"}
+
+
+def test_sync_tail_omits_triage_when_console_does_not_serve_it(monkeypatch):
+    from app.services import code_sync, triage
+
+    monkeypatch.setattr(
+        triage, "pull_decisions", lambda db, cloud_url, api_key: {"pulled": False, "reason": "x"}
+    )
+    assert code_sync._pull_triage_on_sync(object(), "https://console", "k") is None
