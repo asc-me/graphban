@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import re
 import time
 import uuid
 
@@ -119,6 +120,32 @@ def _log_access(scope, status: int, elapsed_ms: float) -> None:
     )
 
 
+# `llm_call_spans.request_id` is String(32), and Postgres enforces it (SQLite does not), so
+# an id longer than 32 chars dropped every LLM span its request wrote (GRPH-1694). The bound
+# lives HERE, at the one place an outside value enters `request_id_var`, so every consumer
+# of the contextvar is safe — not only the meter. The charset bound keeps a caller from
+# writing arbitrary bytes into log lines and response headers through it.
+REQUEST_ID_MAX = 32
+_TOKEN_ID = re.compile(r"[A-Za-z0-9._-]{1,%d}" % REQUEST_ID_MAX)
+
+
+def bound_request_id(incoming: bytes | None) -> str:
+    """The request id actually used: the caller's when it is a short token, a dashed UUID
+    with its dashes stripped (still the caller's id, recognisably), else one we mint."""
+    if incoming:
+        try:
+            raw = incoming.decode("ascii").strip()
+        except UnicodeDecodeError:
+            raw = ""
+        if _TOKEN_ID.fullmatch(raw):
+            return raw
+        try:
+            return uuid.UUID(raw).hex
+        except ValueError:
+            pass
+    return uuid.uuid4().hex[:16]
+
+
 class RequestIdMiddleware:
     """ASGI middleware: assign/propagate a request id, echo it, and log the exchange."""
 
@@ -130,7 +157,7 @@ class RequestIdMiddleware:
             await self.app(scope, receive, send)
             return
         incoming = dict(scope["headers"]).get(b"x-request-id")
-        rid = incoming.decode() if incoming else uuid.uuid4().hex[:16]
+        rid = bound_request_id(incoming)
         token = request_id_var.set(rid)
         started = time.perf_counter()
         # 500 rather than 0, because the one case where no response start is ever sent is
