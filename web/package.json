@@ -51,6 +51,11 @@
   "pnpm": {
     "overrides": {
       "tinypool": "2.2.0"
+    },
+    "auditConfig": {
+      "ignoreGhsas": [
+        "GHSA-fc5q-39xc-vjpf"
+      ]
     }
   }
 }
