@@ -553,7 +553,10 @@ rewritten** — they arrive on each proposal as `dangling_refs`, visible on a dr
 anything is created. Repairing them means guessing which five, and a confidently wrong
 substitution reads as fact where a visible "above" tells the reader to go looking. `prd_coverage(prd_id)` returns
 the per-section rollup (task counts by status, `percent_done`, and `gaps`) so an agent knows
-what's specced-but-unbuilt. Completing an item then updates coverage; ask `get_backlog`/
+what's specced-but-unbuilt. An item closed as a duplicate or superseded stays `done` in
+`by_status` but is counted under `resolved` / `resolved_items`, never in `done` / `done_items`,
+and is left out of the `percent_done` denominator — the same "delivered nothing" reading
+completeness and `close_prd` use. Completing an item then updates coverage; ask `get_backlog`/
 `next_cluster` for what to pick up next — the loop.
 
 ### Dependency-aware prioritization

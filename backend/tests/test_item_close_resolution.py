@@ -153,6 +153,30 @@ def test_a_resolved_item_does_not_deliver_its_prd_section(db):
     assert "Judging" in report["undelivered"]
 
 
+def test_prd_coverage_counts_a_resolved_item_as_resolved_not_done(db):
+    """GRPH-1672. Sabotage: count `status == "done"` for `done` in prds.coverage and this
+    fails — coverage reads the section done while completeness reads it undelivered."""
+    from tests.test_completeness import BODY, _approve
+
+    prd = _approve(db, prd_svc.create_prd(db, title="Spec", project_id="core", body=BODY))
+    fix = _done(db)
+    dup = _item(db, prd_id=prd.id, prd_section="Judging")
+    items_svc.resolve_item(db, dup.id, kind="duplicate", of=fix.key, actor="owner")
+    built = _item(db, "built", prd_id=prd.id, prd_section="Baseline", status="done")
+    _item(db, "open", prd_id=prd.id, prd_section="Baseline")
+    assert built.delivered
+
+    cov = prd_svc.coverage(db, prd)
+    sec = next(s for s in cov["sections"] if s["section"] == "Judging")
+    assert sec["done"] == 0 and sec["resolved"] == 1
+    assert sec["by_status"] == {"done": 1}  # the board status is still reported as-is
+    scoring = next(s for s in cov["sections"] if s["section"] == "Baseline")
+    assert scoring["done"] == 1 and scoring["resolved"] == 0
+    assert cov["total_items"] == 3 and cov["done_items"] == 1 and cov["resolved_items"] == 1
+    # One of the two items that are real work is delivered; the closure is in neither count.
+    assert cov["percent_done"] == 50
+
+
 # ── the MCP boundary: planner only ────────────────────────────────────────────
 
 def _mcp(client, key, name, args):

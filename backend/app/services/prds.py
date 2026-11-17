@@ -3596,7 +3596,12 @@ def coverage(db: Session, prd: Prd) -> dict:
             # it think that" — which previously meant opening `_PROSE_SECTIONS` and guessing.
             "implementable_basis": basis,
             "item_count": len(its),
-            "done": counts.get("done", 0),
+            # Delivered, not `status == "done"` (GRPH-1672): an item closed as a duplicate
+            # or superseded is `done` on the board but built nothing, and completeness and
+            # close_prd already count it that way. `by_status` keeps the raw board status;
+            # `resolved` names the closures so the two numbers reconcile.
+            "done": sum(1 for it in its if it.delivered),
+            "resolved": sum(1 for it in its if it.status == "done" and it.resolution),
             "by_status": dict(counts),
             # Framing prose is never a gap — only buildable sections can lack work (AL-96).
             "gap": implementable and len(its) == 0,
@@ -3615,7 +3620,12 @@ def coverage(db: Session, prd: Prd) -> dict:
             "drift": [{"id": it.key, **section_drift(it, prd.body or "")} for it in its],
         })
     total = len(items)
-    done = sum(1 for it in items if it.status == "done")
+    done = sum(1 for it in items if it.delivered)
+    # Closed as duplicate/superseded (GRPH-1672): out of `done_items`, and out of the
+    # `percent_done` denominator too — a closure is not work left to do, so counting it
+    # there would hold the PRD below 100% forever.
+    resolved = sum(1 for it in items if it.status == "done" and it.resolution)
+    work = total - resolved
     buildable = [p for p in per if p["implementable"]]
     return {
         # The RENDERED key, like every sibling return in this module. `prd.id` is frozen at
@@ -3661,8 +3671,8 @@ def coverage(db: Session, prd: Prd) -> dict:
         # why `empty_sections: []` on a body with no `##` is not a clean pass.
         "shaped": bool(sections),
         "empty_sections": [p["section"] for p in per if p["empty"]],
-        "total_items": total, "done_items": done,
-        "percent_done": round(100 * done / total) if total else 0,
+        "total_items": total, "done_items": done, "resolved_items": resolved,
+        "percent_done": round(100 * done / work) if work else 0,
         # Prototype-first work outstanding across the whole PRD.
         "open_high_fidelity": sum(1 for it in items if it.fidelity == "high" and it.status != "done"),
     }
