@@ -527,3 +527,18 @@ def release_ref_view(db: Session, project_id: str | None) -> dict:
     if project.release_ref:
         return {"ref": project.release_ref, "source": "project"}
     return {"ref": None, "source": "unmeasured"}
+
+
+PUBLISH_FLAGS = {"specs": "publish_specs", "item_digests": "publish_item_digests"}
+
+
+def set_publish_to_org(db: Session, project: Project, flags: dict[str, bool]) -> dict[str, bool]:
+    """Apply publish-to-org flags; returns `{flag: new_value}` for the ones that CHANGED.
+    Caller commits and records the activity events."""
+    changed: dict[str, bool] = {}
+    for name, value in flags.items():
+        col = PUBLISH_FLAGS[name]
+        if bool(getattr(project, col)) != value:
+            setattr(project, col, value)
+            changed[name] = value
+    return changed

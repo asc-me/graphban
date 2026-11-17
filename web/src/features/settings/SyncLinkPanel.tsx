@@ -14,11 +14,13 @@ import * as React from "react";
 
 import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { Button } from "@/components/ui/button";
+import { useProjectCtx } from "@/features/ProjectContext";
 import { LinkedPanel } from "@/features/organization/LinkedPanel";
 import { LinkToOrgWizard, useLinkFlow } from "@/features/organization/LinkToOrgWizard";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { useSyncOrg, useSyncStatus } from "@/lib/queries";
+import { errorDetail } from "@/lib/errors";
+import { useSetPublishToOrg, useSyncOrg, useSyncStatus } from "@/lib/queries";
 import type { SyncProjectState, SyncProjectStatus } from "@/lib/types";
 import { useSearchParams } from "react-router-dom";
 
@@ -43,6 +45,37 @@ function ago(iso: string | null): string {
   const hrs = mins / 60;
   if (hrs < 24) return `${Math.round(hrs)}h ago`;
   return `${Math.round(hrs / 24)}d ago`;
+}
+
+const PUBLISH_FLAGS = [
+  { key: "specs", label: "Specs", sends: "spec title, body and status" },
+  { key: "item_digests", label: "Item digests", sends: "item title, kind, status and touchpoints. Item bodies are never sent" },
+] as const;
+
+/** Per-project "publish to org" switches (GRPH-1674). On by default; an unlinked box sends nothing. */
+export function PublishToOrgPanel() {
+  const { active, activeId } = useProjectCtx();
+  const set = useSetPublishToOrg(activeId);
+  const flags = active?.publish_to_org ?? { specs: true, item_digests: true };
+  return (
+    <div className="space-y-2" data-testid="publish-to-org">
+      <h3 className="text-body font-medium">Publish to org</h3>
+      {PUBLISH_FLAGS.map((f) => (
+        <label key={f.key} className="flex items-start gap-2 text-body">
+          <input
+            type="checkbox"
+            checked={flags[f.key]}
+            disabled={set.isPending}
+            onChange={(e) => set.mutate({ [f.key]: e.target.checked })}
+          />
+          <span>
+            {f.label} <span className="text-faint">sends {f.sends}.</span>
+          </span>
+        </label>
+      ))}
+      {set.isError && <p className="text-body text-red-500">{errorDetail(set.error, "Could not save")}</p>}
+    </div>
+  );
 }
 
 export function SyncLinkPanel() {

@@ -1,5 +1,13 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, Github, HardDrive, KeyRound, RefreshCw, ShieldCheck } from "lucide-react";
+import {
+  Check,
+  Copy,
+  Github,
+  HardDrive,
+  KeyRound,
+  RefreshCw,
+  ShieldCheck,
+} from "lucide-react";
 import * as React from "react";
 
 import { Avatar } from "@/components/ui/avatar";
@@ -14,14 +22,23 @@ import { LogExportPanel } from "@/features/settings/LogExportPanel";
 import { UpdatesPanel } from "@/features/settings/UpdatesPanel";
 import { ApiKeysPanel } from "@/features/settings/ApiKeysPanel";
 import { CloudOrgLinkPanel } from "@/features/settings/CloudOrgLinkPanel";
-import { SyncLinkPanel } from "@/features/settings/SyncLinkPanel";
+import {
+  PublishToOrgPanel,
+  SyncLinkPanel,
+} from "@/features/settings/SyncLinkPanel";
 import { CloudTag } from "@/components/shell/CloudTag";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { copyText } from "@/lib/clipboard";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
-import { keys, useConfig, useMembers, useMintIngestToken, usePlatform } from "@/lib/queries";
+import {
+  keys,
+  useConfig,
+  useMembers,
+  useMintIngestToken,
+  usePlatform,
+} from "@/lib/queries";
 import { adminPath, settingsPath } from "@/lib/routes";
 import type { PlatformConfig, Project } from "@/lib/types";
 import { Link, NavLink, Navigate, useLocation } from "react-router-dom";
@@ -33,7 +50,10 @@ export function SettingsView() {
   return <SelfHostSettings />;
 }
 
-const SELF_HOST_NAV: { group: string; items: { to: string; label: string; end?: boolean }[] }[] = [
+const SELF_HOST_NAV: {
+  group: string;
+  items: { to: string; label: string; end?: boolean }[];
+}[] = [
   {
     // "This box" is the deployment section: what this instance RUNS ON belongs here, not
     // per-project (GRPH-625). Credentials already resolve deployment-default-first with
@@ -77,7 +97,9 @@ function SelfHostSettings() {
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex-none border-b border-line px-5 py-4">
         <h1 className="text-[18px] font-semibold tracking-tight">Settings</h1>
-        <p className="mt-0.5 text-body text-muted">This project and this box.</p>
+        <p className="mt-0.5 text-body text-muted">
+          This project and this box.
+        </p>
       </div>
       <div className="grid min-h-0 flex-1 grid-cols-[200px_1fr]">
         <div className="flex flex-col gap-0.5 overflow-y-auto border-r border-line p-3">
@@ -94,7 +116,9 @@ function SelfHostSettings() {
                   className={({ isActive }) =>
                     cn(
                       "block rounded-[9px] px-3 py-2 text-[13px] transition-colors",
-                      isActive ? "bg-surface-3 text-fg" : "text-muted hover:bg-surface-3 hover:text-fg-2",
+                      isActive
+                        ? "bg-surface-3 text-fg"
+                        : "text-muted hover:bg-surface-3 hover:text-fg-2",
                     )
                   }
                 >
@@ -109,7 +133,9 @@ function SelfHostSettings() {
               className={({ isActive }) =>
                 cn(
                   "block rounded-[9px] px-3 py-2 text-[13px] transition-colors",
-                  isActive ? "bg-surface-3 text-fg" : "text-muted hover:bg-surface-3 hover:text-fg-2",
+                  isActive
+                    ? "bg-surface-3 text-fg"
+                    : "text-muted hover:bg-surface-3 hover:text-fg-2",
                 )
               }
             >
@@ -134,24 +160,41 @@ function SelfHostPane({ pathname }: { pathname: string }) {
       </>
     );
   }
-  if (pathname.startsWith(settingsPath("deployment/https"))) return <HttpsPanel />;
-  if (pathname.startsWith(settingsPath("deployment/updates"))) return <UpdatesPanel />;
-  if (pathname.startsWith(settingsPath("deployment/log-export"))) return <LogExportPanel />;
-  if (pathname.startsWith(settingsPath("deployment/sync"))) return <SyncLinkPanel />;
+  if (pathname.startsWith(settingsPath("deployment/https")))
+    return <HttpsPanel />;
+  if (pathname.startsWith(settingsPath("deployment/updates")))
+    return <UpdatesPanel />;
+  if (pathname.startsWith(settingsPath("deployment/log-export")))
+    return <LogExportPanel />;
+  if (pathname.startsWith(settingsPath("deployment/sync")))
+    return (
+      <div className="space-y-6">
+        <SyncLinkPanel />
+        <PublishToOrgPanel />
+      </div>
+    );
   if (pathname.startsWith(settingsPath("project/mcp"))) return <McpToolsView />;
-  if (pathname.startsWith(settingsPath("project/integrations"))) return <IntegrationsPanel />;
-  if (pathname.startsWith(settingsPath("project/api-keys"))) return <ApiKeysPanel />;
-  if (pathname.startsWith(settingsPath("deployment/providers"))) return <CredentialsPanel />;
+  if (pathname.startsWith(settingsPath("project/integrations")))
+    return <IntegrationsPanel />;
+  if (pathname.startsWith(settingsPath("project/api-keys")))
+    return <ApiKeysPanel />;
+  if (pathname.startsWith(settingsPath("deployment/providers")))
+    return <CredentialsPanel />;
   // GRPH-625 moved providers from This project to This box. The old path must redirect,
   // not fall through: the project-prefix catch-all below would render ProjectPanel at a
   // providers URL, and a wrong pane that looks like a pane is the worse failure.
   if (pathname.startsWith(settingsPath("project/providers")))
     return <Navigate to={settingsPath("deployment/providers")} replace />;
-  if (pathname.startsWith(settingsPath("project/members"))) return <MembersPanel />;
-  if (pathname === settingsPath("project") || pathname.startsWith(`${settingsPath("project")}/`)) {
+  if (pathname.startsWith(settingsPath("project/members")))
+    return <MembersPanel />;
+  if (
+    pathname === settingsPath("project") ||
+    pathname.startsWith(`${settingsPath("project")}/`)
+  ) {
     return <ProjectPanel />;
   }
-  if (pathname.startsWith(settingsPath("account/machines"))) return <MachinesPanel />;
+  if (pathname.startsWith(settingsPath("account/machines")))
+    return <MachinesPanel />;
   if (pathname.startsWith(settingsPath("account"))) return <AccountPanel />;
   return <CredentialsPanel />;
 }
@@ -167,9 +210,15 @@ function GitopsMovedCard() {
       data-testid="gitops-moved"
       className="mb-6 flex max-w-2xl flex-col gap-1.5 rounded-[12px] border border-line bg-surface-2 p-4"
     >
-      <span className="font-mono text-[10px] font-semibold tracking-[0.07em] text-muted-2">MOVED</span>
-      <span className="text-[15px] font-semibold">Gitops moved into Rules.</span>
-      <span className="text-[13px] text-muted">Your delivery contract is the Merge and Release stages.</span>
+      <span className="font-mono text-[10px] font-semibold tracking-[0.07em] text-muted-2">
+        MOVED
+      </span>
+      <span className="text-[15px] font-semibold">
+        Gitops moved into Rules.
+      </span>
+      <span className="text-[13px] text-muted">
+        Your delivery contract is the Merge and Release stages.
+      </span>
       <Link
         to="/rules?stage=merge"
         className="mt-1 inline-flex h-8 items-center self-start rounded-[8px] bg-accent px-3.5 text-body font-semibold text-[#0a0c0e]"
@@ -206,7 +255,9 @@ function HostedSettingsTabs() {
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex-none border-b border-line px-5 py-4">
         <h1 className="text-[18px] font-semibold tracking-tight">Settings</h1>
-        <p className="mt-0.5 text-body text-muted">Providers, integrations, project config, members, and API keys.</p>
+        <p className="mt-0.5 text-body text-muted">
+          Providers, integrations, project config, members, and API keys.
+        </p>
       </div>
       <div className="grid min-h-0 flex-1 grid-cols-[200px_1fr]">
         <div className="flex flex-col gap-0.5 border-r border-line p-3">
@@ -218,7 +269,9 @@ function HostedSettingsTabs() {
               className={({ isActive }) =>
                 cn(
                   "block rounded-[9px] px-3 py-2 text-[13px] transition-colors",
-                  isActive ? "bg-surface-3 text-fg" : "text-muted hover:bg-surface-3 hover:text-fg-2",
+                  isActive
+                    ? "bg-surface-3 text-fg"
+                    : "text-muted hover:bg-surface-3 hover:text-fg-2",
                 )
               }
             >
@@ -249,26 +302,44 @@ function HostedPane({ pathname }: { pathname: string }) {
     // catch-all below is worse — that is AI providers wearing a log-export URL.
     return <Navigate to={settingsPath("deployment/providers")} replace />;
   }
-  if (pathname.startsWith(settingsPath("deployment/sync"))) return <CloudOrgLinkPanel />;
-  if (pathname.startsWith(settingsPath("deployment/updates"))) return <UpdatesPanel />;
-  if (pathname.startsWith(settingsPath("deployment/providers"))) return <CredentialsPanel />;
+  if (pathname.startsWith(settingsPath("deployment/sync")))
+    return <CloudOrgLinkPanel />;
+  if (pathname.startsWith(settingsPath("deployment/updates")))
+    return <UpdatesPanel />;
+  if (pathname.startsWith(settingsPath("deployment/providers")))
+    return <CredentialsPanel />;
   if (pathname.startsWith(settingsPath("project/providers"))) {
     return <Navigate to={settingsPath("deployment/providers")} replace />;
   }
   if (pathname.startsWith(settingsPath("project/mcp"))) return <McpToolsView />;
-  if (pathname.startsWith(settingsPath("project/integrations"))) return <IntegrationsPanel />;
-  if (pathname.startsWith(settingsPath("project/api-keys"))) return <ApiKeysPanel />;
-  if (pathname.startsWith(settingsPath("project/members"))) return <MembersPanel />;
-  if (pathname === settingsPath("project") || pathname.startsWith(`${settingsPath("project")}/`)) {
+  if (pathname.startsWith(settingsPath("project/integrations")))
+    return <IntegrationsPanel />;
+  if (pathname.startsWith(settingsPath("project/api-keys")))
+    return <ApiKeysPanel />;
+  if (pathname.startsWith(settingsPath("project/members")))
+    return <MembersPanel />;
+  if (
+    pathname === settingsPath("project") ||
+    pathname.startsWith(`${settingsPath("project")}/`)
+  ) {
     return <ProjectPanel />;
   }
-  if (pathname.startsWith(settingsPath("account/machines"))) return <MachinesPanel />;
+  if (pathname.startsWith(settingsPath("account/machines")))
+    return <MachinesPanel />;
   if (pathname.startsWith(settingsPath("account"))) return <AccountPanel />;
   return <CredentialsPanel />;
 }
 
-function Section({ title, desc, extra, children }: {
-  title: string; desc?: React.ReactNode; extra?: React.ReactNode; children: React.ReactNode;
+function Section({
+  title,
+  desc,
+  extra,
+  children,
+}: {
+  title: string;
+  desc?: React.ReactNode;
+  extra?: React.ReactNode;
+  children: React.ReactNode;
 }) {
   return (
     <div className="mb-6 max-w-2xl">
@@ -283,7 +354,11 @@ function Section({ title, desc, extra, children }: {
 }
 
 function Label({ children }: { children: React.ReactNode }) {
-  return <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-faint">{children}</div>;
+  return (
+    <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-faint">
+      {children}
+    </div>
+  );
 }
 
 function IntegrationsPanel() {
@@ -301,7 +376,9 @@ function IntegrationsPanel() {
   const [tokenCopied, setTokenCopied] = React.useState(false);
   const mintIngestToken = useMintIngestToken();
   const [syncing, setSyncing] = React.useState(false);
-  const [syncReport, setSyncReport] = React.useState<Awaited<ReturnType<typeof api.gdriveSync>> | null>(null);
+  const [syncReport, setSyncReport] = React.useState<Awaited<
+    ReturnType<typeof api.gdriveSync>
+  > | null>(null);
   async function runSync() {
     setSyncing(true);
     try {
@@ -351,17 +428,41 @@ function IntegrationsPanel() {
             <Row label="Account" value={cfg.github_account} />
             <Row label="Repository" value={cfg.github_repo} />
             <Row label="Scope" value={cfg.github_scope} />
-            <Button variant="danger" size="sm" onClick={() => api.githubDisconnect(activeId).then(invalidate)}>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => api.githubDisconnect(activeId).then(invalidate)}
+            >
               Disconnect
             </Button>
           </div>
         ) : (
           <div className="space-y-3">
             <div className="grid gap-3 sm:grid-cols-2">
-              <div><Label>Account / org</Label><Input value={ghAccount} onChange={(e) => setGhAccount(e.target.value)} placeholder="acme" /></div>
-              <div><Label>Repository</Label><Input value={ghRepo} onChange={(e) => setGhRepo(e.target.value)} placeholder="acme/app" /></div>
+              <div>
+                <Label>Account / org</Label>
+                <Input
+                  value={ghAccount}
+                  onChange={(e) => setGhAccount(e.target.value)}
+                  placeholder="acme"
+                />
+              </div>
+              <div>
+                <Label>Repository</Label>
+                <Input
+                  value={ghRepo}
+                  onChange={(e) => setGhRepo(e.target.value)}
+                  placeholder="acme/app"
+                />
+              </div>
             </div>
-            <Button size="sm" disabled={!ghAccount || !ghRepo} onClick={() => api.githubConnect(activeId, ghAccount, ghRepo).then(invalidate)}>
+            <Button
+              size="sm"
+              disabled={!ghAccount || !ghRepo}
+              onClick={() =>
+                api.githubConnect(activeId, ghAccount, ghRepo).then(invalidate)
+              }
+            >
               Connect
             </Button>
           </div>
@@ -376,16 +477,22 @@ function IntegrationsPanel() {
               className="rounded-md border border-control bg-surface-3 p-1.5 text-muted hover:text-fg"
               onClick={() =>
                 copyText(`${origin}/api/public/github/webhook`).then(
-                  (ok) => ok && (setCopied(true), setTimeout(() => setCopied(false), 1500)),
+                  (ok) =>
+                    ok &&
+                    (setCopied(true), setTimeout(() => setCopied(false), 1500)),
                 )
               }
             >
-              {copied ? <Check size={13} className="text-accent" /> : <Copy size={13} />}
+              {copied ? (
+                <Check size={13} className="text-accent" />
+              ) : (
+                <Copy size={13} />
+              )}
             </button>
           </div>
           <p className="mt-1.5 text-small text-faint">
-            Opened issues from the connected repo become tracker items <em>in this project</em>,
-            each linked back to the GitHub issue.
+            Opened issues from the connected repo become tracker items{" "}
+            <em>in this project</em>, each linked back to the GitHub issue.
           </p>
         </div>
       </div>
@@ -403,34 +510,74 @@ function IntegrationsPanel() {
             <Row label="Folder" value={cfg.gdrive_folder} />
             <div className="flex items-center gap-2">
               <Button size="sm" onClick={runSync} disabled={syncing}>
-                <RefreshCw size={13} className={syncing ? "animate-spin" : ""} />
+                <RefreshCw
+                  size={13}
+                  className={syncing ? "animate-spin" : ""}
+                />
                 {syncing ? "Syncing…" : "Sync now"}
               </Button>
-              <Button variant="danger" size="sm" onClick={() => api.gdriveDisconnect(activeId).then(invalidate)}>
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={() => api.gdriveDisconnect(activeId).then(invalidate)}
+              >
                 Disconnect
               </Button>
             </div>
             {syncReport && (
               <div className="rounded-[11px] border border-line-2 bg-surface px-3 py-2.5 text-[12px]">
                 <div className="mb-1 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-small text-muted">
-                  <span>↑ exported {syncReport.exported.length + syncReport.updated_file.length}</span>
-                  <span>↓ imported {syncReport.imported.length + syncReport.updated_db.length}</span>
+                  <span>
+                    ↑ exported{" "}
+                    {syncReport.exported.length +
+                      syncReport.updated_file.length}
+                  </span>
+                  <span>
+                    ↓ imported{" "}
+                    {syncReport.imported.length + syncReport.updated_db.length}
+                  </span>
                   <span>= in sync {syncReport.in_sync}</span>
                   {syncReport.conflicts.length > 0 && (
-                    <span className="text-st-blocked">⚠ conflicts {syncReport.conflicts.join(", ")}</span>
+                    <span className="text-st-blocked">
+                      ⚠ conflicts {syncReport.conflicts.join(", ")}
+                    </span>
                   )}
                 </div>
-                <code className="block overflow-x-auto text-[10.5px] text-faint">{syncReport.prds_dir}</code>
+                <code className="block overflow-x-auto text-[10.5px] text-faint">
+                  {syncReport.prds_dir}
+                </code>
               </div>
             )}
           </div>
         ) : (
           <div className="space-y-3">
             <div className="grid gap-3 sm:grid-cols-2">
-              <div><Label>Account</Label><Input value={drAccount} onChange={(e) => setDrAccount(e.target.value)} placeholder="you@example.com" /></div>
-              <div><Label>Folder</Label><Input value={drFolder} onChange={(e) => setDrFolder(e.target.value)} placeholder="/Graphban" /></div>
+              <div>
+                <Label>Account</Label>
+                <Input
+                  value={drAccount}
+                  onChange={(e) => setDrAccount(e.target.value)}
+                  placeholder="you@example.com"
+                />
+              </div>
+              <div>
+                <Label>Folder</Label>
+                <Input
+                  value={drFolder}
+                  onChange={(e) => setDrFolder(e.target.value)}
+                  placeholder="/Graphban"
+                />
+              </div>
             </div>
-            <Button size="sm" disabled={!drAccount} onClick={() => api.gdriveConnect(activeId, drAccount, drFolder).then(invalidate)}>
+            <Button
+              size="sm"
+              disabled={!drAccount}
+              onClick={() =>
+                api
+                  .gdriveConnect(activeId, drAccount, drFolder)
+                  .then(invalidate)
+              }
+            >
               Connect
             </Button>
           </div>
@@ -438,10 +585,12 @@ function IntegrationsPanel() {
         <div className="mt-4 border-t border-line pt-3">
           <Label>How the folder is organized</Label>
           <p className="mb-2 text-small text-faint">
-            The folder is this project's root. PRDs two-way sync with the <code>PRDs/</code>
-            subfolder — drop a <code>.md</code> there to import a draft; conflicts are flagged, not
-            clobbered. The sync directory is a mounted volume; point it at a Google Drive Desktop
-            folder to reach Drive.
+            The folder is this project's root. PRDs two-way sync with the{" "}
+            <code>PRDs/</code>
+            subfolder — drop a <code>.md</code> there to import a draft;
+            conflicts are flagged, not clobbered. The sync directory is a
+            mounted volume; point it at a Google Drive Desktop folder to reach
+            Drive.
           </p>
           <pre className="overflow-x-auto rounded-md border border-line-2 bg-surface px-2.5 py-2 font-mono text-[10.5px] leading-relaxed text-muted-2">{`<folder>/
   PRDs/         PRD markdown — drop a .md here to import a draft
@@ -449,7 +598,8 @@ function IntegrationsPanel() {
   Exports/      memory & item snapshots (JSON)
   Attachments/  feedback screenshots`}</pre>
           <p className="mt-1.5 text-small text-faint">
-            Files outside these subfolders are ignored; deleting a mirror never deletes the PRD.
+            Files outside these subfolders are ignored; deleting a mirror never
+            deletes the PRD.
           </p>
         </div>
       </div>
@@ -461,23 +611,50 @@ function IntegrationsPanel() {
           <div className="text-lead font-semibold">Public surfaces</div>
         </div>
         <p className="mb-3 text-[12px] text-muted">
-          Each surface is independent. Intake is not a board. A token is not a publication.
-          <code className="ml-1 font-mono text-small">public_share_enabled</code> is a derived read — on when any surface below is.
+          Each surface is independent. Intake is not a board. A token is not a
+          publication.
+          <code className="ml-1 font-mono text-small">
+            public_share_enabled
+          </code>{" "}
+          is a derived read — on when any surface below is.
         </p>
         <div className="space-y-2.5">
-          {([
-            ["intake_enabled", "Intake", "Accept feedback via the public API"],
-            ["public_form_enabled", "Public form", "Embeddable feedback form"],
-            ["public_roadmap_enabled", "Roadmap", "Read-only public roadmap board"],
-            ["public_issues_enabled", "Issues", "Public issues board"],
-            ["public_requests_enabled", "Requests", "Public feature requests board"],
-          ] as const).map(([key, label, desc]) => (
-            <label key={key} className="flex items-start gap-2 text-[12px] text-fg-2">
+          {(
+            [
+              [
+                "intake_enabled",
+                "Intake",
+                "Accept feedback via the public API",
+              ],
+              [
+                "public_form_enabled",
+                "Public form",
+                "Embeddable feedback form",
+              ],
+              [
+                "public_roadmap_enabled",
+                "Roadmap",
+                "Read-only public roadmap board",
+              ],
+              ["public_issues_enabled", "Issues", "Public issues board"],
+              [
+                "public_requests_enabled",
+                "Requests",
+                "Public feature requests board",
+              ],
+            ] as const
+          ).map(([key, label, desc]) => (
+            <label
+              key={key}
+              className="flex items-start gap-2 text-[12px] text-fg-2"
+            >
               <input
                 type="checkbox"
                 checked={Boolean(cfg[key])}
                 onChange={async (e) => {
-                  await api.updateSurfaceFlags(activeId, { [key]: e.target.checked });
+                  await api.updateSurfaceFlags(activeId, {
+                    [key]: e.target.checked,
+                  });
                   invalidate();
                 }}
                 className="mt-0.5 accent-accent"
@@ -493,14 +670,18 @@ function IntegrationsPanel() {
               type="checkbox"
               checked={cfg.capture_identity}
               onChange={async (e) => {
-                await api.updateSurfaceFlags(activeId, { capture_identity: e.target.checked });
+                await api.updateSurfaceFlags(activeId, {
+                  capture_identity: e.target.checked,
+                });
                 invalidate();
               }}
               className="mt-0.5 accent-accent"
             />
             <span>
               <span className="font-medium text-fg-2">Capture identity</span>
-              <span className="ml-1.5 text-faint">— require account info on submissions</span>
+              <span className="ml-1.5 text-faint">
+                — require account info on submissions
+              </span>
             </span>
           </label>
         </div>
@@ -511,10 +692,22 @@ function IntegrationsPanel() {
             </code>
             <button
               className="rounded-md border border-control bg-surface-3 p-1.5 text-muted hover:text-fg"
-              onClick={() => copyText(`${origin}/embed/roadmap?token=${cfg.share_token}`).then((ok) => ok && (setCopied(true), setTimeout(() => setCopied(false), 1500)))}
+              onClick={() =>
+                copyText(
+                  `${origin}/embed/roadmap?token=${cfg.share_token}`,
+                ).then(
+                  (ok) =>
+                    ok &&
+                    (setCopied(true), setTimeout(() => setCopied(false), 1500)),
+                )
+              }
               title="Copy public roadmap link"
             >
-              {copied ? <Check size={13} className="text-accent" /> : <Copy size={13} />}
+              {copied ? (
+                <Check size={13} className="text-accent" />
+              ) : (
+                <Copy size={13} />
+              )}
             </button>
           </div>
         )}
@@ -527,12 +720,17 @@ function IntegrationsPanel() {
           <div className="text-lead font-semibold">Ingest token</div>
         </div>
         <p className="mb-3 text-[12px] text-muted">
-          Bearer credential for <code className="font-mono text-small">POST /api/public/requests</code>.
-          Rotating immediately invalidates the previous token.
+          Bearer credential for{" "}
+          <code className="font-mono text-small">
+            POST /api/public/requests
+          </code>
+          . Rotating immediately invalidates the previous token.
         </p>
         {cfg.ingest_token_prefix ? (
           <div className="mb-3 flex items-center gap-2">
-            <span className="font-mono text-small text-fg-2">{cfg.ingest_token_prefix}…</span>
+            <span className="font-mono text-small text-fg-2">
+              {cfg.ingest_token_prefix}…
+            </span>
           </div>
         ) : (
           <p className="mb-3 text-small text-faint">No token minted yet.</p>
@@ -550,11 +748,18 @@ function IntegrationsPanel() {
                 className="flex-none rounded-md border border-control bg-surface-3 p-1.5 text-muted hover:text-fg"
                 onClick={() =>
                   copyText(mintedToken).then(
-                    (ok) => ok && (setTokenCopied(true), setTimeout(() => setTokenCopied(false), 1500)),
+                    (ok) =>
+                      ok &&
+                      (setTokenCopied(true),
+                      setTimeout(() => setTokenCopied(false), 1500)),
                   )
                 }
               >
-                {tokenCopied ? <Check size={13} className="text-accent" /> : <Copy size={13} />}
+                {tokenCopied ? (
+                  <Check size={13} className="text-accent" />
+                ) : (
+                  <Copy size={13} />
+                )}
               </button>
             </div>
           </div>
@@ -583,16 +788,28 @@ function IntegrationsPanel() {
           <div className="text-lead font-semibold">Spam protection</div>
         </div>
         <p className="mb-3 text-[12px] text-muted">
-          Applies to the public feedback endpoints for this project. A honeypot is always on.
+          Applies to the public feedback endpoints for this project. A honeypot
+          is always on.
         </p>
         <div className="space-y-3">
           <div className="max-w-[200px]">
             <Label>Rate limit (submissions / minute / IP)</Label>
-            <Input type="number" value={rateLimit} onChange={(e) => setRateLimit(Number(e.target.value) || 0)} />
+            <Input
+              type="number"
+              value={rateLimit}
+              onChange={(e) => setRateLimit(Number(e.target.value) || 0)}
+            />
           </div>
           <div>
-            <Label>Cloudflare Turnstile site key <span className="text-faint-2">(optional)</span></Label>
-            <Input value={sitekey} onChange={(e) => setSitekey(e.target.value)} placeholder="0x4AAAAAAA…" />
+            <Label>
+              Cloudflare Turnstile site key{" "}
+              <span className="text-faint-2">(optional)</span>
+            </Label>
+            <Input
+              value={sitekey}
+              onChange={(e) => setSitekey(e.target.value)}
+              placeholder="0x4AAAAAAA…"
+            />
           </div>
           <div>
             <Label>
@@ -607,13 +824,20 @@ function IntegrationsPanel() {
               type="password"
               value={secret}
               onChange={(e) => setSecret(e.target.value)}
-              placeholder={cfg.turnstile_secret_set ? "•••••••• (leave blank to keep)" : "0x4AAAAAAA…"}
+              placeholder={
+                cfg.turnstile_secret_set
+                  ? "•••••••• (leave blank to keep)"
+                  : "0x4AAAAAAA…"
+              }
             />
           </div>
-          <Button size="sm" onClick={saveSpam}>{spamSaved ? "Saved" : "Save spam settings"}</Button>
+          <Button size="sm" onClick={saveSpam}>
+            {spamSaved ? "Saved" : "Save spam settings"}
+          </Button>
           <p className="text-small text-faint">
-            When a secret is set, submissions must pass Turnstile. Leave both blank for no captcha
-            (default). The widget renders the challenge automatically.
+            When a secret is set, submissions must pass Turnstile. Leave both
+            blank for no captcha (default). The widget renders the challenge
+            automatically.
           </p>
         </div>
       </div>
@@ -639,15 +863,29 @@ function RetagRow() {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const [tag, setTag] = React.useState("");
-  const [check, setCheck] = React.useState<{ available: boolean; reason: string } | null>(null);
+  const [check, setCheck] = React.useState<{
+    available: boolean;
+    reason: string;
+  } | null>(null);
 
   React.useEffect(() => {
-    if (!tag) { setCheck(null); return; }
+    if (!tag) {
+      setCheck(null);
+      return;
+    }
     let cancelled = false;
     const t = setTimeout(() => {
-      api.tagCheck(tag).then((r) => { if (!cancelled) setCheck(r); }).catch(() => {});
+      api
+        .tagCheck(tag)
+        .then((r) => {
+          if (!cancelled) setCheck(r);
+        })
+        .catch(() => {});
     }, 250);
-    return () => { cancelled = true; clearTimeout(t); };
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
   }, [tag]);
 
   if (!active) return null;
@@ -673,7 +911,9 @@ function RetagRow() {
       <div className="flex items-center gap-2">
         <Input value={active.tag} readOnly className="max-w-[7rem] font-mono" />
         {!open && (
-          <Button type="button" variant="ghost" onClick={() => setOpen(true)}>Change</Button>
+          <Button type="button" variant="ghost" onClick={() => setOpen(true)}>
+            Change
+          </Button>
         )}
         {open && (
           <>
@@ -685,20 +925,40 @@ function RetagRow() {
               aria-label="New tag"
               className="max-w-[7rem] font-mono"
             />
-            <Button type="button" onClick={apply} disabled={busy || !tag || check?.available === false}>
+            <Button
+              type="button"
+              onClick={apply}
+              disabled={busy || !tag || check?.available === false}
+            >
               {busy ? "Changing…" : "Apply"}
             </Button>
-            <Button type="button" variant="ghost" onClick={() => { setOpen(false); setTag(""); setError(""); }}>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setOpen(false);
+                setTag("");
+                setError("");
+              }}
+            >
               Cancel
             </Button>
           </>
         )}
       </div>
       <p className="mt-1.5 font-mono text-[10px] text-faint" role="status">
-        {error ? <span className="text-danger">{error}</span>
-          : check && !check.available ? <span className="text-danger">{check.reason}</span>
-          : open && tag ? <>Keys will display as <span className="text-fg-2">{tag}-12</span>. Existing keys keep working — nothing is renumbered.</>
-          : "The prefix this project's item, request, and PRD keys display with."}
+        {error ? (
+          <span className="text-danger">{error}</span>
+        ) : check && !check.available ? (
+          <span className="text-danger">{check.reason}</span>
+        ) : open && tag ? (
+          <>
+            Keys will display as <span className="text-fg-2">{tag}-12</span>.
+            Existing keys keep working — nothing is renumbered.
+          </>
+        ) : (
+          "The prefix this project's item, request, and PRD keys display with."
+        )}
       </p>
     </div>
   );
@@ -710,7 +970,19 @@ function ProjectPanel() {
   const [form, setForm] = React.useState<Partial<Project>>({});
   const [saved, setSaved] = React.useState(false);
   React.useEffect(() => {
-    if (active) setForm({ name: active.name, description: active.description, share_global_memory: active.share_global_memory, auto_extract: active.auto_extract, mcp_enabled: active.mcp_enabled, memory_write_mode: active.memory_write_mode, memory_auto_reject: active.memory_auto_reject, memory_llm_judge: active.memory_llm_judge, agent_adjudication: active.agent_adjudication, allow_self_review: active.allow_self_review });
+    if (active)
+      setForm({
+        name: active.name,
+        description: active.description,
+        share_global_memory: active.share_global_memory,
+        auto_extract: active.auto_extract,
+        mcp_enabled: active.mcp_enabled,
+        memory_write_mode: active.memory_write_mode,
+        memory_auto_reject: active.memory_auto_reject,
+        memory_llm_judge: active.memory_llm_judge,
+        agent_adjudication: active.agent_adjudication,
+        allow_self_review: active.allow_self_review,
+      });
   }, [active?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!active) return null;
@@ -722,42 +994,111 @@ function ProjectPanel() {
     setTimeout(() => setSaved(false), 1500);
   }
 
-  const flags: { key: keyof Project; label: string; hint?: string; disabled?: boolean }[] = [
-    { key: "share_global_memory", label: "Share global memory across projects" },
+  const flags: {
+    key: keyof Project;
+    label: string;
+    hint?: string;
+    disabled?: boolean;
+  }[] = [
+    {
+      key: "share_global_memory",
+      label: "Share global memory across projects",
+    },
     { key: "auto_extract", label: "Auto-extract lessons on item completion" },
     { key: "mcp_enabled", label: "Expose MCP tools for this project" },
     // GRPH-380. Named for what it is: with it on, an agent can be the only thing that ever
     // looked at its own work. The hint states the condition, because the condition is the
     // reason this is not simply "review off" — the server still refuses whenever anyone else
     // could have reviewed it.
-    { key: "allow_self_review", label: "Danger mode: let an agent sign off its own work", hint: "Off by default. Only applies when NO other agent could review the item — with a second agent here, self-review is still refused. Items signed off this way say so on the item. Adversarial evidence is still required." },
+    {
+      key: "allow_self_review",
+      label: "Danger mode: let an agent sign off its own work",
+      hint: "Off by default. Only applies when NO other agent could review the item — with a second agent here, self-review is still refused. Items signed off this way say so on the item. Adversarial evidence is still required.",
+    },
   ];
 
   // AL-227: memory auto-triage — the scorer acts on agent candidates on write.
-  const triageFlags: { key: keyof Project; label: string; hint?: string; disabled?: boolean }[] = [
-    { key: "memory_auto_reject", label: "Auto-reject duplicate & rejected-alike memories", hint: "On: near-duplicates and shards resembling ones you've rejected drop straight to rejected (kept, never surfaced — undoable). Applies in every write mode." },
-    { key: "memory_llm_judge", label: "Use a model judge to assess memories", hint: "On: a configured System One decider judges first; otherwise the project's chat model; otherwise similarity. Structural vetoes (duplicates, rejected-alike) still win." },
-    { key: "agent_adjudication", label: "Let agents adjudicate memory", hint: "Off by default. An agent can discard its own candidates, and can SUBMIT one for review by the configured model — it never publishes its own work, and with no model configured the shard stays here for you. Everything it publishes is labelled." },
+  const triageFlags: {
+    key: keyof Project;
+    label: string;
+    hint?: string;
+    disabled?: boolean;
+  }[] = [
+    {
+      key: "memory_auto_reject",
+      label: "Auto-reject duplicate & rejected-alike memories",
+      hint: "On: near-duplicates and shards resembling ones you've rejected drop straight to rejected (kept, never surfaced — undoable). Applies in every write mode.",
+    },
+    {
+      key: "memory_llm_judge",
+      label: "Use a model judge to assess memories",
+      hint: "On: a configured System One decider judges first; otherwise the project's chat model; otherwise similarity. Structural vetoes (duplicates, rejected-alike) still win.",
+    },
+    {
+      key: "agent_adjudication",
+      label: "Let agents adjudicate memory",
+      hint: "Off by default. An agent can discard its own candidates, and can SUBMIT one for review by the configured model — it never publishes its own work, and with no model configured the shard stays here for you. Everything it publishes is labelled.",
+    },
   ];
 
   // AL-280: what happens to a NOVEL agent write. Replaced the auto-publish checkbox,
   // which could never publish anything novel however it was set.
   const writeModes: { value: string; label: string; hint: string }[] = [
-    { value: "review", label: "Review", hint: "Agent writes wait as candidates until you publish them. The agent can't read back what it just wrote." },
-    { value: "auto", label: "Auto", hint: "Publishes only strongly-corroborated lessons — a recurring or vouched-for note. Novel facts still wait for you." },
-    { value: "trusted", label: "Trusted", hint: "Publishes on write, so the agent can read back what it wrote. Nobody has assessed these — they're labelled and undoable in Memory review." },
+    {
+      value: "review",
+      label: "Review",
+      hint: "Agent writes wait as candidates until you publish them. The agent can't read back what it just wrote.",
+    },
+    {
+      value: "auto",
+      label: "Auto",
+      hint: "Publishes only strongly-corroborated lessons — a recurring or vouched-for note. Novel facts still wait for you.",
+    },
+    {
+      value: "trusted",
+      label: "Trusted",
+      hint: "Publishes on write, so the agent can read back what it wrote. Nobody has assessed these — they're labelled and undoable in Memory review.",
+    },
   ];
 
   return (
     <Section title="Project" desc="Configuration for the active project.">
-      <div className="mb-3"><Label>Name</Label><Input value={form.name ?? ""} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} className="max-w-sm" /></div>
+      <div className="mb-3">
+        <Label>Name</Label>
+        <Input
+          value={form.name ?? ""}
+          onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+          className="max-w-sm"
+        />
+      </div>
       <RetagRow />
-      <div className="mb-3"><CloudTag projectId={active.id} /></div>
-      <div className="mb-4"><Label>Description</Label><Textarea rows={2} value={form.description ?? ""} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} /></div>
+      <div className="mb-3">
+        <CloudTag projectId={active.id} />
+      </div>
+      <div className="mb-4">
+        <Label>Description</Label>
+        <Textarea
+          rows={2}
+          value={form.description ?? ""}
+          onChange={(e) =>
+            setForm((f) => ({ ...f, description: e.target.value }))
+          }
+        />
+      </div>
       <div className="mb-4 space-y-2">
         {flags.map((fl) => (
-          <label key={fl.key} className="flex cursor-pointer items-center gap-2.5 text-body text-fg-2">
-            <input type="checkbox" className="accent-accent" checked={!!form[fl.key]} onChange={(e) => setForm((f) => ({ ...f, [fl.key]: e.target.checked }))} />
+          <label
+            key={fl.key}
+            className="flex cursor-pointer items-center gap-2.5 text-body text-fg-2"
+          >
+            <input
+              type="checkbox"
+              className="accent-accent"
+              checked={!!form[fl.key]}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, [fl.key]: e.target.checked }))
+              }
+            />
             {fl.label}
           </label>
         ))}
@@ -766,17 +1107,24 @@ function ProjectPanel() {
         <Label>Agent memory writes</Label>
         <div className="mt-1 space-y-2.5">
           {writeModes.map((m) => (
-            <label key={m.value} className="flex cursor-pointer gap-2.5 text-body text-fg-2">
+            <label
+              key={m.value}
+              className="flex cursor-pointer gap-2.5 text-body text-fg-2"
+            >
               <input
                 type="radio"
                 name="memory_write_mode"
                 className="accent-accent mt-0.5"
                 checked={(form.memory_write_mode ?? "review") === m.value}
-                onChange={() => setForm((f) => ({ ...f, memory_write_mode: m.value }))}
+                onChange={() =>
+                  setForm((f) => ({ ...f, memory_write_mode: m.value }))
+                }
               />
               <span>
                 {m.label}
-                <span className="mt-0.5 block text-small leading-snug text-faint">{m.hint}</span>
+                <span className="mt-0.5 block text-small leading-snug text-faint">
+                  {m.hint}
+                </span>
               </span>
             </label>
           ))}
@@ -786,17 +1134,37 @@ function ProjectPanel() {
         <Label>Memory auto-triage</Label>
         <div className="mt-1 space-y-2.5">
           {triageFlags.map((fl) => (
-            <label key={fl.key} className={cn("flex cursor-pointer gap-2.5 text-body text-fg-2", fl.disabled && "cursor-not-allowed opacity-55")}>
-              <input type="checkbox" className="accent-accent mt-0.5" disabled={fl.disabled} checked={!!form[fl.key]} onChange={(e) => setForm((f) => ({ ...f, [fl.key]: e.target.checked }))} />
+            <label
+              key={fl.key}
+              className={cn(
+                "flex cursor-pointer gap-2.5 text-body text-fg-2",
+                fl.disabled && "cursor-not-allowed opacity-55",
+              )}
+            >
+              <input
+                type="checkbox"
+                className="accent-accent mt-0.5"
+                disabled={fl.disabled}
+                checked={!!form[fl.key]}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, [fl.key]: e.target.checked }))
+                }
+              />
               <span>
                 {fl.label}
-                {fl.hint && <span className="mt-0.5 block text-small leading-snug text-faint">{fl.hint}</span>}
+                {fl.hint && (
+                  <span className="mt-0.5 block text-small leading-snug text-faint">
+                    {fl.hint}
+                  </span>
+                )}
               </span>
             </label>
           ))}
         </div>
       </div>
-      <Button size="sm" onClick={save}>{saved ? "Saved" : "Save project"}</Button>
+      <Button size="sm" onClick={save}>
+        {saved ? "Saved" : "Save project"}
+      </Button>
     </Section>
   );
 }
@@ -805,17 +1173,33 @@ function MembersPanel() {
   const { activeId } = useProjectCtx();
   const { data: members = [] } = useMembers(activeId);
   return (
-    <Section title="Members" desc="People with access to this project and their roles.">
+    <Section
+      title="Members"
+      desc="People with access to this project and their roles."
+    >
       <div className="space-y-2">
         {members.map((m) => (
-          <div key={m.user.id} className="flex items-center gap-3 rounded-[11px] border border-line-2 bg-surface-2 px-3 py-2.5">
-            <Avatar initials={m.user.initials} color={m.user.avatar} size={30} />
+          <div
+            key={m.user.id}
+            className="flex items-center gap-3 rounded-[11px] border border-line-2 bg-surface-2 px-3 py-2.5"
+          >
+            <Avatar
+              initials={m.user.initials}
+              color={m.user.avatar}
+              size={30}
+            />
             <div className="min-w-0 flex-1">
               <div className="text-[13px] text-fg-2">{m.user.name}</div>
-              <div className="font-mono text-[10.5px] text-faint">@{m.user.handle}</div>
+              <div className="font-mono text-[10.5px] text-faint">
+                @{m.user.handle}
+              </div>
             </div>
-            <span className="rounded-md border border-line-2 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-muted">{m.role}</span>
-            <span className="w-12 text-right font-mono text-[10px] text-faint">{m.access}</span>
+            <span className="rounded-md border border-line-2 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-muted">
+              {m.role}
+            </span>
+            <span className="w-12 text-right font-mono text-[10px] text-faint">
+              {m.access}
+            </span>
           </div>
         ))}
       </div>
@@ -839,7 +1223,8 @@ function AccountPanel() {
 
   const mismatch = confirm.length > 0 && next !== confirm;
   const tooShort = next.length > 0 && next.length < 8;
-  const ready = current.length > 0 && next.length >= 8 && next === confirm && !busy;
+  const ready =
+    current.length > 0 && next.length >= 8 && next === confirm && !busy;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -886,10 +1271,18 @@ function AccountPanel() {
           value={confirm}
           onChange={(e) => setConfirm(e.target.value)}
         />
-        {tooShort && <p className="text-[12px] text-muted">At least 8 characters.</p>}
-        {mismatch && <p className="text-[12px] text-muted">Those two don’t match.</p>}
+        {tooShort && (
+          <p className="text-[12px] text-muted">At least 8 characters.</p>
+        )}
+        {mismatch && (
+          <p className="text-[12px] text-muted">Those two don’t match.</p>
+        )}
         {error && <p className="text-[12px] text-red-400">{error}</p>}
-        {done && <p className="text-[12px] text-emerald-400">Password changed. Other devices are signed out.</p>}
+        {done && (
+          <p className="text-[12px] text-emerald-400">
+            Password changed. Other devices are signed out.
+          </p>
+        )}
         <Button type="submit" disabled={!ready}>
           {busy ? "Changing…" : "Change password"}
         </Button>
@@ -903,10 +1296,17 @@ function StatusPill({ connected }: { connected: boolean }) {
     <span
       className={cn(
         "ml-auto flex items-center gap-1.5 rounded-md border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide",
-        connected ? "border-[#1c2620] bg-[rgba(95,208,122,0.06)] text-st-done" : "border-line-2 text-faint",
+        connected
+          ? "border-[#1c2620] bg-[rgba(95,208,122,0.06)] text-st-done"
+          : "border-line-2 text-faint",
       )}
     >
-      <span className={cn("h-1.5 w-1.5 rounded-full", connected ? "bg-st-done" : "bg-faint")} />
+      <span
+        className={cn(
+          "h-1.5 w-1.5 rounded-full",
+          connected ? "bg-st-done" : "bg-faint",
+        )}
+      />
       {connected ? "connected" : "not connected"}
     </span>
   );
@@ -915,7 +1315,9 @@ function StatusPill({ connected }: { connected: boolean }) {
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center gap-3 text-body">
-      <span className="w-24 flex-none font-mono text-[10px] uppercase tracking-wide text-faint">{label}</span>
+      <span className="w-24 flex-none font-mono text-[10px] uppercase tracking-wide text-faint">
+        {label}
+      </span>
       <span className="text-fg-2">{value}</span>
     </div>
   );
