@@ -5,6 +5,12 @@ One request per sync, carrying every project on this box. The console
 prose, no id that is not a rule slug. A replay of the same payload reuses
 its idempotency key. A refusal is logged and not retried until the payload
 changes. A network failure is resent in full on the next sync.
+
+GRPH-1675: each project entry may also carry `counts` (items by status, open claims,
+active agents — integers only) and `publishing` (the project's `publish_to_org` flags).
+Both are new fields, and a console that predates them refuses unknown fields, so they are
+sent only when the console advertises `box_push_counts` on its `/api/config`. A console
+that says nothing, or cannot be read, gets the push without them.
 """
 from __future__ import annotations
 
@@ -17,7 +23,9 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Observation, Project, RuleDecisionPull
+from datetime import datetime, timedelta, timezone
+
+from app.models import Agent, Item, Observation, Project, RuleDecisionPull
 from app.services import rule_measure
 from app.services import rule_pack
 from app.services import rule_toggles
@@ -28,6 +36,10 @@ _TIMEOUT = 30.0
 _RULE_ID = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 _REASON_CODE = re.compile(r"^[a-z][a-z_]{0,47}$")
 _STATES = ("on", "off", "advisory")
+#: The feature a console advertises when it accepts `counts` and `publishing` (GBC-170).
+COUNTS_FEATURE = "box_push_counts"
+_ITEM_STATUSES = ("backlog", "next", "in_progress", "review", "done", "blocked")
+_PROBE_TIMEOUT = 10.0
 
 #: Payload hash the console last refused. Same process, same payload: do not post again.
 _refused_key: str | None = None
@@ -116,11 +128,89 @@ def _rule(db: Session, project_id: str, rule_id: str) -> dict:
     }
 
 
-def build_box_push(db: Session) -> dict | None:
+def _advertises(data: object, feature: str) -> bool:
+    """Does a console config body name `feature`? A list of feature names, a mapping of
+    name to bool, under `features` or `capabilities`, or a top-level `true`."""
+    if not isinstance(data, dict):
+        return False
+    if data.get(feature) is True:
+        return True
+    for field in ("features", "capabilities"):
+        val = data.get(field)
+        if isinstance(val, (list, tuple)) and feature in val:
+            return True
+        if isinstance(val, dict) and val.get(feature) is True:
+            return True
+    return False
+
+
+def console_accepts_counts(cloud_url: str) -> bool:
+    """Has the console advertised `box_push_counts`? Read from its public `/api/config`.
+
+    Anything short of a 200 that names the feature is False: an older console, an error,
+    a body that is not JSON. Sending the new fields to a console that refuses unknown fields
+    would lose the whole push, so the default is the old shape.
+    """
+    try:
+        resp = httpx.get(f"{cloud_url.rstrip('/')}/api/config", timeout=_PROBE_TIMEOUT)
+        if getattr(resp, "status_code", None) != 200:
+            return False
+        return _advertises(resp.json(), COUNTS_FEATURE)
+    except Exception:  # noqa: BLE001 — a probe failure means the old shape, never no push
+        return False
+
+
+def _aware(dt: datetime | None) -> datetime | None:
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def project_counts(db: Session, project_id: str, *, now: datetime | None = None) -> dict:
+    """The project's tracker in numbers: items by status, open claims, active agents.
+
+    Integers only — no ids, titles or names leave the box. An open claim is a live build
+    or review lease (an expired one frees the item and is not counted). An active agent is
+    one whose presence has not lapsed and that is neither dismissed nor quarantined.
+    """
+    from app.services import fleet
+
+    now = now or datetime.now(timezone.utc)
+    by_status = dict(db.execute(
+        select(Item.status, func.count(Item.id))
+        .where(Item.project_id == project_id).group_by(Item.status)).all())
+    items = {s: int(by_status.get(s, 0) or 0) for s in _ITEM_STATUSES}
+    cutoff = now - timedelta(seconds=fleet.DEFAULT_LEASE_SECONDS)
+    held = db.execute(select(Item.claimed_by, Item.claimed_at, Item.review_claimed_by,
+                             Item.review_claimed_at).where(
+        Item.project_id == project_id,
+        (Item.claimed_by.is_not(None)) | (Item.review_claimed_by.is_not(None)))).all()
+    open_claims = 0
+    for build_by, build_at, review_by, review_at in held:
+        if build_by and build_at is not None and _aware(build_at) >= cutoff:
+            open_claims += 1
+        if review_by and review_at is not None and _aware(review_at) >= cutoff:
+            open_claims += 1
+    agents = db.scalars(select(Agent).where(
+        Agent.project_id == project_id, Agent.dismissed_at.is_(None))).all()
+    active = sum(1 for a in agents
+                 if fleet.presence_state(a, now=now) not in ("offline", "quarantined"))
+    return {"items": items, "open_claims": open_claims, "active_agents": active}
+
+
+def _publishing(project: Project) -> dict:
+    return {"specs": bool(project.publish_specs),
+            "item_digests": bool(project.publish_item_digests)}
+
+
+def build_box_push(db: Session, *, with_counts: bool = False) -> dict | None:
     """The console's `box_push` record, or None when this box has no projects.
 
     A project name that is shared by two projects on the box is left out and
     logged. Sending it twice, or sending both, is a 422 for the whole push.
+
+    `with_counts` adds `counts` and `publishing` to each project (GRPH-1675). Only a console
+    that advertised `box_push_counts` is sent them.
     """
     rows = list(db.scalars(select(Project).order_by(Project.name, Project.id)))
     seen: dict[str, str] = {}
@@ -140,11 +230,16 @@ def build_box_push(db: Session) -> dict | None:
             seen.pop(name, None)
     rule_ids = [rid for rid in rule_toggles.LIBRARY if _RULE_ID.match(rid)]
     projects = []
+    by_id = {row.id: row for row in rows}
     for name, project_id in seen.items():
-        projects.append({
+        entry = {
             "project": name,
             "rules": [_rule(db, project_id, rid) for rid in rule_ids],
-        })
+        }
+        if with_counts:
+            entry["counts"] = project_counts(db, project_id)
+            entry["publishing"] = _publishing(by_id[project_id])
+        projects.append(entry)
     if not projects:
         return None
     return {"record": "box_push", "projects": projects}
@@ -158,7 +253,9 @@ def payload_key(body: dict) -> str:
 def push_box_view(db: Session, *, cloud_url: str, api_key: str) -> dict:
     """POST the org-view push. Never raises for a refusal; a network error does."""
     global _refused_key
-    body = build_box_push(db)
+    if db.scalar(select(func.count(Project.id))) == 0:
+        return {"pushed": False, "reason": "no projects"}
+    body = build_box_push(db, with_counts=console_accepts_counts(cloud_url))
     if body is None:
         return {"pushed": False, "reason": "no projects"}
     key = payload_key(body)
