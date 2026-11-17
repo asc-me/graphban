@@ -1846,7 +1846,10 @@ export interface PrdCoverageSection {
   /** False for framing prose (Problem, Goals, Non-goals, …) — never counted as a gap. */
   implementable: boolean;
   item_count: number;
+  /** Delivered items — excludes ones closed as duplicate/superseded (GRPH-1672). */
   done: number;
+  /** Closed as duplicate or superseded: `done` on the board, delivered nothing. */
+  resolved: number;
   by_status: Record<string, number>;
   gap: boolean;
   /** Heading with no substance (placeholder / blank). Not a task gap. */
@@ -1898,6 +1901,8 @@ export interface PrdCoverage {
   empty_sections: string[];
   total_items: number;
   done_items: number;
+  /** Closed as duplicate/superseded — not in `done_items` nor the `percent_done` denominator. */
+  resolved_items: number;
   percent_done: number;
   open_high_fidelity: number;
 }
