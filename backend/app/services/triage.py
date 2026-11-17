@@ -333,7 +333,11 @@ def _check_unmoved(target, decision: dict) -> None:
     """The decision was made against the status the console saw. If the item moved since,
     the manager decided about something that no longer exists in that form."""
     seen = decision.get("status")
-    if seen is not None and seen != target.status:
+    if not seen:
+        # Without the status the console saw there is nothing to check the item against, and
+        # applying blind would bypass the item_moved guarantee.
+        raise DecisionRefused("no_status", "decision carries no status to check against")
+    if seen != target.status:
         raise DecisionRefused("item_moved", f"{target.key} is now {target.status}, was {seen}")
 
 
@@ -406,11 +410,12 @@ def _apply_duplicate(db: Session, target, decision: dict) -> None:
         db.commit()
 
 
-def apply_decision(db: Session, decision: dict) -> dict:
+def apply_decision(db: Session, decision: dict, project_id: str | None = None) -> dict:
     """Apply one console decision. Returns the report row: `{id, result, reason?}`.
 
     Idempotent on the decision id: a retried sync that delivers it again reports `applied`
-    without touching the item a second time.
+    without touching the item a second time. With `project_id` (the project the decision was
+    pulled for), a target outside that project is refused `wrong_project` and left untouched.
     """
     from app.services import events as events_svc
 
@@ -422,6 +427,8 @@ def apply_decision(db: Session, decision: dict) -> dict:
     target = _find_target(db, str(decision.get("target") or ""))
     if target is None:
         return {"id": did, "result": "refused", "reason": "not_found"}
+    if project_id is not None and target.project_id != project_id:
+        return {"id": did, "result": "refused", "reason": "wrong_project"}
     try:
         out = _apply_one(db, target, decision)
     except DecisionRefused as e:
@@ -442,17 +449,23 @@ def pull_decisions(db: Session, *, cloud_url: str, api_key: str) -> dict:
 
     base, headers = cloud_url.rstrip("/") + DECISIONS_FEATURE_PATH, {"X-API-Key": api_key}
     out = {"applied": 0, "refused": 0, "errors": []}
+    served = False
     for project in list(db.scalars(select(Project).order_by(Project.name, Project.id))):
         name = (project.name or "").strip()
         if not name:
             continue
         resp = httpx.get(base, params={"project": name}, headers=headers, timeout=_TIMEOUT)
         if resp.status_code == 404:
-            return {"pulled": False, "reason": "console does not serve triage decisions"}
+            if not served:
+                # The first GET answers whether the console serves the feature at all.
+                return {"pulled": False, "reason": "console does not serve triage decisions"}
+            out["errors"].append({"project": name, "error": "404"})
+            continue
+        served = True
         resp.raise_for_status()
         body = resp.json()
         rows = body.get("decisions") if isinstance(body, dict) else None
-        results = [apply_decision(db, d) for d in (rows or []) if isinstance(d, dict)]
+        results = [apply_decision(db, d, project.id) for d in (rows or []) if isinstance(d, dict)]
         if not results:
             continue
         try:
