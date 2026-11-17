@@ -1,5 +1,6 @@
 """Team-triage digests published from the box (GRPH-1678)."""
 import json
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 import pytest
 
@@ -64,7 +65,7 @@ def calls(monkeypatch):
 
 
 
-def _item(client, auth, title, status="backlog", **kw):
+def _item(client, auth, title, status="backlog", done_days_ago=None, **kw):
     r = client.post("/api/items", headers=auth, json={
         "title": title, "project_id": "core", "description": SECRET, **kw})
     assert r.status_code in (200, 201), r.text
@@ -73,7 +74,10 @@ def _item(client, auth, title, status="backlog", **kw):
         from app.db import SessionLocal
 
         with SessionLocal() as s:  # the API refuses a bare move to done
-            s.query(Item).filter(Item.title == title).one().status = status
+            row = s.query(Item).filter(Item.title == title).one()
+            row.status = status
+            if done_days_ago is not None:
+                row.done_at = datetime.now(timezone.utc) - timedelta(days=done_days_ago)
             s.commit()
     return key
 
@@ -93,38 +97,62 @@ def _digest(calls):
 def test_digest_lists_open_work_without_any_body_text(client, auth, db, calls):
     a = _item(client, auth, "Edit router", touchpoints=["app/routers/x.py"])
     b = _item(client, auth, "Edit router too", touchpoints=["app/routers/x.py"])
-    d = _item(client, auth, "Finished", status="done")
+    d = _item(client, auth, "Finished", status="done", done_days_ago=3)
+    old = _item(client, auth, "Finished long ago", status="done", done_days_ago=20)
     r = client.post("/api/requests", headers=auth, json={
         "type": "bug", "title": "Crash on save", "detail": SECRET, "project_id": "core"})
     assert r.status_code == 201
     _publish(db)
     rows = _digest(calls)
     ids = {x["id"] for x in rows}
-    assert {a, b, r.json()["id"]} <= ids
-    assert d not in ids  # every non-done item and open request, and nothing else
+    # every non-done item, open request and item done within 14 days, and nothing else
+    assert {a, b, d, r.json()["id"]} <= ids
+    assert old not in ids
+    cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+    for x in rows:
+        if x["kind"] == "item" and x["status"] == "done":
+            assert datetime.fromisoformat(x["done_at"]) >= cutoff
+    row_d = next(x for x in rows if x["id"] == d)
+    assert row_d["status"] == "done" and row_d["done_at"]
     row_a = next(x for x in rows if x["id"] == a)
     assert set(row_a) == {"id", "kind", "title", "status", "item_kind", "touchpoints",
                           "created_at", "hints"}
     assert row_a["hints"][0]["id"] == b
     assert row_a["hints"][0]["evidence"]["shared_touchpoints"] == ["app/routers/x.py"]
+    assert set(row_d) == set(row_a) | {"done_at"}
     blob = json.dumps(rows)
     assert SECRET not in blob
     for word in FORBIDDEN:
         assert all(word not in x for x in rows)
 
 
+def test_an_item_done_more_than_14_days_ago_is_not_listed(client, auth, db, calls):
+    old = _item(client, auth, "Done long ago", status="done", done_days_ago=15)
+    edge = _item(client, auth, "Done 13 days ago", status="done", done_days_ago=13)
+    _publish(db)
+    ids = {x["id"] for x in _digest(calls)}
+    assert old not in ids
+    assert edge in ids
+
+
 def test_second_sync_replaces_the_first(client, auth, db, calls):
     k = _item(client, auth, "Soon closed")
+    aging = _item(client, auth, "Closed a while back", status="done", done_days_ago=13)
     other = _item(client, auth, "Still open")
     _publish(db)
-    assert k in {x["id"] for x in _digest(calls)}
-    row = db.query(Item).filter(Item.title == "Soon closed").one()
-    row.status = "done"  # closed just now: no backdating
+    first = {x["id"]: x for x in _digest(calls)}
+    assert first[k]["status"] == "backlog" and "done_at" not in first[k]
+    assert aging in first
+    db.query(Item).filter(Item.title == "Soon closed").one().status = "done"  # closed now
+    db.query(Item).filter(Item.title == "Closed a while back").one().done_at = (
+        datetime.now(timezone.utc) - timedelta(days=15))  # its window has now passed
     db.commit()
     calls.clear()
     _publish(db)
-    ids = {x["id"] for x in _digest(calls)}
-    assert k not in ids and other in ids
+    second = {x["id"]: x for x in _digest(calls)}
+    assert second[k]["status"] == "done" and second[k]["done_at"]
+    assert aging not in second
+    assert other in second
 
 
 def test_flag_off_purges_and_on_republishes(client, auth, db, calls):

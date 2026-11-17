@@ -5,17 +5,19 @@ box's own duplicate/overlap hints. Never a description, body, comment or memory 
 One `POST /api/sync/item-digests` per project per sync replaces this deployment's previous
 set wholesale. Switching the flag off sends `DELETE`; switching it on republishes.
 
-The digest lists every non-done item and every open request, and nothing else: an item that
-closes drops out of the next set. A console that predates digests does not advertise
+The digest lists every non-done item, every open request, and every item done within the
+last `DONE_WINDOW` (14 days, owner decision 2026-11-17) with its `done_at`, and nothing else.
+An item that closes stays, with status done, until its `done_at` leaves the window. A console that predates digests does not advertise
 `item_digests` on its `/api/config`; such a console is not sent anything, so a box linked to
 it syncs exactly as before.
 """
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Item, Project, Request
@@ -28,6 +30,8 @@ DIGESTS_FEATURE = "item_digests"
 OPEN_REQUEST_STATUSES = ("new", "triaging", "snoozed")
 #: How many hints of each sort a row carries.
 MAX_HINTS = 5
+#: How long a done item stays in the digest after `done_at`.
+DONE_WINDOW = timedelta(days=14)
 
 
 class NotServed(Exception):
@@ -60,18 +64,33 @@ def console_serves_digests(cloud_url: str) -> bool:
         return False
 
 
-def _item_rows(db: Session, project_id: str) -> list[dict]:
+def _aware(dt: datetime) -> datetime:
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def _listed(item: Item, cutoff: datetime) -> bool:
+    """Non-done, or done within the window. A done item with no `done_at` is not listed."""
+    if item.status != "done":
+        return True
+    return item.done_at is not None and _aware(item.done_at) >= cutoff
+
+
+def _cutoff() -> datetime:
+    return datetime.now(timezone.utc) - DONE_WINDOW
+
+
+def _item_rows(db: Session, project_id: str, cutoff: datetime) -> list[dict]:
     from app.services import clustering
 
     pool = clustering.load_pool(db, project_id)
     rows = []
     for item in pool:
-        if item.status == "done":
+        if not _listed(item, cutoff):
             continue
         hints = []
         for rel in clustering.related_items(db, item, project_id, pool):
             other = rel["item"]
-            if other.status == "done":
+            if not _listed(other, cutoff):  # a hint names only a row in the same digest
                 continue
             if rel["shared"]:
                 hints.append({"type": "overlap", "id": other.key,
@@ -81,11 +100,14 @@ def _item_rows(db: Session, project_id: str) -> list[dict]:
                               "evidence": {"link_types": rel["link_types"]}})
             if len(hints) >= MAX_HINTS:
                 break
-        rows.append({
+        row = {
             "id": item.key, "kind": "item", "title": item.title, "status": item.status,
             "item_kind": item.kind or "", "touchpoints": list(item.touchpoints or []),
             "created_at": _iso(item.created_at), "hints": hints,
-        })
+        }
+        if item.status == "done":
+            row["done_at"] = _iso(_aware(item.done_at))
+        rows.append(row)
     return rows
 
 
@@ -102,10 +124,10 @@ def _embed_all(texts: list[str]) -> list[list[float]]:
     return [embedder.embed(t) for t in texts]
 
 
-def _request_rows(db: Session, project_id: str) -> list[dict]:
-    """Open requests, each with its likeliest duplicate among the open work in the digest.
+def _request_rows(db: Session, project_id: str, cutoff: datetime) -> list[dict]:
+    """Open requests, each with its likeliest duplicate among the work in the digest.
 
-    Each open request and each non-done item is embedded once per sync and compared in
+    Each open request and each listed item is embedded once per sync and compared in
     memory: R+I embedder calls (one batch where the provider has one), not R x (R+I).
     """
     from app.providers import cosine_similarity
@@ -116,8 +138,9 @@ def _request_rows(db: Session, project_id: str) -> list[dict]:
     ).order_by(Request.created_at)).all()
     if not reqs:
         return []
-    items = db.scalars(select(Item).where(
-        Item.project_id == project_id, Item.status != "done")).all()
+    items = [i for i in db.scalars(select(Item).where(
+        Item.project_id == project_id,
+        or_(Item.status != "done", Item.done_at.is_not(None)))).all() if _listed(i, cutoff)]
     # Same texts duplicates.find_duplicates compares; the vectors never leave the box.
     vecs = _embed_all([r.title for r in reqs]
                       + [f"{i.title} {i.description}" for i in items])
@@ -147,7 +170,8 @@ def _request_rows(db: Session, project_id: str) -> list[dict]:
 
 
 def build_digest(db: Session, project_id: str) -> list[dict]:
-    return _item_rows(db, project_id) + _request_rows(db, project_id)
+    cutoff = _cutoff()
+    return _item_rows(db, project_id, cutoff) + _request_rows(db, project_id, cutoff)
 
 
 def publish_digests(db: Session, *, cloud_url: str, api_key: str) -> dict | None:
