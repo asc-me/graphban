@@ -162,6 +162,19 @@ class Project(Base):
     # normalize_repo_url). `gban setup` matches a checkout's git remote against it before it falls
     # back to the name match. NULL = never set — not "no repository".
     repo_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Publish to org (GRPH-1674): what a linked box sends the console for this project.
+    # Both on by default, for new projects and (via the migration's server_default) existing
+    # ones. An unlinked box publishes nothing whatever these say (box_push.publish_enabled).
+    publish_specs: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true(), nullable=False
+    )
+    publish_item_digests: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true(), nullable=False
+    )
+
+    @property
+    def publish_to_org(self) -> dict:
+        return {"specs": bool(self.publish_specs), "item_digests": bool(self.publish_item_digests)}
 
     # The credential this project uses for chat, overriding the deployment default (PRD-25).
     # S1 creates the column and never writes it: the resolver honours it so the ordering is

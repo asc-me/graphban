@@ -13,7 +13,7 @@ from app.db import get_db
 from app.errors import Refused, Validation
 from app.models import Membership, Project, User
 from app.schemas import (
-    GitopsPatch, GitopsView, MemberOut, MemoryWriteModeWrite, ProjectCreate, ProjectOut, ProjectRetagIn,
+    GitopsPatch, GitopsView, MemberOut, MemoryWriteModeWrite, ProjectCreate, PublishToOrgWrite, ProjectOut, ProjectRetagIn,
     ProjectSummaryOut, ProjectUpdate, UserOut,
 )
 from app.security import authz
@@ -163,6 +163,26 @@ def set_memory_write_mode(
         memory_svc.set_write_mode(db, project, body.mode, actor=user, reason=body.reason)
     except Validation as e:
         raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
+    db.refresh(project)
+    return project
+
+
+@router.put("/{project_id}/publish-to-org", response_model=ProjectOut)
+def set_publish_to_org(
+    project_id: str,
+    body: PublishToOrgWrite,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Turn what a linked box publishes to the org on or off (GRPH-1674). Owner or admin."""
+    authz.require_writable(db, user.id, project_id)
+    if authz.project_role(db, user.id, project_id) not in ("owner", "admin"):
+        raise HTTPException(403, "requires the project owner or an admin")
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "project not found")
+    flags = body.model_dump(exclude_none=True)
+    projects_svc.set_publish_to_org(db, project, flags, actor=user)
     db.refresh(project)
     return project
 

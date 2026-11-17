@@ -538,6 +538,7 @@ class ProjectOut(ORMModel):
     # The release branch, set on this box (PRD-P57 S2). Null is unmeasured, never `main`.
     release_ref: str | None = None
     repo_url: str | None = None
+    publish_to_org: dict = {"specs": True, "item_digests": True}
 
 
 class ProjectSummaryOut(BaseModel):
@@ -1881,6 +1882,13 @@ class RuleTogglesOut(BaseModel):
     #: Why the installed pack is not in force (refused at startup), else None.
     library_reason: str | None = None
     toggles: list[RuleToggleOut]
+
+
+class PublishToOrgWrite(BaseModel):
+    """Either or both flags; an absent flag is left as it is."""
+    model_config = {"extra": "forbid"}
+    specs: bool | None = None
+    item_digests: bool | None = None
 
 
 class MemoryWriteModeWrite(BaseModel):

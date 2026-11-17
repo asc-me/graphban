@@ -236,6 +236,22 @@ Edit the active project's **name**, **description**, and flags:
 
 Saved via `PATCH /api/projects/{id}`.
 
+### Publish to org
+
+Two switches for what a **linked** box publishes to your org's console for this project
+(GRPH-1674). Both are **on by default** — for new projects, and for existing projects on the
+upgrade that introduces them (migration 0204). An unlinked box publishes nothing, whatever
+they say.
+
+- **Specs** — spec title, body and status.
+- **Item digests** — item title, kind, status and touchpoints. Item bodies are never sent.
+
+Only a project **owner or admin** can change them (`PUT /api/projects/{id}/publish-to-org`
+with `{"specs": bool, "item_digests": bool}`, either or both; anyone else gets 403). Each
+change is an activity event, `publish_to_org`, naming who changed which flag. Turning one off
+removes what was published; turning it back on republishes on the next sync. To opt out after
+upgrading, untick it here.
+
 ## Members tab
 
 Lists the project's members with their **role** (owner/admin/member) and **access**
