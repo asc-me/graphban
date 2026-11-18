@@ -190,8 +190,9 @@ function BoardCard({
         dragging && "opacity-40",
       )}
     >
-      <div className="flex items-center gap-1.5">
-        <span className="font-mono text-[10.5px] text-faint">{item.id}</span>
+      {/* Wraps: a line item's badges ("needs acceptance · needs a file") outrun a card's width. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="flex-none whitespace-nowrap font-mono text-[10.5px] text-faint">{item.id}</span>
         {item.fidelity === "high" && (
           <span
             className="rounded border border-[rgba(167,139,250,0.3)] px-[5px] font-mono text-[9px] tracking-wide text-[#c9b8ff]"

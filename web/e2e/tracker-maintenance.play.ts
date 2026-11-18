@@ -1,0 +1,59 @@
+import { expect, test, type Page } from "@playwright/test";
+
+/**
+ * GRPH-1701: the Maintenance filter on the real tracker page, in a real browser (harness:
+ * `e2e/tracker-maintenance/`). Each state is asserted, then captured to the test's output dir;
+ * the copies committed for the PR are in `docs/design/grph-1701/`.
+ */
+const HARNESS = "http://127.0.0.1:5198/e2e/tracker-maintenance/";
+
+async function openFiltered(page: Page, line: "none" | "empty" | "populated", layout: "list" | "board" = "list") {
+  await page.setViewportSize({ width: 1400, height: 760 });
+  await page.goto(`${HARNESS}?line=${line}&layout=${layout}`);
+  await expect(page.getByTestId("unscoped-count")).toContainText("2");
+  await page.getByRole("button", { name: /^Maintenance\s*\d+$/ }).click();
+}
+
+// The chips fade with `transition-colors`: finish it, and move the pointer off the chip, so the shot shows the settled state.
+const shot = async (page: Page, name: string) => {
+  await page.mouse.move(0, 0);
+  await page.screenshot({ path: test.info().outputPath(`${name}.png`), animations: "disabled" });
+};
+
+test("maintenance: no line — its own sentence and create", async ({ page }) => {
+  await openFiltered(page, "none");
+  await expect(page.getByText("This project has no maintenance line.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create the maintenance line" })).toBeVisible();
+  await shot(page, "1-no-line");
+});
+
+test("maintenance: empty line — a different sentence, unscoped count beside it", async ({ page }) => {
+  await openFiltered(page, "empty");
+  await expect(page.getByText("The maintenance line has no items.")).toBeVisible();
+  await expect(page.getByText("This project has no maintenance line.")).toHaveCount(0);
+  await shot(page, "2-empty-line");
+});
+
+test("maintenance: populated — line items only, with FIX/SECURITY/needs/blocks", async ({ page }) => {
+  await openFiltered(page, "populated");
+  await expect(page.getByText("Session token not rotated on password reset")).toBeVisible();
+  await expect(page.getByText("Invoice PDF export")).toHaveCount(0);
+  await expect(page.getByTestId("badge-security")).toHaveCount(1);
+  await expect(page.getByTestId("badge-needs")).toHaveText("needs acceptance · needs a file");
+  await expect(page.getByTestId("badge-blocks")).toHaveText("blocks CP-41");
+  await shot(page, "3-populated-list");
+});
+
+test("maintenance: populated board", async ({ page }) => {
+  await openFiltered(page, "populated", "board");
+  await expect(page.getByTestId("badge-security")).toHaveCount(1);
+  await expect(page.getByTestId("badge-needs")).toHaveText("needs acceptance · needs a file");
+  await shot(page, "4-populated-board");
+});
+
+test("blocked by a fix: the PRD item reads BLOCKED by the fix's key", async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 760 });
+  await page.goto(`${HARNESS}?line=populated&layout=list`);
+  await expect(page.getByTestId("badge-blocked-by")).toHaveText("BLOCKED by CP-52");
+  await shot(page, "5-blocked-by-fix");
+});

@@ -348,10 +348,14 @@ export function TrackerView() {
         ) : isEmpty ? (
           emptyState
         ) : isFilteredEmpty ? (
-maintenanceOn ? maintenanceEmpty : <PlannerFilteredEmpty
-            message={`No items in this view${hidden ? ` — ${hidden}` : filterLabel(filter)}.`}
-            onClear={clearFilter}
-          />
+          maintenanceOn ? (
+            maintenanceEmpty
+          ) : (
+            <PlannerFilteredEmpty
+              message={`No items in this view${hidden ? ` — ${hidden}` : filterLabel(filter)}.`}
+              onClear={clearFilter}
+            />
+          )
         ) : (
           <TrackerBoard
             items={visible}
@@ -363,7 +367,7 @@ maintenanceOn ? maintenanceEmpty : <PlannerFilteredEmpty
             onStatus={setStatus}
             columns={columns}
             lineInfoOf={lineInfoOf}
-            statuses={BOARD_COLUMNS.filter((st) => filter === RESPONSE_NEEDED || statusMatches(st, filter, ACTIVE_STATUSES))}
+            statuses={BOARD_COLUMNS.filter((st) => filter === RESPONSE_NEEDED || maintenanceOn || statusMatches(st, filter, ACTIVE_STATUSES))}
           />
         )
       ) : (
@@ -375,10 +379,14 @@ maintenanceOn ? maintenanceEmpty : <PlannerFilteredEmpty
           ) : isEmpty ? (
             emptyState
           ) : isFilteredEmpty ? (
-maintenanceOn ? maintenanceEmpty : <PlannerFilteredEmpty
-              message={`No items in this view${hidden ? ` — ${hidden}` : filterLabel(filter)}.`}
-              onClear={clearFilter}
-            />
+            maintenanceOn ? (
+              maintenanceEmpty
+            ) : (
+              <PlannerFilteredEmpty
+                message={`No items in this view${hidden ? ` — ${hidden}` : filterLabel(filter)}.`}
+                onClear={clearFilter}
+              />
+            )
           ) : (
             visible.map((item) => {
               const globalIndex = ordered.findIndex((i) => i.id === item.id);

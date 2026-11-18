@@ -92,6 +92,23 @@ describe("tracker Maintenance filter (GRPH-1701)", () => {
     expect(screen.getByRole("button", { name: /^All\s*\d+$/ }).className).not.toBe(chipClass(await chip()));
   });
 
+  it("keeps the board's columns when the filter is on (board layout)", async () => {
+    localStorage.setItem(TRACKER_LAYOUT_KEY, "board");
+    line = { id: "AL-L", title: "Maintenance" };
+    served = [
+      item({ id: "AL-1", title: "Plain feature" }),
+      item({ id: "AL-2", title: "Line fix", kind: "fix", line_id: "AL-L", severity: "security" }),
+    ];
+    const user = userEvent.setup();
+    renderTracker();
+    await screen.findByText("Plain feature");
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Maintenance\s*1$/ })).toBeInTheDocument());
+    await user.click(await chip());
+    expect(await screen.findByText("Line fix")).toBeInTheDocument();
+    expect(screen.queryByText("Plain feature")).not.toBeInTheDocument();
+    expect(screen.getByTestId("badge-security")).toBeInTheDocument();
+  });
+
   it("says the project has no line, and offers to create it", async () => {
     const user = userEvent.setup();
     renderTracker();
