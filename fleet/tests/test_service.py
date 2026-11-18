@@ -649,3 +649,16 @@ def test_last_run_reads_newest_json(tmp_path, monkeypatch):
     assert service.last_run("d") == ("unready", 1)
     log.write_text("no json here\n")
     assert service.last_run("d") == ("", 0)
+
+
+def test_last_run_reads_a_newest_record_longer_than_the_window(tmp_path, monkeypatch):
+    """GRPH-1698: a newest JSON line over 64 KiB (large `resolutions`) must not fall back to
+    an older run's reason. Sabotage: drop the window widening and this reads ("", 0)."""
+    import json as _json
+
+    monkeypatch.setattr(service, "CONFIG_DIR", tmp_path)
+    (tmp_path / "logs").mkdir()
+    big = _json.dumps({"reason": "unready", "unready": [{"id": "a"}, {"id": "b"}],
+                       "resolutions": ["x" * 1000] * 200})
+    (tmp_path / "logs" / "d.log").write_text('{"reason": "idle"}\n' + big + "\n")
+    assert service.last_run("d") == ("unready", 2)

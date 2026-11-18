@@ -139,14 +139,32 @@ def last_run(name: str) -> tuple[str, int]:
     fixes are filed but not claimable. `("", 0)` means the log held no readable reason.
     """
     path = CONFIG_DIR / "logs" / f"{name}.log"
+    window = 65536
     try:
         with path.open("rb") as fh:
             fh.seek(0, 2)
-            fh.seek(max(0, fh.tell() - 65536))
-            tail = fh.read().decode("utf-8", "replace")
+            size = fh.tell()
+            while True:
+                start = max(0, size - window)
+                fh.seek(start)
+                lines = fh.read().decode("utf-8", "replace").splitlines()
+                if start > 0 and lines:
+                    # The first line may begin mid-record; only whole lines are read.
+                    lines = lines[1:]
+                found = _reason_in(lines)
+                if found is not None:
+                    return found
+                if start == 0:
+                    return "", 0
+                # The newest record may be longer than the window (a large `resolutions`):
+                # widen rather than answer with an older run's reason.
+                window *= 4
     except OSError:
         return "", 0
-    for ln in reversed(tail.splitlines()):
+
+
+def _reason_in(lines: list[str]) -> tuple[str, int] | None:
+    for ln in reversed(lines):
         ln = ln.strip()
         if not ln.startswith("{"):
             continue
@@ -157,7 +175,7 @@ def last_run(name: str) -> tuple[str, int]:
         if isinstance(doc, dict) and isinstance(doc.get("reason"), str) and doc["reason"]:
             un = doc.get("unready")
             return doc["reason"], len(un) if isinstance(un, list) else 0
-    return "", 0
+    return None
 
 
 #: What `until` is given if the operator passes nothing else. Nothing: an empty install is
@@ -954,9 +972,20 @@ class Status:
     @property
     def idle(self) -> bool:
         """Installed, not running, and last exited cleanly: the normal state between cycles."""
-        if self.run_reason is not None and self.run_reason in ("", "unready"):
-            return False
+        return self._exited_clean and self.run_reason not in ("", "unready")
+
+    @property
+    def _exited_clean(self) -> bool:
         return bool(self.installed) and self.running is False and self.last_exit == 0
+
+    @property
+    def unsettled(self) -> bool:
+        """Exited 0 but NOT idle (GRPH-1698): `reason: unready`, or no readable reason.
+
+        Not a crash either — the drain ran and exited cleanly — so install and doctor must not
+        report it as dead; they print `line()` instead.
+        """
+        return self._exited_clean and self.run_reason in ("", "unready")
 
     def line(self) -> str:
         where = self.kind
@@ -973,8 +1002,7 @@ class Status:
         if self.idle:
             return (f"{self.name}: idle between runs, last exit 0 ({where}, "
                     f"{self.unit_path})")
-        if (self.installed and self.running is False and self.last_exit == 0
-                and self.run_reason is not None):
+        if self.unsettled:
             if self.run_reason == "unready":
                 return (f"{self.name}: unready, last exit 0, {self.unready} line item(s) "
                         f"filed but not claimable ({where}, {self.unit_path})")

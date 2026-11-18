@@ -589,3 +589,22 @@ def test_an_idle_drain_passes_the_doctor(monkeypatch):
     finding = _service_finding(report)
     assert finding.status == PASS
     assert "idle between runs" in finding.detail
+
+
+@pytest.mark.parametrize("reason,unready,says", [
+    ("unready", 2, "2 line item(s)"),
+    ("", 0, "reason unknown"),
+])
+def test_an_unsettled_exit_0_is_unknown_not_a_crash(monkeypatch, reason, unready, says):
+    """GRPH-1698: exit 0 with `reason: unready` or no reason is not idle, and not dead.
+
+    Sabotage: drop the `unsettled` branch in `_one_service` and this reads FAIL
+    "installed and NOT running".
+    """
+    _pretend(monkeypatch, _state(running=False, last_exit=0, run_reason=reason,
+                                 unready=unready))
+    report = Report()
+    doctor.check_service(report)
+    finding = _service_finding(report)
+    assert finding.status == UNKNOWN
+    assert says in finding.detail and "NOT running" not in finding.detail
