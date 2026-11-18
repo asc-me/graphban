@@ -107,6 +107,8 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         # GRPH-1681. Quality, not authority: opens the project's one maintenance line, and
         # is planner-only by `fleet.TOOL_ROLES` (a person has the same act through REST).
         "create_line",
+        # GRPH-1686. A read: fixes with neither a PRD nor a line.
+        "unscoped_fixes",
         # A read of whether a published lesson is still worth following. Not a write and
         # not an authority gate — promote-to-org is REST/JWT only.
         "get_lessons",

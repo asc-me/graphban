@@ -24,7 +24,7 @@ from app.services import tool_tiers
 #
 # Raising CEILING is a decision, not a fix. The history below is a series of raises that the
 # docstring itself argues should have been trims.
-CEILING = 17905
+CEILING = 18022
 # 13592 -> 13595 (GRPH-146). `get_code_map` gained `limit`/`offset` so a bounded read is
 # possible at all, and that two-property addition did NOT fit: it cost ~73 tokens against 8 of
 # headroom. It was paid for inside the manifest rather than by raising the ceiling — four
@@ -226,7 +226,9 @@ CEILING = 17905
 # CORE_TOKENS does not move. Headroom 13.
 # 17852 -> 17893, and CEILING 17865 -> 17905 with it (GRPH-1683). `line_id`, `blocks` and
 # `severity` on create_item (core), `line_id` and `severity` on update_item. Headroom 12.
-MEASURED_TOKENS = 17893  # P75 S1: +170 for answer_wait (ceiling 17775). GRPH-1650's
+# 17893 -> 18010, and CEILING 17905 -> 18022 with it (GRPH-1686). One read tool, `unscoped_fixes`,
+# on the opt-in `misc` tier (TIER_TOKENS["misc"] 1346 -> 1463); CORE_TOKENS does not move. Headroom 12.
+MEASURED_TOKENS = 18010  # P75 S1: +170 for answer_wait (ceiling 17775). GRPH-1650's
 # create_item `agent_id` is fleet-only (_FLEET_ONLY_ARGS), so it costs this manifest nothing.
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming

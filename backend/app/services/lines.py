@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app import errors
 from app.errors import Refused
-from app.models import Line, Project
+from app.models import Item, Line, Project
 from app.services import keys
 
 DEFAULT_TITLE = "Maintenance"
@@ -85,3 +85,19 @@ def resolve_for_item(db: Session, line_id: str, project_id: str) -> str:
     if line.project_id != project_id:
         raise ValueError(f"{line_id} belongs to another project, not {project_id!r}")
     return line.id
+
+
+def unscoped_fixes(db: Session, project_id: str) -> dict:
+    """GRPH-1686. Fixes with neither `prd_id` nor `line_id`: nothing moves them.
+
+    `maintenance_line` does not count them. Setting `line_id` on one is the move, and that
+    update passes the filing rules. `count` is present and zero when there are none.
+    """
+    rows = db.scalars(
+        select(Item).where(
+            Item.project_id == project_id, Item.kind == "fix",
+            (Item.prd_id.is_(None)) | (Item.prd_id == ""),
+            (Item.line_id.is_(None)) | (Item.line_id == ""),
+        ).order_by(Item.number)
+    ).all()
+    return {"ids": [i.key for i in rows], "count": len(rows)}

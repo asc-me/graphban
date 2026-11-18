@@ -410,7 +410,7 @@ CORE_TOKENS = 9152  # GRPH-1683: +41, fix-filing fields on create_item/update_it
 # prd 4140 -> 3731 (GRPH-1368): the three accept tools are removed.
 # fleet 1559 -> 1733 (GRPH-1480): report_utilization in the fleet tier.
 # prd 3731 -> 3750 (GRPH-1495): reference documents on put_document and search_docs.
-TIER_TOKENS = {"prd": 3863, "codegraph": 1795, "fleet": 1733, "misc": 1346}
+TIER_TOKENS = {"prd": 3863, "codegraph": 1795, "fleet": 1733, "misc": 1463}
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.
 # codegraph 1786 -> 1789 (GRPH-1060): record_scan's category enum gains "deadcode".
 # codegraph -> 1791 with both: measured when GRPH-1060 and GRPH-1061 met on main.

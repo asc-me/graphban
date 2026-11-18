@@ -1494,7 +1494,7 @@ OPEN_TOOLS: dict[str, str] = {
         # PRD-62 S2: the entitlement registry read; the write is planner-gated above.
         "list_entitlements",
         # PRD-P63 S2a: the toggles read; there is no MCP write (D10).
-        "get_rule_toggles",
+        "get_rule_toggles", "unscoped_fixes",
         # P75 S1: any role may answer a peer's decision wait; the filer is refused in-service.
         "answer_wait",
         # GRPH-1275: document reads — governing specs, project-scoped, nothing written.
