@@ -53,6 +53,7 @@ from app.services import scans as scans_svc
 from app.services import touchpoint_check
 from app.services import events as events_svc
 from app.services import fleet as fleet_svc
+from app.services import lines as lines_svc
 from app.services import gitops
 from app.services import idempotency as idem_svc
 from app.services import insights as insights_svc
@@ -472,6 +473,14 @@ TOOLS: list[dict[str, Any]] = [
                 "template": {"type": "string", "enum": ["standard", "blank"], "description": "Skeleton when no body (default standard)."},
             },
             "required": ["title"],
+        },
+    },
+    {
+        "name": "create_line",
+        "description": "Open the project's one maintenance line (title defaults to Maintenance).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
         },
     },
     {
@@ -1552,7 +1561,7 @@ _PROJECT_SCOPED = {
     "get_backlog", "suggest_next", "generate_digest", "link_items", "unlink_items", "claim_next", "next_cluster",
     "describe_code", "get_code_map", "code_neighbors", "search_code", "graph_query",
     "link_code", "unlink_code", "record_scan", "scan_status", "scans_due", "create_prd",
-    "put_document", "get_document", "search_docs",
+    "create_line", "put_document", "get_document", "search_docs",
     "open_design", "put_preamble", "put_set_constraints",
     "confirm_tier", "get_design_set",
     "compile_prompts", "put_canvas", "file_finding", "resolve_finding",
@@ -1931,6 +1940,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "properties": {"prd_id": _STR, "proposals": {"type": "array"}, "created": {"type": "array"}},
     },
     "create_prd": _PRD_SCHEMA_REF,
+    "create_line": {"type": "object", "properties": {"id": _STR, "title": _STR}},
     "update_prd": _PRD_SCHEMA_REF,
     "answer_grill": {
         "type": "object",
@@ -3007,6 +3017,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # First-run signal (AL-133): an empty project → call setup_project for a bootstrap.
             "empty": setup_svc.is_empty(db, pid) if pid else False,
             "gitops": gitops.for_agent(view),
+            # GRPH-1681. Null = the line has not been created, NOT "no bugs".
+            "maintenance_line": lines_svc.context_field(db, pid),
         }
     if name == "create_project":
         # An AUTHORITY gate, narrowly opened (PRD-14 D4). Both refusals below are the
@@ -3962,6 +3974,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             created_by=_key_user_id(db, key),
         )
         return _prd_dict(prd)
+    if name == "create_line":
+        return lines_svc.line_dict(
+            lines_svc.create_line(db, pid, args.get("title"), created_by=_key_user_id(db, key)))
     if name == "get_prd":
         # The read that was missing (GRPH-519). `answer_grill` reports `body_absorbed: false`,
         # and the only tool that could fix it replaces the body WHOLE — so without this an

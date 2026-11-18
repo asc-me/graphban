@@ -58,7 +58,7 @@ guides that exist.
   and API keys.
 - **Tracker** — the default layout is **Board**; **List** is the other. Both show the same six
   statuses, with drag-reorder, inline status and a detail panel.
-- **Native MCP** — 78 tools over a JSON-RPC endpoint, authenticated by scoped API keys, with
+- **Native MCP** — 79 tools over a JSON-RPC endpoint, authenticated by scoped API keys, with
   a typed error taxonomy (every failure carries a machine code + repair hint).
 
 ## Non-goals (current)

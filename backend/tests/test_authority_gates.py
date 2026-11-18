@@ -104,6 +104,9 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         # project can only be conjured where it cannot reach anyone else's tenant.
         "create_project",
         "update_item", "search_items", "add_memory", "search_memory",
+        # GRPH-1681. Quality, not authority: opens the project's one maintenance line, and
+        # is planner-only by `fleet.TOOL_ROLES` (a person has the same act through REST).
+        "create_line",
         # A read of whether a published lesson is still worth following. Not a write and
         # not an authority gate — promote-to-org is REST/JWT only.
         "get_lessons",

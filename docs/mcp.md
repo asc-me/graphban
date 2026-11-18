@@ -95,7 +95,7 @@ agent carries ~5,100 fewer tokens on every turn.
 | Tier | What it is for |
 | --- | --- |
 | *(core)* | Everything on the path of doing one piece of work: finding, claiming, updating and releasing items, reviewing, memory, all code-graph **reads**, and reading a PRD |
-| `prd` | **Authoring** a spec — `create_prd`, `update_prd`, `grill_prd`, `answer_grill`, `decompose_prd`, `close_prd`, `request_rebaseline`, `submit_verdict` |
+| `prd` | **Authoring** a spec — `create_prd`, `create_line`, `update_prd`, `grill_prd`, `answer_grill`, `decompose_prd`, `close_prd`, `request_rebaseline`, `submit_verdict` |
 | `codegraph` | **Writing** the code graph — `describe_code`, `link_code`, `unlink_code`, `record_scan`, `scan_status`, `scans_due` |
 | `fleet` | **Running** a fleet — `propose_allocation`, `assign_role`, `mint_enrolment`, `retire_wave`, `delegate`, `list_entitlements`, `set_entitlement`, `report_entitlement_event`, `report_utilization`. Being *in* a fleet needs none of it |
 | `misc` | `extract_lessons`, `generate_digest`, `report_graphban_issue`, `learning_loop`, `create_project`, `publish_memory`, `reject_memory`, `get_rule_toggles` |
@@ -115,7 +115,7 @@ Settings → API keys. `fleet.mint` gives a planner credential the `fleet` tier 
 operator can restore the pre-tiering manifest for a whole deployment with
 `MCP_DEFAULT_TOOL_TIERS=prd,codegraph,fleet,misc` — see [configuration.md](configuration.md).
 
-## The 78 tools
+## The 79 tools
 
 The manifest you receive is gated twice. **By scope** (AL-78): a key without `write` is not
 shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b): a key whose
@@ -146,7 +146,7 @@ that stops once the four dimensions are answered or deferred. The tool still wri
 The one-shot editor command (`POST /api/prds/{id}/ai` with `command=grill`) stays on the
 body-only prompt, which has no transcript and cannot know when to stop.
 
-**Every tool argues its role gate** (GRPH-516). 28 of the 78 tools are role-gated; the other
+**Every tool argues its role gate** (GRPH-516). 29 of the 79 tools are role-gated; the other
 50 are callable by every role. That was a *default* rather than a decision — `TOOLS` has had a
 completeness guard forcing each new tool to be classified as a quality gate or an authority
 one, and `TOOL_ROLES` had no equivalent, so forty tools arrived at "open to everyone" without
@@ -350,6 +350,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `prd_coverage` | `prd_id` | Spec-to-task rollup: per-section counts, `gaps` (no tasks), `empty_sections` (no substance). `shaped: false` is not a clean pass (read-only) |
 | `decompose_prd` | `prd_id`, `create` | Propose (or create) one task per un-covered PRD section, each carrying the PRD's framing prose. Created tasks carry `kind: feature` (GRPH-1358). `create=true` is refused unless the PRD is `approved` (grill earns it) |
 | `create_prd` | `title`, `body`, `template`, `project_id` | **Author a PRD** (the handoff artifact) — `## ` sections drive decompose/coverage |
+| `create_line` | `title`, `project_id` | **Open the maintenance line** (GRPH-1681) — a project has at most one; planner only; a second call is refused naming the first. `get_context.maintenance_line` is `{id, title}` or null (not created — not "no bugs") |
 | `get_prd` | `prd_id` | The full PRD including its markdown `body` and a `body_hash` (GRPH-519) |
 | `update_prd` | `prd_id`, `title`, `status`, `section`, `base_hash`, `body` | Patch a PRD. **`section`** replaces one `## ` heading's contents and leaves every other byte alone; a whole-body replace needs `base_hash` from `get_prd` (GRPH-357). **`approved` is not settable** — it is reached by finishing the grill; setting it returns `conflict` naming what is still outstanding (AL-300) |
 | `answer_grill` | `prd_id`, `answer` | Relay the author's answer to a grill question — recorded as **agent-relayed**, visible to whoever reviews later. Returns `outstanding` + `complete` (AL-299) |
