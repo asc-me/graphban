@@ -10,7 +10,7 @@ from datetime import timedelta
 
 import pytest
 
-from app.models import Link, utcnow
+from app.models import utcnow
 from app.services import fleet as fleet_svc
 from app.services import items as items_svc
 from app.services import lines as lines_svc
@@ -59,11 +59,11 @@ def _seat_agent(client, key, db, proj, label, **scope) -> str:
     return res["structuredContent"]["agent_id"]
 
 
-def _fix(db, proj, title, *, line=None, prd=None, tags=None, desc=ACCEPT, tp=("a/x.py",),
-         age_days=0, kind="fix"):
+def _fix(db, proj, title, *, line=None, prd=None, severity="", blocks=None, desc=ACCEPT,
+         tp=("a/x.py",), age_days=0, kind="fix"):
     it = items_svc.create_item(db, title=title, project_id=proj, status="next", kind=kind,
-                               tags=tags or [], description=desc, line_id=line, prd_id=prd,
-                               touchpoints=list(tp))
+                               description=desc, line_id=line, prd_id=prd, severity=severity,
+                               blocks=blocks, touchpoints=list(tp))
     if age_days:
         it.created_at = utcnow() - timedelta(days=age_days)
         db.commit()
@@ -101,7 +101,7 @@ def test_security_one_item_cluster_before_larger_cluster(client, key, db, proj):
     line = lines_svc.create_line(db, proj)
     _fix(db, proj, "ord1", line=line.id, tp=("m/a.py",), age_days=9)
     _fix(db, proj, "ord2", line=line.id, tp=("m/a.py",), age_days=9)
-    _fix(db, proj, "sec", line=line.id, tp=("s/b.py",), tags=["security"])
+    _fix(db, proj, "sec", line=line.id, tp=("s/b.py",), severity="security")
     seat = _seat_agent(client, key, db, proj, "line", line_id=line.id)
     got = fleet_svc.claim_cluster(db, agent_id=seat, project_id=proj)
     assert [i["title"] for i in got["items"]] == ["sec"]
@@ -111,12 +111,10 @@ def test_blocking_fix_before_security_and_age_breaks_ties(client, auth, key, db,
     line = lines_svc.create_line(db, proj)
     prd = client.post("/api/prds", json={"title": "p", "project_id": proj}, headers=auth).json()
     stored = prd["id"]
-    _fix(db, proj, "sec", line=line.id, tp=("s/b.py",), tags=["security"])
+    _fix(db, proj, "sec", line=line.id, tp=("s/b.py",), severity="security")
     _fix(db, proj, "old", line=line.id, tp=("o/c.py",), age_days=30)
     feat = _fix(db, proj, "feat", prd=stored, kind="feature", tp=("f/d.py",))
-    block = _fix(db, proj, "blocker", prd=stored, tp=("b/e.py",))
-    db.add(Link(type="dependency", a=feat.id, b=block.id, project_id=proj))
-    db.commit()
+    _fix(db, proj, "blocker", prd=stored, tp=("b/e.py",), blocks=feat.key)
     seat = _seat_agent(client, key, db, proj, "prd", prd_id=stored)
     got = fleet_svc.claim_cluster(db, agent_id=seat, project_id=proj, max_items=1)
     assert [i["title"] for i in got["items"]] == ["blocker"]
@@ -133,7 +131,7 @@ def test_unscoped_order_is_unchanged(client, key, db, proj):
     line = lines_svc.create_line(db, proj)
     _fix(db, proj, "big1", line=line.id, tp=("m/a.py",))
     _fix(db, proj, "big2", line=line.id, tp=("m/a.py",))
-    _fix(db, proj, "sec", line=line.id, tp=("s/b.py",), tags=["security"])
+    _fix(db, proj, "sec", line=line.id, tp=("s/b.py",), severity="security")
     seat = _seat_agent(client, key, db, proj, "free")
     got = fleet_svc.claim_cluster(db, agent_id=seat, project_id=proj)
     assert len(got["items"]) == 2
@@ -163,3 +161,22 @@ def test_unready_list_empty_when_none(client, key, db, proj):
     seat = _seat_agent(client, key, db, proj, "line", line_id=line.id)
     res = _mcp(client, key, "claim_cluster", {"agent_id": seat})
     assert res["structuredContent"]["unready"] == []
+
+
+def test_line_blocking_fix_before_security_fix_that_blocks_nothing(client, key, db, proj):
+    """The fix another line item waits on goes first, though the waiting item is withheld
+    from the claim pool (its dependency is unmet) and the security fix is older."""
+    from app.models import Link
+
+    line = lines_svc.create_line(db, proj)
+    _fix(db, proj, "sec", line=line.id, tp=("s/b.py",), severity="security", age_days=30)
+    base = _fix(db, proj, "base", line=line.id, tp=("b/e.py",))
+    waiting = _fix(db, proj, "waiting", line=line.id, tp=("w/f.py",))
+    db.add(Link(type="dependency", a=waiting.id, b=base.id, project_id=proj))
+    db.commit()
+    seat = _seat_agent(client, key, db, proj, "line", line_id=line.id)
+    got = fleet_svc.claim_cluster(db, agent_id=seat, project_id=proj, max_items=1)
+    assert [i["title"] for i in got["items"]] == ["base"]
+    nxt = _seat_agent(client, key, db, proj, "line2", line_id=line.id)
+    got = fleet_svc.claim_cluster(db, agent_id=nxt, project_id=proj)
+    assert [i["title"] for i in got["items"]] == ["sec"]

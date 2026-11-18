@@ -267,28 +267,36 @@ def clusters_for_project(db: Session, project_id: str | None, status: str | None
     clusters = _occupy_review_globs(clusters, pool, areas, predicted)
     clusters = _with_reservations(db, clusters, project_id, lease_seconds=lease_seconds)
     if prd_id or line_id:
-        clusters = _scoped_order(clusters, {it.id: it for it in pool}, ctx)
+        clusters = _scoped_order(clusters, {it.id: it for it in pool}, ctx,
+                                 (prd_id or "", line_id or ""))
     return clusters
 
 
 def _is_security(item: Item) -> bool:
-    return any(str(t).lower() in ("security", "severity:security", "severity=security")
-               for t in (item.tags or []))
+    """`severity=security` (GRPH-1683) — the field, not a tag that happens to read alike."""
+    return (getattr(item, "severity", "") or "") == "security"
 
 
-def _blocking_fix(item: Item, ctx, by_id: dict[str, Item]) -> bool:
+def _blocking_fix(item: Item, ctx, scope: tuple[str, str]) -> bool:
     """A fix that holds other work: a `kind=fix` with a PRD and no section that an item
-    carrying that same PRD depends on, or a fix that any item in this scope depends on."""
+    carrying that same PRD depends on, or a fix that any item in this scope depends on.
+
+    Scope membership is read off the dependent, not the claim pool: a dependent waiting on
+    this fix has an unmet dependency, so it was withheld from the pool by construction."""
     if item.kind != "fix":
         return False
-    dependents = [by_id.get(d) or ctx.item(d) for d in ctx.dependents.get(item.id, [])]
-    dependents = [d for d in dependents if d is not None]
+    dependents = [ctx.item(d) for d in ctx.dependents.get(item.id, [])]
+    dependents = [d for d in dependents if d is not None and d.status != "done"]
     if item.prd_id and not item.prd_section:
-        return any(d.prd_id == item.prd_id for d in dependents)
-    return any(d.id in by_id for d in dependents)
+        if any(d.prd_id == item.prd_id for d in dependents):
+            return True
+    prd_id, line_id = scope
+    return any((prd_id and d.prd_id == prd_id) or (line_id and d.line_id == line_id)
+               for d in dependents)
 
 
-def _scoped_order(clusters: list[dict], by_id: dict[str, Item], ctx) -> list[dict]:
+def _scoped_order(clusters: list[dict], by_id: dict[str, Item], ctx,
+                  scope: tuple[str, str]) -> list[dict]:
     """Claim order for a scoped seat (GRPH-1685): a cluster holding a blocking fix, then one
     holding a security item, then the older `created_at`. Size is not a key. Stable, so the
     unscoped order is the tiebreak below the three."""
@@ -296,7 +304,7 @@ def _scoped_order(clusters: list[dict], by_id: dict[str, Item], ctx) -> list[dic
 
     def key(c: dict):
         members = [by_id[i] for i in c.get("items") or [] if i in by_id]
-        blocking = any(_blocking_fix(m, ctx, by_id) for m in members)
+        blocking = any(_blocking_fix(m, ctx, scope) for m in members)
         security = any(_is_security(m) for m in members)
         ages = [m.created_at.timestamp() for m in members if m.created_at is not None]
         return (not blocking, not security, min(ages) if ages else far)
