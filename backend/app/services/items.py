@@ -40,6 +40,90 @@ def check_line(line_id: str | None, prd_id: str | None, kind: str | None) -> Non
             f"only a fix can carry line_id (kind is {kind or 'empty'!r}); "
             "a feature or chore belongs to a PRD")
 
+#: What `severity` may hold (GRPH-1683). Empty = not recorded.
+SEVERITIES = ["security"]
+
+#: The three exits an agent that finds a defect has. Every fix refusal quotes them.
+FIX_EXITS = (
+    "a defect has three exits: fix it on the item you hold (only when build.found_bug is "
+    "fix_in_build); file a blocking fix on a PRD — create_item(kind=fix, prd_id=<the PRD>, "
+    "blocks=<an item on that PRD>, description with ## Acceptance, touchpoints); or file it on "
+    "the maintenance line — create_item(kind=fix, line_id=<get_context.maintenance_line.id>, "
+    "description with ## Acceptance, touchpoints)")
+
+
+def _check_severity(severity: str, kind: str | None) -> None:
+    if severity not in SEVERITIES and severity != "":
+        raise ValueError(
+            f"invalid severity: {severity!r} — {', '.join(SEVERITIES)}, or empty for not recorded")
+    if severity and kind != "fix":
+        raise ValueError(
+            f"severity={severity} is only for a fix (kind is {kind or 'empty'!r}); "
+            "set kind=fix, or drop severity")
+
+
+def is_filed_fix(db: Session, item) -> bool:
+    """A fix filed under the GRPH-1683 rules: on the line, or a blocking fix on a PRD.
+
+    A blocking fix is a `fix` on a PRD with no section and an item on that PRD depending on
+    it. A historical fix with a section, or with nothing waiting on it, is neither, and keeps
+    today's sign-off rule.
+    """
+    if item.kind != "fix":
+        return False
+    if item.line_id:
+        return True
+    return bool(item.prd_id) and not item.prd_section and has_blocking_dependency(db, item)
+
+
+def check_fix_scope(*, kind: str | None, line_id: str | None, prd_id: str | None,
+                    prd_section: str) -> None:
+    """A fix must say where it lives (GRPH-1683); there is no default scope."""
+    if kind != "fix":
+        return
+    if not line_id and not prd_id:
+        raise ValueError(f"a fix needs a scope: it has neither prd_id nor line_id. {FIX_EXITS}")
+    if prd_id and not line_id and prd_section:
+        raise ValueError(
+            f"a blocking fix on a PRD carries no prd_section (got {prd_section!r}): it is not "
+            "a section's work. Drop prd_section; to put it on a section, file a feature")
+
+
+def check_fix_shape(*, description: str, touchpoints) -> None:
+    """Acceptance and touchpoints a filed fix must carry; the refusal names which is missing."""
+    from app.services.fleet import parse_acceptance
+    missing = []
+    if not parse_acceptance(description or "")[0]:
+        missing.append("an acceptance clause (a list item under `## Acceptance` in the "
+                       "description)")
+    if not [t for t in (touchpoints or []) if isinstance(t, str) and t.strip()]:
+        missing.append("a touchpoint (touchpoints=[...] naming the files the fix changes)")
+    if missing:
+        raise ValueError("a fix needs " + " and ".join(missing) + " before it can be filed")
+
+
+def _blocked_item(db: Session, blocks: str | None, prd_id: str | None) -> Item:
+    """The item on `prd_id` that a blocking fix holds up (the dependency's source)."""
+    if not blocks:
+        raise ValueError(
+            "a blocking fix needs `blocks`: an item on the same PRD that depends on it, so the "
+            f"fix is not filed with nothing waiting on it. {FIX_EXITS}")
+    blocked = db.get(Item, keys.resolve_item(db, blocks) or blocks)
+    if blocked is None:
+        raise ValueError(f"blocks: unknown item {blocks!r}")
+    if blocked.prd_id != prd_id:
+        raise ValueError(
+            f"blocks: {blocked.key} is not on the PRD this fix is filed on; name an item on "
+            "that PRD (it may differ from the PRD you are building)")
+    return blocked
+
+
+def has_blocking_dependency(db: Session, item: Item) -> bool:
+    """True if an item on `item`'s PRD depends on it."""
+    from app.models import Link
+    srcs = db.scalars(select(Link.a).where(Link.b == item.id, Link.type == "dependency")).all()
+    return any((o := db.get(Item, a)) is not None and o.prd_id == item.prd_id for a in srcs)
+
 
 def _default_kind(tags) -> str:
     """The kind an item gets when its creator does not say: `fix` for a `bug`-tagged item,
@@ -131,6 +215,9 @@ def create_item(
     options: list[str] | None = None,
     kind: str | None = None,
     line_id: str | None = None,
+    severity: str = "",
+    blocks: str | None = None,
+    agent_create: bool = False,
 ) -> Item:
     """Create a tracked item.
 
@@ -157,11 +244,25 @@ def create_item(
         )
     if fidelity not in FIDELITIES:
         raise ValueError(f"invalid fidelity: {fidelity}")
+    explicit_kind = kind is not None
     kind = _default_kind(tags) if kind is None else kind
     _check_kind(kind)
+    severity = severity or ""
+    _check_severity(severity, kind)
     if db.get(Project, project_id) is None:
         raise ValueError(f"unknown project: {project_id!r}")
     check_line(line_id, prd_id, kind)
+    blocked = None
+    # An explicit `fix`, or any `fix` an agent files (a bug tag defaults it there too), is a
+    # filed fix (GRPH-1683). Only a non-agent caller's bug-tagged default predates the rules.
+    if kind == "fix" and (explicit_kind or agent_create):
+        check_fix_scope(kind=kind, line_id=line_id, prd_id=prd_id, prd_section=prd_section)
+        if agent_create:
+            check_fix_shape(description=description, touchpoints=touchpoints)
+        if prd_id and not line_id:
+            blocked = _blocked_item(db, blocks, _stored_prd_id(db, prd_id, project_id))
+    elif blocks:
+        raise ValueError("blocks is only for a blocking fix (kind=fix with prd_id)")
     if line_id:
         from app.services import lines as lines_svc
         line_id = lines_svc.resolve_for_item(db, line_id, project_id)
@@ -190,11 +291,19 @@ def create_item(
         prd_section=prd_section or "",
         fidelity=fidelity,
         kind=kind,
+        severity=severity,
     )
     if question or options:
         from app.services.waits import set_decision
         set_decision(item, question, options)
     db.add(item)
+    if blocked is not None:
+        from app.models import Link
+        db.flush()
+        # In the same transaction as the fix: a blocking fix with nothing waiting on it is
+        # the state this refuses.
+        db.add(Link(project_id=blocked.project_id, a=blocked.id, b=item.id, type="dependency",
+                    reason="blocking fix", confidence=1.0))
     if commit:
         db.commit()
         db.refresh(item)
@@ -1977,6 +2086,37 @@ def owner_close(db: Session, item_id: str, *, closer: dict, commit: str,
     return out
 
 
+def _check_fix_transition(db: Session, item: Item, fields: dict) -> None:
+    """An update that turns a row INTO a filed fix meets the create rules (GRPH-1683).
+
+    An update that changes neither kind nor scope leaves an old row alone.
+    """
+    new_kind = fields["kind"] if fields.get("kind") is not None else item.kind
+    new_line = (fields["line_id"] or None) if "line_id" in fields else item.line_id
+    new_prd = fields["prd_id"] if fields.get("prd_id") is not None else item.prd_id
+    if fields.get("severity") is not None:
+        _check_severity(fields["severity"], new_kind)
+    sets_kind = fields.get("kind") == "fix" and item.kind != "fix"
+    sets_line = bool(fields.get("line_id")) and not item.line_id and not item.prd_id
+    sets_prd = (bool(fields.get("prd_id")) and new_kind == "fix" and not item.line_id
+                and not item.prd_id)
+    if not (sets_kind or sets_line or sets_prd):
+        return
+    section = fields["prd_section"] if fields.get("prd_section") is not None else item.prd_section
+    check_line(new_line, new_prd, new_kind)
+    check_fix_scope(kind=new_kind, line_id=new_line, prd_id=new_prd, prd_section=section or "")
+    desc = fields["description"] if fields.get("description") is not None else item.description
+    tps = list(item.touchpoints or []) + list(fields.get("touchpoints") or [])
+    check_fix_shape(description=desc, touchpoints=tps)
+    if new_prd and not new_line:
+        stored = _stored_prd_id(db, new_prd, item.project_id)
+        probe = Item(id=item.id, prd_id=stored)
+        if not has_blocking_dependency(db, probe):
+            raise ValueError(
+                f"a blocking fix needs a dependency from an item on its PRD: "
+                f"link_items(a=<an item on that PRD>, b={item.key}, type=dependency). {FIX_EXITS}")
+
+
 def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None = None,
                 **fields) -> Item | None:
     """Patch fields or advance status.
@@ -2160,6 +2300,7 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         _pending_hold(db, item)
         if fields.get("status") == "done" and prev_status != "done" else None
     )
+    _check_fix_transition(db, item, fields)
     if fields.get("line_id") is not None or item.line_id:
         # Checked against the row as it WILL be, so setting line_id on a feature, and
         # setting prd_id or kind on a line item, are refused alike. An empty string clears.
@@ -2186,7 +2327,8 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
             item.prd_linked_at = utcnow()
     for key in ("title", "description", "status", "tags", "effort", "blocker", "pr", "date",
                 "head_commit",
-                "github_url", "assignee", "prd_id", "prd_section", "fidelity", "kind"):
+                "github_url", "assignee", "prd_id", "prd_section", "fidelity", "kind",
+                "severity"):
         if key in fields and fields[key] is not None:
             setattr(item, key, fields[key])
     if "line_id" in fields:
@@ -2620,6 +2762,8 @@ def item_dict(item: Item) -> dict:
         "prd_id": item.prd_key,
         # GRPH-1681. Reply-only; null for an item that is not on the maintenance line.
         "line_id": item.line_key,
+        # GRPH-1683. Reply-only and omitted when empty.
+        **({"severity": item.severity} if item.severity else {}),
         "prd_section": item.prd_section,
         "fidelity": item.fidelity,
         # GRPH-1358. Always present: "" is the honest "not recorded", which a release must be
