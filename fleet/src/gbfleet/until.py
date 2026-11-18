@@ -3328,15 +3328,37 @@ def _block_ci_red(planner: Graphban, item: str, head: str, job: str, agent_id: s
     return True
 
 
-_BUILDER_CI_STATUSES = ("blocked", "next", "backlog")
+#: Statuses a builder's blocker leaves its item in (GRPH-1708). One read each per poll.
+_BUILDER_CI_STATUSES = ("blocked", "next")
+_BUILDER_CI_LIMIT = 200
+
+#: A builder blocker that is about CI or a missing local engine, not a person (GRPH-1708).
+_BUILDER_CI_BLOCKER = re.compile(
+    r"\b(?:ci|postgres(?:ql)?|suite_green|engine_evidence|github actions|gh)\b",
+    re.IGNORECASE,
+)
 
 
 def _in_wave_scope(row: dict, prd: str | None, line: str | None) -> bool:
+    """Only the drain's own PRD or line. An unscoped drain matches nothing here."""
     if line:
         return row.get("line_id") == line
     if prd:
         return str(row.get("prd_id") or "") == prd
-    return True
+    return False
+
+
+def _has_wait_tag(row: dict) -> bool:
+    tags = row.get("tags") or []
+    return any(str(t) in wait_mod.WAIT_TAGS for t in tags if t)
+
+
+def is_builder_ci_blocker(blocker: str) -> bool:
+    """Whether a free-text blocker names CI / Postgres / gh / suite_green (GRPH-1708)."""
+    text = str(blocker or "").strip()
+    if not text or deps.is_hold(text):
+        return False
+    return bool(_BUILDER_CI_BLOCKER.search(text))
 
 
 def _builder_ci_misblocked_rows(
@@ -3344,13 +3366,18 @@ def _builder_ci_misblocked_rows(
 ) -> list[dict]:
     """Items a builder blocked mistaking missing local CI for a human wait (GRPH-1708).
 
-    A typed `wait:*` tag on the same row does not make it a human wait when it has a pushed
-    branch and a PR: the child set a prose blocker, not a decision for a person.
+    Narrow on purpose: the row is in this drain's PRD or line, was built (`built_by`) on a
+    pushed `branch`, carries NO typed `wait:*` tag (a typed wait is a person's, P30 D11), and
+    its blocker text is about CI / Postgres / gh / suite_green — not a dependency hold, not a
+    decision. Anything else is left exactly as the wait read found it.
     """
+    if not prd and not line:
+        return []
     out: list[dict] = []
     seen: set[str] = set()
     for status in _BUILDER_CI_STATUSES:
-        got = planner.call("search_items", status=status, fields="full", limit=10_000)
+        got = planner.call("search_items", status=status, fields="full",
+                           limit=_BUILDER_CI_LIMIT)
         rows = got.get("results") if isinstance(got, dict) else None
         if not isinstance(rows, list):
             raise ToolFailed("search_items", "error",
@@ -3363,12 +3390,13 @@ def _builder_ci_misblocked_rows(
                 continue
             if not _in_wave_scope(row, prd, line):
                 continue
+            if _has_wait_tag(row):
+                continue
             if not str(row.get("built_by") or "").strip():
                 continue
-            blocker = str(row.get("blocker") or "").strip()
-            if not blocker or deps.is_hold(blocker):
-                continue
             if not str(row.get("branch") or "").strip():
+                continue
+            if not is_builder_ci_blocker(str(row.get("blocker") or "")):
                 continue
             seen.add(item_id)
             out.append(row)
@@ -3384,46 +3412,52 @@ def _apply_builder_ci_blockers(
     *,
     agent_id: str = "",
 ) -> tuple[list[str], bool, bool]:
-    """Name builder CI waits and reopen a finished red head. Returns (waits, pending, reopened)."""
+    """Name builder CI waits and reopen a finished red head. Returns (waits, pending, reopened).
+
+    An id leaves `waits` only when it is reported here as CI pending or CI red. Green or
+    unknown CI leaves the row — and every typed wait — exactly as it was.
+    """
     pending = False
     reopened = False
-    drop = {str(r.get("id")) for r in rows}
-    waits = [w for w in waits if w not in drop]
+    waits = list(waits)
     for row in rows:
         item_id = str(row["id"])
         branch = str(row.get("branch") or "")
         state, head, job = ci_verdict(repo, branch)
-        if state == "unknown":
+        if state not in ("red", "pending"):
             continue
+        waits = [w for w in waits if w != item_id]
         if state == "red":
+            # One reopen per red head: a child that blocks again on the same red head is
+            # named, not re-delegated in a loop.
             key = ("builder_ci_red", item_id, head)
-            if key not in logged:
+            first = key not in logged
+            if first:
                 logged.add(key)
                 observe.emit(
                     "builder_ci_red", item=item_id, commit=head, job=job,
                     detail=f"{item_id}: builder blocked on missing local CI; "
                            f"CI red at {head[:12]}: {job}",
                 )
-            if _block_ci_red(planner, item_id, head, job, agent_id,
-                             repo=repo, branch=branch):
+            if first and _block_ci_red(planner, item_id, head, job, agent_id,
+                                       repo=repo, branch=branch):
                 reopened = True
             else:
-                line = f"{item_id}: CI red ({job})"
-                if line not in waits:
-                    waits.append(line)
+                wait_line = f"{item_id}: CI red ({job})"
+                if wait_line not in waits:
+                    waits.append(wait_line)
             continue
-        if state == "pending":
-            pending = True
-            key = ("builder_ci_pending", item_id, head)
-            if key not in logged:
-                logged.add(key)
-                observe.emit(
-                    "builder_ci_pending", item=item_id, commit=head,
-                    detail=f"{item_id}: builder blocked; CI pending at {head[:12]}",
-                )
-            line = f"{item_id}: CI pending at {head[:12]}"
-            if line not in waits:
-                waits.append(line)
+        pending = True
+        key = ("builder_ci_pending", item_id, head)
+        if key not in logged:
+            logged.add(key)
+            observe.emit(
+                "builder_ci_pending", item=item_id, commit=head,
+                detail=f"{item_id}: builder blocked; CI pending at {head[:12]}",
+            )
+        wait_line = f"{item_id}: CI pending at {head[:12]}"
+        if wait_line not in waits:
+            waits.append(wait_line)
     return waits, pending, reopened
 
 

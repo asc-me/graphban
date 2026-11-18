@@ -1,7 +1,10 @@
 """GRPH-1708 — a builder that blocks on missing local CI is not a human wait.
 
-Sabotage: drop the `builder_ci_pending` branch in `_loop` and the pending loop test idles;
-drop `_apply_builder_ci_blockers` from the wait read and the red test stays `idle-with-waits`.
+Sabotage: drop the red branch in `_apply_builder_ci_blockers` and the red test neither
+reopens the item nor names the job.
+
+A typed `wait:*` row, a person's blocker, a dependency hold, and a row whose CI is green or
+unknown are never touched (bounce of the first attempt: D11 waits must survive).
 """
 from __future__ import annotations
 
@@ -47,6 +50,67 @@ def test_misblocked_rows_need_built_by_blocker_and_branch():
     bare = {**ROW, "built_by": ""}
     planner = _Planner({"blocked": [bare], "next": [], "backlog": []})
     assert _builder_ci_misblocked_rows(planner, "PRD-86", None) == []
+
+
+def test_unscoped_drain_matches_nothing():
+    planner = _Planner({"blocked": [ROW], "next": []})
+    assert _builder_ci_misblocked_rows(planner, None, None) == []
+    assert planner.calls == []
+
+
+def test_wait_tagged_row_is_never_a_builder_ci_row():
+    tagged = {**ROW, "tags": ["wait:decision"], "blocker": "needs a person: decide CI pricing"}
+    planner = _Planner({"blocked": [tagged], "next": []})
+    assert _builder_ci_misblocked_rows(planner, "PRD-86", None) == []
+
+
+def test_person_and_hold_blockers_are_not_builder_ci_rows():
+    person = {**ROW, "blocker": "needs a person: decide pricing"}
+    hold = {**ROW, "blocker": "waiting on GRPH-9 ci [gbfleet dependency hold]"}
+    planner = _Planner({"blocked": [person, {**hold, "id": "GRPH-2"}], "next": []})
+    assert _builder_ci_misblocked_rows(planner, "PRD-86", None) == []
+
+
+def test_line_scope_matches_line_rows():
+    on_line = {**ROW, "prd_id": None, "line_id": "GRPH-L1"}
+    planner = _Planner({"blocked": [on_line], "next": []})
+    assert _builder_ci_misblocked_rows(planner, None, "GRPH-L1") == [on_line]
+    assert _builder_ci_misblocked_rows(planner, None, "GRPH-L2") == []
+
+
+def test_green_or_unknown_ci_leaves_waits_untouched(monkeypatch):
+    for state in ("green", "unknown"):
+        monkeypatch.setattr(until, "ci_verdict", lambda *a, s=state: (s, HEAD, ""))
+        planner = _Planner({})
+        waits, pending, reopened = _apply_builder_ci_blockers(
+            planner, [ROW], Path("."), ["GRPH-1681", "GRPH-7"], set())
+        assert waits == ["GRPH-1681", "GRPH-7"]
+        assert (pending, reopened) == (False, False)
+        assert planner.calls == []
+
+
+def test_wait_decision_row_survives_the_whole_read(monkeypatch):
+    """The bounce repro: wait:decision + person blocker + green CI stays a wait."""
+    tagged = {**ROW, "tags": ["wait:decision"], "blocker": "needs a person: decide pricing"}
+    monkeypatch.setattr(until, "ci_verdict", lambda *a: ("green", HEAD, ""))
+    planner = _Planner({"blocked": [tagged], "next": []})
+    rows = _builder_ci_misblocked_rows(planner, "PRD-86", None)
+    waits, _, _ = _apply_builder_ci_blockers(
+        planner, rows, Path("."), ["GRPH-1681"], set())
+    assert waits == ["GRPH-1681"]
+
+
+def test_red_reopens_once_per_head(monkeypatch):
+    monkeypatch.setattr(until, "ci_verdict", lambda *a: ("red", HEAD, "backend-postgres"))
+    monkeypatch.setattr(until, "failed_test_summary", lambda *a: "")
+    planner = _Planner({})
+    logged: set = set()
+    _apply_builder_ci_blockers(planner, [ROW], Path("."), [], logged, agent_id="P")
+    waits, _, reopened = _apply_builder_ci_blockers(
+        planner, [ROW], Path("."), [], logged, agent_id="P")
+    assert reopened is False
+    assert waits == ["GRPH-1681: CI red (backend-postgres)"]
+    assert sum(1 for c in planner.calls if c[0] == "update_item") == 1
 
 
 def test_red_head_reopens_and_names_the_job(monkeypatch):
