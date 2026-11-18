@@ -67,7 +67,7 @@ TOOL_TIERS: dict[str, str] = {
     # authorship to. A role reservation sitting behind an ungiven tier is a capability
     # nobody can find; that composition was the bug, once.
     **{name: "prd" for name in (
-        "create_prd", "update_prd", "grill_prd", "answer_grill", "decompose_prd",
+        "create_prd", "create_line", "update_prd", "grill_prd", "answer_grill", "decompose_prd",
         "close_prd", "request_rebaseline", "submit_verdict",
         "put_document", "get_document", "search_docs",
         "open_design", "put_preamble", "put_set_constraints",

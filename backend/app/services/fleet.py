@@ -1406,6 +1406,9 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     # gains a second role, that argument evaporates silently; a test asserts it does not.
     "mint_enrolment": ("planner",),
     "create_prd": ("planner",),
+    # GRPH-1681. Opening the project's one maintenance line is planner work over MCP; a
+    # person does it through REST with the permission that accepts a request.
+    "create_line": ("planner",),
     # GRPH-1275. The preamble is written by a person; the planner seat is the only agent role
     # near spec authorship, and `put_document` itself refuses an agent identity.
     "put_document": ("planner",),

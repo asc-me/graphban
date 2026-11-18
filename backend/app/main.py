@@ -637,6 +637,8 @@ from app.routers import https as https_routes  # noqa: E402
 app.include_router(https_routes.router, prefix=API)
 app.include_router(projects.router, prefix=API)
 app.include_router(items.router, prefix=API)
+from app.routers import lines as lines_routes  # noqa: E402
+app.include_router(lines_routes.router, prefix=API)
 app.include_router(requests.router, prefix=API)
 app.include_router(memory.router, prefix=API)
 app.include_router(artifacts.router, prefix=API)

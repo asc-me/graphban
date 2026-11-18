@@ -29,6 +29,18 @@ def _check_kind(kind: str) -> None:
             f"invalid kind: {kind!r} — one of {', '.join(KINDS)}, or empty for not recorded")
 
 
+def check_line(line_id: str | None, prd_id: str | None, kind: str | None) -> None:
+    """A line item is a `fix` and has no PRD (GRPH-1681). Empty `kind` is not a fix."""
+    if not line_id:
+        return
+    if prd_id:
+        raise ValueError("an item cannot have both prd_id and line_id")
+    if kind != "fix":
+        raise ValueError(
+            f"only a fix can carry line_id (kind is {kind or 'empty'!r}); "
+            "a feature or chore belongs to a PRD")
+
+
 def _default_kind(tags) -> str:
     """The kind an item gets when its creator does not say: `fix` for a `bug`-tagged item,
     otherwise empty (not recorded). Never `feature` — that is only ever declared."""
@@ -118,6 +130,7 @@ def create_item(
     question: str | None = None,
     options: list[str] | None = None,
     kind: str | None = None,
+    line_id: str | None = None,
 ) -> Item:
     """Create a tracked item.
 
@@ -148,6 +161,10 @@ def create_item(
     _check_kind(kind)
     if db.get(Project, project_id) is None:
         raise ValueError(f"unknown project: {project_id!r}")
+    check_line(line_id, prd_id, kind)
+    if line_id:
+        from app.services import lines as lines_svc
+        line_id = lines_svc.resolve_for_item(db, line_id, project_id)
     effort_val = int(effort or 0)
     if effort_val < 0:
         raise ValueError(f"negative effort: {effort_val}")
@@ -168,6 +185,7 @@ def create_item(
         reporter=reporter or {},
         date=date,
         prd_id=_stored_prd_id(db, prd_id, project_id),
+        line_id=line_id or None,
         prd_linked_at=utcnow() if prd_id else None,
         prd_section=prd_section or "",
         fidelity=fidelity,
@@ -2142,6 +2160,19 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         _pending_hold(db, item)
         if fields.get("status") == "done" and prev_status != "done" else None
     )
+    if fields.get("line_id") is not None or item.line_id:
+        # Checked against the row as it WILL be, so setting line_id on a feature, and
+        # setting prd_id or kind on a line item, are refused alike. An empty string clears.
+        new_line = fields["line_id"] if "line_id" in fields else item.line_id
+        if fields.get("line_id"):
+            from app.services import lines as lines_svc
+            new_line = lines_svc.resolve_for_item(db, fields["line_id"], item.project_id)
+        check_line(
+            new_line or None,
+            fields["prd_id"] if fields.get("prd_id") is not None else item.prd_id,
+            fields["kind"] if fields.get("kind") is not None else item.kind,
+        )
+        fields = {**fields, "line_id": new_line or None}
     if fields.get("prd_id") is not None:
         # The ITEM's project, not the caller's: an update must be scoped to where the
         # row actually lives, or a caller whose key defaults elsewhere could re-open
@@ -2158,6 +2189,8 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
                 "github_url", "assignee", "prd_id", "prd_section", "fidelity", "kind"):
         if key in fields and fields[key] is not None:
             setattr(item, key, fields[key])
+    if "line_id" in fields:
+        item.line_id = fields["line_id"]
     # GRPH-1671. Written only with the `done` it justifies (`resolve_item`), and dropped the
     # moment the item leaves `done`: a reopened duplicate is open work again, and must face
     # the completion gate like any other item when it next closes.
@@ -2585,6 +2618,8 @@ def item_dict(item: Item) -> dict:
         # manifest, and the footprint has seventeen tokens of headroom.
         "review_claimed_by": item.review_claimed_by,
         "prd_id": item.prd_key,
+        # GRPH-1681. Reply-only; null for an item that is not on the maintenance line.
+        "line_id": item.line_key,
         "prd_section": item.prd_section,
         "fidelity": item.fidelity,
         # GRPH-1358. Always present: "" is the honest "not recorded", which a release must be
