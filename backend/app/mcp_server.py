@@ -195,6 +195,8 @@ TOOLS: list[dict[str, Any]] = [
                 "line_id": {"type": "string"},
                 "blocks": {"type": "string"},
                 "severity": {"enum": ["security"]},
+                "distinct_from": {"type": "array"},
+                "found_during": {"type": "string"},
                 "question": {"type": "string", "description": "Asks a human."},
                 "options": {"type": "array", "items": {"type": "string"}},
             },
@@ -3107,9 +3109,19 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         is_wait = bool(args.get("question")) or any(
             str(t).strip().lower() == "wait:decision" for t in (args.get("tags") or []))
         caller = _agent_for_call(db, key, args, session_id) if is_wait else None
+        held: list = []
+        if args.get("kind") == "fix" or any(
+                str(t).strip().lower() == "bug" for t in (args.get("tags") or [])):
+            who = _agent_for_call(db, key, args, session_id)
+            if who:
+                held = list(db.scalars(select(Item).where(
+                    Item.claimed_by == who, Item.status == "in_progress")).all())
         item = items_svc.create_item(
             db,
             commit=not is_wait,
+            distinct_from=args.get("distinct_from"),
+            found_during=args.get("found_during"),
+            held=held,
             title=args["title"],
             description=args.get("description", ""),
             tags=args.get("tags", []),

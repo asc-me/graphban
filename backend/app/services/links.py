@@ -8,7 +8,7 @@ from app.models import Item, Link, Project
 from app.security.authz import Forbidden
 from app.services import keys
 
-LINK_TYPES = ["dependency", "code", "semantic", "tag"]
+LINK_TYPES = ["dependency", "code", "semantic", "tag", "found_during"]
 
 
 def create_link(
