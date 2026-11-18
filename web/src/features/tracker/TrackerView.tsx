@@ -216,7 +216,7 @@ export function TrackerView() {
       <PlaceHeader
         viewName="Tracker"
         purpose="One linear stream. Priority + recency. Drag to reorder, click a status to advance it."
-        action={<NewItemDialog />}
+        action={<NewItemDialog openFromQuery />}
         condensed={condensed}
       />
 

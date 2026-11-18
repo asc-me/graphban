@@ -33,8 +33,16 @@ export function refusalText(err: unknown): string {
   return raw;
 }
 
-/** `icon={false}` drops the plus — the empty-state card carries the label alone. */
-export function NewItemDialog({ icon = true }: { icon?: boolean } = {}) {
+/**
+ * `icon={false}` drops the plus — the empty-state card carries the label alone.
+ * `openFromQuery` opens the dialog on mount when the URL carries `?new=1`. Only
+ * one instance on a page may set it (the tracker header), or an empty tracker —
+ * which also renders the empty-state instance — would stack two dialogs.
+ */
+export function NewItemDialog({
+  icon = true,
+  openFromQuery = false,
+}: { icon?: boolean; openFromQuery?: boolean } = {}) {
   const { activeId } = useProjectCtx();
   const create = useCreateItem(activeId);
   const createLine = useCreateLine(activeId);
@@ -42,7 +50,10 @@ export function NewItemDialog({ icon = true }: { icon?: boolean } = {}) {
   const prds = usePrds(activeId);
   const items = useItems(activeId);
   const [open, setOpen] = React.useState(
-    () => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("new") === "1",
+    () =>
+      openFromQuery &&
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).get("new") === "1",
   );
   const [title, setTitle] = React.useState("");
   const [description, setDescription] = React.useState("");
@@ -233,7 +244,7 @@ export function NewItemDialog({ icon = true }: { icon?: boolean } = {}) {
             />
           </div>
           {error && (
-            <p role="alert" className="text-sm text-destructive">
+            <p role="alert" className="text-sm text-danger">
               {error}
             </p>
           )}

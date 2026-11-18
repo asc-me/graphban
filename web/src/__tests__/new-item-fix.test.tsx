@@ -89,3 +89,24 @@ describe("New item dialog — filing a fix", () => {
     expect(screen.getByPlaceholderText("Title")).toBeInTheDocument();
   });
 });
+
+describe("New item dialog — ?new=1", () => {
+  it("opens only the instance that reads the query, so an empty tracker shows one dialog", async () => {
+    window.history.pushState({}, "", "/?new=1");
+    try {
+      render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <MemoryRouter>
+            <ProjectProvider>
+              <NewItemDialog openFromQuery />
+              <NewItemDialog icon={false} />
+            </ProjectProvider>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      expect(await screen.findAllByPlaceholderText("Title")).toHaveLength(1);
+    } finally {
+      window.history.pushState({}, "", "/");
+    }
+  });
+});
