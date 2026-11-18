@@ -125,6 +125,73 @@ def has_blocking_dependency(db: Session, item: Item) -> bool:
     return any((o := db.get(Item, a)) is not None and o.prd_id == item.prd_id for a in srcs)
 
 
+def lines_svc_resolve(db: Session, line_id: str, project_id: str) -> str:
+    from app.services import lines as lines_svc
+    return lines_svc.resolve_for_item(db, line_id, project_id)
+
+
+def _open_overlaps(db: Session, *, line_id: str | None, prd_id: str | None,
+                   touchpoints, exclude=()) -> list[Item]:
+    """Open items on the same scope (the line, else the PRD) sharing a touchpoint (GRPH-1695).
+
+    `exclude` are ids that are not candidate duplicates: the item a blocking fix holds and
+    the item the fix was found during — a fix usually touches exactly their files."""
+    from app.services.clustering import shared_touchpoints
+    scope = Item.line_id == line_id if line_id else Item.prd_id == prd_id
+    rows = db.scalars(select(Item).where(scope, Item.status != "done")).all()
+    return [o for o in rows if o.id not in set(exclude)
+            and shared_touchpoints(o.touchpoints or [], touchpoints or [])]
+
+
+def check_duplicates(db: Session, *, line_id: str | None, prd_id: str | None,
+                     touchpoints, distinct_from, exclude=()) -> list[tuple[Item, str]]:
+    """Refuse a fix overlapping an open item on its scope unless every overlap is named in
+    `distinct_from` with a reason. Returns the (item, reason) pairs to link."""
+    named: list[tuple[Item, str]] = []
+    for entry in distinct_from or []:
+        ref = entry.get("id") if isinstance(entry, dict) else None
+        reason = entry.get("reason") if isinstance(entry, dict) else None
+        if not isinstance(ref, str) or not isinstance(reason, str) or not reason.strip():
+            raise ValueError("distinct_from entries are {id, reason}, and the reason says in "
+                             f"what way the fix is not a duplicate; got {entry!r}")
+        other = db.get(Item, keys.resolve_item(db, ref) or ref)
+        if other is None:
+            raise ValueError(f"distinct_from: unknown item {ref!r}")
+        named.append((other, reason.strip()))
+    overlaps = _open_overlaps(db, line_id=line_id, prd_id=prd_id, touchpoints=touchpoints,
+                              exclude=exclude)
+    left = [o for o in overlaps if o.id not in {n.id for n, _ in named}]
+    if left:
+        raise ValueError(
+            "possible duplicate: open items on this scope already touch the same files: "
+            + ", ".join(o.key for o in left)
+            + ". Resubmit with distinct_from=[{id, reason}] naming each, with why the fix is "
+            "not the same work")
+    return named
+
+
+def resolve_found_during(db: Session, *, found_during: str | None,
+                         held: list[Item]) -> Item | None:
+    """The item a fix was found on: named, else the one item the caller holds (GRPH-1695)."""
+    if found_during:
+        item = db.get(Item, keys.resolve_item(db, found_during) or found_during)
+        if item is None:
+            raise ValueError(f"found_during: unknown item {found_during!r}")
+        return item
+    if len(held) > 1:
+        raise ValueError("you hold more than one item, so say which one this fix was found "
+                         "during: found_during=<one of " + ", ".join(h.key for h in held) + ">")
+    return held[0] if held else None
+
+
+def found_during_of(db: Session, item: Item) -> str | None:
+    """Key of the item `item` was found on, or None (not recorded)."""
+    from app.models import Link
+    b = db.scalar(select(Link.b).where(Link.a == item.id, Link.type == "found_during"))
+    other = db.get(Item, b) if b else None
+    return other.key if other is not None else None
+
+
 def _default_kind(tags) -> str:
     """The kind an item gets when its creator does not say: `fix` for a `bug`-tagged item,
     otherwise empty (not recorded). Never `feature` — that is only ever declared."""
@@ -218,6 +285,9 @@ def create_item(
     severity: str = "",
     blocks: str | None = None,
     agent_create: bool = False,
+    distinct_from: list | None = None,
+    found_during: str | None = None,
+    held: list[Item] | None = None,
 ) -> Item:
     """Create a tracked item.
 
@@ -253,6 +323,8 @@ def create_item(
         raise ValueError(f"unknown project: {project_id!r}")
     check_line(line_id, prd_id, kind)
     blocked = None
+    distinct: list[tuple[Item, str]] = []
+    origin: Item | None = None
     # An explicit `fix`, or any `fix` an agent files (a bug tag defaults it there too), is a
     # filed fix (GRPH-1683). Only a non-agent caller's bug-tagged default predates the rules.
     if kind == "fix" and (explicit_kind or agent_create):
@@ -261,11 +333,17 @@ def create_item(
             check_fix_shape(description=description, touchpoints=touchpoints)
         if prd_id and not line_id:
             blocked = _blocked_item(db, blocks, _stored_prd_id(db, prd_id, project_id))
+        if agent_create:
+            origin = resolve_found_during(db, found_during=found_during, held=held or [])
+            distinct = check_duplicates(
+                db, line_id=lines_svc_resolve(db, line_id, project_id) if line_id else None,
+                prd_id=_stored_prd_id(db, prd_id, project_id), touchpoints=touchpoints,
+                distinct_from=distinct_from,
+                exclude=[x.id for x in (blocked, origin) if x is not None])
     elif blocks:
         raise ValueError("blocks is only for a blocking fix (kind=fix with prd_id)")
     if line_id:
-        from app.services import lines as lines_svc
-        line_id = lines_svc.resolve_for_item(db, line_id, project_id)
+        line_id = lines_svc_resolve(db, line_id, project_id)
     effort_val = int(effort or 0)
     if effort_val < 0:
         raise ValueError(f"negative effort: {effort_val}")
@@ -304,6 +382,15 @@ def create_item(
         # the state this refuses.
         db.add(Link(project_id=blocked.project_id, a=blocked.id, b=item.id, type="dependency",
                     reason="blocking fix", confidence=1.0))
+    if distinct or origin is not None:
+        from app.models import Link
+        db.flush()
+        for other, reason in distinct:
+            db.add(Link(project_id=item.project_id, a=item.id, b=other.id, type="semantic",
+                        reason=reason, confidence=1.0))
+        if origin is not None:
+            db.add(Link(project_id=item.project_id, a=item.id, b=origin.id,
+                        type="found_during", reason="found during", confidence=1.0))
     if commit:
         db.commit()
         db.refresh(item)
@@ -2729,6 +2816,12 @@ def reserved_elsewhere(db: Session, agent_id: str, project_id: str | None = None
     return out
 
 
+def _found_during_for(item: Item) -> str | None:
+    from sqlalchemy.orm import object_session
+    db = object_session(item)
+    return found_during_of(db, item) if db is not None else None
+
+
 def item_dict(item: Item) -> dict:
     """The fields every item read shares — the ONE renderer (GRPH-821).
 
@@ -2764,6 +2857,8 @@ def item_dict(item: Item) -> dict:
         "line_id": item.line_key,
         # GRPH-1683. Reply-only and omitted when empty.
         **({"severity": item.severity} if item.severity else {}),
+        # GRPH-1695. A fix's provenance; null is "not recorded". Reply-only.
+        **({"found_during": _found_during_for(item)} if item.kind == "fix" else {}),
         "prd_section": item.prd_section,
         "fidelity": item.fidelity,
         # GRPH-1358. Always present: "" is the honest "not recorded", which a release must be
