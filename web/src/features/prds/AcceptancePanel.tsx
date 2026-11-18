@@ -1,7 +1,7 @@
 import { AlertTriangle, Check, CircleDashed, FileWarning, Minus, ShieldQuestion } from "lucide-react";
 
-import { useAuditCoverage, useCloseReport, usePrdEvidence } from "@/lib/queries";
-import type { CloseReport, CloseReportSection, EvidenceRollup } from "@/lib/types";
+import { useAuditCoverage, useCloseReport, usePrdCompleteness, usePrdEvidence } from "@/lib/queries";
+import type { BlockingFix, CloseReport, CloseReportSection, EvidenceRollup } from "@/lib/types";
 
 /** Did we build what we said? — on one screen (GRPH-328 / PRD-12).
  *
@@ -30,6 +30,7 @@ export function AcceptancePanel({ prdId }: { prdId: string }) {
   const { data: report } = useCloseReport(prdId);
   const { data: evidence } = usePrdEvidence(prdId);
   const { data: coverage } = useAuditCoverage(prdId);
+  const { data: completeness } = usePrdCompleteness(prdId);
 
   if (!report) return <p className="text-[12px] text-faint">Loading…</p>;
   if (!report.governed) {
@@ -90,6 +91,8 @@ export function AcceptancePanel({ prdId }: { prdId: string }) {
           rows={report.expanded_scope.map((s) => ({ key: s, text: s, note: "added at a later baseline" }))}
         />
       )}
+
+      <BlockingFixes fixes={completeness?.blocking_fixes} />
 
       <Sections sections={demanding} />
 
@@ -213,6 +216,45 @@ function Sections({ sections }: { sections: CloseReportSection[] }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/** Blocking fixes (GRPH-1684) sit apart from the section rows and change none of them.
+ *  `undefined` means the server did not compute the field — that is not "none". */
+function BlockingFixes({ fixes }: { fixes: BlockingFix[] | undefined }) {
+  if (!fixes) return null;
+  const open = fixes.filter((f) => f.status !== "done");
+  return (
+    <div className="rounded-[11px] border border-line-2 bg-surface-2 p-3" data-testid="blocking-fixes">
+      <div className="mb-1.5 flex items-center gap-2" style={{ color: open.length ? "#ff6b6b" : "#8b949e" }}>
+        <AlertTriangle size={12} />
+        <span className="font-mono text-[10px] uppercase tracking-wide">
+          Blocking fixes ({fixes.length})
+        </span>
+      </div>
+      {fixes.length === 0 ? (
+        <p className="text-[11.5px] text-faint">No blocking fixes.</p>
+      ) : (
+        <>
+          {open.length > 0 && (
+            <p className="mb-1.5 text-[11.5px] text-[#ff6b6b]">
+              Close is refused while open blocking fixes hold this PRD: {open.map((f) => f.id).join(", ")}.
+            </p>
+          )}
+          <ul className="flex flex-col gap-1">
+            {fixes.map((f) => (
+              <li key={f.id} className="text-[12px] text-fg-2">
+                {f.id}
+                <span className="ml-1.5 font-mono text-[10px] uppercase text-faint">{f.status}</span>
+                {f.blocks.length > 0 && (
+                  <span className="ml-1.5 text-small text-faint">— blocks {f.blocks.join(", ")}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
     </div>
   );
 }
