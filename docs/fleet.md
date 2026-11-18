@@ -40,8 +40,10 @@ than printing a `FAILED` line per receipt.
 `gbfleet until --line` drains the project's maintenance line instead of a PRD. Bare `--line`
 is the line in `get_context.maintenance_line`; `--line <id>` names it. A PRD id is refused
 with "use --prd", `--prd` with `--line` is refused, and a project with no line is refused
-with a pointer to `create_line`. The line is never resolved through `get_prd`. The seats it
-mints carry the line.
+with a pointer to `create_line`. The line is never resolved through `get_prd`. Its review
+seats (`mint_enrolment`) carry the line. `delegate` cannot carry one, so a build seat is bound
+`bound_only` to its line item and exits once that item is in review. `collision_clusters`
+has no line filter, so the run filters the clusters to the line's items itself.
 
 - A `--line` run claims, reviews and exits on line items only. A `--prd` run does not claim
   line items, and a line row in review is listed under `review_outside_prd` there: it spawns
@@ -51,7 +53,8 @@ mints carry the line.
   no PRD scope, as before). It does not widen to rows with `line_id` or to rows with neither
   scope, and a `--line` run never widens into PRD reviews.
 - A `--line` run's JSON always has `unready`, a list of `{id, missing}` (`acceptance`,
-  `touchpoints`). `[]` means it looked and found none. When nothing is claimable and
+  `touchpoints`). `[]` means it looked and found none. Which items count is the server's
+  claim pool: an open, unheld, unblocked line item that `collision_clusters` leaves out. When nothing is claimable and
   `unready` is not empty the run finishes `ok: false`, `reason: "unready"`, exit 0.
 - Run the line drain in its own clone. There is one supervisor lock per checkout, unchanged,
   so do not start `--line` on a checkout a `--prd` drain holds.

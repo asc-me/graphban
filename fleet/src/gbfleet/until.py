@@ -1526,7 +1526,7 @@ def _loop(
             if line is not None and not waits and not live:
                 # GRPH-1697. Nothing claimable and nothing in flight, but unready line items
                 # exist: the run did not drain the line, it ran out of claimable work.
-                unready_now = _unready(planner)
+                unready_now = _unready(planner, line)
                 if unready_now:
                     wave.reason = "unready"
                     done = _leave("unready", 0, review=reviews, outside=outside)
@@ -1585,7 +1585,7 @@ def _finish(
         waits=waits,
         review=review,
         review_outside_prd=list(outside or []),
-        unready=_unready(planner) if line is not None else None,
+        unready=_unready(planner, line) if line is not None else None,
         wave=wave,
     )
 
@@ -2006,9 +2006,46 @@ def _scope(prd: str | None, line: str | None = None) -> dict:
 
     Empty when unscoped, so an unfiltered run sends exactly what it sent before.
     """
-    if line:
-        return {"line_id": line}
     return {"prd_id": prd} if prd else {}
+
+
+def _clusters(planner: Graphban, prd: str | None, line: str | None = None, **kw) -> dict:
+    """`collision_clusters` for this wave's scope (GRPH-797, GRPH-1697).
+
+    A `--line` wave cannot ask the server to filter: `collision_clusters` takes `prd_id` and
+    no `line_id`, and an argument it does not know is dropped, so the reply would be the whole
+    project's clusters. The line filter is applied here instead, to each cluster's members,
+    from the items' own `line_id`. A cluster left with no members is dropped. A `--prd` or
+    unscoped wave sends exactly what it sent before.
+    """
+    got = planner.call("collision_clusters", **_scope(prd), **kw)
+    if not line:
+        return got
+    keys = _line_keys(planner, line)
+    out = []
+    for c in (got or {}).get("clusters") or []:
+        if not isinstance(c, dict):
+            continue
+        members = [i for i in (c.get("items") or []) if i in keys]
+        if members:
+            out.append({**c, "items": members})
+    return {**(got or {}), "clusters": out, "total": len(out)}
+
+
+#: Statuses a collision cluster can hold a member in: the claim pool plus `review`, which
+#: occupies its areas (GRPH-886), and `in_progress`, which a stale lease puts back in it.
+_CLUSTER_STATUSES = ("next", "backlog", "in_progress", "review")
+
+
+def _line_keys(planner: Graphban, line: str) -> set[str]:
+    """The ids of this line's items in any status a cluster can hold (GRPH-1697)."""
+    keys: set[str] = set()
+    for status in _CLUSTER_STATUSES:
+        got = planner.call("search_items", status=status, fields="full", limit=10_000)
+        for r in (got or {}).get("results") or []:
+            if isinstance(r, dict) and r.get("id") and r.get("line_id") == line:
+                keys.add(str(r["id"]))
+    return keys
 
 
 def _seat_scope(prd: str | None, line: str | None = None) -> dict:
@@ -2025,7 +2062,23 @@ def _seat_scope(prd: str | None, line: str | None = None) -> dict:
     run scoped against a server that ignores the filter (`check_scope_is_honoured`).
     """
     if line:
+        # `mint_enrolment` takes `line`; `delegate` does not and drops it, which is why a line
+        # wave binds its delegated seats `bound_only` instead (see `_delegate_next`).
         return {"line": line}
+    return {"scope": prd} if prd else {}
+
+
+def _delegate_scope(prd: str | None, line: str | None = None) -> dict:
+    """What bounds a seat `delegate(seat=True)` mints (GRPH-827, GRPH-1697).
+
+    `delegate` reads `scope` (a PRD) and nothing else, so a line cannot be put on its seat.
+    A line wave's delegated child is bound to its line item instead, `bound_only`: once that
+    item leaves `in_progress` the server refuses it every further claim, review included, so
+    it cannot claim or review past the line. The line's reviews are staffed by review-only
+    seats from `mint_enrolment`, which does carry the line.
+    """
+    if line:
+        return {"bound_only": True}
     return {"scope": prd} if prd else {}
 
 
@@ -2424,7 +2477,7 @@ def _delegate_next(
     `expired` on Live rather than being papered over here.
     """
     try:
-        clusters = planner.call("collision_clusters", **_scope(prd, line))
+        clusters = _clusters(planner, prd, line)
     except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
         observe.emit("delegate_skipped", detail=f"collision_clusters: {exc}")
         return None, None, None
@@ -2548,8 +2601,10 @@ def _delegate_next(
                 # by someone else (D13). GRPH-885: do not fall back to an unbound delegate.
                 # GRPH-1089: do not pass bound_only. A wave's finished bound workers review
                 # each other; the flag is opt-in for a caller that wants the child to exit.
+                # A `--line` wave is that caller (GRPH-1697, `_delegate_scope`).
                 reply = planner.call("delegate", id=candidate, lane=lane, tier=want, agent_id=agent_id,
-                                     note=note, seat=True, wave=wave_name, **_seat_scope(prd, line))
+                                     note=note, seat=True, wave=wave_name,
+                                     **_delegate_scope(prd, line))
                 if bound_out is not None and isinstance(reply, dict):
                     bound_out["bound_only"] = bool(reply.get("bound_only"))
                 got_code = reply.get("enrolment_code") if isinstance(reply, dict) else None
@@ -2706,7 +2761,7 @@ def _wanted_workers(
     # 63 registrations against a project with nothing left to do — and `--max-children`
     # never bound. Review work is not this function's job: the unheld-review branch in the
     # loop spawns for that, once, and counts its own failures.
-    clusters = planner.call("collision_clusters", **_scope(prd, line))
+    clusters = _clusters(planner, prd, line)
     # FREE clusters, not all of them (GRPH-803). An item's lease and its areas are different
     # holds: `claimable` excludes an item somebody claimed and says nothing about one whose
     # files are reserved by an agent working something else. Counting every cluster spawned a
@@ -3356,13 +3411,33 @@ def resolve_line(planner: Graphban, line: str) -> str:
     return key
 
 
-_ACCEPT_RE = re.compile(r"^#{1,6}\s*acceptance\b.*?\n(?:\s*\n)*\s*(?:[-*]|\d+[.)])\s+\S",
-                        re.I | re.M | re.S)
+#: An acceptance clause: a list item under an `Acceptance`/`Tests` heading, an `Acceptance:`
+#: label line, or a bold/underscore `Acceptance` label. The server's parser is the authority;
+#: this only NAMES what is missing for an item the server already left out of its claim pool.
+_ACCEPT_RE = re.compile(
+    r"^\s*(?:#{1,6}\s*(?:acceptance(?:\s+criteria)?|tests)\b[^\n]*"
+    r"|(?:\*\*|__)acceptance(?:\s+criteria)?:?(?:\*\*|__):?[^\n]*"
+    r"|acceptance(?:\s+criteria)?:\s*)\n(?:\s*\n)*\s*(?:[-*+]|\d+[.)])\s+\S",
+    re.I | re.M)
 
 
-def _unready(planner: Graphban) -> list[dict]:
-    """`[{id, missing}]` for open line items with no acceptance clause or no touchpoint
-    (GRPH-1697). A failed read is an empty list: the run is already finishing."""
+def _unready(planner: Graphban, line: str) -> list[dict]:
+    """`[{id, missing}]` for this line's open items the server will not hand out for want of
+    an acceptance clause or a touchpoint (GRPH-1697). Empty means it looked and found none.
+
+    The server computes this list (`items.unready_line_items`) but returns it only on a line
+    seat's `claim_cluster`, which a supervisor must not call. So WHICH items are unready is
+    the server's verdict, read from its claim pool: a line item counts only when it is open,
+    unheld and unblocked and `collision_clusters` left it out. `missing` is named here, from
+    the item's touchpoints and description, and an item for which neither is missing is out
+    of the pool for another reason (a dependency) and is not listed. A failed read is an empty
+    list: the run is already finishing.
+    """
+    try:
+        pooled = {i for c in (planner.call("collision_clusters") or {}).get("clusters") or []
+                  if isinstance(c, dict) for i in (c.get("items") or [])}
+    except (NotPermitted, ToolFailed, ServerUnreachable):
+        return []
     out: list[dict] = []
     for status in ("backlog", "next"):
         try:
@@ -3370,7 +3445,8 @@ def _unready(planner: Graphban) -> list[dict]:
         except (NotPermitted, ToolFailed, ServerUnreachable):
             return out
         for r in (got or {}).get("results") or []:
-            if not isinstance(r, dict) or not r.get("line_id") or r.get("claimed_by"):
+            if not isinstance(r, dict) or r.get("line_id") != line or r.get("claimed_by") \
+                    or r.get("blocker") or str(r.get("id")) in pooled:
                 continue
             missing = []
             if not _ACCEPT_RE.search(str(r.get("description") or "")):
