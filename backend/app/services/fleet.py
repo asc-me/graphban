@@ -4034,7 +4034,7 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     clauses, unreadable = parse_acceptance(item.description or "")
     # A line item or blocking fix is filed WITH clauses and touchpoints (GRPH-1683). A
     # historical fix with neither a line nor a PRD keeps today's pass on no clauses.
-    if items_svc.is_filed_fix(item) and (not clauses or not item.touchpoints):
+    if items_svc.is_filed_fix(db, item) and (not clauses or not item.touchpoints):
         gone = ("acceptance clauses" if not clauses else "touchpoints")
         raise FiledFixShape(
             f"{item.key} is a filed fix and has no {gone} left: a line item or blocking fix "

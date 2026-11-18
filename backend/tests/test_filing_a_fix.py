@@ -67,6 +67,7 @@ def test_blocking_fix_shape(client, world):
         item = items_svc.get_item(db, fix)
         assert item.severity == "security"
         assert items_svc.has_blocking_dependency(db, item)
+        assert items_svc.is_filed_fix(db, item)
         link = db.query(Link).filter(Link.b == item.id).one()
         assert items_svc.get_item(db, w["feat"]).id == link.a
 
@@ -104,7 +105,7 @@ def test_update_onto_the_line_and_signoff_shape(client, world):
             _sign(db, it)
         legacy = items_svc.create_item(db, title="legacy", tags=["bug"], description="no clauses")
         assert legacy.kind == "fix"
-        assert not items_svc.is_filed_fix(legacy)
+        assert not items_svc.is_filed_fix(db, legacy)
     # setting line_id on a row with no clause is refused
     plain = _rpc(client, w["key"], "create_item", {"title": "p", "kind": "fix", "line_id": line,
                  "description": ACC, "touchpoints": ["a.py"]})["structuredContent"]["id"]
@@ -126,3 +127,17 @@ def _sign(db, item):
          mock.patch.object(fleet_svc, "require_reviewer_property"), \
          mock.patch.object(fleet_svc, "require_no_human_clause"):
         fleet_svc.sign_off(db, item_id=item.id, agent_id="reviewer")
+
+
+def test_historical_prd_fix_is_not_a_filed_fix(client, world):
+    """A pre-rule fix on a PRD section, or with nothing depending on it, keeps today's rule."""
+    with SessionLocal() as db:
+        feat = items_svc.get_item(db, world["feat"])
+        # A bug-tagged default `fix` predates the scope rules, as historical rows do.
+        on_section = items_svc.create_item(db, title="old", tags=["bug"], project_id=feat.project_id,
+                                           prd_id=feat.prd_id, prd_section="S")
+        no_dep = items_svc.create_item(db, title="old2", tags=["bug"], project_id=feat.project_id,
+                                       prd_id=feat.prd_id)
+        assert on_section.kind == no_dep.kind == "fix"
+        assert not items_svc.is_filed_fix(db, on_section)
+        assert not items_svc.is_filed_fix(db, no_dep)

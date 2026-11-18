@@ -62,9 +62,18 @@ def _check_severity(severity: str, kind: str | None) -> None:
             "set kind=fix, or drop severity")
 
 
-def is_filed_fix(item) -> bool:
-    """A fix filed under the GRPH-1683 rules: on the line, or a blocking fix on a PRD."""
-    return item.kind == "fix" and bool(item.line_id or item.prd_id)
+def is_filed_fix(db: Session, item) -> bool:
+    """A fix filed under the GRPH-1683 rules: on the line, or a blocking fix on a PRD.
+
+    A blocking fix is a `fix` on a PRD with no section and an item on that PRD depending on
+    it. A historical fix with a section, or with nothing waiting on it, is neither, and keeps
+    today's sign-off rule.
+    """
+    if item.kind != "fix":
+        return False
+    if item.line_id:
+        return True
+    return bool(item.prd_id) and not item.prd_section and has_blocking_dependency(db, item)
 
 
 def check_fix_scope(*, kind: str | None, line_id: str | None, prd_id: str | None,
