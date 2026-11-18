@@ -35,6 +35,10 @@ _TIMEOUT = 30.0
 _PATH = "/api/sync/specs"
 
 
+#: The rule a remote-spec refusal names (registered in `services/rules.py`).
+REMOTE_SPEC_RULE = "spec.remote_is_read_only"
+
+
 class RemoteSpecRefused(ValueError):
     """The spec's home is another deployment; it cannot be changed or decomposed here."""
 

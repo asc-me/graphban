@@ -79,6 +79,7 @@ def test_remote_spec_is_stored_read_only_with_home(client, auth, db, console):
         spec_pull.refuse_if_remote(db, "OTHER-P1")
     r = client.post("/api/prds/OTHER-P1/decompose", headers=auth)
     assert r.status_code == 409 and "box-a" in r.text
+    assert "spec.remote_is_read_only" in r.text  # the refusal names its rule
     console["record"] = {"specs": []}
     _pull(db)
     assert db.get(RemoteSpec, "OTHER-P1") is None

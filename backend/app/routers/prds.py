@@ -452,7 +452,7 @@ def decompose_prd(prd_id: str, create: bool = False, include_prose: bool = False
     try:
         spec_pull_svc.refuse_if_remote(db, prd_id)
     except spec_pull_svc.RemoteSpecRefused as e:
-        raise Refused(409, str(e))
+        raise Refused(409, str(e), rule_id=spec_pull_svc.REMOTE_SPEC_RULE)
     prd = prd_svc.get_prd(db, prd_id)
     if prd is None:
         raise HTTPException(404, "prd not found")

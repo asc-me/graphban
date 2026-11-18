@@ -4973,7 +4973,8 @@ async def mcp_endpoint(
                                "elapse and send it again")
         except spec_pull_svc.RemoteSpecRefused as e:
             return _refused(errors.Refused(
-                409, str(e), hint="decompose it on the box named as its home"))
+                409, str(e), rule_id=spec_pull_svc.REMOTE_SPEC_RULE,
+                hint="decompose it on the box named as its home"))
         except prd_svc.DecomposeRequiresApproval as e:
             # CONFLICT, not validation (GRPH-654). The arguments are fine; the PRD has not
             # earned approved. `validation` would send an agent editing a payload that is
