@@ -823,7 +823,10 @@ def _until(args) -> int:
             elif remote:
                 dry_base = default_ref(repo, remote)
             got = until_mod.plan(planner, args.prd or None, args.max_workers,
-                                 repo=repo, base=dry_base)
+                                 repo=repo, base=dry_base, line=args.line)
+        except until_mod.ConfigError as exc:
+            print(f"gbfleet until --dry-run: {exc}", file=sys.stderr)
+            return 2
         except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
             print(f"gbfleet until --dry-run: {exc}", file=sys.stderr)
             return 2
