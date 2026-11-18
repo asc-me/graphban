@@ -424,8 +424,9 @@ def snapshot(db: Session, org_id: str, project_id: str | None, ladder: list[str]
     policy in force (ladder, tie-break, when-exhausted, subscription order), the claimant's
     declared entitlements, and EVERY org entitlement — its id, kind, rung, headroom state, stated
     next reset and every tie-break input (headroom remaining, cost) — so any proposed ladder or
-    tie-break can be re-ranked from it. `entitlements` lists them in the order the policy in
-    force ranked them, then the ones it did not rank (wrong rung, no headroom) in creation order.
+    tie-break can be re-ranked from it. `entitlements` lists them in creation order, each with
+    its `created` index (the live router's last tie-break) and its `rank` under the policy in
+    force (None when that policy did not rank it: wrong rung, no headroom).
     """
     now = now or datetime.now(timezone.utc)
     tie_break = fleet_profiles.tie_break_of(db, project_id)
@@ -436,7 +437,6 @@ def snapshot(db: Session, org_id: str, project_id: str | None, ladder: list[str]
     ranked_ids = [e["id"] for e in order(facts, ladder=ladder, tie_break=tie_break,
                                          subscription_order=sub_order)]
     pos = {eid: i for i, eid in enumerate(ranked_ids)}
-    facts.sort(key=lambda f: pos.get(f["id"], len(pos)))  # stable: unranked keep creation order
     return {
         "v": SNAPSHOT_VERSION,
         "at": now.isoformat(),
@@ -447,15 +447,19 @@ def snapshot(db: Session, org_id: str, project_id: str | None, ladder: list[str]
         "entitlements": [{**f, "next_reset_at": (f["next_reset_at"].isoformat()
                                                  if f["next_reset_at"] else None),
                           "held": f["id"] in held,
-                          "rank": pos.get(f["id"])} for f in facts],
+                          "created": i, "rank": pos.get(f["id"])}
+                         for i, f in enumerate(facts)],
     }
 
 
 def _stored_facts(snap: dict) -> list[dict]:
     """A snapshot's entitlements back in creation order with datetimes restored, so `order`
-    breaks the ties it cannot decide exactly as the live router did."""
+    breaks the ties it cannot decide exactly as the live router did. Sorted by the stored
+    `created` index, never by the recorded `rank`: a tie the proposed policy cannot break must
+    fall back to creation order, as `rank` does live, not to the recorded policy's ordering."""
+    stored = snap.get("entitlements") or []
     out = []
-    for f in snap.get("entitlements") or []:
+    for f in sorted(stored, key=lambda f: f.get("created", 0)):
         reset = f.get("next_reset_at")
         out.append({**f, "next_reset_at": _aware(datetime.fromisoformat(reset)) if reset else None})
     return out

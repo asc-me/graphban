@@ -52,7 +52,11 @@ def test_a_claim_records_its_ranked_candidates_with_every_tie_break_input(client
                               "subscription_order": None}
     assert set(snap["declared"]) == {rung["soon"], rung["roomy"], rung["cheap"]}
     ents = snap["entitlements"]
-    assert [e["id"] for e in ents] == [rung["soon"], rung["cheap"], rung["roomy"]]
+    # Stored in creation order, each with its creation index and its rank under the policy in force.
+    assert [e["id"] for e in ents] == [rung["soon"], rung["roomy"], rung["cheap"]]
+    assert [e["created"] for e in ents] == [0, 1, 2]
+    assert {e["id"]: e["rank"] for e in ents} == {rung["soon"]: 0, rung["cheap"]: 1,
+                                                  rung["roomy"]: 2}
     soon = ents[0]
     assert soon["kind"] == "api_key" and soon["rung"] == "api_key"
     assert soon["state"] == "available" and soon["rank"] == 0
@@ -78,6 +82,30 @@ def test_replay_under_a_changed_tie_break_moves_a_decision_todays_ordering_kept(
     roomy = _replay(tie_break="most_headroom")
     assert roomy["moved"] == 1
     assert roomy["examples"][0]["to"]["entitlement_id"] == rung["roomy"]
+
+
+def _sub(eid, vendor, created, rank, headroom):
+    return {"id": eid, "vendor": vendor, "kind": "subscription", "rung": "subscription",
+            "state": "available", "budget_spent": False, "reviewer_eligible": True,
+            "next_reset_at": None, "headroom_tokens": headroom, "cost_per_mtok": None,
+            "held": False, "created": created, "rank": rank}
+
+
+def test_a_tie_the_proposal_cannot_break_falls_back_to_creation_order_not_the_recorded_rank():
+    """No reset is stated, so soonest_reset ties all three; live, creation order then decides
+    and A (created first) wins. Replay must agree, and so count the decision as moved — not
+    inherit the recorded most_headroom ranking (B, C, A) from the order the snapshot lists."""
+    from app.services import routing
+
+    a, b, c = (_sub("A", "anthropic", 0, 2, 10), _sub("B", "openai", 1, 0, 100),
+               _sub("C", "google", 2, 1, 50))
+    policy = {"ladder": ["subscription", "api_key", "local"], "tie_break": "most_headroom",
+              "when_exhausted": "fall_through", "subscription_order": None}
+    snap = {"v": 1, "policy": policy, "declared": ["A", "B"], "entitlements": [b, c, a]}
+    assert routing.choose(snap, policy) == ("claimed", "B")
+    live = routing.order([a, b, c], ladder=policy["ladder"], tie_break="soonest_reset")
+    assert [e["id"] for e in live] == ["A", "B", "C"]
+    assert routing.choose(snap, {**policy, "tie_break": "soonest_reset"}) == ("claimed", "A")
 
 
 def test_replay_reads_the_candidates_then_not_todays_headroom(client, world, rung):
