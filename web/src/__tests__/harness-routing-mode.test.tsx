@@ -83,7 +83,7 @@ beforeEach(() => {
 });
 
 describe("Capacity routing mode", () => {
-  it("default mode shows the in-force rule and does not offer replay, cheapest, or hold", async () => {
+  it("default mode shows the in-force rule with today's tie-break and fall-through, and no replay", async () => {
     policyRead.mockResolvedValue({
       project_id: "p",
       policy: null,
@@ -93,9 +93,48 @@ describe("Capacity routing mode", () => {
     wrap(<CapacityPanel projectId="p" />);
     await screen.findByTestId("routing-rule-in-force");
     expect(screen.getByTestId("routing-mode-next")).toBeChecked();
+    expect(screen.getByTestId("routing-tie-soonest")).toBeChecked();
+    expect(screen.getByTestId("routing-tie-cheapest")).not.toBeChecked();
+    expect(screen.getByTestId("routing-exhausted-fall")).toBeChecked();
+    expect(screen.getByTestId("routing-exhausted-hold")).not.toBeChecked();
     expect(screen.queryByText(/replay/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/cheapest/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/hold-until-reset/i)).not.toBeInTheDocument();
+  });
+
+  it("saves the tie-break and hold-until-reset through the policy write and shows them after a reload", async () => {
+    const user = userEvent.setup();
+    const base = { local_only: false, reviewer_cross_vendor: false, allowed_harnesses: [] };
+    policyRead.mockResolvedValue({ project_id: "p", policy: { ...base, ladder: ["subscription", "api_key"] }, writable: true });
+    policySave.mockImplementation(async (body: unknown) => ({ project_id: "p", policy: body }));
+    const first = wrap(<RoutingMode projectId="p" entitlements={[sub("s1", "anthropic")]} />);
+    await user.click(await screen.findByTestId("routing-tie-cheapest"));
+    await user.click(screen.getByTestId("routing-exhausted-hold"));
+    expect(screen.getByTestId("routing-rule-state")).toHaveTextContent(/draft/);
+    expect(screen.getByTestId("routing-rule-title")).toHaveTextContent(/ties by cheapest/);
+    expect(screen.getByTestId("routing-rule-in-force")).toHaveTextContent(/earliest stated reset/);
+    await user.click(screen.getByTestId("routing-apply"));
+    await waitFor(() => expect(policySave).toHaveBeenCalled());
+    const body = policySave.mock.calls[0][0] as Record<string, unknown>;
+    expect(body).toMatchObject({ tie_break: "cheapest", when_exhausted: "hold_until_reset", ladder: ["subscription", "api_key"] });
+    first.unmount();
+
+    // Reload: the server returns what was saved, and the card shows it as the active rule.
+    policyRead.mockResolvedValue({ project_id: "p", policy: { ...base, tie_break: "cheapest", when_exhausted: "hold_until_reset" }, writable: true });
+    wrap(<RoutingMode projectId="p" entitlements={[sub("s1", "anthropic")]} />);
+    await waitFor(() => expect(screen.getByTestId("routing-tie-cheapest")).toBeChecked());
+    expect(screen.getByTestId("routing-exhausted-hold")).toBeChecked();
+    expect(screen.getByTestId("routing-rule-state")).toHaveTextContent(/active/);
+  });
+
+  it("discard restores the saved tie-break", async () => {
+    const user = userEvent.setup();
+    policyRead.mockResolvedValue({ project_id: "p", policy: { local_only: false, reviewer_cross_vendor: false, allowed_harnesses: [], tie_break: "most_headroom" }, writable: true });
+    wrap(<RoutingMode projectId="p" entitlements={[sub("s1", "anthropic")]} />);
+    await waitFor(() => expect(screen.getByTestId("routing-tie-headroom")).toBeChecked());
+    await user.click(screen.getByTestId("routing-tie-soonest"));
+    expect(screen.getByTestId("routing-rule-state")).toHaveTextContent(/draft/);
+    await user.click(screen.getByTestId("routing-discard"));
+    expect(screen.getByTestId("routing-tie-headroom")).toBeChecked();
+    expect(screen.getByTestId("routing-rule-state")).toHaveTextContent(/active/);
   });
 
   it("with custom hierarchy off, shows the three-rung ladder and soonest-reset rule together", async () => {
