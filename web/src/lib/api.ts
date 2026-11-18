@@ -873,6 +873,16 @@ export const api = {
   harnessCapacity: (projectId: string) =>
     request<import("@/lib/types").HarnessCapacity>(
       `/harness/capacity?project_id=${encodeURIComponent(projectId)}`),
+  harnessReplay: (projectId: string, proposal: import("@/lib/types").RoutingReplayProposal = {}) => {
+    const q = new URLSearchParams({ project_id: projectId });
+    if (proposal.tie_break) q.set("tie_break", proposal.tie_break);
+    if (proposal.when_exhausted) q.set("when_exhausted", proposal.when_exhausted);
+    if (proposal.ladder?.length) q.set("ladder", proposal.ladder.join(","));
+    if (proposal.routing_mode) q.set("routing_mode", proposal.routing_mode);
+    if (proposal.subscription_order?.length) q.set("subscription_order", proposal.subscription_order.join(","));
+    if (proposal.days) q.set("days", String(proposal.days));
+    return request<import("@/lib/types").RoutingReplay>(`/harness/capacity/replay?${q.toString()}`);
+  },
   harnessLadder: (projectId: string) =>
     request<import("@/lib/types").HarnessLadder>(
       `/harness/ladder?project_id=${encodeURIComponent(projectId)}`),

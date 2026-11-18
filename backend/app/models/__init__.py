@@ -3884,6 +3884,11 @@ class RoutingDecision(Base):
     agent_model: Mapped[str] = mapped_column(String, default="", server_default="")
     #: Did the claimant hold the entitlement the decision named? NULL until someone claims.
     matched: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    #: GRPH-1712: the ranked candidate set at decision time — the policy in force, the claimant's
+    #: declared entitlements and every org entitlement with its rung, headroom state, stated
+    #: reset and tie-break inputs — so a replay re-ranks THEN, not now. NULL on rows written
+    #: before the column existed: those are not replayable, never "would not have moved".
+    candidates: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
