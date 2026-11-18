@@ -3709,6 +3709,9 @@ export interface HarnessRoutingReason {
 /** GRPH-1405: where the test suites run — the `build.test_scope` rule's `mode` param. */
 export type TestScopeMode = "agent_full" | "agent_and_pr" | "agent_targeted";
 
+/** GRPH-1703: what a builder does with a bug it finds — the `build.found_bug` rule's `mode` param. */
+export type FoundBugMode = "fix_in_build" | "file_ticket";
+
 /** One row of the bell's panel (GRPH-1527). */
 export interface AlertRow {
   id: string;
