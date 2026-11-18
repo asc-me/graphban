@@ -127,6 +127,7 @@
 "tests/test_fallback_says_so.py": 0.43,
 "tests/test_fidelity.py": 0.42,
 "tests/test_fixture_isolation.py": 0.15,
+"tests/test_blocking_fixes.py": 3.0,
 "tests/test_filing_a_fix.py": 3.0,
 "tests/test_fleet_adversarial_gate.py": 5.85,
 "tests/test_fleet_allocation.py": 2.14,

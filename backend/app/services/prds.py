@@ -1290,6 +1290,36 @@ def baseline_drift(db: Session, prd: Prd) -> dict:
     }
 
 
+def _is_blocking_fix(db: Session, it) -> bool:
+    """A `kind=fix` on a PRD with no section that an item on the same PRD depends on (GRPH-1684)."""
+    return (it.kind == "fix" and bool(it.prd_id) and not it.prd_section
+            and items_svc.has_blocking_dependency(db, it))
+
+
+def _split_blocking_fixes(db: Session, items: list) -> tuple[list, list]:
+    """(blocking fixes, everything else) from a PRD's items."""
+    fixes = [it for it in items if _is_blocking_fix(db, it)]
+    ids = {it.id for it in fixes}
+    return fixes, [it for it in items if it.id not in ids]
+
+
+def blocking_fixes(db: Session, prd: Prd) -> list[dict]:
+    """Every blocking fix on this PRD as `{id, status, blocks}` (GRPH-1684).
+
+    `blocks` is the rendered keys of the same-PRD items that depend on the fix. A done fix
+    stays listed with its status."""
+    from app.models import Link
+    fixes, _ = _split_blocking_fixes(db, [it for it in items_svc.list_items(
+        db, project_id=prd.project_id) if it.prd_id == prd.id])
+    out = []
+    for fx in fixes:
+        srcs = db.scalars(select(Link.a).where(Link.b == fx.id, Link.type == "dependency")).all()
+        blocks = sorted(o.key for a in srcs
+                        if (o := db.get(Item, a)) is not None and o.prd_id == prd.id)
+        out.append({"id": fx.key, "status": fx.status, "blocks": blocks})
+    return sorted(out, key=lambda r: r["id"])
+
+
 # What a section's linked work adds up to, mechanically. Ordered worst-first so a caller
 # sorting by this reads the problems at the top.
 _ABSENT, _UNDELIVERED, _PARTIAL, _DELIVERED = "absent", "undelivered", "partial", "delivered"
@@ -1343,8 +1373,10 @@ def completeness(db: Session, prd: Prd) -> dict:
     # title belongs to it. Without this every rename would invent an absence.
     renames = {old: new for old, new in diff_sections(base.body, prd.body)["renamed"]}
 
-    items = [it for it in items_svc.list_items(db, project_id=prd.project_id)
-             if it.prd_id == prd.id]
+    # Blocking fixes are in no section's bucket and not outside the baseline (GRPH-1684);
+    # they are reported whole under `blocking_fixes`.
+    _, items = _split_blocking_fixes(db, [it for it in items_svc.list_items(
+        db, project_id=prd.project_id) if it.prd_id == prd.id])
     by_section: dict[str, list] = {}
     for it in items:
         by_section.setdefault(it.prd_section or "", []).append(it)
@@ -1392,6 +1424,7 @@ def completeness(db: Session, prd: Prd) -> dict:
         # how GRPH-319 hid a third of this PRD's own work.
         "outside_baseline": sorted(s for s in by_section if s and s not in claimed),
         "demanding_sections": len(demanded),
+        "blocking_fixes": blocking_fixes(db, prd),
     }
 
 
@@ -2389,6 +2422,10 @@ def close_readiness(db: Session, prd: Prd, *, judge_reachable: bool = True) -> d
     if not governed:
         return {"can_close": False, "mode": None, "judge": status,
                 "blocked_on": "no baseline — there is no agreed intent to close against"}
+    open_fixes = [f["id"] for f in blocking_fixes(db, prd) if f["status"] != "done"]
+    if open_fixes:
+        return {"can_close": False, "mode": None, "judge": status,
+                "blocked_on": "open blocking fixes hold this PRD: " + ", ".join(open_fixes)}
     if status == JUDGE_DOWN:
         # The case the original rule was written for, and it still blocks. A judge that was
         # configured and is not answering means the judged close is merely LATE, and
@@ -2662,8 +2699,8 @@ def scope_drift(db: Session, prd: Prd) -> dict:
     # not the governing one: a rebaseline must not wipe the record of scope that arrived
     # before it, which is the same laundering the accumulated count exists to prevent.
     since = chain[0].created_at
-    items = [it for it in items_svc.list_items(db, project_id=prd.project_id)
-             if it.prd_id == prd.id]
+    _, items = _split_blocking_fixes(db, [it for it in items_svc.list_items(
+        db, project_id=prd.project_id) if it.prd_id == prd.id])
     inferred = sum(1 for it in items if it.prd_linked_at is None)
     scope_added = [
         {"id": it.key, "status": it.status, "section": it.prd_section,
@@ -3576,7 +3613,8 @@ def coverage(db: Session, prd: Prd) -> dict:
     # Loaded whole, then split: the linked set is what coverage is ABOUT, and the rest is
     # what it was silently computed against the absence of (GRPH-486). One query, both.
     all_items = items_svc.list_items(db, project_id=prd.project_id)
-    items = [it for it in all_items if it.prd_id == prd.id]
+    # A blocking fix is not a section's work (GRPH-1684): out of items, gaps and orphaned.
+    _, items = _split_blocking_fixes(db, [it for it in all_items if it.prd_id == prd.id])
     by_section: dict[str, list] = {}
     for it in items:
         by_section.setdefault(it.prd_section or "", []).append(it)
