@@ -22,6 +22,7 @@ from app.hashing import content_hash
 from app.models import DesignAcceptance, DesignSet, Document
 from app.services import design_sets as design_svc
 from app.services import prds as prd_svc
+from app.services import spec_pull
 
 
 def _body(text: str | None, digest: str, blob_status: str = "none") -> dict:
@@ -220,4 +221,5 @@ def library(db: Session, project_id: str) -> dict:
         "preamble": preamble,
         "documents": documents,
         "conflict_ids": [p["id"] for p in prd_rows if p["sync_state"] == "conflict"],
+        "remote_prds": spec_pull.list_remote(db, project_id),
     }

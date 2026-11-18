@@ -73,6 +73,7 @@ from app.services import headroom as headroom_svc
 from app.services import quotas
 from app.services import artifacts as art_svc
 from app.services import prds as prd_svc
+from app.services import spec_pull as spec_pull_svc
 from app.services import projects as projects_svc
 from app.services import prioritization as prio_svc
 from app.services import requests as req_svc
@@ -4010,6 +4011,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             raise authz.Forbidden(f"prd {args['prd_id']!r} is outside this key's project scope")
         return prd_svc.coverage(db, prd)
     if name == "decompose_prd":
+        spec_pull_svc.refuse_if_remote(db, str(args["prd_id"]))
         prd = prd_svc.get_prd(db, args["prd_id"])
         if prd is None:
             raise errors.NotFound(f"prd not found: {args['prd_id']}")
@@ -4969,6 +4971,10 @@ async def mcp_endpoint(
             return _fail("conflict", str(e),
                                "nothing is wrong with the call — wait for the cooldown to "
                                "elapse and send it again")
+        except spec_pull_svc.RemoteSpecRefused as e:
+            return _refused(errors.Refused(
+                409, str(e), rule_id=spec_pull_svc.REMOTE_SPEC_RULE,
+                hint="decompose it on the box named as its home"))
         except prd_svc.DecomposeRequiresApproval as e:
             # CONFLICT, not validation (GRPH-654). The arguments are fine; the PRD has not
             # earned approved. `validation` would send an agent editing a payload that is
