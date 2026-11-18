@@ -3716,6 +3716,40 @@ export interface HarnessRoutingReason {
   at: string | null;
 }
 
+/** GRPH-1712: one decision a draft policy would have moved, re-ranked from its stored candidates. */
+export interface RoutingReplayMove {
+  item_key: string;
+  at: string;
+  from: { verdict: string; entitlement_id: string | null };
+  to: { verdict: string; entitlement_id: string | null };
+}
+
+/** GRPH-1712: GET /harness/capacity/replay — the routing decisions of the window re-ranked under a
+ *  draft policy. `moved`/`held` are null when nothing in the window is replayable (unknown, not 0). */
+export interface RoutingReplay {
+  project_id: string;
+  days: number;
+  window_start: string;
+  window_end: string;
+  decisions: number;
+  replayable: number;
+  not_replayable: number;
+  moved: number | null;
+  held: number | null;
+  examples: RoutingReplayMove[];
+  reason: string | null;
+}
+
+/** The draft a replay re-ranks under; an absent key keeps what each decision recorded. */
+export interface RoutingReplayProposal {
+  tie_break?: string;
+  when_exhausted?: string;
+  ladder?: string[];
+  routing_mode?: string;
+  subscription_order?: string[] | null;
+  days?: number;
+}
+
 /** GRPH-1405: where the test suites run — the `build.test_scope` rule's `mode` param. */
 export type TestScopeMode = "agent_full" | "agent_and_pr" | "agent_targeted";
 

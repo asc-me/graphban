@@ -68,6 +68,32 @@ def harness_capacity(project_id: str, db: Session = Depends(get_db),
     return headroom_svc.capacity(db, org_id)
 
 
+@router.get("/capacity/replay")
+def harness_capacity_replay(project_id: str, tie_break: str | None = None,
+                            when_exhausted: str | None = None, ladder: str | None = None,
+                            routing_mode: str | None = None,
+                            subscription_order: str | None = None,
+                            days: int = Query(routing_svc.REPLAY_DAYS, ge=1, le=90),
+                            db: Session = Depends(get_db),
+                            user: User = Depends(get_current_user)):
+    """GRPH-1712: re-rank this project's routing decisions of the last `days` under a draft
+    policy, from the candidates each decision recorded. `ladder` and `subscription_order` are
+    comma-separated. Rows recorded before candidates were stored come back `not_replayable`."""
+    authz.require_readable(db, user.id, project_id)
+    quotas.require_capacity_routing(db, quotas.org_id_for_project(db, project_id))
+
+    def _list(v: str | None) -> list[str] | None:
+        return [p for p in v.split(",") if p] if v is not None else None
+
+    try:
+        proposal = routing_svc.replay_proposal(
+            tie_break=tie_break, when_exhausted=when_exhausted, ladder=_list(ladder),
+            routing_mode=routing_mode, subscription_order=_list(subscription_order))
+    except fleet_profiles_svc.ProfileInvalid as e:
+        raise HTTPException(422, str(e))
+    return routing_svc.replay(db, project_id, proposal, days=days)
+
+
 @router.get("/ladder")
 def harness_ladder(project_id: str, db: Session = Depends(get_db),
                    user: User = Depends(get_current_user)):

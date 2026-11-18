@@ -4,7 +4,7 @@ import * as React from "react";
 import { api } from "./api";
 import { httpsAddress, probeTrust } from "@/lib/https";
 import type { OnboardingMark, SetupConfirm } from "./types";
-import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, Item, ItemCreateBody, ItemDetail, LessonFilters, LogExportPatch, RequestItem, RuleProfileApplyWrite, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
+import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, RoutingReplayProposal, Item, ItemCreateBody, ItemDetail, LessonFilters, LogExportPatch, RequestItem, RuleProfileApplyWrite, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
 
 export const keys = {
   me: ["me"] as const,
@@ -1446,6 +1446,16 @@ export function useHarnessLadder(projectId?: string) {
   return useQuery({
     queryKey: keys.harnessLadder(projectId ?? ""),
     queryFn: () => api.harnessLadder(projectId!),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+/** GRPH-1712: the routing replay for a draft policy, keyed on project and the draft itself. */
+export function useHarnessReplay(projectId: string | undefined, proposal: RoutingReplayProposal) {
+  return useQuery({
+    queryKey: ["harness-replay", projectId ?? "", proposal] as const,
+    queryFn: () => api.harnessReplay(projectId!, proposal),
     enabled: !!projectId,
     retry: false,
   });

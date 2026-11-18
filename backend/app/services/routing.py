@@ -94,17 +94,17 @@ def reviewer_ineligible(db: Session, org_id: str) -> set[str]:
     return out
 
 
-def _subscription_rank_map(db: Session, project_id: str | None) -> tuple[bool, dict[str, int]]:
-    """When custom hierarchy is in force, subscription entitlements sort by policy order first."""
+def _subscription_order(db: Session, project_id: str | None) -> list[str] | None:
+    """The subscription order in force: a list only under custom hierarchy, else None."""
     if not project_id:
-        return False, {}
+        return None
     if fleet_profiles.routing_mode_of(db, project_id) != "custom_hierarchy":
-        return False, {}
+        return None
     policy = fleet_profiles.policy_of(db, project_id) or {}
     order = policy.get("subscription_order")
     if not isinstance(order, list) or not order:
-        return False, {}
-    return True, {eid: i for i, eid in enumerate(order)}
+        return None
+    return [str(e) for e in order]
 
 
 #: Kinds whose marginal cost per token is zero: a subscription is prepaid and a local model
@@ -156,6 +156,59 @@ def tie_key(entry: dict, tie_break: str) -> tuple:
     return (reset is None, reset or _FAR)
 
 
+def _sub_key(entry_id: str, rung: str, sub_rank: dict[str, int]) -> int:
+    """Under custom hierarchy a subscription sorts by its policy position, an unranked one after
+    every ranked one; without it (`sub_rank` empty) every key is 0 and never decides."""
+    if not sub_rank or rung != "subscription":
+        return 0
+    return sub_rank.get(entry_id, len(sub_rank))
+
+
+def order(facts: list[dict], *, ladder: list[str], tie_break: str,
+          subscription_order: list[str] | None = None) -> list[dict]:
+    """Rank entitlement facts, best first, with no database read: the ONE ordering both the
+    live router (`rank`) and replay use. A fact on a rung the ladder omits, not usable, or an
+    api_key whose budget is spent is dropped; the rest sort available before unknown, then the
+    ladder rung, then (custom hierarchy) the subscription order, then `tie_key`. The sort is
+    stable, so facts arrive in creation order and creation order decides what nothing else does."""
+    sub_rank = {eid: i for i, eid in enumerate(subscription_order or [])}
+    out = []
+    for f in facts:
+        if f["rung"] not in ladder or f["state"] not in USABLE or f.get("budget_spent"):
+            continue
+        out.append({**f, "rung_rank": ladder.index(f["rung"]),
+                    "subscription_rank": _sub_key(f["id"], f["rung"], sub_rank),
+                    "tie_break": tie_break})
+    out.sort(key=lambda e: (e["state"] != "available", e["rung_rank"],
+                            e["subscription_rank"], tie_key(e, tie_break)))
+    return out
+
+
+def _facts(db: Session, org_id: str, *, now: datetime, ladder: list[str] | None,
+           tie_breaks: tuple[str, ...], ruled_out: set[str]) -> list[dict]:
+    """What the router reads about each org entitlement, in creation order. `ladder` None reads
+    every rung (the replay snapshot); a tie-break input is read only when `tie_breaks` names it."""
+    rows = db.scalars(select(Entitlement).where(Entitlement.org_id == org_id)
+                      .order_by(Entitlement.created_at, Entitlement.id)).all()
+    out = []
+    for r in rows:
+        rung = rung_of(r.kind)
+        if ladder is not None and rung not in ladder:
+            continue
+        state = headroom_svc.headroom(db, r, now=now)["state"]
+        usable = state in USABLE
+        f = {"id": r.id, "vendor": r.vendor, "kind": r.kind, "state": state, "rung": rung,
+             "budget_spent": usable and _budget_spent(db, r, now),
+             "reviewer_eligible": r.id not in ruled_out,
+             "next_reset_at": _aware(r.next_reset_at) if r.next_reset_at else None}
+        if "most_headroom" in tie_breaks:
+            f["headroom_tokens"] = _headroom_tokens(db, r, now)
+        if "cheapest" in tie_breaks:
+            f["cost_per_mtok"] = _cost_per_mtok(db, r)
+        out.append(f)
+    return out
+
+
 def rank(db: Session, org_id: str, *, now: datetime | None = None,
          ladder: list[str] | None = None, project_id: str | None = None,
          tie_break: str | None = None) -> list[dict]:
@@ -166,34 +219,10 @@ def rank(db: Session, org_id: str, *, now: datetime | None = None,
     ladder = list(fleet_profiles.DEFAULT_LADDER if ladder is None else ladder)
     now = now or datetime.now(timezone.utc)
     tie_break = tie_break or fleet_profiles.tie_break_of(db, project_id)
-    custom, sub_rank = _subscription_rank_map(db, project_id)
-    rows = db.scalars(select(Entitlement).where(Entitlement.org_id == org_id)
-                      .order_by(Entitlement.created_at, Entitlement.id)).all()
-    out = []
-    ruled_out = reviewer_ineligible(db, org_id)
-    for r in rows:
-        rung = rung_of(r.kind)
-        if rung not in ladder:
-            continue
-        state = headroom_svc.headroom(db, r, now=now)["state"]
-        if state in USABLE and not _budget_spent(db, r, now):
-            sub_key = (sub_rank[r.id] if custom and rung == "subscription" and r.id in sub_rank
-                       else (len(sub_rank) if custom and rung == "subscription" else 0))
-            entry = {"id": r.id, "vendor": r.vendor, "kind": r.kind, "state": state,
-                     "rung": rung, "rung_rank": ladder.index(rung),
-                     "subscription_rank": sub_key,
-                     "reviewer_eligible": r.id not in ruled_out,
-                     "next_reset_at": _aware(r.next_reset_at) if r.next_reset_at else None,
-                     "tie_break": tie_break}
-            if tie_break == "most_headroom":
-                entry["headroom_tokens"] = _headroom_tokens(db, r, now)
-            elif tie_break == "cheapest":
-                entry["cost_per_mtok"] = _cost_per_mtok(db, r)
-            out.append(entry)
-    # Without custom hierarchy every subscription_rank is 0, so that key never decides.
-    out.sort(key=lambda e: (e["state"] != "available", e["rung_rank"],
-                            e["subscription_rank"], tie_key(e, tie_break)))
-    return out
+    facts = _facts(db, org_id, now=now, ladder=ladder, tie_breaks=(tie_break,),
+                   ruled_out=reviewer_ineligible(db, org_id))
+    return order(facts, ladder=ladder, tie_break=tie_break,
+                 subscription_order=_subscription_order(db, project_id))
 
 
 #: (phrase for "decided by", what a value nobody stated reads as, what a better rival did).
@@ -369,6 +398,7 @@ def gate(db: Session, item: Item, agent_id: str, *, now: datetime | None = None)
         db.add(RoutingDecision(
             item_id=item.id, kind="reservation", entitlement_id=best["id"],
             reason=_why(best, ranked), reserved_until=now + RESERVATION_TTL,
+            candidates=snapshot(db, org.id, item.project_id, ladder, declared, now=now),
             created_at=utcnow()))
         db.commit()
         return {"allowed": False, "entitlement_id": best["id"],
@@ -379,6 +409,176 @@ def gate(db: Session, item: Item, agent_id: str, *, now: datetime | None = None)
                           "headroom can build this; the item is not routed down a rung"}
     return {"allowed": True, "entitlement_id": None,
             "reason": "no entitlement has headroom; next rung of the ladder"}
+
+
+# ---- replay (GRPH-1712): the candidates a decision was made from, re-ranked under a draft ----
+
+#: Bumped when the snapshot's shape changes; replay reads only versions it knows.
+SNAPSHOT_VERSION = 1
+_TIE_BREAKS_ALL = ("soonest_reset", "most_headroom", "cheapest")
+
+
+def snapshot(db: Session, org_id: str, project_id: str | None, ladder: list[str],
+             declared: list[str], *, now: datetime | None = None) -> dict:
+    """The ranked candidate set at decision time, as stored on `RoutingDecision.candidates`: the
+    policy in force (ladder, tie-break, when-exhausted, subscription order), the claimant's
+    declared entitlements, and EVERY org entitlement — its id, kind, rung, headroom state, stated
+    next reset and every tie-break input (headroom remaining, cost) — so any proposed ladder or
+    tie-break can be re-ranked from it. `entitlements` lists them in creation order, each with
+    its `created` index (the live router's last tie-break) and its `rank` under the policy in
+    force (None when that policy did not rank it: wrong rung, no headroom).
+    """
+    now = now or datetime.now(timezone.utc)
+    tie_break = fleet_profiles.tie_break_of(db, project_id)
+    sub_order = _subscription_order(db, project_id)
+    facts = _facts(db, org_id, now=now, ladder=None, tie_breaks=_TIE_BREAKS_ALL,
+                   ruled_out=reviewer_ineligible(db, org_id))
+    held = _held(db, org_id)
+    ranked_ids = [e["id"] for e in order(facts, ladder=ladder, tie_break=tie_break,
+                                         subscription_order=sub_order)]
+    pos = {eid: i for i, eid in enumerate(ranked_ids)}
+    return {
+        "v": SNAPSHOT_VERSION,
+        "at": now.isoformat(),
+        "policy": {"ladder": list(ladder), "tie_break": tie_break,
+                   "when_exhausted": fleet_profiles.when_exhausted_of(db, project_id),
+                   "subscription_order": sub_order},
+        "declared": list(declared),
+        "entitlements": [{**f, "next_reset_at": (f["next_reset_at"].isoformat()
+                                                 if f["next_reset_at"] else None),
+                          "held": f["id"] in held,
+                          "created": i, "rank": pos.get(f["id"])}
+                         for i, f in enumerate(facts)],
+    }
+
+
+def _stored_facts(snap: dict) -> list[dict]:
+    """A snapshot's entitlements back in creation order with datetimes restored, so `order`
+    breaks the ties it cannot decide exactly as the live router did. Sorted by the stored
+    `created` index, never by the recorded `rank`: a tie the proposed policy cannot break must
+    fall back to creation order, as `rank` does live, not to the recorded policy's ordering."""
+    stored = snap.get("entitlements") or []
+    out = []
+    for f in sorted(stored, key=lambda f: f.get("created", 0)):
+        reset = f.get("next_reset_at")
+        out.append({**f, "next_reset_at": _aware(datetime.fromisoformat(reset)) if reset else None})
+    return out
+
+
+def choose(snap: dict, policy: dict) -> tuple[str, str | None]:
+    """What `gate` would decide from a stored snapshot under `policy` — (verdict, entitlement).
+    Pure: reads nothing but the snapshot. Verdicts: `claimed` (on one of the claimant's own),
+    `held_for` (soft-held for the one other runner that could build it), `held` (hold until
+    reset), `refused` (the review reserve, or several other runners could take it), `next_rung`
+    (nothing has headroom; the claimant takes the ladder's next rung). The live-reservation and
+    lapsed-reservation paths depend on what happened between decisions, not on the policy, and
+    are not replayed: a decision is re-ranked from its own candidates alone."""
+    ladder = list(policy["ladder"])
+    facts = _stored_facts(snap)
+    ranked = order(facts, ladder=ladder, tie_break=policy["tie_break"],
+                   subscription_order=policy.get("subscription_order"))
+    declared = set(snap.get("declared") or [])
+    hold = policy["when_exhausted"] == "hold_until_reset"
+    candidates = ranked
+    if hold:
+        candidates = [e for e in ranked if e["rung_rank"] == 0]
+        if not candidates:
+            return "held", None
+    mine = [e for e in candidates if e["id"] in declared]
+    for e in mine:
+        if review_reserved(ranked, e["vendor"]):
+            return "claimed", e["id"]
+    if mine:
+        return "refused", None
+    buildable = [e for e in candidates if e.get("held") and review_reserved(ranked, e["vendor"])]
+    if len(buildable) > 1:
+        return "refused", None
+    if buildable:
+        return "held_for", buildable[0]["id"]
+    if hold:
+        return "held", None
+    return "next_rung", None
+
+
+def replay_proposal(*, tie_break: str | None = None, when_exhausted: str | None = None,
+                    ladder: list[str] | None = None, routing_mode: str | None = None,
+                    subscription_order: list[str] | None = None) -> dict:
+    """Validate a draft policy for `replay` with the same rules the policy write applies.
+    Raises `fleet_profiles.ProfileInvalid` naming the bad value."""
+    invalid = fleet_profiles.ProfileInvalid
+    if tie_break is not None and tie_break not in fleet_profiles.TIE_BREAKS:
+        raise invalid(f"tie_break must be one of {list(fleet_profiles.TIE_BREAKS)}")
+    if when_exhausted is not None and when_exhausted not in fleet_profiles.WHEN_EXHAUSTED:
+        raise invalid(f"when_exhausted must be one of {list(fleet_profiles.WHEN_EXHAUSTED)}")
+    if routing_mode is not None and routing_mode not in fleet_profiles.ROUTING_MODES:
+        raise invalid(f"routing_mode must be one of {list(fleet_profiles.ROUTING_MODES)}")
+    return {"tie_break": tie_break, "when_exhausted": when_exhausted,
+            "ladder": fleet_profiles._ladder(ladder) if ladder is not None else None,
+            "routing_mode": routing_mode, "subscription_order": subscription_order or None}
+
+
+REPLAY_DAYS = 7
+_REPLAY_EXAMPLES = 5
+
+
+def replay(db: Session, project_id: str, proposal: dict | None = None, *,
+           days: int = REPLAY_DAYS, now: datetime | None = None) -> dict:
+    """Re-rank every routing decision on this project's items in the trailing `days` under a
+    proposed policy, from the candidates each one stored. `proposal` keys (all optional; an
+    absent one keeps what that decision recorded): `ladder`, `tie_break`, `when_exhausted`,
+    `routing_mode` + `subscription_order`.
+
+    A decision MOVED when the proposal's outcome (verdict, entitlement) differs from its own
+    recorded policy's outcome on the same candidates — so replaying the policy in force moves
+    nothing, and the answer describes the candidates as they were then, never today's headroom.
+    `held` counts the moved ones the proposal would have held until a reset. Rows written before
+    candidates were recorded are `not_replayable`, never counted as "would not have moved"."""
+    from app.models import Item
+
+    proposal = proposal or {}
+    now = now or datetime.now(timezone.utc)
+    start = now - timedelta(days=days)
+    rows = db.scalars(select(RoutingDecision).join(Item, Item.id == RoutingDecision.item_id)
+                      .where(Item.project_id == project_id, RoutingDecision.created_at >= start)
+                      .order_by(RoutingDecision.id)).all()
+    replayable = not_replayable = moved = held = 0
+    examples = []
+    for r in rows:
+        snap = r.candidates
+        if not isinstance(snap, dict) or snap.get("v") != SNAPSHOT_VERSION:
+            not_replayable += 1
+            continue
+        replayable += 1
+        recorded = dict(snap["policy"])
+        proposed = dict(recorded)
+        for k in ("ladder", "tie_break", "when_exhausted"):
+            if proposal.get(k) is not None:
+                proposed[k] = proposal[k]
+        if proposal.get("routing_mode") is not None:
+            proposed["subscription_order"] = (proposal.get("subscription_order") or None
+                                              if proposal["routing_mode"] == "custom_hierarchy"
+                                              else None)
+        before, after = choose(snap, recorded), choose(snap, proposed)
+        if before == after:
+            continue
+        moved += 1
+        held += after[0] == "held"
+        if len(examples) < _REPLAY_EXAMPLES:
+            item = db.get(Item, r.item_id)
+            examples.append({"item_key": item.key if item is not None else r.item_id,
+                             "at": _aware(r.created_at).isoformat(),
+                             "from": {"verdict": before[0], "entitlement_id": before[1]},
+                             "to": {"verdict": after[0], "entitlement_id": after[1]}})
+    reason = None
+    if not rows:
+        reason = f"no routing decisions in the last {days} days"
+    elif not replayable:
+        reason = (f"nothing in the last {days} days is replayable: every decision was recorded "
+                  "before routing stored its candidates")
+    return {"project_id": project_id, "days": days, "window_start": start.isoformat(),
+            "window_end": now.isoformat(), "decisions": len(rows), "replayable": replayable,
+            "not_replayable": not_replayable, "moved": moved if replayable else None,
+            "held": held if replayable else None, "examples": examples, "reason": reason}
 
 
 def held_until_reset(db: Session, org_id: str, rung: str, *, now: datetime) -> str:
@@ -450,11 +650,14 @@ def record_claim(db: Session, item: Item, agent_id: str) -> None:
     agent = db.get(Agent, agent_id)
     caps = (agent.capabilities or {}) if agent else {}
     declared = list(agent.entitlement_ids or []) if agent else []
+    project = db.get(Project, item.project_id)
+    ladder = fleet_profiles.ladder_of(db, item.project_id, _owner(db, agent))
     db.add(RoutingDecision(
         item_id=item.id, kind="claim", entitlement_id=verdict["entitlement_id"],
         reason=verdict["reason"], agent_id=agent_id,
         agent_vendor=str(caps.get("vendor") or ""), agent_model=str(caps.get("model") or ""),
         matched=(verdict["entitlement_id"] in declared) if verdict["entitlement_id"] else None,
+        candidates=snapshot(db, project.org_id, item.project_id, ladder, declared),
         created_at=utcnow()))
     db.commit()
 
