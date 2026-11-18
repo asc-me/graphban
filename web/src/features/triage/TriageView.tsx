@@ -7,7 +7,7 @@ import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { FETCH_FAILED, PlannerError, TriageQueueSkeleton } from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { tagFromPath } from "@/lib/routes";
-import { useTriageFeed } from "@/lib/queries";
+import { useMaintenanceLine, useTriageFeed } from "@/lib/queries";
 import type { DrainNote as DrainNoteData, TriageFeedRow } from "@/lib/types";
 
 import { TABS, actionsFor, answerTextAction, answeredMetaCopy, duplicateHintCopy, formatAge, inTab, rowTitle, type TriageAction, type Undo } from "./actions";
@@ -30,6 +30,8 @@ interface Processed {
   undo: Undo;
   command?: string;
   drain?: DrainNoteData;
+  /** The item an accepted bug became: the Processed line links to it (GRPH-1700). */
+  itemId?: string;
 }
 
 const KIND_TEXT: Record<string, string> = {
@@ -74,6 +76,8 @@ export function TriageView() {
   const projectId = active?.id ?? "";
   const qc = useQueryClient();
   const feedQ = useTriageFeed(projectId);
+  const lineQ = useMaintenanceLine(projectId || undefined);
+  const line = lineQ.isLoading || lineQ.isError ? undefined : (lineQ.data ?? null);
 
   const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("all");
   // `?item=KEY` (the bell's alert links, GRPH-1527) opens on that row.
@@ -83,6 +87,7 @@ export function TriageView() {
   const [processed, setProcessed] = useState<Processed[]>([]);
   const [confirming, setConfirming] = useState<TriageAction | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const busy = useRef(false);
   // A second bell click while Triage is already open changes only the query string.
   useEffect(() => {
@@ -111,7 +116,7 @@ export function TriageView() {
     && !(feedQ.data.rows).some((r) => r.id === linked || ((r.kind === "blocker" || r.kind === "answered") && r.blocks?.id === linked));
   // A linked key that is not in the feed selects nothing: never a different row (GRPH-1606).
   const sel = shown.find((r) => r.id === resolvedSel) ?? (linkMissing ? null : (shown[0] ?? null));
-  const actions = useMemo(() => (sel ? actionsFor(sel, projectId) : []), [sel, projectId]);
+  const actions = useMemo(() => (sel ? actionsFor(sel, projectId, line) : []), [sel, projectId, line]);
 
   const refresh = useCallback(
     () => qc.invalidateQueries({ queryKey: ["triage-feed", projectId] }),
@@ -127,8 +132,15 @@ export function TriageView() {
       const i = shown.indexOf(sel);
       const next = shown[i + 1] ?? shown[i - 1] ?? null;
       try {
-        const { result, undo, command, drain } = await action.run();
-        setProcessed((p) => [...p, { row: sel, result, undo, command, drain }]);
+        const { result, undo, command, drain, itemId } = await action.run();
+        if (action.stays) {
+          // Create-the-line: the request stays `new` and selected.
+          setNotice(result);
+          void qc.invalidateQueries({ queryKey: ["line", projectId] });
+          return;
+        }
+        setNotice(null);
+        setProcessed((p) => [...p, { row: sel, result, undo, command, drain, itemId }]);
         // An answered decision comes back as its own receipt row, so stay on it (GRPH-1655).
         setSelId(action.answers ? sel.id : (next?.id ?? null));
         void refresh();
@@ -139,7 +151,7 @@ export function TriageView() {
         busy.current = false;
       }
     },
-    [sel, shown, refresh],
+    [sel, shown, refresh, qc, projectId],
   );
 
   const trigger = useCallback(
@@ -235,6 +247,14 @@ export function TriageView() {
         {processed.slice(-5).reverse().map((p) => (
           <li key={p.row.id} className="text-small text-muted">
             <span className="font-mono text-faint-2">{p.row.id}</span> {p.result}
+            {p.itemId && (
+              <>
+                {" "}
+                <Link to={sourceHref("decision", p.itemId, tagFromPath(pathname)) ?? "#"} className="text-purple underline">
+                  Open {p.itemId}
+                </Link>
+              </>
+            )}
             {p.drain && p.drain.status !== "live" && (
               <DrainNote compact status={p.drain.status} prd={p.drain.prd} message={p.drain.message} command={p.drain.command ?? p.command} />
             )}
@@ -287,6 +307,11 @@ export function TriageView() {
         <div role="alert" className="border-b border-st-review/30 bg-st-review/[0.07] px-6 py-2 text-small text-st-review">
           Did not answer: {failedSources.join(", ")}. Those rows are missing from this queue —
           it is not clear.
+        </div>
+      )}
+      {notice && (
+        <div role="status" data-testid="triage-notice" className="border-b border-line px-6 py-2 text-small text-muted">
+          {notice}
         </div>
       )}
       {error && (

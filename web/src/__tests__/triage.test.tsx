@@ -30,6 +30,11 @@ const bug: TriageFeedRow = {
   by: "dana", votes: 3, source: "Public form", body: "It crashed.", duplicate: null,
   suggested_prd: { id: "PRD-46", score: 0.62 },
 };
+const feature: TriageFeedRow = {
+  id: "CORE-R9", kind: "feature", title: "Dark mode", age_seconds: 3600, paths: [],
+  by: "dana", votes: 1, source: "Public form", body: "", duplicate: null,
+  suggested_prd: { id: "PRD-46", score: 0.62 },
+};
 const dupBug: TriageFeedRow = {
   id: "CORE-R2", kind: "bug", title: "Sidebar collapses on resize", age_seconds: 1800, paths: [],
   by: "sam", votes: 5, source: "In-app widget", body: "",
@@ -69,6 +74,8 @@ const feed = (rows: TriageFeedRow[], failed: string[] = []): TriageFeed => ({
 
 const m = vi.hoisted(() => ({
   projectTriage: vi.fn(),
+  line: vi.fn(async (): Promise<{ id: string; title: string } | null> => ({ id: "line1", title: "Maintenance" })),
+  createLine: vi.fn(async () => ({ id: "line1", title: "Maintenance" })),
   acceptRequestTo: vi.fn(async () => ({ item: { id: "CORE-9" }, action_id: "act1" })),
   undoRequestAction: vi.fn(async () => ({})),
   mergeRequest: vi.fn(async () => ({ action_id: "act2" })),
@@ -106,6 +113,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   m.projectTriage.mockResolvedValue(feed([blocker, bug, dupBug, collisionBlocked]));
   m.requestComments.mockResolvedValue([]);
+  m.line.mockResolvedValue({ id: "line1", title: "Maintenance" });
 });
 
 describe("Triage inbox", () => {
@@ -154,10 +162,36 @@ describe("Triage inbox", () => {
     await waitFor(() => expect(m.blockerAction).toHaveBeenCalledWith("GRPH-905", "unblock"));
     await waitFor(() => expect(selected()).toHaveTextContent("Crash on empty project"));
     expect(screen.getAllByRole("option")).toHaveLength(3);
+    await waitFor(() => expect(m.line).toHaveBeenCalled());
     await user.keyboard("n"); // Accept to Next
-    await waitFor(() =>
-      expect(m.acceptRequestTo).toHaveBeenCalledWith("CORE-R1", "next", "PRD-46"));
+    await waitFor(() => expect(m.acceptRequestTo).toHaveBeenCalledWith("CORE-R1", "next"));
+    expect(await screen.findByText(/Accepted → Next as CORE-9 on Maintenance line/)).toBeInTheDocument();
+    expect(screen.getByText(/needs an acceptance clause and a touchpoint before a drain can claim it/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open CORE-9" })).toBeInTheDocument();
+  });
+
+  it("a feature request's accept still links its suggested PRD (GRPH-1700)", async () => {
+    m.projectTriage.mockResolvedValue(feed([feature]));
+    renderTriage();
+    await screen.findByRole("heading", { name: "Dark mode" });
+    const user = userEvent.setup();
+    await user.keyboard("n");
+    await waitFor(() => expect(m.acceptRequestTo).toHaveBeenCalledWith("CORE-R9", "next", "PRD-46"));
     expect(await screen.findByText(/Accepted → Next as CORE-9 · linked PRD-46/)).toBeInTheDocument();
+  });
+
+  it("with no line a bug offers Create the maintenance line instead of accept, and stays new (GRPH-1700)", async () => {
+    m.line.mockResolvedValue(null);
+    m.projectTriage.mockResolvedValue(feed([bug]));
+    renderTriage();
+    const create = await screen.findByRole("button", { name: /Create the maintenance line/ });
+    expect(screen.queryByRole("button", { name: /Accept to/ })).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(create);
+    await waitFor(() => expect(m.createLine).toHaveBeenCalledWith("prj_core"));
+    expect(m.acceptRequestTo).not.toHaveBeenCalled();
+    expect(await screen.findByTestId("triage-notice")).toHaveTextContent(/still new/);
+    expect(selected()).toHaveTextContent("Crash on empty project");
   });
 
   it("answers a decision's third option on its own letter", async () => {
