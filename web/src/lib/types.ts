@@ -1,6 +1,19 @@
 export type Status = "backlog" | "next" | "in_progress" | "review" | "done" | "blocked";
 export type Fidelity = "low" | "high";
 /** What kind of change an item is (GRPH-1358); `""` = not recorded, NOT "not a feature". */
+export type Severity = "" | "security";
+
+/** The project's maintenance line (GRPH-1681). */
+export interface MaintenanceLine {
+  id: string;
+  title: string;
+}
+
+/** POST /items body for a fix (GRPH-1683): scope is `line_id` or `prd_id` + `blocks`. */
+export interface ItemCreateBody extends Partial<ItemDetail> {
+  blocks?: string;
+}
+
 export type ItemKind = "feature" | "fix" | "chore" | "";
 /**
  * Where an item's work lands (GRPH-832). `repo` changes files in a worktree; `deploy` acts on
@@ -770,6 +783,10 @@ export interface Item {
   fidelity: Fidelity;
   /** Always sent by the server; optional only so fixtures predating it still type-check. */
   kind?: ItemKind;
+  /** The maintenance line a fix is filed on (GRPH-1681); null/absent for every other item. */
+  line_id?: string | null;
+  /** GRPH-1683: `""` = not recorded, `security` = a security fix. */
+  severity?: Severity;
   /** Where this item's work lands (GRPH-832). `deploy` is refused to every spawned agent. */
   reach: Reach;
   created_at: string;
