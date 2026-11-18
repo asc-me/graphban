@@ -46,3 +46,16 @@ def create_line(project_id: str, body: LineCreate | None = None,
     except errors.NotFound as e:
         raise HTTPException(404, str(e))
     return lines_svc.line_dict(line)
+
+
+class UnscopedOut(BaseModel):
+    ids: list[str]
+    count: int
+
+
+@router.get("/unscoped_fixes", response_model=UnscopedOut)
+def unscoped_fixes(project_id: str, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """GRPH-1686: fixes with no PRD and no line. Nothing moves them; setting line_id does."""
+    authz.require_readable(db, user.id, project_id, "project")
+    return lines_svc.unscoped_fixes(db, project_id)

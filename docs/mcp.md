@@ -115,7 +115,7 @@ Settings → API keys. `fleet.mint` gives a planner credential the `fleet` tier 
 operator can restore the pre-tiering manifest for a whole deployment with
 `MCP_DEFAULT_TOOL_TIERS=prd,codegraph,fleet,misc` — see [configuration.md](configuration.md).
 
-## The 79 tools
+## The 80 tools
 
 The manifest you receive is gated twice. **By scope** (AL-78): a key without `write` is not
 shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b): a key whose
@@ -146,7 +146,7 @@ that stops once the four dimensions are answered or deferred. The tool still wri
 The one-shot editor command (`POST /api/prds/{id}/ai` with `command=grill`) stays on the
 body-only prompt, which has no transcript and cannot know when to stop.
 
-**Every tool argues its role gate** (GRPH-516). 29 of the 79 tools are role-gated; the other
+**Every tool argues its role gate** (GRPH-516). 29 of the 80 tools are role-gated; the other
 50 are callable by every role. That was a *default* rather than a decision — `TOOLS` has had a
 completeness guard forcing each new tool to be classified as a quality gate or an authority
 one, and `TOOL_ROLES` had no equivalent, so forty tools arrived at "open to everyone" without
@@ -351,6 +351,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `decompose_prd` | `prd_id`, `create` | Propose (or create) one task per un-covered PRD section, each carrying the PRD's framing prose. Created tasks carry `kind: feature` (GRPH-1358). `create=true` is refused unless the PRD is `approved` (grill earns it) |
 | `create_prd` | `title`, `body`, `template`, `project_id` | **Author a PRD** (the handoff artifact) — `## ` sections drive decompose/coverage |
 | `create_line` | `title`, `project_id` | **Open the maintenance line** (GRPH-1681) — a project has at most one; planner only; a second call is refused naming the first. `get_context.maintenance_line` is `{id, title}` or null (not created — not "no bugs") |
+| `unscoped_fixes` | `project_id` | **Fixes with no PRD and no line** (GRPH-1686) — `{ids, count}`, count present and zero when none. Not counted in `maintenance_line`; setting `line_id` on one moves it (and must pass the filing rules). REST: `GET /api/projects/{id}/line/unscoped_fixes` (read-only) |
 | `get_prd` | `prd_id` | The full PRD including its markdown `body` and a `body_hash` (GRPH-519) |
 | `update_prd` | `prd_id`, `title`, `status`, `section`, `base_hash`, `body` | Patch a PRD. **`section`** replaces one `## ` heading's contents and leaves every other byte alone; a whole-body replace needs `base_hash` from `get_prd` (GRPH-357). **`approved` is not settable** — it is reached by finishing the grill; setting it returns `conflict` naming what is still outstanding (AL-300) |
 | `answer_grill` | `prd_id`, `answer` | Relay the author's answer to a grill question — recorded as **agent-relayed**, visible to whoever reviews later. Returns `outstanding` + `complete` (AL-299) |

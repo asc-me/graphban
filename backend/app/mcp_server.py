@@ -491,6 +491,11 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "unscoped_fixes",
+        "description": "Fixes with no PRD and no line: {ids, count}. Set line_id to move one.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "get_prd",
         "description": (
             "The full PRD including its markdown `body`. Read before update_prd, which "
@@ -1568,7 +1573,7 @@ _PROJECT_SCOPED = {
     "get_backlog", "suggest_next", "generate_digest", "link_items", "unlink_items", "claim_next", "next_cluster",
     "describe_code", "get_code_map", "code_neighbors", "search_code", "graph_query",
     "link_code", "unlink_code", "record_scan", "scan_status", "scans_due", "create_prd",
-    "create_line", "put_document", "get_document", "search_docs",
+    "create_line", "unscoped_fixes", "put_document", "get_document", "search_docs",
     "open_design", "put_preamble", "put_set_constraints",
     "confirm_tier", "get_design_set",
     "compile_prompts", "put_canvas", "file_finding", "resolve_finding",
@@ -1611,7 +1616,7 @@ _READ_ONLY = {
     "get_backlog", "get_item_details", "suggest_next", "generate_digest", "related_work",
     "prd_coverage", "grill_prd", "get_code_map", "code_neighbors", "search_code",
     "graph_query", "scan_status", "scans_due",
-    "prd_acceptance", "learning_loop", "fleet_status",
+    "prd_acceptance", "learning_loop", "fleet_status", "unscoped_fixes",
     # PRD-62 S2: a read of the org's registry; `set_entitlement` is the write.
     "list_entitlements",
     # PRD-P63 S2a: there is no MCP write for it at all (D10).
@@ -1948,6 +1953,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     },
     "create_prd": _PRD_SCHEMA_REF,
     "create_line": {"type": "object", "properties": {"id": _STR, "title": _STR}},
+    "unscoped_fixes": {"type": "object", "properties": {"ids": {"type": "array"}, "count": {"type": "integer"}}},
     "update_prd": _PRD_SCHEMA_REF,
     "answer_grill": {
         "type": "object",
@@ -4024,6 +4030,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "create_line":
         return lines_svc.line_dict(
             lines_svc.create_line(db, pid, args.get("title"), created_by=_key_user_id(db, key)))
+    if name == "unscoped_fixes":
+        return lines_svc.unscoped_fixes(db, pid)
     if name == "get_prd":
         # The read that was missing (GRPH-519). `answer_grill` reports `body_absorbed: false`,
         # and the only tool that could fix it replaces the body WHOLE — so without this an
