@@ -77,7 +77,8 @@ export function TriageView() {
   const qc = useQueryClient();
   const feedQ = useTriageFeed(projectId);
   const lineQ = useMaintenanceLine(projectId || undefined);
-  const line = lineQ.isLoading || lineQ.isError ? undefined : (lineQ.data ?? null);
+  // A failed read is "unread", not "none": accept stays offered and the server decides.
+  const line = lineQ.isError ? "unread" as const : lineQ.isLoading ? undefined : (lineQ.data ?? null);
 
   const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("all");
   // `?item=KEY` (the bell's alert links, GRPH-1527) opens on that row.
@@ -116,6 +117,9 @@ export function TriageView() {
     && !(feedQ.data.rows).some((r) => r.id === linked || ((r.kind === "blocker" || r.kind === "answered") && r.blocks?.id === linked));
   // A linked key that is not in the feed selects nothing: never a different row (GRPH-1606).
   const sel = shown.find((r) => r.id === resolvedSel) ?? (linkMissing ? null : (shown[0] ?? null));
+  // The create-the-line notice belongs to the row it was raised on.
+  const selRowId = sel?.id ?? null;
+  useEffect(() => { setNotice(null); }, [selRowId]);
   const actions = useMemo(() => (sel ? actionsFor(sel, projectId, line) : []), [sel, projectId, line]);
 
   const refresh = useCallback(

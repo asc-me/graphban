@@ -320,7 +320,8 @@ export function TriageDetail({
               </div>
             </>
           )}
-          {row.suggested_prd && (
+          {/* A bug lands on the maintenance line, never on a PRD (GRPH-1700): no PRD is offered. */}
+          {row.suggested_prd && row.kind !== "bug" && (
             <p className="mt-4 font-mono text-meta text-muted">
               Fits <span className="text-fg-2">{row.suggested_prd.id}</span>{" "}
               {Math.round(row.suggested_prd.score * 100)}% — will link on accept

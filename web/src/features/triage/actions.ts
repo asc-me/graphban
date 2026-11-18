@@ -101,11 +101,12 @@ export function answerTextAction(row: TriageFeedRow, text: string): TriageAction
 }
 
 /**
- * `line` is the project's maintenance line: `undefined` while it loads, `null` when there is none.
- * A bug request lands on it and is never offered a PRD (GRPH-1700).
+ * `line` is the project's maintenance line: `undefined` while it loads, `null` when there is none,
+ * `"unread"` when the read failed. A bug request lands on it and is never offered a PRD (GRPH-1700).
+ * An unread line still offers accept: the server lands the bug on the line or refuses with its reason.
  */
 export function actionsFor(
-  row: TriageFeedRow, projectId: string, line?: MaintenanceLine | null,
+  row: TriageFeedRow, projectId: string, line?: MaintenanceLine | null | "unread",
 ): TriageAction[] {
   // Already answered: nothing to act on, the row only says who answered and what happens next.
   if (row.kind === "answered") return [];
@@ -207,7 +208,7 @@ export function actionsFor(
       if (isBug) {
         const r = await api.acceptRequestTo(row.id, status);
         return {
-          result: `Accepted → ${status === "next" ? "Next" : "Backlog"} as ${r.item.id} on ${line?.title ?? "the maintenance"} line. ${UNREADY_COPY}`,
+          result: `Accepted → ${status === "next" ? "Next" : "Backlog"} as ${r.item.id} on ${line && line !== "unread" ? line.title : "the maintenance"} line. ${UNREADY_COPY}`,
           undo: undoBy(r.action_id),
           itemId: r.item.id,
         };
@@ -231,7 +232,7 @@ export function actionsFor(
     },
   };
   // A bug needs the line: with none, accept is replaced; while it loads, accept waits.
-  const acceptActions: TriageAction[] = isBug && line !== undefined && line === null
+  const acceptActions: TriageAction[] = isBug && line === null
     ? [createLine]
     : isBug && line === undefined
       ? []

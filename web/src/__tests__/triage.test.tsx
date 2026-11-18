@@ -170,6 +170,16 @@ describe("Triage inbox", () => {
     expect(screen.getByRole("link", { name: "Open CORE-9" })).toBeInTheDocument();
   });
 
+  it("a bug's pane offers no PRD; a feature's still names its fit (GRPH-1700)", async () => {
+    m.projectTriage.mockResolvedValue(feed([bug, feature]));
+    renderTriage();
+    await screen.findByRole("heading", { name: "Crash on empty project" });
+    expect(screen.queryByText(/will link on accept/)).not.toBeInTheDocument();
+    await userEvent.setup().keyboard("j");
+    await screen.findByRole("heading", { name: "Dark mode" });
+    expect(screen.getByText(/will link on accept/)).toBeInTheDocument();
+  });
+
   it("a feature request's accept still links its suggested PRD (GRPH-1700)", async () => {
     m.projectTriage.mockResolvedValue(feed([feature]));
     renderTriage();
@@ -192,6 +202,30 @@ describe("Triage inbox", () => {
     expect(m.acceptRequestTo).not.toHaveBeenCalled();
     expect(await screen.findByTestId("triage-notice")).toHaveTextContent(/still new/);
     expect(selected()).toHaveTextContent("Crash on empty project");
+  });
+
+  it("the create-the-line notice clears when the selection moves (GRPH-1700)", async () => {
+    m.line.mockResolvedValue(null);
+    m.projectTriage.mockResolvedValue(feed([bug, dupBug]));
+    renderTriage();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /Create the maintenance line/ }));
+    await screen.findByTestId("triage-notice");
+    await user.keyboard("j");
+    await waitFor(() => expect(selected()).toHaveTextContent("Sidebar collapses on resize"));
+    expect(screen.queryByTestId("triage-notice")).not.toBeInTheDocument();
+  });
+
+  it("a failed line read still offers accept on a bug; the server decides (GRPH-1700)", async () => {
+    m.line.mockRejectedValue(new Error("boom"));
+    m.projectTriage.mockResolvedValue(feed([bug]));
+    renderTriage();
+    await screen.findByRole("heading", { name: "Crash on empty project" });
+    const accept = await screen.findByRole("button", { name: /Accept to Next/ });
+    expect(screen.queryByRole("button", { name: /Create the maintenance line/ })).not.toBeInTheDocument();
+    await userEvent.setup().click(accept);
+    await waitFor(() => expect(m.acceptRequestTo).toHaveBeenCalledWith("CORE-R1", "next"));
+    expect(await screen.findByText(/as CORE-9 on the maintenance line/)).toBeInTheDocument();
   });
 
   it("answers a decision's third option on its own letter", async () => {
