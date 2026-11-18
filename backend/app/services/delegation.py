@@ -324,6 +324,16 @@ _FOUND_BUG_BRIEF = {
 }
 
 
+FIX_EXITS_LINE = (
+    "Filing a fix: a defect has three exits — fix it on the item you hold (only when the "
+    "found-bug mode is fix_in_build); file a blocking fix on the PRD (create_item kind=fix, "
+    "prd_id, blocks=<an item on that PRD>; filing it releases that item to blocked if you "
+    "hold it); or file a fix on the line (create_item kind=fix, line_id from "
+    "get_context.maintenance_line.id). Scope is required: a fix with neither prd_id nor "
+    "line_id is refused."
+)
+
+
 def found_bug_line(mode: str) -> str:
     """GRPH-1682: one line naming the project's found-bug mode."""
     return f"Found bug: {mode} — {_FOUND_BUG_BRIEF[mode]}"
@@ -380,6 +390,7 @@ def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[
         lines.append(test_scope_line(test_scope, test_engines))
     if found_bug:
         lines.append(found_bug_line(found_bug))
+    lines.append(FIX_EXITS_LINE)
     if len(attempts) > 1:
         lines.append(f"Attempts so far: {len(attempts)}")
     return "\n".join(lines)

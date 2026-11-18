@@ -89,6 +89,12 @@ kind, add it here so it is never asked twice.
   twice, file the item and say so.
 - **Follow-ups are filed, not proposed.** An out-of-scope defect you found while working
   is a new item with what you saw, not a question to the user.
+- **A defect has three exits, and a fix needs a scope.** Fix it on the item you hold (only
+  when `build.found_bug` is `fix_in_build`); file a blocking fix on the PRD (`create_item`
+  `kind=fix`, `prd_id`, `blocks=<an item on that PRD>`) — when `blocks` is the item you hold,
+  the same call releases it to `blocked` naming the fix; or file a fix on the line
+  (`create_item` `kind=fix`, `line_id` from `get_context.maintenance_line.id`, never a
+  hardcoded key). A fix with neither `prd_id` nor `line_id` is refused.
 
 Still a person's call, every time: a new policy (fork PRs, hosted vs self-hosted runners,
 release paths), a change to product behaviour, a security-scan finding, a migration's data
