@@ -72,6 +72,9 @@ def create_item(
             question=body.question,
             options=body.options,
             kind=body.kind,
+            line_id=body.line_id,
+            severity=body.severity,
+            blocks=body.blocks,
         )
         return _with_warnings(db, created, body.touchpoints)
     except items_svc.MissingAttestation as e:

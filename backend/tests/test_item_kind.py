@@ -66,9 +66,9 @@ def test_rest_refuses_bad_kind_and_accepts_good(client, auth):
                       headers=auth)
     assert bad.status_code == 422
     assert "feature, fix, chore" in bad.json()["detail"]
-    ok = client.post("/api/items", json={"title": "x", "project_id": "core", "kind": "fix"},
+    ok = client.post("/api/items", json={"title": "x", "project_id": "core", "kind": "feature"},
                      headers=auth)
-    assert ok.status_code == 201 and ok.json()["kind"] == "fix"
+    assert ok.status_code == 201 and ok.json()["kind"] == "feature"
     r = client.patch(f"/api/items/{ok.json()['id']}", json={"kind": "nope"}, headers=auth)
     assert r.status_code == 422
     r = client.patch(f"/api/items/{ok.json()['id']}", json={"kind": "chore"}, headers=auth)
@@ -77,7 +77,11 @@ def test_rest_refuses_bad_kind_and_accepts_good(client, auth):
 
 def test_bug_tag_without_kind_defaults_to_fix(client, auth):
     key = _key(client, auth)
-    out = _mcp(client, key, "create_item", {"title": "It broke", "tags": ["Bug"]})
+    # The default makes it a fix, so an agent must scope and shape it (GRPH-1683).
+    line = _mcp(client, key, "create_line", {})["structuredContent"]["id"]
+    out = _mcp(client, key, "create_item",
+               {"title": "It broke", "tags": ["Bug"], "line_id": line,
+                "description": "x\n\n## Acceptance\n- fixed\n", "touchpoints": ["a.py"]})
     assert out["structuredContent"]["kind"] == "fix"
     # An explicit kind wins over the tag default.
     out = _mcp(client, key, "create_item",

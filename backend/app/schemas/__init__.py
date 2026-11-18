@@ -588,6 +588,10 @@ class ItemCreate(BaseModel):
     #: `feature` / `fix` / `chore` (GRPH-1358). Unset takes the service default — `fix` for a
     #: `bug`-tagged item, otherwise "" (not recorded).
     kind: str | None = None
+    #: GRPH-1683. A fix's scope, severity and the PRD item it blocks.
+    line_id: str | None = None
+    severity: str = ""
+    blocks: str | None = None
 
 
 class WaitAnswerIn(BaseModel):
@@ -617,6 +621,8 @@ class ItemUpdate(BaseModel):
     # web PATCH silently could not, so the loop this item closes had no confirm button.
     fidelity: str | None = None
     kind: str | None = None  # GRPH-1358; validated against items.KINDS in the service
+    line_id: str | None = None  # GRPH-1683
+    severity: str | None = None
     #: Where this item's work lands (GRPH-832). Accepted HERE and on no agent-facing route:
     #: this patch takes a bearer JWT, so declaring an item `deploy` — or clearing it back to
     #: `repo` — is a signed-in person's act and cannot be done by a credential a child holds.
