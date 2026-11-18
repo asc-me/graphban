@@ -45,6 +45,7 @@ export const keys = {
   prdRequests: (id: string) => ["prd-requests", id] as const,
   prdSuggestions: (id: string) => ["prd-request-suggestions", id] as const,
   closeReport: (id: string) => ["close-report", id] as const,
+  prdCompleteness: (id: string) => ["prd-completeness", id] as const,
   prdEvidence: (id: string) => ["prd-evidence", id] as const,
   auditCoverage: (id: string) => ["audit-coverage", id] as const,
   gitops: (projectId: string) => ["gitops", projectId] as const,
@@ -409,6 +410,10 @@ export function usePrds(projectId?: string) {
 
 export function useCloseReport(id: string) {
   return useQuery({ queryKey: keys.closeReport(id), queryFn: () => api.closeReport(id), enabled: !!id });
+}
+
+export function usePrdCompleteness(id: string) {
+  return useQuery({ queryKey: keys.prdCompleteness(id), queryFn: () => api.prdCompleteness(id), enabled: !!id });
 }
 
 export function usePrdEvidence(id: string) {

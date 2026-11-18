@@ -27,6 +27,7 @@ import type {
   AuditCoverage,
   ChatResponse,
   CloseReport,
+  PrdCompleteness,
   EvidenceRollup,
   OrgRequest,
   PrototypeEmitOut,
@@ -1138,6 +1139,7 @@ export const api = {
   // why it is the spine of the reviewer view: a section a rebaseline removed does not
   // exist in the governing one, so no other surface can show it was cut.
   closeReport: (id: string) => request<CloseReport>(`/prds/${id}/close-report`),
+  prdCompleteness: (id: string) => request<PrdCompleteness>(`/prds/${id}/completeness`),
   prdEvidence: (id: string) => request<EvidenceRollup>(`/prds/${id}/evidence`),
   auditCoverage: (id: string) => request<AuditCoverage>(`/prds/${id}/audit-coverage`),
 

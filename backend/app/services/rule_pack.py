@@ -167,6 +167,13 @@ register_primitive(Primitive(
     Enforcer("graphban_source", "app/services/delegation.py"),
     {"frontend": Param("list"), "migration": Param("list"),
      "mcp_tool": Param("list"), "docs": Param("list")}))
+# GRPH-1682. `enforced`: `items.create_item` refuses an overlapping fix under `fix_in_build` and
+# `items.update_item` refuses the move to review under `file_ticket`. `mode` is one of
+# `rule_toggles.FOUND_BUG_MODES`, enforced when a person sets the param.
+register_primitive(Primitive(
+    "found_bug", "enforced",
+    Enforcer("graphban_source", "app/services/items.py"),
+    {"mode": Param("str")}))
 register_primitive(Primitive(
     "evidence_attached", "checked",
     Enforcer("graphban_source", "app/services/items.py"),
