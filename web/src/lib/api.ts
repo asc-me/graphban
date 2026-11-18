@@ -90,6 +90,7 @@ import type {
   PathCounts,
   RuleToggle,
   SerialisationPreview,
+  RuleEffect,
   RuleToggles,
   RuleToggleBatchOut,
   RuleToggleBatchWrite,
@@ -1302,6 +1303,9 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
+  /** Measured effect of one library rule (caught, escapes before/after, cost). Reads only. */
+  ruleEffect: (projectId: string, ruleId: string) =>
+    request<RuleEffect>(`/rules/effect${projectQuery(projectId)}&rule_id=${encodeURIComponent(ruleId)}`),
   /** The pack's profiles and this project's applied level (GRPH-1609). Reads only. */
   ruleProfiles: (projectId: string) => request<RuleProfiles>(`/rules/profiles${projectQuery(projectId)}`),
   /** How the project differs from one profile; turning a pinned-on rule off is `weakening`. */

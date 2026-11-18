@@ -341,7 +341,7 @@ export function StageEditor({
   );
 }
 
-function gitopsReadOnly(view: NonNullable<ReturnType<typeof useGitops>["data"]>): string {
+export function gitopsReadOnly(view: NonNullable<ReturnType<typeof useGitops>["data"]>): string {
   const { state } = view.control;
   if (state === "linked_set" || state === "linked_unset" || state === "linked_unreachable") {
     return "These gitops settings come from your org; change them on the org console.";
@@ -349,7 +349,7 @@ function gitopsReadOnly(view: NonNullable<ReturnType<typeof useGitops>["data"]>)
   return readOnlyCopy(view);
 }
 
-function GitopsField({
+export function GitopsField({
   rule,
   field,
   editable,

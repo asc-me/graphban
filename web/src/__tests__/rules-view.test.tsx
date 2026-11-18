@@ -230,16 +230,18 @@ describe("RulesView", () => {
     renderAt();
     await user.click(await screen.findByTestId("rules-stage-merge"));
     const ins = await screen.findByTestId("rules-inspector");
-    const rows = within(ins).getAllByTestId(/^rules-row-/).map((r) => r.getAttribute("data-testid"));
+    const rows = within(within(ins).getByTestId("rules-dock-list")).getAllByTestId(/^rules-dock-row-/).map((r) => r.getAttribute("data-testid"));
     expect(rows).toEqual([
-      "rules-row-gitops.pr_title_pattern",
-      "rules-row-gitops.base_branch",
-      "rules-row-forge.branch_protection",
-      "rules-row-merge.ci_green",
+      // Grouped (built-in, then project settings), weakest first within each group.
+      "rules-dock-row-forge.branch_protection",
+      "rules-dock-row-merge.ci_green",
+      "rules-dock-row-gitops.pr_title_pattern",
+      "rules-dock-row-gitops.base_branch",
     ]);
     const pr = within(ins).getByTestId("rules-row-gitops.pr_title_pattern");
     expect(pr).toHaveTextContent("UNMEASURED");
     expect(pr).toHaveTextContent("— no value");
+    await user.click(within(ins).getByTestId("rules-dock-row-gitops.base_branch"));
     const base = within(ins).getByTestId("rules-row-gitops.base_branch");
     expect(base).toHaveTextContent("Told to agents in every get_context. Nothing refuses a violation.");
     expect(base).toHaveTextContent("PROJECT");
@@ -247,8 +249,10 @@ describe("RulesView", () => {
     expect(within(base).getByTestId("rules-enforcer")).toHaveTextContent("CONTEXT");
     // No URL from the server is no link.
     expect(within(base).getByTestId("rules-enforcer").tagName).toBe("SPAN");
+    await user.click(within(ins).getByTestId("rules-dock-row-forge.branch_protection"));
     const forge = within(ins).getByTestId("rules-row-forge.branch_protection");
     expect(forge).toHaveTextContent("NOT VERIFIED");
+    await user.click(within(ins).getByTestId("rules-dock-row-merge.ci_green"));
     const ci = within(ins).getByTestId("rules-row-merge.ci_green");
     expect(within(ci).getByTestId("rules-no-result")).toHaveTextContent("NO RESULT RECORDED");
     expect(ci).toHaveTextContent("That is not a pass.");
@@ -268,7 +272,9 @@ describe("RulesView", () => {
     vi.mocked(api.rulesFlow).mockResolvedValue(flow);
     renderAt();
     await user.click(await screen.findByTestId("rules-stage-merge"));
-    const row = within(await screen.findByTestId("rules-inspector")).getByTestId("rules-row-merge.ci_green");
+    const dock = await screen.findByTestId("rules-inspector");
+    await user.click(within(dock).getByTestId("rules-dock-row-merge.ci_green"));
+    const row = within(dock).getByTestId("rules-row-merge.ci_green");
     expect(within(row).getByTestId("rules-result")).toHaveTextContent(`${copy} 2h ago`);
     expect(within(row).queryByTestId("rules-no-result")).not.toBeInTheDocument();
   });
@@ -277,7 +283,9 @@ describe("RulesView", () => {
     const user = userEvent.setup();
     renderAt();
     await user.click(await screen.findByTestId("rules-stage-review"));
-    const row = within(await screen.findByTestId("rules-inspector")).getByTestId("rules-row-review.not_own_work");
+    const dock = await screen.findByTestId("rules-inspector");
+    await user.click(within(dock).getByTestId("rules-dock-row-review.not_own_work"));
+    const row = within(dock).getByTestId("rules-row-review.not_own_work");
     const link = within(row).getByRole("link");
     expect(link).toHaveTextContent("SOURCE");
     expect(link).toHaveTextContent("graphban · app/services/fleet.py @ v1.0.0");
@@ -303,7 +311,8 @@ describe("RulesView", () => {
     expect(pill("release")).toHaveTextContent("NOT USED");
     await user.click(screen.getByTestId("rules-stage-release"));
     const ins = await screen.findByTestId("rules-inspector");
-    expect(ins).toHaveTextContent("Every rule on this stage is not used by this project's model: prs_to_base.");
+    expect(within(ins).getByTestId("rules-stage-not-used")).toHaveTextContent("Every rule on this stage is not used by this project's model: prs_to_base.");
+    await user.click(within(ins).getByTestId("rules-dock-row-release.version_from"));
     const row = within(ins).getByTestId("rules-row-release.version_from");
     expect(row).toHaveAttribute("data-level", "not_used");
     expect(within(row).getByTestId("rules-row-not-used")).toBeInTheDocument();
@@ -314,7 +323,6 @@ describe("RulesView", () => {
     renderAt();
     await user.click(await screen.findByTestId("rules-pack"));
     const ins = await screen.findByTestId("rules-inspector");
-    expect(ins).toHaveTextContent("2 skills shipped with gban 0.8.2");
     expect(within(ins).getByTestId("rules-pack-skills")).toHaveTextContent("skills/graphban-review/SKILL.md");
     expect(within(ins).getByRole("link", { name: "skills/graphban-review/SKILL.md" })).toHaveAttribute(
       "href",
@@ -377,35 +385,38 @@ describe("RulesView", () => {
     expect(await screen.findByRole("region", { name: "Merge stage inspector" })).toBeInTheDocument();
   });
 
-  it("?stage=build opens the full-width view with the stage strip; close returns to the map (GRPH-1659)", async () => {
+  it("?stage=build opens the dock under the map; close returns to the map (GRPH-1718)", async () => {
     const user = userEvent.setup();
     renderAt("/rules?stage=build");
     const ins = await screen.findByTestId("rules-inspector");
-    const strip = within(ins).getByTestId("rules-stage-strip");
-    expect(within(strip).getByTestId("rules-strip-s:build")).toHaveAttribute("aria-current", "true");
-    expect(within(strip).getByTestId("rules-strip-s:merge")).not.toHaveAttribute("aria-current");
-    expect(ins).toHaveClass("inset-0");
-    await user.click(within(ins).getByRole("button", { name: "Close inspector" }));
+    // The map stays as a strip above the dock, with the stage highlighted; the old strip is gone.
+    expect(screen.getByTestId("rules-listbox")).toBeInTheDocument();
+    expect(screen.getByTestId("rules-stage-build")).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByTestId("rules-stage-strip")).not.toBeInTheDocument();
+    expect(ins).not.toHaveClass("inset-0");
+    await user.click(within(ins).getByRole("button", { name: "Close editor" }));
     await waitFor(() => expect(screen.queryByTestId("rules-inspector")).not.toBeInTheDocument());
     expect(screen.getByTestId("rules-listbox")).toBeInTheDocument();
   });
 
-  it("a strip click moves to another stage; clicking the selected stage closes the view", async () => {
+  it("clicking another stage on the map moves the dock; clicking the selected stage closes it", async () => {
     const user = userEvent.setup();
     renderAt("/rules?stage=build");
-    const ins = await screen.findByTestId("rules-inspector");
-    await user.click(within(ins).getByTestId("rules-strip-s:merge"));
+    await screen.findByTestId("rules-inspector");
+    await user.click(screen.getByTestId("rules-stage-merge"));
     expect(await screen.findByRole("region", { name: "Merge stage inspector" })).toBeInTheDocument();
-    await user.click(screen.getByTestId("rules-strip-s:merge"));
+    await user.click(screen.getByTestId("rules-stage-merge"));
     await waitFor(() => expect(screen.queryByTestId("rules-inspector")).not.toBeInTheDocument());
   });
 
-  it("the read view renders values as text and has no inputs", async () => {
+  it("a rule's detail renders values as text next to its editor", async () => {
+    const user = userEvent.setup();
     renderAt("/rules?stage=merge");
     const ins = await screen.findByTestId("rules-inspector");
+    await user.click(within(ins).getByTestId("rules-dock-row-gitops.base_branch"));
     const row = within(ins).getByTestId("rules-row-gitops.base_branch");
     expect(within(row).getByTestId("rules-value")).toHaveTextContent("main");
-    expect(ins.querySelectorAll("input, textarea, select")).toHaveLength(0);
+    expect(row.querySelectorAll("input, textarea, select")).toHaveLength(0);
   });
 
   it("a fresh project says the contract is unmeasured, and the banner opens Merge (6b)", async () => {
@@ -446,14 +457,15 @@ describe("RulesView", () => {
       Object.defineProperty(window, "innerWidth", { configurable: true, value: wide });
     });
 
-    it("lists the stages vertically with the same pills, inspector as a sheet", async () => {
+    it("lists the stages vertically with the same pills, dock stacked under it", async () => {
       const user = userEvent.setup();
       renderAt();
       const list = await screen.findByTestId("rules-narrow");
       expect(within(list).getAllByRole("listitem")).toHaveLength(7);
       expect(within(screen.getByTestId("rules-stage-review")).getByTestId("rules-stage-pill")).toHaveTextContent("ADVISORY");
       await user.click(screen.getByTestId("rules-stage-review"));
-      expect(await screen.findByTestId("rules-inspector")).toHaveClass("inset-0");
+      // Narrow: the dock sits under the list, in flow and stacked, not as an overlay.
+      expect(await screen.findByTestId("rules-inspector")).not.toHaveClass("inset-0");
     });
   });
 });

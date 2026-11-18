@@ -687,6 +687,16 @@ export function useRuleToggles(projectId: string) {
   });
 }
 
+/** Measured effect of one rule; an error or a missing endpoint reads as unavailable, never zero. */
+export function useRuleEffect(projectId: string, ruleId: string | null) {
+  return useQuery({
+    queryKey: ["rule-effect", projectId, ruleId],
+    queryFn: () => api.ruleEffect(projectId, ruleId as string),
+    enabled: !!projectId && !!ruleId,
+    retry: false,
+  });
+}
+
 /** The last `set_rule_toggle` event on one rule in this project: who changed it, and when. */
 export function useRuleToggleLastChange(projectId: string, ruleId: string) {
   const q: EventsQuery = { projectId, action: "set_rule_toggle", targetType: "rule", targetId: ruleId, limit: 1 };
@@ -730,6 +740,7 @@ function invalidateRuleToggles(qc: ReturnType<typeof useQueryClient>) {
   // The map draws the toggle (used / NOT USED) from the flow; the row's "changed by" from events.
   qc.invalidateQueries({ queryKey: ["rules-flow"] });
   qc.invalidateQueries({ queryKey: ["rule-toggles"] });
+  qc.invalidateQueries({ queryKey: ["rule-effect"] });
   qc.invalidateQueries({ queryKey: ["events"] });
   // A hand change can drift the project from its applied level (GRPH-1600).
   qc.invalidateQueries({ queryKey: ["rule-profile-drift"] });

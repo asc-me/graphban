@@ -3472,6 +3472,28 @@ export interface EffectivePredicate {
   when?: string;
 }
 
+/** A measured value from `GET /rules/effect`: never a bare 0 when `status` is not `measured`. */
+export interface RuleMeasured {
+  status: "measured" | "insufficient" | "unavailable";
+  value: number | null;
+  n: number | null;
+  min_n: number;
+  reason: string | null;
+}
+
+export interface RuleEffectRule {
+  rule_id: string;
+  caught: RuleMeasured & { items?: string[] };
+  cost: { overridden: RuleMeasured; held_seconds: RuleMeasured };
+  escape_rate: { before: RuleMeasured; after: RuleMeasured };
+}
+
+/** `GET /rules/effect` for one project (GRPH-1265). */
+export interface RuleEffect {
+  scope: string;
+  rules: RuleEffectRule[];
+}
+
 export interface RuleToggles {
   /** False until a rule pack is loaded: an empty list then means "no library". */
   library_loaded: boolean;
