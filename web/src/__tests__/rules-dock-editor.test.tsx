@@ -339,5 +339,66 @@ describe("docked editor", () => {
     expect(form).toHaveTextContent("review.not_own_work summary");
     expect(screen.getByTestId("rules-dock-chain")).toBeInTheDocument();
     expect(screen.getByTestId("rules-dock-effect")).toBeInTheDocument();
+    // A built-in rule has no change history, and says why rather than showing nothing.
+    expect(screen.getByTestId("rules-dock-history-none")).toHaveTextContent("No history: a built-in rule has no setting");
+  });
+
+  it("stage switch with unsaved changes asks first", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm");
+    view("/rules?stage=build");
+    const ins = await screen.findByTestId("rules-inspector");
+    await user.click(await within(ins).findByRole("button", { name: "Add path" }));
+    await user.type(screen.getByLabelText("paths 2"), "b.lock");
+    expect(screen.getByTestId("rules-dock-diff")).toBeInTheDocument();
+    // Another stage on the map strip: the draft holds the switch behind an in-page confirm.
+    await user.click(screen.getByTestId("rules-stage-merge"));
+    expect(screen.getByTestId("rules-stage-leave")).toHaveTextContent("unsaved changes");
+    expect(screen.getByRole("region", { name: "Build stage inspector" })).toBeInTheDocument();
+    await user.click(screen.getByTestId("rules-stage-leave-stay"));
+    expect(screen.queryByTestId("rules-stage-leave")).toBeNull();
+    expect(screen.getByLabelText("paths 2")).toHaveValue("b.lock"); // the draft survives "Keep editing"
+    // Closing the dock asks too.
+    await user.click(screen.getByTestId("rules-dock-close"));
+    expect(screen.getByTestId("rules-stage-leave")).toHaveTextContent("Close the editor");
+    await user.click(screen.getByTestId("rules-stage-leave-stay"));
+    await user.click(screen.getByTestId("rules-stage-merge"));
+    await user.click(screen.getByTestId("rules-stage-leave-confirm"));
+    const next = await screen.findByRole("region", { name: "Merge stage inspector" });
+    expect(within(next).getByTestId("rules-dock-row-merge.done_predicates")).toBeInTheDocument();
+    // Clean now: the next switch goes straight through.
+    await user.click(screen.getByTestId("rules-stage-build"));
+    expect(await screen.findByRole("region", { name: "Build stage inspector" })).toBeInTheDocument();
+    expect(screen.queryByTestId("rules-stage-leave")).toBeNull();
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("history shows who, when, reason and before → after", async () => {
+    vi.mocked(api.events).mockResolvedValue({
+      results: [
+        {
+          id: 7, ts: null, actor_type: "user", actor_id: "u1", actor_label: "Ada", surface: "rest",
+          action: "set_rule_toggle", target_type: "rule", target_id: "review.sabotage_required", project_id: "core",
+          meta: {
+            reason: "raise the bar", effective_before: { on: true, params: { min_effort: 3 } },
+            effective_after: { on: false, params: { min_effort: 5 } },
+          },
+        },
+      ],
+      total: 1,
+    } as never);
+    dock(stageOf("review", "Review", [sabotage]));
+    const row = await screen.findByTestId("rules-dock-history-7");
+    expect(row).toHaveTextContent("Ada");
+    expect(row).toHaveTextContent("“raise the bar”");
+    expect(row).toHaveTextContent("on/off: ON → OFF");
+    expect(row).toHaveTextContent("min_effort: 3 → 5");
+  });
+
+  it("each parameter row shows its name and help", async () => {
+    dock(stageOf("build", "Build", [generated]));
+    const row = await screen.findByTestId("rules-dock-param-paths");
+    expect(row).toHaveTextContent("paths");
+    expect(within(row).getByTestId("rules-dock-help-paths")).toHaveTextContent("Generated files a builder may change");
   });
 });

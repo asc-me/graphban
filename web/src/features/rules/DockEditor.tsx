@@ -51,6 +51,33 @@ function stateWord(r: RuleFlowRule): string {
 
 type Draft = { on?: boolean; params?: Params; resetOn?: boolean; resetParams?: boolean; gitops?: string };
 
+/**
+ * One line of help per parameter. The primitive contract (`rule_pack.PRIMITIVES`) carries only a
+ * param's name and type, so the words live here; a rule-specific entry (`<rule>:<param>`) wins
+ * over the param name. A param with neither says so rather than showing nothing.
+ */
+const PARAM_HELP: Record<string, string> = {
+  min_effort: "Items at or above this effort need a sabotage receipt before sign-off.",
+  min_tests_failed: "How many tests the sabotage must fail for the receipt to count.",
+  property: "What the reviewer must differ from the builder on.",
+  path: "The file the evidence must name.",
+  engine: "The test engine the evidence must come from.",
+  mode: "Which behaviour this rule applies; each option says what it does.",
+  engines: "Database engines the agent must run, when the mode is agent_full.",
+  paths: "Path globs, one per entry.",
+  predicates: "Attestations an item needs before it can be done. suite_green is the floor and cannot be removed.",
+  frontend: "Globs that make a change a frontend change.",
+  migration: "Globs that make a change a migration.",
+  mcp_tool: "Globs that make a change an MCP tool change.",
+  docs: "Globs that make a change a docs change.",
+  kinds: "Evidence kinds an item must carry.",
+  "build.generated_files:paths": "Generated files a builder may change without declaring them as touchpoints.",
+};
+
+export function paramHelp(ruleId: string, name: string): string {
+  return PARAM_HELP[`${ruleId}:${name}`] ?? PARAM_HELP[name] ?? "No help is written for this parameter yet.";
+}
+
 /** A measured number, or the reason there isn't one: never a bare 0 for a reading that was not taken. */
 function measured(m: RuleMeasured | undefined): string {
   if (!m || m.status === "unavailable") return `unavailable${m?.reason ? ` — ${m.reason}` : ""}`;
@@ -65,6 +92,7 @@ export function DockEditor({
   focusRule,
   prefill,
   onClose,
+  onDirty,
   detail,
 }: {
   stage: RuleStage;
@@ -73,6 +101,8 @@ export function DockEditor({
   focusRule: string | null;
   prefill: { rule: string; value: string } | null;
   onClose: () => void;
+  /** Told whenever the draft turns dirty or clean, so a stage switch can ask first. */
+  onDirty?: (dirty: boolean) => void;
   /** Read-only enforcement detail for a rule the form has no inputs for (enforcer, last result). */
   detail?: (rule: RuleFlowRule) => React.ReactNode;
 }) {
@@ -166,6 +196,11 @@ export function DockEditor({
   }, [rule, draft, t, gitops, orgName, editableLib, field]);
 
   const dirty = lines.length > 0;
+  React.useEffect(() => {
+    onDirty?.(dirty);
+  }, [dirty, onDirty]);
+  // Unmounting (a stage switch, closing the dock) leaves nothing dirty behind.
+  React.useEffect(() => () => onDirty?.(false), [onDirty]);
   const hasPatch = Object.keys(patch).length > 0;
   const firstParamError = Object.values(paramErrors)[0];
   const reasonOk = reason.trim().length >= MIN_REASON;
@@ -358,6 +393,9 @@ export function DockEditor({
                       </button>
                     )}
                   </div>
+                  <span className="text-small leading-snug text-muted" data-testid={`rules-dock-help-${k}`}>
+                    {paramHelp(rule.id, k)}
+                  </span>
                   <RuleValueEditor
                     key={epoch}
                     ruleId={rule.id}
@@ -446,12 +484,20 @@ export function DockEditor({
             )}
           </div>
 
-          {isLibrary(rule) && !rule.unmeasured_reason && (
-            <div className="flex flex-col gap-0.5" data-testid="rules-dock-history">
-              <span className={cn(MONO, "text-meta tracking-[0.07em] text-muted-2")}>HISTORY</span>
+          <div className="flex flex-col gap-0.5" data-testid="rules-dock-history">
+            <span className={cn(MONO, "text-meta tracking-[0.07em] text-muted-2")}>HISTORY</span>
+            {isLibrary(rule) && !rule.unmeasured_reason ? (
               <DockHistory ruleId={rule.id} />
-            </div>
-          )}
+            ) : (
+              <span className="text-small leading-snug text-muted" data-testid="rules-dock-history-none">
+                {builtin
+                  ? "No history: a built-in rule has no setting anyone can change, so there is nothing to record."
+                  : rule.unmeasured_reason
+                    ? "No history: the pack refused this rule's template, so it cannot be set."
+                    : "No rule history: this is a project setting, and its changes are not recorded as rule toggles."}
+              </span>
+            )}
+          </div>
           <span className={cn(MONO, "text-meta text-muted-2")} data-testid="rules-dock-level">
             {LEVELS[level].word} · v{version}
           </span>
@@ -551,7 +597,25 @@ export function DockEditor({
   );
 }
 
-/** Who changed the rule, when, and why, newest first. */
+type Effective = { on?: unknown; params?: unknown };
+
+/** What a recorded change did: the effective value before → after, one part per changed key. */
+export function historyChange(meta: Record<string, unknown> | null): string[] {
+  const b = meta?.effective_before as Effective | undefined;
+  const a = meta?.effective_after as Effective | undefined;
+  if (!b || !a || typeof b !== "object" || typeof a !== "object") return [];
+  const out: string[] = [];
+  const word = (v: unknown) => (v === true ? "ON" : v === false ? "OFF" : showValue(v as Params[string]));
+  if (b.on !== a.on) out.push(`on/off: ${word(b.on)} → ${word(a.on)}`);
+  const bp = (b.params ?? {}) as Params;
+  const ap = (a.params ?? {}) as Params;
+  for (const k of Array.from(new Set([...Object.keys(bp), ...Object.keys(ap)])).sort()) {
+    if (JSON.stringify(bp[k]) !== JSON.stringify(ap[k])) out.push(`${k}: ${showValue(bp[k])} → ${showValue(ap[k])}`);
+  }
+  return out;
+}
+
+/** Who changed the rule, when, why, and before → after, newest first. */
 function DockHistory({ ruleId }: { ruleId: string }) {
   const { activeId } = useProjectCtx();
   const { data } = useRuleHistory(activeId, ruleId, true);
@@ -560,10 +624,22 @@ function DockHistory({ ruleId }: { ruleId: string }) {
     <ol className="flex flex-col gap-1" data-testid="rules-dock-history-list">
       {data.map((e) => {
         const why = typeof e.meta?.reason === "string" ? e.meta.reason : "";
+        const change = historyChange(e.meta);
         return (
-          <li key={e.id} className="text-small leading-snug text-muted">
-            {e.actor_label || e.actor_id} {relTime(e.ts) ?? "at an unknown time"}
-            {why ? ` — “${why}”` : ""}
+          <li key={e.id} className="flex flex-col text-small leading-snug text-muted" data-testid={`rules-dock-history-${e.id}`}>
+            <span>
+              {e.actor_label || e.actor_id} {relTime(e.ts) ?? "at an unknown time"}
+              {why ? ` — “${why}”` : ""}
+            </span>
+            {change.length > 0 ? (
+              change.map((c) => (
+                <span key={c} className={cn(MONO, "break-all text-fg-2")}>
+                  {c}
+                </span>
+              ))
+            ) : (
+              <span className={cn(MONO, "text-fg-2")}>no change to the effective value</span>
+            )}
           </li>
         );
       })}

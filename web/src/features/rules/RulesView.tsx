@@ -103,6 +103,19 @@ export function RulesView() {
   const [params] = useSearchParams();
   const linked = params.get("stage");
   const [sel, setSel] = React.useState<string | null>(linked ? stageKey(linked) : null);
+  // A dirty draft in the dock holds a stage switch (or a close) behind an in-page confirm.
+  const dirtyRef = React.useRef(false);
+  const onDirty = React.useCallback((d: boolean) => {
+    dirtyRef.current = d;
+  }, []);
+  const [pendingSel, setPendingSel] = React.useState<{ to: string | null } | null>(null);
+  const selectStage = React.useCallback(
+    (to: string | null) => {
+      if (to !== sel && dirtyRef.current) setPendingSel({ to });
+      else setSel(to);
+    },
+    [sel],
+  );
   const { pathname } = useLocation();
   // Following a refusal (frames 4a1–4b2): `?rule=` focuses one rule, `?from=` is the event to
   // go back to, `?pulse=unmapped` is "see all rules" for a refusal that names no rule.
@@ -293,11 +306,32 @@ export function RulesView() {
           <LoadingMap />
         ) : (
           <div className="relative min-h-0" style={{ height: sel ? `${mapPct}%` : "100%" }} data-testid="rules-map-area" data-map-pct={sel ? mapPct : 100}>
-            {narrow ? <NarrowList flow={flow} sel={sel} onSelect={setSel} /> : <RulesCanvas flow={flow} sel={sel} onSelect={setSel} />}
+            {narrow ? <NarrowList flow={flow} sel={sel} onSelect={selectStage} /> : <RulesCanvas flow={flow} sel={sel} onSelect={selectStage} />}
           </div>
         )}
         {flow && sel && (
-          <StageDock flow={flow} sel={sel} focusRule={focusRule} prefill={prefill} mapPct={mapPct} onMapPct={setPct} containerRef={bodyRef} onClose={() => setSel(null)} />
+          <StageDock
+            flow={flow}
+            sel={sel}
+            focusRule={focusRule}
+            prefill={prefill}
+            mapPct={mapPct}
+            onMapPct={setPct}
+            containerRef={bodyRef}
+            onClose={() => selectStage(null)}
+            onDirty={onDirty}
+            leave={
+              pendingSel && {
+                closing: pendingSel.to === null,
+                onLeave: () => {
+                  dirtyRef.current = false;
+                  setSel(pendingSel.to);
+                  setPendingSel(null);
+                },
+                onStay: () => setPendingSel(null),
+              }
+            }
+          />
         )}
         {sheet === "unmapped" && <UnmappedSheet returnTo={unmappedBtn} onClose={() => setSheet(null)} />}
         {sheet === "recommended" && <RecommendedSheet returnTo={recommendedBtn} onClose={() => setSheet(null)} onOpenValue={openValueSuggestion} />}
@@ -1048,6 +1082,8 @@ function StageDock({
   onMapPct,
   containerRef,
   onClose,
+  onDirty,
+  leave,
 }: {
   flow: RulesFlow;
   sel: string;
@@ -1057,6 +1093,9 @@ function StageDock({
   onMapPct: (pct: number) => void;
   containerRef: React.RefObject<HTMLDivElement | null>;
   onClose: () => void;
+  onDirty: (dirty: boolean) => void;
+  /** A stage switch or close is waiting on a dirty draft: ask before throwing it away. */
+  leave: { closing: boolean; onLeave: () => void; onStay: () => void } | null;
 }) {
   const pack = sel === PACK_KEY ? packOf(flow) : null;
   const index = flow.stages.findIndex((s) => stageKey(s.id) === sel);
@@ -1143,6 +1182,34 @@ function StageDock({
           ×
         </button>
       </div>
+      {leave && (
+        <div
+          role="alertdialog"
+          aria-label="Unsaved changes"
+          data-testid="rules-stage-leave"
+          className="flex flex-none flex-wrap items-center gap-2 border-b border-accent bg-surface-2 px-4 py-2"
+        >
+          <span className="text-small text-fg">
+            You have unsaved changes on this stage. {leave.closing ? "Close the editor" : "Switch stage"} without saving?
+          </span>
+          <button
+            type="button"
+            data-testid="rules-stage-leave-confirm"
+            onClick={leave.onLeave}
+            className="h-6 rounded-[8px] border border-control px-2 text-small text-fg"
+          >
+            Discard and leave
+          </button>
+          <button
+            type="button"
+            data-testid="rules-stage-leave-stay"
+            onClick={leave.onStay}
+            className="h-6 rounded-[8px] border border-control px-2 text-small text-fg-2"
+          >
+            Keep editing
+          </button>
+        </div>
+      )}
       {pack ? (
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
           <p className="mb-2 text-body leading-normal text-muted">{pack.summary}</p>
@@ -1157,6 +1224,7 @@ function StageDock({
           focusRule={focusRule}
           prefill={prefill}
           onClose={onClose}
+          onDirty={onDirty}
           detail={(r) => <RuleRow rule={r} version={flow.version} model={flow.model} focused={focusRule === r.id} canWrite={false} />}
         />
       )}
