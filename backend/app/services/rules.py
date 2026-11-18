@@ -103,6 +103,10 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
     Rule("gate.decompose_requires_approval", "plan", "Decompose needs approval",
          "Tasks are filed from a PRD only once it has earned approval.",
          "enforced", _src("app/services/prds.py", "DecomposeRequiresApproval"), "code"),
+    Rule("spec.remote_is_read_only", "plan", "Another deployment's spec is read-only",
+         "A spec whose home is another deployment is shown here but cannot be decomposed; "
+         "the refusal names its home box.",
+         "enforced", _src("app/services/spec_pull.py", "RemoteSpecRefused"), "code"),
     Rule("gitops.observe_answer_required", "build", "Observe before the plan",
          "A gitops plan's Observe step needs a named answer before it, or the plan, can move on.",
          "enforced", _src("app/services/gitops.py", "refuse_observe_progress"), "code"),
