@@ -26,7 +26,7 @@ import {
   useSetMemoryWriteMode,
   useSetRuleToggle,
 } from "@/lib/queries";
-import type { RuleFlowRule, RuleParamValue, RuleToggleWrite, TestScopeMode } from "@/lib/types";
+import type { FoundBugMode, RuleFlowRule, RuleParamValue, RuleToggleWrite, TestScopeMode } from "@/lib/types";
 
 import { useOrgName } from "./RuleEditors";
 import { RuleHistory } from "./RuleHistory";
@@ -46,6 +46,16 @@ export const TEST_SCOPE_MODES: { value: TestScopeMode; label: string; explain: s
 ];
 
 registerEnum(TEST_SCOPE_RULE, "mode", TEST_SCOPE_MODES.map((m) => ({ ...m, risky: m.value === "agent_targeted" })), "Where the test suites run");
+
+/** GRPH-1703: the found-bug rule's two modes. `fix_in_build` is the default when the rule is off or absent. */
+export const FOUND_BUG_RULE = "build.found_bug";
+export const FOUND_BUG_DEFAULT: FoundBugMode = "fix_in_build";
+export const FOUND_BUG_MODES: { value: FoundBugMode; label: string; explain: string }[] = [
+  { value: "fix_in_build", label: "Fix it in this build", explain: "The builder fixes a bug it finds as part of the item it is building." },
+  { value: "file_ticket", label: "File a ticket", explain: "The builder files the bug as its own item and carries on." },
+];
+
+registerEnum(FOUND_BUG_RULE, "mode", FOUND_BUG_MODES, "What a builder does with a bug it finds");
 
 const MONO = "font-mono";
 const note = "text-[11.5px] leading-snug text-muted";
