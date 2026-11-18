@@ -1916,7 +1916,7 @@ def _joined(cluster: dict) -> list[str]:
 
 
 def plan(planner: Graphban, prd: str | None, max_workers: int,
-         repo: Path | None = None, base: str = "") -> dict:
+         repo: Path | None = None, base: str = "", line: str | None = None) -> dict:
     """What this wave WOULD delegate, without delegating it (GRPH-819).
 
     Reported after a real wave: "you cannot ask what a wave would delegate before it does —
@@ -1928,16 +1928,21 @@ def plan(planner: Graphban, prd: str | None, max_workers: int,
     that can disagree with it — a dry run that models the wave instead of asking it is a dry
     run that reassures you about the wrong plan.
     """
-    clusters = planner.call("collision_clusters", holds=True, **_scope(prd))
+    # GRPH-1710: `--line` resolves through the same `resolve_line` the real run uses (so a PRD
+    # id or a project with no line is refused identically) and filters through `_clusters`.
+    if line is not None:
+        line = resolve_line(planner, line)
+    clusters = _clusters(planner, prd, line or None, holds=True)
     free, blocked = _free_and_blocked(clusters)
     would = [c for c in free[:max_workers]]
     return {
         "prd": prd or None,
+        "line": line or None,
         # GRPH-827: a dry run that showed only what would be HANDED OUT answered half the
         # question. The other half is what the children could then take on their own, and for
         # a scoped wave that is now the same set. Said explicitly, because the previous answer
         # to it was a README paragraph that turned out to be false.
-        "seats_scoped": bool(prd),
+        "seats_scoped": bool(prd or line),
         "would_delegate": [(c.get("items") or [None])[0] for c in would],
         "clusters_free": len(free),
         "clusters_held": len(blocked),
