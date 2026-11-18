@@ -16,11 +16,21 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import errors
+from app.errors import Refused
 from app.models import Line, Project
 from app.services import keys
 
 DEFAULT_TITLE = "Maintenance"
+#: The registry rule (`services/rules.py`) a second create is refused under.
+ONE_LINE_RULE = "line.one_per_project"
 NO_LINE = "this project has no maintenance line — create it with `create_line` first"
+
+
+def _refuse_second(existing: Line) -> None:
+    raise Refused(
+        409, f"this project already has a maintenance line: {existing.key}",
+        rule_id=ONE_LINE_RULE,
+        hint=f"use {existing.key}; a project has at most one line")
 
 
 def get_line(db: Session, project_id: str) -> Line | None:
@@ -35,9 +45,7 @@ def create_line(db: Session, project_id: str, title: str | None = None,
     title = (title or "").strip() or DEFAULT_TITLE
     existing = get_line(db, project_id)
     if existing is not None:
-        raise errors.Conflict(
-            f"this project already has a maintenance line: {existing.key}",
-            hint=f"use {existing.key}; a project has at most one line")
+        _refuse_second(existing)
     line_id, number = keys.mint(db, project_id, "line")
     line = Line(id=line_id, project_id=project_id, number=number, title=title,
                 created_by=created_by)
@@ -50,9 +58,7 @@ def create_line(db: Session, project_id: str, title: str | None = None,
         existing = get_line(db, project_id)
         if existing is None:
             raise
-        raise errors.Conflict(
-            f"this project already has a maintenance line: {existing.key}",
-            hint=f"use {existing.key}; a project has at most one line")
+        _refuse_second(existing)
     db.refresh(line)
     return line
 

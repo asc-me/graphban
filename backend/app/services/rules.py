@@ -205,6 +205,10 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
     Rule("rules.toggle_needs_admin", "learn", "Toggles need a project admin",
          "A project's library rule toggles are set by its owner or an admin.",
          "enforced", _src("app/services/rule_toggles.py", "Refused"), "code"),
+    Rule("line.one_per_project", "plan", "One maintenance line per project",
+         "A project has at most one maintenance line; a second create_line is refused and "
+         "names the existing line.",
+         "enforced", _src("app/services/lines.py", "Refused"), "code"),
     Rule("agents.operating_loop", "build", "Operating loop",
          "Agents follow the operating loop and invariants in AGENTS.md.",
          "advisory", Enforcer("doc", "AGENTS.md"), "repo_file", channel="doc"),

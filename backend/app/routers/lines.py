@@ -43,8 +43,6 @@ def create_line(project_id: str, body: LineCreate | None = None,
     try:
         line = lines_svc.create_line(
             db, project_id, (body.title if body else None), created_by=user.id)
-    except errors.Conflict as e:
-        raise HTTPException(409, str(e))
     except errors.NotFound as e:
         raise HTTPException(404, str(e))
     return lines_svc.line_dict(line)
