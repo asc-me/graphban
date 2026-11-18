@@ -1045,6 +1045,9 @@ class Enrolment(Base):
     #: on its own. Not a ForeignKey, for the reason `Item.prd_id` is not — it holds another
     #: entity's frozen id, and a delete there must not reach into a credential's history.
     prd_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: The maintenance line this seat was minted for (GRPH-1685). Same role as `prd_id` and
+    #: exclusive with it: a seat has at most one scope. NULL is not line-scoped.
+    line_id: Mapped[str | None] = mapped_column(String, nullable=True)
     delegation_id: Mapped[str | None] = mapped_column(String, nullable=True)
     #: A REVIEW-ONLY seat (GRPH-988): may hold review work, may never take build work. Not a
     #: role — `reviewer` merged into `worker` in S3 (PRD-39) and a worker both builds and

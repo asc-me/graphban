@@ -2253,6 +2253,10 @@ _FLEET_ONLY_ARGS = {
     "mint_enrolment": {
         **_SEAT_SCOPE_ARG,
         **_BOUND_ONLY_ARG,
+        "line": {
+            "type": "string",
+            "description": "Maintenance line this seat may claim within. Exclusive with scope.",
+        },
         "item": {
             "type": "string",
             "description": "Item a bound_only seat is bound to. Required with bound_only; "
@@ -2731,6 +2735,20 @@ def _prd_ref(db: Session, project_id: str | None, asked: str | None) -> str | No
     if not asked:
         return None
     return items_svc._stored_prd_id(db, asked, project_id) or asked
+
+
+def _seat_line_id(db: Session, project_id: str | None, asked: str | None) -> str | None:
+    """Resolve the line a seat is scoped to into the stored id (GRPH-1685), or None.
+
+    Refused when unknown or another project's, for the reason `_scope_id` gives: a scope that
+    quietly stops applying is a worse failure than a refused mint.
+    """
+    if not asked:
+        return None
+    try:
+        return lines_svc.resolve_for_item(db, asked, project_id or "")
+    except ValueError as e:
+        raise errors.Validation(str(e))
 
 
 def _scope_id(db: Session, project_id: str | None, asked: str | None) -> str | None:
@@ -3529,9 +3547,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
 
         got = fleet_svc.park(db, _attempt, agent_id=args.get("agent_id"),
                              wait_seconds=args.get("wait_seconds"))
-        return got or miss.get("last") or {
+        reply = got or miss.get("last") or {
             "claimed": False, "items": [], "areas": [], "predicted": False, "held_by": [],
             "reason": "nothing ready to claim"}
+        if items_svc.seat_line(db, agent):
+            # GRPH-1685. Line seats only; an empty list means it looked and found none.
+            reply = {**reply, "unready": items_svc.unready_line_items(db, pid)}
+        return reply
     if name == "claim_review":
         agent = fleet_svc.caller_identity(args.get("agent_id"), key)
         item = fleet_svc.park(
@@ -3814,6 +3836,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 db, minter_id=args["agent_id"], project_id=project_id, role=args["role"],
                 api_key=key, wave=args.get("wave"),
                 prd_id=_scope_id(db, project_id, args.get("scope")),
+                line_id=_seat_line_id(db, project_id, args.get("line")),
                 review_only=bool(args.get("review_only")),
                 item_id=item_id, bound_only=bound_only)
         except ValueError as e:

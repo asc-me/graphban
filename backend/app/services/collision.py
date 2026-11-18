@@ -212,7 +212,8 @@ def _partition(ids: list[str], areas: dict[str, list[str]],
 
 def clusters_for_project(db: Session, project_id: str | None, status: str | None = None,
                          lease_seconds: int = items_svc.DEFAULT_LEASE_SECONDS,
-                         prd_id: str | None = None) -> list[dict]:
+                         prd_id: str | None = None,
+                         line_id: str | None = None) -> list[dict]:
     """Collision clusters over a project's work pool. Defaults to everything an agent could
     actually take right now — which is NOT the same as the unstarted pool.
 
@@ -250,6 +251,9 @@ def clusters_for_project(db: Session, project_id: str | None, status: str | None
         # a promise that its members do not collide, and dropping members from one afterwards
         # would hand out a promise computed over items that are no longer in it.
         pool = [it for it in pool if (it.prd_id or "") == prd_id]
+    if line_id:
+        # GRPH-1685. The same filter on the same side of the partition, for the same reason.
+        pool = [it for it in pool if (it.line_id or "") == line_id]
     # GRPH-885: filter out items with unmet dependencies. A cluster that includes a blocked
     # item is a promise the divvy cannot keep — the seed may be pinned or refused, and the
     # rest of the glob becomes the seed, skip-ahead the DAG. Withholding blocked items from
@@ -261,7 +265,43 @@ def clusters_for_project(db: Session, project_id: str | None, status: str | None
     # Review holds BEFORE reservations: splitting a cluster changes its areas, and a
     # reservation check run on the unsplit cluster would hold the freed siblings anyway.
     clusters = _occupy_review_globs(clusters, pool, areas, predicted)
-    return _with_reservations(db, clusters, project_id, lease_seconds=lease_seconds)
+    clusters = _with_reservations(db, clusters, project_id, lease_seconds=lease_seconds)
+    if prd_id or line_id:
+        clusters = _scoped_order(clusters, {it.id: it for it in pool}, ctx)
+    return clusters
+
+
+def _is_security(item: Item) -> bool:
+    return any(str(t).lower() in ("security", "severity:security", "severity=security")
+               for t in (item.tags or []))
+
+
+def _blocking_fix(item: Item, ctx, by_id: dict[str, Item]) -> bool:
+    """A fix that holds other work: a `kind=fix` with a PRD and no section that an item
+    carrying that same PRD depends on, or a fix that any item in this scope depends on."""
+    if item.kind != "fix":
+        return False
+    dependents = [by_id.get(d) or ctx.item(d) for d in ctx.dependents.get(item.id, [])]
+    dependents = [d for d in dependents if d is not None]
+    if item.prd_id and not item.prd_section:
+        return any(d.prd_id == item.prd_id for d in dependents)
+    return any(d.id in by_id for d in dependents)
+
+
+def _scoped_order(clusters: list[dict], by_id: dict[str, Item], ctx) -> list[dict]:
+    """Claim order for a scoped seat (GRPH-1685): a cluster holding a blocking fix, then one
+    holding a security item, then the older `created_at`. Size is not a key. Stable, so the
+    unscoped order is the tiebreak below the three."""
+    far = float("inf")
+
+    def key(c: dict):
+        members = [by_id[i] for i in c.get("items") or [] if i in by_id]
+        blocking = any(_blocking_fix(m, ctx, by_id) for m in members)
+        security = any(_is_security(m) for m in members)
+        ages = [m.created_at.timestamp() for m in members if m.created_at is not None]
+        return (not blocking, not security, min(ages) if ages else far)
+
+    return sorted(clusters, key=key)
 
 
 def _occupy_review_globs(clusters: list[dict], pool: list[Item],
