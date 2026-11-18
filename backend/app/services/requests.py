@@ -219,6 +219,22 @@ def accept_request(
         if existing is not None:
             return req, existing
 
+    # GRPH-1686. A bug lands on the project's maintenance line as a fix, because its type is
+    # `bug` — the prose is never read to decide chore vs fix. Both refusals come before any
+    # write, so the request stays `new` and nothing is half-linked.
+    kind: str | None = None
+    line_id: str | None = None
+    if req.type == "bug":
+        if prd_id:
+            raise ValueError(
+                "a bug request lands on the maintenance line and takes no prd_id; "
+                "drop prd_id, or file a feature if it belongs to a PRD")
+        from app.services import lines as lines_svc
+        line = lines_svc.get_line(db, req.project_id)
+        if line is None:
+            raise ValueError(lines_svc.NO_LINE)
+        kind, line_id = "fix", line.id
+
     item = items_svc.create_item(
         db,
         title=req.title,
@@ -229,6 +245,8 @@ def accept_request(
         reporter=reporter,
         status=status,
         prd_id=prd_id,
+        kind=kind,
+        line_id=line_id,
         commit=False,
     )
     prior = _state(req)
