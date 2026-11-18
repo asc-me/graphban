@@ -65,20 +65,18 @@ beforeEach(() => {
 });
 
 describe("test-scope rule", () => {
-  it("reads as the stored mode's label, with no radios in the read view", async () => {
+  it("the rule's row reads as the stored mode's label", async () => {
     const ins = await open("agent_targeted");
     const row = within(ins).getByTestId(`rules-row-${RULE}`);
     expect(within(row).getByTestId("rules-value")).toHaveTextContent("mode: The agent runs partial CI, only what changed");
-    expect(within(ins).queryByRole("radio")).toBeNull();
   });
 
   it("choosing a mode in the stage editor lists the three modes and stages the change", async () => {
     const user = userEvent.setup();
     const ins = await open("agent_and_pr");
-    await user.click(within(ins).getByTestId("rules-edit-stage"));
     const group = await within(ins).findByRole("radiogroup", { name: "Where the test suites run" });
     expect(within(group).getAllByRole("radio")).toHaveLength(3);
     await user.click(within(group).getByRole("radio", { name: "The agent runs CI" }));
-    expect(within(ins).getByTestId("rules-review-open")).toHaveTextContent("Review changes · 1");
+    expect(within(ins).getByTestId("rules-dock-diff").querySelectorAll("li")).toHaveLength(1);
   });
 });

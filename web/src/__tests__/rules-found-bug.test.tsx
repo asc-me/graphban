@@ -84,9 +84,7 @@ describe("found-bug rule", () => {
   });
 
   it("offers only the two modes in the editor", async () => {
-    const user = userEvent.setup();
     const ins = await open("fix_in_build");
-    await user.click(within(ins).getByTestId("rules-edit-stage"));
     const group = await within(ins).findByRole("radiogroup", { name: "What a builder does with a bug it finds" });
     expect(within(group).getAllByRole("radio")).toHaveLength(2);
   });
@@ -95,15 +93,12 @@ describe("found-bug rule", () => {
     const user = userEvent.setup();
     vi.mocked(api.setRuleToggles).mockResolvedValue({} as never);
     const ins = await open("fix_in_build");
-    await user.click(within(ins).getByTestId("rules-edit-stage"));
     const group = await within(ins).findByRole("radiogroup", { name: "What a builder does with a bug it finds" });
     await user.click(within(group).getByRole("radio", { name: /File a ticket/ }));
-    await user.click(within(ins).getByTestId("rules-review-open"));
-    const sheet = await screen.findByTestId("rules-review-sheet");
-    expect(within(sheet).getByTestId(`rules-review-rule-${RULE}`)).toHaveTextContent("file_ticket");
-    const save = within(sheet).getByTestId("rules-review-save");
+    expect(within(ins).getByTestId("rules-dock-diff")).toHaveTextContent("file_ticket");
+    const save = within(ins).getByTestId("rules-dock-save-button");
     expect(save).toBeDisabled();
-    await user.type(within(sheet).getByLabelText("Reason"), "bugs found mid-build get their own ticket");
+    await user.type(within(ins).getByLabelText("Reason"), "bugs found mid-build get their own ticket");
     expect(save).toBeEnabled();
     await user.click(save);
     await waitFor(() => expect(api.setRuleToggles).toHaveBeenCalled());
