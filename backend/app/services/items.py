@@ -131,16 +131,20 @@ def lines_svc_resolve(db: Session, line_id: str, project_id: str) -> str:
 
 
 def _open_overlaps(db: Session, *, line_id: str | None, prd_id: str | None,
-                   touchpoints) -> list[Item]:
-    """Open items on the same scope (the line, else the PRD) sharing a touchpoint (GRPH-1695)."""
+                   touchpoints, exclude=()) -> list[Item]:
+    """Open items on the same scope (the line, else the PRD) sharing a touchpoint (GRPH-1695).
+
+    `exclude` are ids that are not candidate duplicates: the item a blocking fix holds and
+    the item the fix was found during — a fix usually touches exactly their files."""
     from app.services.clustering import shared_touchpoints
     scope = Item.line_id == line_id if line_id else Item.prd_id == prd_id
     rows = db.scalars(select(Item).where(scope, Item.status != "done")).all()
-    return [o for o in rows if shared_touchpoints(o.touchpoints or [], touchpoints or [])]
+    return [o for o in rows if o.id not in set(exclude)
+            and shared_touchpoints(o.touchpoints or [], touchpoints or [])]
 
 
 def check_duplicates(db: Session, *, line_id: str | None, prd_id: str | None,
-                     touchpoints, distinct_from) -> list[tuple[Item, str]]:
+                     touchpoints, distinct_from, exclude=()) -> list[tuple[Item, str]]:
     """Refuse a fix overlapping an open item on its scope unless every overlap is named in
     `distinct_from` with a reason. Returns the (item, reason) pairs to link."""
     named: list[tuple[Item, str]] = []
@@ -154,7 +158,8 @@ def check_duplicates(db: Session, *, line_id: str | None, prd_id: str | None,
         if other is None:
             raise ValueError(f"distinct_from: unknown item {ref!r}")
         named.append((other, reason.strip()))
-    overlaps = _open_overlaps(db, line_id=line_id, prd_id=prd_id, touchpoints=touchpoints)
+    overlaps = _open_overlaps(db, line_id=line_id, prd_id=prd_id, touchpoints=touchpoints,
+                              exclude=exclude)
     left = [o for o in overlaps if o.id not in {n.id for n, _ in named}]
     if left:
         raise ValueError(
@@ -329,11 +334,12 @@ def create_item(
         if prd_id and not line_id:
             blocked = _blocked_item(db, blocks, _stored_prd_id(db, prd_id, project_id))
         if agent_create:
+            origin = resolve_found_during(db, found_during=found_during, held=held or [])
             distinct = check_duplicates(
                 db, line_id=lines_svc_resolve(db, line_id, project_id) if line_id else None,
                 prd_id=_stored_prd_id(db, prd_id, project_id), touchpoints=touchpoints,
-                distinct_from=distinct_from)
-            origin = resolve_found_during(db, found_during=found_during, held=held or [])
+                distinct_from=distinct_from,
+                exclude=[x.id for x in (blocked, origin) if x is not None])
     elif blocks:
         raise ValueError("blocks is only for a blocking fix (kind=fix with prd_id)")
     if line_id:

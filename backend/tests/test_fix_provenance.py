@@ -4,6 +4,7 @@ import pytest
 from app.db import SessionLocal
 from app.models import Link
 from app.services import items as items_svc
+from app.services import prioritization
 
 ACC = "Does it.\n\n## Acceptance\n- the fix works\n"
 
@@ -67,8 +68,42 @@ def test_explicit_found_during_links_and_does_not_block(client, world):
     assert out["found_during"] == host
     assert _links(out["id"], "found_during")[0][0] == host
     with SessionLocal() as db:
-        assert not items_svc.get_item(db, host).blocked_by if hasattr(
-            items_svc.get_item(db, host), "blocked_by") else True
+        ctx = prioritization.context(db, items_svc.get_item(db, host).project_id)
+        for k in (host, out["id"]):
+            it = items_svc.get_item(db, k)
+            assert prioritization.ready(ctx, it), k
+            assert prioritization.blocked_by(ctx, it) == []
+
+
+def test_blocking_fix_is_not_a_duplicate_of_the_item_it_blocks(client):
+    from app.services import prds as prd_svc
+    with SessionLocal() as db:
+        prd = prd_svc.create_prd(db, title="Spec", project_id="core",
+                                 body="# S\n\n## Build\n\nBuild it.\n")
+        feat = items_svc.create_item(db, title="feat", project_id="core", kind="feature",
+                                     prd_id=prd.id, prd_section="Build",
+                                     touchpoints=["backend/app/x.py"])
+        fix = items_svc.create_item(db, title="bug", project_id="core", kind="fix",
+                                    prd_id=prd.id, description=ACC, agent_create=True,
+                                    touchpoints=["backend/app/x.py"], blocks=feat.key)
+        assert fix.kind == "fix"
+        other = items_svc.create_item(db, title="feat2", project_id="core", kind="feature",
+                                      prd_id=prd.id, prd_section="Build",
+                                      touchpoints=["backend/app/x.py"])
+        # A second fix blocking `feat` still overlaps `fix` and `other` — those stay refused.
+        with pytest.raises(ValueError) as e:
+            items_svc.create_item(db, title="bug2", project_id="core", kind="fix",
+                                  prd_id=prd.id, description=ACC, agent_create=True,
+                                  touchpoints=["backend/app/x.py"], blocks=feat.key)
+        msg = str(e.value)
+        assert fix.key in msg and other.key in msg and feat.key not in msg
+
+
+def test_found_during_item_is_not_a_duplicate(client, world):
+    host = _fix(client, world)["structuredContent"]["id"]
+    out = _fix(client, world, found_during=host)
+    assert not out.get("isError"), out
+    assert out["structuredContent"]["found_during"] == host
 
 
 def test_held_item_defaults_found_during_and_two_held_refused(client, world):
@@ -77,9 +112,6 @@ def test_held_item_defaults_found_during_and_two_held_refused(client, world):
     agent = reg["agent_id"]
     one = _rpc(client, w["key"], "create_item", {"title": "one", "kind": "chore"})
     two = _rpc(client, w["key"], "create_item", {"title": "two", "kind": "chore"})
-    with SessionLocal() as db:
-        for r in (one, two):
-            pass
     k1, k2 = one["structuredContent"]["id"], two["structuredContent"]["id"]
     with SessionLocal() as db:
         a = items_svc.get_item(db, k1)
