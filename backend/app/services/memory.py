@@ -703,7 +703,9 @@ def _triage_prefs(db: Session, project_id: str | None) -> tuple[str, bool, bool]
     project = db.get(Project, project_id)
     if project is None:
         return "review", True, False
-    mode = project.memory_write_mode if project.memory_write_mode in WRITE_MODES else "review"
+    # GRPH-1603: the resolved rule — the project's column, or the org's value while it is locked.
+    from app.services import rule_toggles
+    mode = rule_toggles.memory_write_mode(db, project_id)
     return mode, bool(project.memory_auto_reject), bool(project.memory_llm_judge)
 
 
@@ -1708,12 +1710,17 @@ WRITE_MODE_MEANING = {
 
 
 def set_write_mode(db: Session, project: Project, mode: str, *, actor: object,
-                   reason: str | None, require_reason: bool = True) -> bool:
+                   reason: str | None, require_reason: bool = True, commit: bool = True) -> bool:
     """Set `Project.memory_write_mode` and record who, when, old and new, and why.
 
     A person only (`rules.person_adopts`). The Rules page requires the reason; the settings
     update passes `require_reason=False` and records whatever it was given, so the history is
-    never missing a change. Returns whether the mode changed."""
+    never missing a change. Returns whether the mode changed.
+
+    GRPH-1603: when the loaded pack carries `memory.write_mode` as a library rule, this column
+    is that rule's project layer, so an org lock refuses a change here as it does on the rules
+    view (`rules.org_lock_holds`). `commit=False` is the rules view's staged write: the column
+    is set in the session and the caller commits and records the change in the rule history."""
     from app.services import rule_toggles
     user = rule_toggles._require_person(db, actor)
     if mode not in WRITE_MODES:
@@ -1722,7 +1729,10 @@ def set_write_mode(db: Session, project: Project, mode: str, *, actor: object,
     old = project.memory_write_mode
     if old == mode:
         return False
+    rule_toggles.refuse_if_locked(db, WRITE_MODE_RULE, project.id)
     project.memory_write_mode = mode
+    if not commit:
+        return True
     db.commit()
     events_svc.record_user(
         db, user, action="set_rule_toggle", target_type="rule", target_id=WRITE_MODE_RULE,

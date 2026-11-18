@@ -1406,6 +1406,9 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     # gains a second role, that argument evaporates silently; a test asserts it does not.
     "mint_enrolment": ("planner",),
     "create_prd": ("planner",),
+    # GRPH-1681. Opening the project's one maintenance line is planner work over MCP; a
+    # person does it through REST with the permission that accepts a request.
+    "create_line": ("planner",),
     # GRPH-1275. The preamble is written by a person; the planner seat is the only agent role
     # near spec authorship, and `put_document` itself refuses an agent identity.
     "put_document": ("planner",),
@@ -1491,7 +1494,7 @@ OPEN_TOOLS: dict[str, str] = {
         # PRD-62 S2: the entitlement registry read; the write is planner-gated above.
         "list_entitlements",
         # PRD-P63 S2a: the toggles read; there is no MCP write (D10).
-        "get_rule_toggles",
+        "get_rule_toggles", "unscoped_fixes",
         # P75 S1: any role may answer a peer's decision wait; the filer is refused in-service.
         "answer_wait",
         # GRPH-1275: document reads — governing specs, project-scoped, nothing written.
@@ -2601,6 +2604,10 @@ class ClauseCapability(Exception):
 
 class MissingAcceptanceCoverage(Exception):
     """Work signed off while an acceptance clause has no named test (GRPH-884)."""
+
+
+class FiledFixShape(MissingAcceptanceCoverage):
+    """A line item or blocking fix lost its acceptance clauses or touchpoints (GRPH-1683)."""
 
 
 class UnreadableAcceptance(MissingAcceptanceCoverage):
@@ -4025,6 +4032,13 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # description — signed off with `acceptance_coverage: passed` and "not checked", so the
     # receipt vouched for a check that had read nothing.
     clauses, unreadable = parse_acceptance(item.description or "")
+    # A line item or blocking fix is filed WITH clauses and touchpoints (GRPH-1683). A
+    # historical fix with neither a line nor a PRD keeps today's pass on no clauses.
+    if items_svc.is_filed_fix(db, item) and (not clauses or not item.touchpoints):
+        gone = ("acceptance clauses" if not clauses else "touchpoints")
+        raise FiledFixShape(
+            f"{item.key} is a filed fix and has no {gone} left: a line item or blocking fix "
+            "signs off only against `## Acceptance` clauses and declared touchpoints")
     if unreadable:
         raise UnreadableAcceptance(
             f"{item.key} states acceptance the gate cannot read: " + "; ".join(unreadable)
@@ -5221,13 +5235,16 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     # Scoping here rather than skipping out-of-scope members below is also what keeps
     # `claim_item`'s refusal unreachable from this path: the two agree by construction.
     scope = items_svc.seat_scope(db, agent_id)
+    scope_line = items_svc.seat_line(db, agent_id)
+    scope_prd = "" if scope_line else scope
     #: (mine, theirs) for the first collision of each refused cluster — the refusal names both.
     collided: list[tuple[str, str]] = []
     hards = project_hard_areas(db, project_id)
 
     for cluster in collision_svc.clusters_for_project(db, project_id,
                                                        lease_seconds=lease_seconds,
-                                                       prd_id=scope or None):
+                                                       prd_id=scope_prd or None,
+                                                       line_id=scope_line or None):
         members = set(cluster.get("items") or [])
         free = set().union(*[o for o in overrides if members <= o]) if overrides else set()
         blocked = [r.area for r in taken if r.agent_id != agent_id and r.item_id not in free]
@@ -5436,6 +5453,7 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
                     reissued_from: str | None = None, item_id: str | None = None,
                     delegation_id: str | None = None,
                     prd_id: str | None = None,
+                    line_id: str | None = None,
                     review_only: bool = False,
                     bound_only: bool = False) -> tuple[Enrolment, str]:
     """Mint one SEAT and return (row, plaintext). The code is shown once.
@@ -5450,6 +5468,10 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
     if role not in ROLES + (ALL_IN_ONE,):
         raise ValueError(
             f"unknown role: {role!r}; valid roles are {', '.join(ROLES)}")
+    if prd_id and line_id:
+        # GRPH-1685. A seat has one scope. Both would be a seat that claims nothing, or one
+        # whose scope depends on which column a reader checked first.
+        raise ValueError("a seat cannot be scoped to both a PRD and a line")
     if item_id and role != "worker":
         # PRD-36 D1: a bound seat is worker-only — a worker takes review through claim_review
         # and must not be steered to one item by whoever minted its seat.
@@ -5483,6 +5505,7 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
         # outlives whatever typed it, and a key that gets retagged would silently widen the
         # scope to everything.
         prd_id=prd_id or None,
+        line_id=line_id or None,
         # GRPH-988. Stored, not inferred: a seat that may review but not build is a fact
         # about the wave that minted it, and nothing downstream can reconstruct it.
         review_only=bool(review_only),
@@ -5501,6 +5524,7 @@ def mint_enrolment_as(db: Session, *, minter_id: str, project_id: str, role: str
                       api_key, wave: str | None = None, item_id: str | None = None,
                       delegation_id: str | None = None,
                       prd_id: str | None = None,
+                      line_id: str | None = None,
                       review_only: bool = False,
                       bound_only: bool = False) -> tuple[Enrolment, str]:
     """A planner mints a seat for an agent it is about to spawn (PRD-19 E7 / D-g).
@@ -5531,6 +5555,7 @@ def mint_enrolment_as(db: Session, *, minter_id: str, project_id: str, role: str
             hint="mint a credential for that role in the Fleet view first")
     return issue_enrolment(db, project_id=project_id, role=role, wave=wave, minted_by=minter_id,
                            item_id=item_id, delegation_id=delegation_id, prd_id=prd_id,
+                           line_id=line_id,
                            review_only=review_only, bound_only=bound_only)
 
 

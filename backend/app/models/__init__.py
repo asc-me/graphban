@@ -130,7 +130,7 @@ def _key_of(owner, stored_id: str | None, kind: str) -> str | None:
     session = object_session(owner)
     if session is None:
         return stored_id
-    row = session.get({"item": Item, "request": Request, "prd": Prd}[kind], stored_id)
+    row = session.get({"item": Item, "request": Request, "prd": Prd, "line": Line}[kind], stored_id)
     return row.key if row is not None else stored_id
 
 
@@ -717,6 +717,12 @@ class Item(Base):
     bounce_reason: Mapped[str] = mapped_column(String, default="")
     # Spec traceability (feature D): the PRD + section this item implements.
     prd_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The project's maintenance line this item belongs to (GRPH-1681). Holds the line's
+    # FROZEN id, never a rendering, like `prd_id`. Mutually exclusive with `prd_id`, and only
+    # a `fix` may carry it: `services/items.py:check_line`.
+    line_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # `security` or empty (GRPH-1683); only a fix carries it.
+    severity: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
     prd_section: Mapped[str] = mapped_column(String, default="")
     # The section text AS IT WAS when this item was decomposed out of it (GRPH-360).
     #
@@ -827,6 +833,10 @@ class Item(Base):
     @property
     def prd_key(self) -> str | None:
         return _key_of(self, self.prd_id, "prd")
+
+    @property
+    def line_key(self) -> str | None:
+        return _key_of(self, self.line_id, "line")
 
 
 @event.listens_for(Item.status, "set", active_history=True)
@@ -1037,6 +1047,9 @@ class Enrolment(Base):
     #: on its own. Not a ForeignKey, for the reason `Item.prd_id` is not — it holds another
     #: entity's frozen id, and a delete there must not reach into a credential's history.
     prd_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: The maintenance line this seat was minted for (GRPH-1685). Same role as `prd_id` and
+    #: exclusive with it: a seat has at most one scope. NULL is not line-scoped.
+    line_id: Mapped[str | None] = mapped_column(String, nullable=True)
     delegation_id: Mapped[str | None] = mapped_column(String, nullable=True)
     #: A REVIEW-ONLY seat (GRPH-988): may hold review work, may never take build work. Not a
     #: role — `reviewer` merged into `worker` in S3 (PRD-39) and a worker both builds and
@@ -1388,6 +1401,34 @@ class Request(Base):
     @property
     def linked_to_key(self) -> str | None:
         return _key_of(self, self.linked_to, "item")
+
+
+class Line(Base):
+    """A project's maintenance line (GRPH-1681): at most one per project.
+
+    Identity only — a frozen id, a per-project number and a title. It deliberately has no
+    body, status, version, grill, baseline or close, so nothing that reads a PRD can read it.
+    The key renders with its own kind letter (`<TAG>-L<number>`), which is what stops a line
+    id resolving as a PRD. `project_id` is unique: the one-line rule is the schema's, not
+    only the service's.
+    """
+
+    __tablename__ = "lines"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # frozen; see Item.id
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), unique=True)
+    number: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(String, default="Maintenance")
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    project: Mapped["Project"] = relationship()
+
+    __table_args__ = (UniqueConstraint("project_id", "number", name="uq_line_project_number"),)
+
+    @property
+    def key(self) -> str:
+        return tagging.render(self.project.tag, "line", self.number)
 
 
 class Prd(Base):
@@ -3862,6 +3903,11 @@ class RoutingDecision(Base):
     agent_model: Mapped[str] = mapped_column(String, default="", server_default="")
     #: Did the claimant hold the entitlement the decision named? NULL until someone claims.
     matched: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    #: GRPH-1712: the ranked candidate set at decision time — the policy in force, the claimant's
+    #: declared entitlements and every org entitlement with its rung, headroom state, stated
+    #: reset and tie-break inputs — so a replay re-ranks THEN, not now. NULL on rows written
+    #: before the column existed: those are not replayable, never "would not have moved".
+    candidates: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 
 import { cn } from "@/lib/cn";
-import { useFleetPolicy, useSaveFleetPolicy } from "@/lib/queries";
-import type { FleetPolicy, HarnessCapacityEntitlement } from "@/lib/types";
+import { useFleetPolicy, useHarnessReplay, useSaveFleetPolicy } from "@/lib/queries";
+import type { FleetPolicy, HarnessCapacityEntitlement, RoutingReplayProposal } from "@/lib/types";
 import { STATE } from "./capacityLook";
 
 function defaultPolicy(): FleetPolicy {
@@ -12,6 +12,8 @@ function defaultPolicy(): FleetPolicy {
     reviewer_cross_vendor: false,
     allowed_harnesses: [],
     routing_mode: "next_available",
+    tie_break: "soonest_reset",
+    when_exhausted: "fall_through",
   };
 }
 
@@ -26,13 +28,31 @@ function mergePolicy(saved: FleetPolicy | null | undefined): FleetPolicy {
     ladder: saved.ladder ?? null,
     routing_mode: saved.routing_mode ?? "next_available",
     subscription_order: saved.subscription_order ?? null,
+    tie_break: saved.tie_break ?? "soonest_reset",
+    when_exhausted: saved.when_exhausted ?? "fall_through",
   };
 }
 
-const RULE_NEXT = (
-  "Subscription with headroom, then an org API key within budget, then local. Among available "
-  + "entitlements, soonest reset wins; unknown follows; exhausted, broken, and unreachable are skipped."
-);
+type TieBreak = "soonest_reset" | "most_headroom" | "cheapest";
+type WhenExhausted = "fall_through" | "hold_until_reset";
+
+const TIE_BREAKS: { id: TieBreak; label: string; rule: string; testid: string }[] = [
+  { id: "soonest_reset", label: "Soonest reset", rule: "soonest reset wins", testid: "routing-tie-soonest" },
+  { id: "most_headroom", label: "Most headroom", rule: "most token budget left this week wins", testid: "routing-tie-headroom" },
+  { id: "cheapest", label: "Cheapest", rule: "lowest list price wins (prepaid first)", testid: "routing-tie-cheapest" },
+];
+const WHEN_EXHAUSTED: { id: WhenExhausted; label: string; testid: string }[] = [
+  { id: "fall_through", label: "Fall through", testid: "routing-exhausted-fall" },
+  { id: "hold_until_reset", label: "Hold until a reset", testid: "routing-exhausted-hold" },
+];
+
+function ruleNext(tie: TieBreak, exhausted: WhenExhausted): string {
+  const rule = TIE_BREAKS.find((t) => t.id === tie)?.rule ?? "soonest reset wins";
+  const head = exhausted === "hold_until_reset"
+    ? "Subscription with headroom only: when that rung has none, the item waits for the earliest stated reset instead of falling to an API key or local."
+    : "Subscription with headroom, then an org API key within budget, then local.";
+  return `${head} Among available entitlements on one rung, ${rule}; unknown follows; exhausted, broken, and unreachable are skipped.`;
+}
 const RULE_CUSTOM = (
   "Each item goes to the highest subscription in this list that has headroom. Entries that are "
   + "exhausted, broken or quiet are skipped, not removed — they take work again when they report "
@@ -58,10 +78,92 @@ const MODES: { id: Mode; label: string; sub: string; testid: string }[] = [
 
 const arrow = "flex size-6 items-center justify-center rounded-[6px] border border-control text-fg-2 hover:bg-surface-3 disabled:text-line-3 disabled:hover:bg-transparent";
 
+/** A small labelled radio group: one of a fixed set of policy values. */
+function Choice<T extends string>({
+  label,
+  testid,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  testid: string;
+  options: { id: T; label: string; testid: string }[];
+  value: T;
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-[10.5px] text-faint">{label}</span>
+      <div role="radiogroup" aria-label={label} data-testid={testid} className="flex w-fit overflow-hidden rounded-[8px] border border-control">
+        {options.map((o, i) => {
+          const on = value === o.id;
+          return (
+            <button
+              key={o.id}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              data-testid={o.testid}
+              onClick={() => onChange(o.id)}
+              className={cn(
+                "px-3 py-[5px] text-[12px]",
+                i > 0 && "border-l border-control",
+                on ? "bg-surface-3 font-medium text-fg" : "text-muted hover:bg-surface-3/50",
+              )}
+            >
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * GRPH-1712 — the rule on screen replayed over the last 7 days of routing decisions, each
+ * re-ranked from the candidates it recorded then (never today's headroom). Decisions recorded
+ * before candidates were stored are counted apart, and when none is replayable the line says so
+ * instead of showing 0.
+ */
+function ReplayLine({ projectId, proposal, draft }: {
+  projectId?: string;
+  proposal: RoutingReplayProposal;
+  draft: boolean;
+}) {
+  const { data, isLoading, isError } = useHarnessReplay(projectId, proposal);
+  if (!projectId || isError) return null;
+  const head = draft ? "Replay of this draft" : "Replay of the rule in force";
+  let body: string;
+  if (isLoading || !data) {
+    body = "replaying the last 7 days…";
+  } else if (data.replayable === 0 || data.moved === null) {
+    body = data.decisions === 0
+      ? `no routing decisions in the last ${data.days} days to replay`
+      : `nothing in the last ${data.days} days is replayable — ${data.not_replayable} `
+        + `decision${data.not_replayable === 1 ? " was" : "s were"} recorded before routing stored its candidates`;
+  } else {
+    const held = data.held ? ` (${data.held} held until a reset)` : "";
+    const legacy = data.not_replayable
+      ? ` · ${data.not_replayable} recorded before candidates were stored ${data.not_replayable === 1 ? "is" : "are"} not replayable`
+      : "";
+    body = `${data.moved} of ${data.replayable} decision${data.replayable === 1 ? "" : "s"} `
+      + `in the last ${data.days} days would have moved${held}${legacy}`;
+  }
+  return (
+    <p data-testid="routing-replay" role="status" className="text-[12px] text-muted">
+      <span className="font-medium text-fg-2">{head}:</span> {body}
+    </p>
+  );
+}
+
 /**
  * PRD-76 — the capacity routing rule on project policy: next available (S4 + D6) or a custom
- * subscription stack-rank. Only what the router does is offered: no alternative tie-breaks,
- * no simulated outcomes, no waiting for a reset. Each ranked row says whether it takes work now.
+ * subscription stack-rank, plus (GRPH-1505) the tie-break the router's last sort key uses and
+ * whether an item falls down the ladder or holds until a reset when the top rung is spent.
+ * Only what the router does is offered; the replay line (GRPH-1712) re-ranks recorded decisions,
+ * it does not simulate today's headroom.
  */
 export function RoutingMode({
   projectId,
@@ -86,6 +188,13 @@ export function RoutingMode({
 
   const [mode, setMode] = useState<Mode>("next_available");
   const [order, setOrder] = useState<string[]>([]);
+  const [tie, setTie] = useState<TieBreak>("soonest_reset");
+  const [exhausted, setExhausted] = useState<WhenExhausted>("fall_through");
+
+  const savedTie: TieBreak = saved.tie_break ?? "soonest_reset";
+  const savedExhausted: WhenExhausted = saved.when_exhausted ?? "fall_through";
+  useEffect(() => { setTie(savedTie); }, [savedTie]);
+  useEffect(() => { setExhausted(savedExhausted); }, [savedExhausted]);
 
   useEffect(() => {
     setMode(saved.routing_mode === "custom_hierarchy" ? "custom_hierarchy" : "next_available");
@@ -98,6 +207,8 @@ export function RoutingMode({
   const savedOrder = editableSubscriptionOrder(saved.subscription_order, subscriptions.map((e) => e.id));
   const dirty =
     mode !== (saved.routing_mode ?? "next_available")
+    || tie !== savedTie
+    || exhausted !== savedExhausted
     || (mode === "custom_hierarchy" && JSON.stringify(order) !== JSON.stringify(savedOrder));
 
   useEffect(() => { onDraft?.(dirty); }, [dirty, onDraft]);
@@ -119,6 +230,8 @@ export function RoutingMode({
       ...saved,
       routing_mode: mode,
       subscription_order: mode === "custom_hierarchy" ? order : null,
+      tie_break: tie,
+      when_exhausted: exhausted,
     };
     save.mutate(body);
   };
@@ -126,12 +239,21 @@ export function RoutingMode({
   const discard = () => {
     setMode(saved.routing_mode === "custom_hierarchy" ? "custom_hierarchy" : "next_available");
     setOrder(editableSubscriptionOrder(saved.subscription_order, subscriptions.map((e) => e.id)));
+    setTie(savedTie);
+    setExhausted(savedExhausted);
   };
+
+  const proposal = useMemo<RoutingReplayProposal>(() => ({
+    tie_break: tie,
+    when_exhausted: exhausted,
+    routing_mode: mode,
+    subscription_order: mode === "custom_hierarchy" ? order : null,
+  }), [tie, exhausted, mode, order]);
 
   const byId = new Map(subscriptions.map((e) => [e.id, e]));
   const topLive = order.find((id) => byId.get(id)?.state === "available");
   const title = mode === "next_available"
-    ? "Route to the next available entitlement · ties by soonest stated reset"
+    ? `Route to the next available entitlement · ties by ${TIE_BREAKS.find((t) => t.id === tie)?.label.toLowerCase()}`
     : `Route by preferred hierarchy · ${topLive ?? "no subscription has headroom"}${topLive ? " first" : ""}`;
 
   return (
@@ -153,7 +275,7 @@ export function RoutingMode({
       <div className="flex flex-col gap-[3px]">
         <div data-testid="routing-rule-title" className="text-[13.5px] font-medium text-fg">{title}</div>
         <p data-testid={mode === "next_available" ? "routing-rule-in-force" : "routing-rule-custom"} className="max-w-[84ch] text-[12px] leading-[1.5] text-muted">
-          {mode === "next_available" ? RULE_NEXT : RULE_CUSTOM}
+          {mode === "next_available" ? ruleNext(tie, exhausted) : RULE_CUSTOM}
         </p>
       </div>
 
@@ -234,6 +356,25 @@ export function RoutingMode({
           )}
         </div>
       )}
+
+      <div className="flex flex-wrap items-start gap-4">
+        <Choice
+          label="Break ties by"
+          testid="routing-tie-break"
+          options={TIE_BREAKS}
+          value={tie}
+          onChange={setTie}
+        />
+        <Choice
+          label="When nothing above has headroom"
+          testid="routing-when-exhausted"
+          options={WHEN_EXHAUSTED}
+          value={exhausted}
+          onChange={setExhausted}
+        />
+      </div>
+
+      <ReplayLine projectId={projectId} proposal={proposal} draft={dirty} />
 
       <div className="flex flex-wrap items-center gap-1.5">
         <button

@@ -54,7 +54,7 @@ import {
   type Level,
   type MapLayout,
 } from "./levels";
-import { MEMORY_WRITE_MODES, MemoryWriteModeControl, useCanWriteRules } from "./LibraryRuleControls";
+import { FOUND_BUG_DEFAULT, FOUND_BUG_RULE, MEMORY_WRITE_MODES, MemoryWriteModeControl, useCanWriteRules } from "./LibraryRuleControls";
 import { RecommendedSheet, UnmappedSheet, useDialogBehavior } from "./RefusalPanels";
 import { AdminGitopsLink, BudgetCapEditor, GITOPS_RULE_FIELDS, useOrgName } from "./RuleEditors";
 import { RuleHistory } from "./RuleHistory";
@@ -1156,6 +1156,15 @@ function Inspector({
               </span>
             </div>
           )}
+          {!editing && stage?.id === "build" && !rules.some((r) => r.id === FOUND_BUG_RULE) && (
+            <div className="flex flex-col gap-1 rounded-[8px] px-3 py-2.5" style={{ border: "1.5px dashed #626c75" }} data-testid="rules-found-bug-absent">
+              <span className="text-[13px] font-semibold">Found bugs</span>
+              <span className={cn(MONO, "text-[10.5px] text-fg-2")}>{FOUND_BUG_RULE}</span>
+              <span className="text-[12px] leading-snug text-muted">
+                The installed pack has no {FOUND_BUG_RULE} template, so the default, {FOUND_BUG_DEFAULT}, is in force.
+              </span>
+            </div>
+          )}
           {!editing && rules.length > 0 && (
             <div className="flex flex-col divide-y divide-line">
               {rules.map((r) => (
@@ -1295,6 +1304,13 @@ function RuleRow({
       {valueLine !== null && !editing && (
         <span data-testid="rules-value" className={cn(MONO, "break-words text-[13px] font-semibold")} style={{ color: valueLine === "— no value" ? "#ff6b6b" : "#e6e9ec" }}>
           {valueLine}
+        </span>
+      )}
+      {rule.id === FOUND_BUG_RULE && library && !rule.unmeasured_reason && (
+        <span data-testid="rules-found-bug-effective" className="text-[11.5px] leading-snug text-fg-2">
+          {rule.value === true
+            ? `Effective mode: ${paramText(rule.id, "mode", (rule.params?.value as Record<string, unknown> | null)?.mode ?? FOUND_BUG_DEFAULT)}.`
+            : `Off: the default, ${FOUND_BUG_DEFAULT}, is in force.`}
         </span>
       )}
       {rule.id === "gitops.model" && <ModelWhere />}

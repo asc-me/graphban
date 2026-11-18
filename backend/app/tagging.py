@@ -27,12 +27,12 @@ TAG_RE = re.compile(rf"^[A-Z][A-Z0-9]{{{TAG_MIN - 1},{TAG_MAX - 1}}}$")
 # from the project tag is retag-safe for free. PRD-17's data model says "AGT-n"; that shape
 # is the PRE-tag, product-wide prefix PRD-13 exists to replace (it is what LEGACY_KEY_RE
 # still resolves), so the convention the same sentence cites wins over the literal example.
-KIND_LETTER = {"item": "", "request": "R", "prd": "P", "agent": "A"}
+KIND_LETTER = {"item": "", "request": "R", "prd": "P", "agent": "A", "line": "L"}
 _LETTER_KIND = {v: k for k, v in KIND_LETTER.items()}
 
 # A rendered key. The first hyphen delimits the tag, so this stays unambiguous even
 # for a tag that contains digits (`A1-R12` is request 12 of the project tagged A1).
-KEY_RE = re.compile(rf"^([A-Za-z][A-Za-z0-9]{{{TAG_MIN - 1},{TAG_MAX - 1}}})-([RrPpAa]?)(\d+)$")
+KEY_RE = re.compile(rf"^([A-Za-z][A-Za-z0-9]{{{TAG_MIN - 1},{TAG_MAX - 1}}})-([RrPpAaLl]?)(\d+)$")
 
 
 # A pre-tag id: `AL-12`, `AL-01`, `R-33`, `PRD-4`. The prefix was a product-wide

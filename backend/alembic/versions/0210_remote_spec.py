@@ -1,15 +1,15 @@
 """remote_spec: specs published by other deployments, read-only here (GRPH-1677).
 
-Revision ID: 0206
-Revises: 0205
+Revision ID: 0210
+Revises: 0209
 """
 from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0206"
-down_revision: Union[str, None] = "0205"
+revision: str = "0210"
+down_revision: Union[str, None] = "0209"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

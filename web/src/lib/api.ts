@@ -27,6 +27,7 @@ import type {
   AuditCoverage,
   ChatResponse,
   CloseReport,
+  PrdCompleteness,
   EvidenceRollup,
   OrgRequest,
   PrototypeEmitOut,
@@ -59,6 +60,9 @@ import type {
   InvitePreview,
   Item,
   ItemDetail,
+  ItemCreateBody,
+  MaintenanceLine,
+  UnscopedFixes,
   EventPage,
   EventsQuery,
   GrillMessage,
@@ -766,7 +770,14 @@ export const api = {
   // The shell's badge numbers. It used to fetch four whole collections to call `.length` on
   // them — 2.1 MB on every route to draw three badges and a stat (GRPH-431).
   counts: (projectId: string) => request<ShellCounts>(`/projects/${projectId}/counts`),
-  createItem: (projectId: string, body: Partial<ItemDetail>) =>
+  line: (projectId: string) => request<MaintenanceLine | null>(`/projects/${encodeURIComponent(projectId)}/line`),
+  unscopedFixes: (projectId: string) =>
+    request<UnscopedFixes>(`/projects/${encodeURIComponent(projectId)}/line/unscoped_fixes`),
+  itemsFull: (projectId?: string) =>
+    request<ItemDetail[]>(`/items?fields=full${projectId ? `&project_id=${projectId}` : ""}`),
+  createLine: (projectId: string) =>
+    request<MaintenanceLine>(`/projects/${encodeURIComponent(projectId)}/line`, { method: "POST", body: "{}" }),
+  createItem: (projectId: string, body: ItemCreateBody) =>
     request<Item>("/items", {
       method: "POST",
       body: JSON.stringify(withProject(projectId, body)),
@@ -862,6 +873,16 @@ export const api = {
   harnessCapacity: (projectId: string) =>
     request<import("@/lib/types").HarnessCapacity>(
       `/harness/capacity?project_id=${encodeURIComponent(projectId)}`),
+  harnessReplay: (projectId: string, proposal: import("@/lib/types").RoutingReplayProposal = {}) => {
+    const q = new URLSearchParams({ project_id: projectId });
+    if (proposal.tie_break) q.set("tie_break", proposal.tie_break);
+    if (proposal.when_exhausted) q.set("when_exhausted", proposal.when_exhausted);
+    if (proposal.ladder?.length) q.set("ladder", proposal.ladder.join(","));
+    if (proposal.routing_mode) q.set("routing_mode", proposal.routing_mode);
+    if (proposal.subscription_order?.length) q.set("subscription_order", proposal.subscription_order.join(","));
+    if (proposal.days) q.set("days", String(proposal.days));
+    return request<import("@/lib/types").RoutingReplay>(`/harness/capacity/replay?${q.toString()}`);
+  },
   harnessLadder: (projectId: string) =>
     request<import("@/lib/types").HarnessLadder>(
       `/harness/ladder?project_id=${encodeURIComponent(projectId)}`),
@@ -1133,6 +1154,7 @@ export const api = {
   // why it is the spine of the reviewer view: a section a rebaseline removed does not
   // exist in the governing one, so no other surface can show it was cut.
   closeReport: (id: string) => request<CloseReport>(`/prds/${id}/close-report`),
+  prdCompleteness: (id: string) => request<PrdCompleteness>(`/prds/${id}/completeness`),
   prdEvidence: (id: string) => request<EvidenceRollup>(`/prds/${id}/evidence`),
   auditCoverage: (id: string) => request<AuditCoverage>(`/prds/${id}/audit-coverage`),
 

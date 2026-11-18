@@ -205,6 +205,10 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
     Rule("rules.toggle_needs_admin", "learn", "Toggles need a project admin",
          "A project's library rule toggles are set by its owner or an admin.",
          "enforced", _src("app/services/rule_toggles.py", "Refused"), "code"),
+    Rule("line.one_per_project", "plan", "One maintenance line per project",
+         "A project has at most one maintenance line; a second create_line is refused and "
+         "names the existing line.",
+         "enforced", _src("app/services/lines.py", "Refused"), "code"),
     Rule("agents.operating_loop", "build", "Operating loop",
          "Agents follow the operating loop and invariants in AGENTS.md.",
          "advisory", Enforcer("doc", "AGENTS.md"), "repo_file", channel="doc"),
@@ -217,7 +221,7 @@ RULES_BY_ID = {r.id: r for r in RULES}
 #: draw each twice — so a refusal citing one is valid without being in `RULES_BY_ID`.
 LIBRARY_BOUND_RULE_IDS = frozenset({"review.sabotage_required", "review.gap_blocks_sign_off",
                                     "review.distinct_vendor", "build.engine_evidence",
-                                    "accept.human_clause_blocks"})
+                                    "accept.human_clause_blocks", "build.found_bug"})
 
 #: Package data written by the build of what ships — `graphban_pack.py` runs
 #: `scripts/refusal_ratchet.py publish`, which writes nothing for a failing tree (GRPH-1185).
@@ -347,11 +351,8 @@ ADJUDICATION = "memory.independent_adjudication"
 
 
 def _write_mode(db: Session, project_id: str | None) -> str:
-    from app.models import Project
-    from app.services import memory
-    p = db.get(Project, project_id) if project_id else None
-    mode = p.memory_write_mode if p else "review"
-    return mode if mode in memory.WRITE_MODES else "review"
+    from app.services import rule_toggles
+    return rule_toggles.memory_write_mode(db, project_id)
 
 
 def _budget_cap_value(db: Session, project_id: str | None) -> dict:
@@ -368,8 +369,13 @@ def registry(db: Session, project_id: str | None, view=None) -> list[dict]:
     a linked box each resolve is an org fetch and two of them can disagree (GRPH-1196)."""
     if view is None:
         view = gitops.resolve(db, project_id)
+    from app.services import rule_toggles
     out = []
     for r in RULES:
+        if r.id in rule_toggles.LIBRARY:
+            # GRPH-1603: a static rule the pack now carries (`memory.write_mode`) is drawn once,
+            # from the library, where its value and source resolve.
+            continue
         d = {
             "id": r.id, "stage": r.stage, "title": r.title, "summary": r.summary,
             "enforcement": r.enforcement, "channel": r.channel,

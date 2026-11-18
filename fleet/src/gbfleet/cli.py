@@ -364,6 +364,12 @@ def build_parser() -> argparse.ArgumentParser:
              "in the project, and `backlog` is no defence — backlog is claimable by design "
              "(GRPH-397). Needs a credential with the `fleet` tool tier to be advertised")
     until.add_argument(
+        "--line", nargs="?", const="", default=None, metavar="LINE",
+        help="drain the project's maintenance line (GRPH-1697): claims, reviews and exits on "
+             "line items only. Bare `--line` is the project's line; a line id names it. "
+             "Exclusive with --prd. Runs in its own clone: one supervisor lock per checkout, "
+             "so do not start it on a checkout a --prd drain holds")
+    until.add_argument(
         "--mcp-server", action="append", default=[], metavar="NAME",
         help="share one of YOUR MCP servers with each child, by exact name (e.g. context7). "
              "Repeatable. Exact names only — no patterns — and an unknown name refuses the "
@@ -758,6 +764,9 @@ def _until(args) -> int:
         print(f"gbfleet until: ${API_KEY_ENV} is not set", file=sys.stderr)
         return 2
 
+    if args.line is not None and args.prd:
+        print("gbfleet until: --prd and --line cannot be combined", file=sys.stderr)
+        return 2
     template = [a for a in (args.argv or []) if a != "--"]
     try:
         factory = (
@@ -814,7 +823,10 @@ def _until(args) -> int:
             elif remote:
                 dry_base = default_ref(repo, remote)
             got = until_mod.plan(planner, args.prd or None, args.max_workers,
-                                 repo=repo, base=dry_base)
+                                 repo=repo, base=dry_base, line=args.line)
+        except until_mod.ConfigError as exc:
+            print(f"gbfleet until --dry-run: {exc}", file=sys.stderr)
+            return 2
         except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
             print(f"gbfleet until --dry-run: {exc}", file=sys.stderr)
             return 2
@@ -853,6 +865,7 @@ def _until(args) -> int:
             debug=args.debug,
             request=args.request,
             prd=args.prd or None,
+            line=args.line,
             budget=args.budget or None,
             shared=_shared_servers(args),
             tiers=tiers,
@@ -1161,6 +1174,11 @@ def _service(args) -> int:
     if done.state is not None and done.state.idle:
         print(f"{plan.name}: ran and exited 0 — that is what `until` does when there is no "
               f"ready work. Next run in {plan.every}s")
+        return 0
+    if done.state is not None and done.state.unsettled:
+        # GRPH-1698: exited 0 but not idle — unready line work, or no reason in the log yet.
+        # Not idle, and not a crash either: say which, and do not fail the install.
+        print(f"{done.state.line()}. Next run in {plan.every}s")
         return 0
     code = "unknown" if done.state is None or done.state.last_exit is None \
         else done.state.last_exit

@@ -53,6 +53,7 @@ from app.services import scans as scans_svc
 from app.services import touchpoint_check
 from app.services import events as events_svc
 from app.services import fleet as fleet_svc
+from app.services import lines as lines_svc
 from app.services import gitops
 from app.services import idempotency as idem_svc
 from app.services import insights as insights_svc
@@ -192,6 +193,11 @@ TOOLS: list[dict[str, Any]] = [
                 "kind": {"enum": _KIND_ENUM},
                 "prd_id": {"type": "string"},
                 "prd_section": {"type": "string"},
+                "line_id": {"type": "string"},
+                "blocks": {"type": "string"},
+                "severity": {"enum": ["security"]},
+                "distinct_from": {"type": "array"},
+                "found_during": {"type": "string"},
                 "question": {"type": "string", "description": "Asks a human."},
                 "options": {"type": "array", "items": {"type": "string"}},
             },
@@ -221,6 +227,8 @@ TOOLS: list[dict[str, Any]] = [
                 "kind": {"enum": _KIND_ENUM},
                 "prd_id": {"type": "string"},
                 "prd_section": {"type": "string"},
+                "line_id": {"type": "string"},
+                "severity": {"enum": ["security"]},
                 "evidence": {
                     "type": "array",
                     # The kind list that used to live here is dropped, not squeezed: the
@@ -474,6 +482,19 @@ TOOLS: list[dict[str, Any]] = [
             },
             "required": ["title"],
         },
+    },
+    {
+        "name": "create_line",
+        "description": "Open the project's one maintenance line (title defaults to Maintenance).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+        },
+    },
+    {
+        "name": "unscoped_fixes",
+        "description": "Fixes with no PRD and no line: {ids, count}. Set line_id to move one.",
+        "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "get_prd",
@@ -1553,7 +1574,7 @@ _PROJECT_SCOPED = {
     "get_backlog", "suggest_next", "generate_digest", "link_items", "unlink_items", "claim_next", "next_cluster",
     "describe_code", "get_code_map", "code_neighbors", "search_code", "graph_query",
     "link_code", "unlink_code", "record_scan", "scan_status", "scans_due", "create_prd",
-    "put_document", "get_document", "search_docs",
+    "create_line", "unscoped_fixes", "put_document", "get_document", "search_docs",
     "open_design", "put_preamble", "put_set_constraints",
     "confirm_tier", "get_design_set",
     "compile_prompts", "put_canvas", "file_finding", "resolve_finding",
@@ -1596,7 +1617,7 @@ _READ_ONLY = {
     "get_backlog", "get_item_details", "suggest_next", "generate_digest", "related_work",
     "prd_coverage", "grill_prd", "get_code_map", "code_neighbors", "search_code",
     "graph_query", "scan_status", "scans_due",
-    "prd_acceptance", "learning_loop", "fleet_status",
+    "prd_acceptance", "learning_loop", "fleet_status", "unscoped_fixes",
     # PRD-62 S2: a read of the org's registry; `set_entitlement` is the write.
     "list_entitlements",
     # PRD-P63 S2a: there is no MCP write for it at all (D10).
@@ -1932,6 +1953,8 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "properties": {"prd_id": _STR, "proposals": {"type": "array"}, "created": {"type": "array"}},
     },
     "create_prd": _PRD_SCHEMA_REF,
+    "create_line": {"type": "object", "properties": {"id": _STR, "title": _STR}},
+    "unscoped_fixes": {"type": "object", "properties": {"ids": {"type": "array"}, "count": {"type": "integer"}}},
     "update_prd": _PRD_SCHEMA_REF,
     "answer_grill": {
         "type": "object",
@@ -2244,6 +2267,10 @@ _FLEET_ONLY_ARGS = {
     "mint_enrolment": {
         **_SEAT_SCOPE_ARG,
         **_BOUND_ONLY_ARG,
+        "line": {
+            "type": "string",
+            "description": "Maintenance line this seat may claim within. Exclusive with scope.",
+        },
         "item": {
             "type": "string",
             "description": "Item a bound_only seat is bound to. Required with bound_only; "
@@ -2724,6 +2751,20 @@ def _prd_ref(db: Session, project_id: str | None, asked: str | None) -> str | No
     return items_svc._stored_prd_id(db, asked, project_id) or asked
 
 
+def _seat_line_id(db: Session, project_id: str | None, asked: str | None) -> str | None:
+    """Resolve the line a seat is scoped to into the stored id (GRPH-1685), or None.
+
+    Refused when unknown or another project's, for the reason `_scope_id` gives: a scope that
+    quietly stops applying is a worse failure than a refused mint.
+    """
+    if not asked:
+        return None
+    try:
+        return lines_svc.resolve_for_item(db, asked, project_id or "")
+    except ValueError as e:
+        raise errors.Validation(str(e))
+
+
 def _scope_id(db: Session, project_id: str | None, asked: str | None) -> str | None:
     """Resolve a PRD scope the caller typed into the stored id the columns hold (GRPH-827).
 
@@ -3008,6 +3049,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # First-run signal (AL-133): an empty project → call setup_project for a bootstrap.
             "empty": setup_svc.is_empty(db, pid) if pid else False,
             "gitops": gitops.for_agent(view),
+            # GRPH-1681. Null = the line has not been created, NOT "no bugs".
+            "maintenance_line": lines_svc.context_field(db, pid),
         }
     if name == "create_project":
         # An AUTHORITY gate, narrowly opened (PRD-14 D4). Both refusals below are the
@@ -3073,9 +3116,19 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         is_wait = bool(args.get("question")) or any(
             str(t).strip().lower() == "wait:decision" for t in (args.get("tags") or []))
         caller = _agent_for_call(db, key, args, session_id) if is_wait else None
+        held: list = []
+        if args.get("kind") == "fix" or any(
+                str(t).strip().lower() == "bug" for t in (args.get("tags") or [])):
+            who = _agent_for_call(db, key, args, session_id)
+            if who:
+                held = list(db.scalars(select(Item).where(
+                    Item.claimed_by == who, Item.status == "in_progress")).all())
         item = items_svc.create_item(
             db,
             commit=not is_wait,
+            distinct_from=args.get("distinct_from"),
+            found_during=args.get("found_during"),
+            held=held,
             title=args["title"],
             description=args.get("description", ""),
             tags=args.get("tags", []),
@@ -3089,6 +3142,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             prd_section=args.get("prd_section", ""),
             question=args.get("question"),
             options=args.get("options"),
+            line_id=args.get("line_id"),
+            severity=args.get("severity", ""),
+            blocks=args.get("blocks"),
+            agent_create=True,
             reporter={"name": "Agent", "handle": "mcp", "avatar": "#a78bfa"},
         )
         wait_link = waits_svc.attach_to_claim(db, item, caller) if is_wait else None
@@ -3147,6 +3204,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             ack_section_drift=args.get("ack_section_drift"),
             evidence=args.get("evidence"),
             branch=args.get("branch"),
+            severity=args.get("severity"),
+            # Only when sent: a None here would read as "clear the line".
+            **({"line_id": args["line_id"]} if "line_id" in args else {}),
         )
         if item is None:
             raise errors.NotFound(f"item not found: {args['id']}")
@@ -3518,9 +3578,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
 
         got = fleet_svc.park(db, _attempt, agent_id=args.get("agent_id"),
                              wait_seconds=args.get("wait_seconds"))
-        return got or miss.get("last") or {
+        reply = got or miss.get("last") or {
             "claimed": False, "items": [], "areas": [], "predicted": False, "held_by": [],
             "reason": "nothing ready to claim"}
+        if items_svc.seat_line(db, agent):
+            # GRPH-1685. Line seats only; an empty list means it looked and found none.
+            reply = {**reply, "unready": items_svc.unready_line_items(db, pid)}
+        return reply
     if name == "claim_review":
         agent = fleet_svc.caller_identity(args.get("agent_id"), key)
         item = fleet_svc.park(
@@ -3803,6 +3867,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 db, minter_id=args["agent_id"], project_id=project_id, role=args["role"],
                 api_key=key, wave=args.get("wave"),
                 prd_id=_scope_id(db, project_id, args.get("scope")),
+                line_id=_seat_line_id(db, project_id, args.get("line")),
                 review_only=bool(args.get("review_only")),
                 item_id=item_id, bound_only=bound_only)
         except ValueError as e:
@@ -3964,6 +4029,11 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             created_by=_key_user_id(db, key),
         )
         return _prd_dict(prd)
+    if name == "create_line":
+        return lines_svc.line_dict(
+            lines_svc.create_line(db, pid, args.get("title"), created_by=_key_user_id(db, key)))
+    if name == "unscoped_fixes":
+        return lines_svc.unscoped_fixes(db, pid)
     if name == "get_prd":
         # The read that was missing (GRPH-519). `answer_grill` reports `body_absorbed: false`,
         # and the only tool that could fix it replaces the body WHOLE — so without this an

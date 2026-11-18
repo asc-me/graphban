@@ -5,6 +5,19 @@ It files a small item tagged `wait:merge` (or decision / secret / access /
 deploy), blocks the original on that item, and leaves. Free-text `blocker`
 without a type is not a wait — "please look" is stuck, not a human act.
 
+A wait comes in two shapes, and answering a decision treats them differently (GRPH-1714):
+
+- A STANDALONE wait is a small item that other items depend on and that carries no build
+  acceptance of its own. Answering it marks it `done` and releases its dependents.
+- An item that ASKS ITS OWN QUESTION (`create_item(question=…)` on the work itself) is the
+  work. It is that shape when it carries build acceptance (`## Acceptance` or any shape
+  `fleet.parse_acceptance` reads, readable or not) or when nothing depends on it. Answering it
+  records the answer, removes `wait:decision`, clears the blocker and returns it to `next`
+  (`in_progress` while its lease is live). It never reaches `done`: an answer is not proof the
+  work was built, and `done` without an attestation is the "absence reads as clean" class.
+
+`carries_own_work` is the one rule that tells them apart.
+
 When the wait item reaches `done`, dependents that were `blocked` return to
 `next` unless another unmet dep remains. `in_progress` with a live lease is
 not rewritten. Moving the original to `review` or `done` while a wait dep is
@@ -162,7 +175,7 @@ def release_waiters(db: Session, wait: Item) -> list[str]:
 ACTIONS = ("answer", "unblock", "release_claim", "escalate", "snooze")
 _ACTION_EVENTS = tuple(f"blocker.{a}" for a in ACTIONS)
 _SNAP_FIELDS = ("status", "blocker", "claimed_by", "claimed_at", "assignee", "snoozed_until",
-                "decision")
+                "decision", "tags")
 
 
 class ActionRefused(ValueError):
@@ -190,7 +203,10 @@ def _parse_dt(v):
 
 
 def _restore(item: Item, snap: dict) -> None:
+    # A snapshot written before a field joined `_SNAP_FIELDS` restores what it holds.
     for f in _SNAP_FIELDS:
+        if f not in snap:
+            continue
         v = snap[f]
         setattr(item, f, _parse_dt(v) if f in ("claimed_at", "snoozed_until") else v)
 
@@ -416,10 +432,34 @@ def sweep_questions(db: Session, *, grace_seconds: int | None = None, now=None) 
     return handed
 
 
+def carries_own_work(db: Session, item: Item) -> bool:
+    """True when a decision item is itself the work, not a standalone wait (GRPH-1714).
+
+    It is the work when its description carries build acceptance (a clause `parse_acceptance`
+    reads, or acceptance text it cannot read: written acceptance is work either way), or when
+    no item depends on it, since a wait nothing waits on releases nothing by being `done`.
+    Only a dependency target with no acceptance of its own is a standalone wait.
+    """
+    from sqlalchemy import select
+
+    from app.models import Link
+    from app.services.fleet import parse_acceptance
+
+    clauses, unreadable = parse_acceptance(item.description or "")
+    if clauses or unreadable:
+        return True
+    return db.scalar(select(Link.a).where(
+        Link.type == "dependency", Link.b == item.id).limit(1)) is None
+
+
 def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: str | None = None,
                 actor=None, surface: str = "rest", agent: str | None = None,
                 source: dict | None = None, needs_person: bool = False) -> dict:
     """Record the answer on a decision wait, mark it done, and release what waited on it.
+
+    An item that asks its own question (`carries_own_work`) is not marked done: the answer is
+    recorded, `wait:decision` and the blocker are removed, and it returns to `next` (or stays
+    `in_progress` while its lease is live) to be built, reviewed and signed off as any work.
 
     An agent (`agent` set) must name a `source`; a person's answer carries none. `needs_person`
     records no answer: it only stamps `decision.needs_person_at` (S4 hands it to a person).
@@ -476,7 +516,18 @@ def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: s
     # attestation and releases its dependents (`release_waiters`).
     from app.services import items as items_svc
 
-    items_svc.update_item(db, wait.id, status="done", blocker="")
+    if carries_own_work(db, wait):
+        wait.tags = [t for t in (wait.tags or []) if str(t).lower() != "wait:decision"]
+        wait.blocker = ""
+        if wait.status == "blocked":
+            if _lease_live(wait):
+                wait.status = "in_progress"
+            else:
+                wait.status = "next"
+                wait.claimed_by, wait.claimed_at, wait.assignee = None, None, ""
+        db.flush()
+    else:
+        items_svc.update_item(db, wait.id, status="done", blocker="")
     db.refresh(wait)
     for dep, _ in touched.values():
         db.refresh(dep)
@@ -487,7 +538,8 @@ def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: s
     alerts_svc.clear_for_item(db, wait.id)
     db.commit()
     db.refresh(wait)
-    return {"wait": wait.key, "answer": answer, "released": released, "event_id": eid,
+    return {"wait": wait.key, "status": wait.status, "answer": answer, "released": released,
+            "event_id": eid,
             "answered_by": answered_by_line(answer),
             "quote": (answer.get("source") or {}).get("quote"),
             "drain": drain_note(db, wait)}
@@ -615,7 +667,8 @@ def undo(db: Session, item_id: str, *, actor=None, surface: str = "rest") -> dic
     snaps = (last.meta or {}).get("items") or {}
     rows = {i: db.get(Item, i) for i in snaps}
     for i, row in rows.items():
-        if row is None or _snap(row) != snaps[i]["after"]:
+        after = snaps[i]["after"]
+        if row is None or {k: v for k, v in _snap(row).items() if k in after} != after:
             raise ActionRefused(
                 f"{item.key} changed after `{last.action}`; undo is only for the latest change")
     for i, row in rows.items():

@@ -18,8 +18,17 @@ from app.models import FleetProfile, Project, utcnow
 
 AXES: tuple[str, ...] = ("cost", "quality", "latency", "locality")
 POLICY_KEYS: tuple[str, ...] = ("local_only", "reviewer_cross_vendor", "allowed_harnesses", "caps",
-                                 "cluster_ceiling", "ladder", "routing_mode", "subscription_order")
+                                 "cluster_ceiling", "ladder", "routing_mode", "subscription_order",
+                                 "tie_break", "when_exhausted")
 ROUTING_MODES: tuple[str, ...] = ("next_available", "custom_hierarchy")
+#: GRPH-1505: the router's LAST sort key. Availability, the ladder rung and the subscription
+#: order still decide first; this only breaks what they leave tied. `soonest_reset` is S4's.
+TIE_BREAKS: tuple[str, ...] = ("soonest_reset", "most_headroom", "cheapest")
+DEFAULT_TIE_BREAK = "soonest_reset"
+#: GRPH-1505: when nothing on the ladder's top rung has headroom, fall to the next rung (S4) or
+#: hold the item until a stated reset.
+WHEN_EXHAUSTED: tuple[str, ...] = ("fall_through", "hold_until_reset")
+DEFAULT_WHEN_EXHAUSTED = "fall_through"
 #: Capacity-routing rungs (PRD-62 D6), in the default order: a subscription with headroom, then
 #: an org API key within its stated budget, then a local model. `cloud` entitlements ride the
 #: `api_key` rung (both are metered by a handle the runner resolves).
@@ -184,8 +193,12 @@ def normalise_policy(raw: Any) -> dict | None:
     ladder = _ladder(raw.get("ladder"))
     routing_mode = _routing_mode(raw.get("routing_mode"))
     subscription_order = _subscription_order(raw.get("subscription_order"))
+    tie_break = _choice(raw.get("tie_break"), "tie_break", TIE_BREAKS, DEFAULT_TIE_BREAK)
+    when_exhausted = _choice(raw.get("when_exhausted"), "when_exhausted", WHEN_EXHAUSTED,
+                             DEFAULT_WHEN_EXHAUSTED)
     if (not local_only and not cross and not allowed and not caps and not ceiling and not ladder
-            and routing_mode == "next_available" and not subscription_order):
+            and routing_mode == "next_available" and not subscription_order
+            and tie_break == DEFAULT_TIE_BREAK and when_exhausted == DEFAULT_WHEN_EXHAUSTED):
         return None
     out = {"local_only": local_only, "reviewer_cross_vendor": cross, "allowed_harnesses": allowed}
     if caps:
@@ -198,7 +211,32 @@ def normalise_policy(raw: Any) -> dict | None:
         out["routing_mode"] = routing_mode
         if subscription_order:
             out["subscription_order"] = subscription_order
+    # Defaults are not stored, like `routing_mode`: a policy that never chose reads as today's.
+    if tie_break != DEFAULT_TIE_BREAK:
+        out["tie_break"] = tie_break
+    if when_exhausted != DEFAULT_WHEN_EXHAUSTED:
+        out["when_exhausted"] = when_exhausted
     return out
+
+
+def _choice(value: Any, key: str, allowed: tuple[str, ...], default: str) -> str:
+    if value is None or value == "":
+        return default
+    if value not in allowed:
+        raise ProfileInvalid(f"{key} must be one of {list(allowed)}")
+    return value
+
+
+def tie_break_of(db: Session, project_id: str | None) -> str:
+    policy = policy_of(db, project_id) or {}
+    value = policy.get("tie_break") if isinstance(policy, dict) else None
+    return value if value in TIE_BREAKS else DEFAULT_TIE_BREAK
+
+
+def when_exhausted_of(db: Session, project_id: str | None) -> str:
+    policy = policy_of(db, project_id) or {}
+    value = policy.get("when_exhausted") if isinstance(policy, dict) else None
+    return value if value in WHEN_EXHAUSTED else DEFAULT_WHEN_EXHAUSTED
 
 
 def _routing_mode(value: Any) -> str:

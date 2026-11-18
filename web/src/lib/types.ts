@@ -1,6 +1,25 @@
 export type Status = "backlog" | "next" | "in_progress" | "review" | "done" | "blocked";
 export type Fidelity = "low" | "high";
 /** What kind of change an item is (GRPH-1358); `""` = not recorded, NOT "not a feature". */
+export type Severity = "" | "security";
+
+/** The project's maintenance line (GRPH-1681). */
+export interface MaintenanceLine {
+  id: string;
+  title: string;
+}
+
+/** `GET /projects/{id}/line/unscoped_fixes` (GRPH-1686): `count` is present, and 0 when none. */
+export interface UnscopedFixes {
+  ids: string[];
+  count: number;
+}
+
+/** POST /items body for a fix (GRPH-1683): scope is `line_id` or `prd_id` + `blocks`. */
+export interface ItemCreateBody extends Partial<ItemDetail> {
+  blocks?: string;
+}
+
 export type ItemKind = "feature" | "fix" | "chore" | "";
 /**
  * Where an item's work lands (GRPH-832). `repo` changes files in a worktree; `deploy` acts on
@@ -770,6 +789,10 @@ export interface Item {
   fidelity: Fidelity;
   /** Always sent by the server; optional only so fixtures predating it still type-check. */
   kind?: ItemKind;
+  /** The maintenance line a fix is filed on (GRPH-1681); null/absent for every other item. */
+  line_id?: string | null;
+  /** GRPH-1683: `""` = not recorded, `security` = a security fix. */
+  severity?: Severity;
   /** Where this item's work lands (GRPH-832). `deploy` is refused to every spawned agent. */
   reach: Reach;
   created_at: string;
@@ -2619,6 +2642,10 @@ export interface FleetPolicy {
   /** GRPH-P76: next available (S4) or stack-ranked subscriptions on the policy. */
   routing_mode?: "next_available" | "custom_hierarchy" | null;
   subscription_order?: string[] | null;
+  /** GRPH-1505: the router's LAST sort key. Absent = soonest reset (the default, not stored). */
+  tie_break?: "soonest_reset" | "most_headroom" | "cheapest" | null;
+  /** GRPH-1505: when the ladder's top rung has no headroom. Absent = fall through. */
+  when_exhausted?: "fall_through" | "hold_until_reset" | null;
 }
 
 export interface FleetProfileRead {
@@ -3689,8 +3716,45 @@ export interface HarnessRoutingReason {
   at: string | null;
 }
 
+/** GRPH-1712: one decision a draft policy would have moved, re-ranked from its stored candidates. */
+export interface RoutingReplayMove {
+  item_key: string;
+  at: string;
+  from: { verdict: string; entitlement_id: string | null };
+  to: { verdict: string; entitlement_id: string | null };
+}
+
+/** GRPH-1712: GET /harness/capacity/replay — the routing decisions of the window re-ranked under a
+ *  draft policy. `moved`/`held` are null when nothing in the window is replayable (unknown, not 0). */
+export interface RoutingReplay {
+  project_id: string;
+  days: number;
+  window_start: string;
+  window_end: string;
+  decisions: number;
+  replayable: number;
+  not_replayable: number;
+  moved: number | null;
+  held: number | null;
+  examples: RoutingReplayMove[];
+  reason: string | null;
+}
+
+/** The draft a replay re-ranks under; an absent key keeps what each decision recorded. */
+export interface RoutingReplayProposal {
+  tie_break?: string;
+  when_exhausted?: string;
+  ladder?: string[];
+  routing_mode?: string;
+  subscription_order?: string[] | null;
+  days?: number;
+}
+
 /** GRPH-1405: where the test suites run — the `build.test_scope` rule's `mode` param. */
 export type TestScopeMode = "agent_full" | "agent_and_pr" | "agent_targeted";
+
+/** GRPH-1703: what a builder does with a bug it finds — the `build.found_bug` rule's `mode` param. */
+export type FoundBugMode = "fix_in_build" | "file_ticket";
 
 /** One row of the bell's panel (GRPH-1527). */
 export interface AlertRow {
@@ -3726,3 +3790,9 @@ export interface AlertsFeed {
   unread: number;
   alerts: AlertRow[];
 }
+
+/** A blocking fix on a PRD (GRPH-1684): `blocks` are the keys of the items it holds. */
+export interface BlockingFix { id: string; status: string; blocks: string[] }
+
+/** `/prds/{id}/completeness`. `blocking_fixes` is absent when the server did not compute it. */
+export interface PrdCompleteness { blocking_fixes?: BlockingFix[] }

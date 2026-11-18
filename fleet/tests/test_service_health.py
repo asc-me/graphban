@@ -152,8 +152,14 @@ def test_a_clean_idle_status_carries_no_reason(git_repo: Path, monkeypatch):
     unit.write_text("[Service]\n", encoding="utf-8")
     monkeypatch.setattr(service, "_running_systemd", lambda n: (False, "inactive", 0))
     monkeypatch.setattr(service, "linger", lambda: True)
+    # GRPH-1698: exit 0 is idle only when the drain's log says its queue was empty.
+    log = service.CONFIG_DIR / "logs" / f"{name}.log"
+    log.write_text('{"ok": true, "reason": "idle"}\n', encoding="utf-8")
     state = service.status(name, kind="systemd")
     assert state.reason == "" and state.idle
+    log.write_text("no run result yet\n", encoding="utf-8")
+    state = service.status(name, kind="systemd")
+    assert state.reason == "" and not state.idle and "reason unknown" in state.line()
 
 
 def test_the_committed_servers_file_marks_host_optional_servers():
@@ -164,3 +170,32 @@ def test_the_committed_servers_file_marks_host_optional_servers():
              if ln.strip() and not ln.lstrip().startswith("#")]
     assert "browser?" in names and "browser-use?" in names
     assert "browser" not in names and "browser-use" not in names
+
+
+@pytest.mark.parametrize("reason,unready,says", [
+    ("unready", 3, "unready, last exit 0, 3 line item(s)"),
+    ("", 0, "reason unknown"),
+])
+def test_an_unsettled_exit_0_does_not_fail_the_install(
+        git_repo: Path, monkeypatch, quick, capsys, reason, unready, says):
+    """GRPH-1698: exit 0 with `reason: unready` (or no reason yet) is not idle — and not a
+    crash. The install names it and succeeds; "NOT running ... gave no reason" was wrong.
+
+    Sabotage: drop the `unsettled` branch in `cli` and this exits 1 with "NOT running".
+    """
+    plan = _plan(git_repo, kind="systemd")
+
+    def fake(n, kind=""):
+        return service.Status(
+            name=n, kind="systemd", installed=True, running=False, last_exit=0,
+            unit_path=service.unit_path_for(n, "systemd"), path_env="/usr/bin",
+            run_reason=reason, unready=unready)
+
+    monkeypatch.setenv(service.API_KEY_ENV, KEY)
+    monkeypatch.setattr(service, "make_plan", lambda rest, **kw: plan)
+    monkeypatch.setattr(service, "status", fake)
+    code = main(["service", "install", "--", *_args(git_repo)])
+    out = capsys.readouterr()
+    assert code == 0, out.err
+    assert says in out.out
+    assert "NOT running" not in out.err and "NOT running" not in out.out

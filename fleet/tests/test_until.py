@@ -80,6 +80,8 @@ def _clients(
     observation_posts: list | None = None,
     agent_holdings: list | None = None,
     brief_tier: dict | None = None,
+    maintenance_line: dict | None = None,
+    backlog: list | None = None,
 ):
     """Planner + supervisor clients sharing one mock Graphban.
 
@@ -156,7 +158,8 @@ def _clients(
             # is what the real server answers for a project that has measured no git
             # process — so every other test here exercises the unmeasured path whether it
             # knows it or not.
-            return _mcp({"project_id": "core", "gitops": dict(gitops or {})}, rid)
+            return _mcp({"project_id": "core", "gitops": dict(gitops or {}),
+                         "maintenance_line": maintenance_line}, rid)
         if tool == "get_rule_toggles":
             # GRPH-1273. None: a server that has never heard of the rule's library.
             toggles = [] if staff_every_row is None else [{
@@ -240,6 +243,9 @@ def _clients(
                 tag = (args.get("tags") or [""])[0]
                 rows = [w for w in (waits or []) if tag in (w.get("tags") or [])]
                 return _mcp({"results": rows}, rid)
+            if args.get("status") in ("backlog", "next"):
+                return _mcp({"results": [r for r in (backlog or [])
+                                         if r.get("status") == args.get("status")]}, rid)
             return _mcp({"results": []}, rid)
         if tool == "retire_wave":
             return _mcp({"seats_revoked": 0, "agents": 0}, rid)

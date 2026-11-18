@@ -412,3 +412,55 @@ def test_migrations_run_from_the_app_do_not_reconfigure_logging():
     )
     assert env.index(guard) < env.index("fileConfig(config.config_file_name"), \
         "the guard no longer precedes the fileConfig call it is meant to gate"
+
+
+# ------------------------------------------- an inbound request id is bounded (GRPH-1694)
+
+def _seen_id(header: bytes) -> tuple[str, str]:
+    """Run one request carrying `header` as X-Request-ID. Returns (the id the app saw in
+    request_id_var, the id the response echoed)."""
+    from app import observability
+
+    seen: dict = {}
+
+    async def app(scope, receive, send):
+        seen["rid"] = observability.request_id_var.get()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    sent: list[dict] = []
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "method": "GET", "path": "/x", "query_string": b"",
+             "headers": [(b"x-request-id", header)]}
+    asyncio.run(observability.RequestIdMiddleware(app)(scope, lambda: None, send))
+    return seen["rid"], dict(sent[0]["headers"])[b"x-request-id"].decode()
+
+
+def test_a_dashed_uuid_request_id_is_kept_as_its_32_char_hex():
+    """The box's failing value: 36 chars overflowed llm_call_spans.request_id (String(32))
+    on Postgres and every LLM span of the request was dropped."""
+    used, echoed = _seen_id(b"c3cb2ed2-b453-4b74-bd30-6ef2868e85f1")
+    assert used == "c3cb2ed2b4534b74bd306ef2868e85f1"
+    assert echoed == used, "the response must echo the id actually used, not the one sent"
+
+
+@pytest.mark.parametrize("header", [
+    b"x" * 33,                      # over-long token
+    b"a b",                         # whitespace inside
+    b"evil\r\nInjected: 1",         # header/log injection attempt
+    "café".encode(),           # non-ascii
+    b"<script>",                    # outside the token charset
+])
+def test_an_unusable_request_id_is_replaced_never_carried_verbatim(header):
+    used, echoed = _seen_id(header)
+    assert used != header.decode("utf-8", "replace")
+    assert len(used) <= 32 and all(c.isalnum() or c in "._-" for c in used), used
+    assert echoed == used
+
+
+def test_a_short_token_request_id_is_honoured_as_is():
+    used, echoed = _seen_id(b"trace.abc-123_X")
+    assert used == echoed == "trace.abc-123_X"

@@ -4,7 +4,7 @@ import * as React from "react";
 import { api } from "./api";
 import { httpsAddress, probeTrust } from "@/lib/https";
 import type { OnboardingMark, SetupConfirm } from "./types";
-import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, Item, ItemDetail, LessonFilters, LogExportPatch, RequestItem, RuleProfileApplyWrite, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
+import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, RoutingReplayProposal, Item, ItemCreateBody, ItemDetail, LessonFilters, LogExportPatch, RequestItem, RuleProfileApplyWrite, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
 
 export const keys = {
   me: ["me"] as const,
@@ -45,6 +45,7 @@ export const keys = {
   prdRequests: (id: string) => ["prd-requests", id] as const,
   prdSuggestions: (id: string) => ["prd-request-suggestions", id] as const,
   closeReport: (id: string) => ["close-report", id] as const,
+  prdCompleteness: (id: string) => ["prd-completeness", id] as const,
   prdEvidence: (id: string) => ["prd-evidence", id] as const,
   auditCoverage: (id: string) => ["audit-coverage", id] as const,
   gitops: (projectId: string) => ["gitops", projectId] as const,
@@ -409,6 +410,10 @@ export function usePrds(projectId?: string) {
 
 export function useCloseReport(id: string) {
   return useQuery({ queryKey: keys.closeReport(id), queryFn: () => api.closeReport(id), enabled: !!id });
+}
+
+export function usePrdCompleteness(id: string) {
+  return useQuery({ queryKey: keys.prdCompleteness(id), queryFn: () => api.prdCompleteness(id), enabled: !!id });
 }
 
 export function usePrdEvidence(id: string) {
@@ -1157,8 +1162,39 @@ export function useResolveItem() {
 export function useCreateItem(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: Partial<ItemDetail>) => api.createItem(projectId, body),
+    mutationFn: (body: ItemCreateBody) => api.createItem(projectId, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.items }),
+  });
+}
+
+/** The project's maintenance line, or null when it has none (GRPH-1681). */
+export function useMaintenanceLine(projectId?: string) {
+  return useQuery({ queryKey: ["line", projectId], queryFn: () => api.line(projectId!), enabled: !!projectId });
+}
+
+/** Fixes with no PRD and no line (GRPH-1686). An error stays an error: it is never read as 0. */
+export function useUnscopedFixes(projectId?: string) {
+  return useQuery({
+    queryKey: ["line", projectId, "unscoped"],
+    queryFn: () => api.unscopedFixes(projectId!),
+    enabled: !!projectId,
+  });
+}
+
+/** The full item list (descriptions included), fetched only while `enabled`. */
+export function useItemsFull(projectId?: string, enabled = true) {
+  return useQuery({
+    queryKey: [...keys.items, "full", projectId],
+    queryFn: () => api.itemsFull(projectId),
+    enabled: !!projectId && enabled,
+  });
+}
+
+export function useCreateLine(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.createLine(projectId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["line", projectId] }),
   });
 }
 
@@ -1410,6 +1446,16 @@ export function useHarnessLadder(projectId?: string) {
   return useQuery({
     queryKey: keys.harnessLadder(projectId ?? ""),
     queryFn: () => api.harnessLadder(projectId!),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+/** GRPH-1712: the routing replay for a draft policy, keyed on project and the draft itself. */
+export function useHarnessReplay(projectId: string | undefined, proposal: RoutingReplayProposal) {
+  return useQuery({
+    queryKey: ["harness-replay", projectId ?? "", proposal] as const,
+    queryFn: () => api.harnessReplay(projectId!, proposal),
     enabled: !!projectId,
     retry: false,
   });

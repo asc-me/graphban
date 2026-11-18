@@ -10,6 +10,7 @@ from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.errors import Refused
 from app.models import Agent, Enrolment, Item, Prd, Project, utcnow
 from app.services import keys
 from app.services import routing as routing_svc
@@ -27,6 +28,205 @@ def _check_kind(kind: str) -> None:
     if kind not in KINDS and kind != "":
         raise ValueError(
             f"invalid kind: {kind!r} — one of {', '.join(KINDS)}, or empty for not recorded")
+
+
+def check_line(line_id: str | None, prd_id: str | None, kind: str | None) -> None:
+    """A line item is a `fix` and has no PRD (GRPH-1681). Empty `kind` is not a fix."""
+    if not line_id:
+        return
+    if prd_id:
+        raise ValueError("an item cannot have both prd_id and line_id")
+    if kind != "fix":
+        raise ValueError(
+            f"only a fix can carry line_id (kind is {kind or 'empty'!r}); "
+            "a feature or chore belongs to a PRD")
+
+#: What `severity` may hold (GRPH-1683). Empty = not recorded.
+SEVERITIES = ["security"]
+
+#: The three exits an agent that finds a defect has. Every fix refusal quotes them.
+FIX_EXITS = (
+    "a defect has three exits: fix it on the item you hold (only when build.found_bug is "
+    "fix_in_build); file a blocking fix on a PRD — create_item(kind=fix, prd_id=<the PRD>, "
+    "blocks=<an item on that PRD>, description with ## Acceptance, touchpoints); or file it on "
+    "the maintenance line — create_item(kind=fix, line_id=<get_context.maintenance_line.id>, "
+    "description with ## Acceptance, touchpoints)")
+
+
+def _check_severity(severity: str, kind: str | None) -> None:
+    if severity not in SEVERITIES and severity != "":
+        raise ValueError(
+            f"invalid severity: {severity!r} — {', '.join(SEVERITIES)}, or empty for not recorded")
+    if severity and kind != "fix":
+        raise ValueError(
+            f"severity={severity} is only for a fix (kind is {kind or 'empty'!r}); "
+            "set kind=fix, or drop severity")
+
+
+def is_filed_fix(db: Session, item) -> bool:
+    """A fix filed under the GRPH-1683 rules: on the line, or a blocking fix on a PRD.
+
+    A blocking fix is a `fix` on a PRD with no section and an item on that PRD depending on
+    it. A historical fix with a section, or with nothing waiting on it, is neither, and keeps
+    today's sign-off rule.
+    """
+    if item.kind != "fix":
+        return False
+    if item.line_id:
+        return True
+    return bool(item.prd_id) and not item.prd_section and has_blocking_dependency(db, item)
+
+
+def check_fix_scope(*, kind: str | None, line_id: str | None, prd_id: str | None,
+                    prd_section: str) -> None:
+    """A fix must say where it lives (GRPH-1683); there is no default scope."""
+    if kind != "fix":
+        return
+    if not line_id and not prd_id:
+        raise ValueError(f"a fix needs a scope: it has neither prd_id nor line_id. {FIX_EXITS}")
+    if prd_id and not line_id and prd_section:
+        raise ValueError(
+            f"a blocking fix on a PRD carries no prd_section (got {prd_section!r}): it is not "
+            "a section's work. Drop prd_section; to put it on a section, file a feature")
+
+
+def check_fix_shape(*, description: str, touchpoints) -> None:
+    """Acceptance and touchpoints a filed fix must carry; the refusal names which is missing."""
+    from app.services.fleet import parse_acceptance
+    missing = []
+    if not parse_acceptance(description or "")[0]:
+        missing.append("an acceptance clause (a list item under `## Acceptance` in the "
+                       "description)")
+    if not [t for t in (touchpoints or []) if isinstance(t, str) and t.strip()]:
+        missing.append("a touchpoint (touchpoints=[...] naming the files the fix changes)")
+    if missing:
+        raise ValueError("a fix needs " + " and ".join(missing) + " before it can be filed")
+
+
+def _blocked_item(db: Session, blocks: str | None, prd_id: str | None) -> Item:
+    """The item on `prd_id` that a blocking fix holds up (the dependency's source)."""
+    if not blocks:
+        raise ValueError(
+            "a blocking fix needs `blocks`: an item on the same PRD that depends on it, so the "
+            f"fix is not filed with nothing waiting on it. {FIX_EXITS}")
+    blocked = db.get(Item, keys.resolve_item(db, blocks) or blocks)
+    if blocked is None:
+        raise ValueError(f"blocks: unknown item {blocks!r}")
+    if blocked.prd_id != prd_id:
+        raise ValueError(
+            f"blocks: {blocked.key} is not on the PRD this fix is filed on; name an item on "
+            "that PRD (it may differ from the PRD you are building)")
+    return blocked
+
+
+def has_blocking_dependency(db: Session, item: Item) -> bool:
+    """True if an item on `item`'s PRD depends on it."""
+    from app.models import Link
+    srcs = db.scalars(select(Link.a).where(Link.b == item.id, Link.type == "dependency")).all()
+    return any((o := db.get(Item, a)) is not None and o.prd_id == item.prd_id for a in srcs)
+
+
+def lines_svc_resolve(db: Session, line_id: str, project_id: str) -> str:
+    from app.services import lines as lines_svc
+    return lines_svc.resolve_for_item(db, line_id, project_id)
+
+
+def _open_overlaps(db: Session, *, line_id: str | None, prd_id: str | None,
+                   touchpoints, exclude=()) -> list[Item]:
+    """Open items on the same scope (the line, else the PRD) sharing a touchpoint (GRPH-1695).
+
+    `exclude` are ids that are not candidate duplicates: the item a blocking fix holds and
+    the item the fix was found during — a fix usually touches exactly their files."""
+    from app.services.clustering import shared_touchpoints
+    scope = Item.line_id == line_id if line_id else Item.prd_id == prd_id
+    rows = db.scalars(select(Item).where(scope, Item.status != "done")).all()
+    return [o for o in rows if o.id not in set(exclude)
+            and shared_touchpoints(o.touchpoints or [], touchpoints or [])]
+
+
+def check_duplicates(db: Session, *, line_id: str | None, prd_id: str | None,
+                     touchpoints, distinct_from, exclude=()) -> list[tuple[Item, str]]:
+    """Refuse a fix overlapping an open item on its scope unless every overlap is named in
+    `distinct_from` with a reason. Returns the (item, reason) pairs to link."""
+    named: list[tuple[Item, str]] = []
+    for entry in distinct_from or []:
+        ref = entry.get("id") if isinstance(entry, dict) else None
+        reason = entry.get("reason") if isinstance(entry, dict) else None
+        if not isinstance(ref, str) or not isinstance(reason, str) or not reason.strip():
+            raise ValueError("distinct_from entries are {id, reason}, and the reason says in "
+                             f"what way the fix is not a duplicate; got {entry!r}")
+        other = db.get(Item, keys.resolve_item(db, ref) or ref)
+        if other is None:
+            raise ValueError(f"distinct_from: unknown item {ref!r}")
+        named.append((other, reason.strip()))
+    overlaps = _open_overlaps(db, line_id=line_id, prd_id=prd_id, touchpoints=touchpoints,
+                              exclude=exclude)
+    left = [o for o in overlaps if o.id not in {n.id for n, _ in named}]
+    if left:
+        raise ValueError(
+            "possible duplicate: open items on this scope already touch the same files: "
+            + ", ".join(o.key for o in left)
+            + ". Resubmit with distinct_from=[{id, reason}] naming each, with why the fix is "
+            "not the same work")
+    return named
+
+
+def resolve_found_during(db: Session, *, found_during: str | None,
+                         held: list[Item]) -> Item | None:
+    """The item a fix was found on: named, else the one item the caller holds (GRPH-1695)."""
+    if found_during:
+        item = db.get(Item, keys.resolve_item(db, found_during) or found_during)
+        if item is None:
+            raise ValueError(f"found_during: unknown item {found_during!r}")
+        return item
+    if len(held) > 1:
+        raise ValueError("you hold more than one item, so say which one this fix was found "
+                         "during: found_during=<one of " + ", ".join(h.key for h in held) + ">")
+    return held[0] if held else None
+
+
+def found_during_of(db: Session, item: Item) -> str | None:
+    """Key of the item `item` was found on, or None (not recorded)."""
+    from app.models import Link
+    b = db.scalar(select(Link.b).where(Link.a == item.id, Link.type == "found_during"))
+    other = db.get(Item, b) if b else None
+    return other.key if other is not None else None
+
+
+def refuse_overlap_with_held(db: Session, *, touchpoints, held: list[Item],
+                             project_id: str) -> None:
+    """`build.found_bug` under `fix_in_build`: a new fix over the files of an item the caller
+    holds is fixed on that item, not filed (GRPH-1682). `file_ticket` does not refuse."""
+    from app.services import rule_toggles
+    from app.services.clustering import shared_touchpoints
+    if rule_toggles.found_bug_mode(db, project_id) != "fix_in_build":
+        return
+    hit = [h for h in held if shared_touchpoints(h.touchpoints or [], touchpoints or [])]
+    if hit:
+        raise Refused(
+            409, f"{rule_toggles.FOUND_BUG_RULE} is fix_in_build: this fix touches the files of "
+            f"{hit[0].key}, which you hold. Fix the bug on {hit[0].key} instead of filing a "
+            "ticket for it", rule_id=rule_toggles.FOUND_BUG_RULE)
+
+
+def refuse_review_over_open_fix(db: Session, item: Item) -> None:
+    """`build.found_bug` under `file_ticket`: the held item does not reach review while its
+    diff touches a path on an open fix found during it (GRPH-1682)."""
+    from app.models import Link
+    from app.services import rule_toggles
+    from app.services.clustering import shared_touchpoints
+    if rule_toggles.found_bug_mode(db, item.project_id) != "file_ticket":
+        return
+    ids = db.scalars(select(Link.a).where(Link.b == item.id, Link.type == "found_during")).all()
+    for fid in ids:
+        fix = db.get(Item, fid)
+        if (fix is not None and fix.kind == "fix" and fix.status != "done"
+                and shared_touchpoints(item.touchpoints or [], fix.touchpoints or [])):
+            raise Refused(
+                409, f"{rule_toggles.FOUND_BUG_RULE} is file_ticket: {item.key} cannot move to "
+                f"review while its diff touches a path on open fix {fix.key}. Finish {fix.key}, "
+                "or take those paths out of this item's diff",
+                rule_id=rule_toggles.FOUND_BUG_RULE)
 
 
 def _default_kind(tags) -> str:
@@ -118,6 +318,13 @@ def create_item(
     question: str | None = None,
     options: list[str] | None = None,
     kind: str | None = None,
+    line_id: str | None = None,
+    severity: str = "",
+    blocks: str | None = None,
+    agent_create: bool = False,
+    distinct_from: list | None = None,
+    found_during: str | None = None,
+    held: list[Item] | None = None,
 ) -> Item:
     """Create a tracked item.
 
@@ -144,10 +351,38 @@ def create_item(
         )
     if fidelity not in FIDELITIES:
         raise ValueError(f"invalid fidelity: {fidelity}")
+    explicit_kind = kind is not None
     kind = _default_kind(tags) if kind is None else kind
     _check_kind(kind)
+    severity = severity or ""
+    _check_severity(severity, kind)
     if db.get(Project, project_id) is None:
         raise ValueError(f"unknown project: {project_id!r}")
+    check_line(line_id, prd_id, kind)
+    blocked = None
+    distinct: list[tuple[Item, str]] = []
+    origin: Item | None = None
+    # An explicit `fix`, or any `fix` an agent files (a bug tag defaults it there too), is a
+    # filed fix (GRPH-1683). Only a non-agent caller's bug-tagged default predates the rules.
+    if kind == "fix" and (explicit_kind or agent_create):
+        check_fix_scope(kind=kind, line_id=line_id, prd_id=prd_id, prd_section=prd_section)
+        if agent_create:
+            check_fix_shape(description=description, touchpoints=touchpoints)
+        if prd_id and not line_id:
+            blocked = _blocked_item(db, blocks, _stored_prd_id(db, prd_id, project_id))
+        if agent_create:
+            origin = resolve_found_during(db, found_during=found_during, held=held or [])
+            refuse_overlap_with_held(db, touchpoints=touchpoints, held=held or [],
+                                     project_id=project_id)
+            distinct = check_duplicates(
+                db, line_id=lines_svc_resolve(db, line_id, project_id) if line_id else None,
+                prd_id=_stored_prd_id(db, prd_id, project_id), touchpoints=touchpoints,
+                distinct_from=distinct_from,
+                exclude=[x.id for x in (blocked, origin) if x is not None])
+    elif blocks:
+        raise ValueError("blocks is only for a blocking fix (kind=fix with prd_id)")
+    if line_id:
+        line_id = lines_svc_resolve(db, line_id, project_id)
     effort_val = int(effort or 0)
     if effort_val < 0:
         raise ValueError(f"negative effort: {effort_val}")
@@ -168,20 +403,52 @@ def create_item(
         reporter=reporter or {},
         date=date,
         prd_id=_stored_prd_id(db, prd_id, project_id),
+        line_id=line_id or None,
         prd_linked_at=utcnow() if prd_id else None,
         prd_section=prd_section or "",
         fidelity=fidelity,
         kind=kind,
+        severity=severity,
     )
     if question or options:
         from app.services.waits import set_decision
         set_decision(item, question, options)
     db.add(item)
+    if blocked is not None:
+        from app.models import Link
+        db.flush()
+        # In the same transaction as the fix: a blocking fix with nothing waiting on it is
+        # the state this refuses.
+        db.add(Link(project_id=blocked.project_id, a=blocked.id, b=item.id, type="dependency",
+                    reason="blocking fix", confidence=1.0))
+    if distinct or origin is not None:
+        from app.models import Link
+        db.flush()
+        for other, reason in distinct:
+            db.add(Link(project_id=item.project_id, a=item.id, b=other.id, type="semantic",
+                        reason=reason, confidence=1.0))
+        if origin is not None:
+            db.add(Link(project_id=item.project_id, a=item.id, b=origin.id,
+                        type="found_during", reason="found during", confidence=1.0))
     if commit:
         db.commit()
         db.refresh(item)
     else:
         db.flush()  # assigns the row without ending the caller's transaction
+    # GRPH-1696: the holder stops when they are the blocked item. A dependency written after
+    # the fact does not retract a lease; filing the blocking fix does. A held item is one the
+    # caller holds (`held` is built from the caller's own claims), so another agent's lease on
+    # the blocked item is never touched.
+    if blocked is not None and agent_create and any(h.id == blocked.id for h in held or []):
+        holder = blocked.claimed_by
+        if holder and release_item(db, blocked.id, holder, to_status="blocked",
+                                   reason=f"blocked by the fix {item.key} it filed") is not None:
+            blocked.blocker = f"{item.key}: blocking fix filed on this item"
+            if commit:
+                db.commit()
+                db.refresh(item)
+            else:
+                db.flush()
     if item.touchpoints:
         from app.services.clustering import sync_code_links
         sync_code_links(db, item)
@@ -1959,6 +2226,37 @@ def owner_close(db: Session, item_id: str, *, closer: dict, commit: str,
     return out
 
 
+def _check_fix_transition(db: Session, item: Item, fields: dict) -> None:
+    """An update that turns a row INTO a filed fix meets the create rules (GRPH-1683).
+
+    An update that changes neither kind nor scope leaves an old row alone.
+    """
+    new_kind = fields["kind"] if fields.get("kind") is not None else item.kind
+    new_line = (fields["line_id"] or None) if "line_id" in fields else item.line_id
+    new_prd = fields["prd_id"] if fields.get("prd_id") is not None else item.prd_id
+    if fields.get("severity") is not None:
+        _check_severity(fields["severity"], new_kind)
+    sets_kind = fields.get("kind") == "fix" and item.kind != "fix"
+    sets_line = bool(fields.get("line_id")) and not item.line_id and not item.prd_id
+    sets_prd = (bool(fields.get("prd_id")) and new_kind == "fix" and not item.line_id
+                and not item.prd_id)
+    if not (sets_kind or sets_line or sets_prd):
+        return
+    section = fields["prd_section"] if fields.get("prd_section") is not None else item.prd_section
+    check_line(new_line, new_prd, new_kind)
+    check_fix_scope(kind=new_kind, line_id=new_line, prd_id=new_prd, prd_section=section or "")
+    desc = fields["description"] if fields.get("description") is not None else item.description
+    tps = list(item.touchpoints or []) + list(fields.get("touchpoints") or [])
+    check_fix_shape(description=desc, touchpoints=tps)
+    if new_prd and not new_line:
+        stored = _stored_prd_id(db, new_prd, item.project_id)
+        probe = Item(id=item.id, prd_id=stored)
+        if not has_blocking_dependency(db, probe):
+            raise ValueError(
+                f"a blocking fix needs a dependency from an item on its PRD: "
+                f"link_items(a=<an item on that PRD>, b={item.key}, type=dependency). {FIX_EXITS}")
+
+
 def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None = None,
                 **fields) -> Item | None:
     """Patch fields or advance status.
@@ -2032,6 +2330,7 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
                 "branch, or attach the PR url as evidence, then move it to review"
             )
     if fields.get("status") == "review" and prev_status != "review":
+        refuse_review_over_open_fix(db, item)
         require_engine_evidence(db, item, fields.get("evidence"),
                                 head=fields.get("head_commit"))
     # THE COMPLETION GATE (GRPH-543). Before this, `update_item` validated a status
@@ -2142,6 +2441,20 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         _pending_hold(db, item)
         if fields.get("status") == "done" and prev_status != "done" else None
     )
+    _check_fix_transition(db, item, fields)
+    if fields.get("line_id") is not None or item.line_id:
+        # Checked against the row as it WILL be, so setting line_id on a feature, and
+        # setting prd_id or kind on a line item, are refused alike. An empty string clears.
+        new_line = fields["line_id"] if "line_id" in fields else item.line_id
+        if fields.get("line_id"):
+            from app.services import lines as lines_svc
+            new_line = lines_svc.resolve_for_item(db, fields["line_id"], item.project_id)
+        check_line(
+            new_line or None,
+            fields["prd_id"] if fields.get("prd_id") is not None else item.prd_id,
+            fields["kind"] if fields.get("kind") is not None else item.kind,
+        )
+        fields = {**fields, "line_id": new_line or None}
     if fields.get("prd_id") is not None:
         # The ITEM's project, not the caller's: an update must be scoped to where the
         # row actually lives, or a caller whose key defaults elsewhere could re-open
@@ -2155,9 +2468,12 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
             item.prd_linked_at = utcnow()
     for key in ("title", "description", "status", "tags", "effort", "blocker", "pr", "date",
                 "head_commit",
-                "github_url", "assignee", "prd_id", "prd_section", "fidelity", "kind"):
+                "github_url", "assignee", "prd_id", "prd_section", "fidelity", "kind",
+                "severity"):
         if key in fields and fields[key] is not None:
             setattr(item, key, fields[key])
+    if "line_id" in fields:
+        item.line_id = fields["line_id"]
     # GRPH-1671. Written only with the `done` it justifies (`resolve_item`), and dropped the
     # moment the item leaves `done`: a reopened duplicate is open work again, and must face
     # the completion gate like any other item when it next closes.
@@ -2554,6 +2870,12 @@ def reserved_elsewhere(db: Session, agent_id: str, project_id: str | None = None
     return out
 
 
+def _found_during_for(item: Item) -> str | None:
+    from sqlalchemy.orm import object_session
+    db = object_session(item)
+    return found_during_of(db, item) if db is not None else None
+
+
 def item_dict(item: Item) -> dict:
     """The fields every item read shares — the ONE renderer (GRPH-821).
 
@@ -2585,6 +2907,12 @@ def item_dict(item: Item) -> dict:
         # manifest, and the footprint has seventeen tokens of headroom.
         "review_claimed_by": item.review_claimed_by,
         "prd_id": item.prd_key,
+        # GRPH-1681. Reply-only; null for an item that is not on the maintenance line.
+        "line_id": item.line_key,
+        # GRPH-1683. Reply-only and omitted when empty.
+        **({"severity": item.severity} if item.severity else {}),
+        # GRPH-1695. A fix's provenance; null is "not recorded". Reply-only.
+        **({"found_during": _found_during_for(item)} if item.kind == "fix" else {}),
         "prd_section": item.prd_section,
         "fidelity": item.fidelity,
         # GRPH-1358. Always present: "" is the honest "not recorded", which a release must be
@@ -2777,6 +3105,11 @@ def _is_claimable(it: Item, cutoff) -> bool:
     if stale:
         return it.status in ("next", "backlog", "in_progress")
     if it.claimed_by is None:
+        # GRPH-1685. A line item with no acceptance clause or no touchpoint is in the line's
+        # pool for reporting and out of it for claim. Fresh work only: a stale reclaim above
+        # was ready when it was taken.
+        if it.line_id and unready_reasons(it):
+            return False
         return it.status in ("next", "backlog")
     return False  # someone holds a live lease
 
@@ -2908,7 +3241,23 @@ def seat_scope(db: Session, agent_id: str | None) -> str:
     if agent is None or not agent.enrolment_id:
         return ""
     seat = db.get(Enrolment, agent.enrolment_id)
-    return (seat.prd_id or "") if seat is not None else ""
+    if seat is None:
+        return ""
+    # GRPH-1685. A seat has at most one scope, the PRD or the maintenance line, and this
+    # returns whichever is set. Both are frozen ids from different key namespaces, so
+    # `in_scope` can match either against an item without a second parameter.
+    return seat.prd_id or seat.line_id or ""
+
+
+def seat_line(db: Session, agent_id: str | None) -> str:
+    """The maintenance line this agent's seat is scoped to, or "" (GRPH-1685)."""
+    if not agent_id:
+        return ""
+    agent = db.get(Agent, agent_id)
+    if agent is None or not agent.enrolment_id:
+        return ""
+    seat = db.get(Enrolment, agent.enrolment_id)
+    return (seat.line_id or "") if seat is not None else ""
 
 
 def held_by_a_seat(db: Session, agent_id: str | None) -> bool:
@@ -3090,7 +3439,39 @@ def in_scope(item: Item, scope: str) -> bool:
     part of a PRD. Until then the operator's choice is a scoped wave or a reachable backlog,
     and it is better that this is written down than discovered.
     """
-    return not scope or (item.prd_id or "") == scope
+    return not scope or scope in ((item.prd_id or ""), (item.line_id or ""))
+
+
+def unready_reasons(item: Item) -> list[str]:
+    """What a LINE item lacks before it may be claimed (GRPH-1685): any of `acceptance`
+    (no parsed clause) and `touchpoints` (none). Empty for a ready item and for any item that
+    is not on the line, whose readiness is the ordinary rules' business."""
+    if not item.line_id:
+        return []
+    from app.services import fleet as fleet_svc
+
+    missing = []
+    if not fleet_svc.parse_acceptance(item.description or "")[0]:
+        missing.append("acceptance")
+    if not [t for t in (item.touchpoints or []) if str(t).strip()]:
+        missing.append("touchpoints")
+    return missing
+
+
+def unready_line_items(db: Session, project_id: str | None) -> list[dict]:
+    """`[{id, missing}]` for every open line item that is out of the claim pool for lacking an
+    acceptance clause or a touchpoint. Empty means it looked and found none."""
+    stmt = select(Item).where(Item.line_id.is_not(None),
+                              Item.status.in_(("backlog", "next")),
+                              Item.claimed_by.is_(None))
+    if project_id:
+        stmt = stmt.where(Item.project_id == project_id)
+    out = []
+    for it in db.scalars(stmt.order_by(Item.number)).all():
+        missing = unready_reasons(it)
+        if missing:
+            out.append({"id": it.key, "missing": missing})
+    return out
 
 
 class AlreadyHolding(Exception):
