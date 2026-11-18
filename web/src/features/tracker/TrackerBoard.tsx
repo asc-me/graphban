@@ -3,6 +3,7 @@ import * as React from "react";
 
 import { Avatar } from "@/components/ui/avatar";
 import { cn } from "@/lib/cn";
+import { LineBadges, type LineInfo } from "./LineBadges";
 import { QuestionStateBadge } from "./QuestionStateBadge";
 import { BOARD_COLUMNS, CHECK_COLOR, PR_STATE_COLOR, STATUS_META } from "@/lib/meta";
 import type { Item, Status } from "@/lib/types";
@@ -24,7 +25,9 @@ export function TrackerBoard({
   doneHidden = 0,
   hideDays = 0,
   onShowHidden,
+  lineInfoOf,
 }: {
+  lineInfoOf?: (item: Item) => LineInfo;
   items: Item[];
   selectedId: string | null;
   onSelect: (id: string) => void;
@@ -120,6 +123,7 @@ export function TrackerBoard({
               <BoardCard
                 key={item.id}
                 item={item}
+                lineInfo={lineInfoOf?.(item)}
                 selected={item.id === selectedId}
                 dragging={item.id === dragId}
                 onSelect={() => onSelect(item.id)}
@@ -155,6 +159,7 @@ export function TrackerBoard({
 }
 
 function BoardCard({
+  lineInfo,
   item,
   selected,
   dragging,
@@ -162,6 +167,7 @@ function BoardCard({
   onDragStart,
   onDragEnd,
 }: {
+  lineInfo?: LineInfo;
   item: Item;
   selected: boolean;
   dragging: boolean;
@@ -195,6 +201,7 @@ function BoardCard({
           </span>
         )}
         <QuestionStateBadge state={item.question_state} />
+        <LineBadges item={item} {...lineInfo} />
         <span className="flex-1" />
         {item.pr && (
           <span

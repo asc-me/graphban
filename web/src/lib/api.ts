@@ -62,6 +62,7 @@ import type {
   ItemDetail,
   ItemCreateBody,
   MaintenanceLine,
+  UnscopedFixes,
   EventPage,
   EventsQuery,
   GrillMessage,
@@ -770,6 +771,10 @@ export const api = {
   // them — 2.1 MB on every route to draw three badges and a stat (GRPH-431).
   counts: (projectId: string) => request<ShellCounts>(`/projects/${projectId}/counts`),
   line: (projectId: string) => request<MaintenanceLine | null>(`/projects/${encodeURIComponent(projectId)}/line`),
+  unscopedFixes: (projectId: string) =>
+    request<UnscopedFixes>(`/projects/${encodeURIComponent(projectId)}/line/unscoped_fixes`),
+  itemsFull: (projectId?: string) =>
+    request<ItemDetail[]>(`/items?fields=full${projectId ? `&project_id=${projectId}` : ""}`),
   createLine: (projectId: string) =>
     request<MaintenanceLine>(`/projects/${encodeURIComponent(projectId)}/line`, { method: "POST", body: "{}" }),
   createItem: (projectId: string, body: ItemCreateBody) =>

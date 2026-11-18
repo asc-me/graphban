@@ -14,17 +14,28 @@ import { Collapsible } from "@/components/planner/Collapsible";
 import { hiddenSummary, scopeRows, statusMatches, useCondensed, useViews } from "@/components/planner/viewScope";
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Dot } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { RefusalRuleLink } from "@/features/activity/RefusalRuleLink";
 import { errorDetail, errorRuleId, isRefusal } from "@/lib/errors";
 import { BOARD_COLUMNS, STATUS_META, STATUS_ORDER } from "@/lib/meta";
 import { PALETTE_ITEM_PARAM } from "@/lib/palette-nav";
-import { useItems, useReorderItems, useUpdateItem } from "@/lib/queries";
+import {
+  useCreateLine,
+  useItems,
+  useItemsFull,
+  useLinks,
+  useMaintenanceLine,
+  useReorderItems,
+  useUnscopedFixes,
+  useUpdateItem,
+} from "@/lib/queries";
 import type { Item, Status } from "@/lib/types";
 
 import { ItemDetailPanel } from "./ItemDetailPanel";
 import { ItemRow } from "./ItemRow";
+import { fixBlockMaps, lineNeeds, type LineInfo } from "./LineBadges";
 import { NewItemDialog } from "./NewItemDialog";
 import { OwnerCloseDialog } from "./OwnerCloseDialog";
 import { useColumnPrefs } from "./columnPrefs";
@@ -50,8 +61,14 @@ function canPatchDone(item: Item): boolean {
 /** Planner-facing statuses: live work, not backlog/next/done. */
 /** The Response Needed filter: the server's `question_state`, not a second derivation. */
 const RESPONSE_NEEDED = "response_needed";
-const matches = (it: Item, filter: string) =>
-  filter === RESPONSE_NEEDED ? it.question_state === "response_needed" : statusMatches(it.status, filter, ACTIVE_STATUSES);
+/** The Maintenance filter: exclusive with the status chips, it lives in the same filter slot (GRPH-1701). */
+const MAINTENANCE = "maintenance";
+const matches = (it: Item, filter: string, lineId?: string | null) =>
+  filter === MAINTENANCE
+    ? !!lineId && it.line_id === lineId
+    : filter === RESPONSE_NEEDED
+      ? it.question_state === "response_needed"
+      : statusMatches(it.status, filter, ACTIVE_STATUSES);
 
 const ACTIVE_STATUSES: Status[] = ["in_progress", "review", "blocked"];
 
@@ -75,6 +92,10 @@ export function TrackerView() {
   const { activeId } = useProjectCtx();
   const { data: items = [], isLoading, isError, refetch } = useItems(activeId);
   const update = useUpdateItem();
+  const lineQ = useMaintenanceLine(activeId);
+  const unscopedQ = useUnscopedFixes(activeId);
+  const createLine = useCreateLine(activeId ?? "");
+  const linksQ = useLinks(activeId);
   const reorder = useReorderItems();
 
   const views = useViews("tracker");
@@ -119,7 +140,22 @@ export function TrackerView() {
       { activity: (it) => it.updated_at || it.created_at, finishedAt: (it) => (it.status === "done" ? it.done_at : null) },
     );
   const scoped = scopeOf(views.state);
-  const visible = scoped.shown.filter((it) => matches(it, filter));
+  const lineId = lineQ.data?.id ?? null;
+  const visible = scoped.shown.filter((it) => matches(it, filter, lineId));
+  const maintenanceOn = filter === MAINTENANCE;
+  // The list is lean (no description); the full read is fetched only to say what a line item still needs.
+  const fullQ = useItemsFull(activeId, maintenanceOn);
+  const descriptions = React.useMemo(
+    () => new Map((fullQ.data ?? []).map((i) => [i.id, i.description] as const)),
+    [fullQ.data],
+  );
+  const blockMaps = React.useMemo(() => fixBlockMaps(items, linksQ.data ?? []), [items, linksQ.data]);
+  const lineInfoOf = (it: Item): LineInfo => ({
+    needs: lineNeeds(it, descriptions.get(it.id)),
+    blockedBy: blockMaps.blockedBy.get(it.id) ?? [],
+    blocks: blockMaps.blocks.get(it.id) ?? [],
+  });
+  const lineCount = lineId ? scoped.shown.filter((it) => it.line_id === lineId).length : 0;
 
   // Chip counts follow the scope, so a chip's number is the rows it would show.
   const counts = React.useMemo(() => {
@@ -211,6 +247,21 @@ export function TrackerView() {
     />
   );
 
+  // Two different empty states: no line at all, or a line with nothing on it.
+  const maintenanceEmpty = lineQ.isError ? (
+    <PlannerError title="Maintenance line unavailable" onRetry={() => lineQ.refetch()} />
+  ) : lineQ.isLoading ? null : !lineId ? (
+    <div className="flex flex-col items-center gap-3 px-8 py-12 text-center">
+      <p className="text-[13px] text-muted">This project has no maintenance line.</p>
+      <Button type="button" variant="outline" size="sm" disabled={createLine.isPending} onClick={() => createLine.mutate()}>
+        Create the maintenance line
+      </Button>
+      {createLine.isError && <p role="alert" className="text-small text-st-blocked">Could not create the line.</p>}
+    </div>
+  ) : (
+    <PlannerFilteredEmpty message="The maintenance line has no items." onClear={clearFilter} />
+  );
+
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       <PlaceHeader
@@ -227,7 +278,7 @@ export function TrackerView() {
         views={views}
         doneWord="done"
         countFor={(v) =>
-          scopeOf(v).shown.filter((it) => matches(it, v.status)).length
+          scopeOf(v).shown.filter((it) => matches(it, v.status, lineId)).length
         }
         leading={
           <>
@@ -253,6 +304,13 @@ export function TrackerView() {
               color={STATUS_META[s].color}
             />
           ))}
+          <FilterChip
+            active={maintenanceOn}
+            onClick={() => setFilter(MAINTENANCE)}
+            label="Maintenance"
+            count={lineCount}
+          />
+          <UnscopedCount query={unscopedQ} />
           <FilterChip
             active={filter === RESPONSE_NEEDED}
             onClick={() => setFilter(RESPONSE_NEEDED)}
@@ -290,7 +348,7 @@ export function TrackerView() {
         ) : isEmpty ? (
           emptyState
         ) : isFilteredEmpty ? (
-          <PlannerFilteredEmpty
+maintenanceOn ? maintenanceEmpty : <PlannerFilteredEmpty
             message={`No items in this view${hidden ? ` — ${hidden}` : filterLabel(filter)}.`}
             onClear={clearFilter}
           />
@@ -304,6 +362,7 @@ export function TrackerView() {
             onSelect={setSelectedId}
             onStatus={setStatus}
             columns={columns}
+            lineInfoOf={lineInfoOf}
             statuses={BOARD_COLUMNS.filter((st) => filter === RESPONSE_NEEDED || statusMatches(st, filter, ACTIVE_STATUSES))}
           />
         )
@@ -316,7 +375,7 @@ export function TrackerView() {
           ) : isEmpty ? (
             emptyState
           ) : isFilteredEmpty ? (
-            <PlannerFilteredEmpty
+maintenanceOn ? maintenanceEmpty : <PlannerFilteredEmpty
               message={`No items in this view${hidden ? ` — ${hidden}` : filterLabel(filter)}.`}
               onClear={clearFilter}
             />
@@ -334,6 +393,7 @@ export function TrackerView() {
                   onMoveDown={() => moveItem(item.id, 1)}
                   canMoveUp={globalIndex > 0}
                   canMoveDown={globalIndex >= 0 && globalIndex < ordered.length - 1}
+                  lineInfo={lineInfoOf(item)}
                   dragging={dragId === item.id}
                   dragOver={overId === item.id && dragId !== item.id}
                   dragHandlers={{
@@ -367,9 +427,30 @@ export function TrackerView() {
   );
 }
 
+/** Beside the filter. Zero is shown; a failed read says so and is never drawn as 0. */
+function UnscopedCount({ query }: { query: { isError: boolean; isLoading: boolean; data?: { count: number } } }) {
+  return (
+    <span
+      data-testid="unscoped-count"
+      className="inline-flex items-center gap-1.5 px-1 text-[12px] text-muted"
+      title="Fixes with no PRD and no line: nothing moves them"
+    >
+      Unscoped fixes
+      {query.isError ? (
+        <span className="text-st-blocked">could not load</span>
+      ) : query.isLoading || !query.data ? (
+        <span className="font-mono text-[10px] text-faint">…</span>
+      ) : (
+        <span className="font-mono text-[10px] text-faint">{query.data.count}</span>
+      )}
+    </span>
+  );
+}
+
 function filterLabel(filter: TrackerFilter): string {
   if (filter === "all") return "";
   if (filter === "active") return " (Active)";
+  if (filter === MAINTENANCE) return " (Maintenance)";
   if (filter === RESPONSE_NEEDED) return " (Response Needed)";
   return ` (${STATUS_META[filter as Status]?.label ?? filter})`;
 }
