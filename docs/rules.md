@@ -225,6 +225,6 @@ A project can only *change* a rule once the box's pack carries it.
 | `build.generated_files` | 0.4.0 | 1.8.0 | the first release carrying GRPH-1494 |
 | `build.test_scope` `engines` | 0.4.0 | 1.8.0 | the first release carrying GRPH-1494 |
 | `plan.path_classes` | 0.5.0 | 1.9.0 | the first release carrying GRPH-1496 |
-| `memory.write_mode` (`mode`) | not yet released | 1.10.0 | the first release carrying GRPH-1603 |
+| `memory.write_mode` (`mode`) | 0.6.0 | 1.10.0 | 2026.11.35 |
 
 `gitops.merge_method` is a gitops field, not a library rule, and needs no template.
