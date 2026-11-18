@@ -1172,6 +1172,11 @@ def _service(args) -> int:
         print(f"{plan.name}: ran and exited 0 — that is what `until` does when there is no "
               f"ready work. Next run in {plan.every}s")
         return 0
+    if done.state is not None and done.state.unsettled:
+        # GRPH-1698: exited 0 but not idle — unready line work, or no reason in the log yet.
+        # Not idle, and not a crash either: say which, and do not fail the install.
+        print(f"{done.state.line()}. Next run in {plan.every}s")
+        return 0
     code = "unknown" if done.state is None or done.state.last_exit is None \
         else done.state.last_exit
     # GRPH-1312: the err log's last line is the drain's own reason; the loader's output

@@ -701,6 +701,14 @@ def _one_service(report: Report, state) -> None:
         report.add(label, PASS,
                    f"idle between runs, last exit 0 ({state.kind}, {state.unit_path})")
         return
+    if state.unsettled:
+        # GRPH-1698: exited 0, so not dead — but unready line work (or no reason in the log)
+        # is not a clean queue either. UNKNOWN, never the crash-loop FAIL.
+        report.add(label, UNKNOWN, state.line(),
+                   "unready: fixes are filed but not claimable — `gbfleet until --line` names "
+                   "them; reason unknown: read the drain's log in "
+                   f"{service_mod.CONFIG_DIR / 'logs'}")
+        return
     if not state.running:
         # `state.detail` already carries the exit code on both platforms; naming it twice
         # read as "last exit 3 — last exit 3".
