@@ -59,6 +59,8 @@ import type {
   InvitePreview,
   Item,
   ItemDetail,
+  ItemCreateBody,
+  MaintenanceLine,
   EventPage,
   EventsQuery,
   GrillMessage,
@@ -766,7 +768,10 @@ export const api = {
   // The shell's badge numbers. It used to fetch four whole collections to call `.length` on
   // them — 2.1 MB on every route to draw three badges and a stat (GRPH-431).
   counts: (projectId: string) => request<ShellCounts>(`/projects/${projectId}/counts`),
-  createItem: (projectId: string, body: Partial<ItemDetail>) =>
+  line: (projectId: string) => request<MaintenanceLine | null>(`/projects/${encodeURIComponent(projectId)}/line`),
+  createLine: (projectId: string) =>
+    request<MaintenanceLine>(`/projects/${encodeURIComponent(projectId)}/line`, { method: "POST", body: "{}" }),
+  createItem: (projectId: string, body: ItemCreateBody) =>
     request<Item>("/items", {
       method: "POST",
       body: JSON.stringify(withProject(projectId, body)),
