@@ -3043,6 +3043,34 @@ def _carries_another_item(repo: Path, branch: str, base: str, items: list[str]) 
             f"one PR per item, so {item}'s commits go on a branch of their own")
 
 
+def _recorded_merge(client: Graphban | None, item_id: str) -> str:
+    """What a `done` item's recorded merge names, or "" (GRPH-1709).
+
+    Asked before a reap opens a PR: the receipt says the work landed, so a PR for it asks a
+    person to merge something already on the trunk, and the merge loop proposes that PR again
+    on every later cycle. Only `done` counts — an item bounced back to `next` keeps its
+    receipt (evidence only appends) and its rework is exactly the work that still needs a PR.
+
+    Every client that reaches a proposal holds the read (`SPAWN_READS` on `up`/`mcp`,
+    `PLANNER_TOOLS` on `until`); one that does not is asked nothing, the way `_ids_in_review`
+    asks nothing of it, and the head-keyed check in `propose` — which needs no ledger at all —
+    is what still covers that case. Anything unreadable is "", which proposes as before
+    rather than dropping work because a ledger did not answer.
+    """
+    if client is None or not item_id:
+        return ""
+    allowed = getattr(client, "allowed", frozenset()) or frozenset()
+    if "get_item_details" not in allowed:
+        return ""
+    try:
+        item = client.call("get_item_details", id=item_id) or {}
+    except (NotPermitted, ToolFailed, ServerUnreachable):
+        return ""
+    if str(item.get("status") or "") != "done":
+        return ""
+    return propose_mod.merge_receipt(item)
+
+
 def _open_pr(wave: Wave, repo: Path, branch: str, items: list[str], base: str, subj: str, *,
              client: Graphban | None, attest: bool = False) -> None:
     """One draft PR for one branch carrying at most one item, and the receipt on that item.
@@ -3050,6 +3078,14 @@ def _open_pr(wave: Wave, repo: Path, branch: str, items: list[str], base: str, s
     `attest` writes `Attests: <item>` into the body. The per-item split asks for it; a
     single-item branch does not, and its body stays the one it had.
     """
+    for item_id in items:
+        receipt = _recorded_merge(client, item_id)
+        if receipt:
+            wave.proposed[branch] = propose_mod.Proposed(
+                branch=branch, skipped=True,
+                reason=f"{item_id} is done and its merge is recorded ({receipt}); not opening "
+                       "another PR for work already on the trunk")
+            return
     # GRPH-1419: title from the build commit, not the newest follow-up fix.
     subj = propose_mod.title_subject(repo, branch, base) or subj
     title, body = propose_mod.describe(branch, items, subj, attest=attest)
@@ -3486,6 +3522,18 @@ class Merger:
             self.watching.pop(item_id, None)
             return None
         selector = propose_mod.pr_selector(item) or self.watching.get(item_id, "")
+        receipt = propose_mod.merge_receipt(item)
+        if receipt:
+            # GRPH-1709: this merge landed and was written down, so there is nothing left to
+            # ask GitHub — and every call this would make shares one rate limit with every
+            # other drain on the account. When `view` misses under that limit the pass reads
+            # GRPH-1457's stuck state and proposes a SECOND PR for an already-merged head,
+            # then logs "proposed #1847; merge is attempted next tick" on every cycle after.
+            # Skipped, which is final: the item leaves `watching` and no later tick re-asks.
+            self.watching.pop(item_id, None)
+            return propose_mod.Merged(item=item_id, selector=selector, skipped=True,
+                                      checked=("merge-receipt",),
+                                      reason=f"already merged and recorded ({receipt})")
         got = propose_mod.merge(
             self.repo, item_id, selector,
             reviewed=propose_mod.reviewed_commit(item),

@@ -160,10 +160,9 @@ def existing_any(repo: Path, branch: str) -> dict:
     }
 
 
-def open_prs(repo: Path) -> list[dict]:
-    """Every open PR with what is needed to tell whose it is, or [] when it cannot be read."""
-    done = _gh(repo, "pr", "list", "--state", "open", "--limit", "200", "--json",
-               "number,url,headRefName,headRefOid,isDraft,title,body")
+def _listed(repo: Path, state: str, fields: str) -> list[dict]:
+    """`gh pr list --state <state>` rows, or [] when it cannot be read."""
+    done = _gh(repo, "pr", "list", "--state", state, "--limit", "200", "--json", fields)
     if done.returncode != 0:
         return []
     try:
@@ -171,6 +170,24 @@ def open_prs(repo: Path) -> list[dict]:
     except ValueError:
         return []
     return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
+def open_prs(repo: Path) -> list[dict]:
+    """Every open PR with what is needed to tell whose it is, or [] when it cannot be read."""
+    return _listed(repo, "open", "number,url,headRefName,headRefOid,isDraft,title,body")
+
+
+def merged_prs(repo: Path) -> list[dict]:
+    """Every MERGED PR with the head that landed, or [] when it cannot be read (GRPH-1709).
+
+    Keyed on the COMMIT where `existing_any` is keyed on the BRANCH. That is the difference
+    this exists for: `existing` is OPEN-only and `existing_any` answers {} for ANY `gh` that
+    did not exit zero — which is what one rate limit shared by every drain on the account
+    produces — so both can say "nothing here" about a head that landed an hour ago. A
+    listing that cannot be read answers [] rather than "nothing merged", so this only ever
+    narrows what `propose` is willing to open; it never widens it.
+    """
+    return _listed(repo, "merged", "number,url,headRefName,headRefOid")
 
 
 def _pr_number(url: str) -> int:
@@ -237,7 +254,9 @@ def propose(repo: Path, branch: str, base: str, *, title: str, body: str,
 
     A branch whose head already has a PR — open, closed, or merged — is not given a
     sibling (GRPH-1031). Open: the push already updated it. Closed: reopen, or say why
-    not. Merged: say so; another PR for the same head is the defect.
+    not. Merged: say so; another PR for the same head is the defect. The merged half is asked
+    twice, by branch and then by COMMIT (GRPH-1709): a branch-keyed answer is "" whenever
+    `gh` did not exit zero, and which head landed is a fact about a commit, not about a ref.
     """
     if not find():
         return Proposed(branch=branch, skipped=True,
@@ -282,6 +301,17 @@ def propose(repo: Path, branch: str, base: str, *, title: str, body: str,
                     return Proposed(
                         branch=branch, url=str(pr["url"]), skipped=True,
                         reason=f"commit already carried by open PR #{pr.get('number')} "
+                               f"({pr.get('headRefName')}); not opening a second")
+            # GRPH-1709: or a PR that already MERGED it — this branch's own included, which
+            # the lookups above answer by ref and so can miss. Reaping gb/p86-56 after #1846
+            # had landed opened #1847 for one and the same head, and the merge loop went on
+            # proposing that duplicate on every later cycle.
+            for pr in merged_prs(repo):
+                if (pr.get("url")
+                        and same_commit(str(pr.get("headRefOid") or ""), head)):
+                    return Proposed(
+                        branch=branch, url=str(pr["url"]), skipped=True,
+                        reason=f"head already merged as PR #{pr.get('number')} "
                                f"({pr.get('headRefName')}); not opening a second")
         done = _gh(repo, "pr", "create", "--draft", "--head", branch,
                    "--base", base.split("/", 1)[-1], "--title", title, "--body", body)
@@ -788,6 +818,38 @@ def pr_receipts(item: dict) -> list[str]:
         if "/pull/" in url and url not in urls:
             urls.append(url)
     return urls
+
+
+#: The `detail` prefix of the receipt `supervisor.Merger._record` writes when a squash lands.
+#: Spelled a second time here because fleet is a separate distribution and cannot import the
+#: server's `MERGE_RECEIPT_PREFIX`. Both copies are pinned by a test that writes the literal
+#: rather than the constant — backend/tests/test_merge_receipt.py on the server's side,
+#: fleet/tests/test_merged_head_is_not_reproposed.py on this one — so a drift reddens one.
+MERGE_RECEIPT_PREFIX = "merged by gbfleet"
+
+
+def merge_receipt(item: dict) -> str:
+    """What this item's recorded merge names — its PR URL, else the merge commit — or ""
+    (GRPH-1709).
+
+    The Merger writes a `url` row carrying the MERGE COMMIT, and its presence means the merge
+    landed AND was written down. Reading it is what stops the loop going back to GitHub about
+    an item that is finished: the calls it would make share one rate limit with every other
+    drain on the account, and a `gh` that fails under that limit reads as "no PR", which is
+    how a merged item got a second one. Evidence only appends, so the last such row is the
+    merge; an item with none answers "", which is "not recorded", never "not merged".
+    """
+    found = ""
+    for e in item.get("evidence") or []:
+        if not isinstance(e, dict) or e.get("kind") != "url":
+            continue
+        commit = str(e.get("commit") or "").strip()
+        if not commit:
+            continue
+        if not str(e.get("detail") or "").startswith(MERGE_RECEIPT_PREFIX):
+            continue
+        found = str(e.get("url") or "").strip() or commit
+    return found
 
 
 def _pr_ref(pr: dict | None, fallback: str) -> str:
