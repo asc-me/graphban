@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 
 import { cn } from "@/lib/cn";
-import { useFleetPolicy, useSaveFleetPolicy } from "@/lib/queries";
-import type { FleetPolicy, HarnessCapacityEntitlement } from "@/lib/types";
+import { useFleetPolicy, useHarnessReplay, useSaveFleetPolicy } from "@/lib/queries";
+import type { FleetPolicy, HarnessCapacityEntitlement, RoutingReplayProposal } from "@/lib/types";
 import { STATE } from "./capacityLook";
 
 function defaultPolicy(): FleetPolicy {
@@ -122,10 +122,48 @@ function Choice<T extends string>({
 }
 
 /**
+ * GRPH-1712 — the rule on screen replayed over the last 7 days of routing decisions, each
+ * re-ranked from the candidates it recorded then (never today's headroom). Decisions recorded
+ * before candidates were stored are counted apart, and when none is replayable the line says so
+ * instead of showing 0.
+ */
+function ReplayLine({ projectId, proposal, draft }: {
+  projectId?: string;
+  proposal: RoutingReplayProposal;
+  draft: boolean;
+}) {
+  const { data, isLoading, isError } = useHarnessReplay(projectId, proposal);
+  if (!projectId || isError) return null;
+  const head = draft ? "Replay of this draft" : "Replay of the rule in force";
+  let body: string;
+  if (isLoading || !data) {
+    body = "replaying the last 7 days…";
+  } else if (data.replayable === 0 || data.moved === null) {
+    body = data.decisions === 0
+      ? `no routing decisions in the last ${data.days} days to replay`
+      : `nothing in the last ${data.days} days is replayable — ${data.not_replayable} `
+        + `decision${data.not_replayable === 1 ? " was" : "s were"} recorded before routing stored its candidates`;
+  } else {
+    const held = data.held ? ` (${data.held} held until a reset)` : "";
+    const legacy = data.not_replayable
+      ? ` · ${data.not_replayable} recorded before candidates were stored ${data.not_replayable === 1 ? "is" : "are"} not replayable`
+      : "";
+    body = `${data.moved} of ${data.replayable} decision${data.replayable === 1 ? "" : "s"} `
+      + `in the last ${data.days} days would have moved${held}${legacy}`;
+  }
+  return (
+    <p data-testid="routing-replay" role="status" className="text-[12px] text-muted">
+      <span className="font-medium text-fg-2">{head}:</span> {body}
+    </p>
+  );
+}
+
+/**
  * PRD-76 — the capacity routing rule on project policy: next available (S4 + D6) or a custom
  * subscription stack-rank, plus (GRPH-1505) the tie-break the router's last sort key uses and
  * whether an item falls down the ladder or holds until a reset when the top rung is spent.
- * Only what the router does is offered: no simulated outcomes (replay is GRPH-1712).
+ * Only what the router does is offered; the replay line (GRPH-1712) re-ranks recorded decisions,
+ * it does not simulate today's headroom.
  */
 export function RoutingMode({
   projectId,
@@ -204,6 +242,13 @@ export function RoutingMode({
     setTie(savedTie);
     setExhausted(savedExhausted);
   };
+
+  const proposal = useMemo<RoutingReplayProposal>(() => ({
+    tie_break: tie,
+    when_exhausted: exhausted,
+    routing_mode: mode,
+    subscription_order: mode === "custom_hierarchy" ? order : null,
+  }), [tie, exhausted, mode, order]);
 
   const byId = new Map(subscriptions.map((e) => [e.id, e]));
   const topLive = order.find((id) => byId.get(id)?.state === "available");
@@ -328,6 +373,8 @@ export function RoutingMode({
           onChange={setExhausted}
         />
       </div>
+
+      <ReplayLine projectId={projectId} proposal={proposal} draft={dirty} />
 
       <div className="flex flex-wrap items-center gap-1.5">
         <button
