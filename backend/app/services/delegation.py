@@ -306,6 +306,15 @@ _TEST_SCOPE_BRIEF = {
                       "`suite_green` on the head is the proof. A reviewer need not rerun them.",
 }
 
+# GRPH-1708. Named beside the test-scope line, not inside it — the modes share a prefix but
+# only targeted and and_pr delegate CI proof to the supervisor.
+_CI_HANDOFF_LINE = (
+    "The supervisor opens the PR after you push; CI's `suite_green` is the Postgres proof. "
+    "A missing local Postgres or `gh` is not a blocker."
+)
+
+_SCOPES_WITH_CI_HANDOFF = frozenset({"agent_targeted", "agent_and_pr"})
+
 
 def test_scope_line(mode: str, engines: list[str] | None = None) -> str:
     """GRPH-1405: one line naming the project's test-scope mode and what it asks of this
@@ -388,6 +397,8 @@ def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[
                          f" ({_answer_source_text(a)})")
     if test_scope:
         lines.append(test_scope_line(test_scope, test_engines))
+        if test_scope in _SCOPES_WITH_CI_HANDOFF:
+            lines.append(_CI_HANDOFF_LINE)
     if found_bug:
         lines.append(found_bug_line(found_bug))
     lines.append(FIX_EXITS_LINE)
