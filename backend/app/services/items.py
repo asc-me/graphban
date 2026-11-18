@@ -253,9 +253,9 @@ def create_item(
         raise ValueError(f"unknown project: {project_id!r}")
     check_line(line_id, prd_id, kind)
     blocked = None
-    # An explicit `fix` is a filed fix (GRPH-1683). A bug-tagged default `fix` predates the
-    # scope rules and is left alone.
-    if explicit_kind and kind == "fix":
+    # An explicit `fix`, or any `fix` an agent files (a bug tag defaults it there too), is a
+    # filed fix (GRPH-1683). Only a non-agent caller's bug-tagged default predates the rules.
+    if kind == "fix" and (explicit_kind or agent_create):
         check_fix_scope(kind=kind, line_id=line_id, prd_id=prd_id, prd_section=prd_section)
         if agent_create:
             check_fix_shape(description=description, touchpoints=touchpoints)

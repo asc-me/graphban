@@ -107,8 +107,6 @@ def test_update_onto_the_line_and_signoff_shape(client, world):
         assert legacy.kind == "fix"
         assert not items_svc.is_filed_fix(db, legacy)
     # setting line_id on a row with no clause is refused
-    plain = _rpc(client, w["key"], "create_item", {"title": "p", "kind": "fix", "line_id": line,
-                 "description": ACC, "touchpoints": ["a.py"]})["structuredContent"]["id"]
     with SessionLocal() as db:
         with pytest.raises(ValueError, match="acceptance"):
             items_svc.update_item(db, old, kind="fix", line_id=line)
@@ -141,3 +139,33 @@ def test_historical_prd_fix_is_not_a_filed_fix(client, world):
         assert on_section.kind == no_dep.kind == "fix"
         assert not items_svc.is_filed_fix(db, on_section)
         assert not items_svc.is_filed_fix(db, no_dep)
+
+
+def test_agent_bug_tag_with_no_kind_or_scope_is_refused(client, world):
+    """A bug tag defaults kind to fix; over MCP that default is a filed fix and needs a scope."""
+    res = _rpc(client, world["key"], "create_item",
+               {"title": "bug", "tags": ["bug"], "description": "x"})
+    assert res["isError"]
+    text = str(res)
+    assert "prd_id" in text and "line_id" in text and "fix_in_build" in text
+    line = _line(client, world)
+    unshaped = _rpc(client, world["key"], "create_item",
+                    {"title": "bug", "tags": ["bug"], "description": "x", "line_id": line})
+    assert unshaped["isError"] and "acceptance" in str(unshaped) and "touchpoint" in str(unshaped)
+    ok = _rpc(client, world["key"], "create_item",
+              {"title": "bug", "tags": ["bug"], "description": ACC, "line_id": line,
+               "touchpoints": ["a.py"]})
+    assert not ok.get("isError"), ok
+    with SessionLocal() as db:
+        assert items_svc.get_item(db, ok["structuredContent"]["id"]).kind == "fix"
+
+
+def test_historical_fix_signs_off_with_no_clauses(client, world):
+    """A historical `fix` (no line, not a blocking fix) still signs off on today's rule."""
+    with SessionLocal() as db:
+        feat = items_svc.get_item(db, world["feat"])
+        legacy = items_svc.create_item(db, title="legacy", tags=["bug"], project_id=feat.project_id,
+                                       description="no clauses")
+        assert legacy.kind == "fix" and not items_svc.is_filed_fix(db, legacy)
+        _sign(db, legacy)
+        assert items_svc.get_item(db, legacy.id).status == "done"
