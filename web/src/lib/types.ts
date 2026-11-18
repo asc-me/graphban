@@ -3743,3 +3743,9 @@ export interface AlertsFeed {
   unread: number;
   alerts: AlertRow[];
 }
+
+/** A blocking fix on a PRD (GRPH-1684): `blocks` are the keys of the items it holds. */
+export interface BlockingFix { id: string; status: string; blocks: string[] }
+
+/** `/prds/{id}/completeness`. `blocking_fixes` is absent when the server did not compute it. */
+export interface PrdCompleteness { blocking_fixes?: BlockingFix[] }

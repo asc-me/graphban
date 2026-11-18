@@ -17,7 +17,7 @@ import type { AuditCoverage, CloseReport, EvidenceRollup } from "@/lib/types";
  *  this PRD hit five separate times in its own implementation. */
 
 const mocks = vi.hoisted(() => ({
-  report: vi.fn(), evidence: vi.fn(), coverage: vi.fn(),
+  report: vi.fn(), evidence: vi.fn(), coverage: vi.fn(), completeness: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -25,6 +25,7 @@ vi.mock("@/lib/api", () => ({
     closeReport: mocks.report,
     prdEvidence: mocks.evidence,
     auditCoverage: mocks.coverage,
+    prdCompleteness: mocks.completeness,
   },
 }));
 
@@ -59,7 +60,8 @@ const emptyEvidence: EvidenceRollup = {
 };
 const coverage: AuditCoverage = { governed: true, covered: ["Baseline"], uncovered: ["Judging"] };
 
-function draw(r: CloseReport = report(), e: EvidenceRollup = emptyEvidence) {
+function draw(r: CloseReport = report(), e: EvidenceRollup = emptyEvidence, c: unknown = {}) {
+  mocks.completeness.mockResolvedValue(c);
   mocks.report.mockResolvedValue(r);
   mocks.evidence.mockResolvedValue(e);
   mocks.coverage.mockResolvedValue(coverage);
@@ -70,6 +72,36 @@ function draw(r: CloseReport = report(), e: EvidenceRollup = emptyEvidence) {
     </QueryClientProvider>,
   );
 }
+
+describe("acceptance panel — blocking fixes", () => {
+  it("lists open fixes, says close is refused, and leaves section rows alone", async () => {
+    draw(report(), emptyEvidence, { blocking_fixes: [
+      { id: "GB-9", status: "in_progress", blocks: ["GB-2"] },
+      { id: "GB-8", status: "done", blocks: ["GB-1"] },
+    ] });
+    expect(await screen.findByText(/Blocking fixes \(2\)/)).toBeTruthy();
+    expect(screen.getByText(/Close is refused while open blocking fixes hold this PRD: GB-9\./)).toBeTruthy();
+    expect(screen.getByText(/blocks GB-2/)).toBeTruthy();
+    expect(screen.getByText("done")).toBeTruthy();
+    expect(screen.getByText("nothing delivered")).toBeTruthy();
+  });
+
+  it("drops the refusal once all are done, keeping them listed", async () => {
+    draw(report(), emptyEvidence, { blocking_fixes: [{ id: "GB-8", status: "done", blocks: ["GB-1"] }] });
+    expect(await screen.findByText(/Blocking fixes \(1\)/)).toBeTruthy();
+    expect(screen.queryByText(/Close is refused/)).not.toBeInTheDocument();
+  });
+
+  it("says none for an empty list, and nothing for a missing field", async () => {
+    const { unmount } = draw(report(), emptyEvidence, { blocking_fixes: [] });
+    expect(await screen.findByText("No blocking fixes.")).toBeTruthy();
+    unmount();
+    draw(report(), emptyEvidence, {});
+    await screen.findByText(/Cut from the spec/);
+    expect(screen.queryByText("No blocking fixes.")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("blocking-fixes")).not.toBeInTheDocument();
+  });
+});
 
 describe("acceptance panel", () => {
   it("names intent a rebaseline cut, which no other surface can show", async () => {
