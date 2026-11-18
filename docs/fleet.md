@@ -35,6 +35,27 @@ seat and the key to run on. If the route refuses this key outright mid-wave (403
 masked 404), the supervisor reports it once, stops spawning and ends the wave not-ok, rather
 than printing a `FAILED` line per receipt.
 
+### Draining the maintenance line
+
+`gbfleet until --line` drains the project's maintenance line instead of a PRD. Bare `--line`
+is the line in `get_context.maintenance_line`; `--line <id>` names it. A PRD id is refused
+with "use --prd", `--prd` with `--line` is refused, and a project with no line is refused
+with a pointer to `create_line`. The line is never resolved through `get_prd`. The seats it
+mints carry the line.
+
+- A `--line` run claims, reviews and exits on line items only. A `--prd` run does not claim
+  line items, and a line row in review is listed under `review_outside_prd` there: it spawns
+  no reviewer and does not fail the run. Rows with neither a PRD nor a line are listed the
+  same way and are staffed by nobody.
+- `review.staff_every_row` still widens a `--prd` run across other PRDs (its reviewer seat has
+  no PRD scope, as before). It does not widen to rows with `line_id` or to rows with neither
+  scope, and a `--line` run never widens into PRD reviews.
+- A `--line` run's JSON always has `unready`, a list of `{id, missing}` (`acceptance`,
+  `touchpoints`). `[]` means it looked and found none. When nothing is claimable and
+  `unready` is not empty the run finishes `ok: false`, `reason: "unready"`, exit 0.
+- Run the line drain in its own clone. There is one supervisor lock per checkout, unchanged,
+  so do not start `--line` on a checkout a `--prd` drain holds.
+
 ## Harness config
 
 - **Tier map**: harness × tier, editable for this deployment. An override is stored beside the
