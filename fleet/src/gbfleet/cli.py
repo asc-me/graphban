@@ -364,6 +364,12 @@ def build_parser() -> argparse.ArgumentParser:
              "in the project, and `backlog` is no defence — backlog is claimable by design "
              "(GRPH-397). Needs a credential with the `fleet` tool tier to be advertised")
     until.add_argument(
+        "--line", nargs="?", const="", default=None, metavar="LINE",
+        help="drain the project's maintenance line (GRPH-1697): claims, reviews and exits on "
+             "line items only. Bare `--line` is the project's line; a line id names it. "
+             "Exclusive with --prd. Runs in its own clone: one supervisor lock per checkout, "
+             "so do not start it on a checkout a --prd drain holds")
+    until.add_argument(
         "--mcp-server", action="append", default=[], metavar="NAME",
         help="share one of YOUR MCP servers with each child, by exact name (e.g. context7). "
              "Repeatable. Exact names only — no patterns — and an unknown name refuses the "
@@ -758,6 +764,9 @@ def _until(args) -> int:
         print(f"gbfleet until: ${API_KEY_ENV} is not set", file=sys.stderr)
         return 2
 
+    if args.line is not None and args.prd:
+        print("gbfleet until: --prd and --line cannot be combined", file=sys.stderr)
+        return 2
     template = [a for a in (args.argv or []) if a != "--"]
     try:
         factory = (
@@ -853,6 +862,7 @@ def _until(args) -> int:
             debug=args.debug,
             request=args.request,
             prd=args.prd or None,
+            line=args.line,
             budget=args.budget or None,
             shared=_shared_servers(args),
             tiers=tiers,
