@@ -70,3 +70,37 @@ def test_unscoped_fixes_lists_only_scopeless_fixes_and_zero_is_present(client, a
         assert on_line.key not in out["ids"] and feat.key not in out["ids"]
     r = client.get(f"/api/projects/{proj}/line/unscoped_fixes", headers=auth)
     assert r.status_code == 200 and r.json()["count"] == 1
+
+
+def test_accepted_bug_is_unready_until_clause_and_touchpoint_then_claimable(client, auth):
+    """Clause 2: the line item a bug accept creates has no clause and no touchpoint, so
+    claim_cluster and claim_next skip it (GRPH-1685's predicate) and the drain reports it
+    unready. Writing both makes it claimable. A feature accept is not held by that rule."""
+    from app.services import fleet as fleet_svc
+    from app.services import requests as req_svc
+    proj = _project(client, auth, "IntakeUnready")
+    key = client.post("/api/api-keys", json={"name": "k", "project_id": proj,
+                                             "scopes": ["read", "write", "gate"]},
+                      headers=auth).json()["plaintext"]
+    with SessionLocal() as db:
+        line = lines_svc.create_line(db, proj)
+        req = _request(db, proj, "bug", "it breaks")
+        _, item = req_svc.accept_request(db, req.id, status="next")
+        bug_key, bug_id = item.key, item.id
+        assert items_svc.unready_reasons(item) == ["acceptance", "touchpoints"]
+        _row, code = fleet_svc.issue_enrolment(db, project_id=proj, role="worker",
+                                               line_id=line.id)
+    res = _rpc(client, key, "register_agent", {"label": "line", "enrolment_code": code})
+    seat = res["structuredContent"]["agent_id"]
+    with SessionLocal() as db:
+        assert fleet_svc.claim_cluster(db, agent_id=seat, project_id=proj)["claimed"] is False
+        assert items_svc.claim_next(db, agent_id=seat, project_id=proj) is None
+        assert items_svc.unready_line_items(db, proj) == [
+            {"id": bug_key, "missing": ["acceptance", "touchpoints"]}]
+        items_svc.update_item(db, bug_id, description="## Acceptance\n- it no longer breaks\n",
+                              touchpoints=["a/x.py"])
+        assert items_svc.unready_line_items(db, proj) == []
+        got = items_svc.claim_next(db, agent_id=seat, project_id=proj)
+        assert got is not None and got.key == bug_key
+        feat = req_svc.accept_request(db, _request(db, proj, "feature", "f").id)[1]
+        assert items_svc.unready_reasons(feat) == []
