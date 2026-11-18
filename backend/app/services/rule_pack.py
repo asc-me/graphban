@@ -44,6 +44,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import InstalledRulePack
 from app.services import events as events_svc
+from app.services import instance_update
 from app.services import rule_toggles
 from app.services.rules import Enforcer
 from app.version import __version__
@@ -569,14 +570,25 @@ class PackFeedError(Exception):
 
 
 def _get(url: str, *, accept: str | None = None) -> httpx.Response:
-    headers = {"User-Agent": "graphban-api"}
+    # GRPH-1666: the same header helper as the update check, so GITHUB_TOKEN reaches
+    # api.github.com (the feed) and never an asset download host.
+    headers = instance_update._gh_headers(url)
     if accept:
         headers["Accept"] = accept
+    else:
+        headers.pop("Accept", None)
     try:
         resp = httpx.get(url, headers=headers, timeout=_FEED_TIMEOUT, follow_redirects=True)
     except (httpx.HTTPError, OSError) as e:
         raise PackFeedError(f"could not reach {url}: {e}") from e
     if resp.status_code != 200:
+        if resp.status_code in (403, 429):
+            # The REST budget is shared with the update check (same IP, same token), so
+            # its backoff is recorded where the update check reads it.
+            until = instance_update._record_rate_limit(resp)
+            if until:
+                raise PackFeedError(f"{url} returned {resp.status_code} — "
+                                    f"{instance_update._retry_note(until)}")
         raise PackFeedError(f"{url} returned {resp.status_code}")
     return resp
 
