@@ -221,6 +221,7 @@
 "tests/test_lesson_effectiveness.py": 0.4,
 "tests/test_lesson_extraction.py": 1.14,
 "tests/test_lesson_retrieval.py": 0.79,
+"tests/test_line_drain_claims.py": 2.0,
 "tests/test_linear_adapter.py": 1.44,
 "tests/test_live.py": 0.52,
 "tests/test_llm_meter.py": 1.03,

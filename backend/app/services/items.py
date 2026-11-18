@@ -2956,6 +2956,11 @@ def _is_claimable(it: Item, cutoff) -> bool:
     if stale:
         return it.status in ("next", "backlog", "in_progress")
     if it.claimed_by is None:
+        # GRPH-1685. A line item with no acceptance clause or no touchpoint is in the line's
+        # pool for reporting and out of it for claim. Fresh work only: a stale reclaim above
+        # was ready when it was taken.
+        if it.line_id and unready_reasons(it):
+            return False
         return it.status in ("next", "backlog")
     return False  # someone holds a live lease
 
@@ -3087,7 +3092,23 @@ def seat_scope(db: Session, agent_id: str | None) -> str:
     if agent is None or not agent.enrolment_id:
         return ""
     seat = db.get(Enrolment, agent.enrolment_id)
-    return (seat.prd_id or "") if seat is not None else ""
+    if seat is None:
+        return ""
+    # GRPH-1685. A seat has at most one scope, the PRD or the maintenance line, and this
+    # returns whichever is set. Both are frozen ids from different key namespaces, so
+    # `in_scope` can match either against an item without a second parameter.
+    return seat.prd_id or seat.line_id or ""
+
+
+def seat_line(db: Session, agent_id: str | None) -> str:
+    """The maintenance line this agent's seat is scoped to, or "" (GRPH-1685)."""
+    if not agent_id:
+        return ""
+    agent = db.get(Agent, agent_id)
+    if agent is None or not agent.enrolment_id:
+        return ""
+    seat = db.get(Enrolment, agent.enrolment_id)
+    return (seat.line_id or "") if seat is not None else ""
 
 
 def held_by_a_seat(db: Session, agent_id: str | None) -> bool:
@@ -3269,7 +3290,39 @@ def in_scope(item: Item, scope: str) -> bool:
     part of a PRD. Until then the operator's choice is a scoped wave or a reachable backlog,
     and it is better that this is written down than discovered.
     """
-    return not scope or (item.prd_id or "") == scope
+    return not scope or scope in ((item.prd_id or ""), (item.line_id or ""))
+
+
+def unready_reasons(item: Item) -> list[str]:
+    """What a LINE item lacks before it may be claimed (GRPH-1685): any of `acceptance`
+    (no parsed clause) and `touchpoints` (none). Empty for a ready item and for any item that
+    is not on the line, whose readiness is the ordinary rules' business."""
+    if not item.line_id:
+        return []
+    from app.services import fleet as fleet_svc
+
+    missing = []
+    if not fleet_svc.parse_acceptance(item.description or "")[0]:
+        missing.append("acceptance")
+    if not [t for t in (item.touchpoints or []) if str(t).strip()]:
+        missing.append("touchpoints")
+    return missing
+
+
+def unready_line_items(db: Session, project_id: str | None) -> list[dict]:
+    """`[{id, missing}]` for every open line item that is out of the claim pool for lacking an
+    acceptance clause or a touchpoint. Empty means it looked and found none."""
+    stmt = select(Item).where(Item.line_id.is_not(None),
+                              Item.status.in_(("backlog", "next")),
+                              Item.claimed_by.is_(None))
+    if project_id:
+        stmt = stmt.where(Item.project_id == project_id)
+    out = []
+    for it in db.scalars(stmt.order_by(Item.number)).all():
+        missing = unready_reasons(it)
+        if missing:
+            out.append({"id": it.key, "missing": missing})
+    return out
 
 
 class AlreadyHolding(Exception):
