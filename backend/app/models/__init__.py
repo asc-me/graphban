@@ -721,6 +721,8 @@ class Item(Base):
     # FROZEN id, never a rendering, like `prd_id`. Mutually exclusive with `prd_id`, and only
     # a `fix` may carry it: `services/items.py:check_line`.
     line_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # `security` or empty (GRPH-1683); only a fix carries it.
+    severity: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
     prd_section: Mapped[str] = mapped_column(String, default="")
     # The section text AS IT WAS when this item was decomposed out of it (GRPH-360).
     #

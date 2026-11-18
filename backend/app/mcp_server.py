@@ -192,6 +192,9 @@ TOOLS: list[dict[str, Any]] = [
                 "kind": {"enum": _KIND_ENUM},
                 "prd_id": {"type": "string"},
                 "prd_section": {"type": "string"},
+                "line_id": {"type": "string"},
+                "blocks": {"type": "string"},
+                "severity": {"enum": ["security"]},
                 "question": {"type": "string", "description": "Asks a human."},
                 "options": {"type": "array", "items": {"type": "string"}},
             },
@@ -221,6 +224,8 @@ TOOLS: list[dict[str, Any]] = [
                 "kind": {"enum": _KIND_ENUM},
                 "prd_id": {"type": "string"},
                 "prd_section": {"type": "string"},
+                "line_id": {"type": "string"},
+                "severity": {"enum": ["security"]},
                 "evidence": {
                     "type": "array",
                     # The kind list that used to live here is dropped, not squeezed: the
@@ -3100,6 +3105,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             prd_section=args.get("prd_section", ""),
             question=args.get("question"),
             options=args.get("options"),
+            line_id=args.get("line_id"),
+            severity=args.get("severity", ""),
+            blocks=args.get("blocks"),
+            agent_create=True,
             reporter={"name": "Agent", "handle": "mcp", "avatar": "#a78bfa"},
         )
         wait_link = waits_svc.attach_to_claim(db, item, caller) if is_wait else None
@@ -3158,6 +3167,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             ack_section_drift=args.get("ack_section_drift"),
             evidence=args.get("evidence"),
             branch=args.get("branch"),
+            severity=args.get("severity"),
+            # Only when sent: a None here would read as "clear the line".
+            **({"line_id": args["line_id"]} if "line_id" in args else {}),
         )
         if item is None:
             raise errors.NotFound(f"item not found: {args['id']}")

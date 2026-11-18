@@ -2606,6 +2606,10 @@ class MissingAcceptanceCoverage(Exception):
     """Work signed off while an acceptance clause has no named test (GRPH-884)."""
 
 
+class FiledFixShape(MissingAcceptanceCoverage):
+    """A line item or blocking fix lost its acceptance clauses or touchpoints (GRPH-1683)."""
+
+
 class UnreadableAcceptance(MissingAcceptanceCoverage):
     """The description states acceptance in a shape the gate cannot read (GRPH-893).
 
@@ -4028,6 +4032,13 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # description — signed off with `acceptance_coverage: passed` and "not checked", so the
     # receipt vouched for a check that had read nothing.
     clauses, unreadable = parse_acceptance(item.description or "")
+    # A line item or blocking fix is filed WITH clauses and touchpoints (GRPH-1683). A
+    # historical fix with neither a line nor a PRD keeps today's pass on no clauses.
+    if items_svc.is_filed_fix(item) and (not clauses or not item.touchpoints):
+        gone = ("acceptance clauses" if not clauses else "touchpoints")
+        raise FiledFixShape(
+            f"{item.key} is a filed fix and has no {gone} left: a line item or blocking fix "
+            "signs off only against `## Acceptance` clauses and declared touchpoints")
     if unreadable:
         raise UnreadableAcceptance(
             f"{item.key} states acceptance the gate cannot read: " + "; ".join(unreadable)

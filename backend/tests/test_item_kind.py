@@ -66,9 +66,9 @@ def test_rest_refuses_bad_kind_and_accepts_good(client, auth):
                       headers=auth)
     assert bad.status_code == 422
     assert "feature, fix, chore" in bad.json()["detail"]
-    ok = client.post("/api/items", json={"title": "x", "project_id": "core", "kind": "fix"},
+    ok = client.post("/api/items", json={"title": "x", "project_id": "core", "kind": "feature"},
                      headers=auth)
-    assert ok.status_code == 201 and ok.json()["kind"] == "fix"
+    assert ok.status_code == 201 and ok.json()["kind"] == "feature"
     r = client.patch(f"/api/items/{ok.json()['id']}", json={"kind": "nope"}, headers=auth)
     assert r.status_code == 422
     r = client.patch(f"/api/items/{ok.json()['id']}", json={"kind": "chore"}, headers=auth)
