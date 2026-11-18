@@ -10,6 +10,7 @@ from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.errors import Refused
 from app.models import Agent, Enrolment, Item, Prd, Project, utcnow
 from app.services import keys
 from app.services import routing as routing_svc
@@ -192,9 +193,6 @@ def found_during_of(db: Session, item: Item) -> str | None:
     return other.key if other is not None else None
 
 
-FOUND_BUG_RULE = "build.found_bug"
-
-
 def refuse_overlap_with_held(db: Session, *, touchpoints, held: list[Item],
                              project_id: str) -> None:
     """`build.found_bug` under `fix_in_build`: a new fix over the files of an item the caller
@@ -205,9 +203,10 @@ def refuse_overlap_with_held(db: Session, *, touchpoints, held: list[Item],
         return
     hit = [h for h in held if shared_touchpoints(h.touchpoints or [], touchpoints or [])]
     if hit:
-        raise ValueError(
-            f"{FOUND_BUG_RULE} is fix_in_build: this fix touches the files of {hit[0].key}, "
-            f"which you hold. Fix the bug on {hit[0].key} instead of filing a ticket for it")
+        raise Refused(
+            409, f"{rule_toggles.FOUND_BUG_RULE} is fix_in_build: this fix touches the files of "
+            f"{hit[0].key}, which you hold. Fix the bug on {hit[0].key} instead of filing a "
+            "ticket for it", rule_id=rule_toggles.FOUND_BUG_RULE)
 
 
 def refuse_review_over_open_fix(db: Session, item: Item) -> None:
@@ -223,10 +222,11 @@ def refuse_review_over_open_fix(db: Session, item: Item) -> None:
         fix = db.get(Item, fid)
         if (fix is not None and fix.kind == "fix" and fix.status != "done"
                 and shared_touchpoints(item.touchpoints or [], fix.touchpoints or [])):
-            raise ValueError(
-                f"{FOUND_BUG_RULE} is file_ticket: {item.key} cannot move to review while its "
-                f"diff touches a path on open fix {fix.key}. Finish {fix.key}, or take those "
-                "paths out of this item's diff")
+            raise Refused(
+                409, f"{rule_toggles.FOUND_BUG_RULE} is file_ticket: {item.key} cannot move to "
+                f"review while its diff touches a path on open fix {fix.key}. Finish {fix.key}, "
+                "or take those paths out of this item's diff",
+                rule_id=rule_toggles.FOUND_BUG_RULE)
 
 
 def _default_kind(tags) -> str:

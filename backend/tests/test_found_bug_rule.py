@@ -78,51 +78,92 @@ def _item(db, title, tps, **kw):
     return items_svc.create_item(db, title=title, touchpoints=tps, project_id="core", **kw)
 
 
-def test_fix_in_build_refuses_an_overlapping_fix(db, monkeypatch):
+def _line(db):
+    from app.services import lines as lines_svc
+    return lines_svc.get_line(db, "core") or lines_svc.create_line(db, "core")
+
+
+def _file_fix(db, held, tps):
+    """An agent filing a fix while it holds `held` — the create_item path the MCP tool takes."""
+    return items_svc.create_item(
+        db, title="bug", kind="fix", description=ACC, touchpoints=tps, project_id="core",
+        line_id=_line(db).id, agent_create=True, held=[held])
+
+
+def test_fix_in_build_refuses_an_overlapping_fix_on_create(db, monkeypatch):
+    from app.errors import Refused
     _mode(monkeypatch, "fix_in_build")
     held = _item(db, "held", ["backend/app/x.py"], status="in_progress")
-    with pytest.raises(ValueError) as e:
-        items_svc.refuse_overlap_with_held(db, touchpoints=["backend/app/x.py"], held=[held],
-                                           project_id="core")
-    assert held.key in str(e.value) and "build.found_bug" in str(e.value)
-    items_svc.refuse_overlap_with_held(db, touchpoints=["backend/app/other.py"], held=[held],
-                                       project_id="core")
+    with pytest.raises(Refused) as e:
+        _file_fix(db, held, ["backend/app/x.py"])
+    assert e.value.status_code == 409 and e.value.rule_id == RULE
+    assert held.key in e.value.detail and RULE in e.value.detail
+    db.rollback()
+    assert _file_fix(db, held, ["backend/app/other.py"]).kind == "fix"   # outside: a ticket
 
 
-def test_file_ticket_does_not_refuse_the_overlap(db, monkeypatch):
+def test_file_ticket_files_the_overlapping_fix(db, monkeypatch):
     _mode(monkeypatch, "file_ticket")
     held = _item(db, "held", ["backend/app/x.py"], status="in_progress")
-    items_svc.refuse_overlap_with_held(db, touchpoints=["backend/app/x.py"], held=[held],
-                                       project_id="core")
+    fix = _file_fix(db, held, ["backend/app/x.py"])
+    assert items_svc.found_during_of(db, fix) == held.key
 
 
-def _fix_found_during(db, held, tps, status="backlog"):
-    from app.models import Link
-    fix = _item(db, "fix", tps, status=status)
-    fix.kind = "fix"
-    db.add(Link(project_id="core", a=fix.id, b=held.id, type="found_during",
-                reason="found during", confidence=1.0))
-    db.commit()
-    return fix
+def _to_review(db, item):
+    return items_svc.update_item(db, item.id, status="review")
 
 
 def test_file_ticket_refuses_review_while_diff_touches_open_fix(db, monkeypatch):
+    from app.errors import Refused
     _mode(monkeypatch, "file_ticket")
     held = _item(db, "held", ["backend/app/x.py"], status="in_progress")
-    fix = _fix_found_during(db, held, ["backend/app/x.py"])
-    with pytest.raises(ValueError) as e:
-        items_svc.refuse_review_over_open_fix(db, held)
-    assert fix.key in str(e.value) and "build.found_bug" in str(e.value)
+    fix = _file_fix(db, held, ["backend/app/x.py"])
+    with pytest.raises(Refused) as e:
+        _to_review(db, held)
+    assert e.value.status_code == 409 and e.value.rule_id == RULE
+    assert fix.key in e.value.detail and RULE in e.value.detail
+    db.rollback()
+    db.refresh(fix)
     fix.status = "done"
     db.commit()
-    items_svc.refuse_review_over_open_fix(db, held)
+    assert _to_review(db, held).status == "review"
+
+
+def test_file_ticket_review_passes_once_the_diff_leaves_the_fix_paths(db, monkeypatch):
+    _mode(monkeypatch, "file_ticket")
+    held = _item(db, "held", ["backend/app/x.py"], status="in_progress")
+    _file_fix(db, held, ["backend/app/x.py"])
+    held.touchpoints = ["backend/app/y.py"]
+    db.commit()
+    assert _to_review(db, held).status == "review"
 
 
 def test_fix_in_build_does_not_refuse_review(db, monkeypatch):
-    _mode(monkeypatch, "fix_in_build")
+    _mode(monkeypatch, "file_ticket")
     held = _item(db, "held", ["backend/app/x.py"], status="in_progress")
-    _fix_found_during(db, held, ["backend/app/x.py"])
-    items_svc.refuse_review_over_open_fix(db, held)
+    _file_fix(db, held, ["backend/app/x.py"])
+    _mode(monkeypatch, "fix_in_build")
+    assert _to_review(db, held).status == "review"
+
+
+def test_an_agent_key_cannot_write_the_toggle(client, library):
+    from app.errors import Refused
+    from app.models import ApiKey
+    auth = _login(client)
+    key = client.post("/api/api-keys", json={"name": "k", "project_id": "core"},
+                      headers=auth).json()["plaintext"]
+    r = client.put(f"/api/rules/toggles/{RULE}", params={"project_id": "core"},
+                   json={"params": {"mode": "file_ticket"}, "reason": "r"},
+                   headers={"X-API-Key": key})
+    assert r.status_code == 401
+    from app.db import SessionLocal
+    with SessionLocal() as s:
+        k = s.query(ApiKey).first()
+        with pytest.raises(Refused) as e:
+            T.set_project_toggle(s, "core", RULE, {"params": {"mode": "file_ticket"}},
+                                 actor=k, reason="r")
+        assert e.value.rule_id == T.PERSON_RULE
+        assert T.found_bug_mode(s, "core") == "fix_in_build"
 
 
 def test_brief_has_one_found_bug_line(db, monkeypatch):
