@@ -351,11 +351,8 @@ ADJUDICATION = "memory.independent_adjudication"
 
 
 def _write_mode(db: Session, project_id: str | None) -> str:
-    from app.models import Project
-    from app.services import memory
-    p = db.get(Project, project_id) if project_id else None
-    mode = p.memory_write_mode if p else "review"
-    return mode if mode in memory.WRITE_MODES else "review"
+    from app.services import rule_toggles
+    return rule_toggles.memory_write_mode(db, project_id)
 
 
 def _budget_cap_value(db: Session, project_id: str | None) -> dict:
@@ -372,8 +369,13 @@ def registry(db: Session, project_id: str | None, view=None) -> list[dict]:
     a linked box each resolve is an org fetch and two of them can disagree (GRPH-1196)."""
     if view is None:
         view = gitops.resolve(db, project_id)
+    from app.services import rule_toggles
     out = []
     for r in RULES:
+        if r.id in rule_toggles.LIBRARY:
+            # GRPH-1603: a static rule the pack now carries (`memory.write_mode`) is drawn once,
+            # from the library, where its value and source resolve.
+            continue
         d = {
             "id": r.id, "stage": r.stage, "title": r.title, "summary": r.summary,
             "enforcement": r.enforcement, "channel": r.channel,

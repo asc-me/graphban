@@ -50,7 +50,7 @@ from app.version import __version__
 
 #: The primitive API this server provides. Bump the minor for additive changes, the major for
 #: a removed primitive or a new required param; the pinned fixtures then fail the PR (below).
-PRIMITIVE_API = "1.9.0"
+PRIMITIVE_API = "1.10.0"
 
 #: Raw Ed25519 public keys (hex) whose signatures are trusted. The graphban-rules signing job
 #: holds the matching private key; it never enters this repo. An empty tuple would refuse every pack.
@@ -173,6 +173,14 @@ register_primitive(Primitive(
 register_primitive(Primitive(
     "found_bug", "enforced",
     Enforcer("graphban_source", "app/services/items.py"),
+    {"mode": Param("str")}))
+# GRPH-1603. `enforced`: the memory gate (`memory._triage_prefs`) publishes or holds a candidate
+# by the mode. Backed by `Project.memory_write_mode` itself, never a toggle row
+# (`rule_toggles.MEMORY_WRITE_MODE_RULE`). `mode` is one of `memory.WRITE_MODES`, enforced when
+# a person sets the param.
+register_primitive(Primitive(
+    "memory_write_mode", "enforced",
+    Enforcer("graphban_source", "app/services/memory.py"),
     {"mode": Param("str")}))
 register_primitive(Primitive(
     "evidence_attached", "checked",

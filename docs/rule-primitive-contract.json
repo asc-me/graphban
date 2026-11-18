@@ -1,5 +1,5 @@
 {
-  "api_version": "1.9.0",
+  "api_version": "1.10.0",
   "primitives": [
     {
       "id": "done_predicates",
@@ -81,6 +81,17 @@
       "id": "human_only_clause",
       "level": "enforced",
       "params": []
+    },
+    {
+      "id": "memory_write_mode",
+      "level": "enforced",
+      "params": [
+        {
+          "name": "mode",
+          "required": false,
+          "type": "str"
+        }
+      ]
     },
     {
       "id": "path_classes",
