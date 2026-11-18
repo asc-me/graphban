@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 369 of the 369. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 370 of the 370. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -198,6 +198,7 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | POST | `/api/items/{id}/resolve` | JWT (project owner) | Close an item as a duplicate or superseded, with no attestation. Body: `{kind: duplicate\|superseded, of, reason?}`. A duplicate's `of` must be a done item in the same project; superseded may name an item or PRD and needs `reason`. Stored as `resolution`; the item is done but never counted as delivered. 409 `close.resolution_points_at_the_work` names why. |
 | GET | `/api/projects/{project_id}/line` | JWT (project reader) | The project's maintenance line `{id, title}`, or `null` when it has not been created — null does not mean the project has no bugs (GRPH-1681). |
 | POST | `/api/projects/{project_id}/line` | JWT (write — the permission that accepts a request) | Create the project's one maintenance line. Body: `{title?}`, default "Maintenance". 409 `line.one_per_project` names the existing line on a second create. |
+| GET | `/api/projects/{project_id}/line/unscoped_fixes` | JWT (project reader) | Fixes with no PRD and no line: `{ids, count}`; `count` is `0`, never omitted, when there are none. Nothing moves them — setting `line_id` on one is the move (GRPH-1686). |
 
 ## Requests
 

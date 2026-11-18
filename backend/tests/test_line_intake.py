@@ -70,6 +70,13 @@ def test_unscoped_fixes_lists_only_scopeless_fixes_and_zero_is_present(client, a
         assert on_line.key not in out["ids"] and feat.key not in out["ids"]
     r = client.get(f"/api/projects/{proj}/line/unscoped_fixes", headers=auth)
     assert r.status_code == 200 and r.json()["count"] == 1
+    # The MCP read returns the same payload (and exercises its outputSchema, GRPH-495).
+    key = client.post("/api/api-keys", json={"name": "k", "project_id": proj,
+                                             "scopes": ["read"]},
+                      headers=auth).json()["plaintext"]
+    res = _rpc(client, key, "unscoped_fixes", {})
+    assert not res.get("isError"), res
+    assert res["structuredContent"] == {"ids": [loose.key], "count": 1}
 
 
 def test_accepted_bug_is_unready_until_clause_and_touchpoint_then_claimable(client, auth):
