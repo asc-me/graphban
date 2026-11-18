@@ -182,3 +182,34 @@ def test_an_item_in_the_claim_pool_is_not_unready():
     "**Acceptance:**\n- a", "__Acceptance__\n* a", "## Tests\n- a"])
 def test_acceptance_shapes_the_server_reads_are_read(text):
     assert until._ACCEPT_RE.search(text)
+
+
+class _DryP:
+    def __init__(self, ml=LINE):
+        self.ml = ml
+
+    def call(self, tool, **kw):
+        if tool == "get_context":
+            return {"maintenance_line": self.ml} if self.ml else {}
+        if tool == "collision_clusters":
+            return {"clusters": [{"items": ["P-1"]}, {"items": ["L-1"]}], "holds": []}
+        if tool == "search_items":
+            if kw.get("status") == "next":
+                return {"results": [{"id": "L-1", "line_id": "GRPH-L1"},
+                                    {"id": "P-1", "prd_id": "P"}]}
+            return {"results": []}
+        return {}
+
+
+def test_dry_run_plan_with_line_lists_only_the_line_item():
+    """GRPH-1710. Sabotage: call plan() without `line` and `would_delegate` gains P-1."""
+    got = until.plan(_DryP(), None, 5, line="")
+    assert got["would_delegate"] == ["L-1"]
+    assert got["line"] == "GRPH-L1" and got["seats_scoped"] is True
+
+
+def test_dry_run_plan_refuses_a_prd_id_and_a_missing_line():
+    with pytest.raises(ConfigError, match="use --prd"):
+        until.plan(_DryP(), None, 5, line="GRPH-P86")
+    with pytest.raises(ConfigError, match="create_line"):
+        until.plan(_DryP(ml=None), None, 5, line="")
