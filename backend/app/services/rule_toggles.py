@@ -127,6 +127,14 @@ PATH_CLASSES_DEFAULT: dict[str, list[str]] = {
     "mcp_tool": ["*mcp_server.py"],
     "docs": ["*.md", "docs/**"],
 }
+#: GRPH-1603: the project's memory write mode as a library rule, so a strictness level can set
+#: it. Its project layer IS `Project.memory_write_mode` — read and written in place, never a
+#: `RuleToggle` row — so the project endpoint and the rules view hold one value. `mode` is one of
+#: `memory.WRITE_MODES`. The mode is always in force: there is no "off" write mode.
+MEMORY_WRITE_MODE_RULE = "memory.write_mode"
+MEMORY_WRITE_MODE_DEFAULT = "review"
+
+
 #: A string param that takes one of a closed set: rule id -> param -> allowed values.
 PARAM_CHOICES: dict[str, dict[str, tuple[str, ...]]] = {
     TEST_SCOPE_RULE: {"mode": tuple(TEST_SCOPE_MODES)},
@@ -141,6 +149,50 @@ DONE_PREDICATES_RULE = "merge.done_predicates"
 #: (`items.refuse_if_pr_cooling_down`, GRPH-1633); locked in a set
 #: list until GRPH-1059 decides whether it can ever be dropped.
 CI_FLOOR_PREDICATE = "suite_green"
+
+
+def _choices(rule_id: str, param: str) -> tuple[str, ...] | None:
+    if rule_id == MEMORY_WRITE_MODE_RULE and param == "mode":
+        from app.services import memory  # memory imports this module lazily; keep it symmetric
+        return tuple(memory.WRITE_MODES)
+    return PARAM_CHOICES.get(rule_id, {}).get(param)
+
+
+def _default_params(rule: LibraryRule) -> dict:
+    """The rule's platform-default params. `memory.write_mode` always has a `mode`, even when
+    its template declares none, so the param is known and typed."""
+    if rule.id == MEMORY_WRITE_MODE_RULE:
+        return {"mode": MEMORY_WRITE_MODE_DEFAULT, **rule.default_params}
+    return rule.default_params
+
+
+class _ModeColumn:
+    """The project layer of `memory.write_mode`: `Project.memory_write_mode`, not a toggle row.
+
+    It reads like a `RuleToggle` (`on`, `params`, `locked`) so resolution and the audit snapshot
+    need no fork, and it is never added to the session: the rule keeps no copy in
+    `rule_toggles`. `on` is None — the mode has no off; `_resolve` draws it on."""
+
+    on = None
+    locked = False
+    updated_by = None
+
+    def __init__(self, project: Project):
+        self.project = project
+
+    @property
+    def params(self) -> dict:
+        return {"mode": self.project.memory_write_mode}
+
+
+def _mode_layer(db: Session, rule: LibraryRule, row: RuleToggle | None,
+                project_id: str | None) -> RuleToggle | _ModeColumn | None:
+    """The project layer of `rule`: its toggle row, or for `memory.write_mode` the column. A
+    stray toggle row on that rule is ignored, so a second copy could never be read."""
+    if rule.id != MEMORY_WRITE_MODE_RULE:
+        return row
+    p = db.get(Project, project_id) if project_id else None
+    return _ModeColumn(p) if p is not None else None
 
 
 def register(rule: LibraryRule) -> None:
@@ -222,18 +274,52 @@ def _resolve(rule: LibraryRule, proj: RuleToggle | None, org: RuleToggle | None,
         return "org" if org is not None and getattr(org, attr) is not None else "platform default"
 
     # Kept beside `on`/`params`, not inside them, so their `{value, source}` shape is unchanged.
-    return {"rule_id": rule.id, "on": first("on", rule.default_on),
-            "params": first("params", rule.default_params),
-            "inherits": {"on": inherits("on"), "params": inherits("params")},
-            "locked": locked, "locked_by": org_id if locked else None}
+    out = {"rule_id": rule.id, "on": first("on", rule.default_on),
+           "params": first("params", _default_params(rule)),
+           "inherits": {"on": inherits("on"), "params": inherits("params")},
+           "locked": locked, "locked_by": org_id if locked else None}
+    if rule.id == MEMORY_WRITE_MODE_RULE:
+        # GRPH-1603: a write mode is always in force; only its `mode` is a choice.
+        out["on"], out["inherits"]["on"] = {"value": True, "source": "platform default"}, \
+            "platform default"
+    return out
 
 
 def resolve(db: Session, rule_id: str, project_id: str | None) -> dict:
     """The effective state and params of one rule for one project, each with its source."""
     rule = _rule(rule_id)
     org_id = _org_of(db, project_id)
-    return _resolve(rule, _row(db, rule_id, project_id=project_id),
+    return _resolve(rule, _mode_layer(db, rule, _row(db, rule_id, project_id=project_id),
+                                      project_id),
                     _row(db, rule_id, org_id=org_id), org_id)
+
+
+def refuse_if_locked(db: Session, rule_id: str, project_id: str) -> dict | None:
+    """Refuse a project-level change to a rule its org has locked, naming `LOCK_RULE`. Returns
+    the resolved state, or None when the loaded library does not carry the rule."""
+    if rule_id not in LIBRARY:
+        return None
+    state = resolve(db, rule_id, project_id)
+    if state["locked"]:
+        raise Refused(409, f"{rule_id} is locked by the org; a project cannot override it",
+                      rule_id=LOCK_RULE, meta={"locked_rule": rule_id, "org_id": state["locked_by"]},
+                      hint="ask an org admin to change the org's value or unlock the rule")
+    return state
+
+
+def memory_write_mode(db: Session, project_id: str | None) -> str:
+    """The write mode the memory gate applies (GRPH-1603): the rule's resolved `mode` — the
+    project's column, or the org's value while it is locked. A box whose pack does not carry
+    the rule reads the column, today's behaviour. Unknown values read `review`."""
+    from app.services import memory
+    if project_id is None:
+        return MEMORY_WRITE_MODE_DEFAULT
+    if MEMORY_WRITE_MODE_RULE in LIBRARY:
+        mode = (resolve(db, MEMORY_WRITE_MODE_RULE, project_id)["params"]["value"] or {}).get("mode")
+    else:
+        p = db.get(Project, project_id)
+        mode = p.memory_write_mode if p is not None else None
+    return mode if mode in memory.WRITE_MODES else MEMORY_WRITE_MODE_DEFAULT
 
 
 def test_scope_mode(db: Session, project_id: str | None) -> str:
@@ -345,7 +431,8 @@ def effective(db: Session, project_id: str | None) -> list[dict]:
             (RuleToggle.project_id == project_id) if not org_id else
             ((RuleToggle.project_id == project_id) | (RuleToggle.org_id == org_id))))
     } if project_id else {}
-    out = [dict(_resolve(r, rows.get((r.id, "project")), rows.get((r.id, "org")), org_id),
+    out = [dict(_resolve(r, _mode_layer(db, r, rows.get((r.id, "project")), project_id),
+                         rows.get((r.id, "org")), org_id),
                 stage=r.stage, title=r.title)
            for r in LIBRARY.values()]
     for t in out:
@@ -402,10 +489,11 @@ def _check_params(rule: LibraryRule, params: dict, base: dict | None = None) -> 
     refused rather than stored, where it would read as a setting the primitive honours."""
     if not isinstance(params, dict):
         raise Validation("`params` must be an object")
-    unknown = sorted(set(params) - set(rule.default_params))
+    defaults = _default_params(rule)
+    unknown = sorted(set(params) - set(defaults))
     if unknown:
         raise Validation(f"{rule.id} has no param(s) {', '.join(unknown)}",
-                         hint=f"known: {', '.join(sorted(rule.default_params)) or 'none'}")
+                         hint=f"known: {', '.join(sorted(defaults)) or 'none'}")
     for k, v in params.items():
         if rule.id == TEST_SCOPE_RULE and k == "engines":
             if (not isinstance(v, list) or not v
@@ -414,18 +502,18 @@ def _check_params(rule: LibraryRule, params: dict, base: dict | None = None) -> 
                                  "engine names")
             params = {**params, k: list(dict.fromkeys(e.strip().lower() for e in v))}
             continue
-        want = type(rule.default_params[k])
+        want = type(defaults[k])
         if not isinstance(v, want) or (want is int and isinstance(v, bool)):
             raise Validation(f"{rule.id} param {k!r} must be {want.__name__}")
         if want is list and not all(isinstance(x, str) for x in v):
             raise Validation(f"{rule.id} param {k!r} must be a list of strings")
         if rule.id == DONE_PREDICATES_RULE and k == "predicates":
             params = {**params, k: _check_done_predicates(v)}
-        choices = PARAM_CHOICES.get(rule.id, {}).get(k)
+        choices = _choices(rule.id, k)
         if choices is not None and v not in choices:
             raise Validation(f"{rule.id} param {k!r} must be one of {', '.join(choices)}",
                              hint=f"got {v!r}")
-    return {**(rule.default_params if base is None else base), **params}
+    return {**(defaults if base is None else base), **params}
 
 
 def _apply(row: RuleToggle, rule: LibraryRule, changes: dict, base: dict | None = None) -> None:
@@ -465,11 +553,9 @@ def _stage_project_toggle(db: Session, project_id: str, rule_id: str, changes: d
     if unknown or not changes:
         raise Validation(f"a project toggle sets `on` and/or `params`"
                          + (f"; not {', '.join(unknown)}" if unknown else ""))
-    before = resolve(db, rule_id, project_id)
-    if before["locked"]:
-        raise Refused(409, f"{rule_id} is locked by the org; a project cannot override it",
-                      rule_id=LOCK_RULE, meta={"locked_rule": rule_id, "org_id": before["locked_by"]},
-                      hint="ask an org admin to change the org's value or unlock the rule")
+    before = refuse_if_locked(db, rule_id, project_id)
+    if rule_id == MEMORY_WRITE_MODE_RULE:
+        return _stage_write_mode(db, project_id, rule, changes, before, user)
     row = _row(db, rule_id, project_id=project_id)
     old = _snapshot(row)
     if row is None:
@@ -478,6 +564,38 @@ def _stage_project_toggle(db: Session, project_id: str, rule_id: str, changes: d
     # A write keeps the params it does not name: they merge onto what holds for the project now.
     _apply(row, rule, changes, copy.deepcopy(before["params"]["value"]))
     row.updated_by = user.id
+    return row, before, old
+
+
+def _refuse_mode_off(rule: LibraryRule, changes: dict) -> None:
+    if rule.id == MEMORY_WRITE_MODE_RULE and changes.get("on") is False:
+        raise Validation(f"{rule.id} is always in force; it cannot be turned off",
+                         hint="set its `mode` param: " + ", ".join(_choices(rule.id, "mode")))
+
+
+def _stage_write_mode(db: Session, project_id: str, rule: LibraryRule, changes: dict,
+                      before: dict, user: User) -> tuple[_ModeColumn, dict, dict]:
+    """A project write to `memory.write_mode` (GRPH-1603): the mode goes to
+    `Project.memory_write_mode` through `memory.set_write_mode`, uncommitted, and no toggle row
+    is written. `params: null` resets the column to what the project would inherit."""
+    from app.services import memory
+    _refuse_mode_off(rule, changes)
+    if changes.get("on") is not None and not isinstance(changes["on"], bool):
+        raise Validation("`on` must be true, false or null (inherit)")
+    project = db.get(Project, project_id)
+    if project is None:
+        raise NotFound(f"project {project_id!r} not found")
+    row = _ModeColumn(project)
+    old = _snapshot(row)
+    if "params" in changes:
+        if changes["params"] is None:
+            org = _row(db, rule.id, org_id=_org_of(db, project_id))
+            base = org.params if org is not None and org.params is not None else _default_params(rule)
+            mode = base.get("mode", MEMORY_WRITE_MODE_DEFAULT)
+        else:
+            mode = _check_params(rule, changes["params"], {"mode": project.memory_write_mode})["mode"]
+        memory.set_write_mode(db, project, mode, actor=user, reason=None, require_reason=False,
+                              commit=False)
     return row, before, old
 
 
@@ -573,6 +691,7 @@ def set_org_toggle(db: Session, org_id: str, rule_id: str, changes: dict, *, act
                          + (f"; not {', '.join(unknown)}" if unknown else ""))
     if "locked" in changes and not isinstance(changes["locked"], bool):
         raise Validation("`locked` must be true or false")
+    _refuse_mode_off(rule, changes)
     project_ids = list(db.scalars(select(Project.id).where(Project.org_id == org_id)
                                   .order_by(Project.id)))
     before = {pid: _value(resolve(db, rule_id, pid)) for pid in project_ids}
@@ -588,9 +707,9 @@ def set_org_toggle(db: Session, org_id: str, rule_id: str, changes: dict, *, act
         # A lock fixes a value. Locking with nothing set would leave projects "locked" to the
         # platform default with the org shown as nobody — so the default is written down.
         if row.on is None:
-            row.on = rule.default_on
+            row.on = rule.default_on or rule.id == MEMORY_WRITE_MODE_RULE
         if row.params is None:
-            row.params = dict(rule.default_params)
+            row.params = dict(_default_params(rule))
     row.updated_by = user.id
     if dry_run:
         try:

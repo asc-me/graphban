@@ -193,6 +193,23 @@ reaches a box through the signed rule-pack feed (primitive `path_classes`, level
 template `plan.path_classes`, stage Plan, default `on`, the four lists above); the feed lives
 outside this repo and needs that template added. Primitive API 1.9.0.
 
+## `memory.write_mode` — who must review agent-written memory (GRPH-1603)
+
+A per-project library rule (stage Learn, primitive `memory_write_mode`, level `enforced`: the
+memory gate publishes or holds a candidate by it) with one param, `mode`: `review`, `auto` or
+`trusted` (`memory.WRITE_MODES`). Any other value is refused 422 and nothing is stored. The rule
+is always in force; `on: false` is refused, because there is no "off" write mode.
+
+The project's value **is** `Project.memory_write_mode`. The rule keeps no copy in
+`rule_toggles`: a write through the rules view (`PUT /api/rules/toggles/memory.write_mode`, or a
+profile apply) sets the column through `memory.set_write_mode`, and a write through the project
+endpoint (`PUT /api/projects/{id}/memory-write-mode`, or the settings `PATCH`) shows up in the
+rules view at once. Both record a `set_rule_toggle` event on `memory.write_mode` with the reason.
+An org may set and lock the mode like any library rule; while it is locked the gate reads the
+org's mode, and a project change on either path is refused 409 naming `rules.org_lock_holds`.
+Unlocking gives the project back the mode its column holds. A box whose pack does not carry the
+template reads the column, as before. The primitive exists from primitive API 1.10.0.
+
 ## Which pack version carries each rule (GRPH-1430)
 
 A rule absent from a box's pack reads as its default, never as off (`backend/tests/test_rule_pack_p74.py`).
@@ -208,5 +225,6 @@ A project can only *change* a rule once the box's pack carries it.
 | `build.generated_files` | 0.4.0 | 1.8.0 | the first release carrying GRPH-1494 |
 | `build.test_scope` `engines` | 0.4.0 | 1.8.0 | the first release carrying GRPH-1494 |
 | `plan.path_classes` | 0.5.0 | 1.9.0 | the first release carrying GRPH-1496 |
+| `memory.write_mode` (`mode`) | not yet released | 1.10.0 | the first release carrying GRPH-1603 |
 
 `gitops.merge_method` is a gitops field, not a library rule, and needs no template.
