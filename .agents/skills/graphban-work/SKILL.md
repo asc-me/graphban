@@ -26,6 +26,8 @@ Test scope follows the project's mode, which your delegation brief states. `agen
 
 Found bug follows the project's mode, which your delegation brief states on a `Found bug:` line; read it there, do not choose it per bug. `fix_in_build`: a bug in the files of the item you hold is fixed on that item, and a new fix over those files is refused; a bug outside them is a ticket. `file_ticket`: a bug found during the work is a new ticket, including a bug in those files, and your item cannot move to review while its diff touches a path on that ticket until it is `done`.
 
+Filing a fix: a defect has three exits. Fix it on the item you hold (only in `fix_in_build` mode); file a blocking fix on the PRD, `create_item` with `kind=fix`, `prd_id`, `blocks=<an item on that PRD>`, a description with `## Acceptance`, and touchpoints, and when `blocks` names the item you hold the same call releases it to `blocked` with the fix as its blocker, so your lease ends; or file a fix on the line, `create_item` with `kind=fix` and `line_id` read from `get_context.maintenance_line.id`. Scope is required: a fix with neither `prd_id` nor `line_id` is refused. Never hardcode a line key.
+
 A product decision the item and its PRD framing do not already state: file a wait and stop. `create_item` with tag `wait:decision`, `status=blocked`, this item's `prd_id`, and a description that is the question plus what each answer would make you do. `link_items` with `a` this item, `b` the wait, `type` `dependency`, `reason` `wait:decision`. Leave this item `blocked`. Leave the wait blocked. Answering it is `graphban-answer`.
 
 A broken build is either still this item (move it back to `next` with the failure named), or a

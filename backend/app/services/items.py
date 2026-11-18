@@ -435,6 +435,20 @@ def create_item(
         db.refresh(item)
     else:
         db.flush()  # assigns the row without ending the caller's transaction
+    # GRPH-1696: the holder stops when they are the blocked item. A dependency written after
+    # the fact does not retract a lease; filing the blocking fix does. A held item is one the
+    # caller holds (`held` is built from the caller's own claims), so another agent's lease on
+    # the blocked item is never touched.
+    if blocked is not None and agent_create and any(h.id == blocked.id for h in held or []):
+        holder = blocked.claimed_by
+        if holder and release_item(db, blocked.id, holder, to_status="blocked",
+                                   reason=f"blocked by the fix {item.key} it filed") is not None:
+            blocked.blocker = f"{item.key}: blocking fix filed on this item"
+            if commit:
+                db.commit()
+                db.refresh(item)
+            else:
+                db.flush()
     if item.touchpoints:
         from app.services.clustering import sync_code_links
         sync_code_links(db, item)
