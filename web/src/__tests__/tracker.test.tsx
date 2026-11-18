@@ -44,6 +44,9 @@ vi.mock("@/lib/api", () => ({
     item: vi.fn(async (id: string) => (served.find((i) => i.id === id) ?? items[0]) as ItemDetail),
     shards: vi.fn(async () => []),
     links: vi.fn(async () => servedLinks),
+    line: vi.fn(async () => null),
+    unscopedFixes: vi.fn(async () => ({ ids: [], count: 0 })),
+    itemsFull: vi.fn(async () => served),
     updateItem: vi.fn(async (id: string, body: Partial<Item>) => ({ ...items[0], id, ...body })),
     ownerClose: vi.fn(async (id: string) => ({ ...items[0], id, status: "done" as const })),
     resolveItem: vi.fn(async (id: string, body: { kind: string; of: string }) => ({
@@ -635,12 +638,18 @@ describe("the tracker board (GRPH-1144)", () => {
     const { api } = await import("@/lib/api");
     let release: (v: Item[]) => void = () => {};
     vi.mocked(api.items).mockImplementationOnce(() => new Promise<Item[]>((r) => (release = r)));
-    renderTracker();
-    expect(await screen.findByLabelText("Loading tracker")).toBeInTheDocument();
-    expect(screen.queryByText("No items yet")).not.toBeInTheDocument();
-    release([]);
-    expect(await screen.findByText("No items yet")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Loading tracker")).not.toBeInTheDocument();
+    // Mounting the empty state's own "New item" re-reads the list; that read is an empty project too.
+    vi.mocked(api.items).mockImplementation(async () => []);
+    try {
+      renderTracker();
+      expect(await screen.findByLabelText("Loading tracker")).toBeInTheDocument();
+      expect(screen.queryByText("No items yet")).not.toBeInTheDocument();
+      release([]);
+      expect(await screen.findByText("No items yet")).toBeInTheDocument();
+      expect(screen.queryByLabelText("Loading tracker")).not.toBeInTheDocument();
+    } finally {
+      vi.mocked(api.items).mockImplementation(async () => served);
+    }
   });
 
   it("shows the empty state with New item when there are no items", async () => {

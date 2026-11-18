@@ -1172,6 +1172,24 @@ export function useMaintenanceLine(projectId?: string) {
   return useQuery({ queryKey: ["line", projectId], queryFn: () => api.line(projectId!), enabled: !!projectId });
 }
 
+/** Fixes with no PRD and no line (GRPH-1686). An error stays an error: it is never read as 0. */
+export function useUnscopedFixes(projectId?: string) {
+  return useQuery({
+    queryKey: ["line", projectId, "unscoped"],
+    queryFn: () => api.unscopedFixes(projectId!),
+    enabled: !!projectId,
+  });
+}
+
+/** The full item list (descriptions included), fetched only while `enabled`. */
+export function useItemsFull(projectId?: string, enabled = true) {
+  return useQuery({
+    queryKey: [...keys.items, "full", projectId],
+    queryFn: () => api.itemsFull(projectId),
+    enabled: !!projectId && enabled,
+  });
+}
+
 export function useCreateLine(projectId: string) {
   const qc = useQueryClient();
   return useMutation({

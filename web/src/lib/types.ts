@@ -9,6 +9,12 @@ export interface MaintenanceLine {
   title: string;
 }
 
+/** `GET /projects/{id}/line/unscoped_fixes` (GRPH-1686): `count` is present, and 0 when none. */
+export interface UnscopedFixes {
+  ids: string[];
+  count: number;
+}
+
 /** POST /items body for a fix (GRPH-1683): scope is `line_id` or `prd_id` + `blocks`. */
 export interface ItemCreateBody extends Partial<ItemDetail> {
   blocks?: string;

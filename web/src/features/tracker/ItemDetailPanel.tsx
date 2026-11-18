@@ -230,7 +230,8 @@ export function ItemDetailPanel({
               )}
               {dependents.length > 0 && (
                 <p className="text-[12px] text-accent">
-                  Unblocks {dependents.length} item{dependents.length > 1 ? "s" : ""} when done.
+                  Unblocks {dependents.length} item{dependents.length > 1 ? "s" : ""} when done
+                  {item.kind === "fix" ? ` · blocks ${dependents.join(", ")}` : ""}.
                 </p>
               )}
             </Section>
