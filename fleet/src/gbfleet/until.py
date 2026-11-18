@@ -930,6 +930,7 @@ def _loop(
     review_fails = 0
     ci_stuck: list[dict] = []
     ci_logged: set[tuple[str, str, str]] = set()  # GRPH-1392: events already logged
+    builder_ci_logged: set[tuple[str, str, str]] = set()  # GRPH-1708
     review_spawned: list = []  # GRPH-1374: children this loop spawned for review rows
     # GRPH-842. One gate for the whole run, not one per spawn: a child spawned seconds ago
     # is not in the kernel's numbers yet, and a fresh reading per seat cannot know that. Its
@@ -1180,6 +1181,13 @@ def _loop(
             reviews = [str(r["id"]) for r in rows + ci_stuck]
             outside = [str(r["id"]) for r in rows_outside]
             waits = _wait_ids(planner)
+            builder_ci_pending = False
+            try:
+                misblocked = _builder_ci_misblocked_rows(planner, prd, line)
+            except ToolFailed as exc:
+                raise ConfigError(f"cannot list builder CI blockers: {exc}") from exc
+            waits, builder_ci_pending, _ = _apply_builder_ci_blockers(
+                planner, misblocked, repo, waits, builder_ci_logged, agent_id=agent_id)
             for rid, running in ci_pending.items():
                 wait_line = f"{rid}: review_waits_on_ci ({running})"
                 if wait_line not in waits:
@@ -1485,6 +1493,13 @@ def _loop(
                 wait_line = f"{row.get('id')}: review waits on CI"
                 if wait_line not in waits:
                     waits.append(wait_line)
+            empty = 0
+            sleep(poll)
+            continue
+
+        if builder_ci_pending:
+            # GRPH-1708: a builder blocked on missing local CI while CI is still running — not
+            # a typed human wait and not idle.
             empty = 0
             sleep(poll)
             continue
@@ -3311,6 +3326,105 @@ def _block_ci_red(planner: Graphban, item: str, head: str, job: str, agent_id: s
     observe.emit("review_ci_red_reopened", item=item, commit=head, job=job,
                  detail=f"{item}: reopened on {job} at {head[:12]}")
     return True
+
+
+_BUILDER_CI_STATUSES = ("blocked", "next", "backlog")
+
+
+def _in_wave_scope(row: dict, prd: str | None, line: str | None) -> bool:
+    if line:
+        return row.get("line_id") == line
+    if prd:
+        return str(row.get("prd_id") or "") == prd
+    return True
+
+
+def _builder_ci_misblocked_rows(
+    planner: Graphban, prd: str | None, line: str | None,
+) -> list[dict]:
+    """Items a builder blocked mistaking missing local CI for a human wait (GRPH-1708).
+
+    A typed `wait:*` tag on the same row does not make it a human wait when it has a pushed
+    branch and a PR: the child set a prose blocker, not a decision for a person.
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    for status in _BUILDER_CI_STATUSES:
+        got = planner.call("search_items", status=status, fields="full", limit=10_000)
+        rows = got.get("results") if isinstance(got, dict) else None
+        if not isinstance(rows, list):
+            raise ToolFailed("search_items", "error",
+                             f"{status} listing carried no results list")
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            item_id = str(row.get("id") or "")
+            if not item_id or item_id in seen:
+                continue
+            if not _in_wave_scope(row, prd, line):
+                continue
+            if not str(row.get("built_by") or "").strip():
+                continue
+            blocker = str(row.get("blocker") or "").strip()
+            if not blocker or deps.is_hold(blocker):
+                continue
+            if not str(row.get("branch") or "").strip():
+                continue
+            seen.add(item_id)
+            out.append(row)
+    return out
+
+
+def _apply_builder_ci_blockers(
+    planner: Graphban,
+    rows: list[dict],
+    repo: Path,
+    waits: list[str],
+    logged: set[tuple[str, str, str]],
+    *,
+    agent_id: str = "",
+) -> tuple[list[str], bool, bool]:
+    """Name builder CI waits and reopen a finished red head. Returns (waits, pending, reopened)."""
+    pending = False
+    reopened = False
+    drop = {str(r.get("id")) for r in rows}
+    waits = [w for w in waits if w not in drop]
+    for row in rows:
+        item_id = str(row["id"])
+        branch = str(row.get("branch") or "")
+        state, head, job = ci_verdict(repo, branch)
+        if state == "unknown":
+            continue
+        if state == "red":
+            key = ("builder_ci_red", item_id, head)
+            if key not in logged:
+                logged.add(key)
+                observe.emit(
+                    "builder_ci_red", item=item_id, commit=head, job=job,
+                    detail=f"{item_id}: builder blocked on missing local CI; "
+                           f"CI red at {head[:12]}: {job}",
+                )
+            if _block_ci_red(planner, item_id, head, job, agent_id,
+                             repo=repo, branch=branch):
+                reopened = True
+            else:
+                line = f"{item_id}: CI red ({job})"
+                if line not in waits:
+                    waits.append(line)
+            continue
+        if state == "pending":
+            pending = True
+            key = ("builder_ci_pending", item_id, head)
+            if key not in logged:
+                logged.add(key)
+                observe.emit(
+                    "builder_ci_pending", item=item_id, commit=head,
+                    detail=f"{item_id}: builder blocked; CI pending at {head[:12]}",
+                )
+            line = f"{item_id}: CI pending at {head[:12]}"
+            if line not in waits:
+                waits.append(line)
+    return waits, pending, reopened
 
 
 def review_held(row: dict) -> bool:
