@@ -192,6 +192,43 @@ def found_during_of(db: Session, item: Item) -> str | None:
     return other.key if other is not None else None
 
 
+FOUND_BUG_RULE = "build.found_bug"
+
+
+def refuse_overlap_with_held(db: Session, *, touchpoints, held: list[Item],
+                             project_id: str) -> None:
+    """`build.found_bug` under `fix_in_build`: a new fix over the files of an item the caller
+    holds is fixed on that item, not filed (GRPH-1682). `file_ticket` does not refuse."""
+    from app.services import rule_toggles
+    from app.services.clustering import shared_touchpoints
+    if rule_toggles.found_bug_mode(db, project_id) != "fix_in_build":
+        return
+    hit = [h for h in held if shared_touchpoints(h.touchpoints or [], touchpoints or [])]
+    if hit:
+        raise ValueError(
+            f"{FOUND_BUG_RULE} is fix_in_build: this fix touches the files of {hit[0].key}, "
+            f"which you hold. Fix the bug on {hit[0].key} instead of filing a ticket for it")
+
+
+def refuse_review_over_open_fix(db: Session, item: Item) -> None:
+    """`build.found_bug` under `file_ticket`: the held item does not reach review while its
+    diff touches a path on an open fix found during it (GRPH-1682)."""
+    from app.models import Link
+    from app.services import rule_toggles
+    from app.services.clustering import shared_touchpoints
+    if rule_toggles.found_bug_mode(db, item.project_id) != "file_ticket":
+        return
+    ids = db.scalars(select(Link.a).where(Link.b == item.id, Link.type == "found_during")).all()
+    for fid in ids:
+        fix = db.get(Item, fid)
+        if (fix is not None and fix.kind == "fix" and fix.status != "done"
+                and shared_touchpoints(item.touchpoints or [], fix.touchpoints or [])):
+            raise ValueError(
+                f"{FOUND_BUG_RULE} is file_ticket: {item.key} cannot move to review while its "
+                f"diff touches a path on open fix {fix.key}. Finish {fix.key}, or take those "
+                "paths out of this item's diff")
+
+
 def _default_kind(tags) -> str:
     """The kind an item gets when its creator does not say: `fix` for a `bug`-tagged item,
     otherwise empty (not recorded). Never `feature` — that is only ever declared."""
@@ -335,6 +372,8 @@ def create_item(
             blocked = _blocked_item(db, blocks, _stored_prd_id(db, prd_id, project_id))
         if agent_create:
             origin = resolve_found_during(db, found_during=found_during, held=held or [])
+            refuse_overlap_with_held(db, touchpoints=touchpoints, held=held or [],
+                                     project_id=project_id)
             distinct = check_duplicates(
                 db, line_id=lines_svc_resolve(db, line_id, project_id) if line_id else None,
                 prd_id=_stored_prd_id(db, prd_id, project_id), touchpoints=touchpoints,
@@ -2277,6 +2316,7 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
                 "branch, or attach the PR url as evidence, then move it to review"
             )
     if fields.get("status") == "review" and prev_status != "review":
+        refuse_review_over_open_fix(db, item)
         require_engine_evidence(db, item, fields.get("evidence"),
                                 head=fields.get("head_commit"))
     # THE COMPLETION GATE (GRPH-543). Before this, `update_item` validated a status

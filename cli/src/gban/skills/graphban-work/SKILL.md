@@ -24,6 +24,8 @@ Take one item, leave a receipt, hand it to review. Reading the repo is `graphban
 
 Test scope follows the project's mode, which your delegation brief states. `agent_targeted`: run the tests you wrote or changed, the module's existing tests and the sabotage check, then push and hand off; the PR's CI runs the full suites and is the receipt. `agent_and_pr`: run the full suites per `AGENTS.md`'s operating loop. `agent_full`: run the full suites; your receipts are the proof. In every mode, a full local run is still right when reproducing a CI failure.
 
+Found bug follows the project's mode, which your delegation brief states on a `Found bug:` line; read it there, do not choose it per bug. `fix_in_build`: a bug in the files of the item you hold is fixed on that item, and a new fix over those files is refused; a bug outside them is a ticket. `file_ticket`: a bug found during the work is a new ticket, including a bug in those files, and your item cannot move to review while its diff touches a path on that ticket until it is `done`.
+
 A product decision the item and its PRD framing do not already state: file a wait and stop. `create_item` with tag `wait:decision`, `status=blocked`, this item's `prd_id`, and a description that is the question plus what each answer would make you do. `link_items` with `a` this item, `b` the wait, `type` `dependency`, `reason` `wait:decision`. Leave this item `blocked`. Leave the wait blocked. Answering it is `graphban-answer`.
 
 A broken build is either still this item (move it back to `next` with the failure named), or a

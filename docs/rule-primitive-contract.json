@@ -51,6 +51,17 @@
       ]
     },
     {
+      "id": "found_bug",
+      "level": "enforced",
+      "params": [
+        {
+          "name": "mode",
+          "required": false,
+          "type": "str"
+        }
+      ]
+    },
+    {
       "id": "gap_followup_link",
       "level": "enforced",
       "params": []
