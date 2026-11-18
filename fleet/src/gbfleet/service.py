@@ -35,6 +35,7 @@ the wrong port. So the installing shell's PATH is recorded in the unit, and `sta
 """
 from __future__ import annotations
 
+import json
 import os
 import plistlib
 import shlex
@@ -130,6 +131,34 @@ def err_reason(name: str, *, limit: int = 400) -> str:
         return ""
     last = lines[-1]
     return last if len(last) <= limit else last[: limit - 1] + "…"
+
+def last_run(name: str) -> tuple[str, int]:
+    """`(reason, unready_count)` from the newest `until` JSON in `<name>.log` (GRPH-1698).
+
+    Exit 0 alone is not the idle signal: a `--line` drain exits 0 with `reason: unready` when
+    fixes are filed but not claimable. `("", 0)` means the log held no readable reason.
+    """
+    path = CONFIG_DIR / "logs" / f"{name}.log"
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, 2)
+            fh.seek(max(0, fh.tell() - 65536))
+            tail = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return "", 0
+    for ln in reversed(tail.splitlines()):
+        ln = ln.strip()
+        if not ln.startswith("{"):
+            continue
+        try:
+            doc = json.loads(ln)
+        except ValueError:
+            continue
+        if isinstance(doc, dict) and isinstance(doc.get("reason"), str) and doc["reason"]:
+            un = doc.get("unready")
+            return doc["reason"], len(un) if isinstance(un, list) else 0
+    return "", 0
+
 
 #: What `until` is given if the operator passes nothing else. Nothing: an empty install is
 #: refused, because a service running `gbfleet until` with no server, project or repo is a
@@ -917,10 +946,16 @@ class Status:
     #: Why it died, from the err log's last line, when it is not running and last exited
     #: non-zero (GRPH-1312). Empty otherwise, and empty when the log is unreadable.
     reason: str = ""
+    #: The newest `until` run's JSON `reason` from the drain's log (GRPH-1698). None means the
+    #: log was not consulted; "" means it was and held no reason.
+    run_reason: str | None = None
+    unready: int = 0
 
     @property
     def idle(self) -> bool:
         """Installed, not running, and last exited cleanly: the normal state between cycles."""
+        if self.run_reason is not None and self.run_reason in ("", "unready"):
+            return False
         return bool(self.installed) and self.running is False and self.last_exit == 0
 
     def line(self) -> str:
@@ -938,6 +973,12 @@ class Status:
         if self.idle:
             return (f"{self.name}: idle between runs, last exit 0 ({where}, "
                     f"{self.unit_path})")
+        if (self.installed and self.running is False and self.last_exit == 0
+                and self.run_reason is not None):
+            if self.run_reason == "unready":
+                return (f"{self.name}: unready, last exit 0, {self.unready} line item(s) "
+                        f"filed but not claimable ({where}, {self.unit_path})")
+            return (f"{self.name}: last exit 0, reason unknown ({where}, {self.unit_path})")
         exit_code = "unknown" if self.last_exit is None else str(self.last_exit)
         said = f" — {self.reason}" if self.reason else ""
         return (f"{self.name}: NOT running, last exit {exit_code} ({where}, "
@@ -962,10 +1003,12 @@ def status(name: str = DEFAULT_NAME, *, kind: str = "") -> Status:
     else:
         alive, detail, last_exit = _running_systemd(name)
     died = alive is False and last_exit not in (None, 0)
+    run_reason, unready = last_run(name) if alive is False and last_exit == 0 else (None, 0)
     return Status(name=name, kind=kind, installed=True, running=alive, unit_path=unit,
                   detail=detail, linger=linger(), path_env=_path_in(unit, kind),
                   last_exit=last_exit, logon_policy=policy,
-                  reason=err_reason(name) if died else "")
+                  reason=err_reason(name) if died else "",
+                  run_reason=run_reason, unready=unready)
 
 
 def _path_in(unit: Path, kind: str) -> str:

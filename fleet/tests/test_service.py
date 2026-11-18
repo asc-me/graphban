@@ -619,3 +619,33 @@ def test_install_refuses_a_utf16_task_that_embeds_the_key(git_repo: Path, monkey
     with pytest.raises(Refused, match="contains the API key"):
         service.install(plan, KEY)
     assert not plan.unit_path.exists()
+
+
+def _drain(**kw):
+    return service.Status(name="d", kind="launchd", installed=True, running=False,
+                          last_exit=0, unit_path=Path("/tmp/x"), **kw)
+
+
+def test_exit_zero_unready_is_not_idle_and_prints_count():
+    s = _drain(run_reason="unready", unready=2)
+    assert not s.idle and "unready" in s.line() and "2" in s.line()
+
+
+def test_exit_zero_empty_queue_is_idle():
+    s = _drain(run_reason="idle")
+    assert s.idle and "idle between runs" in s.line()
+
+
+def test_exit_zero_without_reason_is_unknown_not_idle():
+    s = _drain(run_reason="")
+    assert not s.idle and "reason unknown" in s.line()
+
+
+def test_last_run_reads_newest_json(tmp_path, monkeypatch):
+    monkeypatch.setattr(service, "CONFIG_DIR", tmp_path)
+    (tmp_path / "logs").mkdir()
+    log = tmp_path / "logs" / "d.log"
+    log.write_text('{"reason": "idle"}\nnoise\n{"reason": "unready", "unready": [{"id": "a"}]}\n')
+    assert service.last_run("d") == ("unready", 1)
+    log.write_text("no json here\n")
+    assert service.last_run("d") == ("", 0)
