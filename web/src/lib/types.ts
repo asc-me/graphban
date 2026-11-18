@@ -2642,6 +2642,10 @@ export interface FleetPolicy {
   /** GRPH-P76: next available (S4) or stack-ranked subscriptions on the policy. */
   routing_mode?: "next_available" | "custom_hierarchy" | null;
   subscription_order?: string[] | null;
+  /** GRPH-1505: the router's LAST sort key. Absent = soonest reset (the default, not stored). */
+  tie_break?: "soonest_reset" | "most_headroom" | "cheapest" | null;
+  /** GRPH-1505: when the ladder's top rung has no headroom. Absent = fall through. */
+  when_exhausted?: "fall_through" | "hold_until_reset" | null;
 }
 
 export interface FleetProfileRead {
