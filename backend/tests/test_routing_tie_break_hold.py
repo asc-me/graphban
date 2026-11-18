@@ -188,6 +188,24 @@ def test_hold_still_builds_on_the_top_rung_when_it_has_headroom(client, world):
     assert _claim(a, item) == item
 
 
+
+def test_hold_never_lets_a_lower_rung_build_while_the_top_rung_has_headroom(client, world):
+    """With hold, a claimant holding only a lower-rung key is refused even though the top rung
+    is not spent: the item waits for the subscription another runner holds."""
+    sub = _ent(client, world, "anthropic", kind="subscription")
+    key = _ent(client, world, "mistral")
+    b = _runner(client, world, [sub])
+    _report(client, world, sub, b, "registered")
+    a = _runner(client, world, [key], vendor="mistral")
+    _report(client, world, key, a, "registered")
+    _runner(client, world, [_ent(client, world, "google")], vendor="google")  # reviewer vendor
+    _policy(when_exhausted="hold_until_reset")
+    item = _item()
+    verdict = _gate(item, a)
+    assert verdict["allowed"] is False
+    assert verdict["entitlement_id"] in (None, sub)
+    assert _claim(a, item) is None
+
 # ---- policy -------------------------------------------------------------------------------
 
 def test_both_controls_round_trip_through_the_policy_write(client, auth):
