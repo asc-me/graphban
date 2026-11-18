@@ -245,11 +245,22 @@ def test_a_credential_that_may_not_read_items_proposes_without_asking(git_repo: 
 
 def test_the_receipt_is_the_merger_row_and_not_any_pr_row():
     """`pr_receipts` already lists every `/pull/` url an item carries, so a receipt that only
-    meant "this item has a PR" would skip the merge pass for every proposed item there is."""
-    opened = {"kind": "url", "detail": f"draft PR opened by gbfleet for {BRANCH}",
-              "url": "https://github.com/o/r/pull/1846"}
+    meant "this item has a PR" would skip the merge pass for every proposed item there is.
+    Both halves of the predicate are load-bearing, and each has a row that only IT refuses:
+    the commit half a `pr_opened` row (the server stores no commit on one), the prefix half a
+    builder's own url row — which is what GRPH-1701 carried, its child having opened #1846
+    itself, and reading that as a merge would strand the item."""
+    opened = _stored([{"kind": "url", "url": "https://github.com/o/r/pull/1846",
+                       "detail": f"draft PR opened by gbfleet for {BRANCH}"}])[0]
+    assert "commit" not in opened, "the fixture no longer models what the server stores"
     assert propose_mod.merge_receipt({"evidence": [opened]}) == ""
-    assert propose_mod.merge_receipt({"evidence": [opened, _receipt()]}) == (
+
+    builders = _stored([{"kind": "url", "url": "https://github.com/o/r/pull/1846",
+                         "commit": HEAD, "detail": "PR opened by the child, head 960d8965"}])[0]
+    assert propose_mod.merge_receipt({"evidence": [builders]}) == "", (
+        "a url row with a commit read as a recorded merge")
+
+    assert propose_mod.merge_receipt({"evidence": [opened, builders, _receipt()]}) == (
         "https://github.com/o/r/pull/1846")
     # A row the server stripped the commit from says nothing about a merge landing.
     no_commit = {"kind": "url", "detail": "merged by gbfleet: squash of #9 landed as ",
