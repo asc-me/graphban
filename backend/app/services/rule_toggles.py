@@ -80,6 +80,18 @@ TEST_SCOPE_MODES: dict[str, tuple[str, str]] = {
                        "The builder runs the tests it wrote or changed, the module's existing "
                        "tests and the sabotage check; the PR's CI runs the full suites."),
 }
+#: GRPH-1682: how a bug found while an item is built is handled. The product default, and what
+#: an unset, absent, off, empty or unknown value reads (off is not a third policy).
+FOUND_BUG_RULE = "build.found_bug"
+FOUND_BUG_DEFAULT = "fix_in_build"
+FOUND_BUG_MODES: dict[str, tuple[str, str]] = {
+    "fix_in_build": ("Fix it in the build",
+                     "A bug in the files of the item you hold is fixed on that item; a bug "
+                     "outside them is a ticket."),
+    "file_ticket": ("File a ticket",
+                    "A bug found during the work is a new ticket, including one in the item's "
+                    "files; the item waits for review while its diff touches the ticket's paths."),
+}
 #: GRPH-1425: whether a branch with a file outside every declared touchpoint is held back from
 #: a PR or only warned about. The merge-time `covering` check (GRPH-1408) is not this rule's.
 UNDECLARED_FILES_RULE = "build.undeclared_files"
@@ -119,6 +131,7 @@ PATH_CLASSES_DEFAULT: dict[str, list[str]] = {
 PARAM_CHOICES: dict[str, dict[str, tuple[str, ...]]] = {
     TEST_SCOPE_RULE: {"mode": tuple(TEST_SCOPE_MODES)},
     UNDECLARED_FILES_RULE: {"mode": tuple(UNDECLARED_FILES_MODES)},
+    FOUND_BUG_RULE: {"mode": tuple(FOUND_BUG_MODES)},
 }
 
 
@@ -242,6 +255,18 @@ def test_scope_engines(db: Session, project_id: str | None) -> list[str]:
             and all(isinstance(e, str) and e.strip() for e in value)):
         return [e.strip().lower() for e in value]
     return list(TEST_SCOPE_ENGINES_DEFAULT)
+
+
+def found_bug_mode(db: Session, project_id: str | None) -> str:
+    """`fix_in_build` or `file_ticket` (GRPH-1682). Never set, a pack without the template, the
+    toggle off, or an empty/unknown stored mode all read `fix_in_build`."""
+    if FOUND_BUG_RULE not in LIBRARY:
+        return FOUND_BUG_DEFAULT
+    state = resolve(db, FOUND_BUG_RULE, project_id)
+    if not state["on"]["value"]:
+        return FOUND_BUG_DEFAULT
+    mode = (state["params"]["value"] or {}).get("mode")
+    return mode if mode in FOUND_BUG_MODES else FOUND_BUG_DEFAULT
 
 
 def undeclared_files_mode(db: Session, project_id: str | None) -> str:

@@ -316,11 +316,24 @@ def test_scope_line(mode: str, engines: list[str] | None = None) -> str:
     return line
 
 
+_FOUND_BUG_BRIEF = {
+    "fix_in_build": "a bug in the files of this item is fixed on this item; a bug outside them "
+                    "is a ticket.",
+    "file_ticket": "a bug found during the work is a new ticket, including a bug in this "
+                   "item's files.",
+}
+
+
+def found_bug_line(mode: str) -> str:
+    """GRPH-1682: one line naming the project's found-bug mode."""
+    return f"Found bug: {mode} — {_FOUND_BUG_BRIEF[mode]}"
+
+
 def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[str],
           checklist: str | None, lessons: list[dict], previous: dict | None,
           attempts: list[dict], test_scope: str | None = None,
           test_engines: list[str] | None = None,
-          checklist_matched: list[str] | None = None,
+          checklist_matched: list[str] | None = None, found_bug: str | None = None,
           answered: list[dict] | None = None) -> str:
     """Prose for a spawn prompt, derived from the fields and nothing else (D16). Deliberately
     excludes the lane and tier suggestions so a pasted brief cannot become the default."""
@@ -365,6 +378,8 @@ def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[
                          f" ({_answer_source_text(a)})")
     if test_scope:
         lines.append(test_scope_line(test_scope, test_engines))
+    if found_bug:
+        lines.append(found_bug_line(found_bug))
     if len(attempts) > 1:
         lines.append(f"Attempts so far: {len(attempts)}")
     return "\n".join(lines)
@@ -459,6 +474,7 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
     mix = mix_counts(db, item.project_id)
     test_scope = rule_toggles.test_scope_mode(db, item.project_id)
     test_engines = rule_toggles.test_scope_engines(db, item.project_id)
+    found_bug = rule_toggles.found_bug_mode(db, item.project_id)
     answered = answered_decisions(db, item)
     return {
         "item": item.key,
@@ -483,9 +499,10 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
         "text": _text(item, summary=summary, touchpoints=touchpoints, blocked_by=blocked_by,
                       checklist=checklist, lessons=lessons, previous=previous,
                       attempts=attempts, test_scope=test_scope,
-                      test_engines=test_engines, checklist_matched=checklist_matched,
+                      test_engines=test_engines, checklist_matched=checklist_matched, found_bug=found_bug,
                       answered=answered),
         "test_scope": test_scope,
+        "found_bug": found_bug,
         # PRD-41 D5 / D15: the set the resolver will score, inside the measured_for_lane cap.
         "capabilities": caps,
         "measured_for_lane": measured_lane,

@@ -129,6 +129,7 @@
 "tests/test_fixture_isolation.py": 0.15,
 "tests/test_blocking_fixes.py": 3.0,
 "tests/test_filing_a_fix.py": 3.0,
+"tests/test_found_bug_rule.py": 1.2,
 "tests/test_fix_provenance.py": 1.5,
 "tests/test_fleet_adversarial_gate.py": 5.85,
 "tests/test_fleet_allocation.py": 2.14,
