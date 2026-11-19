@@ -444,6 +444,15 @@ def _scan_rows(verdict: Verdict, head: str) -> list[dict]:
 ATTEST_TRANSIENT = (TimeoutError, ConnectionResetError)
 
 
+def _retry_backoff(seconds: float) -> None:
+    """Wait before the next attestation write.
+
+    This is the only sleep the retry owns. A test records this call. Replacing
+    ``time.sleep`` would also record the sleeps Postgres takes in the same process.
+    """
+    time.sleep(seconds)
+
+
 def _write_attestation(url: str, key: str, item_key: str, head: str, receipt: dict) -> None:
     """Post one item's receipt. Retry a read timeout or reset; re-raise the last one.
 
@@ -458,7 +467,7 @@ def _write_attestation(url: str, key: str, item_key: str, head: str, receipt: di
         except ATTEST_TRANSIENT:
             if n == attest_ci.LEDGER_ATTEMPTS - 1:
                 raise
-            time.sleep(attest_ci.LEDGER_BACKOFF * (2 ** n))
+            _retry_backoff(attest_ci.LEDGER_BACKOFF * (2 ** n))
 
 
 def _attest_error(item_key: str, exc: BaseException, *, scans_passed: bool) -> str:

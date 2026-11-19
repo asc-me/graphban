@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pathlib
 import sys
+import time
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "scripts"))
@@ -30,6 +31,9 @@ def _ledger(monkeypatch, exc_type, *, times, on="update_item"):
 
     def call_tool(url, key, name, arguments, *, timeout=15.0):
         calls.append((name, arguments))
+        # A neighbour in this process also sleeps. Postgres does, in 0.001s steps,
+        # while the attestation write is in flight. That wait is not the retry.
+        time.sleep(0.001)
         if name == on:
             seen["n"] += 1
             if seen["n"] <= times:
@@ -38,7 +42,9 @@ def _ledger(monkeypatch, exc_type, *, times, on="update_item"):
     monkeypatch.setenv("GRAPHBAN_URL", "https://example.invalid")
     monkeypatch.setenv("GRAPHBAN_GATE_KEY", "gb_sk_x")
     monkeypatch.setattr(attest_ci, "call_tool", call_tool)
-    monkeypatch.setattr(scan_ci.time, "sleep", sleeps.append)
+    # Record the retry's own wait. Patching scan_ci.time.sleep replaces time.sleep
+    # for the whole process, so a Postgres run's sleeps land in this list.
+    monkeypatch.setattr(scan_ci, "_retry_backoff", sleeps.append)
     return calls, sleeps
 
 
@@ -133,13 +139,14 @@ def test_a_refused_write_is_still_not_retried(repo, fakes, monkeypatch):
 
     def call_tool(url, key, name, arguments, *, timeout=15.0):
         calls.append((name, arguments))
+        time.sleep(0.001)  # a neighbour's sleep, same as _ledger; not the retry
         if name == "update_item":
             raise RuntimeError(f"{arguments['id']}: graphban refused the write")
 
     monkeypatch.setenv("GRAPHBAN_URL", "https://example.invalid")
     monkeypatch.setenv("GRAPHBAN_GATE_KEY", "gb_sk_x")
     monkeypatch.setattr(attest_ci, "call_tool", call_tool)
-    monkeypatch.setattr(scan_ci.time, "sleep", sleeps.append)
+    monkeypatch.setattr(scan_ci, "_retry_backoff", sleeps.append)
     head = _pr(repo, {"backend/app/x.py": "x = 2\n"})
     assert _run(repo, head) == 1
     assert len(_updates(calls)) == 1
