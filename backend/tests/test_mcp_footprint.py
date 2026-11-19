@@ -236,7 +236,12 @@ CEILING = 18120
 # already in this manifest, so the ordering between a PRD's sections comes out of the spec and
 # a caller can correct the inference. On the opt-in `prd` tier and planner-gated —
 # TIER_TOKENS["prd"] 3848 -> 3916 is the whole bill and CORE_TOKENS does not move. Headroom 30.
-MEASURED_TOKENS = 18090  # P75 S1: +170 for answer_wait (ceiling 17775). GRPH-1650's
+# 18090 -> 18054 (GRPH-1690): the same fields, prose cut back. At 18090 a planner key saved
+# 7.99% and test_the_saving_is_real_and_measured requires >8% — the tool is planner-gated, so
+# the full manifest and the planner both carry every character and the ratio moves toward 1.
+# Argument shapes moved into the one description; the property docs came off. CEILING stays
+# 18120. Headroom 66.
+MEASURED_TOKENS = 18054  # P75 S1: +170 for answer_wait (ceiling 17775). GRPH-1650's
 # create_item `agent_id` is fleet-only (_FLEET_ONLY_ARGS), so it costs this manifest nothing.
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming

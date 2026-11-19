@@ -414,7 +414,9 @@ CORE_TOKENS = 9178  # GRPH-1695: +26, distinct_from/found_during on create_item;
 # `add_links`, on top of the touchpoint fields already in this tier. CORE_TOKENS does not
 # move — the tool is planner-gated, so this tier is the whole bill and a worker or reviewer
 # never pays for a tool it cannot call.
-TIER_TOKENS = {"prd": 3916, "codegraph": 1795, "fleet": 1733, "misc": 1463}
+# prd 3916 -> 3881 (GRPH-1690): the same fields, descriptions cut so a planner key still
+# saves >8%. At 3916 it saved 7.99% (the characters sit on the full manifest too).
+TIER_TOKENS = {"prd": 3881, "codegraph": 1795, "fleet": 1733, "misc": 1463}
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.
 # codegraph 1786 -> 1789 (GRPH-1060): record_scan's category enum gains "deadcode".
 # codegraph -> 1791 with both: measured when GRPH-1060 and GRPH-1061 met on main.

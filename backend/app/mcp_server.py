@@ -449,10 +449,11 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "decompose_prd",
         "description": (
-            "One task per un-covered PRD section, with its own `## Acceptance` and code-graph "
-            "`touchpoints` (none of either: filed blocked), plus `depends_on` where its body "
-            "names another section. `create=true` files and links them if approved (grill). "
-            "Framing sections skipped unless `include_prose`."
+            "One task per un-covered PRD section: `## Acceptance`, `touchpoints` "
+            "(none of either: filed blocked), `depends_on` where the body names another. "
+            "`drop_links`/`add_links`: [{section, depends_on}]. "
+            "`create=true` files and links them if approved (grill). "
+            "Framing skipped unless `include_prose`."
         ),
         "inputSchema": {
             "type": "object",
@@ -461,14 +462,11 @@ TOOLS: list[dict[str, Any]] = [
                 "create": {"type": "boolean"},
                 "include_prose": {"type": "boolean"},
                 "touchpoints": {"type": "object", "description": "{section: [paths]} override"},
-                "drop_links": {
-                    "type": "array",
-                    "description": "depends_on links to skip: [{section, depends_on}].",
-                },
-                "add_links": {
-                    "type": "array",
-                    "description": "depends_on links to add: [{section, depends_on, why?}].",
-                },
+                # Shapes live in the description. A per-argument description here is
+                # planner-gated text the full manifest also carries, and that ratio is
+                # what dropped a planner key under the 8% saving (GRPH-1690).
+                "drop_links": {"type": "array"},
+                "add_links": {"type": "array"},
             },
             "required": ["prd_id"],
         },
