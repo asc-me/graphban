@@ -427,8 +427,15 @@ export function NewProjectWizard({
                         className="h-7 w-7 rounded-[8px] transition-transform hover:scale-110"
                         style={{
                           background: c,
-                          outline: accent === c ? "2px solid var(--color-fg)" : "none",
-                          outlineOffset: "2px",
+                          // Selection is a box-shadow, not outline. An inline outline beats
+                          // the global :focus-visible rule, so keyboard focus disappears.
+                          // The 4px ring sits inside a 5px focus offset (design RING_ON).
+                          // The 2px inner stop is the dialog surface (bg-surface-3).
+                          boxShadow:
+                            accent === c
+                              ? "0 0 0 2px var(--color-surface-3), 0 0 0 4px var(--color-fg)"
+                              : undefined,
+                          outlineOffset: "5px",
                         }}
                       />
                     ))}
