@@ -68,7 +68,7 @@ describe("found-bug rule", () => {
   it("shows the effective mode when on", async () => {
     const ins = await open("file_ticket");
     const row = within(ins).getByTestId(`rules-row-${RULE}`);
-    expect(within(row).getByTestId("rules-value")).toHaveTextContent("mode: File a ticket");
+    expect(within(ins).getByRole("radio", { name: "File a ticket" })).toBeChecked();
     expect(within(row).getByTestId("rules-found-bug-effective")).toHaveTextContent("Effective mode: File a ticket");
   });
 

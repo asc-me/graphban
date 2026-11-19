@@ -87,8 +87,10 @@ describe("library rule toggles", () => {
     const row = within(ins).getByTestId("rules-row-review.sabotage_required");
     expect(row).toHaveAttribute("data-level", "enforced");
     expect(row).toHaveTextContent("ENFORCED");
-    expect(within(row).getByTestId("rules-value")).toHaveTextContent("on · min_effort: 3");
-    expect(within(row).getByTestId("rules-source")).toHaveTextContent("PLATFORM DEFAULT");
+    // One card: the form's own header and params table carry the value and its source (GRPH-1725).
+    expect(within(row).getByTestId("rules-dock-state-badge")).toHaveTextContent(/^ON$/);
+    expect(within(ins).getByLabelText("min_effort")).toHaveValue("3");
+    expect(within(ins).getByTestId("rules-dock-source-min_effort")).toHaveTextContent("PLATFORM DEFAULT");
     expect(within(row).queryByRole("switch")).toBeNull();
     expect(screen.queryByRole("button", { name: /enable all/i })).toBeNull();
   });
@@ -101,7 +103,7 @@ describe("library rule toggles", () => {
     expect(row).toHaveAttribute("data-level", "not_used");
     expect(row).toHaveTextContent("NOT USED");
     expect(within(row).getByTestId("rules-row-not-used")).toHaveTextContent("turned off for this project");
-    expect(within(row).getByTestId("rules-value")).toHaveTextContent("off");
+    expect(within(row).getByTestId("rules-dock-state-badge")).toHaveTextContent(/^NOT USED/);
   });
 
   it("editing happens in the stage editor: a change asks for a reason and writes the batch", async () => {
