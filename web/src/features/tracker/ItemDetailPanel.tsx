@@ -83,7 +83,7 @@ export function ItemDetailPanel({
 
           {/* A fix's provenance; "not recorded" is a real value and always shows. */}
           {item.kind === "fix" && detail && (
-            <div className={`text-[12.5px] ${foundDuring ? "text-fg-2" : "text-muted-2"}`} data-testid="found-during">
+            <div className={`text-body ${foundDuring ? "text-fg-2" : "text-muted-2"}`} data-testid="found-during">
               {foundDuring ? `Found during ${foundDuring}` : "Found during: not recorded"}
             </div>
           )}
@@ -94,7 +94,7 @@ export function ItemDetailPanel({
               className="flex flex-col gap-1 rounded-[9px] border border-line-2 bg-surface-2 px-3 py-2.5"
             >
               {needs.map((n) => (
-                <span key={n} className="text-[12.5px] text-fg-2">
+                <span key={n} className="text-body text-fg-2">
                   {n}
                 </span>
               ))}

@@ -112,7 +112,7 @@ export function UnscopedFixes({
         }
         onClick={() => setOpen((o) => !o)}
         className={cn(
-          "h-7 px-1.5 font-mono text-[11px] underline underline-offset-[3px]",
+          "h-7 px-1.5 font-mono text-small underline underline-offset-[3px]",
           query.isError
             ? "text-st-blocked decoration-[rgba(255,107,107,0.45)]"
             : amber
@@ -131,7 +131,7 @@ export function UnscopedFixes({
           className="fixed z-50 max-h-[70vh] w-[440px] overflow-y-auto rounded-[11px] border border-[#2f3a42] bg-[#0f1317] text-left shadow-[0_18px_48px_rgba(0,0,0,0.55)]"
         >
           <div className="flex items-center gap-2 border-b border-[#1e242a] px-3 py-2.5">
-            <span className="flex-1 text-[12.5px] font-semibold text-fg">{n === null ? label : `${n} unscoped`}</span>
+            <span className="flex-1 text-body font-semibold text-fg">{n === null ? label : `${n} unscoped`}</span>
             <button
               type="button"
               aria-label="Close"
@@ -152,8 +152,8 @@ export function UnscopedFixes({
           {ids.map((id) => (
             <div key={id} data-testid={`unscoped-row-${id}`} className="flex flex-col gap-1.5 border-t border-[#1a2025] px-3 py-[9px]">
               <div className="flex items-center gap-2.5">
-                <span className="w-[76px] flex-none font-mono text-[11px] text-muted">{id}</span>
-                <span className="min-w-0 flex-1 truncate text-[12.5px] text-fg-2">{byId.get(id)?.title ?? ""}</span>
+                <span className="w-[76px] flex-none font-mono text-small text-muted">{id}</span>
+                <span className="min-w-0 flex-1 truncate text-body text-fg-2">{byId.get(id)?.title ?? ""}</span>
                 <button
                   type="button"
                   disabled={put.isPending && put.variables?.id === id}
