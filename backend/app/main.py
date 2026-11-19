@@ -281,11 +281,18 @@ async def lifespan(app: FastAPI):
     if is_leader and settings.tls_sync_seconds > 0:
         tls_task = asyncio.create_task(_tls_sync_loop())
 
+    # Project-sync flush (GRPH-1735): leader-only, `0` disables. Each pass opens and closes
+    # its own session. Backoff and the per-minute budget live on the flusher, so a pass that
+    # wakes early still sends nothing while `Retry-After` is in force.
+    flush_task = None
+    if is_leader and settings.sync_flush_seconds > 0:
+        flush_task = asyncio.create_task(_project_sync_flush_loop())
+
     try:
         yield
     finally:
         for task in (retry_task, export_task, judge_task, update_task, grant_task, sweep_task,
-                     tls_task):
+                     tls_task, flush_task):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -370,6 +377,33 @@ async def _tls_sync_loop() -> None:
             raise
         except Exception:  # noqa: BLE001
             logger.warning("box certificate sync pass failed", exc_info=True)
+
+
+def _project_sync_flush_pass() -> int:
+    """One outbox drain, session included. Runs inside a worker thread (GRPH-535)."""
+    from datetime import datetime, timezone
+
+    from app.services import project_sync_flush as flush
+
+    db = SessionLocal()
+    try:
+        return flush.flush_once(db, now=datetime.now(timezone.utc))
+    finally:
+        db.close()
+
+
+async def _project_sync_flush_loop() -> None:
+    """Drain the project-sync outbox. Same three properties as `_plan_grant_loop`."""
+    while True:
+        try:
+            sent = await asyncio.to_thread(_project_sync_flush_pass)
+            if sent:
+                logger.info("project sync flush: %d batch(es)", sent)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — silence here is the failure
+            logger.warning("project sync flush pass failed", exc_info=True)
+        await asyncio.sleep(settings.sync_flush_seconds)
 
 
 async def _plan_grant_loop() -> None:
