@@ -16,7 +16,8 @@ def test_parse_sections_and_bodies(client):
 def test_decompose_fills_gaps_and_links(client, auth):
     prd = client.post("/api/prds", json={
         "title": "Sync Spec",
-        "body": "# Sync Spec\n\n## Ingest\nread the feed\n\n## Transform\nnormalize\n",
+        "body": ("# Sync Spec\n\n## Ingest\nread the feed\n\n## Transform\nnormalize\n\n"
+                 "## Acceptance criteria\n### Ingest\n- feed is read\n### Transform\n- rows normalized\n"),
     }, headers=auth).json()
 
     # Dry run proposes one task per section; nothing created yet.
@@ -154,3 +155,35 @@ def test_mcp_prd_coverage_names_empty_on_a_standard_template(client, auth):
     assert cov["shaped"] is True
     assert cov["empty_sections"]
     assert "Overview" in cov["empty_sections"]
+
+
+def test_decompose_carries_per_item_acceptance_past_framing_budget(client, auth):
+    from app.services.fleet import parse_acceptance
+    from tests.prd_approve import approve_id
+
+    big = "\n".join(f"- filler clause {i} " + "x" * 80 for i in range(120))
+    body = (
+        "# Spec\n\n## Context\nframing\n\n## Ingest\nread the feed\n\n"
+        "## Transform\nnormalize\n\n## Export\nwrite out\n\n"
+        f"## Acceptance criteria\n### Ingest\n- feed is read\n{big}\n"
+        "### Transform\n- rows normalized\n### General\n"
+        "- Orphan clause about nothing in particular\n"
+    )
+    prd = client.post("/api/prds", json={"title": "AC Spec", "body": body}, headers=auth).json()
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    by = {p["section"]: p for p in dry["proposals"]}
+    assert "Not carried" not in by["Ingest"]["description"]
+    ingest, _ = parse_acceptance(by["Ingest"]["description"])
+    assert ingest[0] == "feed is read" and "rows normalized" not in ingest
+    assert parse_acceptance(by["Transform"]["description"])[0] == ["rows normalized"]
+    assert dry["no_acceptance"] == ["Export"]
+    assert dry["unassigned_clauses"] == ["Orphan clause about nothing in particular"]
+    assert by["Export"]["blocked"] and "acceptance" in by["Export"]["blocker"]
+
+    approve_id(prd["id"])
+    made = client.post(f"/api/prds/{prd['id']}/decompose?create=true", headers=auth).json()
+    db = SessionLocal()
+    statuses = {db.get(items_svc.Item, i).prd_section: db.get(items_svc.Item, i).status
+                for i in made["created"]}
+    db.close()
+    assert statuses == {"Ingest": "backlog", "Transform": "backlog", "Export": "blocked"}
