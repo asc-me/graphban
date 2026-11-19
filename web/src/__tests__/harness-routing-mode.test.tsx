@@ -319,4 +319,61 @@ describe("Capacity routing mode", () => {
     expect(screen.getByTestId("routing-mode-custom")).toBeChecked();
     expect(policySave).not.toHaveBeenCalled();
   });
+
+  describe("GRPH-1713: preference within every rung", () => {
+    const ent = (id: string, kind: string): HarnessCapacityEntitlement => ({ ...sub(id, "v"), kind });
+    const ents = [sub("s1", "anthropic"), ent("k1", "api_key"), ent("k2", "cloud"), ent("l1", "local"), ent("l2", "local")];
+
+    it("orders API keys and local models per rung, saves them, and shows them after a reload", async () => {
+      const user = userEvent.setup();
+      const base = { local_only: false, reviewer_cross_vendor: false, allowed_harnesses: [] };
+      policyRead.mockResolvedValue({ project_id: "p", policy: { ...base, routing_mode: "custom_hierarchy" }, writable: true });
+      policySave.mockImplementation(async (body: unknown) => ({ project_id: "p", policy: body }));
+      const first = wrap(<RoutingMode projectId="p" entitlements={ents} />);
+      const stacks = await screen.findAllByTestId("routing-rung-stack");
+      expect(stacks.map((s) => s.getAttribute("data-rung"))).toEqual(["api_key", "local"]);
+      const keyRows = within(stacks[0]).getAllByTestId("routing-rung-row");
+      expect(keyRows.map((r) => r.getAttribute("data-entitlement"))).toEqual(["k1", "k2"]);
+      await user.click(within(keyRows[1]).getByRole("button", { name: /up$/ }));
+      const localRows = within(stacks[1]).getAllByTestId("routing-rung-row");
+      await user.click(within(localRows[1]).getByRole("button", { name: /up$/ }));
+      await user.selectOptions(screen.getByTestId("routing-rung-tie-api_key"), "cheapest");
+      expect(screen.getByTestId("routing-ladder-fixed")).toHaveTextContent(/ladder order is fixed/i);
+      expect(screen.getByTestId("routing-rule-state")).toHaveTextContent(/draft/);
+      expect(replay).toHaveBeenLastCalledWith("p", expect.objectContaining({
+        rung_order: { api_key: ["k2", "k1"], local: ["l2", "l1"] },
+        rung_tie_break: { api_key: "cheapest" },
+      }));
+      await user.click(screen.getByTestId("routing-apply"));
+      await waitFor(() => expect(policySave).toHaveBeenCalledTimes(1));
+      const body = policySave.mock.calls[0][0] as Record<string, unknown>;
+      expect(body.rung_preference).toEqual({
+        api_key: { order: ["k2", "k1"], tie_break: "cheapest" },
+        local: { order: ["l2", "l1"] },
+      });
+      first.unmount();
+
+      policyRead.mockResolvedValue({ project_id: "p", policy: { ...base, routing_mode: "custom_hierarchy", rung_preference: body.rung_preference }, writable: true });
+      wrap(<RoutingMode projectId="p" entitlements={ents} />);
+      await waitFor(() => {
+        const [keys] = screen.getAllByTestId("routing-rung-stack");
+        expect(within(keys).getAllByTestId("routing-rung-row").map((r) => r.getAttribute("data-entitlement"))).toEqual(["k2", "k1"]);
+      });
+      expect(screen.getByTestId("routing-rung-tie-api_key")).toHaveValue("cheapest");
+      expect(screen.getByTestId("routing-rule-state")).toHaveTextContent(/active/);
+    });
+
+    it("next available keeps no rung order but still saves a rung's own tie-break", async () => {
+      const user = userEvent.setup();
+      policyRead.mockResolvedValue({ project_id: "p", policy: null, writable: true });
+      policySave.mockImplementation(async (body: unknown) => ({ project_id: "p", policy: body }));
+      wrap(<RoutingMode projectId="p" entitlements={ents} />);
+      await screen.findByTestId("routing-rung-ties");
+      expect(screen.queryByTestId("routing-rung-stack")).toBeNull();
+      await user.selectOptions(screen.getByTestId("routing-rung-tie-local"), "most_headroom");
+      await user.click(screen.getByTestId("routing-apply"));
+      await waitFor(() => expect(policySave).toHaveBeenCalledTimes(1));
+      expect((policySave.mock.calls[0][0] as Record<string, unknown>).rung_preference).toEqual({ local: { tie_break: "most_headroom" } });
+    });
+  });
 });

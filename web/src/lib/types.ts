@@ -2630,6 +2630,14 @@ export interface FleetPolicyCaps {
   period?: "day" | "week" | "month" | null;
 }
 
+export type LadderRungId = "subscription" | "api_key" | "local";
+export type TieBreakId = "soonest_reset" | "most_headroom" | "cheapest";
+
+export interface RungPreference {
+  order?: string[] | null;
+  tie_break?: TieBreakId | null;
+}
+
 export interface FleetPolicy {
   local_only: boolean;
   reviewer_cross_vendor: boolean;
@@ -2642,6 +2650,12 @@ export interface FleetPolicy {
   /** GRPH-P76: next available (S4) or stack-ranked subscriptions on the policy. */
   routing_mode?: "next_available" | "custom_hierarchy" | null;
   subscription_order?: string[] | null;
+  /**
+   * GRPH-1713: a preference WITHIN each ladder rung — an explicit order (api_key and local; the
+   * subscription rung's is `subscription_order`; kept only under custom hierarchy) and the
+   * rung's own tie-break. The ladder order itself is fixed.
+   */
+  rung_preference?: Partial<Record<LadderRungId, RungPreference>> | null;
   /** GRPH-1505: the router's LAST sort key. Absent = soonest reset (the default, not stored). */
   tie_break?: "soonest_reset" | "most_headroom" | "cheapest" | null;
   /** GRPH-1505: when the ladder's top rung has no headroom. Absent = fall through. */
@@ -3773,6 +3787,10 @@ export interface RoutingReplayProposal {
   ladder?: string[];
   routing_mode?: string;
   subscription_order?: string[] | null;
+  /** GRPH-1713: api_key and local orders (sent only with a routing_mode). */
+  rung_order?: Partial<Record<"api_key" | "local", string[]>> | null;
+  /** GRPH-1713: a rung's own tie-break. */
+  rung_tie_break?: Partial<Record<LadderRungId, string>> | null;
   days?: number;
 }
 
