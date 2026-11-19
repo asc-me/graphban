@@ -19,6 +19,7 @@ from app.models import (
     WorkClassification, utcnow,
 )
 from app.services import items as items_svc
+from app.services import links as links_svc
 from app import errors
 from app.config import settings
 from app.providers import llm_meter
@@ -4127,7 +4128,295 @@ def assign_acceptance(body: str, titles: list[str]) -> tuple[dict[str, list[str]
     return by_section, unassigned
 
 
-def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool = False) -> dict:
+# ---- dependency proposals between sections (GRPH-1690) --------------------------------
+#
+# `decompose` used to emit one item per section and NOTHING between them, so a drain could
+# start "Draining the line" before "The line" existed; the ordering had to be added by hand
+# afterwards, which is the step most likely to be skipped or reversed.
+#
+# Both signals below are drawn from the document's own text rather than guessed, which is
+# what makes them worth proposing at all. A wrong link that quotes the sentence it came from
+# is a link a caller can check and drop, and `drop_links` exists for exactly that; a link
+# inferred from a vibe is neither checkable nor safe to gate a drain on.
+
+#: A heading shorter than this matches ordinary prose ("A", "In", "One"), and a false
+#: dependency is worse than a missing one — it silently reorders somebody's drain.
+_MIN_HEADING_CHARS = 4
+
+_BACKTICK_TERM = re.compile(r"`([^`\n]{3,60})`")
+#: A bolded lead-in followed by definition punctuation: `**The line** — …`, `**The line**: …`,
+#: `- **The line** is …`. The punctuation is required, so bold emphasis in ordinary prose
+#: ("**never** skip this") does not read as a term the section defines.
+_BOLD_TERM = re.compile(r"^\s*(?:[-*+]\s+)?\*\*([^*\n]{3,60})\*\*\s*(?:[—–-]|:|\bis\b)", re.MULTILINE)
+#: Loose, so "Non-goals", "Non Goals" and "nongoals" are the same heading.
+_HEADING_JOIN = r"[\s\-_/]*"
+
+
+def _heading_matcher(title: str) -> re.Pattern[str] | None:
+    """A pattern for `title` as another section's body would write it, or None if too short.
+
+    The leading number and any parenthetical go first — the same cleaning `_section_key` does,
+    and for the same reason: every PRD in this repo numbers its headings, and a number left in
+    the pattern would stop "7. Non-goals" matching a body that says "non-goals".
+    """
+    cleaned = re.sub(r"\(.*?\)", " ", _SECTION_NUMBER.sub("", title or ""))
+    words = [w for w in re.split(r"[^A-Za-z0-9]+", cleaned) if w]
+    if len("".join(words)) < _MIN_HEADING_CHARS:
+        return None
+    inner = _HEADING_JOIN.join(re.escape(w) for w in words)
+    return re.compile(rf"(?<![A-Za-z0-9]){inner}(?![A-Za-z0-9])", re.IGNORECASE)
+
+
+def _defined_terms(title: str, body: str) -> dict[str, str]:
+    """Terms `title` DEFINES, mapped to the signal that defined them (`code` or `prose`).
+
+    A backticked span is an identifier the section introduces; a bolded lead-in with
+    definition punctuation is prose defining a term. The section's own heading is excluded —
+    a body naming it is the heading signal, not a second one.
+    """
+    text = body or ""
+    out: dict[str, str] = {}
+    for pattern, kind in ((_BACKTICK_TERM, "code"), (_BOLD_TERM, "prose")):
+        for m in pattern.finditer(text):
+            term = m.group(1).strip()
+            if len(term) >= 3 and any(c.isalpha() for c in term):
+                out.setdefault(term, kind)
+    own = _heading_matcher(title)
+    if own:
+        out = {t: k for t, k in out.items() if not own.fullmatch(t)}
+    return out
+
+
+def _reference(text: str, target: str, matcher, term_res) -> tuple[str, str] | None:
+    """`(why, matched)` for the strongest way `text` refers to `target`, else None.
+
+    The heading wins over a defined term: naming a section is a directer statement of "builds
+    on it" than reusing one of its identifiers, and reporting the stronger reason keeps the
+    `why` a caller reads from being the weaker of two.
+    """
+    if matcher:
+        m = matcher.search(text)
+        if m:
+            return f'body names the section heading "{target}"', m.group(0)
+    for term, rx in term_res:
+        m = rx.search(text)
+        if m:
+            return f'body uses "{term}", which "{target}" defines', m.group(0)
+    return None
+
+
+def propose_section_links(
+    order: list[str], bodies: dict[str, str], proposed: set[str],
+) -> tuple[list[dict], list[dict]]:
+    """`(edges, skipped)` — the dependency edges between a PRD's implementable sections.
+
+    `order` is those sections in DOCUMENT ORDER, which is what every tie here is broken by.
+    `proposed` is the subset becoming items now. An edge reads **`section` DEPENDS ON
+    `depends_on`**: the section whose body does the naming is the one that builds on the
+    other, so "Draining the line" naming "The line" makes the DRAIN the dependent. Getting
+    that backwards is the failure this whole function exists to prevent, and it is the one
+    thing a reader cannot recover from later, because a reversed link looks like a link.
+
+    An edge whose far end is not being created is returned in `skipped` with a reason rather
+    than dropped: a proposal that silently omits a reference it saw is the same quiet absence
+    the rest of this module reports.
+    """
+    defined = {s: _defined_terms(s, bodies.get(s, "")) for s in order}
+    # Who owns a term. An IDENTIFIER is owned by the first section in document order that
+    # carries it: a PRD introduces a tool or a field and later sections use it, which is the
+    # same "rules come first" shape `framing_context` relies on when it spends its budget in
+    # document order. Requiring an identifier to appear in exactly one section instead — the
+    # obvious reading of "defines" — would have thrown away the whole signal, because a
+    # dependent section writes the identifier in backticks too.
+    #
+    # A BOLDED term is the exception: there the markup is itself the claim to define it, so
+    # two sections both writing `**The line** — …` are genuinely ambiguous and neither is
+    # used as evidence. Same reasoning as `_clause_section` preferring the longest title over
+    # guessing between two that match.
+    code_owner: dict[str, tuple[str, str]] = {}
+    prose_owners: dict[str, list[tuple[str, str]]] = {}
+    for s in order:
+        for t, kind in defined[s].items():
+            if kind == "code":
+                code_owner.setdefault(t.lower(), (t, s))
+            else:
+                prose_owners.setdefault(t.lower(), []).append((t, s))
+    owners = {low: [hit] for low, hit in code_owner.items()}
+    for low, hits in prose_owners.items():
+        if low not in owners and len(hits) == 1:
+            owners[low] = hits
+    term_res: dict[str, list[tuple[str, re.Pattern[str]]]] = {s: [] for s in order}
+    for hits in owners.values():
+        for t, s in hits:
+            flags = 0 if defined[s][t] == "code" else re.IGNORECASE
+            term_res[s].append(
+                (t, re.compile(rf"(?<![A-Za-z0-9_]){re.escape(t)}(?![A-Za-z0-9_])", flags)))
+    for s in order:
+        term_res[s].sort(key=lambda pair: pair[0])
+    matchers = {s: _heading_matcher(s) for s in order}
+
+    edges: list[dict] = []
+    skipped: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for dep in order:
+        text = bodies.get(dep, "")
+        if not text or dep not in proposed:
+            continue  # only a section becoming an item can carry a dependency
+        for target in order:
+            if target == dep or (dep, target) in seen:
+                continue
+            hit = _reference(text, target, matchers[target], term_res[target])
+            if hit is None:
+                continue
+            seen.add((dep, target))
+            why, matched = hit
+            edge = {"section": dep, "depends_on": target, "why": why, "matched": matched}
+            if target not in proposed:
+                skipped.append({**edge, "reason": (
+                    f'"{target}" already has tracked work, so this decompose creates no item '
+                    "to link to; add the dependency on that item by hand")})
+                continue
+            edges.append({**edge, "inferred": True})
+    return edges, skipped
+
+
+def _find_cycle(edges: list[dict]) -> list[str] | None:
+    """One cycle as a closed path of section names (`[a, b, a]`), or None. DFS over the
+    edges, visiting in the order they were proposed so the cycle reported is stable."""
+    adj: dict[str, list[str]] = {}
+    for e in edges:
+        adj.setdefault(e["section"], []).append(e["depends_on"])
+        adj.setdefault(e["depends_on"], [])
+    state: dict[str, int] = {}
+    stack: list[str] = []
+
+    def walk(node: str) -> list[str] | None:
+        state[node] = 1
+        stack.append(node)
+        for nxt in adj[node]:
+            mark = state.get(nxt, 0)
+            if mark == 1:
+                return stack[stack.index(nxt):] + [nxt]
+            if mark == 0:
+                found = walk(nxt)
+                if found:
+                    return found
+        stack.pop()
+        state[node] = 2
+        return None
+
+    for start in adj:
+        if state.get(start, 0) == 0:
+            found = walk(start)
+            if found:
+                return found
+    return None
+
+
+def break_link_cycles(edges: list[dict], order: list[str]) -> tuple[list[dict], list[dict]]:
+    """`(kept, cycles)` — the edges with every cycle cut, and a report of each cut.
+
+    The edge cut is the one pointing furthest WITH the document — an earlier section naming a
+    later one — because the shape a PRD is actually written in is a later section naming an
+    earlier one it builds on. The reverse is normally a forward cross-reference ("see Export
+    below"), not work that depends on work which does not exist yet. Cutting that way also
+    always terminates: any cycle under a total order contains at least one such edge.
+
+    A cut is never silent. An unreported cycle fix is a dependency the caller cannot see went
+    missing, and the drain it was protecting starts in the wrong order anyway.
+    """
+    kept = list(edges)
+    cycles: list[dict] = []
+    rank = {s: i for i, s in enumerate(order)}
+    while True:
+        path = _find_cycle(kept)
+        if not path:
+            return kept, cycles
+        worst = max(
+            zip(path, path[1:]),
+            key=lambda ab: (rank.get(ab[1], 0) - rank.get(ab[0], 0), rank.get(ab[0], 0), ab),
+        )
+        cut = next(e for e in kept
+                   if e["section"] == worst[0] and e["depends_on"] == worst[1])
+        kept.remove(cut)
+        cycles.append({
+            "cycle": path,
+            "cut": {k: cut[k] for k in ("section", "depends_on", "why", "matched")},
+            "reason": "proposed links must not form a cycle, so the edge pointing forward "
+                      "through the document was cut rather than created",
+        })
+
+
+def _resolve_section(name: str, order: list[str]) -> str | None:
+    """The section in `order` a caller meant, matched the way `_section_key` matches."""
+    key = _section_key(name or "")
+    if key:
+        hit = next((s for s in order if _section_key(s) == key), None)
+        if hit:
+            return hit
+    low = (name or "").strip().lower()
+    return next((s for s in order if s.strip().lower() == low), None) if low else None
+
+
+def apply_link_overrides(
+    edges: list[dict], drop_links: list | None, add_links: list | None,
+    order: list[str], proposed: set[str],
+) -> tuple[list[dict], list[dict]]:
+    """`(edges, ignored)` after a caller's per-section corrections.
+
+    Applied BEFORE cycles are cut, so a link the caller adds is held to the same rule as one
+    the document proposed. Every override that changed nothing is reported: an entry silently
+    not applied is indistinguishable from one that was, and the caller's next dry run shows
+    the proposal they believed they had removed.
+    """
+    def entries(raw) -> list:
+        return raw if isinstance(raw, list) else []
+
+    def ignore(entry, reason: str) -> None:
+        ignored.append({**(entry if isinstance(entry, dict) else {"entry": entry}),
+                        "reason": reason})
+
+    kept = list(edges)
+    ignored: list[dict] = []
+    for entry in entries(drop_links):
+        if not isinstance(entry, dict):
+            ignore(entry, "not a {section, depends_on} object")
+            continue
+        dep = _resolve_section(str(entry.get("section", "")), order)
+        tgt = _resolve_section(str(entry.get("depends_on", "")), order)
+        before = len(kept)
+        if dep and tgt:
+            kept = [e for e in kept
+                    if not (e["section"] == dep and e["depends_on"] == tgt)]
+        if len(kept) == before:
+            ignore(entry, "no proposed link matched, so nothing was dropped")
+    for entry in entries(add_links):
+        if not isinstance(entry, dict):
+            ignore(entry, "not a {section, depends_on} object")
+            continue
+        dep = _resolve_section(str(entry.get("section", "")), order)
+        tgt = _resolve_section(str(entry.get("depends_on", "")), order)
+        if not dep or not tgt:
+            ignore(entry, "names a section this PRD does not have")
+        elif dep == tgt or any(e["section"] == dep and e["depends_on"] == tgt for e in kept):
+            ignore(entry, "already proposed")
+        elif dep not in proposed or tgt not in proposed:
+            ignore(entry, "both ends must be sections this decompose creates items for")
+        else:
+            kept.append({"section": dep, "depends_on": tgt, "inferred": False, "matched": "",
+                         "why": str(entry.get("why") or "").strip() or "added by the caller"})
+    return kept, ignored
+
+
+#: An inferred dependency is a reading of the document, not a statement by its author, and
+#: `Link.confidence` is where this module says so — the way `unlinked_work` labels its
+#: softer `cites_slice` signal rather than passing it off as the exact one beside it.
+_INFERRED_LINK_CONFIDENCE = 0.7
+
+
+def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool = False,
+              drop_links: list[dict] | None = None,
+              add_links: list[dict] | None = None) -> dict:
     """Propose one tracked task per un-covered section (gap). With create=True, creates them
     as backlog items linked to the PRD + section, so the spec drives the tracker.
 
@@ -4136,7 +4425,15 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
 
     Framing sections (Problem, Goals, Non-goals, Success criteria, …) are skipped — they
     describe the work, they aren't work (AL-96). Pass ``include_prose=True`` when a PRD
-    genuinely uses one of those headings for buildable scope."""
+    genuinely uses one of those headings for buildable scope.
+
+    Each proposal also carries ``depends_on`` — the other sections this one builds on, each
+    with the text that said so (GRPH-1690) — and ``create=True`` writes them as dependency
+    links, so the ordering a drain runs in comes out of the spec instead of being added by
+    hand afterwards. ``drop_links``/``add_links`` are the caller's corrections to that
+    inference, per section, as ``[{"section": …, "depends_on": …}]``; a proposal that names
+    the sentence it matched is one a caller can check, and these are how they say it is wrong.
+    """
     from app.services import design_sets as design_svc
 
     cov = coverage(db, prd)
@@ -4152,6 +4449,26 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
     ]
     ac_by_section, unassigned = assign_acceptance(prd.body or "", wanted)
     no_acceptance: list[str] = []
+    # Which sections can carry an edge: the ones becoming items, plus every other
+    # implementable section one of them might name. Document order, because that is the order
+    # a cycle gets cut in. The acceptance list is out at both ends — it becomes clauses on
+    # other items, never an item of its own, so there is nothing to link from or to.
+    proposed = set(wanted)
+    universe = [
+        p["section"] for p in cov["sections"]
+        if (p["implementable"] or p["section"] in proposed)
+        and _section_key(p["section"]) not in _ACCEPTANCE_SECTION_KEYS
+    ]
+    edges, links_skipped = propose_section_links(universe, bodies, proposed)
+    # Overrides land BEFORE the cycle cut, so a link a caller adds is held to the same rule as
+    # one the document proposed rather than sneaking a cycle in past the check.
+    edges, ignored = apply_link_overrides(edges, drop_links, add_links, universe, proposed)
+    edges, link_cycles = break_link_cycles(edges, universe)
+    links_skipped.extend(ignored)
+    depends_by_section: dict[str, list[dict]] = {}
+    for e in edges:
+        depends_by_section.setdefault(e["section"], []).append(
+            {"section": e["depends_on"], "why": e["why"], "matched": e["matched"]})
     for p in cov["sections"]:
         if not include_prose and not p["implementable"]:
             continue
@@ -4210,8 +4527,13 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             "fidelity": fidelity,
             # Surfaced on the proposal so a dry run shows them before anything is created.
             "dangling_refs": dangling_refs(body),
+            # Sections this one builds on, each with the text that said so. Direction is
+            # THIS section DEPENDS ON the named one (GRPH-1690).
+            "depends_on": depends_by_section.get(p["section"], []),
         })
     created = []
+    links = []
+    made: dict[str, tuple[str, str]] = {}  # section -> (frozen id, rendered key)
     if create:
         if prd.status != "approved":
             raise DecomposeRequiresApproval(
@@ -4240,9 +4562,35 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             item.prd_section_hash = section_fingerprint(prd.body or "", pr["section"])
             db.commit()
             created.append(item.id)
+            made[pr["section"]] = (item.id, item.key)
+        # Written AFTER every item exists, because a dependency points at an item this same
+        # call created and there is nothing to point at until it does. `a` is the dependent:
+        # the whole feature is the direction, so it is spelled out here rather than left to
+        # the reader's memory of which end of a Link is which.
+        for e in edges:
+            src, dst = made.get(e["section"]), made.get(e["depends_on"])
+            if not src or not dst:
+                continue
+            links_svc.create_link(
+                db, a=src[0], b=dst[0], type_="dependency",
+                reason=f"decompose_prd: {e['section']} builds on {e['depends_on']} — {e['why']}",
+                confidence=_INFERRED_LINK_CONFIDENCE if e.get("inferred") else 1.0,
+                project_id=prd.project_id,
+            )
+            links.append({"a": src[1], "b": dst[1], "section": e["section"],
+                          "depends_on": e["depends_on"], "why": e["why"]})
     # Rendered, as in `coverage` above. NOT the same as the `prd_id=prd.id` written onto each
     # created item further up: that column holds the frozen id deliberately (GRPH-319), because
     # a stored rendering would rot the moment the project is retagged. Displayed keys render;
-    # stored ids freeze — and this dict is read, not stored.
+    # stored ids freeze — and this dict is read, not stored. `links` follows the same rule, so
+    # it carries the two rendered item keys and not the ids `create_link` was given.
+    #
+    # `links`, `link_cycles` and `links_skipped` are RETURNED but not declared in
+    # decompose_prd's outputSchema, for the reason recorded beside `answer_grill`'s: the
+    # manifest is at its ceiling, and the ratchet checks that declared keys are emitted, not
+    # that emitted keys are declared. All three are always present — an empty list here means
+    # "looked and found none", which is exactly what it should mean, since the alternative
+    # reading (nobody looked) is what `links_skipped` exists to rule out.
     return {"prd_id": prd.key, "proposals": proposals, "created": created,
-            "unassigned_clauses": unassigned, "no_acceptance": no_acceptance}
+            "unassigned_clauses": unassigned, "no_acceptance": no_acceptance,
+            "links": links, "link_cycles": link_cycles, "links_skipped": links_skipped}
