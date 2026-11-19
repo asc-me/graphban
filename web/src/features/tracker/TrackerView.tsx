@@ -41,6 +41,7 @@ import { OwnerCloseDialog } from "./OwnerCloseDialog";
 import { useColumnPrefs } from "./columnPrefs";
 import { ColumnsPopover } from "./ColumnsPopover";
 import { TrackerBoard } from "./TrackerBoard";
+import { UnscopedFixes } from "./UnscopedFixes";
 
 /** Typed waits can PATCH `done` without an attestation — a human emptied them. */
 const WAIT_TAGS = new Set(["wait:merge", "wait:decision", "wait:secret", "wait:access", "wait:deploy"]);
@@ -305,18 +306,27 @@ export function TrackerView() {
             />
           ))}
           <FilterChip
-            active={maintenanceOn}
-            onClick={() => setFilter(MAINTENANCE)}
-            label="Maintenance"
-            count={lineCount}
-          />
-          <UnscopedCount query={unscopedQ} />
-          <FilterChip
             active={filter === RESPONSE_NEEDED}
             onClick={() => setFilter(RESPONSE_NEEDED)}
             label="Response Needed"
             count={responseNeededCount}
           />
+          {/* After Response Needed (GRPH-1744). No line: no count, not a zero, and a dashed border. */}
+          <FilterChip
+            active={maintenanceOn}
+            onClick={() => setFilter(MAINTENANCE)}
+            label="Maintenance"
+            count={lineQ.data ? lineCount : undefined}
+            dashed={!lineQ.isLoading && !lineQ.isError && !lineId}
+            ariaLabel={
+              lineQ.isLoading || lineQ.isError
+                ? "Maintenance filter"
+                : lineId
+                  ? `Maintenance filter, ${lineCount} item${lineCount === 1 ? "" : "s"} on the line`
+                  : "Maintenance filter, this project has no line"
+            }
+          />
+          <UnscopedFixes projectId={activeId ?? ""} query={unscopedQ} items={items} lineId={lineId} />
         </div>
         </Collapsible>
       )}
@@ -367,6 +377,7 @@ export function TrackerView() {
             onStatus={setStatus}
             columns={columns}
             lineInfoOf={lineInfoOf}
+            emptyText={maintenanceOn ? "None on the line here" : undefined}
             statuses={BOARD_COLUMNS.filter((st) => filter === RESPONSE_NEEDED || maintenanceOn || statusMatches(st, filter, ACTIVE_STATUSES))}
           />
         )
@@ -435,26 +446,6 @@ export function TrackerView() {
   );
 }
 
-/** Beside the filter. Zero is shown; a failed read says so and is never drawn as 0. */
-function UnscopedCount({ query }: { query: { isError: boolean; isLoading: boolean; data?: { count: number } } }) {
-  return (
-    <span
-      data-testid="unscoped-count"
-      className="inline-flex items-center gap-1.5 px-1 text-[12px] text-muted"
-      title="Fixes with no PRD and no line: nothing moves them"
-    >
-      Unscoped fixes
-      {query.isError ? (
-        <span className="text-st-blocked">could not load</span>
-      ) : query.isLoading || !query.data ? (
-        <span className="font-mono text-[10px] text-faint">…</span>
-      ) : (
-        <span className="font-mono text-[10px] text-faint">{query.data.count}</span>
-      )}
-    </span>
-  );
-}
-
 function filterLabel(filter: TrackerFilter): string {
   if (filter === "all") return "";
   if (filter === "active") return " (Active)";
@@ -497,26 +488,36 @@ function FilterChip({
   label,
   count,
   color,
+  dashed = false,
+  ariaLabel,
 }: {
   active: boolean;
   onClick: () => void;
   label: string;
-  count: number;
+  /** Undefined draws no count at all — not a zero. */
+  count?: number;
   color?: string;
+  dashed?: boolean;
+  ariaLabel?: string;
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
+      aria-pressed={active}
+      aria-label={ariaLabel}
       className={cn(
         "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[12px] transition-colors",
         active
           ? "border-control-hover bg-surface-3 text-fg"
           : "border-control bg-surface-2 text-muted hover:border-control-hover hover:text-fg-2",
+        dashed && "border-dashed",
+        dashed && !active && "bg-transparent",
       )}
     >
       {color && <Dot color={color} />}
       {label}
-      <span className="font-mono text-[10px] text-faint">{count}</span>
+      {count !== undefined && <span className="font-mono text-[10px] text-faint">{count}</span>}
     </button>
   );
 }
