@@ -4023,6 +4023,11 @@ def framing_context(prd: Prd) -> str:
     for title, body in bodies.items():
         if is_implementable_section(title, body):
             continue
+        # Acceptance is carried per item as its own `## Acceptance` list (GRPH-1688), never
+        # as framing: it would spend the budget, and a `### Acceptance criteria` copy of
+        # the whole PRD's list would hand every item every clause.
+        if _section_key(title) in _ACCEPTANCE_SECTION_KEYS:
+            continue
         text = (body or "").strip()
         if not text:
             continue
@@ -4062,6 +4067,66 @@ def dangling_refs(text: str) -> list[str]:
     return seen
 
 
+#: `_section_key`s of the sections that hold the PRD's acceptance list (GRPH-1688).
+_ACCEPTANCE_SECTION_KEYS = ("acceptancecriteria", "acceptance", "donecriteria")
+_AC_SUBHEADING = re.compile(r"^(?:#{3,6}\s+(.*?)\s*#*|\*\*(.+?)\*\*:?|__(.+?)__:?)\s*$")
+_AC_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.*\S)\s*$")
+
+
+def acceptance_clauses(body: str) -> list[tuple[str, str]]:
+    """`(clause, group)` for every list item in the PRD's acceptance section(s).
+
+    `group` is the sub-heading (`### X` or a bold label) the clause sits under, or "".
+    """
+    out: list[tuple[str, str]] = []
+    for title, text in section_bodies(body).items():
+        if _section_key(title) not in _ACCEPTANCE_SECTION_KEYS:
+            continue
+        group = ""
+        in_fence = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            item = _AC_ITEM.match(line)
+            if item:
+                out.append((item.group(1).strip(), group))
+                continue
+            sub = _AC_SUBHEADING.match(stripped)
+            if sub:
+                group = next(g for g in sub.groups() if g).strip()
+    return out
+
+
+def _clause_section(clause: str, group: str, titles: list[str]) -> str | None:
+    """The section a clause belongs to: its sub-heading names it, else the clause does."""
+    def named(text: str) -> str | None:
+        low = text.lower()
+        key = _section_key(text)
+        hits = [t for t in titles if key and _section_key(t) == key]
+        if not hits:
+            hits = [t for t in titles if t.lower() in low]
+        # Longest title wins, so "Auth tokens" is not claimed by a section called "Auth".
+        return max(hits, key=len) if hits else None
+    return (named(group) if group else None) or named(clause)
+
+
+def assign_acceptance(body: str, titles: list[str]) -> tuple[dict[str, list[str]], list[str]]:
+    """Per-section acceptance clauses, and the clauses that map to no section."""
+    by_section: dict[str, list[str]] = {}
+    unassigned: list[str] = []
+    for clause, group in acceptance_clauses(body):
+        target = _clause_section(clause, group, titles)
+        if target is None:
+            unassigned.append(clause)
+        else:
+            by_section.setdefault(target, []).append(clause)
+    return by_section, unassigned
+
+
 def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool = False) -> dict:
     """Propose one tracked task per un-covered section (gap). With create=True, creates them
     as backlog items linked to the PRD + section, so the spec drives the tracker.
@@ -4077,22 +4142,40 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
     cov = coverage(db, prd)
     bodies = section_bodies(prd.body)
     context = framing_context(prd)
+    from app.services.fleet import parse_acceptance
+
     proposals = []
+    wanted = [
+        p["section"] for p in cov["sections"]
+        if (include_prose or p["implementable"]) and not p["item_count"]
+        and _section_key(p["section"]) not in _ACCEPTANCE_SECTION_KEYS
+    ]
+    ac_by_section, unassigned = assign_acceptance(prd.body or "", wanted)
+    no_acceptance: list[str] = []
     for p in cov["sections"]:
         if not include_prose and not p["implementable"]:
             continue
         if p["item_count"]:  # already covered by tracked work
             continue
+        if _section_key(p["section"]) in _ACCEPTANCE_SECTION_KEYS:
+            continue  # the acceptance list is split across items, never an item itself
         body = bodies.get(p["section"], "").strip()
         # A section about how something looks/feels needs a prototype first (AL-68).
         fidelity = classify_fidelity(f"{p['section']} {body}")
         described = body
+        clauses = ac_by_section.get(p["section"], [])
+        no_clause = False
+        if clauses:
+            described = f"{body}\n\n## Acceptance\n" + "\n".join(f"- {c}" for c in clauses)
+        elif not parse_acceptance(body)[0]:
+            no_clause = True
+            no_acceptance.append(p["section"])
         if context:
             # The section first, because that is the work. The spec follows it as context
             # rather than preceding it, so an implementer reads their task before the
             # material that frames it.
             described = (
-                f"{body}\n\n---\n\n"
+                f"{described}\n\n---\n\n"
                 f"## Context from {prd.key} — {prd.title}\n\n"
                 f"Carried with the task on purpose: an item that has to fetch its parent "
                 f"to be actionable is the gap this fills. Framing sections only — the "
@@ -4112,12 +4195,18 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
         if gated is not None:
             gate = design_svc.handoff(db, gated, p["section"])
             described = f"{described}\n\n---\n\n{gate['text']}"
+        blocker = gate["blocker"] if gate else ""
+        if no_clause:
+            msg = (f"no acceptance clause in {prd.key} maps to this section; sign-off "
+                   "refuses an item with no `## Acceptance` list. Add the clauses.")
+            blocker = f"{blocker}\n{msg}".strip()
         proposals.append({
             "section": p["section"],
             "title": f"Implement: {p['section']}",
             "description": described,
-            "blocked": bool(gate and gate["blocked"]),
-            "blocker": gate["blocker"] if gate else "",
+            "blocked": bool(gate and gate["blocked"]) or no_clause,
+            "blocker": blocker,
+            "acceptance": clauses,
             "fidelity": fidelity,
             # Surfaced on the proposal so a dry run shows them before anything is created.
             "dangling_refs": dangling_refs(body),
@@ -4155,4 +4244,5 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
     # created item further up: that column holds the frozen id deliberately (GRPH-319), because
     # a stored rendering would rot the moment the project is retagged. Displayed keys render;
     # stored ids freeze — and this dict is read, not stored.
-    return {"prd_id": prd.key, "proposals": proposals, "created": created}
+    return {"prd_id": prd.key, "proposals": proposals, "created": created,
+            "unassigned_clauses": unassigned, "no_acceptance": no_acceptance}

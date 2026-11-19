@@ -13,7 +13,10 @@ from app.services import prds as prd_svc
 from app.services.drive_sync import LocalFolderBackend
 from tests.prd_approve import approve
 
-BODY = "## Tokens\nUse the teal accent everywhere.\n\n## Spacing\nEight point grid.\n"
+BODY = (
+    "## Tokens\nUse the teal accent everywhere.\n\n### Acceptance\n- the accent is teal\n\n"
+    "## Spacing\nEight point grid.\n\n### Acceptance\n- spacing snaps to the grid\n"
+)
 KEY = "key:alex"
 COMPILER = "agent:GRPH-A1"
 

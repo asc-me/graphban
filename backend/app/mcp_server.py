@@ -449,9 +449,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "decompose_prd",
         "description": (
-            "One task per un-covered PRD section, each carrying the PRD's framing prose so it "
-            "needs no other reading. `create=true` files them if approved (grill earns it). "
-            "Framing sections aren't tasks unless `include_prose=true`."
+            "One task per un-covered PRD section, carrying the framing prose and its own "
+            "`## Acceptance` clauses (none: filed blocked). `create=true` files them if approved "
+            "(grill earns it). Framing sections aren't tasks unless `include_prose=true`."
         ),
         "inputSchema": {
             "type": "object",
