@@ -349,6 +349,13 @@ export function DockEditor({
   const reasonOk = reason.trim().length >= MIN_REASON;
   const needsReason = !!entry; // a gitops-only save carries no audit reason
   const canSave = dirty && !firstParamError && editable && (!needsReason || reasonOk) && (risks.length === 0 || confirmed);
+  const reasonBlocks = needsReason && !reasonOk && dirty && !firstParamError && editable && (risks.length === 0 || confirmed);
+  const reasonLen = reason.trim().length;
+  const reasonHint = reasonBlocks
+    ? reasonLen === 0
+      ? `Add a reason (${MIN_REASON}+ characters) to save`
+      : `Add a reason (${MIN_REASON}+ characters) to save — ${MIN_REASON - reasonLen} more needed`
+    : null;
   const saving = saveRules.isPending || saveGitops.isPending;
 
   function reset() {
@@ -878,20 +885,27 @@ export function DockEditor({
               )}
               <div className="flex flex-wrap items-center gap-2" data-testid="rules-dock-save-row">
                 {needsReason && (
+                  <label className="flex min-w-[160px] flex-1 flex-col gap-0.5">
+                    <span className="text-micro font-semibold text-fg-2" data-testid="rules-dock-reason-label">
+                      Why (required)
+                    </span>
                   <Input
                     aria-label="Reason"
+                    aria-required="true"
+                    aria-describedby={reasonHint ? "rules-dock-reason-hint" : undefined}
                     value={reason}
-                    className="h-7 min-w-[160px] flex-1 text-small"
+                    className="h-7 w-full text-small"
                     placeholder="Why? One sentence, saved as the audit record (required)"
                     onChange={(e) => setReason(e.target.value)}
                   />
+                  </label>
                 )}
                 <button
                   type="button"
                   disabled={!canSave || saving}
                   onClick={() => void save()}
                   data-testid="rules-dock-save-button"
-                  title="⌘↵ / Ctrl+↵"
+                  title={reasonHint ?? "⌘↵ / Ctrl+↵"}
                   className="h-7 flex-none rounded-[8px] bg-accent px-3 text-body font-semibold text-[#0a0c0e] disabled:opacity-50"
                 >
                   {saving ? "Saving…" : nChanges ? `Save ${nChanges} change${nChanges === 1 ? "" : "s"}` : "Save"}
@@ -906,9 +920,9 @@ export function DockEditor({
                   Discard
                 </button>
               </div>
-              {needsReason && reason.length > 0 && !reasonOk && (
-                <span className="text-micro text-muted" data-testid="rules-dock-reason-short">
-                  At least {MIN_REASON} characters.
+              {reasonHint && (
+                <span id="rules-dock-reason-hint" className="text-micro text-[#ffb454]" data-testid="rules-dock-reason-hint">
+                  {reasonHint}
                 </span>
               )}
             </>
