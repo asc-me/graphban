@@ -3288,6 +3288,15 @@ def publish_salvaged(wave: Wave, repo: Path, salvaged: list, *,
 MERGE_RECHECK_S = 60.0
 
 
+def _merge_recorded(row: dict) -> bool:
+    """True when the item carries the `url` receipt `Merger._record` writes."""
+    for e in row.get("evidence") or []:
+        if (isinstance(e, dict) and e.get("kind") == "url" and e.get("commit")
+                and str(e.get("detail") or "").startswith("merged by gbfleet:")):
+            return True
+    return False
+
+
 @dataclass
 class Merger:
     """Finishes the merge for items that reach `done` (GRPH-846, GRPH-880). Off unless asked.
@@ -3326,6 +3335,9 @@ class Merger:
     #: The PRD this wave is scoped to (if any). Candidates outside this scope are not merged
     #: unless a GRPH-798 hold names them.
     prd_id: str = ""
+    #: The maintenance line this wave is scoped to (if any). Same rule as `prd_id`: with no
+    #: PRD, a `--line` run must not walk every done item in the project (GRPH-1719).
+    line_id: str = ""
     #: The planner this wave registered. `bounce` on a fleet credential refuses an
     #: unidentified caller, which is what left a conflicted `done` item unbounced.
     agent_id: str = ""
@@ -3407,7 +3419,8 @@ class Merger:
         An item already `done` when the `--merge` wave starts is a candidate on the first
         tick — no requirement that this process saw it leave `review`.
 
-        Scope: if `prd_id` is set, only items belonging to that PRD are candidates.
+        Scope: if `prd_id` is set, only items belonging to that PRD are candidates; else if
+        `line_id` is set, only that line's items (GRPH-1719).
         Hold deps (added via `note_hold`) bypass the scope filter — they are merges that
         would clear a hold, which is the merge most worth finishing.
         """
@@ -3436,6 +3449,15 @@ class Merger:
                 item_prd = str(row.get("prd_id") or "")
                 if item_prd != self.prd_id and item_id not in self.watching:
                     continue
+            elif self.line_id:
+                if (str(row.get("line_id") or "") != self.line_id
+                        and item_id not in self.watching):
+                    continue
+            # GRPH-1719: a merge this supervisor already recorded is read from the item, so
+            # a restarted process does not look the PR up again.
+            if _merge_recorded(row):
+                self._seen.add(item_id)
+                continue
             # Check for fleet.sign_off attestation naming a commit.
             if not propose_mod.reviewed_commit(row):
                 continue
