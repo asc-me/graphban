@@ -1201,6 +1201,22 @@ export function useItemsFull(projectId?: string, enabled = true) {
   });
 }
 
+/**
+ * Put one unscoped fix on the project's line (GRPH-1744). No optimistic patch: a refused move
+ * must leave the row where it was. Success refreshes the items (the Maintenance count) and the
+ * line reads (the unscoped count).
+ */
+export function usePutOnLine(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, lineId }: { id: string; lineId: string }) => api.updateItem(id, { line_id: lineId }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.items });
+      qc.invalidateQueries({ queryKey: ["line", projectId] });
+    },
+  });
+}
+
 export function useCreateLine(projectId: string) {
   const qc = useQueryClient();
   return useMutation({

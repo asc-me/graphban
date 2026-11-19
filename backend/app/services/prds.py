@@ -4127,7 +4127,39 @@ def assign_acceptance(body: str, titles: list[str]) -> tuple[dict[str, list[str]
     return by_section, unassigned
 
 
-def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool = False) -> dict:
+_TP_MIN_SCORE = 0.6
+_TP_MAX = 5
+
+
+def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[dict]:
+    """Code-graph paths a section likely touches, each with the evidence that matched.
+
+    Two signals: a node's path (or its file name) named verbatim in the section text, which
+    is strong; and semantic search over the title and body, kept above a score floor."""
+    from app.services import code_graph
+
+    text = f"{section}\n{body}".lower()
+    found: dict[str, str] = {}
+    for n in code_graph.list_nodes(db, prd.project_id):
+        path = n.path.split("::", 1)[0]
+        base = path.rsplit("/", 1)[-1]
+        if path.lower() in text:
+            found.setdefault(path, f"path `{path}` named in the section")
+        elif len(base) > 3 and base.lower() in text:
+            found.setdefault(path, f"file name `{base}` named in the section")
+    try:
+        hits = code_graph.search_code(db, f"{section}\n{body}"[:2000], prd.project_id, top_k=_TP_MAX)
+    except Exception:  # noqa: BLE001 - semantic search is best effort; lexical hits still stand
+        hits = []
+    for node, score in hits:
+        if score >= _TP_MIN_SCORE:
+            found.setdefault(node.path.split("::", 1)[0],
+                             f"code search matched the section (score {score:.2f})")
+    return [{"path": k, "evidence": v} for k, v in list(found.items())[:_TP_MAX]]
+
+
+def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool = False,
+              touchpoints: dict[str, list[str]] | None = None) -> dict:
     """Propose one tracked task per un-covered section (gap). With create=True, creates them
     as backlog items linked to the PRD + section, so the spec drives the tracker.
 
@@ -4152,6 +4184,8 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
     ]
     ac_by_section, unassigned = assign_acceptance(prd.body or "", wanted)
     no_acceptance: list[str] = []
+    no_touchpoints: list[str] = []
+    overrides = touchpoints or {}
     for p in cov["sections"]:
         if not include_prose and not p["implementable"]:
             continue
@@ -4200,11 +4234,25 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             msg = (f"no acceptance clause in {prd.key} maps to this section; sign-off "
                    "refuses an item with no `## Acceptance` list. Add the clauses.")
             blocker = f"{blocker}\n{msg}".strip()
+        tp_evidence = propose_touchpoints(db, prd, p["section"], body)
+        given = [t for t in (overrides.get(p["section"]) or []) if isinstance(t, str) and t.strip()]
+        tps = given or [e["path"] for e in tp_evidence]
+        if given:
+            tp_evidence = [{"path": t, "evidence": "given by the caller"} for t in given]
+        no_tp = not tps
+        if no_tp:
+            no_touchpoints.append(p["section"])
+            msg = ("no touchpoints: the code graph proposed none for this section, so the "
+                   "planner cannot cluster it and gbfleet cannot open its PR. Set "
+                   "`touchpoints` (files it changes) on the item.")
+            blocker = f"{blocker}\n{msg}".strip()
         proposals.append({
             "section": p["section"],
             "title": f"Implement: {p['section']}",
             "description": described,
-            "blocked": bool(gate and gate["blocked"]) or no_clause,
+            "touchpoints": tps,
+            "touchpoint_evidence": tp_evidence,
+            "blocked": bool(gate and gate["blocked"]) or no_clause or no_tp,
             "blocker": blocker,
             "acceptance": clauses,
             "fidelity": fidelity,
@@ -4223,7 +4271,7 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                 db, title=pr["title"], description=pr["description"],
                 project_id=prd.project_id, status="backlog",
                 tags=["prd", "prototype"] if pr["fidelity"] == "high" else ["prd"],
-                fidelity=pr["fidelity"],
+                fidelity=pr["fidelity"], touchpoints=pr["touchpoints"],
                 # A PRD task is new capability (GRPH-1358). Said here, not inferred from
                 # `prd_id`: bugs are filed under PRDs too, and those must not read as features.
                 kind="feature",
@@ -4245,4 +4293,5 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
     # a stored rendering would rot the moment the project is retagged. Displayed keys render;
     # stored ids freeze — and this dict is read, not stored.
     return {"prd_id": prd.key, "proposals": proposals, "created": created,
-            "unassigned_clauses": unassigned, "no_acceptance": no_acceptance}
+            "unassigned_clauses": unassigned, "no_acceptance": no_acceptance,
+            "no_touchpoints": no_touchpoints}
