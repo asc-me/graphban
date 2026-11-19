@@ -4144,12 +4144,18 @@ def assign_acceptance(body: str, titles: list[str]) -> tuple[dict[str, list[str]
 _MIN_HEADING_CHARS = 4
 
 _BACKTICK_TERM = re.compile(r"`([^`\n]{3,60})`")
-#: A bolded lead-in followed by definition punctuation: `**The line** — …`, `**The line**: …`,
-#: `- **The line** is …`. The punctuation is required, so bold emphasis in ordinary prose
-#: ("**never** skip this") does not read as a term the section defines.
-_BOLD_TERM = re.compile(r"^\s*(?:[-*+]\s+)?\*\*([^*\n]{3,60})\*\*\s*(?:[—–-]|:|\bis\b)", re.MULTILINE)
 #: Loose, so "Non-goals", "Non Goals" and "nongoals" are the same heading.
 _HEADING_JOIN = r"[\s\-_/]*"
+
+#: An identifier more sections than this share is VOCABULARY, not a handoff. Measured across
+#: this repo's fifteen `docs/prd-*.md` documents: 1456 distinct backticked terms, of which
+#: 1205 appear in one section, 190 in two, and 61 in three or more — and the false edges all
+#: came out of that last group, because `reviewer`, `heartbeat` and `offline` are the language
+#: every section of a fleet PRD speaks rather than something one section hands the next.
+#: Uncapped, those fifteen documents proposed 256 links of which 80 contradicted each other
+#: into cycles, and a third of a graph disagreeing with itself is a measurement of noise
+#: rather than of fifteen PRDs that all happen to be circular.
+_MAX_TERM_SECTIONS = 2
 
 
 def _heading_matcher(title: str) -> re.Pattern[str] | None:
@@ -4167,37 +4173,51 @@ def _heading_matcher(title: str) -> re.Pattern[str] | None:
     return re.compile(rf"(?<![A-Za-z0-9]){inner}(?![A-Za-z0-9])", re.IGNORECASE)
 
 
-def _defined_terms(title: str, body: str) -> dict[str, str]:
-    """Terms `title` DEFINES, mapped to the signal that defined them (`code` or `prose`).
+def _section_label(title: str) -> str | None:
+    """The slice label a heading carries — `S1`, `D8`, `E3`, `AC-18` — if it has exactly one.
 
-    A backticked span is an identifier the section introduces; a bolded lead-in with
-    definition punctuation is prose defining a term. The section's own heading is excluded —
-    a body naming it is the heading signal, not a second one.
+    This is the signal that actually fires on the PRDs in this repo, and the verbatim heading
+    match beside it does not: a real heading here reads `## S1 — The state floor on the
+    thirteen surfaces P46 does not cover`, and no later section quotes that sentence back.
+    They say `S1`. Measured over `docs/prd-*.md`, the heading match found nothing at all in
+    fifteen documents while the label found 55 edges — a feature checked only against a
+    hand-written fixture would have shipped its primary signal dead.
+
+    Reuses `_SLICE_LABEL` rather than growing a second idea of what a label looks like, so
+    this and `unlinked_work` cannot drift apart about which citations are real.
     """
-    text = body or ""
-    out: dict[str, str] = {}
-    for pattern, kind in ((_BACKTICK_TERM, "code"), (_BOLD_TERM, "prose")):
-        for m in pattern.finditer(text):
-            term = m.group(1).strip()
-            if len(term) >= 3 and any(c.isalpha() for c in term):
-                out.setdefault(term, kind)
-    own = _heading_matcher(title)
-    if own:
-        out = {t: k for t, k in out.items() if not own.fullmatch(t)}
-    return out
+    found = {m.group(1).upper() for m in _SLICE_LABEL.finditer(title or "")}
+    return found.pop() if len(found) == 1 else None
 
 
-def _reference(text: str, target: str, matcher, term_res) -> tuple[str, str] | None:
+def _code_terms(body: str) -> set[str]:
+    """Identifiers `body` carries in backticks — the terms a section can define for others.
+
+    Bold prose is deliberately NOT a term. It reads like one (`**Graph** — the node view`) and
+    measured like noise: of 36 bold-defined terms across this repo's PRDs, 10 were a single
+    common word — `Graph`, `Dashboard`, `Find`, `Hover`, `Triage` — and each one linked every
+    section that happened to use that English word. Emphasis in prose is not a definition, and
+    the markup cannot tell the two apart.
+    """
+    return {m.group(1).strip() for m in _BACKTICK_TERM.finditer(body or "")
+            if len(m.group(1).strip()) >= 3 and any(c.isalpha() for c in m.group(1))}
+
+
+def _reference(text: str, target: str, matcher, label_rx, term_res) -> tuple[str, str] | None:
     """`(why, matched)` for the strongest way `text` refers to `target`, else None.
 
-    The heading wins over a defined term: naming a section is a directer statement of "builds
-    on it" than reusing one of its identifiers, and reporting the stronger reason keeps the
-    `why` a caller reads from being the weaker of two.
+    Ordered by how direct the statement is: naming a section outright beats citing its label,
+    which beats reusing one of its identifiers. Reporting the strongest reason that matched
+    keeps the `why` a caller reads from being the weakest of several.
     """
     if matcher:
         m = matcher.search(text)
         if m:
             return f'body names the section heading "{target}"', m.group(0)
+    if label_rx:
+        m = label_rx.search(text)
+        if m:
+            return f'body names "{target}" by its slice label', m.group(0)
     for term, rx in term_res:
         m = rx.search(text)
         if m:
@@ -4221,38 +4241,42 @@ def propose_section_links(
     than dropped: a proposal that silently omits a reference it saw is the same quiet absence
     the rest of this module reports.
     """
-    defined = {s: _defined_terms(s, bodies.get(s, "")) for s in order}
-    # Who owns a term. An IDENTIFIER is owned by the first section in document order that
-    # carries it: a PRD introduces a tool or a field and later sections use it, which is the
-    # same "rules come first" shape `framing_context` relies on when it spends its budget in
-    # document order. Requiring an identifier to appear in exactly one section instead — the
-    # obvious reading of "defines" — would have thrown away the whole signal, because a
-    # dependent section writes the identifier in backticks too.
+    terms = {s: _code_terms(bodies.get(s, "")) for s in order}
+    # Who owns a term: the FIRST section in document order that carries it. A PRD introduces a
+    # tool or a field and later sections use it — the same "rules come first" shape
+    # `framing_context` relies on when it spends its budget in document order. Requiring an
+    # identifier to appear in exactly one section instead, the obvious reading of "defines",
+    # would have thrown the signal away: a dependent section writes the identifier in backticks
+    # too, so the term it depends on is by definition in both.
     #
-    # A BOLDED term is the exception: there the markup is itself the claim to define it, so
-    # two sections both writing `**The line** — …` are genuinely ambiguous and neither is
-    # used as evidence. Same reasoning as `_clause_section` preferring the longest title over
-    # guessing between two that match.
-    code_owner: dict[str, tuple[str, str]] = {}
-    prose_owners: dict[str, list[tuple[str, str]]] = {}
+    # What does disqualify a term is spread — see `_MAX_TERM_SECTIONS` for the measurement.
+    spread: Counter = Counter()
     for s in order:
-        for t, kind in defined[s].items():
-            if kind == "code":
-                code_owner.setdefault(t.lower(), (t, s))
-            else:
-                prose_owners.setdefault(t.lower(), []).append((t, s))
-    owners = {low: [hit] for low, hit in code_owner.items()}
-    for low, hits in prose_owners.items():
-        if low not in owners and len(hits) == 1:
-            owners[low] = hits
+        for t in terms[s]:
+            spread[t.lower()] += 1
+    owner: dict[str, tuple[str, str]] = {}
+    for s in order:
+        for t in sorted(terms[s]):
+            if spread[t.lower()] <= _MAX_TERM_SECTIONS:
+                owner.setdefault(t.lower(), (t, s))
     term_res: dict[str, list[tuple[str, re.Pattern[str]]]] = {s: [] for s in order}
-    for hits in owners.values():
-        for t, s in hits:
-            flags = 0 if defined[s][t] == "code" else re.IGNORECASE
-            term_res[s].append(
-                (t, re.compile(rf"(?<![A-Za-z0-9_]){re.escape(t)}(?![A-Za-z0-9_])", flags)))
+    for t, s in owner.values():
+        term_res[s].append(
+            (t, re.compile(rf"(?<![A-Za-z0-9_]){re.escape(t)}(?![A-Za-z0-9_])")))
     for s in order:
         term_res[s].sort(key=lambda pair: pair[0])
+
+    # A label two sections both carry is no evidence about which one a body means by `S1`, so
+    # it belongs to neither — the rule `_clause_section` applies to an ambiguous title.
+    label_owner: dict[str, str | None] = {}
+    for s in order:
+        lab = _section_label(s)
+        if lab:
+            label_owner[lab] = None if lab in label_owner else s
+    label_res: dict[str, re.Pattern[str]] = {}
+    for lab, s in label_owner.items():
+        if s is not None:
+            label_res[s] = re.compile(rf"(?<![A-Za-z0-9]){re.escape(lab)}(?![A-Za-z0-9])")
     matchers = {s: _heading_matcher(s) for s in order}
 
     edges: list[dict] = []
@@ -4265,7 +4289,8 @@ def propose_section_links(
         for target in order:
             if target == dep or (dep, target) in seen:
                 continue
-            hit = _reference(text, target, matchers[target], term_res[target])
+            hit = _reference(text, target, matchers[target], label_res.get(target),
+                             term_res[target])
             if hit is None:
                 continue
             seen.add((dep, target))
