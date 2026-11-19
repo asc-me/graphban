@@ -179,7 +179,8 @@ def test_spawn_starts_one_child_and_returns_its_identity(fleet: Fleet):
     value = _value(_call(fleet, "spawn", adapter="claude", enrolment_code="WORKER-1"))
     try:
         assert value["agent_id"]
-        assert value["running"] is True
+        assert value["running"] is True, [
+            (c.process.returncode, c.tail()) for c in fleet.children]
         assert value["branch"].startswith("gb/")
         assert value["registration_latency"] is not None
         assert len(fleet.children) == 1
@@ -636,7 +637,8 @@ def test_spawn_refuses_past_max_workers(fleet: Fleet):
     first = _value(_call(fleet, "spawn", adapter="claude", enrolment_code="WORKER-1"))
     try:
         result = _call(fleet, "spawn", adapter="claude", enrolment_code="WORKER-2")
-        assert result["isError"] is True
+        assert result.get("isError") is True, (result, [
+            (c.process.returncode, c.tail()) for c in fleet.children])
         assert "max_workers" in result["content"][0]["text"]
         assert len([c for c in fleet.children if c.running]) == 1
     finally:
