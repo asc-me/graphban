@@ -269,11 +269,11 @@ def clusters_for_project(db: Session, project_id: str | None, status: str | None
     pool = [it for it in pool if it.status in ("in_progress", "review") or prio.ready(ctx, it)]
     areas, predicted = _areas_for(db, pool, project_id)
     from app.services import fleet as fleet_svc
-    clusters = _partition([it.id for it in pool], areas, predicted,
-                          fleet_svc.project_hard_areas(db, project_id))
+    hards = fleet_svc.project_hard_areas(db, project_id)
+    clusters = _partition([it.id for it in pool], areas, predicted, hards)
     # Review holds BEFORE reservations: splitting a cluster changes its areas, and a
     # reservation check run on the unsplit cluster would hold the freed siblings anyway.
-    clusters = _occupy_review_globs(clusters, pool, areas, predicted)
+    clusters = _occupy_review_globs(clusters, pool, areas, predicted, hards)
     clusters = _with_reservations(db, clusters, project_id, lease_seconds=lease_seconds)
     if prd_id or line_id:
         clusters = _scoped_order(clusters, {it.id: it for it in pool}, ctx,
@@ -323,7 +323,8 @@ def _scoped_order(clusters: list[dict], by_id: dict[str, Item], ctx,
 
 def _occupy_review_globs(clusters: list[dict], pool: list[Item],
                          areas: dict[str, list[str]] | None = None,
-                         predicted: dict[str, bool] | None = None) -> list[dict]:
+                         predicted: dict[str, bool] | None = None,
+                         hards: tuple[str, ...] | list[str] | None = None) -> list[dict]:
     """A member in `review` occupies ITS OWN areas after its reservation is gone (GRPH-886,
     GRPH-951).
 
@@ -359,7 +360,9 @@ def _occupy_review_globs(clusters: list[dict], pool: list[Item],
         # A review member with no areas names nothing to hold by, so it holds all of them.
         stuck = [i for i in siblings
                  if not held_areas or not areas.get(i)
-                 or fleet_svc.areas_collide(areas.get(i, []), held_areas)]
+                 or fleet_svc.areas_collide(areas.get(i, []), held_areas)
+                 or (hards is not None and fleet_svc.shared_exclusive_prefixes(
+                     areas.get(i, []), held_areas, hards))]
         free = [i for i in siblings if i not in stuck]
 
         occupied = dict(cluster)
@@ -383,15 +386,16 @@ def _occupy_review_globs(clusters: list[dict], pool: list[Item],
                 "holds": mine,
                 "held": sorted(by_id[i].key for i in stuck
                                if not mine or not areas.get(i)
-                               or fleet_svc.areas_collide(areas.get(i, []), mine)),
+                               or fleet_svc.areas_collide(areas.get(i, []), mine)
+                               or (hards is not None and fleet_svc.shared_exclusive_prefixes(
+                                   areas.get(i, []), mine, hards))),
                 "rule": (f"{key} is in review and holds {', '.join(mine)}" if mine else
                          f"{key} is in review and declares no areas, so it holds its cluster"),
             })
         occupied["held_because"] = held_because
         out.append(occupied)
         if free:
-            out.extend(_partition(free, areas, predicted,
-                                  fleet_svc.project_hard_areas(db, project_id)))
+            out.extend(_partition(free, areas, predicted, hards))
     out.sort(key=lambda c: (-len(c["items"]), c["items"][0]))
     return out
 

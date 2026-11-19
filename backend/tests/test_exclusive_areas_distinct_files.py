@@ -67,3 +67,32 @@ def test_collision_clusters_put_them_in_one_cluster(db, monkeypatch):
     two = _item(db, "two", [B])
     got = collision.collision_clusters(db, [one, two], "core")
     assert len(got) == 1 and got[0]["collides"]
+
+
+def test_review_hold_keeps_the_prefix_and_frees_the_unrelated():
+    """A sibling under a review member's exclusive prefix stays held; a disjoint one is freed
+    and re-partitioned (the path that raised NameError on the first attempt)."""
+    class _It:
+        def __init__(self, id, status):
+            self.id, self.key, self.status, self.touchpoints = id, id.upper(), status, []
+
+    pool = [_It("r", "review"), _It("s", "next"), _It("u", "next")]
+    areas = {"r": [A, "x.py"], "s": [B], "u": ["x.py", "other.py"]}
+    pred = {k: False for k in areas}
+    hards = fleet_svc._hard_paths(MIG)
+    clusters = collision._partition(["r", "s", "u"], areas, pred, hards)
+    assert len(clusters) == 1
+    out = collision._occupy_review_globs(clusters, pool, areas, pred, hards)
+    held = [c for c in out if "r" in c["items"]][0]
+    assert "S" in held["held_because"][0]["held"]
+    assert not any("s" in c["items"] for c in out if c is not held)
+
+
+def test_clusters_for_project_runs_with_a_review_member(db, monkeypatch):
+    monkeypatch.setattr(fleet_svc, "project_hard_areas", lambda db, pid: tuple(MIG))
+    one = _item(db, "one", [A])
+    _item(db, "two", [B])
+    _item(db, "seed", ["db/seed.sql"])
+    items_svc.update_item(db, one.id, status="review")
+    got = collision.clusters_for_project(db, "core")
+    assert got is not None
