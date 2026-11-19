@@ -3069,6 +3069,20 @@ _TRANSPORT_ERROR = re.compile(
     r"|\b50[234]\b.{0,40}(?:Server Error|Gateway|Unavailable)", re.I)
 
 
+def _fetch_job_log(repo: Path, job_id: str) -> subprocess.CompletedProcess:
+    """One Actions job log. `gh api` refuses a body that contains ANSI unless this flag is set.
+
+    GRPH-1743: without `--allow-escape-sequences` the call fails before any bytes arrive, and
+    the bounce note can only say the log could not be read.
+    """
+    from . import propose
+    return propose._gh(
+        repo, "api",
+        f"repos/{{owner}}/{{repo}}/actions/jobs/{job_id}/logs",
+        "--allow-escape-sequences",
+    )
+
+
 def transport_flake_jobs(repo: Path, branch: str) -> list[str]:
     """Job ids of failed checks whose log shows a transport error and no test failure.
 
@@ -3093,8 +3107,7 @@ def transport_flake_jobs(repo: Path, branch: str) -> list[str]:
         if not m:
             return []
         try:
-            got = propose._gh(repo, "api",
-                              f"repos/{{owner}}/{{repo}}/actions/jobs/{m.group(1)}/logs")
+            got = _fetch_job_log(repo, m.group(1))
         except (OSError, subprocess.SubprocessError):
             return []
         if got.returncode != 0:
@@ -3180,8 +3193,7 @@ def failed_test_summary(repo: Path, branch: str) -> str:
             parts.append(f"{name}: log could not be read (no job id in the check URL)")
             continue
         try:
-            got = propose._gh(repo, "api",
-                              f"repos/{{owner}}/{{repo}}/actions/jobs/{m.group(1)}/logs")
+            got = _fetch_job_log(repo, m.group(1))
         except (OSError, subprocess.SubprocessError) as exc:
             parts.append(f"{name}: log could not be read ({exc})")
             continue
