@@ -98,16 +98,17 @@ export function RulesView() {
     dirtyRef.current = d;
   }, []);
   const [pendingSel, setPendingSel] = React.useState<{ to: string | null; after?: () => void } | null>(null);
-  const selectStage = React.useCallback(
-    (to: string | null, after?: () => void) => {
-      if (to !== sel && dirtyRef.current) setPendingSel({ to, after });
-      else {
-        setSel(to);
-        after?.();
-      }
-    },
-    [sel],
-  );
+  // `sel` is read through a ref so selectStage keeps one identity: effects that call it (the
+  // ?rule= focus) must re-run only when their own inputs change, not on every selection.
+  const selRef = React.useRef(sel);
+  selRef.current = sel;
+  const selectStage = React.useCallback((to: string | null, after?: () => void) => {
+    if (to !== selRef.current && dirtyRef.current) setPendingSel({ to, after });
+    else {
+      setSel(to);
+      after?.();
+    }
+  }, []);
   const { pathname } = useLocation();
   // Following a refusal (frames 4a1–4b2): `?rule=` focuses one rule, `?from=` is the event to
   // go back to, `?pulse=unmapped` is "see all rules" for a refusal that names no rule.
