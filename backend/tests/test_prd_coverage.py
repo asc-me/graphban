@@ -225,6 +225,99 @@ def test_decompose_proposes_touchpoints_from_code_graph(client, auth):
     db.close()
 
 
+def test_decompose_flags_an_oversized_section_and_splits_three_ways(client, auth):
+    """Three sub-headings, a clause under each: flagged, and create files three linked items.
+
+    The pieces are inserted blocked and the split links are added before any of them
+    becomes backlog, so a drain cannot claim one while the others are still unlinked.
+    """
+    from sqlalchemy import event, select
+
+    from app.models import Item, Link
+    from app.services.fleet import parse_acceptance
+    from tests.prd_approve import approve_id
+
+    body = (
+        "# Spec\n\n## Small\none thing\n\n## Work\n"
+        "### One\ndo the first\n### Two\ndo the second\n### Three\ndo the third\n\n"
+        "## Acceptance criteria\n### Small\n- small is done\n"
+        "### One\n- first is done\n### Two\n- second is done\n### Three\n- third is done\n"
+    )
+    prd = client.post("/api/prds", json={"title": "Split Spec", "body": body, "project_id": "core"},
+                      headers=auth).json()
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    by = {p["section"]: p for p in dry["proposals"]}
+    assert set(by) == {"Small", "Work"}
+    assert by["Small"]["oversized"] is False
+    assert by["Small"]["oversized_reason"] == ""
+    assert by["Small"]["sub_items"] == []
+    assert {s["signal"]: s["threshold"] for s in by["Small"]["size"]} == {
+        "acceptance_clauses": 2, "touchpoint_areas": 2, "body_chars": 3000,
+    }
+    assert all(s["exceeded"] is False for s in by["Small"]["size"])
+
+    work = by["Work"]
+    assert work["oversized"] is True
+    assert work["oversized_reason"] == "acceptance_clauses 3 > 2"
+    clauses = next(s for s in work["size"] if s["signal"] == "acceptance_clauses")
+    assert clauses["value"] == 3 and clauses["exceeded"] is True
+    assert [s["heading"] for s in work["sub_items"]] == ["One", "Two", "Three"]
+    assert [s["clauses"] for s in work["sub_items"]] == [
+        ["first is done"], ["second is done"], ["third is done"],
+    ]
+    assert dry["unassigned_clauses"] == []
+    assert "Work" not in dry["no_acceptance"]
+
+    approve_id(prd["id"])
+    seen: list[str] = []
+
+    def _on_status(target, value, old, _initiator):
+        if (target.title or "").startswith("Implement: Work —") and value == "backlog" and old == "blocked":
+            seen.append("backlog")
+
+    def _on_link(_target, _args, kwargs):
+        if str(kwargs.get("reason", "")).startswith("split of "):
+            seen.append("link")
+
+    event.listen(Item.status, "set", _on_status)
+    event.listen(Link, "init", _on_link)
+    try:
+        key = client.post("/api/api-keys", json={"name": "split-agent", "project_id": "core"},
+                          headers=auth).json()["plaintext"]
+        made = _mcp(client, key, "decompose_prd", {
+            "prd_id": prd["id"], "create": True,
+            "splits": {"Work": ["One", "Two", "Three"]},
+            "touchpoints": {"Work": ["backend/app/work.py"], "Small": ["backend/app/small.py"]},
+        })["structuredContent"]
+    finally:
+        event.remove(Item.status, "set", _on_status)
+        event.remove(Link, "init", _on_link)
+
+    assert seen == ["link", "link", "backlog", "backlog", "backlog"]
+    assert len(made["created"]) == 4
+    db = SessionLocal()
+    items = [db.get(items_svc.Item, i) for i in made["created"]]
+    small = next(i for i in items if i.prd_section == "Small")
+    pieces = [i for i in items if i.prd_section == "Work"]
+    assert small.status == "backlog" and small.touchpoints == ["backend/app/small.py"]
+    assert len(pieces) == 3
+    assert {i.status for i in pieces} == {"backlog"}
+    assert {i.blocker for i in pieces} == {""}
+    by_title = {i.title: i for i in pieces}
+    assert parse_acceptance(by_title["Implement: Work — One"].description)[0] == ["first is done"]
+    assert parse_acceptance(by_title["Implement: Work — Two"].description)[0] == ["second is done"]
+    assert "first is done" not in parse_acceptance(by_title["Implement: Work — Three"].description)[0]
+    links = list(db.scalars(select(Link).where(Link.reason == "split of Work")))
+    assert len(links) == 2
+    assert {lnk.type for lnk in links} == {"semantic"}
+    ids = {i.id for i in pieces}
+    assert {lnk.a for lnk in links} | {lnk.b for lnk in links} == ids
+    db.close()
+
+    again = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    assert again["proposals"] == []
+
+
 def test_decompose_touchpoint_override(client, auth):
     from tests.prd_approve import approve_id
 
