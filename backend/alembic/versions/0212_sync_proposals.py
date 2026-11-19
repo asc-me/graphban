@@ -34,7 +34,7 @@ def upgrade() -> None:
         sa.Column("project_id", sa.String(), nullable=False),
         sa.Column("status", sa.String(), nullable=False),
         sa.Column("reason", sa.String(), nullable=True),
-        sa.Column("current_version", sa.Integer(), nullable=True),
+        sa.Column("current_version", sa.BigInteger(), nullable=True),
         sa.Column("reported", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),
         sa.PrimaryKeyConstraint("id", name="pk_sync_proposal"),

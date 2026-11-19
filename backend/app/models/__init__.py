@@ -2482,7 +2482,8 @@ class SyncProposal(Base):
     project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     status: Mapped[str] = mapped_column(String, nullable=False)
     reason: Mapped[str | None] = mapped_column(String, nullable=True)
-    current_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # version_of() is a 63-bit hash: int4 overflows on Postgres.
+    current_version: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     reported: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false(), nullable=False)
     created_at: Mapped[datetime | None] = mapped_column(
