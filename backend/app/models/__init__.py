@@ -2388,11 +2388,68 @@ class SyncProject(Base):
     #: mapped and refreshed on every projects read; "" (or null) until known, shown `☁ ?`.
     cloud_project_tag: Mapped[str | None] = mapped_column(
         String, default="", server_default="", nullable=True)
+    #: `digests` (today's push; the default, including every row that predates GRPH-1733)
+    #: or `sync` (full replica, D2). Local-only is the absence of a row, not a third value.
+    sync_level: Mapped[str] = mapped_column(
+        String, default="digests", server_default="digests", nullable=False)
+    #: What the cloud may propose back: `read_only`, `comments` (default, D4), `proposals`.
+    cloud_permission: Mapped[str] = mapped_column(
+        String, default="comments", server_default="comments", nullable=False)
+    #: Who turned full sync on, and when (D8). Sync keeps running after that person leaves;
+    #: these columns are the audit, not a grant. Null on a row that was never opted in.
+    enabled_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_push_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_push_result: Mapped[str | None] = mapped_column(String, nullable=True)
     last_push_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=True)
+
+
+class SyncOutbox(Base):
+    """One dirty entity waiting to be pushed (GRPH-1733, P89 D11).
+
+    The primary key is the entity, so a later change updates this row instead of inserting
+    another. That collapse is what keeps the outbox inside its 100 MB cap: the table holds
+    at most one row per entity, however many times the entity changes before the flush.
+
+    `change_class` is the best pending change (`status`, `new`, `edit`, `history`). It is
+    not in the column list the slice named, and it has to be stored anyway: once several
+    changes have collapsed into this row, the class is no longer recoverable from the
+    version and the hash, and `due()` orders by it.
+    """
+
+    __tablename__ = "sync_outbox"
+
+    project_id: Mapped[str] = mapped_column(String, primary_key=True)
+    entity_type: Mapped[str] = mapped_column(String, primary_key=True)
+    entity_id: Mapped[str] = mapped_column(String, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    dirty_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    first_dirty_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    parked_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    parked_contract: Mapped[str | None] = mapped_column(String, nullable=True)
+    change_class: Mapped[str] = mapped_column(
+        String, nullable=False, default="edit", server_default="edit")
+
+
+class SyncManifest(Base):
+    """What the console has confirmed for one entity (GRPH-1733).
+
+    The flush writes this after a batch is accepted. Capture does not. A missing row means
+    the entity has never been confirmed, which is a different fact from an empty hash.
+    """
+
+    __tablename__ = "sync_manifest"
+
+    project_id: Mapped[str] = mapped_column(String, primary_key=True)
+    entity_type: Mapped[str] = mapped_column(String, primary_key=True)
+    entity_id: Mapped[str] = mapped_column(String, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class SyncLink(Base):

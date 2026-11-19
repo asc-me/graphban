@@ -26,6 +26,8 @@ are different strings because they ask different people for different things:
 `scans_clean` passes only when every required tool on every touched component is clean. It is
 posted on its OWN receipt (`attest_ci.receipt`), never beside `suite_green`, and with
 `head_commit` on every run, pass or fail, so an older pass stops covering a head that failed.
+A read timeout or a connection reset on that post is retried, then reported as an attestation
+failure. It is not an uncaught traceback, and it is not a scan finding.
 
 The scan rows are also recorded (`record_scan`, explicit `category`) so the Stack overlay can
 show them. The attestation never depends on those rows: a failed post is logged and changes
@@ -45,6 +47,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 from dataclasses import dataclass, field
 
@@ -433,6 +436,49 @@ def _scan_rows(verdict: Verdict, head: str) -> list[dict]:
             for r in verdict.results if r.tool and r.state in (CLEAN, FAILED)]
 
 
+#: A read timeout or a connection reset while the response is being read. urllib wraps
+#: OSError as URLError only around `h.request`; `getresponse` (where `_read_status` calls
+#: `recv_into`) sits outside that handler, so these two are not URLError (GRPH-1731).
+#: Named here, not inherited from OSError: an except that only lists URLError lets a
+#: read-phase TimeoutError kill the job after the scans have already passed.
+ATTEST_TRANSIENT = (TimeoutError, ConnectionResetError)
+
+
+def _retry_backoff(seconds: float) -> None:
+    """Wait before the next attestation write.
+
+    This is the only sleep the retry owns. A test records this call. Replacing
+    ``time.sleep`` would also record the sleeps Postgres takes in the same process.
+    """
+    time.sleep(seconds)
+
+
+def _write_attestation(url: str, key: str, item_key: str, head: str, receipt: dict) -> None:
+    """Post one item's receipt. Retry a read timeout or reset; re-raise the last one.
+
+    Not `attest_ci.with_retry`: that treats every OSError as transient, and this catch has
+    to name TimeoutError so dropping it from `ATTEST_TRANSIENT` is a visible failure.
+    """
+    for n in range(attest_ci.LEDGER_ATTEMPTS):
+        try:
+            attest_ci.call_tool(url, key, "update_item",
+                                {"id": item_key, "head_commit": head, "evidence": [receipt]})
+            return
+        except ATTEST_TRANSIENT:
+            if n == attest_ci.LEDGER_ATTEMPTS - 1:
+                raise
+            _retry_backoff(attest_ci.LEDGER_BACKOFF * (2 ** n))
+
+
+def _attest_error(item_key: str, exc: BaseException, *, scans_passed: bool) -> str:
+    """What a bounce should read when the write failed and the scanners did not."""
+    what = "timed out" if isinstance(exc, TimeoutError) else "hit a connection reset"
+    clean = "scans were clean; " if scans_passed else ""
+    return (f"{item_key}: {clean}the attestation write to the box {what} after "
+            f"{attest_ci.LEDGER_ATTEMPTS} attempts ({type(exc).__name__}: {exc}). "
+            f"This is not a scan finding.")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--base", default="", help="pull_request.base.sha")
@@ -489,7 +535,9 @@ def main(argv: list[str] | None = None) -> int:
         for row in _scan_rows(verdict, args.head):
             try:
                 attest_ci.call_tool(url, key, "record_scan", row)
-            except (urllib.error.URLError, RuntimeError, ValueError) as e:
+            except ATTEST_TRANSIENT + (urllib.error.URLError, RuntimeError, ValueError) as e:
+                # A failed row post changes nothing. The same read timeout that used to
+                # escape here killed the job before the attestation retry could run.
                 print(f"::warning title=scan row not recorded::{row['scanner_id']} "
                       f"{row['path']}: {e}")
         receipt = attest_ci.receipt(
@@ -507,10 +555,8 @@ def main(argv: list[str] | None = None) -> int:
         for item_key in keys:
             try:
                 # `head_commit` on every run, pass or fail: an older pass must stop covering
-                # a head that has since failed.
-                attest_ci.call_tool(url, key, "update_item",
-                                    {"id": item_key, "head_commit": args.head,
-                                     "evidence": [receipt]})
+                # a head that has since failed. A read timeout is retried; it is not a finding.
+                _write_attestation(url, key, item_key, args.head, receipt)
                 print(f"{item_key}: {PREDICATE} "
                       f"{'passed' if verdict.passed else 'failed'} at {args.head[:12]}")
                 wrote += 1
@@ -518,6 +564,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"::warning title=scans_clean not attested::{e}")
             except attest_ci.OutOfScope as e:
                 refused.append(str(e))
+            except ATTEST_TRANSIENT as e:
+                errors.append(_attest_error(item_key, e, scans_passed=verdict.passed))
             except (urllib.error.URLError, RuntimeError, ValueError) as e:
                 errors.append(f"{item_key}: {e}")
         for message in refused:

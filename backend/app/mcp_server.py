@@ -449,19 +449,17 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "decompose_prd",
         "description": (
-            "One task per un-covered PRD section, each carrying the PRD's framing prose so it "
-            "needs no other reading. `create=true` files them if approved (grill earns it). "
-            "Framing sections aren't tasks unless `include_prose=true`."
+            "One task per un-covered PRD section, with its own `## Acceptance` and code-graph "
+            "`touchpoints` (none of either: filed blocked). `create=true` files them if approved (grill). "
+            "Framing sections skipped unless `include_prose`."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "prd_id": {"type": "string"},
-                "create": {"type": "boolean", "description": "Create the proposed tasks (default false = dry-run)."},
-                "include_prose": {
-                    "type": "boolean",
-                    "description": "Also propose tasks for framing sections (default false).",
-                },
+                "create": {"type": "boolean"},
+                "include_prose": {"type": "boolean"},
+                "touchpoints": {"type": "object", "description": "{section: [paths]} override"},
             },
             "required": ["prd_id"],
         },
@@ -4021,6 +4019,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             db, prd,
             create=bool(args.get("create", False)),
             include_prose=bool(args.get("include_prose", False)),
+            touchpoints=args.get("touchpoints") or None,
         )
     if name == "create_prd":
         prd = prd_svc.create_prd(

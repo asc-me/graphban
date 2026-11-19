@@ -16,7 +16,8 @@ def test_parse_sections_and_bodies(client):
 def test_decompose_fills_gaps_and_links(client, auth):
     prd = client.post("/api/prds", json={
         "title": "Sync Spec",
-        "body": "# Sync Spec\n\n## Ingest\nread the feed\n\n## Transform\nnormalize\n",
+        "body": ("# Sync Spec\n\n## Ingest\nread the feed\n\n## Transform\nnormalize\n\n"
+                 "## Acceptance criteria\n### Ingest\n- feed is read\n### Transform\n- rows normalized\n"),
     }, headers=auth).json()
 
     # Dry run proposes one task per section; nothing created yet.
@@ -31,7 +32,9 @@ def test_decompose_fills_gaps_and_links(client, auth):
     assert len(made["created"]) == 2
     db = SessionLocal()
     it = db.get(items_svc.Item, made["created"][0])
-    assert it.prd_id == prd["id"] and it.prd_section == "Ingest" and it.status == "backlog"
+    assert it.prd_id == prd["id"] and it.prd_section == "Ingest"
+    # No code graph here, so no touchpoints could be proposed: filed blocked, not backlog.
+    assert it.status == "blocked" and "touchpoints" in it.blocker
     db.close()
 
     # Now those sections are covered — a second decompose finds no gaps.
@@ -154,3 +157,86 @@ def test_mcp_prd_coverage_names_empty_on_a_standard_template(client, auth):
     assert cov["shaped"] is True
     assert cov["empty_sections"]
     assert "Overview" in cov["empty_sections"]
+
+
+def test_decompose_carries_per_item_acceptance_past_framing_budget(client, auth):
+    from app.services.fleet import parse_acceptance
+    from tests.prd_approve import approve_id
+
+    big = "\n".join(f"- filler clause {i} " + "x" * 80 for i in range(120))
+    body = (
+        "# Spec\n\n## Context\nframing\n\n## Ingest\nread the feed\n\n"
+        "## Transform\nnormalize\n\n## Export\nwrite out\n\n"
+        f"## Acceptance criteria\n### Ingest\n- feed is read\n{big}\n"
+        "### Transform\n- rows normalized\n### General\n"
+        "- Orphan clause about nothing in particular\n"
+    )
+    prd = client.post("/api/prds", json={"title": "AC Spec", "body": body}, headers=auth).json()
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    by = {p["section"]: p for p in dry["proposals"]}
+    assert "Not carried" not in by["Ingest"]["description"]
+    ingest, _ = parse_acceptance(by["Ingest"]["description"])
+    assert ingest[0] == "feed is read" and "rows normalized" not in ingest
+    assert parse_acceptance(by["Transform"]["description"])[0] == ["rows normalized"]
+    assert dry["no_acceptance"] == ["Export"]
+    assert dry["unassigned_clauses"] == ["Orphan clause about nothing in particular"]
+    assert by["Export"]["blocked"] and "acceptance" in by["Export"]["blocker"]
+
+    approve_id(prd["id"])
+    made = client.post(f"/api/prds/{prd['id']}/decompose?create=true", headers=auth).json()
+    db = SessionLocal()
+    statuses = {db.get(items_svc.Item, i).prd_section: db.get(items_svc.Item, i).status
+                for i in made["created"]}
+    db.close()
+    assert statuses == {"Ingest": "blocked", "Transform": "blocked", "Export": "blocked"}  # no touchpoints
+
+
+def test_decompose_proposes_touchpoints_from_code_graph(client, auth):
+    from app.services import code_graph
+    from tests.prd_approve import approve_id
+
+    prd = client.post("/api/prds", json={
+        "title": "Widgets Spec",
+        "body": ("# Widgets Spec\n\n## Fix the parser\nchange backend/app/widgets.py to trim\n\n"
+                 "## Elsewhere\nsomething nobody has code for\n\n"
+                 "## Acceptance criteria\n### Fix the parser\n- trimmed\n### Elsewhere\n- done\n"),
+    }, headers=auth).json()
+    db = SessionLocal()
+    pid = db.get(prd_svc.Prd, prd["id"]).project_id
+    code_graph.describe_code(db, project_id=pid, nodes=[
+        {"path": "backend/app/widgets.py", "kind": "file", "summary": "widgets"}])
+    db.close()
+
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    by = {p["section"]: p for p in dry["proposals"]}
+    assert by["Fix the parser"]["touchpoints"] == ["backend/app/widgets.py"]
+    assert by["Fix the parser"]["touchpoint_evidence"][0]["evidence"]
+    assert by["Fix the parser"]["blocked"] is False
+    assert dry["no_touchpoints"] == ["Elsewhere"]
+    assert by["Elsewhere"]["blocked"] is True
+
+    approve_id(prd["id"])
+    made = client.post(f"/api/prds/{prd['id']}/decompose?create=true", headers=auth).json()
+    db = SessionLocal()
+    its = {i.prd_section: i for i in (db.get(items_svc.Item, x) for x in made["created"])}
+    assert its["Fix the parser"].touchpoints == ["backend/app/widgets.py"]
+    assert its["Fix the parser"].status == "backlog"
+    assert its["Elsewhere"].status == "blocked" and "touchpoints" in its["Elsewhere"].blocker
+    db.close()
+
+
+def test_decompose_touchpoint_override(client, auth):
+    from tests.prd_approve import approve_id
+
+    prd = client.post("/api/prds", json={
+        "title": "Ov Spec",
+        "body": "# Ov\n\n## Thing\nbuild it\n\n## Acceptance criteria\n### Thing\n- built\n",
+    }, headers=auth).json()
+    approve_id(prd["id"])
+    db = SessionLocal()
+    out = prd_svc.decompose(db, prd_svc.get_prd(db, prd["id"]), create=True,
+                            touchpoints={"Thing": ["a/b.py"]})
+    it = db.get(items_svc.Item, out["created"][0])
+    assert it.touchpoints == ["a/b.py"] and it.status == "backlog"
+    assert out["no_touchpoints"] == []
+    db.close()
