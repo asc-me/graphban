@@ -5,10 +5,13 @@ entitlement and never proxies for one: it only decides which claimant an item is
 
 **The rung order** (after tier and matrix score, which are decided elsewhere): `available`
 entitlements first, then the ladder rung (D6: subscription, api_key within budget, local, or
-the project policy's `ladder`), then the project's tie-break within a rung: soonest stated
-reset by default (use it before it is lost), or most headroom, or cheapest (GRPH-1505), then
-`unknown`. The tie-break is only the LAST key: it never overrides availability, a rung, or the
-custom hierarchy's subscription order. A kind the ladder omits is never routed to, and an api_key whose stated
+the project policy's `ladder`), then (custom hierarchy) the rung's own explicit order, then the
+rung's tie-break: soonest stated reset by default (use it before it is lost), or most headroom,
+or cheapest (GRPH-1505), then `unknown`. GRPH-1713: every rung — subscriptions, API keys, local
+models — takes its own order and tie-break (`rung_preference`; the subscription rung's order is
+`subscription_order`), read only among that rung's candidates. The ladder order is fixed: no
+preference lifts an API key above a subscription with headroom. The tie-break is only the LAST
+key: it never overrides availability, a rung, or the rung's order. A kind the ladder omits is never routed to, and an api_key whose stated
 `token_budget` is met by this period's reported spend is skipped.
 `exhausted`, `broken` and `unreachable` are skipped (D4). A reset nobody stated sorts after
 every stated one and is never invented (D5).
@@ -96,15 +99,21 @@ def reviewer_ineligible(db: Session, org_id: str) -> set[str]:
 
 def _subscription_order(db: Session, project_id: str | None) -> list[str] | None:
     """The subscription order in force: a list only under custom hierarchy, else None."""
-    if not project_id:
-        return None
-    if fleet_profiles.routing_mode_of(db, project_id) != "custom_hierarchy":
-        return None
-    policy = fleet_profiles.policy_of(db, project_id) or {}
-    order = policy.get("subscription_order")
-    if not isinstance(order, list) or not order:
-        return None
-    return [str(e) for e in order]
+    return fleet_profiles.rung_orders_of(db, project_id).get("subscription")
+
+
+def _rung_order(db: Session, project_id: str | None) -> dict[str, list[str]] | None:
+    """GRPH-1713: the api_key and local rungs' explicit orders in force (custom hierarchy)."""
+    orders = {r: o for r, o in fleet_profiles.rung_orders_of(db, project_id).items()
+              if r != "subscription"}
+    return orders or None
+
+
+def _rung_tie_break(db: Session, project_id: str | None) -> dict[str, str] | None:
+    """GRPH-1713: each rung's own tie-break where it differs from the project's `tie_break`."""
+    base = fleet_profiles.tie_break_of(db, project_id)
+    own = {r: t for r, t in fleet_profiles.rung_tie_breaks_of(db, project_id).items() if t != base}
+    return own or None
 
 
 #: Kinds whose marginal cost per token is zero: a subscription is prepaid and a local model
@@ -156,31 +165,36 @@ def tie_key(entry: dict, tie_break: str) -> tuple:
     return (reset is None, reset or _FAR)
 
 
-def _sub_key(entry_id: str, rung: str, sub_rank: dict[str, int]) -> int:
-    """Under custom hierarchy a subscription sorts by its policy position, an unranked one after
-    every ranked one; without it (`sub_rank` empty) every key is 0 and never decides."""
-    if not sub_rank or rung != "subscription":
-        return 0
-    return sub_rank.get(entry_id, len(sub_rank))
-
-
 def order(facts: list[dict], *, ladder: list[str], tie_break: str,
-          subscription_order: list[str] | None = None) -> list[dict]:
+          subscription_order: list[str] | None = None,
+          rung_order: dict[str, list[str]] | None = None,
+          rung_tie_break: dict[str, str] | None = None) -> list[dict]:
     """Rank entitlement facts, best first, with no database read: the ONE ordering both the
     live router (`rank`) and replay use. A fact on a rung the ladder omits, not usable, or an
     api_key whose budget is spent is dropped; the rest sort available before unknown, then the
-    ladder rung, then (custom hierarchy) the subscription order, then `tie_key`. The sort is
-    stable, so facts arrive in creation order and creation order decides what nothing else does."""
-    sub_rank = {eid: i for i, eid in enumerate(subscription_order or [])}
+    ladder rung, then that rung's explicit order (GRPH-1713: `subscription_order` on the
+    subscription rung, `rung_order[rung]` on the others; an unranked entitlement after every
+    ranked one), then `tie_key` under that rung's tie-break (`rung_tie_break[rung]`, else
+    `tie_break`). A rung's preference is read only among that rung's candidates: it never lifts
+    an entitlement past the ladder. The sort is stable, so facts arrive in creation order and
+    creation order decides what nothing else does."""
+    ranks = {r: {eid: i for i, eid in enumerate(o)} for r, o in (rung_order or {}).items()
+             if o and r != "subscription"}
+    if subscription_order:
+        ranks["subscription"] = {eid: i for i, eid in enumerate(subscription_order)}
+    ties = rung_tie_break or {}
     out = []
     for f in facts:
         if f["rung"] not in ladder or f["state"] not in USABLE or f.get("budget_spent"):
             continue
+        mine = ranks.get(f["rung"], {})
+        pref = mine.get(f["id"], len(mine)) if mine else 0
         out.append({**f, "rung_rank": ladder.index(f["rung"]),
-                    "subscription_rank": _sub_key(f["id"], f["rung"], sub_rank),
-                    "tie_break": tie_break})
+                    "preference_rank": pref,
+                    "subscription_rank": pref if f["rung"] == "subscription" else 0,
+                    "tie_break": ties.get(f["rung"]) or tie_break})
     out.sort(key=lambda e: (e["state"] != "available", e["rung_rank"],
-                            e["subscription_rank"], tie_key(e, tie_break)))
+                            e["preference_rank"], tie_key(e, e["tie_break"])))
     return out
 
 
@@ -219,10 +233,13 @@ def rank(db: Session, org_id: str, *, now: datetime | None = None,
     ladder = list(fleet_profiles.DEFAULT_LADDER if ladder is None else ladder)
     now = now or datetime.now(timezone.utc)
     tie_break = tie_break or fleet_profiles.tie_break_of(db, project_id)
-    facts = _facts(db, org_id, now=now, ladder=ladder, tie_breaks=(tie_break,),
+    rung_tie = _rung_tie_break(db, project_id)
+    facts = _facts(db, org_id, now=now, ladder=ladder,
+                   tie_breaks=(tie_break, *(rung_tie or {}).values()),
                    ruled_out=reviewer_ineligible(db, org_id))
     return order(facts, ladder=ladder, tie_break=tie_break,
-                 subscription_order=_subscription_order(db, project_id))
+                 subscription_order=_subscription_order(db, project_id),
+                 rung_order=_rung_order(db, project_id), rung_tie_break=rung_tie)
 
 
 #: (phrase for "decided by", what a value nobody stated reads as, what a better rival did).
@@ -249,8 +266,8 @@ def _metric(entry: dict, tie_break: str) -> str:
 
 
 def _why(entry: dict, ranked: list[dict]) -> str:
-    """Why this entry was chosen, naming the rule that actually decided: a higher rung, the
-    subscription policy order, or the project's tie-break (GRPH-1505)."""
+    """Why this entry was chosen, naming the rule that actually decided: a higher rung, that
+    rung's policy order (GRPH-1713), or the rung's tie-break (GRPH-1505)."""
     tie_break = entry.get("tie_break") or fleet_profiles.DEFAULT_TIE_BREAK
     by, unstated, better = _TIE_WORDS[tie_break]
     who = f"{entry['id']} ({entry['vendor']}, {entry['rung']} rung)"
@@ -264,12 +281,13 @@ def _why(entry: dict, ranked: list[dict]) -> str:
     # A higher rung decides before any tie-break does; say so rather than crediting the tie-break.
     lower = [e for e in rivals if e["rung_rank"] > entry["rung_rank"]]
     rivals = [e for e in rivals if e["rung_rank"] == entry["rung_rank"]]
-    # On the subscription rung under custom hierarchy, the policy order decides before the
-    # tie-break: a rival the order put below this one was not beaten by the tie-break.
-    mine_sub = entry.get("subscription_rank", 0)
-    policy = [e for e in rivals if e.get("subscription_rank", 0) > mine_sub]
-    above = [e for e in rivals if e.get("subscription_rank", 0) < mine_sub]
-    rivals = [e for e in rivals if e.get("subscription_rank", 0) == mine_sub]
+    # Under custom hierarchy the rung's own order decides before the tie-break (GRPH-1713: on
+    # every rung): a rival the order put below this one was not beaten by the tie-break.
+    mine_pref = entry.get("preference_rank", 0)
+    policy = [e for e in rivals if e.get("preference_rank", 0) > mine_pref]
+    above = [e for e in rivals if e.get("preference_rank", 0) < mine_pref]
+    rivals = [e for e in rivals if e.get("preference_rank", 0) == mine_pref]
+    order_name = f"{entry['rung'].replace('_', ' ')} policy order"
     mine_key = tie_key(entry, tie_break)
     mine_stated = not mine_key[0]
     beaten = [e for e in rivals if mine_stated and mine_key < tie_key(e, tie_break)]
@@ -279,8 +297,7 @@ def _why(entry: dict, ranked: list[dict]) -> str:
     if lower:
         parts.append(f"{entry['rung']} rung is above {', '.join(e['id'] for e in lower)}")
     if policy:
-        parts.append(f"chosen over {', '.join(e['id'] for e in policy)} by subscription "
-                     "policy order")
+        parts.append(f"chosen over {', '.join(e['id'] for e in policy)} by {order_name}")
     if beaten:
         parts.append(f"chosen over {', '.join(e['id'] for e in beaten)} by {by}")
     if tied:
@@ -290,8 +307,8 @@ def _why(entry: dict, ranked: list[dict]) -> str:
         parts.append(f"{', '.join(e['id'] for e in ahead)} {better} but were not "
                      "usable for this claim")
     if above:
-        parts.append(f"{', '.join(e['id'] for e in above)} rank higher in subscription "
-                     "policy order but were not usable for this claim")
+        parts.append(f"{', '.join(e['id'] for e in above)} rank higher in {order_name} "
+                     "but were not usable for this claim")
     return f"{head}; {'; '.join(parts)}"
 
 
@@ -431,18 +448,27 @@ def snapshot(db: Session, org_id: str, project_id: str | None, ladder: list[str]
     now = now or datetime.now(timezone.utc)
     tie_break = fleet_profiles.tie_break_of(db, project_id)
     sub_order = _subscription_order(db, project_id)
+    rung_ord = _rung_order(db, project_id)
+    rung_tie = _rung_tie_break(db, project_id)
     facts = _facts(db, org_id, now=now, ladder=None, tie_breaks=_TIE_BREAKS_ALL,
                    ruled_out=reviewer_ineligible(db, org_id))
     held = _held(db, org_id)
     ranked_ids = [e["id"] for e in order(facts, ladder=ladder, tie_break=tie_break,
-                                         subscription_order=sub_order)]
+                                         subscription_order=sub_order, rung_order=rung_ord,
+                                         rung_tie_break=rung_tie)]
     pos = {eid: i for i, eid in enumerate(ranked_ids)}
+    policy = {"ladder": list(ladder), "tie_break": tie_break,
+              "when_exhausted": fleet_profiles.when_exhausted_of(db, project_id),
+              "subscription_order": sub_order}
+    # GRPH-1713: written only when set, so a snapshot without them reads as no rung preference.
+    if rung_ord:
+        policy["rung_order"] = rung_ord
+    if rung_tie:
+        policy["rung_tie_break"] = rung_tie
     return {
         "v": SNAPSHOT_VERSION,
         "at": now.isoformat(),
-        "policy": {"ladder": list(ladder), "tie_break": tie_break,
-                   "when_exhausted": fleet_profiles.when_exhausted_of(db, project_id),
-                   "subscription_order": sub_order},
+        "policy": policy,
         "declared": list(declared),
         "entitlements": [{**f, "next_reset_at": (f["next_reset_at"].isoformat()
                                                  if f["next_reset_at"] else None),
@@ -476,7 +502,9 @@ def choose(snap: dict, policy: dict) -> tuple[str, str | None]:
     ladder = list(policy["ladder"])
     facts = _stored_facts(snap)
     ranked = order(facts, ladder=ladder, tie_break=policy["tie_break"],
-                   subscription_order=policy.get("subscription_order"))
+                   subscription_order=policy.get("subscription_order"),
+                   rung_order=policy.get("rung_order"),
+                   rung_tie_break=policy.get("rung_tie_break"))
     declared = set(snap.get("declared") or [])
     hold = policy["when_exhausted"] == "hold_until_reset"
     candidates = ranked
@@ -502,9 +530,12 @@ def choose(snap: dict, policy: dict) -> tuple[str, str | None]:
 
 def replay_proposal(*, tie_break: str | None = None, when_exhausted: str | None = None,
                     ladder: list[str] | None = None, routing_mode: str | None = None,
-                    subscription_order: list[str] | None = None) -> dict:
+                    subscription_order: list[str] | None = None,
+                    rung_order: dict[str, list[str]] | None = None,
+                    rung_tie_break: dict[str, str] | None = None) -> dict:
     """Validate a draft policy for `replay` with the same rules the policy write applies.
-    Raises `fleet_profiles.ProfileInvalid` naming the bad value."""
+    Raises `fleet_profiles.ProfileInvalid` naming the bad value. `rung_order` (api_key and
+    local orders) applies, like `subscription_order`, only with a `routing_mode`."""
     invalid = fleet_profiles.ProfileInvalid
     if tie_break is not None and tie_break not in fleet_profiles.TIE_BREAKS:
         raise invalid(f"tie_break must be one of {list(fleet_profiles.TIE_BREAKS)}")
@@ -512,9 +543,22 @@ def replay_proposal(*, tie_break: str | None = None, when_exhausted: str | None 
         raise invalid(f"when_exhausted must be one of {list(fleet_profiles.WHEN_EXHAUSTED)}")
     if routing_mode is not None and routing_mode not in fleet_profiles.ROUTING_MODES:
         raise invalid(f"routing_mode must be one of {list(fleet_profiles.ROUTING_MODES)}")
+    for rung, tie in (rung_tie_break or {}).items():
+        if rung not in fleet_profiles.LADDER_RUNGS:
+            raise invalid(f"unknown rung {rung!r}; rungs are {list(fleet_profiles.LADDER_RUNGS)}")
+        if tie not in fleet_profiles.TIE_BREAKS:
+            raise invalid(f"{rung} tie_break must be one of {list(fleet_profiles.TIE_BREAKS)}")
+    orders = {}
+    for rung, ids in (rung_order or {}).items():
+        if rung not in fleet_profiles.ORDERABLE_RUNGS:
+            raise invalid(f"rung order may name {list(fleet_profiles.ORDERABLE_RUNGS)}, not "
+                          f"{rung!r}; the subscription rung's is subscription_order")
+        if ids:
+            orders[rung] = fleet_profiles._names(ids, f"{rung}_order")
     return {"tie_break": tie_break, "when_exhausted": when_exhausted,
             "ladder": fleet_profiles._ladder(ladder) if ladder is not None else None,
-            "routing_mode": routing_mode, "subscription_order": subscription_order or None}
+            "routing_mode": routing_mode, "subscription_order": subscription_order or None,
+            "rung_order": orders or None, "rung_tie_break": dict(rung_tie_break or {}) or None}
 
 
 REPLAY_DAYS = 7
@@ -526,7 +570,7 @@ def replay(db: Session, project_id: str, proposal: dict | None = None, *,
     """Re-rank every routing decision on this project's items in the trailing `days` under a
     proposed policy, from the candidates each one stored. `proposal` keys (all optional; an
     absent one keeps what that decision recorded): `ladder`, `tie_break`, `when_exhausted`,
-    `routing_mode` + `subscription_order`.
+    `routing_mode` + `subscription_order` + `rung_order`, and `rung_tie_break` (GRPH-1713).
 
     A decision MOVED when the proposal's outcome (verdict, entitlement) differs from its own
     recorded policy's outcome on the same candidates — so replaying the policy in force moves
@@ -555,9 +599,14 @@ def replay(db: Session, project_id: str, proposal: dict | None = None, *,
             if proposal.get(k) is not None:
                 proposed[k] = proposal[k]
         if proposal.get("routing_mode") is not None:
+            custom = proposal["routing_mode"] == "custom_hierarchy"
             proposed["subscription_order"] = (proposal.get("subscription_order") or None
-                                              if proposal["routing_mode"] == "custom_hierarchy"
-                                              else None)
+                                              if custom else None)
+            proposed["rung_order"] = (proposal.get("rung_order") or None) if custom else None
+        if proposal.get("rung_tie_break") is not None:
+            # A rung's own tie-break replaces the recorded one for that rung only.
+            proposed["rung_tie_break"] = {**(recorded.get("rung_tie_break") or {}),
+                                          **proposal["rung_tie_break"]}
         before, after = choose(snap, recorded), choose(snap, proposed)
         if before == after:
             continue

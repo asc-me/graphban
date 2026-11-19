@@ -348,6 +348,8 @@ class PolicyIn(BaseModel):
     ladder: list[str] | None = None
     routing_mode: str = "next_available"
     subscription_order: list[str] | None = None
+    #: GRPH-1713: `{rung: {"order": [...], "tie_break": ...}}` — a preference within each rung.
+    rung_preference: dict | None = None
     tie_break: str | None = None
     when_exhausted: str | None = None
 
