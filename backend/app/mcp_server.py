@@ -450,7 +450,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "decompose_prd",
         "description": (
             "One task per un-covered PRD section, with its own `## Acceptance` and code-graph "
-            "`touchpoints` (none of either: filed blocked). `create=true` files them if approved. "
+            "`touchpoints` (none of either: filed blocked). `create=true` files them if approved (grill). "
             "Framing sections skipped unless `include_prose`."
         ),
         "inputSchema": {
