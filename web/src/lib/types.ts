@@ -3459,6 +3459,8 @@ export interface RuleToggle {
   params: RuleToggleValue<Record<string, RuleParamValue>>;
   /** Per field, what a Reset would inherit (GRPH-1631). */
   inherits?: { on: RuleToggleInherits; params: RuleToggleInherits };
+  /** Per field, the VALUE a Reset would land on: the org row's, else the library default (GRPH-1727). */
+  inherited?: { on: boolean; params: Record<string, RuleParamValue> };
   locked: boolean;
   /** The org id holding the lock; null when unlocked. */
   locked_by: string | null;

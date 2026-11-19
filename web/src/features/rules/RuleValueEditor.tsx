@@ -356,6 +356,11 @@ function GeneratedFiles(props: EditorProps & { value: string[] }) {
           </label>
         ))}
       </div>
+      {mode === "add" && (
+        <p className={cn(MONO, "break-all text-small text-muted-2")} data-testid="rules-generated-defaults">
+          Built in: {defaults.join(", ")}
+        </p>
+      )}
       <ListRows {...props} value={extras} onChange={(l) => emit(mode, l as string[])} counted />
     </div>
   );
