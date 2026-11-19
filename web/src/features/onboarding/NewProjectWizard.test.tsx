@@ -302,6 +302,38 @@ describe("New project wizard", () => {
       expect(checked()).toHaveFocus();
     });
 
+    it("draws the selected accent with a box-shadow ring and leaves outline to focus-visible (GRPH-1745)", async () => {
+      const user = userEvent.setup();
+      renderWizard();
+      const selected = screen.getByRole("radio", { name: "accent #c6f24e" });
+      const other = screen.getByRole("radio", { name: "accent #a78bfa" });
+      // An inline outline beats the global :focus-visible rule. Neither swatch may set one.
+      expect(selected.style.outline).toBe("");
+      expect(other.style.outline).toBe("");
+      expect(selected).toHaveStyle({
+        boxShadow: "0 0 0 2px var(--color-surface-3), 0 0 0 4px var(--color-fg)",
+        outlineOffset: "5px",
+      });
+      expect(other.style.boxShadow).toBe("");
+      expect(other).toHaveStyle({ outlineOffset: "5px" });
+      // The focus ring starts outside the 4px selection ring, so the two do not overlap.
+      const offset = Number.parseFloat(selected.style.outlineOffset);
+      expect(offset).toBeGreaterThan(4);
+
+      selected.focus();
+      expect(selected).toHaveFocus();
+      expect(selected.style.outline).toBe("");
+      await user.click(other);
+      expect(other).toHaveAttribute("aria-checked", "true");
+      expect(other.style.outline).toBe("");
+      expect(other).toHaveStyle({
+        boxShadow: "0 0 0 2px var(--color-surface-3), 0 0 0 4px var(--color-fg)",
+        outlineOffset: "5px",
+      });
+      expect(selected.style.outline).toBe("");
+      expect(selected.style.boxShadow).toBe("");
+    });
+
     it("moves the Accent selection with ← and →, wrapping at both ends, and focus follows", async () => {
       const user = userEvent.setup();
       renderWizard();
