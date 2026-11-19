@@ -130,3 +130,25 @@ registers a credential. `revoke(token)` is the console-side unlink.
 `enqueue_proposal` queues a proposal. `timeout_once`, `fail_once`,
 `status_once`, and `retry_after_once` inject the failure the next call sees.
 `max_entity_bytes` defaults to 1 MiB.
+
+## Box apply (GRPH-1737)
+
+`project_sync_proposals` pulls `GET /api/sync/proposals` for each project at
+`sync_level=sync` that has a cloud id. The normal interval is 60s. While that
+project has an open `wait:decision`, it is 10s, measured from the last poll.
+`after_push(local_project_id)` marks the project due on the next pass, which
+is how a push is followed immediately. The leader loop ticks every
+`proposal_poll_seconds` (`0` disables it). The tick is not the interval.
+
+Each proposal goes through the service layer. `cloud_permission` is enforced
+on the box: `read_only` refuses every proposal, `comments` allows only
+comment and answer, `proposals` allows all four. In every permission the box
+also refuses, naming the rule: status `done`, `sign_off`, an attestation
+waiver, closing a PRD, and rules changes. An edit whose `base_version` is not
+the entity's current version is `conflict` and changes nothing.
+
+The proposal id is stored in the same transaction as the apply. A re-delivery
+reports the stored outcome and does not apply again. Outcomes go to
+`POST /api/sync/proposals/outcomes`. A failed post stays queued (`reported`
+false) and is retried; the apply is not repeated. The actor on the item
+history is `cloud:<proposer.label>`, and the history records the proposal id.

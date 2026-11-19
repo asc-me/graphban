@@ -2399,6 +2399,20 @@ class SyncProject(Base):
     #: these columns are the audit, not a grant. Null on a row that was never opted in.
     enabled_by: Mapped[str | None] = mapped_column(String, nullable=True)
     enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: Exclusive cursor for `GET /api/sync/proposals`. Empty until the first page.
+    #: A 304 does not clear it: the console sends no cursor on an idle poll.
+    proposal_cursor: Mapped[str] = mapped_column(
+        String, default="", server_default="", nullable=False)
+    #: `ETag` from the last proposal page. Sent back as `If-None-Match`.
+    proposal_etag: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: When this box last attempted a proposal pull. The next poll is this plus
+    #: the interval `poll_interval` computes (60s, or 10s while a decision is open).
+    proposal_polled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    #: Set by `after_push` so the next pass pulls immediately. Cleared when a
+    #: pull is attempted, including one the console did not answer.
+    proposal_pull_now: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False)
     last_push_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_push_result: Mapped[str | None] = mapped_column(String, nullable=True)
     last_push_reason: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -2450,6 +2464,30 @@ class SyncManifest(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SyncProposal(Base):
+    """One cloud proposal this box has already decided (GRPH-1737, P89 D10).
+
+    The id is the console's proposal id. The row is written in the same
+    transaction as the apply, so a re-delivery finds it and does not apply
+    again. `reported` stays false until `POST /api/sync/proposals/outcomes`
+    accepts this status. A failed report is retried from this row; the apply
+    is not.
+    """
+
+    __tablename__ = "sync_proposal"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    # version_of() is a 63-bit hash: int4 overflows on Postgres.
+    current_version: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reported: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=True)
 
 
 class SyncLink(Base):
