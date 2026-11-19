@@ -15,6 +15,8 @@ A wait comes in two shapes, and answering a decision treats them differently (GR
   records the answer, removes `wait:decision`, clears the blocker and returns it to `next`
   (`in_progress` while its lease is live). It never reaches `done`: an answer is not proof the
   work was built, and `done` without an attestation is the "absence reads as clean" class.
+  Its holder is also its asker, so that holder is named in `notify` directly — and because the
+  item never reaches `done`, `pending_answers` reads the stored answer rather than the status.
 
 `carries_own_work` is the one rule that tells them apart.
 
@@ -504,6 +506,14 @@ def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: s
         if dep.claimed_by and _lease_live(dep) and dep.claimed_by not in notify:
             notify.append(dep.claimed_by)
 
+    # An item that asks its own question has no dependent standing in for its asker — the
+    # holder IS the asker, and answering leaves it `in_progress` on that same live lease
+    # rather than `done` (GRPH-1717). Without this the agent that asked hears nothing until
+    # its lease lapses, which is the wait it was told would end.
+    own_work = carries_own_work(db, wait)
+    if own_work and wait.claimed_by and _lease_live(wait) and wait.claimed_by not in notify:
+        notify.append(wait.claimed_by)
+
     user = getattr(actor, "handle", "") or getattr(actor, "name", "") or ""
     if agent:
         answer = {"choice": choice, "text": text, "by": {"agent": agent, "user": user},
@@ -516,7 +526,7 @@ def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: s
     # attestation and releases its dependents (`release_waiters`).
     from app.services import items as items_svc
 
-    if carries_own_work(db, wait):
+    if own_work:
         wait.tags = [t for t in (wait.tags or []) if str(t).lower() != "wait:decision"]
         wait.blocker = ""
         if wait.status == "blocked":
@@ -546,13 +556,24 @@ def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: s
 
 
 def pending_answers(db: Session, agent_id: str) -> list[Item]:
-    """Answered decision waits that still owe this agent a directive."""
+    """Answered decisions that still owe this agent a directive, newest answer first.
+
+    Not the `done` ones: an item that asked its own question is answered IN PLACE and stays
+    `in_progress` on its holder's live lease (GRPH-1717), so a `done` filter dropped exactly
+    the agent that asked. What marks an answer owed is the stored `answer` plus a `notify`
+    naming this agent, not the status the item landed on.
+
+    Ordered by `updated_at`, which every row carries. `done_at` is NULL on the self-decision
+    shape, and a NULL sorts first under DESC on Postgres but last on SQLite — ordering by it
+    would pick a different winner per engine once more than `limit` answers were owed.
+    """
     from sqlalchemy import select
 
-    rows = db.scalars(select(Item).where(Item.decision.is_not(None), Item.status == "done")
-                      .order_by(Item.done_at.desc()).limit(100)).all()
+    rows = db.scalars(select(Item).where(Item.decision.is_not(None))
+                      .order_by(Item.updated_at.desc()).limit(100)).all()
     return [w for w in rows
-            if agent_id in (w.decision.get("notify") or [])
+            if (w.decision or {}).get("answer")
+            and agent_id in (w.decision.get("notify") or [])
             and agent_id not in (w.decision.get("notified") or [])]
 
 
@@ -564,12 +585,18 @@ def answer_directive(db: Session, agent_id: str) -> dict | None:
     wait = waits[0]
     wait.decision = {**wait.decision, "notified": [*(wait.decision.get("notified") or []), agent_id]}
     db.commit()
+    # An item that asked its own question is still this agent's, still `in_progress` on the
+    # lease it held when it asked (GRPH-1717). Telling that holder to claim it again sends it
+    # after work it already owns.
+    still_held = wait.status == "in_progress" and wait.claimed_by == agent_id
+    next_step = ("it never left you: continue building it with this answer" if still_held else
+                 "the blocked item is back in `next`: claim it again and continue with this answer")
     return {
         "type": "decision_answered",
         "wait": wait.key,
         "question": wait.decision.get("question", ""),
         "answer": wait.decision["answer"],
-        "next": "the blocked item is back in `next`: claim it again and continue with this answer",
+        "next": next_step,
     }
 
 
