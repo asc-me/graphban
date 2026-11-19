@@ -181,7 +181,8 @@ function updateRuleCount(u: RuleProfileUpdate): number | null {
 
 // ── The bar above the map ───────────────────────────────────────────────────────────────────
 
-export function QuickConfigureBar({ onOpen }: { onOpen: (s: QuickScreen) => void }) {
+/** `compact`: the dock is open, so the bar is one line that never wraps (GRPH-1725). */
+export function QuickConfigureBar({ onOpen, compact = false }: { onOpen: (s: QuickScreen) => void; compact?: boolean }) {
   const { activeId } = useProjectCtx();
   const profiles = useRuleProfiles(activeId);
   const applied = profiles.data?.applied ?? null;
@@ -192,7 +193,11 @@ export function QuickConfigureBar({ onOpen }: { onOpen: (s: QuickScreen) => void
   const offer = updates.data?.updates.find((u) => u.profile === applied?.profile) ?? updates.data?.updates[0];
   const drifted = drift.data?.state === "drifted" ? drift.data.differs_in : null;
   return (
-    <div className="mx-5 mt-3 flex flex-wrap items-center gap-2" data-testid="rules-quick-bar">
+    <div
+      className={cn("mx-5 flex items-center gap-2", compact ? "mt-1 flex-none flex-nowrap overflow-hidden whitespace-nowrap" : "mt-3 flex-wrap")}
+      data-testid="rules-quick-bar"
+      data-collapsed={compact ? "true" : undefined}
+    >
       <span className={cn(MONO, "text-meta font-semibold text-accent")}>QUICK CONFIGURE</span>
       {applied?.profile ? (
         <button

@@ -139,11 +139,19 @@ export function Preferences({ projectId, scope, profile, policy, onSaved }: {
         }
         caps.period = period;
       }
-      const out = await api.saveFleetPolicy({
+      // PUT /api/fleet/policy is a FULL replace: a key left out is cleared. So the policy this
+      // form does not show — routing mode, subscription order, tie-break, hold-until-reset,
+      // ladder, cluster ceiling — goes back as it was read. Building the body from these boxes
+      // alone reset every one of them to its default (GRPH-1716).
+      const body: { project_id: string } & FleetPolicy = {
+        ...(policy ?? {}),
         project_id: projectId, local_only: localOnly, reviewer_cross_vendor: crossVendor,
         allowed_harnesses: names(allowed),
-        ...(Object.keys(caps).length ? { caps } : {}),
-      });
+      };
+      // Caps are this form's alone: sending back a stored cap the boxes no longer show would
+      // make clearing one impossible.
+      if (Object.keys(caps).length) body.caps = caps; else delete body.caps;
+      const out = await api.saveFleetPolicy(body);
       setNote(out.policy ? `Policy saved for ${scope}.` : `Policy cleared for ${scope}: no constraint.`);
       onSaved();
     } catch (e) {

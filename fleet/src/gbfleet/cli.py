@@ -87,7 +87,7 @@ _MERGE_HELP = (
     "finish the merge for items whose fleet.sign_off attestation names a commit — the "
     "reviewer's sign-off is the handoff, not the moment this process watched the item "
     "leave review. Only when the PR head is the reviewed commit, CI attested suite_green "
-    "on it, and the forge reports it MERGEABLE/CLEAN. Scoped to --prd when given; hold "
+    "on it, and the forge reports it MERGEABLE/CLEAN. Scoped to --prd or --line when given; hold "
     "deps bypass the scope. Default off (GRPH-846, GRPH-880)")
 
 

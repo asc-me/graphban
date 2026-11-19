@@ -67,8 +67,9 @@ beforeEach(() => {
 describe("test-scope rule", () => {
   it("the rule's row reads as the stored mode's label", async () => {
     const ins = await open("agent_targeted");
-    const row = within(ins).getByTestId(`rules-row-${RULE}`);
-    expect(within(row).getByTestId("rules-value")).toHaveTextContent("mode: The agent runs partial CI, only what changed");
+    expect(within(ins).getByTestId(`rules-row-${RULE}`)).toBeInTheDocument();
+    // The stored mode is the checked card in the params table: the value is shown once (GRPH-1725).
+    expect(within(ins).getByRole("radio", { name: "The agent runs partial CI, only what changed" })).toBeChecked();
   });
 
   it("choosing a mode in the stage editor lists the three modes and stages the change", async () => {
