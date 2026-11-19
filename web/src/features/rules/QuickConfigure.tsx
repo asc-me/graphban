@@ -391,6 +391,7 @@ export function QuickConfigure({
             onSelect={choose}
             onSetup={onSetup}
             onReview={() => setReviewing(true)}
+            onKeep={isUpdate ? undefined : (id) => setDropped((d) => new Set([...d, id]))}
             isUpdate={isUpdate}
           />
         ) : (
@@ -521,6 +522,7 @@ function Compare({
   onSelect,
   onSetup,
   onReview,
+  onKeep,
   isUpdate,
 }: {
   profiles: RuleProfile[];
@@ -535,6 +537,7 @@ function Compare({
   onSelect: (id: string) => void;
   onSetup: () => void;
   onReview: () => void;
+  onKeep?: (id: string) => void;
   isUpdate: boolean;
 }) {
   const pinned = new Map<string, Map<string, RuleProfilePin>>();
@@ -562,6 +565,19 @@ function Compare({
     const rule = rules.get(id);
     const pin = pinned.get(id)!.get(selected.id);
     const out: React.ReactNode[] = [];
+    if (onKeep && changing.has(id)) {
+      out.push(
+        <button
+          key="keep"
+          type="button"
+          onClick={() => onKeep(id)}
+          data-testid={`rules-quick-keep-${id}`}
+          className="h-6 rounded-[6px] border border-control px-2 text-small text-fg-2 hover:text-fg"
+        >
+          Keep current (exception)
+        </button>,
+      );
+    }
     const drift = driftRows.get(id);
     if (drift) {
       out.push(
@@ -612,6 +628,7 @@ function Compare({
       <p className="text-body text-fg-2" data-testid="rules-quick-summary">
         {plan.changes.length} rule{plan.changes.length === 1 ? "" : "s"} would change
         {plan.locked.length > 0 && `, ${plan.locked.length} skipped (org-locked)`}. Outlined cells are the ones that would change.
+        {!isUpdate && " To leave a rule out, press Keep current on its row; it keeps its current value and is recorded as an exception."}
       </p>
       {plan.unenforceable.length > 0 && (
         <p role="alert" className="text-body text-st-blocked" data-testid="rules-quick-unenforceable">
