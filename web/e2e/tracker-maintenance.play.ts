@@ -10,8 +10,8 @@ const HARNESS = "http://127.0.0.1:5198/e2e/tracker-maintenance/";
 async function openFiltered(page: Page, line: "none" | "empty" | "populated", layout: "list" | "board" = "list") {
   await page.setViewportSize({ width: 1400, height: 760 });
   await page.goto(`${HARNESS}?line=${line}&layout=${layout}`);
-  await expect(page.getByTestId("unscoped-count")).toContainText("2");
-  await page.getByRole("button", { name: /^Maintenance\s*\d+$/ }).click();
+  await expect(page.getByTestId("unscoped-count")).toHaveText("2 unscoped");
+  await page.getByRole("button", { name: /^Maintenance filter/ }).click();
 }
 
 // The chips fade with `transition-colors`: finish it, and move the pointer off the chip, so the shot shows the settled state.
@@ -39,7 +39,7 @@ test("maintenance: populated — line items only, with FIX/SECURITY/needs/blocks
   await expect(page.getByText("Session token not rotated on password reset")).toBeVisible();
   await expect(page.getByText("Invoice PDF export")).toHaveCount(0);
   await expect(page.getByTestId("badge-security")).toHaveCount(1);
-  await expect(page.getByTestId("badge-needs")).toHaveText("needs acceptance · needs a file");
+  await expect(page.getByTestId("line-needs")).toHaveText("needs acceptance · needs a file");
   await expect(page.getByTestId("badge-blocks")).toHaveText("blocks CP-41");
   await shot(page, "3-populated-list");
 });
@@ -47,7 +47,7 @@ test("maintenance: populated — line items only, with FIX/SECURITY/needs/blocks
 test("maintenance: populated board", async ({ page }) => {
   await openFiltered(page, "populated", "board");
   await expect(page.getByTestId("badge-security")).toHaveCount(1);
-  await expect(page.getByTestId("badge-needs")).toHaveText("needs acceptance · needs a file");
+  await expect(page.getByTestId("line-needs")).toHaveText("needs acceptance · needs a file");
   await shot(page, "4-populated-board");
 });
 
@@ -56,4 +56,14 @@ test("blocked by a fix: the PRD item reads BLOCKED by the fix's key", async ({ p
   await page.goto(`${HARNESS}?line=populated&layout=list`);
   await expect(page.getByTestId("badge-blocked-by")).toHaveText("BLOCKED by CP-52");
   await shot(page, "5-blocked-by-fix");
+});
+
+test("unscoped: a small list, one action per row (GRPH-1744)", async ({ page }) => {
+  await openFiltered(page, "populated");
+  await page.getByTestId("unscoped-count").click();
+  const pop = page.getByRole("dialog", { name: "Unscoped fixes" });
+  await expect(pop).toBeVisible();
+  await expect(pop.getByText("Fixes with no PRD and no line. They are not in the Maintenance filter.")).toBeVisible();
+  await expect(pop.getByRole("button", { name: "Put on the maintenance line" })).toHaveCount(2);
+  await shot(page, "6-unscoped-popover");
 });

@@ -3,7 +3,7 @@ import * as React from "react";
 
 import { Avatar } from "@/components/ui/avatar";
 import { cn } from "@/lib/cn";
-import { LineBadges, type LineInfo } from "./LineBadges";
+import { LineBadges, NeedsLine, type LineInfo } from "./LineBadges";
 import { QuestionStateBadge } from "./QuestionStateBadge";
 import { BOARD_COLUMNS, CHECK_COLOR, PR_STATE_COLOR, STATUS_META } from "@/lib/meta";
 import type { Item, Status } from "@/lib/types";
@@ -26,8 +26,11 @@ export function TrackerBoard({
   hideDays = 0,
   onShowHidden,
   lineInfoOf,
+  emptyText = "Drop here",
 }: {
   lineInfoOf?: (item: Item) => LineInfo;
+  /** An empty column's text; the Maintenance filter says "None on the line here". */
+  emptyText?: string;
   items: Item[];
   selectedId: string | null;
   onSelect: (id: string) => void;
@@ -139,7 +142,7 @@ export function TrackerBoard({
             ))}
             {cards.length === 0 && (
               <div className="flex min-h-[72px] flex-1 items-center justify-center rounded-[10px] border border-dashed border-line-2 font-mono text-[10.5px] text-faint-2">
-                Drop here
+                {emptyText}
               </div>
             )}
             {status === "done" && doneHidden > 0 && onShowHidden && (
@@ -190,7 +193,7 @@ function BoardCard({
         dragging && "opacity-40",
       )}
     >
-      {/* Wraps: a line item's badges ("needs acceptance · needs a file") outrun a card's width. */}
+      {/* Wraps: a card's chips (FIX, SECURITY, blocked-by) can outrun its width. */}
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="flex-none whitespace-nowrap font-mono text-[10.5px] text-faint">{item.id}</span>
         {item.fidelity === "high" && (
@@ -219,6 +222,7 @@ function BoardCard({
         )}
       </div>
       <div className="text-[13px] leading-[1.4] text-fg-2 [text-wrap:pretty]">{item.title}</div>
+      <NeedsLine needs={lineInfo?.needs} />
       <div className="flex flex-wrap items-center gap-[5px]">
         {item.tags.slice(0, 3).map((t) => (
           <span key={t} className="rounded-[5px] border border-line-2 px-1.5 py-px font-mono text-[10px] text-muted">

@@ -793,6 +793,8 @@ export interface Item {
   line_id?: string | null;
   /** GRPH-1683: `""` = not recorded, `security` = a security fix. */
   severity?: Severity;
+  /** GRPH-1695: a fix's provenance. Sent on fixes only; null = "not recorded". */
+  found_during?: string | null;
   /** Where this item's work lands (GRPH-832). `deploy` is refused to every spawned agent. */
   reach: Reach;
   created_at: string;
