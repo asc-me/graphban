@@ -108,11 +108,14 @@ export function RulesView() {
   const onDirty = React.useCallback((d: boolean) => {
     dirtyRef.current = d;
   }, []);
-  const [pendingSel, setPendingSel] = React.useState<{ to: string | null } | null>(null);
+  const [pendingSel, setPendingSel] = React.useState<{ to: string | null; after?: () => void } | null>(null);
   const selectStage = React.useCallback(
-    (to: string | null) => {
-      if (to !== sel && dirtyRef.current) setPendingSel({ to });
-      else setSel(to);
+    (to: string | null, after?: () => void) => {
+      if (to !== sel && dirtyRef.current) setPendingSel({ to, after });
+      else {
+        setSel(to);
+        after?.();
+      }
     },
     [sel],
   );
@@ -147,21 +150,21 @@ export function RulesView() {
   const focusedRule = flow && focusRule ? flow.stages.flatMap((s) => s.rules).find((r) => r.id === focusRule) ?? null : null;
   const focusedStage = focusedRule?.stage ?? null;
   React.useEffect(() => {
-    if (focusedStage) setSel(stageKey(focusedStage));
-  }, [focusedStage]);
+    if (focusedStage) selectStage(stageKey(focusedStage));
+  }, [focusedStage, selectStage]);
 
   function openValueSuggestion(s: RuleSuggestion) {
     if (s.rule_id && s.value !== null) setPrefill({ rule: s.rule_id, value: s.value });
     setFocusRule(s.rule_id);
-    if (!s.rule_id) setSel(stageKey(s.stage));
-    setSheet(null);
+    if (!s.rule_id) selectStage(stageKey(s.stage), () => setSheet(null));
+    else setSheet(null);
   }
 
   // A ?stage= that names no stage on this payload selects nothing, rather than an empty inspector.
   React.useEffect(() => {
     if (!flow || !sel || sel === PACK_KEY) return;
-    if (!flow.stages.some((s) => stageKey(s.id) === sel)) setSel(null);
-  }, [flow, sel]);
+    if (!flow.stages.some((s) => stageKey(s.id) === sel)) selectStage(null);
+  }, [flow, sel, selectStage]);
 
   // A null model is also what linked_unset and linked_unreachable look like; only a local
   // project with no model is new.
@@ -173,7 +176,7 @@ export function RulesView() {
   const setWizardDirty = React.useCallback((d: boolean) => { wizardDirty.current = d; }, []);
   const openQuick = (s: QuickScreen) => {
     if (wizard && wizardDirty.current && !window.confirm("Leave setup? Your answers are not saved and will be discarded.")) return;
-    setSel(null); setWizard(false); setQuick(s);
+    selectStage(null, () => { setWizard(false); setQuick(s); });
   };
 
   return (
@@ -188,7 +191,7 @@ export function RulesView() {
               ref={unmappedBtn}
               aria-haspopup="dialog"
               aria-expanded={sheet === "unmapped"}
-              onClick={() => { setPulse(false); setSel(null); setSheet("unmapped"); }}
+              onClick={() => selectStage(null, () => { setPulse(false); setSheet("unmapped"); })}
               onAnimationEnd={() => setPulse(false)}
               data-testid="rules-open-unmapped"
               data-pulse={pulse ? "true" : "false"}
@@ -204,7 +207,7 @@ export function RulesView() {
               ref={recommendedBtn}
               aria-haspopup="dialog"
               aria-expanded={sheet === "recommended"}
-              onClick={() => { setSel(null); setSheet("recommended"); }}
+              onClick={() => selectStage(null, () => setSheet("recommended"))}
               data-testid="rules-open-recommended"
               className="h-7 rounded-[8px] border border-control px-2.5 text-small text-fg-2 hover:text-fg"
             >
@@ -212,7 +215,7 @@ export function RulesView() {
             </button>
             <button
               type="button"
-              onClick={() => { setSel(null); setQuick(null); setWizard(true); }}
+              onClick={() => selectStage(null, () => { setQuick(null); setWizard(true); })}
               data-testid="rules-open-wizard"
               className="h-7 rounded-[8px] border border-control px-2.5 text-small text-fg-2 hover:text-fg"
             >
@@ -263,7 +266,7 @@ export function RulesView() {
           </button>
           <button
             type="button"
-            onClick={() => { setSel(null); setWizard(true); }}
+            onClick={() => selectStage(null, () => setWizard(true))}
             data-testid="rules-fresh-setup"
             className="h-[30px] rounded-[8px] bg-accent px-3 text-body font-semibold text-[#0a0c0e]"
           >
@@ -271,7 +274,7 @@ export function RulesView() {
           </button>
           <button
             type="button"
-            onClick={() => setSel(stageKey("merge"))}
+            onClick={() => selectStage(stageKey("merge"))}
             className="h-[30px] rounded-[8px] border border-control px-3 text-body text-fg-2"
           >
             Set it up in Merge
@@ -325,8 +328,10 @@ export function RulesView() {
                 closing: pendingSel.to === null,
                 onLeave: () => {
                   dirtyRef.current = false;
-                  setSel(pendingSel.to);
+                  const { to, after } = pendingSel;
+                  setSel(to);
                   setPendingSel(null);
+                  after?.();
                 },
                 onStay: () => setPendingSel(null),
               }
