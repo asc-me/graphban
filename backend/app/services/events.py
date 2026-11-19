@@ -49,6 +49,14 @@ def record(
             target_id=target_id, project_id=project_id, meta=meta,
         )
         db.add(event)
+        db.flush()
+        # The outbox observes the same change. Flushed first so a failed capture rolls
+        # back only its own savepoint and the audit row still commits (GRPH-1733).
+        from app.services import project_sync_outbox as outbox
+        outbox.note_event(
+            db, project_id=project_id, target_type=target_type, target_id=target_id,
+            action=action, meta=meta,
+        )
         db.commit()
         return event
     except Exception:  # noqa: BLE001 — auditing must never break the audited op
