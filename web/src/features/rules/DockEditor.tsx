@@ -7,21 +7,35 @@
  * whole params object. Built-in rules open read-only.
  */
 import * as React from "react";
+import { Link } from "react-router-dom";
 
 import { Input } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
-import { useGitops, useRuleEffect, useRuleHistory, useRuleToggles, useSetRuleToggles, useUpdateGitops } from "@/lib/queries";
-import type { GitopsPatch, RuleFlowRule, RuleMeasured, RuleStage, RuleToggle, RuleToggleBatchEntry } from "@/lib/types";
+import { useConfig, useGitops, useRuleEffect, useRuleHistory, useRuleToggles, useSetRuleToggles, useUpdateGitops } from "@/lib/queries";
+import { settingsPath } from "@/lib/routes";
+import type { GitopsPatch, RuleEffectRule, RuleFlowRule, RuleMeasured, RuleStage, RuleToggle, RuleToggleBatchEntry } from "@/lib/types";
 
-import { LEVELS, ruleLevel, stageLevel, stageRules, toggleSourceLabel, weakestFirst } from "./levels";
-import { cleanParams, FOUND_BUG_DEFAULT, FOUND_BUG_RULE, MemoryWriteModeControl, useCanWriteRules } from "./LibraryRuleControls";
-import { BudgetCapEditor, currentValue, GITOPS_RULE_FIELDS, toPatch, useOrgName } from "./RuleEditors";
+import {
+  enforcerKindLabel,
+  enforcerText,
+  externalText,
+  LEVELS,
+  quietLine,
+  ruleLevel,
+  stageLevel,
+  stageRules,
+  valueText,
+  weakestFirst,
+} from "./levels";
+import { cleanParams, FOUND_BUG_DEFAULT, FOUND_BUG_RULE, MEMORY_WRITE_MODES, MemoryWriteModeControl, useCanWriteRules } from "./LibraryRuleControls";
+import { AdminGitopsLink, BudgetCapEditor, currentValue, GITOPS_RULE_FIELDS, toPatch, useOrgNameOrNull } from "./RuleEditors";
+import { RuleLevelIcon } from "./RuleLevelIcon";
 import { relTime } from "@/lib/relTime";
 import { showValue, type Params } from "./RuleReviewSheet";
 import { inheritsFor, ReadOnlyReason, SourceChip } from "./RuleSource";
-import { enumFor, RuleValueEditor } from "./RuleValueEditor";
+import { enumFor, isScalarParam, RuleValueEditor } from "./RuleValueEditor";
 import { FIXED_RULE_REASONS, GitopsField, gitopsReadOnly } from "./StageEditor";
 
 const MONO = "font-mono";
@@ -49,7 +63,49 @@ function stateWord(r: RuleFlowRule): string {
   return r.params?.source === "org" || r.source === "org" ? "ON · ORG" : "ON";
 }
 
+const ACCENT = "#c6f24e";
+
+/** "LIBRARY RULE · REVIEW", "BUILT-IN RULE · REVIEW", "PROJECT SETTING · MERGE". */
+export function kindLine(r: RuleFlowRule, stage: RuleStage): string {
+  const g = groupOf(r);
+  const kind = g === "library" ? "LIBRARY RULE" : g === "project" ? "PROJECT SETTING" : "BUILT-IN RULE";
+  return `${kind} · ${stage.title.toUpperCase()}`;
+}
+
+/** The form header's state badge: ON, NOT USED, or NOT USED · INHERITED when the off comes from above the project. */
+export function stateBadge(r: RuleFlowRule, onSource: string | null | undefined): string {
+  if (r.unmeasured_reason) return "UNMEASURED";
+  if (!isLibrary(r)) return r.used ? "ON" : "NOT USED";
+  if (r.value === true) return "ON";
+  return onSource === "project" ? "NOT USED" : "NOT USED · INHERITED";
+}
+
+/** What the on/off resolves from, in one sentence under the state control. */
+export function stateNote(on: boolean, source: string | null | undefined, orgName: string | null): string {
+  if (source === "project") return on ? "This project switched it on." : "Off for this project, whatever the org sets.";
+  if (source === "org") return `${orgName ? `The org ${orgName}` : "The org"} switched it ${on ? "on" : "off"}; this project follows it.`;
+  return `Follows the org, then the platform default (${on ? "on" : "off"}).`;
+}
+
+/** Seconds held as "1h 48m", "12m", "40s". */
+export function duration(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h) return m ? `${h}h ${m}m` : `${h}h`;
+  if (m) return `${m}m`;
+  return `${s}s`;
+}
+
+const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+function adoptedText(at: string | null | undefined): string | null {
+  if (!at) return null;
+  const d = new Date(at);
+  return Number.isNaN(d.getTime()) ? null : `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
+}
+
 type Draft = { on?: boolean; params?: Params; resetOn?: boolean; resetParams?: boolean; gitops?: string };
+type DiffLine = { key: string; before: string; after: string };
 
 /**
  * One line of help per parameter. The primitive contract (`rule_pack.PRIMITIVES`) carries only a
@@ -78,11 +134,69 @@ export function paramHelp(ruleId: string, name: string): string {
   return PARAM_HELP[`${ruleId}:${name}`] ?? PARAM_HELP[name] ?? "No help is written for this parameter yet.";
 }
 
-/** A measured number, or the reason there isn't one: never a bare 0 for a reading that was not taken. */
-function measured(m: RuleMeasured | undefined): string {
-  if (!m || m.status === "unavailable") return `unavailable${m?.reason ? ` — ${m.reason}` : ""}`;
-  if (m.status === "insufficient" || m.value === null) return `not enough data${m.reason ? ` — ${m.reason}` : ""}`;
+/** A measured number, or the word for why there isn't one: never a bare 0 for a reading that was not taken. */
+function measuredWord(m: RuleMeasured | undefined): string {
+  if (!m || m.status === "unavailable") return "unavailable";
+  if (m.status === "insufficient" || m.value === null) return "not enough data";
   return String(m.value);
+}
+
+const isMeasured = (m: RuleMeasured | undefined): m is RuleMeasured & { value: number } =>
+  !!m && m.status === "measured" && m.value !== null;
+
+/** The reasons behind the unmeasured readings, each said once. */
+function reasonsOf(...ms: (RuleMeasured | undefined)[]): string | null {
+  const out = new Set<string>();
+  for (const m of ms) {
+    if (isMeasured(m)) continue;
+    out.add(
+      m?.reason ||
+        (!m ? "not reported" : m.status === "insufficient" ? `not enough data (${m.n ?? 0} of ${m.min_n})` : "the server gave no reason"),
+    );
+  }
+  return out.size ? Array.from(out).join("; ") : null;
+}
+
+type Tile = { id: string; label: string; value: string; sub: string };
+
+/** The four effect tiles (GRPH-1725): a large value each and one sub-line; an unmeasured tile states its reason once. */
+export function effectTiles(fx: RuleEffectRule): Tile[] {
+  const caught = fx.caught;
+  const items = caught.items ?? [];
+  const before = fx.escape_rate.before;
+  const after = fx.escape_rate.after;
+  const held = fx.cost.held_seconds;
+  const over = fx.cost.overridden;
+  const escapes =
+    !isMeasured(before) && !isMeasured(after) && measuredWord(before) === measuredWord(after)
+      ? measuredWord(before)
+      : `${measuredWord(before)} → ${measuredWord(after)}`;
+  return [
+    {
+      id: "caught",
+      label: "CAUGHT",
+      value: measuredWord(caught),
+      sub: isMeasured(caught) ? (items.length ? items.join(", ") : "no item ids recorded") : reasonsOf(caught)!,
+    },
+    {
+      id: "escapes",
+      label: "ESCAPES",
+      value: escapes,
+      sub: reasonsOf(before, after) ?? "escape rate, before → after adoption",
+    },
+    {
+      id: "cost",
+      label: "COST",
+      value: isMeasured(held) ? `${duration(held.value)} held · ${held.n ?? 0} ${held.n === 1 ? "item" : "items"}` : measuredWord(held),
+      sub: isMeasured(held) ? "time work waited on this rule" : reasonsOf(held)!,
+    },
+    {
+      id: "overridden",
+      label: "OVERRIDDEN",
+      value: measuredWord(over),
+      sub: isMeasured(over) ? "refusals a person overrode" : reasonsOf(over)!,
+    },
+  ];
 }
 
 export function DockEditor({
@@ -93,7 +207,7 @@ export function DockEditor({
   prefill,
   onClose,
   onDirty,
-  detail,
+  onRule,
 }: {
   stage: RuleStage;
   version: string;
@@ -103,8 +217,8 @@ export function DockEditor({
   onClose: () => void;
   /** Told whenever the draft turns dirty or clean, so a stage switch can ask first. */
   onDirty?: (dirty: boolean) => void;
-  /** Read-only enforcement detail for a rule the form has no inputs for (enforcer, last result). */
-  detail?: (rule: RuleFlowRule) => React.ReactNode;
+  /** Told which rule the form is on, so the dock header can name it. */
+  onRule?: (rule: RuleFlowRule | null) => void;
 }) {
   const { activeId } = useProjectCtx();
   const canWrite = useCanWriteRules(activeId) !== false;
@@ -112,7 +226,7 @@ export function DockEditor({
   const { data: toggles } = useRuleToggles(activeId);
   const saveRules = useSetRuleToggles(activeId);
   const saveGitops = useUpdateGitops(activeId);
-  const orgName = useOrgName(gitops);
+  const orgName = useOrgNameOrNull(gitops);
   const rules = React.useMemo(() => weakestFirst(stageRules(stage)), [stage]);
 
   const initial =
@@ -141,18 +255,30 @@ export function DockEditor({
   }, [focusRule, rules]);
 
   const rule = rules.find((r) => r.id === ruleId) ?? null;
+  React.useEffect(() => {
+    onRule?.(rule);
+  }, [rule, onRule]);
   const t: RuleToggle | undefined = toggles?.toggles.find((x) => x.rule_id === rule?.id);
   const effect = useRuleEffect(activeId, rule && isLibrary(rule) ? rule.id : null);
   const effectRule = effect.data?.rules.find((x) => x.rule_id === rule?.id);
+
+  // A refusal's ?rule= lands keyboard focus on the rule's own header.
+  const headRef = React.useRef<HTMLDivElement | null>(null);
+  const focused = !!rule && focusRule === rule.id;
+  React.useEffect(() => {
+    if (!focused) return;
+    headRef.current?.scrollIntoView?.({ block: "nearest" });
+    headRef.current?.focus({ preventScroll: true });
+  }, [focused, rule?.id]);
 
   const field = rule ? GITOPS_RULE_FIELDS[rule.id] : undefined;
   const gitopsEditable = !!gitops && gitops.control.writable && gitops.control.state === "local";
   const editableLib = !!rule && isEditableLibrary(rule);
   const editable = canWrite && (editableLib || (!!field && gitopsEditable && !!rule?.used));
 
-  // The diff: one line per changed key, before → after; and the batch entry that carries it.
+  // The diff: one chip per changed key, before → after; and the batch entry that carries it.
   const { lines, entry, patch, risks } = React.useMemo(() => {
-    const lines: string[] = [];
+    const lines: DiffLine[] = [];
     const risks: string[] = [];
     let entry: RuleToggleBatchEntry | null = null;
     const patch: GitopsPatch = {};
@@ -163,21 +289,21 @@ export function DockEditor({
       const on = rule.value === true;
       if (draft.resetOn && t?.on.source === "project") {
         e.on = null;
-        lines.push(`on/off: ${on ? "ON" : "OFF"} → inherited (${inheritsFor(t.inherits?.on, orgName)})`);
+        lines.push({ key: "on/off", before: on ? "ON" : "OFF", after: `inherited (${inheritsFor(t.inherits?.on, orgName)})` });
       } else if (draft.on !== undefined && draft.on !== on) {
         e.on = draft.on;
-        lines.push(`on/off: ${on ? "ON" : "OFF"} → ${draft.on ? "ON" : "OFF"}`);
+        lines.push({ key: "on/off", before: on ? "ON" : "OFF", after: draft.on ? "ON" : "OFF" });
       }
       if (draft.resetParams && t?.params.source === "project") {
         e.params = null;
-        lines.push(`params: project values → inherited (${inheritsFor(t.inherits?.params, orgName)})`);
+        lines.push({ key: "params", before: "project values", after: `inherited (${inheritsFor(t.inherits?.params, orgName)})` });
       } else if (draft.params) {
         const cleaned = cleanParams(draft.params);
         const changed = Object.keys(cleaned).filter((k) => JSON.stringify(cleaned[k]) !== JSON.stringify(current[k]));
         if (changed.length > 0) {
           e.params = cleaned; // the whole object: the write replaces params, it does not merge
           for (const k of changed) {
-            lines.push(`${k}: ${showValue(current[k])} → ${showValue(cleaned[k])}`);
+            lines.push({ key: k, before: showValue(current[k]), after: showValue(cleaned[k]) });
             const after = cleaned[k];
             const opt = typeof after === "string" ? enumFor(rule.id, k)?.find((o) => o.value === after) : undefined;
             if (opt?.risky) risks.push(`${opt.label}: ${opt.explain}`);
@@ -189,7 +315,7 @@ export function DockEditor({
       const before = currentValue(gitops, field);
       if (draft.gitops !== before) {
         Object.assign(patch, toPatch(field, draft.gitops));
-        lines.push(`${field}: ${showValue(before)} → ${showValue(draft.gitops)}`);
+        lines.push({ key: field, before: showValue(before), after: showValue(draft.gitops) });
       }
     }
     return { lines, entry, patch, risks };
@@ -228,9 +354,16 @@ export function DockEditor({
     setRuleId(id);
   }
 
-  // Esc closes the dock back to the map, unless it is a field's own Escape.
+  // Esc closes the dock back to the map, unless it is a field's own Escape; ⌘↵ / Ctrl+↵ saves.
   const onKeyDown = (e: React.KeyboardEvent) => {
     const el = e.target as HTMLElement;
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      if (canSave && !saving) {
+        e.preventDefault();
+        void save();
+      }
+      return;
+    }
     if (e.key === "Escape" && !/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) {
       e.stopPropagation();
       onClose();
@@ -239,6 +372,7 @@ export function DockEditor({
 
   async function save() {
     setError(null);
+    const what = lines.map((l) => `${l.key} ${l.before} → ${l.after}`).join(", ");
     try {
       if (entry) await saveRules.mutateAsync({ toggles: [entry], reason: reason.trim(), ...(hasPatch ? { gitops: patch } : {}) });
       else if (hasPatch) await saveGitops.mutateAsync(patch);
@@ -248,7 +382,7 @@ export function DockEditor({
       return;
     }
     reset();
-    setSaved("Saved by you · just now · in force on the next sign-off");
+    setSaved(`Saved by you · ${what} · in force on the next sign-off`);
   }
 
   if (!rule) {
@@ -265,17 +399,28 @@ export function DockEditor({
   const savedParams: Params = (rule.params?.value as Params | null) ?? {};
   const params: Params = draft.params ?? savedParams;
   const level = ruleLevel(rule);
+  const meta = LEVELS[level];
   const builtin = groupOf(rule) === "builtin";
-  const winner = t
-    ? t.on.source === "project" || t.params.source === "project"
-      ? "project"
-      : t.on.source === "org" || t.params.source === "org"
-        ? "org"
-        : "platform"
-    : "platform";
+  const library = isLibrary(rule);
   const fixed = FIXED_RULE_REASONS[rule.id];
   const onNow = draft.on ?? rule.value === true;
   const segment = draft.resetOn ? "inherit" : onNow ? "on" : "off";
+  const onSource = t?.on.source ?? (library ? rule.source : null);
+  const noteSource = draft.resetOn ? "inherit" : draft.on !== undefined ? "project" : onSource;
+  // Gitops settings and select rules have no on/off of their own: no state control for them.
+  const showState = library || builtin;
+  const dim = !rule.used && !rule.unmeasured_reason;
+  const quiet = quietLine(rule);
+  const select_ = rule.control === "select";
+  const budget = rule.id === "plan.budget_cap";
+  const settingValue = library
+    ? null
+    : select_
+      ? MEMORY_WRITE_MODES.find((m) => m.value === String(rule.value ?? "review"))?.label ?? String(rule.value ?? "review")
+      : rule.truth === "db"
+        ? valueText(rule.value) ?? (budget ? null : "— no value")
+        : null;
+  const nChanges = lines.length;
 
   return (
     <section
@@ -301,21 +446,36 @@ export function DockEditor({
               </span>
               {rs.map((r) => {
                 const on = r.id === rule.id;
-                const meta = LEVELS[ruleLevel(r)];
+                const lv = ruleLevel(r);
+                const word = stateWord(r);
+                const lit = word.startsWith("ON");
                 return (
                   <button
                     key={r.id}
                     type="button"
                     aria-current={on ? "true" : undefined}
                     data-testid={`rules-dock-row-${r.id}`}
-                    data-level={ruleLevel(r)}
+                    data-level={lv}
                     onClick={() => select(r.id)}
-                    className={cn("flex flex-col gap-0.5 rounded-[8px] px-2 py-1.5 text-left hover:bg-surface-2", on && "bg-surface-2")}
-                    style={{ boxShadow: on ? "inset 3px 0 0 #c6f24e" : undefined }}
+                    className={cn("flex items-start gap-2 rounded-[8px] px-2 py-1.5 text-left hover:bg-surface-2", on && "bg-surface-2")}
+                    style={{ boxShadow: on ? `inset 3px 0 0 ${ACCENT}` : undefined }}
                   >
-                    <span className="text-body font-semibold leading-snug text-fg">{r.title}</span>
-                    <span className={cn(MONO, "text-meta tracking-[0.05em]")} style={{ color: meta.color }}>
-                      {stateWord(r)}
+                    <span className="mt-0.5 flex-none" style={{ color: LEVELS[lv].color }} data-testid={`rules-dock-rowicon-${r.id}`}>
+                      <RuleLevelIcon level={lv} size={14} />
+                    </span>
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span className="text-body font-semibold leading-snug text-fg">{r.title}</span>
+                      <span className={cn(MONO, "break-all text-meta text-muted-2")} data-testid={`rules-dock-rowid-${r.id}`}>
+                        {r.id}
+                      </span>
+                      <span
+                        className={cn(MONO, "text-meta tracking-[0.05em]")}
+                        data-testid={`rules-dock-rowstate-${r.id}`}
+                        data-lit={lit ? "true" : undefined}
+                        style={{ color: lit ? ACCENT : "#8b949e" }}
+                      >
+                        {word}
+                      </span>
                     </span>
                   </button>
                 );
@@ -328,95 +488,230 @@ export function DockEditor({
 
       {/* 2 · the rule's form */}
       <div data-testid="rules-dock-form" className="flex min-w-0 flex-col gap-3 overflow-y-auto p-4">
-        <div className="flex flex-col gap-1">
-          <span className="text-lead font-semibold leading-tight">{rule.title}</span>
+        <div
+          ref={headRef}
+          data-testid={`rules-row-${rule.id}`}
+          data-level={level}
+          data-focused={focused ? "true" : undefined}
+          aria-current={focused ? "true" : undefined}
+          tabIndex={focused ? -1 : undefined}
+          className="flex flex-col gap-1.5 outline-none"
+          style={focused ? { borderLeft: `4px solid ${ACCENT}`, paddingLeft: 8 } : undefined}
+        >
+          <div className="flex flex-wrap items-center gap-2" data-testid="rules-dock-head">
+            <span
+              data-testid="rules-dock-level-pill"
+              data-level={level}
+              className={cn(MONO, "inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-meta font-semibold tracking-[0.06em]")}
+              style={{ border: meta.pillBorder, background: meta.pillBg, color: meta.color }}
+            >
+              <RuleLevelIcon level={level} size={12} />
+              {meta.word}
+            </span>
+            <span className={cn(MONO, "text-meta tracking-[0.07em] text-muted-2")} data-testid="rules-dock-kind">
+              {kindLine(rule, stage)}
+            </span>
+            <span className="flex-1" />
+            <span
+              data-testid="rules-dock-state-badge"
+              className={cn(MONO, "rounded-[4px] border px-1.5 text-meta font-semibold tracking-[0.05em]")}
+              style={
+                stateBadge(rule, onSource) === "ON"
+                  ? { borderColor: "rgba(198,242,78,.4)", color: ACCENT }
+                  : { borderColor: "#2a333a", color: "#8b949e" }
+              }
+            >
+              {stateBadge(rule, onSource)}
+            </span>
+          </div>
+          <span className="text-lead font-semibold leading-tight" style={{ opacity: dim ? 0.7 : 1 }}>
+            {rule.title}
+          </span>
           <span className={cn(MONO, "break-all text-small text-fg-2")}>{rule.id}</span>
           <span className="text-body leading-normal text-muted">{rule.summary}</span>
+          <span className="flex flex-wrap items-center gap-1.5 text-small text-muted" data-testid="rules-dock-enforced-by">
+            Enforced by
+            <EnforcerLink kind={rule.enforcer.kind} text={enforcerText(rule, version)} url={rule.enforcer.url} />
+          </span>
+          {rule.used && rule.enforcement === "checked" && <LastResult rule={rule} />}
+          {rule.used && rule.enforcement === "external" && (
+            <span className="text-small leading-snug text-fg-2">
+              <span className={cn(MONO, "mr-2 text-meta font-semibold tracking-[0.06em] text-[#c9b8ff]")}>NOT VERIFIED</span>
+              {externalText(rule)}
+            </span>
+          )}
+          {quiet && <span className="text-small leading-snug text-muted-2">{quiet}</span>}
+          {settingValue !== null && (
+            <span className="flex flex-wrap items-baseline gap-2">
+              <span className={cn(MONO, "text-meta tracking-[0.07em] text-muted-2")}>IN FORCE</span>
+              <span
+                data-testid="rules-value"
+                className={cn(MONO, "break-words text-body font-semibold")}
+                style={{ color: settingValue === "— no value" ? "#ff6b6b" : "#e6e9ec" }}
+              >
+                {settingValue}
+              </span>
+            </span>
+          )}
+          {dim && (
+            <span className="text-small leading-snug text-muted" data-testid="rules-row-not-used">
+              {rule.not_used_reason
+                ? `NOT USED — ${rule.not_used_reason}.`
+                : library
+                  ? `NOT USED — ${rule.label ?? "turned off for this project"}. On, it is ${LEVELS[rule.enforcement].word}.`
+                  : `Not used by this project's model${model ? `: ${model}` : ""}.`}
+            </span>
+          )}
+          {rule.id === "gitops.model" && <ModelWhere />}
+          {rule.unmeasured_reason && (
+            <span data-testid="rules-toggle-refused" className="text-small leading-snug text-[#ff6b6b]">
+              UNMEASURED · TEMPLATE REFUSED — {rule.unmeasured_reason}
+            </span>
+          )}
+          {rule.locked && (
+            <span data-testid="rules-toggle-locked" className="text-small leading-snug text-fg-2">
+              Locked: the org set this for every project; change it on the org console.
+            </span>
+          )}
+          {rule.id === FOUND_BUG_RULE && library && !rule.unmeasured_reason && (
+            <span data-testid="rules-found-bug-effective" className="text-small leading-snug text-fg-2">
+              {rule.value === true
+                ? `Effective mode: ${modeLabel(rule.id, (rule.params?.value as Params | null)?.mode ?? FOUND_BUG_DEFAULT)}.`
+                : `Off: the default, ${FOUND_BUG_DEFAULT}, is in force.`}
+            </span>
+          )}
         </div>
         {stageLevel(stage) === "not_used" && (
           <p className="text-small leading-snug text-muted" data-testid="rules-stage-not-used">
             Every rule on this stage is not used by this project's model{model ? `: ${model}` : ""}. They stay drawn so you can see what would apply.
           </p>
         )}
-        {saved && (
-          <p role="status" data-testid="rules-dock-saved" className="text-body text-fg-2">
-            {saved}
-          </p>
-        )}
-        {rule.unmeasured_reason && <ReadOnlyReason>Unmeasured: {rule.unmeasured_reason}</ReadOnlyReason>}
-        {rule.locked && <ReadOnlyReason>Locked: the org set this for every project; change it on the org console.</ReadOnlyReason>}
         {fixed && <ReadOnlyReason>{fixed}</ReadOnlyReason>}
 
-        <div role="group" aria-label="State" className="flex gap-1.5" data-testid="rules-dock-state">
-          {(["on", "off", "inherit"] as const).map((s) => (
-            <button
-              key={s}
-              type="button"
-              disabled={!editable || !editableLib || (s === "inherit" && t?.on.source !== "project")}
-              aria-pressed={segment === s}
-              data-testid={`rules-dock-state-${s}`}
-              onClick={() =>
-                setDraft((d) => (s === "inherit" ? { ...d, resetOn: true, on: undefined } : { ...d, resetOn: false, on: s === "on" }))
-              }
-              className={cn(
-                "h-7 rounded-[8px] border px-3 text-small capitalize disabled:opacity-50",
-                segment === s ? "border-accent text-accent" : "border-control text-fg-2",
-              )}
-            >
-              {s}
-            </button>
-          ))}
-        </div>
+        {showState && (
+          <div className="flex flex-col gap-1">
+            <div role="group" aria-label="State" className="flex gap-1.5" data-testid="rules-dock-state">
+              {(["on", "off", "inherit"] as const).map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  disabled={!editable || !editableLib || (s === "inherit" && t?.on.source !== "project")}
+                  aria-pressed={segment === s}
+                  data-testid={`rules-dock-state-${s}`}
+                  onClick={() =>
+                    setDraft((d) => (s === "inherit" ? { ...d, resetOn: true, on: undefined } : { ...d, resetOn: false, on: s === "on" }))
+                  }
+                  className={cn(
+                    "h-7 rounded-[8px] border px-3 text-small capitalize disabled:opacity-50",
+                    segment === s ? "border-accent text-accent" : "border-control text-fg-2",
+                  )}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+            {library && !rule.unmeasured_reason && (
+              <span className="text-small leading-snug text-muted" data-testid="rules-dock-state-note">
+                {noteSource === "inherit"
+                  ? `Back to inherited: ${inheritsFor(t?.inherits?.on, orgName)}.`
+                  : stateNote(onNow, noteSource, orgName)}
+              </span>
+            )}
+          </div>
+        )}
 
         {builtin && <ReadOnlyReason>Built in: this holds by how Graphban works, so every control here is read-only.</ReadOnlyReason>}
 
         {editableLib && Object.keys(savedParams).length > 0 && (
-          <div className="flex flex-col divide-y divide-line rounded-[8px] border border-[#2a333a]" data-testid="rules-dock-params">
-            {Object.entries(savedParams).map(([k, v]) => {
-              const shown = params[k] ?? v;
-              const changed = JSON.stringify(shown) !== JSON.stringify(v);
-              return (
-                <div key={k} data-testid={`rules-dock-param-${k}`} className="flex flex-col gap-1.5 p-2.5">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className={cn(MONO, "text-body font-semibold")}>{k}</span>
-                    <SourceChip source={t?.params.source} locked={rule.locked ?? false} testId={`rules-dock-source-${k}`} />
-                    {changed && <span className={cn(MONO, "text-small text-muted")}>was {showValue(v)}</span>}
-                    {t?.params.source === "project" && !draft.resetParams && (
-                      <button
-                        type="button"
-                        disabled={!editable}
-                        data-testid={`rules-dock-reset-${k}`}
-                        onClick={() => setDraft((d) => ({ ...d, resetParams: true, params: undefined }))}
-                        className="text-small text-accent underline disabled:opacity-50"
+          <div className="flex flex-col gap-1.5">
+            <table className="w-full table-fixed border-collapse overflow-hidden rounded-[8px] border border-[#2a333a] text-left" data-testid="rules-dock-params">
+              <colgroup>
+                <col className="w-[38%]" />
+                <col />
+                <col className="w-[26%]" />
+              </colgroup>
+              <thead>
+                <tr className={cn(MONO, "text-meta tracking-[0.07em] text-muted-2")}>
+                  <th className="px-2.5 py-1.5 font-normal">NAME</th>
+                  <th className="px-2.5 py-1.5 font-normal">VALUE</th>
+                  <th className="px-2.5 py-1.5 font-normal">SET BY</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(savedParams).map(([k, v]) => {
+                  const shown = params[k] ?? v;
+                  const changed = JSON.stringify(shown) !== JSON.stringify(v);
+                  const scalar = isScalarParam(rule.id, k, v);
+                  const editor = (
+                    <RuleValueEditor
+                      key={epoch}
+                      ruleId={rule.id}
+                      name={k}
+                      value={shown}
+                      hideLabel
+                      compact
+                      effectivePredicates={t?.effective_predicates}
+                      onChange={(nv) => setDraft((d) => ({ ...d, resetParams: false, params: { ...(d.params ?? savedParams), [k]: nv } }))}
+                      onError={(m) =>
+                        setParamErrors((e) => {
+                          const { [`${rule.id}:${k}`]: _drop, ...rest } = e;
+                          return m ? { ...rest, [`${rule.id}:${k}`]: m } : rest;
+                        })
+                      }
+                    />
+                  );
+                  const bg = changed ? "rgba(198,242,78,.05)" : undefined;
+                  return (
+                    <React.Fragment key={k}>
+                      <tr
+                        data-testid={`rules-dock-param-${k}`}
+                        data-changed={changed ? "true" : undefined}
+                        className="border-t border-line align-top"
+                        style={{ background: bg }}
                       >
-                        Reset to {inheritsFor(t.inherits?.params, orgName)}
-                      </button>
-                    )}
-                  </div>
-                  <span className="text-small leading-snug text-muted" data-testid={`rules-dock-help-${k}`}>
-                    {paramHelp(rule.id, k)}
-                  </span>
-                  <RuleValueEditor
-                    key={epoch}
-                    ruleId={rule.id}
-                    name={k}
-                    value={shown}
-                    effectivePredicates={t?.effective_predicates}
-                    onChange={(nv) => setDraft((d) => ({ ...d, resetParams: false, params: { ...(d.params ?? savedParams), [k]: nv } }))}
-                    onError={(m) =>
-                      setParamErrors((e) => {
-                        const { [`${rule.id}:${k}`]: _drop, ...rest } = e;
-                        return m ? { ...rest, [`${rule.id}:${k}`]: m } : rest;
-                      })
-                    }
-                  />
-                </div>
-              );
-            })}
+                        <td className="px-2.5 py-2">
+                          <span className={cn(MONO, "block break-all text-body font-semibold")}>{k}</span>
+                          <span className="block text-small leading-snug text-muted" data-testid={`rules-dock-help-${k}`}>
+                            {paramHelp(rule.id, k)}
+                          </span>
+                        </td>
+                        <td className="px-2.5 py-2" data-testid={`rules-dock-value-${k}`}>
+                          {scalar ? editor : <span className="text-small text-muted">see below</span>}
+                        </td>
+                        <td className="px-2.5 py-2">
+                          <span className="flex flex-col items-start gap-1">
+                            <SourceChip source={t?.params.source} locked={rule.locked ?? false} testId={`rules-dock-source-${k}`} />
+                            {changed && <span className={cn(MONO, "break-all text-small text-muted")}>was {showValue(v)}</span>}
+                            {t?.params.source === "project" && !draft.resetParams && (
+                              <button
+                                type="button"
+                                disabled={!editable}
+                                data-testid={`rules-dock-reset-${k}`}
+                                onClick={() => setDraft((d) => ({ ...d, resetParams: true, params: undefined }))}
+                                className="text-left text-small text-accent underline disabled:opacity-50"
+                              >
+                                Reset to inherited
+                              </button>
+                            )}
+                          </span>
+                        </td>
+                      </tr>
+                      {!scalar && (
+                        <tr className="align-top" style={{ background: bg }} data-testid={`rules-dock-param-wide-${k}`}>
+                          <td colSpan={3} className="px-2.5 pb-2.5">
+                            {editor}
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+            <span className="text-small text-muted" data-testid="rules-dock-params-note">
+              Only the template's own parameters can be set. The server refuses any other.
+            </span>
           </div>
-        )}
-        {rule.id === FOUND_BUG_RULE && editableLib && (
-          <span className="text-small text-fg-2">Off: the default, {FOUND_BUG_DEFAULT}, is in force.</span>
         )}
         {field && gitops && (
           <GitopsField
@@ -428,43 +723,20 @@ export function DockEditor({
             onChange={(v) => setDraft({ gitops: v })}
           />
         )}
-        {rule.control === "select" && <MemoryWriteModeControl rule={rule} />}
-        {rule.id === "plan.budget_cap" && rule.used && <BudgetCapEditor />}
-        {detail && <div className="border-t border-line pt-2">{detail(rule)}</div>}
+        {select_ && <MemoryWriteModeControl rule={rule} />}
+        {budget && rule.used && <BudgetCapEditor />}
       </div>
 
       {/* 3 · resolution, effect, history, and the pinned save area */}
       <aside data-testid="rules-dock-side" className="flex min-h-0 flex-col border-t border-line min-[900px]:border-l min-[900px]:border-t-0">
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
-          <div data-testid="rules-dock-chain" className="flex flex-col gap-1">
-            <span className={cn(MONO, "text-meta tracking-[0.07em] text-muted-2")}>RESOLUTION</span>
-            {(
-              [
-                ["project", "PROJECT"],
-                ["org", orgName ? `ORG ${orgName}` : "ORG"],
-                ["platform", "PLATFORM DEFAULT"],
-              ] as const
-            ).map(([id, label]) => (
-              <span
-                key={id}
-                data-testid={`rules-dock-chain-${id}`}
-                aria-current={winner === id ? "true" : undefined}
-                className={cn(
-                  MONO,
-                  "rounded-[4px] border px-2 py-0.5 text-small",
-                  winner === id ? "border-accent text-accent" : "border-transparent text-muted",
-                )}
-              >
-                {label}
-                {winner === id ? " · in force" : ""}
-              </span>
-            ))}
-            <span className="text-small text-muted">{toggleSourceLabel(t?.on.source)}</span>
-          </div>
+          <Resolution rule={rule} t={t} orgName={orgName} />
 
-          <div data-testid="rules-dock-effect" className="flex flex-col gap-0.5">
-            <span className={cn(MONO, "text-meta tracking-[0.07em] text-muted-2")}>MEASURED EFFECT</span>
-            {!isLibrary(rule) ? (
+          <div data-testid="rules-dock-effect" className="flex flex-col gap-1.5">
+            <span className={cn(MONO, "text-meta tracking-[0.07em] text-muted-2")} data-testid="rules-dock-effect-heading">
+              MEASURED EFFECT{adoptedText(effectRule?.adopted_at) ? ` · ADOPTED ${adoptedText(effectRule?.adopted_at)}` : ""}
+            </span>
+            {!library ? (
               <span className="text-small text-muted">Not measured: only library rules have an effect reading.</span>
             ) : effect.isLoading ? (
               <span className="text-small text-muted">loading…</span>
@@ -474,19 +746,34 @@ export function DockEditor({
               </span>
             ) : (
               <>
-                <span className={cn(MONO, "text-small text-fg-2")}>caught: {measured(effectRule.caught)}</span>
-                <span className={cn(MONO, "text-small text-fg-2")}>
-                  escapes before → after: {measured(effectRule.escape_rate.before)} → {measured(effectRule.escape_rate.after)}
+                <div className="grid grid-cols-2 gap-1.5">
+                  {effectTiles(effectRule).map((tile) => (
+                    <div
+                      key={tile.id}
+                      data-testid={`rules-dock-tile-${tile.id}`}
+                      className="flex min-w-0 flex-col gap-0.5 rounded-[8px] border border-[#2a333a] bg-surface-2 px-2 py-1.5"
+                    >
+                      <span className={cn(MONO, "text-micro tracking-[0.07em] text-muted-2")}>{tile.label}</span>
+                      <span className={cn(MONO, "break-words text-lead font-semibold leading-tight text-fg")} data-testid={`rules-dock-tile-${tile.id}-value`}>
+                        {tile.value}
+                      </span>
+                      <span className="break-words text-micro leading-snug text-muted" data-testid={`rules-dock-tile-${tile.id}-sub`}>
+                        {tile.sub}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <span className="text-micro leading-snug text-muted-2" data-testid="rules-dock-effect-window">
+                  {effectRule.escape_note ||
+                    "Escapes compare the window after adoption with an equal window before it. Observed, not a cause."}
                 </span>
-                <span className={cn(MONO, "text-small text-fg-2")}>cost, held seconds: {measured(effectRule.cost.held_seconds)}</span>
-                <span className={cn(MONO, "text-small text-fg-2")}>overridden: {measured(effectRule.cost.overridden)}</span>
               </>
             )}
           </div>
 
           <div className="flex flex-col gap-0.5" data-testid="rules-dock-history">
             <span className={cn(MONO, "text-meta tracking-[0.07em] text-muted-2")}>HISTORY</span>
-            {isLibrary(rule) && !rule.unmeasured_reason ? (
+            {library && !rule.unmeasured_reason ? (
               <DockHistory ruleId={rule.id} />
             ) : (
               <span className="text-small leading-snug text-muted" data-testid="rules-dock-history-none">
@@ -508,18 +795,29 @@ export function DockEditor({
             <p className="text-small text-fg-2" data-testid="rules-dock-builtin-note">
               This rule is built in and can't be changed here.
             </p>
-          ) : !dirty ? (
-            <p className="text-small text-muted" data-testid="rules-dock-nochange">
-              No changes. Edit a value to see the diff and save it with a reason.
-            </p>
-          ) : (
-            <ul className="flex flex-col gap-0.5" data-testid="rules-dock-diff">
+          ) : dirty ? (
+            <ul className="flex flex-wrap gap-1.5" data-testid="rules-dock-diff">
               {lines.map((l) => (
-                <li key={l} className={cn(MONO, "break-all text-small text-fg-2")}>
-                  {l}
+                <li
+                  key={l.key}
+                  data-testid={`rules-dock-diff-${l.key}`}
+                  className={cn(MONO, "inline-flex max-w-full flex-wrap items-baseline gap-1 rounded-[6px] border border-[#2a333a] bg-bg px-1.5 py-0.5 text-small")}
+                >
+                  <span className="text-fg">{l.key}</span>{" "}
+                  <s className="break-all text-muted">{l.before}</s> <span aria-hidden className="text-muted-2">→</span>{" "}
+                  <span className="break-all text-accent">{l.after}</span>
                 </li>
               ))}
             </ul>
+          ) : saved ? (
+            <p role="status" data-testid="rules-dock-saved" className="flex items-start gap-1.5 text-small text-fg-2">
+              <span aria-hidden className="text-accent">✓</span>
+              <span>{saved}</span>
+            </p>
+          ) : (
+            <p className="text-small text-muted" data-testid="rules-dock-nochange">
+              No changes. Edit a value to see the diff and save it with a reason.
+            </p>
           )}
           {!builtin && (
             <>
@@ -527,12 +825,6 @@ export function DockEditor({
                 <label className="flex items-start gap-2 text-small text-[#ffb454]" data-testid="rules-dock-weakening">
                   <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
                   <span>WEAKENING — I understand the risk: {risks.join("; ")}</span>
-                </label>
-              )}
-              {needsReason && (
-                <label className="flex flex-col gap-1 text-small text-fg-2">
-                  Reason (at least {MIN_REASON} characters)
-                  <Input aria-label="Reason" value={reason} placeholder="Say why, in a sentence" onChange={(e) => setReason(e.target.value)} />
                 </label>
               )}
               {firstParamError && (
@@ -545,26 +837,41 @@ export function DockEditor({
                   {error}
                 </p>
               )}
-              <div className="flex gap-2">
+              <div className="flex flex-wrap items-center gap-2" data-testid="rules-dock-save-row">
+                {needsReason && (
+                  <Input
+                    aria-label="Reason"
+                    value={reason}
+                    className="h-7 min-w-[160px] flex-1 text-small"
+                    placeholder="Why? One sentence, saved as the audit record (required)"
+                    onChange={(e) => setReason(e.target.value)}
+                  />
+                )}
                 <button
                   type="button"
                   disabled={!canSave || saving}
                   onClick={() => void save()}
                   data-testid="rules-dock-save-button"
-                  className="h-7 rounded-[8px] bg-accent px-3 text-body font-semibold text-[#0a0c0e] disabled:opacity-50"
+                  title="⌘↵ / Ctrl+↵"
+                  className="h-7 flex-none rounded-[8px] bg-accent px-3 text-body font-semibold text-[#0a0c0e] disabled:opacity-50"
                 >
-                  {saving ? "Saving…" : "Save"}
+                  {saving ? "Saving…" : nChanges ? `Save ${nChanges} change${nChanges === 1 ? "" : "s"}` : "Save"}
                 </button>
                 <button
                   type="button"
                   disabled={!dirty || saving}
                   onClick={reset}
                   data-testid="rules-dock-discard"
-                  className="h-7 rounded-[8px] border border-control px-3 text-body text-fg-2 disabled:opacity-50"
+                  className="h-7 flex-none rounded-[8px] border border-control px-3 text-body text-fg-2 disabled:opacity-50"
                 >
                   Discard
                 </button>
               </div>
+              {needsReason && reason.length > 0 && !reasonOk && (
+                <span className="text-micro text-muted" data-testid="rules-dock-reason-short">
+                  At least {MIN_REASON} characters.
+                </span>
+              )}
             </>
           )}
           {leaveTo && (
@@ -594,6 +901,155 @@ export function DockEditor({
         </div>
       </aside>
     </section>
+  );
+}
+
+function modeLabel(ruleId: string, v: Params[string]): string {
+  return typeof v === "string" ? enumFor(ruleId, "mode")?.find((o) => o.value === v)?.label ?? v : showValue(v);
+}
+
+/** One level's value as the mock writes it: "on · min_tests_failed 2". */
+function levelValue(on: boolean | null, params: Params | null): string {
+  const parts: string[] = [];
+  if (on !== null) parts.push(on ? "on" : "off");
+  if (params) for (const [k, v] of Object.entries(params)) parts.push(`${k} ${showValue(v)}`);
+  return parts.join(" · ");
+}
+
+/**
+ * Project → org → platform default, each with its value and the winner IN FORCE. The toggles read
+ * resolves each field to the first level that sets it, so a level's value is known where it won;
+ * the org's row is otherwise known only to exist (`inherits`), and is said that way.
+ */
+export function Resolution({ rule, t, orgName }: { rule: RuleFlowRule; t: RuleToggle | undefined; orgName: string | null }) {
+  const library = isLibrary(rule);
+  // With no toggles read, the flow's own sources stand in, so the chain and the state note agree.
+  const norm = (x: string | null | undefined) => (x === "project" || x === "org" ? x : "platform default");
+  const onSrc = library ? norm(t?.on.source ?? rule.source) : null;
+  const parSrc = library ? norm(t?.params.source ?? rule.params?.source ?? rule.source) : null;
+  const onVal = t ? t.on.value : rule.value === true;
+  const parVal = (t ? t.params.value : (rule.params?.value as Params | null)) ?? {};
+  const has = (src: string) => onSrc === src || parSrc === src;
+  const winner: "project" | "org" | "platform" = library
+    ? has("project")
+      ? "project"
+      : has("org")
+        ? "org"
+        : "platform"
+    : rule.source === "project"
+      ? "project"
+      : rule.source === "org"
+        ? "org"
+        : "platform";
+  const at = (src: string) =>
+    levelValue(onSrc === src ? onVal : null, parSrc === src && Object.keys(parVal).length ? (parVal as Params) : null);
+  const setting = library ? null : valueText(rule.value) ?? (rule.control === "select" ? String(rule.value ?? "review") : null);
+  const orgHasRow = t?.inherits?.on === "org" || t?.inherits?.params === "org";
+
+  const steps: { id: "project" | "org" | "platform"; label: string; value: string }[] = [
+    {
+      id: "project",
+      label: "PROJECT",
+      value: library ? at("project") || "not set" : winner === "project" ? setting ?? "set" : "not set",
+    },
+    {
+      id: "org",
+      label: orgName ? `ORG ${orgName}` : "ORG · none",
+      value: !orgName
+        ? ""
+        : library
+          ? at("org") || (orgHasRow ? "set · overridden" : "not set")
+          : winner === "org"
+            ? setting ?? "set"
+            : "not set",
+    },
+    {
+      id: "platform",
+      label: "PLATFORM DEFAULT",
+      value: library ? at("platform default") || "overridden" : winner === "platform" ? setting ?? (groupOf(rule) === "builtin" ? "built in" : "default") : "overridden",
+    },
+  ];
+  return (
+    <div data-testid="rules-dock-chain" className="flex flex-col gap-1">
+      <span className={cn(MONO, "text-meta tracking-[0.07em] text-muted-2")}>RESOLUTION</span>
+      {steps.map((s) => (
+        <span
+          key={s.id}
+          data-testid={`rules-dock-chain-${s.id}`}
+          aria-current={winner === s.id ? "true" : undefined}
+          className={cn(
+            MONO,
+            "flex flex-wrap items-baseline gap-x-1.5 rounded-[4px] border px-2 py-0.5 text-small",
+            winner === s.id ? "border-accent text-accent" : "border-transparent text-muted",
+          )}
+        >
+          <span className="font-semibold">{s.label}</span>
+          {s.value && (
+            <span className={winner === s.id ? "text-fg" : "text-muted"} data-testid={`rules-dock-chain-${s.id}-value`}>
+              {s.value}
+            </span>
+          )}
+          {winner === s.id && <span className="ml-auto text-meta tracking-[0.06em]">IN FORCE</span>}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function LastResult({ rule }: { rule: RuleFlowRule }) {
+  if (!rule.last_result) {
+    // No attestation on a merged item: said as such, never drawn as a pass.
+    return (
+      <span data-testid="rules-no-result" className="text-small text-muted">
+        <span className={cn(MONO, "mr-2 text-meta font-semibold tracking-[0.06em] text-fg-2")}>NO RESULT RECORDED</span>
+        Nothing has reported yet. That is not a pass.
+      </span>
+    );
+  }
+  return (
+    <span data-testid="rules-result" data-outcome={rule.last_result.outcome} className="text-small text-muted">
+      <span className={cn(MONO, "mr-2 text-meta font-semibold tracking-[0.06em] text-fg-2")}>
+        {rule.last_result.outcome === "pass" ? "PASS" : "FAIL"} · last attested {relTime(rule.last_result.at) ?? "at an unknown time"}
+      </span>
+      {rule.last_result.item}
+    </span>
+  );
+}
+
+function ModelWhere() {
+  const { data: config } = useConfig();
+  const hosted = config?.hosted_mode ?? false;
+  return (
+    <span className="text-small leading-snug text-muted" data-testid="rules-gitops-model-where">
+      A preset rewrites other fields, so the model is not edited inline. Change it in{" "}
+      {hosted ? (
+        <AdminGitopsLink />
+      ) : (
+        <Link to={settingsPath("deployment/gitops")} className="text-accent hover:underline">
+          Settings → Gitops
+        </Link>
+      )}
+    </span>
+  );
+}
+
+export function EnforcerLink({ kind, text, url }: { kind: string; text: string; url: string }) {
+  const body = (
+    <>
+      <span className="flex-none rounded-[3px] border border-[#2a333a] px-1 text-micro tracking-[0.05em] text-muted">
+        {enforcerKindLabel(kind)}
+      </span>
+      <span>{text}</span>
+    </>
+  );
+  const cls = cn(MONO, "inline-flex items-center gap-1.5 break-all text-small leading-snug");
+  // No URL from the server means no link — a guessed one would read as a verified source.
+  if (!url) return <span className={cn(cls, "text-fg-2")} data-testid="rules-enforcer">{body}</span>;
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer" className={cn(cls, "text-accent hover:underline")} data-testid="rules-enforcer">
+      {body}
+      <span aria-hidden>↗</span>
+    </a>
   );
 }
 

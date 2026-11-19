@@ -3483,6 +3483,10 @@ export interface RuleMeasured {
 
 export interface RuleEffectRule {
   rule_id: string;
+  /** Earliest recorded off→on in this scope; null when the rule was never adopted or its time is unknown. */
+  adopted_at?: string | null;
+  /** The server's caveat on the escape windows (observational, no cause claimed). */
+  escape_note?: string | null;
   caught: RuleMeasured & { items?: string[] };
   cost: { overridden: RuleMeasured; held_seconds: RuleMeasured };
   escape_rate: { before: RuleMeasured; after: RuleMeasured };

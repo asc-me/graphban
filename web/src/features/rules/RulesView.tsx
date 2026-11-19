@@ -15,8 +15,7 @@ import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
 import { useCanvasListbox, type CanvasListNode } from "@/lib/graph/useGraphKeyboard";
 import { useGraphViewport, zoomAbout } from "@/lib/graph/useGraphViewport";
-import { useConfig, useGitops, useRulePack, useRulePackAvailable, useRulesFlow, useUnmappedRefusals } from "@/lib/queries";
-import { relTime } from "@/lib/relTime";
+import { useGitops, useRulePack, useRulePackAvailable, useRulesFlow, useUnmappedRefusals } from "@/lib/queries";
 import { projectPath, settingsPath, tagFromPath } from "@/lib/routes";
 import type { RuleFlowRule, RuleStage, RuleSuggestion, RulesFlow } from "@/lib/types";
 
@@ -34,35 +33,25 @@ import {
   STAGE_H,
   STAGE_W,
   STAGE_Y,
-  enforcerKindLabel,
-  enforcerText,
-  externalText,
   legendCounts,
   mapLayout,
   packOf,
-  quietLine,
   ruleLevel,
-  sourceLabel,
-  toggleSourceLabel,
   stageLevel,
   stageRules,
   stageX,
   tally,
   tallyText,
-  valueText,
   weakestFirst,
   type Level,
   type MapLayout,
 } from "./levels";
-import { FOUND_BUG_DEFAULT, FOUND_BUG_RULE, MEMORY_WRITE_MODES, MemoryWriteModeControl } from "./LibraryRuleControls";
 import { RecommendedSheet, UnmappedSheet } from "./RefusalPanels";
-import { AdminGitopsLink, BudgetCapEditor, useOrgName } from "./RuleEditors";
-import { RuleHistory } from "./RuleHistory";
+import { AdminGitopsLink, useOrgName } from "./RuleEditors";
 import { RuleLevelIcon } from "./RuleLevelIcon";
 import { QuickConfigure, QuickConfigureBar, type QuickScreen } from "./QuickConfigure";
 import { ChangedRulesContext, SetupWizard } from "./SetupWizard";
 import { DockEditor } from "./DockEditor";
-import { enumFor } from "./RuleValueEditor";
 
 const PACK_KEY = "pack";
 const stageKey = (id: string) => `s:${id}`;
@@ -240,9 +229,24 @@ export function RulesView() {
           The refusal names {focusRule}, which is not in this project's registry on this server. The rule exists in the refusal's record; the map can't show it.
         </div>
       )}
-      <ControlBanner state={controlState} gitops={gitops} />
-      <QuickConfigureBar onOpen={openQuick} />
-      {fresh && (
+      {/* With the dock open these collapse to one line each, so the presets divide the space under the header (GRPH-1725). */}
+      <ControlBanner state={controlState} gitops={gitops} compact={!!sel} />
+      <QuickConfigureBar onOpen={openQuick} compact={!!sel} />
+      {fresh && sel && (
+        <div
+          role="status"
+          data-testid="rules-fresh-banner"
+          data-collapsed="true"
+          className="mx-5 mt-1 flex flex-none items-center gap-2 overflow-hidden whitespace-nowrap text-small"
+        >
+          <span className={cn(MONO, "text-meta font-semibold tracking-[0.07em] text-[#ff6b6b]")}>NEW PROJECT</span>
+          <span className="truncate text-fg-2">Your delivery contract is unmeasured.</span>
+          <button type="button" onClick={() => openQuick({ screen: "picker" })} data-testid="rules-fresh-quick" className="flex-none text-accent underline">
+            Quick configure
+          </button>
+        </div>
+      )}
+      {fresh && !sel && (
         <div
           role="status"
           data-testid="rules-fresh-banner"
@@ -306,7 +310,11 @@ export function RulesView() {
           <LoadingMap />
         ) : (
           <div className="relative min-h-0" style={{ height: sel ? `${mapPct}%` : "100%" }} data-testid="rules-map-area" data-map-pct={sel ? mapPct : 100}>
-            {narrow ? <NarrowList flow={flow} sel={sel} onSelect={selectStage} /> : <RulesCanvas flow={flow} sel={sel} onSelect={selectStage} />}
+            {narrow ? (
+              <NarrowList flow={flow} sel={sel} onSelect={selectStage} />
+            ) : (
+              <RulesCanvas flow={flow} sel={sel} onSelect={selectStage} fitKey={sel ? mapPct : null} />
+            )}
           </div>
         )}
         {flow && sel && (
@@ -457,10 +465,13 @@ function RulesCanvas({
   flow,
   sel,
   onSelect,
+  fitKey = null,
 }: {
   flow: RulesFlow;
   sel: string | null;
   onSelect: (key: string | null) => void;
+  /** The dock's height preset while the dock is open: the map is then a strip, refitted on every change. */
+  fitKey?: number | null;
 }) {
   const layout = React.useMemo(() => mapLayout(flow), [flow]);
   const { width: W, height: H } = layout;
@@ -483,15 +494,25 @@ function RulesCanvas({
   const pack = packOf(flow);
   const [hover, setHover] = React.useState<string | null>(null);
 
-  // Fit never enlarges past 1:1; the legend and zoom bar keep the bottom 120px.
+  // Fit never enlarges past 1:1; the legend and zoom bar keep the bottom 120px. Docked, the map is
+  // a strip with no legend or zoom bar (GRPH-1725): every stage card fits the strip's width and
+  // height, the row centred, and the fit is recomputed whenever the dock opens or changes height.
   const { setViewport } = view;
+  const docked = fitKey !== null;
+  const fits = React.useRef(0);
   const fit = React.useCallback(() => {
+    fits.current += 1;
+    if (docked) {
+      const k = Math.max(0.2, Math.min(1, (size.w - 48) / W, (size.h - 16) / STAGE_H));
+      setViewport({ k, x: (size.w - W * k) / 2, y: (size.h - STAGE_H * k) / 2 - STAGE_Y * k });
+      return;
+    }
     const k = Math.max(0.2, Math.min(1, (size.w - 48) / W, (size.h - 140) / H));
     setViewport({ k, x: (size.w - W * k) / 2, y: Math.max(16, (size.h - 120 - H * k) / 2) });
-  }, [setViewport, size.w, size.h, W, H]);
+  }, [setViewport, size.w, size.h, W, H, docked]);
   React.useEffect(() => {
     fit();
-  }, [fit]);
+  }, [fit, fitKey]);
 
   // The stages and the pack node ride the same listbox hook as the code graph (GRPH-1076):
   // live-region announcements, typeahead by stage name, Enter opens, Escape closes. The order is
@@ -555,7 +576,14 @@ function RulesCanvas({
   const counts = legendCounts(flow);
 
   return (
-    <div ref={boxRef} className="absolute inset-0" data-testid="rules-canvas">
+    <div
+      ref={boxRef}
+      className="absolute inset-0"
+      data-testid="rules-canvas"
+      data-docked={docked ? "true" : undefined}
+      data-zoom={view.viewport.k.toFixed(3)}
+      data-fits={fits.current}
+    >
       <div
         role="listbox"
         tabIndex={0}
@@ -616,15 +644,19 @@ function RulesCanvas({
       <div aria-live="polite" aria-atomic="true" data-testid="rules-live" className="sr-only">
         {kb.live}
       </div>
-      <Legend counts={counts} />
-      <ZoomControls
-        pct={Math.round(view.viewport.k * 100)}
-        outline={outline}
-        onIn={() => zoomBy(1.2)}
-        onOut={() => zoomBy(1 / 1.2)}
-        onFit={fit}
-        onOneToOne={() => view.setViewport((v) => zoomAbout(v, 1 / v.k, size.w / 2, size.h / 2))}
-      />
+      {!docked && (
+        <>
+          <Legend counts={counts} />
+          <ZoomControls
+            pct={Math.round(view.viewport.k * 100)}
+            outline={outline}
+            onIn={() => zoomBy(1.2)}
+            onOut={() => zoomBy(1 / 1.2)}
+            onFit={fit}
+            onOneToOne={() => view.setViewport((v) => zoomAbout(v, 1 / v.k, size.w / 2, size.h / 2))}
+          />
+        </>
+      )}
     </div>
   );
 }
@@ -733,16 +765,18 @@ function StageColumn({
           aria-selected={selected}
           aria-label={stageAria(stage)}
           data-testid={`rules-stage-${stage.id}`}
+          data-selected={selected ? "true" : undefined}
           data-level={level ?? "none"}
           onClick={onPick}
           onMouseEnter={() => onHover(true)}
           onMouseLeave={() => onHover(false)}
           className="flex h-full w-full cursor-pointer flex-col gap-1.5 overflow-hidden rounded-[12px] px-3 py-2.5 text-fg transition-[box-shadow,transform] duration-200 hover:-translate-y-0.5"
           style={{
-            border: meta ? meta.stageBorder : "1.5px dashed #626c75",
+            // The opened stage: an accent border and glow, readable at the strip's scale.
+            border: selected ? "2px solid #c6f24e" : meta ? meta.stageBorder : "1.5px dashed #626c75",
             background: dim ? "#0f1317" : "#12171b",
-            boxShadow: ring(selected, focused),
-            opacity: dim ? 0.5 : 1,
+            boxShadow: selected ? "0 0 0 3px rgba(198,242,78,.22), 0 0 24px rgba(198,242,78,.35)" : ring(false, focused),
+            opacity: dim && !selected ? 0.5 : 1,
           }}
         >
           {!outline && (
@@ -1027,33 +1061,23 @@ function NarrowList({
           <LevelWord level="advisory" className="text-meta" />
         </button>
       )}
-      <div className="mt-4 flex flex-wrap gap-3" data-testid="rules-legend">
-        {LEVEL_ORDER.map((l) => (
-          <span key={l} data-testid={`rules-legend-${l}`} className="flex items-center gap-1.5">
-            <LevelWord level={l} className="text-[10px]" />
-            {l === "not_used" && <span className="text-[10px] text-muted">not used by this project's model</span>}
-            <span className={cn(MONO, "text-[10px] text-fg-2")}>{counts[l]}</span>
-          </span>
-        ))}
-      </div>
+      {/* Docked, the list is a strip over the editor: no legend (GRPH-1725). */}
+      {!sel && (
+        <div className="mt-4 flex flex-wrap gap-3" data-testid="rules-legend">
+          {LEVEL_ORDER.map((l) => (
+            <span key={l} data-testid={`rules-legend-${l}`} className="flex items-center gap-1.5">
+              <LevelWord level={l} className="text-[10px]" />
+              {l === "not_used" && <span className="text-[10px] text-muted">not used by this project's model</span>}
+              <span className={cn(MONO, "text-[10px] text-fg-2")}>{counts[l]}</span>
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
 // ── Stage view (replaces the 400px inspector panel; GRPH-1659) ─────────────────
-
-/** A library rule's current value as text: lists comma-joined, enums by label, on/off. */
-function paramText(ruleId: string, name: string, v: unknown): string {
-  if (Array.isArray(v)) return v.length ? v.join(", ") : "none";
-  if (typeof v === "boolean") return v ? "on" : "off";
-  if (typeof v === "string") return enumFor(ruleId, name)?.find((o) => o.value === v)?.label ?? v;
-  if (v && typeof v === "object") {
-    return Object.entries(v as Record<string, unknown>)
-      .map(([k, x]) => `${k}: ${Array.isArray(x) ? x.join(", ") : String(x)}`)
-      .join("; ");
-  }
-  return String(v);
-}
 
 // ── Docked editor (GRPH-1718, layout C) ────────────────────────────────────────
 
@@ -1101,6 +1125,8 @@ function StageDock({
   const index = flow.stages.findIndex((s) => stageKey(s.id) === sel);
   const stage = index >= 0 ? flow.stages[index] : null;
   const ref = React.useRef<HTMLElement | null>(null);
+  const [ruleTitle, setRuleTitle] = React.useState<string | null>(null);
+  const onRule = React.useCallback((r: RuleFlowRule | null) => setRuleTitle(r?.title ?? null), []);
   // Opening takes focus (Escape then closes it); closing hands focus back to what opened it.
   // A refusal's ?rule= focus belongs to the rule's own row, so the dock leaves it there.
   React.useEffect(() => {
@@ -1150,9 +1176,14 @@ function StageDock({
         className="h-1.5 flex-none cursor-row-resize bg-surface-2 hover:bg-accent/40"
       />
       <div className="flex flex-none flex-wrap items-center gap-2 border-b border-line px-4 py-1.5">
-        <span className={cn(MONO, "text-meta tracking-[0.07em] text-muted-2")}>
+        <span className={cn(MONO, "flex-none text-meta tracking-[0.07em] text-muted-2")}>
           {pack ? "AGENT INSTRUCTIONS" : `STAGE ${String(index + 1).padStart(2, "0")} · ${title.toUpperCase()}`}
         </span>
+        {!pack && ruleTitle && (
+          <span className="min-w-0 truncate text-body font-semibold text-fg" data-testid="rules-dock-rule-title">
+            {ruleTitle}
+          </span>
+        )}
         <span className="flex-1" />
         <div role="group" aria-label="Editor height" className="flex gap-1">
           {DOCK_PRESETS.map(([label, pct]) => (
@@ -1225,7 +1256,7 @@ function StageDock({
           prefill={prefill}
           onClose={onClose}
           onDirty={onDirty}
-          detail={(r) => <RuleRow rule={r} version={flow.version} model={flow.model} focused={focusRule === r.id} canWrite={false} />}
+          onRule={onRule}
         />
       )}
     </section>
@@ -1253,152 +1284,6 @@ function PackBody({ pack }: { pack: RuleFlowRule }) {
   );
 }
 
-/** One rule, single column, read only: the current value is text. Editing is the stage editor's. */
-function RuleRow({
-  rule,
-  version,
-  model,
-  focused = false,
-  canWrite,
-}: {
-  rule: RuleFlowRule;
-  version: string;
-  model: string | null;
-  focused?: boolean;
-  canWrite: boolean;
-}) {
-  const level = ruleLevel(rule);
-  const ref = React.useRef<HTMLDivElement | null>(null);
-  const [editing, setEditing] = React.useState(false);
-  React.useEffect(() => {
-    if (!focused) return;
-    ref.current?.scrollIntoView?.({ block: "center" });
-    ref.current?.focus({ preventScroll: true });
-  }, [focused]);
-  const quiet = quietLine(rule);
-  const enforcer = enforcerText(rule, version);
-  const library = rule.control === "toggle";
-  const select = rule.control === "select";
-  const budget = rule.id === "plan.budget_cap";
-  // A refused template is UNMEASURED, not a dimmed choice; an off rule is dimmed and still listed.
-  const dim = !rule.used && !rule.unmeasured_reason;
-  // Rules the stage editor can't edit get their own Edit, which opens the existing editor here.
-  const ownEditor = select || (budget && rule.used);
-
-  let valueLine: string | null = null;
-  let source: string | null = null;
-  if (library && !rule.unmeasured_reason) {
-    const params = (rule.params?.value as Record<string, unknown> | null) ?? {};
-    const parts = Object.entries(params).map(([k, v]) => `${k}: ${paramText(rule.id, k, v)}`);
-    valueLine = [rule.value === true ? "on" : "off", ...parts].join(" · ");
-    source = toggleSourceLabel(rule.params?.source ?? rule.source);
-  } else if (select) {
-    valueLine = MEMORY_WRITE_MODES.find((m) => m.value === String(rule.value ?? "review"))?.label ?? String(rule.value ?? "review");
-  } else if (rule.truth === "db") {
-    valueLine = valueText(rule.value) ?? (budget ? null : "— no value");
-    source = sourceLabel(rule.source);
-  }
-
-  return (
-    <div
-      ref={ref}
-      data-testid={`rules-row-${rule.id}`}
-      data-level={level}
-      data-focused={focused ? "true" : undefined}
-      aria-current={focused ? "true" : undefined}
-      tabIndex={focused ? -1 : undefined}
-      className="flex flex-col gap-1.5 py-3"
-      style={focused ? { borderLeft: "4px solid #c6f24e", paddingLeft: 8 } : undefined}
-    >
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1" style={{ opacity: dim ? 0.55 : 1 }}>
-        <span className="text-[13px] font-semibold leading-snug text-fg">{rule.title}</span>
-        <LevelWord level={level} size={13} className="text-[10px]" />
-        {source && (
-          <span data-testid="rules-source" className={cn(MONO, "rounded-[4px] border border-control px-1.5 text-meta tracking-[0.04em] text-fg-2")}>
-            {source}
-          </span>
-        )}
-        <span className={cn(MONO, "break-all text-[10.5px] text-fg-2")}>{rule.id}</span>
-        <span className={cn(MONO, "rounded-[4px] border border-[#2a333a] px-1 text-[9px] tracking-[0.04em] text-muted")}>{rule.truth}</span>
-        <span className="flex-1" />
-        {ownEditor && canWrite && !editing && (
-          <button
-            type="button"
-            data-testid={`rules-edit-row-${rule.id}`}
-            onClick={() => setEditing(true)}
-            className="h-6 rounded-[8px] border border-control px-2 text-small text-fg hover:border-accent"
-          >
-            Edit
-          </button>
-        )}
-        {editing && (
-          <button type="button" onClick={() => setEditing(false)} className="h-6 rounded-[8px] border border-control px-2 text-small text-fg-2">
-            Done
-          </button>
-        )}
-      </div>
-      <span className="text-[12px] leading-snug text-muted" style={{ opacity: dim ? 0.55 : 1 }}>{rule.summary}</span>
-      {rule.unmeasured_reason && (
-        <span data-testid="rules-toggle-refused" className="text-[11.5px] leading-snug text-[#ff6b6b]">
-          UNMEASURED · TEMPLATE REFUSED — {rule.unmeasured_reason}
-        </span>
-      )}
-      {rule.locked && (
-        <span data-testid="rules-toggle-locked" className="text-[11.5px] leading-snug text-fg-2">
-          Locked: the org set this for every project; change it on the org console.
-        </span>
-      )}
-      {valueLine !== null && !editing && (
-        <span data-testid="rules-value" className={cn(MONO, "break-words text-[13px] font-semibold")} style={{ color: valueLine === "— no value" ? "#ff6b6b" : "#e6e9ec" }}>
-          {valueLine}
-        </span>
-      )}
-      {rule.id === FOUND_BUG_RULE && library && !rule.unmeasured_reason && (
-        <span data-testid="rules-found-bug-effective" className="text-[11.5px] leading-snug text-fg-2">
-          {rule.value === true
-            ? `Effective mode: ${paramText(rule.id, "mode", (rule.params?.value as Record<string, unknown> | null)?.mode ?? FOUND_BUG_DEFAULT)}.`
-            : `Off: the default, ${FOUND_BUG_DEFAULT}, is in force.`}
-        </span>
-      )}
-      {rule.id === "gitops.model" && <ModelWhere />}
-      <EnforcerLink kind={rule.enforcer.kind} text={enforcer} url={rule.enforcer.url} />
-      {dim && (
-        <span className="text-[11.5px] leading-snug text-muted" data-testid="rules-row-not-used">
-          {rule.not_used_reason
-            ? `NOT USED — ${rule.not_used_reason}.`
-            : library
-            ? `NOT USED — ${rule.label ?? "turned off for this project"}. On, it is ${LEVELS[rule.enforcement].word}.`
-            : `Not used by this project's model${model ? `: ${model}` : ""}.`}
-        </span>
-      )}
-      {quiet && <span className="text-[11.5px] leading-snug text-muted-2">{quiet}</span>}
-      {rule.used && rule.enforcement === "external" && (
-        <span className="text-[11.5px] leading-snug text-fg-2">
-          <span className={cn(MONO, "mr-2 text-[10px] font-semibold tracking-[0.06em] text-[#c9b8ff]")}>NOT VERIFIED</span>
-          {externalText(rule)}
-        </span>
-      )}
-      {rule.used && rule.enforcement === "checked" && (rule.last_result ? (
-        <span data-testid="rules-result" data-outcome={rule.last_result.outcome} className="text-[11.5px] text-muted">
-          <span className={cn(MONO, "mr-2 text-[10px] font-semibold tracking-[0.06em] text-fg-2")}>
-            {rule.last_result.outcome === "pass" ? "PASS" : "FAIL"} · last attested {relTime(rule.last_result.at) ?? "at an unknown time"}
-          </span>
-          {rule.last_result.item}
-        </span>
-      ) : (
-        // No attestation on a merged item: said as such, never drawn as a pass.
-        <span data-testid="rules-no-result" className="text-[11.5px] text-muted">
-          <span className={cn(MONO, "mr-2 text-[10px] font-semibold tracking-[0.06em] text-fg-2")}>NO RESULT RECORDED</span>
-          Nothing has reported yet. That is not a pass.
-        </span>
-      ))}
-      {library && !rule.unmeasured_reason && <RuleHistory ruleId={rule.id} />}
-      {editing && select && <MemoryWriteModeControl rule={rule} />}
-      {editing && budget && <BudgetCapEditor />}
-    </div>
-  );
-}
-
 const CONTROL_BANNERS = {
   linked_set: { label: "LINKED", color: "#c9b8ff", text: "Gitops values come from your org." },
   linked_unset: { label: "LINKED · NOT SET", color: "#dfe3e7", text: "Your org has not set a gitops contract for this project." },
@@ -1406,10 +1291,23 @@ const CONTROL_BANNERS = {
 } as const;
 
 /** Frames 3b–3d: which plane holds the gitops contract, and the pill that says so. */
-function ControlBanner({ state, gitops }: { state: string | null; gitops: ReturnType<typeof useGitops>["data"] }) {
+function ControlBanner({ state, gitops, compact = false }: { state: string | null; gitops: ReturnType<typeof useGitops>["data"]; compact?: boolean }) {
   const orgName = useOrgName(gitops);
   if (state !== "linked_set" && state !== "linked_unset" && state !== "linked_unreachable") return null;
   const b = CONTROL_BANNERS[state];
+  if (compact) {
+    return (
+      <div
+        role="status"
+        data-testid={`rules-control-banner-${state}`}
+        data-collapsed="true"
+        className="mx-5 mt-1 flex flex-none items-center gap-2 overflow-hidden whitespace-nowrap text-small"
+      >
+        <span className={cn(MONO, "text-meta font-semibold tracking-[0.07em]")} style={{ color: b.color }}>{b.label}</span>
+        <span className="truncate text-fg-2">{gitops?.control.message || b.text}</span>
+      </div>
+    );
+  }
   return (
     <div
       role="status"
@@ -1432,35 +1330,3 @@ function ControlBanner({ state, gitops }: { state: string | null; gitops: Return
   );
 }
 
-function ModelWhere() {
-  const { data: config } = useConfig();
-  const hosted = config?.hosted_mode ?? false;
-  return (
-    <span className="text-[11.5px] leading-snug text-muted" data-testid="rules-gitops-model-where">
-      A preset rewrites other fields, so the model is not edited inline. Change it in{" "}
-      {hosted ? <AdminGitopsLink /> : (
-        <Link to={settingsPath("deployment/gitops")} className="text-accent hover:underline">Settings → Gitops</Link>
-      )}
-    </span>
-  );
-}
-
-function EnforcerLink({ kind, text, url }: { kind: string; text: string; url: string }) {
-  const body = (
-    <>
-      <span className="flex-none rounded-[3px] border border-[#2a333a] px-1 text-[9px] tracking-[0.05em] text-muted">
-        {enforcerKindLabel(kind)}
-      </span>
-      <span>{text}</span>
-    </>
-  );
-  const cls = cn(MONO, "flex items-center gap-1.5 break-all text-small leading-snug");
-  // No URL from the server means no link — a guessed one would read as a verified source.
-  if (!url) return <span className={cn(cls, "text-fg-2")} data-testid="rules-enforcer">{body}</span>;
-  return (
-    <a href={url} target="_blank" rel="noopener noreferrer" className={cn(cls, "text-accent hover:underline")} data-testid="rules-enforcer">
-      {body}
-      <span aria-hidden>↗</span>
-    </a>
-  );
-}
