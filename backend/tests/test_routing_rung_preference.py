@@ -53,13 +53,22 @@ def test_a_local_order_reorders_two_local_models(client, world):
 
 def test_no_api_key_order_lifts_an_api_key_above_a_subscription_with_headroom(client, world,
                                                                                rung):
-    """The sabotage target: let the api_key order cross rungs and this goes red."""
-    sub = _ent(client, world, "google", kind="subscription")
-    _report(client, world, sub, _runner(client, world, [sub], vendor="google"), "registered")
-    _custom(api_key={"order": [rung["cheap"]], "tie_break": "cheapest"})
+    """The sabotage target: let any rung's order be read across rungs and this goes red.
+
+    The subscription with headroom is SECOND in its own rung's order (preference_rank 1) while
+    the api key is FIRST in its rung's (preference_rank 0), so only the ladder keeps the
+    subscription above the api key: a sort that reads preference ahead of the rung lifts it."""
+    first = _ent(client, world, "google", kind="subscription")
+    sub = _ent(client, world, "openai", kind="subscription")
+    _report(client, world, first, _runner(client, world, [first], vendor="google"), "registered")
+    _report(client, world, sub, _runner(client, world, [sub], vendor="openai"), "registered")
+    _policy(routing_mode="custom_hierarchy", subscription_order=[first, sub],
+            rung_preference={"api_key": {"order": [rung["cheap"]], "tie_break": "cheapest"}})
     ranked = _rank()
-    assert ranked[0]["id"] == sub and ranked[0]["rung"] == "subscription"
-    assert ranked[1]["id"] == rung["cheap"]
+    assert [e["rung"] for e in ranked[:2]] == ["subscription", "subscription"]
+    assert _ids(ranked[:2]) == [first, sub]
+    assert ranked[1]["preference_rank"] == 1
+    assert ranked[2]["id"] == rung["cheap"] and ranked[2]["preference_rank"] == 0
 
 
 def test_a_rungs_own_tie_break_applies_only_within_that_rung(client, rung):
