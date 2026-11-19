@@ -450,7 +450,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "decompose_prd",
         "description": (
             "One task per un-covered PRD section, with its own `## Acceptance` and code-graph "
-            "`touchpoints` (none of either: filed blocked). `create=true` files them if approved (grill). "
+            "`touchpoints` (none of either: filed blocked), plus `depends_on` where its body "
+            "names another section. `create=true` files and links them if approved (grill). "
             "Framing sections skipped unless `include_prose`."
         ),
         "inputSchema": {
@@ -460,6 +461,14 @@ TOOLS: list[dict[str, Any]] = [
                 "create": {"type": "boolean"},
                 "include_prose": {"type": "boolean"},
                 "touchpoints": {"type": "object", "description": "{section: [paths]} override"},
+                "drop_links": {
+                    "type": "array",
+                    "description": "depends_on links to skip: [{section, depends_on}].",
+                },
+                "add_links": {
+                    "type": "array",
+                    "description": "depends_on links to add: [{section, depends_on, why?}].",
+                },
             },
             "required": ["prd_id"],
         },
@@ -4020,6 +4029,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             create=bool(args.get("create", False)),
             include_prose=bool(args.get("include_prose", False)),
             touchpoints=args.get("touchpoints") or None,
+            drop_links=args.get("drop_links"),
+            add_links=args.get("add_links"),
         )
     if name == "create_prd":
         prd = prd_svc.create_prd(
