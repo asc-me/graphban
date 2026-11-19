@@ -96,6 +96,7 @@ describe("library rule toggles", () => {
   it("an off rule stays listed, drawn NOT USED, dimmed and labelled", async () => {
     const off = lib("review.sabotage_required", { value: false, used: false, label: "turned off for this project" });
     const ins = await openReview([lib("review.other"), off]);
+    await userEvent.setup().click(within(ins).getByTestId("rules-dock-row-review.sabotage_required"));
     const row = within(ins).getByTestId("rules-row-review.sabotage_required");
     expect(row).toHaveAttribute("data-level", "not_used");
     expect(row).toHaveTextContent("NOT USED");
@@ -107,12 +108,10 @@ describe("library rule toggles", () => {
     const user = userEvent.setup();
     vi.mocked(api.setRuleToggles).mockResolvedValue({} as never);
     const ins = await openReview([lib("review.sabotage_required", { value: false, used: false })]);
-    await user.click(within(ins).getByTestId("rules-edit-stage"));
-    await user.click(within(ins).getByRole("switch"));
+    await user.click(within(ins).getByTestId("rules-dock-state-on"));
     expect(api.setRuleToggles).not.toHaveBeenCalled();
-    await user.click(within(ins).getByTestId("rules-review-open"));
     await user.type(await screen.findByLabelText(/reason/i), "we ship sabotage");
-    await user.click(screen.getByRole("button", { name: /^save/i }));
+    await user.click(screen.getByTestId("rules-dock-save-button"));
     await waitFor(() => expect(api.setRuleToggles).toHaveBeenCalled());
     expect(JSON.stringify(vi.mocked(api.setRuleToggles).mock.calls[0])).toContain("we ship sabotage");
   });

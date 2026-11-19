@@ -35,6 +35,7 @@ from app.services import events as events_svc
 from app.services import items as items_svc
 from app.services import platform as platform_svc
 from app.services import prds as prd_svc
+from app.services import spec_pull as spec_pull_svc
 from app.services import prototypes as proto_svc
 
 router = APIRouter(prefix="/prds", tags=["prds"])
@@ -448,6 +449,10 @@ def prd_baseline_chain(prd_id: str, db: Session = Depends(get_db),
 
 @router.post("/{prd_id}/decompose")
 def decompose_prd(prd_id: str, create: bool = False, include_prose: bool = False, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    try:
+        spec_pull_svc.refuse_if_remote(db, prd_id)
+    except spec_pull_svc.RemoteSpecRefused as e:
+        raise Refused(409, str(e), rule_id=spec_pull_svc.REMOTE_SPEC_RULE)
     prd = prd_svc.get_prd(db, prd_id)
     if prd is None:
         raise HTTPException(404, "prd not found")

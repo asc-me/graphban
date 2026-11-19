@@ -90,6 +90,7 @@ import type {
   PathCounts,
   RuleToggle,
   SerialisationPreview,
+  RuleEffect,
   RuleToggles,
   RuleToggleBatchOut,
   RuleToggleBatchWrite,
@@ -873,6 +874,16 @@ export const api = {
   harnessCapacity: (projectId: string) =>
     request<import("@/lib/types").HarnessCapacity>(
       `/harness/capacity?project_id=${encodeURIComponent(projectId)}`),
+  harnessReplay: (projectId: string, proposal: import("@/lib/types").RoutingReplayProposal = {}) => {
+    const q = new URLSearchParams({ project_id: projectId });
+    if (proposal.tie_break) q.set("tie_break", proposal.tie_break);
+    if (proposal.when_exhausted) q.set("when_exhausted", proposal.when_exhausted);
+    if (proposal.ladder?.length) q.set("ladder", proposal.ladder.join(","));
+    if (proposal.routing_mode) q.set("routing_mode", proposal.routing_mode);
+    if (proposal.subscription_order?.length) q.set("subscription_order", proposal.subscription_order.join(","));
+    if (proposal.days) q.set("days", String(proposal.days));
+    return request<import("@/lib/types").RoutingReplay>(`/harness/capacity/replay?${q.toString()}`);
+  },
   harnessLadder: (projectId: string) =>
     request<import("@/lib/types").HarnessLadder>(
       `/harness/ladder?project_id=${encodeURIComponent(projectId)}`),
@@ -1292,6 +1303,9 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
+  /** Measured effect of one library rule (caught, escapes before/after, cost). Reads only. */
+  ruleEffect: (projectId: string, ruleId: string) =>
+    request<RuleEffect>(`/rules/effect${projectQuery(projectId)}&rule_id=${encodeURIComponent(ruleId)}`),
   /** The pack's profiles and this project's applied level (GRPH-1609). Reads only. */
   ruleProfiles: (projectId: string) => request<RuleProfiles>(`/rules/profiles${projectQuery(projectId)}`),
   /** How the project differs from one profile; turning a pinned-on rule off is `weakening`. */
@@ -1728,6 +1742,17 @@ export interface SpecLibrary {
   preamble: SpecLibraryPreamble | null;
   documents: SpecLibraryDocument[];
   conflict_ids: string[];
+  /** Specs whose home is another deployment (GRPH-1677): read-only here. Absent on an older box. */
+  remote_prds?: SpecLibraryRemotePrd[];
+}
+
+/** A spec owned by another deployment. `home` names it; `version` is the published hash. */
+export interface SpecLibraryRemotePrd {
+  id: string;
+  title: string;
+  home: string;
+  version: string;
+  read_only: true;
 }
 
 /** What one Drive sync run reports. The conflict record page reads it from router state. */

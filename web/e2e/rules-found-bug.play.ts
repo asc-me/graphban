@@ -35,8 +35,8 @@ test("found-bug: absent from the pack — the default is in force, the rule is n
 });
 
 test("found-bug: the editor offers exactly the two modes", async ({ page }) => {
+  // GRPH-1718: the stage opens as the docked editor, so the rule's form is already open.
   const ins = await open(page, "on");
-  await ins.getByTestId("rules-edit-stage").click();
   const group = ins.getByRole("radiogroup", { name: "What a builder does with a bug it finds" });
   await expect(group.getByRole("radio")).toHaveCount(2);
   await shot(page, "4-editor");

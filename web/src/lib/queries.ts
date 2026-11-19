@@ -4,7 +4,7 @@ import * as React from "react";
 import { api } from "./api";
 import { httpsAddress, probeTrust } from "@/lib/https";
 import type { OnboardingMark, SetupConfirm } from "./types";
-import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, Item, ItemCreateBody, ItemDetail, LessonFilters, LogExportPatch, RequestItem, RuleProfileApplyWrite, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
+import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, RoutingReplayProposal, Item, ItemCreateBody, ItemDetail, LessonFilters, LogExportPatch, RequestItem, RuleProfileApplyWrite, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
 
 export const keys = {
   me: ["me"] as const,
@@ -687,6 +687,16 @@ export function useRuleToggles(projectId: string) {
   });
 }
 
+/** Measured effect of one rule; an error or a missing endpoint reads as unavailable, never zero. */
+export function useRuleEffect(projectId: string, ruleId: string | null) {
+  return useQuery({
+    queryKey: ["rule-effect", projectId, ruleId],
+    queryFn: () => api.ruleEffect(projectId, ruleId as string),
+    enabled: !!projectId && !!ruleId,
+    retry: false,
+  });
+}
+
 /** The last `set_rule_toggle` event on one rule in this project: who changed it, and when. */
 export function useRuleToggleLastChange(projectId: string, ruleId: string) {
   const q: EventsQuery = { projectId, action: "set_rule_toggle", targetType: "rule", targetId: ruleId, limit: 1 };
@@ -730,6 +740,7 @@ function invalidateRuleToggles(qc: ReturnType<typeof useQueryClient>) {
   // The map draws the toggle (used / NOT USED) from the flow; the row's "changed by" from events.
   qc.invalidateQueries({ queryKey: ["rules-flow"] });
   qc.invalidateQueries({ queryKey: ["rule-toggles"] });
+  qc.invalidateQueries({ queryKey: ["rule-effect"] });
   qc.invalidateQueries({ queryKey: ["events"] });
   // A hand change can drift the project from its applied level (GRPH-1600).
   qc.invalidateQueries({ queryKey: ["rule-profile-drift"] });
@@ -1446,6 +1457,16 @@ export function useHarnessLadder(projectId?: string) {
   return useQuery({
     queryKey: keys.harnessLadder(projectId ?? ""),
     queryFn: () => api.harnessLadder(projectId!),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+/** GRPH-1712: the routing replay for a draft policy, keyed on project and the draft itself. */
+export function useHarnessReplay(projectId: string | undefined, proposal: RoutingReplayProposal) {
+  return useQuery({
+    queryKey: ["harness-replay", projectId ?? "", proposal] as const,
+    queryFn: () => api.harnessReplay(projectId!, proposal),
     enabled: !!projectId,
     retry: false,
   });

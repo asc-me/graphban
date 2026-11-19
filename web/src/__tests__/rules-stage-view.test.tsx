@@ -99,8 +99,8 @@ beforeEach(() => {
   vi.mocked(api.refusalCoverage).mockResolvedValue({ published: false, n: null, m: null, commit: null, published_at: null });
 });
 
-describe("full-width stage view (GRPH-1659)", () => {
-  it("a 'set this value' suggestion opens the stage editor with the value staged on its rule", async () => {
+describe("docked editor: the paths the old stage view handed to an editor (GRPH-1718)", () => {
+  it("a 'set this value' suggestion opens the dock with the value staged on its rule", async () => {
     const user = userEvent.setup();
     vi.mocked(api.recommendedRules).mockResolvedValue({
       sources: [],
@@ -111,57 +111,37 @@ describe("full-width stage view (GRPH-1659)", () => {
     await user.click(await screen.findByTestId("rules-open-recommended"));
     await user.click(await screen.findByRole("button", { name: "Open in Release" }));
     const ins = await screen.findByRole("region", { name: "Release stage inspector" });
-    const editor = await within(ins).findByTestId("rules-stage-editor");
-    const field = within(editor).getByTestId("rules-edit-gitops-release_defined_in");
+    const field = await within(ins).findByTestId("rules-edit-gitops-release_defined_in");
     expect(await within(field).findByLabelText("Release doc")).toHaveValue("RELEASING.md");
-    expect(within(ins).queryByTestId("rules-edit-stage")).toBeNull();
+    expect(within(ins).getByTestId("rules-dock-diff")).toHaveTextContent("release_defined_in");
   });
 
-  it("memory.write_mode's per-row Edit opens its editor in the view; Done closes it", async () => {
-    const user = userEvent.setup();
+  it("memory.write_mode's editor is in the form, and its row still reads the stored mode", async () => {
     wrap(<RulesView />, "/rules?stage=learn");
     const ins = await screen.findByTestId("rules-inspector");
     const row = within(ins).getByTestId("rules-row-memory.write_mode");
     expect(within(row).getByTestId("rules-value")).toHaveTextContent("Review");
-    expect(within(row).queryByTestId("rules-write-mode")).toBeNull();
-    await user.click(await within(row).findByTestId("rules-edit-row-memory.write_mode"));
-    expect(within(row).getByTestId("rules-write-mode")).toBeInTheDocument();
-    expect(within(row).getByRole("radiogroup", { name: "Memory write mode" })).toBeInTheDocument();
-    expect(within(row).queryByTestId("rules-value")).toBeNull();
-    await user.click(within(row).getByRole("button", { name: "Done" }));
-    expect(within(row).queryByTestId("rules-write-mode")).toBeNull();
-    expect(within(row).getByTestId("rules-value")).toHaveTextContent("Review");
+    expect(within(ins).getByTestId("rules-write-mode")).toBeInTheDocument();
+    expect(within(ins).getByRole("radiogroup", { name: "Memory write mode" })).toBeInTheDocument();
   });
 
-  it("plan.budget_cap's per-row Edit opens the budget editor in the view; Done closes it", async () => {
-    const user = userEvent.setup();
+  it("plan.budget_cap's budget editor is in the form", async () => {
     wrap(<RulesView />, "/rules?stage=plan");
     const ins = await screen.findByTestId("rules-inspector");
-    const row = within(ins).getByTestId("rules-row-plan.budget_cap");
-    expect(within(row).queryByTestId("rules-budget-cap")).toBeNull();
-    await user.click(await within(row).findByTestId("rules-edit-row-plan.budget_cap"));
-    expect(await within(row).findByTestId("rules-budget-cap")).toHaveTextContent("5000 tokens per item");
-    await user.click(within(row).getByRole("button", { name: "Done" }));
-    expect(within(row).queryByTestId("rules-budget-cap")).toBeNull();
+    expect(await within(ins).findByTestId("rules-budget-cap")).toHaveTextContent("5000 tokens per item");
   });
 
-  it("the pack opens the same full-width view, with the strip, from the map and from the strip", async () => {
+  it("the pack opens in the dock from the map", async () => {
     const user = userEvent.setup();
     wrap(<RulesView />);
     await user.click(await screen.findByTestId("rules-pack"));
     const ins = await screen.findByRole("region", { name: "Agent instructions (Graphban pack) inspector" });
-    expect(ins).toHaveClass("inset-0");
-    const strip = within(ins).getByTestId("rules-stage-strip");
-    expect(within(strip).getByTestId("rules-strip-pack")).toHaveAttribute("aria-current", "true");
+    expect(ins).not.toHaveClass("inset-0");
     expect(within(ins).getByTestId("rules-pack-skills")).toHaveTextContent("skills/graphban-review/SKILL.md");
-    // From a stage, the strip's pack entry opens the pack in the same view.
-    await user.click(within(strip).getByTestId("rules-strip-s:build"));
-    await screen.findByRole("region", { name: "Build stage inspector" });
-    await user.click(screen.getByTestId("rules-strip-pack"));
-    expect(await screen.findByRole("region", { name: "Agent instructions (Graphban pack) inspector" })).toBeInTheDocument();
+    expect(screen.getByTestId("rules-listbox")).toBeInTheDocument();
   });
 
-  it("Escape on the stage view closes it and returns to the map", async () => {
+  it("Escape on the dock closes it and returns to the map", async () => {
     const user = userEvent.setup();
     wrap(<RulesView />, "/rules?stage=build");
     const ins = await screen.findByRole("region", { name: "Build stage inspector" });
@@ -171,17 +151,15 @@ describe("full-width stage view (GRPH-1659)", () => {
     expect(screen.getByTestId("rules-listbox")).toBeInTheDocument();
   });
 
-  it("width: the content is capped at 880px, the strip scrolls horizontally, and the view has no horizontal overflow", async () => {
+  it("layout: three columns from 900px up, stacked and scrolling inside the dock below it, no overlay", async () => {
     wrap(<RulesView />, "/rules?stage=build");
     const ins = await screen.findByTestId("rules-inspector");
-    expect(ins).toHaveClass("inset-0", "overflow-hidden");
-    const strip = within(ins).getByTestId("rules-stage-strip");
-    expect(strip).toHaveClass("overflow-x-auto");
-    for (const b of within(strip).getAllByRole("button")) expect(b).toHaveClass("flex-none", "whitespace-nowrap");
-    expect(ins.querySelector(".max-w-\\[880px\\]")).not.toBeNull();
-    // The old narrow column and bottom sheet are gone.
-    expect(ins).not.toHaveClass("w-[400px]");
-    expect(ins).not.toHaveClass("bottom-0");
+    expect(ins).not.toHaveClass("inset-0");
+    const editor = within(ins).getByTestId("rules-dock-editor");
+    expect(editor).toHaveClass("flex-col", "overflow-y-auto", "min-[900px]:grid");
+    expect(editor.className).toContain("min-[900px]:grid-cols-[");
+    // The page never scrolls sideways: the dock clips, its columns scroll.
+    expect(document.querySelector('[data-testid="rules-view"]')).toHaveClass("min-h-0");
   });
 });
 

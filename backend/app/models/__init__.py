@@ -2354,6 +2354,25 @@ class SpecPublish(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class RemoteSpec(Base):
+    """A spec whose home is ANOTHER deployment, as last read from the console (GRPH-1677).
+
+    Read-only on this box: never a `Prd` row, so nothing here can be edited, approved or
+    decomposed. `home` names the deployment that owns it and `base_hash` is the version it
+    published. Replaced whole on each pull; a spec the console stops serving is dropped."""
+
+    __tablename__ = "remote_spec"
+
+    prd_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String, index=True)
+    project_name: Mapped[str] = mapped_column(String, default="", server_default="")
+    title: Mapped[str] = mapped_column(String, default="", server_default="")
+    home: Mapped[str] = mapped_column(String, default="", server_default="")
+    base_hash: Mapped[str] = mapped_column(String, default="", server_default="")
+    body: Mapped[str] = mapped_column(Text, default="", server_default="")
+    pulled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class SyncProject(Base):
     """A local project mapped to a cloud project (GRPH-1517, P67 L4). A project with no row is
     local only. `last_push_result` is `ok | refused | unknown`, with `last_push_reason`; both
@@ -3884,6 +3903,11 @@ class RoutingDecision(Base):
     agent_model: Mapped[str] = mapped_column(String, default="", server_default="")
     #: Did the claimant hold the entitlement the decision named? NULL until someone claims.
     matched: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    #: GRPH-1712: the ranked candidate set at decision time — the policy in force, the claimant's
+    #: declared entitlements and every org entitlement with its rung, headroom state, stated
+    #: reset and tie-break inputs — so a replay re-ranks THEN, not now. NULL on rows written
+    #: before the column existed: those are not replayable, never "would not have moved".
+    candidates: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

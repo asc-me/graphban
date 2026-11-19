@@ -3472,6 +3472,28 @@ export interface EffectivePredicate {
   when?: string;
 }
 
+/** A measured value from `GET /rules/effect`: never a bare 0 when `status` is not `measured`. */
+export interface RuleMeasured {
+  status: "measured" | "insufficient" | "unavailable";
+  value: number | null;
+  n: number | null;
+  min_n: number;
+  reason: string | null;
+}
+
+export interface RuleEffectRule {
+  rule_id: string;
+  caught: RuleMeasured & { items?: string[] };
+  cost: { overridden: RuleMeasured; held_seconds: RuleMeasured };
+  escape_rate: { before: RuleMeasured; after: RuleMeasured };
+}
+
+/** `GET /rules/effect` for one project (GRPH-1265). */
+export interface RuleEffect {
+  scope: string;
+  rules: RuleEffectRule[];
+}
+
 export interface RuleToggles {
   /** False until a rule pack is loaded: an empty list then means "no library". */
   library_loaded: boolean;
@@ -3714,6 +3736,40 @@ export interface HarnessRoutingReason {
   /** Set when the item was never routed: the server's own words. */
   reason: string | null;
   at: string | null;
+}
+
+/** GRPH-1712: one decision a draft policy would have moved, re-ranked from its stored candidates. */
+export interface RoutingReplayMove {
+  item_key: string;
+  at: string;
+  from: { verdict: string; entitlement_id: string | null };
+  to: { verdict: string; entitlement_id: string | null };
+}
+
+/** GRPH-1712: GET /harness/capacity/replay — the routing decisions of the window re-ranked under a
+ *  draft policy. `moved`/`held` are null when nothing in the window is replayable (unknown, not 0). */
+export interface RoutingReplay {
+  project_id: string;
+  days: number;
+  window_start: string;
+  window_end: string;
+  decisions: number;
+  replayable: number;
+  not_replayable: number;
+  moved: number | null;
+  held: number | null;
+  examples: RoutingReplayMove[];
+  reason: string | null;
+}
+
+/** The draft a replay re-ranks under; an absent key keeps what each decision recorded. */
+export interface RoutingReplayProposal {
+  tie_break?: string;
+  when_exhausted?: string;
+  ladder?: string[];
+  routing_mode?: string;
+  subscription_order?: string[] | null;
+  days?: number;
 }
 
 /** GRPH-1405: where the test suites run — the `build.test_scope` rule's `mode` param. */
