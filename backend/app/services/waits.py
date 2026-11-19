@@ -279,6 +279,12 @@ def _event(db: Session, action: str, items: dict[str, tuple[Item, dict]], *, act
     )
     db.add(ev)
     db.flush()
+    # Decision waits write the audit row here, not through events.record (GRPH-1733).
+    from app.services import project_sync_outbox as outbox
+    outbox.note_event(
+        db, project_id=primary.project_id, target_type="item", target_id=primary.key,
+        action=f"blocker.{action}", meta=ev.meta,
+    )
     return ev.id
 
 
@@ -706,6 +712,12 @@ def undo(db: Session, item_id: str, *, actor=None, surface: str = "rest") -> dic
         surface=surface, action="blocker.undo", target_type="item", target_id=item.key,
         project_id=item.project_id, meta={"undoes": last.id, "action": last.action})
     db.add(ev)
+    db.flush()
+    from app.services import project_sync_outbox as outbox
+    outbox.note_event(
+        db, project_id=item.project_id, target_type="item", target_id=item.key,
+        action="blocker.undo", meta=ev.meta,
+    )
     db.commit()
     return {"item": item.key, "undone": last.action, "event_id": ev.id}
 
