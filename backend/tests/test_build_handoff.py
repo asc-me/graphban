@@ -18,6 +18,9 @@ def _gate(db, pid, sid, sections):
     db.commit()
 
 
+_TP = {"Tokens": ["web/tokens.css"], "Spacing": ["web/spacing.css"]}
+
+
 def _items(db, prd):
     return {i.prd_section: i for i in db.scalars(select(Item).where(Item.prd_id == prd.id))}
 
@@ -25,7 +28,7 @@ def _items(db, prd):
 def test_unaccepted_gated_section_files_blocked_and_others_normal(db, pid, world):
     prd, sid = world
     _gate(db, pid, sid, ["Tokens"])
-    prd_svc.decompose(db, prd, create=True)
+    prd_svc.decompose(db, prd, create=True, touchpoints=_TP)
     items = _items(db, prd)
     assert items["Tokens"].status == "blocked"
     assert "not approved to build" in items["Tokens"].description
@@ -40,7 +43,7 @@ def test_accepted_gate_cites_revision_and_goes_stale(db, pid, world, be):
     _gate(db, pid, sid, ["Tokens", "Spacing"])
     _ready(db, pid, sid, be)
     ds_svc.accept_design(db, pid, sid, "agent:GRPH-A2", "dana")
-    prd_svc.decompose(db, prd, create=True)
+    prd_svc.decompose(db, prd, create=True, touchpoints=_TP)
     items = _items(db, prd)
     tok = items["Tokens"]
     assert tok.status == "backlog"
@@ -66,7 +69,7 @@ def test_a_screen_brief_hands_off_without_pasted_headings(db, pid, world):
         db, pid, sid, "Teal only.", sections=["Tokens"],
         screens=[{"screen": "home", "brief": "The dialog names the org. Next stays enabled."}])
     assert ds_svc.get_design_set(db, pid, sid)["alignment"]["approved_to_build"] is True
-    prd_svc.decompose(db, prd, create=True)
+    prd_svc.decompose(db, prd, create=True, touchpoints=_TP)
     tok = _items(db, prd)["Tokens"]
     assert tok.status == "backlog", tok.blocker
     assert tok.blocker == ""
@@ -85,7 +88,7 @@ def test_an_aligned_set_on_a_baselined_prd_hands_off_with_no_accept(db, pid, wor
     db.commit()
     ds_svc.compile_prompts(db, pid, sid)
     assert ds_svc.get_design_set(db, pid, sid)["alignment"]["approved_to_build"] is True
-    prd_svc.decompose(db, prd, create=True)
+    prd_svc.decompose(db, prd, create=True, touchpoints=_TP)
     tok = _items(db, prd)["Tokens"]
     assert tok.status == "backlog", tok.blocker
     assert db.get(DesignSet, sid).prd_hash in tok.description
