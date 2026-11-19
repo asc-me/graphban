@@ -97,6 +97,22 @@ describe("quick configure exception control", () => {
     expect(vi.mocked(api.applyRuleProfile).mock.calls[0][2]).toMatchObject({ except: ["review.cross_vendor"] });
   });
 
+  it("compare: a kept row can be restored from the same control", async () => {
+    const user = userEvent.setup();
+    panel({ screen: "compare", profile: "regulated" });
+    const keep = await screen.findByTestId("rules-quick-keep-review.cross_vendor");
+    await user.click(keep);
+    expect(screen.getByTestId("rules-quick-summary")).toHaveTextContent("1 rule would change");
+    const restore = screen.getByTestId("rules-quick-keep-review.cross_vendor");
+    expect(restore).toHaveTextContent("Restore");
+    expect(restore).toHaveAttribute("aria-pressed", "true");
+    await user.click(restore);
+    expect(screen.getByTestId("rules-quick-summary")).toHaveTextContent("2 rules would change");
+    expect(screen.getByTestId("rules-quick-row-review.cross_vendor")).toHaveAttribute("data-changes", "true");
+    expect(screen.queryByText("kept: exception")).toBeNull();
+    expect(screen.getByTestId("rules-quick-keep-review.cross_vendor")).toHaveTextContent("Keep current (exception)");
+  });
+
   it("an unchanged row has no control", async () => {
     panel({ screen: "compare", profile: "standard" });
     await screen.findByTestId("rules-quick-row-review.sabotage");

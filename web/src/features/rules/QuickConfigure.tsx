@@ -391,7 +391,11 @@ export function QuickConfigure({
             onSelect={choose}
             onSetup={onSetup}
             onReview={() => setReviewing(true)}
-            onKeep={isUpdate ? undefined : (id) => setDropped((d) => new Set([...d, id]))}
+            onKeep={
+              isUpdate
+                ? undefined
+                : (id) => setDropped((d) => (d.has(id) ? new Set([...d].filter((x) => x !== id)) : new Set([...d, id])))
+            }
             isUpdate={isUpdate}
           />
         ) : (
@@ -565,16 +569,18 @@ function Compare({
     const rule = rules.get(id);
     const pin = pinned.get(id)!.get(selected.id);
     const out: React.ReactNode[] = [];
-    if (onKeep && changing.has(id)) {
+    if (onKeep && (changing.has(id) || dropped.has(id))) {
+      const kept = dropped.has(id);
       out.push(
         <button
           key="keep"
           type="button"
+          aria-pressed={kept}
           onClick={() => onKeep(id)}
           data-testid={`rules-quick-keep-${id}`}
           className="h-6 rounded-[6px] border border-control px-2 text-small text-fg-2 hover:text-fg"
         >
-          Keep current (exception)
+          {kept ? "Restore" : "Keep current (exception)"}
         </button>,
       );
     }
