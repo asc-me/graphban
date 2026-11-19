@@ -33,7 +33,7 @@ def fleet(git_repo: Path, tmp_path: Path, scripts, state: Path) -> Fleet:
         repo=git_repo,
         workspace=workspace,
         client=_server(workspace),
-        launch_for=lambda name, model="", tuning=None: _factory(scripts, "works_then_waits", adapter=name),
+        launch_for=lambda name, model="", tuning=None: _factory(scripts, "works_until_released", adapter=name),
     )
 
 
@@ -518,11 +518,13 @@ def test_ps_names_the_children_that_have_gone_quiet(git_repo: Path, tmp_path: Pa
     """
     from gbfleet.supervisor import Limits
 
-    fleet = _fleet_with(git_repo, tmp_path, scripts, "silent_then_exits",
+    fleet = _fleet_with(git_repo, tmp_path, scripts, "silent_until_released",
                         limits=Limits(quiet_after=0.0))
-    _call(fleet, "spawn", adapter="fake", enrolment_code="enrol-1")
-
-    listed = _value(_call(fleet, "ps"))
+    spawned = _value(_call(fleet, "spawn", adapter="fake", enrolment_code="enrol-1"))
+    try:
+        listed = _value(_call(fleet, "ps"))
+    finally:
+        _call(fleet, "stop", agent_id=spawned["agent_id"])
     assert listed["quiet"], "a child that has written nothing is not named as quiet"
     assert listed["quiet_after"] == 0.0
 
