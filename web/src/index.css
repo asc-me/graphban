@@ -347,10 +347,12 @@ body::before {
   a:hover { color: var(--color-accent-hi); }
 
   /* Themed native radios/checkboxes (GRPH-1754): hollow accent ring unchecked,
-     accent-filled when checked. Inputs that are sr-only or already appearance-none
-     (switches built on a hidden checkbox) are excluded. */
-  :where(input[type="radio"]:not(.sr-only):not(.appearance-none)),
-  :where(input[type="checkbox"]:not(.sr-only):not(.appearance-none)) {
+     accent-filled when checked. `input:where(...)` keeps element specificity
+     (0,0,1) so these beat Tailwind preflight's `input { border-radius: 0 }` in
+     this layer, while utilities still override them. Inputs that are sr-only or
+     already appearance-none (switches built on a hidden checkbox) are excluded. */
+  input:where([type="radio"]:not(.sr-only):not(.appearance-none)),
+  input:where([type="checkbox"]:not(.sr-only):not(.appearance-none)) {
     appearance: none;
     -webkit-appearance: none;
     flex: none;
@@ -364,33 +366,33 @@ body::before {
     border: 1.5px solid color-mix(in srgb, var(--color-accent) 70%, transparent);
   }
   @media (prefers-reduced-motion: no-preference) {
-    :where(input[type="radio"]:not(.sr-only):not(.appearance-none)),
-    :where(input[type="checkbox"]:not(.sr-only):not(.appearance-none)) {
+    input:where([type="radio"]:not(.sr-only):not(.appearance-none)),
+    input:where([type="checkbox"]:not(.sr-only):not(.appearance-none)) {
       transition: border-color .12s ease, background-color .12s ease;
     }
   }
-  :where(input[type="radio"]:not(.sr-only):not(.appearance-none)) { border-radius: 999px; }
-  :where(input[type="checkbox"]:not(.sr-only):not(.appearance-none)) { border-radius: 3px; }
-  :where(input[type="radio"]:not(.sr-only):not(.appearance-none)):checked {
+  input:where([type="radio"]:not(.sr-only):not(.appearance-none)) { border-radius: 999px; }
+  input:where([type="checkbox"]:not(.sr-only):not(.appearance-none)) { border-radius: 3px; }
+  input:where([type="radio"]:not(.sr-only):not(.appearance-none)):checked {
     border-color: var(--color-accent);
     background-image: radial-gradient(circle, var(--color-accent) 0 3px, transparent 3.5px);
   }
-  :where(input[type="checkbox"]:not(.sr-only):not(.appearance-none)):checked {
+  input:where([type="checkbox"]:not(.sr-only):not(.appearance-none)):checked {
     border-color: var(--color-accent);
     background-color: var(--color-accent);
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 7.2l2.6 2.6L11 4.4' fill='none' stroke='%230a0b0d' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   }
-  :where(input[type="checkbox"]:not(.sr-only):not(.appearance-none)):indeterminate {
+  input:where([type="checkbox"]:not(.sr-only):not(.appearance-none)):indeterminate {
     border-color: var(--color-accent);
     background-color: var(--color-accent);
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3.5 7h7' fill='none' stroke='%230a0b0d' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E");
   }
-  :where(input[type="radio"]:not(.sr-only):not(.appearance-none)):hover:not(:disabled),
-  :where(input[type="checkbox"]:not(.sr-only):not(.appearance-none)):hover:not(:disabled) {
+  input:where([type="radio"]:not(.sr-only):not(.appearance-none)):hover:not(:disabled),
+  input:where([type="checkbox"]:not(.sr-only):not(.appearance-none)):hover:not(:disabled) {
     border-color: var(--color-accent);
   }
-  :where(input[type="radio"]:not(.sr-only):not(.appearance-none)):disabled,
-  :where(input[type="checkbox"]:not(.sr-only):not(.appearance-none)):disabled {
+  input:where([type="radio"]:not(.sr-only):not(.appearance-none)):disabled,
+  input:where([type="checkbox"]:not(.sr-only):not(.appearance-none)):disabled {
     opacity: .45;
     cursor: not-allowed;
   }
