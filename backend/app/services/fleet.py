@@ -5280,7 +5280,18 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     # from having nothing to do.
     held = sorted({r.agent_id for r in taken if r.agent_id != agent_id})
     soonest = min((r.expires_at for r in taken if r.agent_id != agent_id), default=None)
-    if held:
+    # GRPH-1711: a line seat whose pool is only unready items gets NO clusters, so nothing
+    # collided — saying "collide" there points the caller at a reservation that is not the
+    # cause. A real collision still wins; otherwise the unready items are the answer. Gated on
+    # `scope_line` because `unready_line_items` is the line pool only for a line seat.
+    unready = (items_svc.unready_line_items(db, project_id)
+               if scope_line and not collided else [])
+    if unready:
+        named = "; ".join(f"{u['id']} (missing {' and '.join(u['missing'])})" for u in unready)
+        reason = (f"nothing is claimable inside {scope}: the line's open items are unready — "
+                  f"{named}. Writing an `## Acceptance` clause and touchpoints on an item "
+                  f"puts it in the claim pool")
+    elif held:
         free_in = max(0, int((_aware(soonest) - now).total_seconds())) if soonest else None
         reason = ("all ready clusters collide with areas held by "
                   + ", ".join(held)

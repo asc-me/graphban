@@ -180,3 +180,50 @@ def test_line_blocking_fix_before_security_fix_that_blocks_nothing(client, key, 
     nxt = _seat_agent(client, key, db, proj, "line2", line_id=line.id)
     got = fleet_svc.claim_cluster(db, agent_id=nxt, project_id=proj)
     assert [i["title"] for i in got["items"]] == ["sec"]
+
+
+HARD = "backend/alembic/versions/0001_x.py"  # under a hard area, so two holders collide
+
+
+def _other_agent_holds_areas(client, key, db, proj, line_id, tp="held/z.py"):
+    """A second seat on the line claims a ready item, which reserves its areas — without a live
+    reservation the refusal takes the 'nothing ready' branch and the test proves nothing."""
+    other_item = _fix(db, proj, "held elsewhere", line=line_id, tp=(tp,))
+    other = _seat_agent(client, key, db, proj, "holder", line_id=line_id)
+    got = fleet_svc.claim_cluster(db, agent_id=other, project_id=proj)
+    assert got["claimed"] and got["items"][0]["id"] == other_item.key
+    return other
+
+
+def test_unready_only_pool_reason_names_unready_items_not_collision(client, key, db, proj):
+    """GRPH-1711: only unready items in a line seat's pool, another agent holding areas — the
+    reason names the unready items and never says collide."""
+    line = lines_svc.create_line(db, proj)
+    holder = _other_agent_holds_areas(client, key, db, proj, line.id)
+    no_acc = _fix(db, proj, "no acceptance", line=line.id, desc="just prose", tp=("a/1.py",))
+    no_tp = _fix(db, proj, "no touchpoint", line=line.id, tp=())
+    seat = _seat_agent(client, key, db, proj, "line", line_id=line.id)
+    got = fleet_svc.claim_cluster(db, agent_id=seat, project_id=proj)
+    assert got["claimed"] is False
+    assert got["held_by"] == [holder]
+    reason = got["reason"]
+    assert "collide" not in reason.lower() and "collision" not in reason.lower()
+    assert "unready" in reason
+    assert no_acc.key in reason and no_tp.key in reason
+    assert "acceptance" in reason and "touchpoints" in reason
+    res = _mcp(client, key, "claim_cluster", {"agent_id": seat})
+    assert "collide" not in res["structuredContent"]["reason"].lower()
+    assert {u["id"] for u in res["structuredContent"]["unready"]} == {no_acc.key, no_tp.key}
+
+
+def test_real_collision_on_line_seat_keeps_collision_reason(client, key, db, proj):
+    """Control arm: a ready line item whose areas another agent holds still gets the collision
+    reason naming the holder, even with an unready item alongside it."""
+    line = lines_svc.create_line(db, proj)
+    holder = _other_agent_holds_areas(client, key, db, proj, line.id, tp=HARD)
+    _fix(db, proj, "same migration", line=line.id, tp=(HARD,))
+    _fix(db, proj, "unready", line=line.id, desc="just prose", tp=("u/1.py",))
+    seat = _seat_agent(client, key, db, proj, "line", line_id=line.id)
+    got = fleet_svc.claim_cluster(db, agent_id=seat, project_id=proj)
+    assert got["claimed"] is False
+    assert "collide with areas held by" in got["reason"] and holder in got["reason"]
