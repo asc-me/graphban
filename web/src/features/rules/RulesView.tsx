@@ -10,6 +10,7 @@ import * as React from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
+import { useHideDocsTrigger } from "@/features/docs/DocsReader";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
@@ -106,6 +107,8 @@ export function RulesView() {
     [sel],
   );
   const { pathname } = useLocation();
+  // The docs trigger sits on the dock's pinned Save row; hide it while the dock is open (GRPH-1729).
+  useHideDocsTrigger(!!flow && !!sel);
   // Following a refusal (frames 4a1–4b2): `?rule=` focuses one rule, `?from=` is the event to
   // go back to, `?pulse=unmapped` is "see all rules" for a refusal that names no rule.
   const ruleParam = params.get("rule");
