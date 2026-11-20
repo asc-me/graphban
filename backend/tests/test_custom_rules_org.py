@@ -154,3 +154,51 @@ def test_agent_cannot_write_org_rule(client, org):
         assert e.value.rule_id == T.PERSON_RULE
     finally:
         db.close()
+
+
+def _tighten_org_rule(db, org):
+    """A project proposal to tighten the org-owned `custom.areas` — filed on a project only."""
+    C.create_org(db, _user(db, org["uid"]), org["org"], **BODY)
+    p, folded = RP.propose(db, project_id=org["pid"], proposer_kind="agent", proposer="GRPH-A1",
+                           kind="tighten", rule_id="custom.areas", citations=org["cites"],
+                           params={"paths": ["db/migrations", "db/seeds"]})
+    assert folded is False and p.primitive == "exclusive_areas"
+    return p
+
+
+def test_project_adopts_a_tighten_of_an_org_rule_as_a_kept_override(client, org):
+    from app.models import CustomRule
+    db = _db()
+    try:
+        p = _tighten_org_rule(db, org)
+        RP.adopt(db, _user(db, org["uid"]), org["pid"], [p.id], "stricter here")
+        mine = T.resolve(db, "custom.areas", org["pid"])
+        assert mine["override"] is True and mine["on"]["source"] == "custom"
+        assert mine["params"]["value"] == {"paths": ["db/migrations", "db/seeds"]}
+        other = T.resolve(db, "custom.areas", org["b"])
+        assert other["on"]["source"] == "org" and other["params"]["value"] == BODY["params"]
+        org_row = C.get_org(db, org["org"], "custom.areas")
+        assert org_row.params == BODY["params"]
+        own = db.query(CustomRule).filter(CustomRule.rule_id == "custom.areas",
+                                          CustomRule.project_id == org["pid"]).one()
+        assert own.org_id is None
+    finally:
+        db.close()
+
+
+def test_org_adopts_a_project_tighten_of_its_rule(client, org):
+    from app.models import CustomRule
+    db = _db()
+    try:
+        p = _tighten_org_rule(db, org)
+        RP.adopt_org(db, _user(db, org["uid"]), org["org"], p.id, "everywhere")
+        for pid in (org["pid"], org["b"]):
+            s = T.resolve(db, "custom.areas", pid)
+            assert s["on"]["source"] == "org" and s["override"] is False
+            assert s["params"]["value"] == {"paths": ["db/migrations", "db/seeds"]}
+        rows = db.query(CustomRule).filter(CustomRule.rule_id == "custom.areas").all()
+        assert [(r.org_id, r.project_id) for r in rows] == [(org["org"], None)]
+    finally:
+        db.close()
+    ev = _events("adopt_rule_proposal", scope="org")
+    assert len(ev) == 1 and ev[0].meta["kind"] == "tighten"

@@ -156,8 +156,11 @@ def _citations(db: Session, project: Project, raw: object) -> list[dict]:
 
 def _primitive_of(rule_id: str, project_id: str, db: Session) -> str | None:
     if custom_rules.is_custom(rule_id):
-        row = custom_rules._row(db, rule_id, project_id)
-        return row.primitive if row else None
+        # Project -> org (GRPH-1779): an org-owned rule is a rule of each of its projects.
+        try:
+            return custom_rules.get(db, rule_id, project_id).primitive
+        except NotFound:
+            return None
     pack = rule_pack.CURRENT
     t = pack.templates.get(rule_id) if pack else None
     if t and t.get("primitive") in rule_pack.PRIMITIVES:
