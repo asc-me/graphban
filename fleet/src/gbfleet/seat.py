@@ -137,6 +137,11 @@ class Seat:
     #: ledger event to it. Empty is the default and the S1 behaviour: nothing is declared.
     #: Last field, so a seat built positionally anywhere keeps its meaning.
     entitlements: tuple = ()
+    #: Item ids `claim_review` must pass over (GRPH-1730). Review rows whose PR is not
+    #: linked yet. A hint: the server withholds the same rows (`pr_unlinked`), so a child
+    #: that ignores the sentence still cannot take one. Empty on every other seat.
+    #: Last field, so a seat built positionally anywhere keeps its meaning.
+    review_skip: tuple = ()
 
     def mcp_config(self, name: str = "graphban") -> dict:
         """The vendor-neutral core of every adapter's config file.
@@ -384,8 +389,25 @@ BOUND_ONLY_INSTRUCTION = (
 )
 
 
+def subagent_clause(subagents: int | None) -> str:
+    """The run's cap on vendor subagents, as one paragraph (GRPH-1726). Empty when the flag
+    was omitted, so the instruction stays byte-identical. Advice, not a deny: no adapter
+    strips the tool."""
+    if subagents is None:
+        return ""
+    if subagents == 0:
+        return ("Do not spawn vendor subagents (Task, spawn_subagent or the like). "
+                "Do the work yourself in this process.")
+    return (f"You may start at most {subagents} vendor subagent(s) (Task, spawn_subagent or "
+            "the like). Those subagents do not register, do not set parent_agent_id, and do "
+            "not call claim, sign_off, bounce, or mint_enrolment. You, the fleet child, "
+            "integrate their edits, commit, and move the item to review. You still do not "
+            "set parent_agent_id yourself.")
+
+
 def instruction_for(seat: Seat, worktree: Path, branch: str, *,
-                    behind_ref: str = "", conflicts: list[str] | None = None) -> str:
+                    behind_ref: str = "", conflicts: list[str] | None = None,
+                    subagents: int | None = None) -> str:
     # `review_only` first. A seat cannot be both that and bound — the server refuses to mint
     # one that is — and if that ever changed, the narrower promise is the one to state.
     if seat.review_only:
@@ -418,6 +440,19 @@ def instruction_for(seat: Seat, worktree: Path, branch: str, *,
                  f"{', '.join(conflicts)}. It was not merged. Before anything else run "
                  f"`git merge {behind_ref or 'main'}` (no rebase, no force-push), resolve "
                  "keeping both sides, and commit. Your copy of AGENTS.md may be stale until you do.")
+    clause = subagent_clause(subagents)
+    if clause:
+        text += "\n\n" + clause
+    if seat.review_skip:
+        # The sentence names the ids. The control is claim_review's pr_unlinked withhold:
+        # a child that does not pass skip is still not handed the row.
+        text += (
+            "\n\nCall claim_review with skip="
+            + json.dumps(list(seat.review_skip))
+            + ". Those rows have no linked PR yet. The server withholds them "
+            "(pr_unlinked) until a PR url is recorded on the item, and it keeps "
+            "retrying the open while you review anything else.\n"
+        )
     return text
 
 

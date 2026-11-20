@@ -68,6 +68,7 @@ from app.services import tool_tiers
 from app.services import waits as waits_svc
 from app.services import delegation as delegation_svc
 from app.services import entitlements as entitlements_svc
+from app.services import rule_proposals as rule_proposals_svc
 from app.services import rule_toggles as rule_toggles_svc
 from app.services import headroom as headroom_svc
 from app.services import quotas
@@ -452,7 +453,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "decompose_prd",
         "description": (
             "One task per uncovered section. Missing acceptance or touchpoints: blocked. "
-            "`oversized` names the signal; `splits` files the pieces blocked, linked, then backlog. "
+            "`depends_on` from the body. "
+            "`oversized`; `splits` files pieces blocked, linked, then backlog. "
             "Needs approved (grill). Framing skipped unless `include_prose`."
         ),
         "inputSchema": {
@@ -461,8 +463,10 @@ TOOLS: list[dict[str, Any]] = [
                 "prd_id": {"type": "string"},
                 "create": {"type": "boolean"},
                 "include_prose": {"type": "boolean"},
-                "touchpoints": {"type": "object", "description": "{section: [paths]}"},
-                "splits": {"type": "object", "description": "{section: [headings]}"},
+                "touchpoints": {"type": "object"},
+                "splits": {"type": "object"},
+                "drop_links": {"type": "array"},
+                "add_links": {"type": "array"},
             },
             "required": ["prd_id"],
         },
@@ -637,6 +641,20 @@ TOOLS: list[dict[str, Any]] = [
             "lock. A person sets them."
         ),
         "inputSchema": {"type": "object", "properties": {"project_id": {"type": "string"}}},
+    },
+    {
+        "name": "propose_rule",
+        "description": (
+            "Cited rule suggestion; agents tighten only. guidance: draft{stage,label,text}"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string"},
+                "draft": {"type": "object"},
+                "citations": {"type": "array"},
+            },
+        },
     },
     {
         "name": "list_entitlements",
@@ -1578,7 +1596,7 @@ _PROJECT_SCOPED = {
     "create_line", "unscoped_fixes", "put_document", "get_document", "search_docs",
     "open_design", "put_preamble", "put_set_constraints",
     "confirm_tier", "get_design_set",
-    "compile_prompts", "put_canvas", "file_finding", "resolve_finding",
+    "compile_prompts", "put_canvas", "file_finding", "resolve_finding", "propose_rule",
 }
 # Tools that ACCEPT `project_id`, which is a different question from the one above.
 #
@@ -1842,6 +1860,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     },
     "list_entitlements": {"type": "object", "properties": {"entitlements": {"type": "array"}}},
     "get_rule_toggles": {"type": "object", "properties": {"toggles": {"type": "array"}}},
+    "propose_rule": {"type": "object", "properties": {"id": {"type": "integer"}}},
     "set_entitlement": {"type": "object", "properties": {"id": {"type": "string"}}},
     "report_entitlement_event": {"type": "object", "properties": {"admitted": {"type": "boolean"}}},
     "report_utilization": {"type": "object", "properties": {"recorded": {"type": "boolean"}}},
@@ -2266,6 +2285,14 @@ _FLEET_ONLY_ARGS = {
                            "it is not. Recorded against the delegation.",
         },
         **_BOUND_ONLY_ARG,
+        # GRPH-1753. A spawn that raised has nothing to replace the open row with.
+        # Re-delegating would withdraw it and open another, which is the orphan the
+        # next planner is then refused for. `withdraw` closes and stops.
+        "withdraw": {
+            "type": "boolean",
+            "description": "Close your open delegation on `id` and open nothing. "
+                           "For a spawn that never started.",
+        },
     },
     "mint_enrolment": {
         **_SEAT_SCOPE_ARG,
@@ -2350,6 +2377,8 @@ _FLEET_ONLY_ARGS = {
     # headroom. A worker that sends no agent_id is still resolved from the connection's single
     # live agent; the dispatcher reads an agent_id whether or not it was advertised.
     "create_item": {"agent_id": {"type": "string"}},
+    # GRPH-1775. The proposer is stamped from it; same reason as create_item's.
+    "propose_rule": {"agent_id": {"type": "string"}},
     "fleet_status": {"view": {
         "type": "string", "enum": ["lean", "live", "full"],
         "description": "lean (default) drops display-only fields; live drops offline agents "
@@ -3475,6 +3504,25 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "get_rule_toggles":
         return {"library_loaded": rule_toggles_svc.library_loaded(),
                 "toggles": rule_toggles_svc.effective(db, pid)}
+    if name == "propose_rule":
+        # P91 D2: any agent on the project may SUGGEST; nothing here adopts (rules.person_adopts).
+        draft = args.get("draft") or {}  # {slug, primitive, title, why, params} or {rule_id, params}
+        who = fleet_svc.caller_identity(args.get("agent_id"), key)
+        if args.get("kind") == rule_proposals_svc.GUIDANCE_KIND:
+            # P91 D8: advisory text, cited; a person adopts it (rules.person_adopts).
+            g = rule_proposals_svc.file_guidance(
+                db, project_id=pid, proposer_kind="agent", proposer=who,
+                stage=draft.get("stage"), label=draft.get("label"), text=draft.get("text"),
+                citations=args.get("citations"))
+            return rule_proposals_svc.guidance_view(g)
+        row, folded = rule_proposals_svc.propose(
+            db, project_id=pid, proposer_kind="agent",
+            proposer=fleet_svc.caller_identity(args.get("agent_id"), key),
+            kind=args.get("kind") or "", citations=args.get("citations"),
+            rule_id=draft.get("rule_id"),
+            slug=draft.get("slug"), primitive=draft.get("primitive"), title=draft.get("title"),
+            why=draft.get("why"), params=draft.get("params"))
+        return rule_proposals_svc.view(row, folded=folded)
     if name == "list_entitlements":
         return {"entitlements": entitlements_svc.list_entitlements(
             db, entitlements_svc.org_for_project(db, pid))}
@@ -3505,6 +3553,16 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                                     "register_agent on this connection first")
         agent = db.get(Agent, me)
         try:
+            if args.get("withdraw"):
+                # GRPH-1753. Close the row this caller just opened. Do not mint, and do not
+                # open a replacement — a replacement is what the next planner is refused for.
+                # The refusal shares the raise below: a second `errors.Conflict` is a bare
+                # 409, and the ratchet only goes down.
+                withdrew = delegation_svc.withdraw(db, agent=agent, item=item)
+                return {"delegation_id": withdrew or "",
+                        "state": "closed" if withdrew else "absent",
+                        "withdrew": withdrew, "enrolment_code": None, "bound_only": False,
+                        "brief": {}}
             row, withdrew, code = delegation_svc.delegate(
                 db, agent=agent, item=item, lane=args["lane"], tier=args["tier"],
                 note=args.get("note", ""), lease_seconds=items_svc.DEFAULT_LEASE_SECONDS,
@@ -4030,6 +4088,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             include_prose=bool(args.get("include_prose", False)),
             touchpoints=args.get("touchpoints") or None,
             splits=args.get("splits") if isinstance(args.get("splits"), dict) else None,
+            drop_links=args.get("drop_links"),
+            add_links=args.get("add_links"),
         )
     if name == "create_prd":
         prd = prd_svc.create_prd(

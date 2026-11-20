@@ -3498,6 +3498,46 @@ export interface RuleToggle {
   locked_by: string | null;
   /** Only on `merge.done_predicates`: each predicate `done` needs and where it came from. */
   effective_predicates?: EffectivePredicate[];
+  /** GRPH-1777: `observing` (on, measured, not enforced) or `active`. */
+  state?: string | null;
+  /** Present while `state` is `observing`; null/absent reads UNMEASURED, never 0. */
+  observation?: RuleObservationSummary | null;
+}
+
+/** What an observing rule has recorded since it began observing (GRPH-1777). */
+export interface RuleObservationSummary {
+  since: string | null;
+  would_hold: number | null;
+  would_refuse: number | null;
+  would_have: number | null;
+  decision_due: boolean;
+  decision_due_reason: string | null;
+}
+
+/** One would-have outcome row; the rule's own history, kept across promotion. */
+export interface RuleObservation {
+  id: number;
+  rule_id: string;
+  outcome: "would_hold" | "would_refuse";
+  item_id: string | null;
+  commit: string | null;
+  detail: Record<string, unknown>;
+  at: string;
+}
+
+/** Adopted or open guidance for a stage: ADVISORY text with its citations (GRPH-1780). */
+export interface RuleGuidance {
+  id: number;
+  project_id: string;
+  kind: string;
+  stage: string;
+  label: string;
+  text: string;
+  citations: RuleProposalCitation[];
+  proposer: string;
+  proposer_kind: string;
+  status: string;
+  created_at: string;
 }
 
 export interface EffectivePredicate {
@@ -3860,3 +3900,47 @@ export interface BlockingFix { id: string; status: string; blocks: string[] }
 
 /** `/prds/{id}/completeness`. `blocking_fixes` is absent when the server did not compute it. */
 export interface PrdCompleteness { blocking_fixes?: BlockingFix[] }
+
+/** A cited file span, an item, an observation, a lesson or a url (GRPH-1775). */
+export type RuleProposalCitation =
+  | { kind: "file"; ref: { path: string; commit: string; lines: string } }
+  | { kind: "item" | "observation" | "lesson" | "url"; ref: string };
+
+/** A rule proposal (GRPH-1775 / P91 D2). `loosens` is the server's own direction verdict. */
+export interface RuleProposal {
+  id: number;
+  project_id: string;
+  kind: string;
+  rule_id: string;
+  primitive: string;
+  draft: Record<string, unknown>;
+  params: Record<string, unknown>;
+  citations: RuleProposalCitation[];
+  proposer: string;
+  proposer_kind: string;
+  direction: string;
+  loosens: boolean;
+  status: string;
+  folded: boolean;
+  created_at: string;
+  decided_by?: string | null;
+  decided_reason?: string | null;
+}
+
+/** A custom rule with its author and why (GRPH-1774 / P91 D1). */
+export interface CustomRule {
+  rule_id: string;
+  primitive: string;
+  stage: string;
+  title: string;
+  why: string;
+  claims: string;
+  params: Record<string, unknown>;
+  state: string;
+  author: string | null;
+  reason: string;
+  created_at: string;
+  on: boolean;
+  source: string;
+  unmeasured_reason?: string | null;
+}

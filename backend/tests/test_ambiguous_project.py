@@ -147,6 +147,15 @@ def test_a_registered_agent_is_served_its_own_project_not_the_key_s_default(clie
     assert got["claimed"] and got["item"]["id"] == made["id"], got
     _call(client, spanning_key, "update_item",
           {"id": made["id"], "status": "review", "agent_id": builder["agent_id"], "project_id": b})
+    # GRPH-1730 withholds a branch with no PR. The column releases that gate.
+    from app.db import SessionLocal
+    from app.models import Item
+    s = SessionLocal()
+    try:
+        s.get(Item, made["id"]).github_url = "https://github.com/o/r/pull/1"
+        s.commit()
+    finally:
+        s.close()
 
     # THE CALL: no project_id. The agent's registration decides, not the key's sort order.
     out = _call(client, spanning_key, "claim_review",

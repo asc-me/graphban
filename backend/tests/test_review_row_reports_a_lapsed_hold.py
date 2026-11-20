@@ -69,9 +69,19 @@ def _agent(client, key, label) -> str:
 def _item_in_review(client, key, proj, builder) -> str:
     made = _ok(_mcp(client, key, "create_item",
                     {"project_id": proj, "title": "something to review", "effort": 3}))
-    for status in ("in_progress", "review"):
-        _ok(_mcp(client, key, "update_item",
-                 {"project_id": proj, "id": made["id"], "status": status, "agent_id": builder}))
+    _ok(_mcp(client, key, "update_item",
+             {"project_id": proj, "id": made["id"], "status": "in_progress", "agent_id": builder}))
+    _ok(_mcp(client, key, "update_item",
+             {"project_id": proj, "id": made["id"], "status": "review", "agent_id": builder}))
+    # GRPH-1730 withholds a branch with no PR. The column releases that gate.
+    from app.db import SessionLocal
+    from app.models import Item
+    s = SessionLocal()
+    try:
+        s.get(Item, made["id"]).github_url = "https://github.com/o/r/pull/1"
+        s.commit()
+    finally:
+        s.close()
     return made["id"]
 
 

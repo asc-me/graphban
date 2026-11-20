@@ -27,7 +27,9 @@ import pytest
 
 from app.services.prds import (
     _PROSE_SECTIONS,
+    classify_fidelity,
     classify_section,
+    fidelity_reading,
     is_implementable_section,
     parse_sections,
     section_bodies,
@@ -183,3 +185,137 @@ def test_decompose_does_not_propose_work_for_a_marked_section(client, auth):
     }, headers=auth).json()
     dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
     assert [p["section"] for p in dry["proposals"]] == ["Ingest"]
+
+
+# ── fidelity: a UI word is not a prototype (GRPH-1693) ────────────────────────
+# GRPH-P86 "The line", the section the bug was filed against. Two occurrences of
+# "UI" in a behaviour section. Kept whole so a shorter fixture cannot pass by
+# having lost the words.
+
+_THE_LINE = """\
+<!-- buildable -->
+
+A project has at most one maintenance line. It is a row with a frozen id, a per-project number, and a title. The rendered key uses a new key kind, `line`, so a line id cannot be passed to `get_prd` and resolve. Retagging the project does not rewrite the stored id. The same identity rule as an item (PRD-13).
+
+The line has no body, no status, no version, no grill, no baseline, and no close. `coverage`, `completeness`, `scope_drift`, and `close_prd` do not read it. `get_prd` on a line id is not found.
+
+`create_line` is open to a person through the UI and REST, with the same permission as accepting a request, and to a planner key over MCP. A worker or reviewer key is refused. The UI offers it where a missing line stops work: the tracker's Maintenance filter, triage when a bug is accepted, and the New item dialog when a fix goes on the line. The first call creates the row. A second call, from anyone, is refused and names the existing id. The title defaults to "Maintenance" and can be set at create. There is no update that turns the line into a PRD. Nothing creates the line implicitly: a create, an accept, or a drain that needs a line and finds none is refused and names `create_line`.
+
+`get_context` gains `maintenance_line`. It is null when the project has no line. Null means the line has not been created. It does not mean the project has no bugs. When the line exists, the field is `{id, title}` with the rendered key.
+
+An item gains `line_id`, nullable, stored as the line's frozen id. `prd_id` and `line_id` cannot both be set. A `feature` or a `chore` with `line_id` is refused. Empty `kind` is not a fix and cannot take `line_id`.
+
+This section is first. Filing, draining, and intake all name `line_id`.
+"""
+
+
+def test_the_line_is_low_and_a_layout_heading_is_high():
+    """P86's behaviour section stays low. A heading that is the UI term is high,
+    and the reading names the terms that made it so."""
+    assert fidelity_reading(_THE_LINE, heading="The line") == {"fidelity": "low", "terms": []}
+    assert classify_fidelity(_THE_LINE, heading="The line") == "low"
+    reading = fidelity_reading("The steps a new project takes.", heading="Onboarding flow layout")
+    assert reading == {"fidelity": "high", "terms": ["onboarding flow", "layout"]}
+    assert classify_fidelity("The steps a new project takes.", heading="Onboarding flow layout") == "high"
+
+
+def test_an_incidental_body_word_is_not_named_when_the_heading_decided():
+    """The heading made it high. 'screen' in the body did not, so the proposal
+    must not list it as a term that drove the classification."""
+    reading = fidelity_reading(
+        "The count is shown on screen.", heading="Onboarding flow layout")
+    assert reading == {"fidelity": "high", "terms": ["onboarding flow", "layout"]}
+
+
+def test_one_incidental_word_is_not_high_and_a_dense_body_is():
+    """One 'screen' is the bug. A body that is mostly look / feel / layout is the
+    case the heuristic exists for, even when the heading has none of those words."""
+    assert fidelity_reading(
+        "The count is shown on screen.", heading="Storage") == {"fidelity": "low", "terms": []}
+    reading = fidelity_reading(
+        "How the dashboard should look and feel, the layout and interactions.",
+        heading="Dashboard",
+    )
+    assert reading["fidelity"] == "high"
+    assert reading["terms"] == ["look", "feel", "layout"]
+
+
+def test_a_fenced_mention_does_not_count():
+    """A code sample that says `screen` is not the section asking for a prototype."""
+    body = "The store keeps the id.\n\n```\nlayout screen design look\n```\n"
+    assert fidelity_reading(body, heading="Storage") == {"fidelity": "low", "terms": []}
+
+
+def test_an_empty_section_is_low_and_names_no_terms():
+    assert fidelity_reading("", heading="Storage") == {"fidelity": "low", "terms": []}
+
+
+def test_the_proposal_names_the_terms_that_drove_high(client, auth):
+    """The classifier can be right and the proposal can still omit the terms.
+    Decompose is the surface that files the item."""
+    prd = client.post("/api/prds", json={
+        "title": "Fidelity",
+        "body": (
+            "# Fidelity\n\n"
+            "## Onboarding flow layout\n\nThe steps a new project takes.\n\n"
+            "## The line\n\n" + _THE_LINE
+        ),
+    }, headers=auth).json()
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    by = {p["section"]: p for p in dry["proposals"]}
+    assert by["Onboarding flow layout"]["fidelity"] == "high"
+    assert by["Onboarding flow layout"]["fidelity_terms"] == ["onboarding flow", "layout"]
+    assert by["The line"]["fidelity"] == "low"
+    assert by["The line"]["fidelity_terms"] == []
+
+
+def test_inline_design_pages_keep_the_section_low(client, auth):
+    """Named pages mean the prototype exists (GRPH-1692). The heading would
+    otherwise be high, and the UI item that matches the pages stays high."""
+    prd = client.post("/api/prds", json={
+        "title": "Named",
+        "body": (
+            "# Named\n\n"
+            "## Onboarding flow layout\n\n"
+            "How the screen should look and feel.\n\n"
+            "Design: https://example.test/artifact\n"
+            "Pages: Welcome, First project\n"
+        ),
+    }, headers=auth).json()
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    prop = next(p for p in dry["proposals"] if p["section"] == "Onboarding flow layout")
+    assert prop["fidelity"] == "low"
+    assert prop["fidelity_terms"] == []
+    assert dry["ui_items"][0]["fidelity"] == "high"
+
+
+def test_external_design_pages_keep_the_proposal_low(client, auth):
+    """Pages registered on the set, not written in the section, are the same
+    reference. Dropping `named_design` on the decompose call leaves this high."""
+    from app.db import SessionLocal
+    from app.services import design_sets as design_svc
+    from app.services import prds as prd_svc
+
+    prd = client.post("/api/prds", json={
+        "title": "External",
+        "body": (
+            "# External\n\n"
+            "## Visual design\n\n"
+            "How the dashboard should look and feel, the layout.\n"
+        ),
+    }, headers=auth).json()
+    db = SessionLocal()
+    try:
+        row = prd_svc.get_prd(db, prd["id"])
+        design_svc.register_external_artifact(
+            db, row.project_id, row.id, "https://example.test/artifact",
+            {"Visual design": ["Dashboard"]},
+        )
+        row = prd_svc.get_prd(db, prd["id"])
+        out = prd_svc.decompose(db, row)
+    finally:
+        db.close()
+    prop = next(p for p in out["proposals"] if p["section"] == "Visual design")
+    assert prop["fidelity"] == "low"
+    assert prop["fidelity_terms"] == []
+    assert out["ui_items"][0]["fidelity"] == "high"

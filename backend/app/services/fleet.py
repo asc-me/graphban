@@ -1528,6 +1528,8 @@ OPEN_TOOLS: dict[str, str] = {
                 "the manifest tier — not a role — is what keeps it off a lone agent's list",
 
     # ---- shared context: memory and the code graph ---------------------------------------
+    "propose_rule": "a suggestion, never an adoption (rules.person_adopts); the server refuses "
+                    "a loosening, so no role gate adds to it",
     "add_memory": "memory is shared context; a role that could not contribute would make "
                   "every other role's context worse",
     "publish_memory": "promotes a shard already written; the authority question is the "
@@ -2267,6 +2269,30 @@ WITHHELD_PUBLISH_PENDING = "publish_pending"
 WITHHELD_NOTHING_TO_READ = "nothing_to_read"
 WITHHELD_OUT_OF_SCOPE = "outside_seat_scope"
 WITHHELD_CAPABILITY = "missing_capability"
+WITHHELD_PR_UNLINKED = "pr_unlinked"
+
+
+def _review_pr_unlinked(it: Item) -> bool:
+    """A review row `sign_off` would refuse `pr_missing`, and nothing else has refused it.
+
+    A branch (or a reported head) with no linked PR. Every `done` refusal so far is
+    `pr_missing`, including none yet — the first reviewer is the one that used to walk
+    into that refusal. A different refusal still gets a reviewer. An owner close is the
+    outcome the no-PR gate does not apply to, so it is not held back here either.
+    """
+    if items_svc.recorded_pr_url(it):
+        return False
+    evidence = [e for e in (it.evidence or []) if isinstance(e, dict)]
+    if any(items_svc.is_pr_url(str(e.get("url") or "")) for e in evidence):
+        return False
+    if not (it.branch or "").strip() and not (getattr(it, "head_commit", "") or "").strip():
+        return False
+    if any(a.get("adapter") == items_svc.OWNER_CLOSE_ADAPTER
+           for a in items_svc.valid_attestations(evidence)):
+        return False
+    refusals = [str(e.get("detail") or "") for e in evidence
+                if str(e.get("detail") or "").startswith("refused at `done` (")]
+    return all(d.startswith("refused at `done` (pr_missing)") for d in refusals)
 
 
 def review_withholding(db: Session, it: Item, *, agent_id: str, me: Agent | None,
@@ -2319,6 +2345,15 @@ def review_withholding(db: Session, it: Item, *, agent_id: str, me: Agent | None
     # defects went unreviewed. Rows that predate the `update_item` gate land here.
     if not items_svc.reviewable_handoff(it):
         return WITHHELD_NOTHING_TO_READ, "it has no branch and no PR url to read"
+    # GRPH-1730. A pushed branch with no linked PR is readable and still not reviewable:
+    # sign_off refuses `pr_missing`, and a reviewer who takes the row holds it for the
+    # lease. `review_held` then hides it from the supervisor, so the PR open is never
+    # retried. Withheld until a PR url is recorded. A second ready row is what gets
+    # handed out instead — sort order used to hand this one out first.
+    if _review_pr_unlinked(it):
+        return WITHHELD_PR_UNLINKED, (
+            "its branch has no linked PR, so sign_off would be refused pr_missing. "
+            "Released when a PR url is recorded on the item")
     # GRPH-827: and inside the scope this seat was minted for. Review is scoped for the same
     # reason building is — and the reviewer is the half that can also SIGN OFF.
     if not items_svc.in_scope(it, scope):
@@ -3459,6 +3494,13 @@ def require_reviewer_sabotage(db: Session, item: Item, fresh: list) -> None:
     need = max(1, int(params.get("min_tests_failed", 1)))
     best = max((e.get("tests_failed") or 0 for e in items_svc.sabotage_receipts(fresh)),
                default=0)
+    if best < need and state.get("state") == "observing":
+        # GRPH-1777: observing records what it would have refused, and lets the sign-off through.
+        from app.services import rule_observations
+        rule_observations.record(db, item.project_id, SABOTAGE_REQUIRED_RULE, "would_refuse",
+                                 item_id=item.id, commit=item.head_commit,
+                                 detail={"need": need, "best": best})
+        return
     if best < need:
         raise SabotageRequired(
             f"{item.key} cannot be signed off while {SABOTAGE_REQUIRED_RULE} is on without a "
@@ -5095,6 +5137,9 @@ def project_hard_areas(db: Session, project_id: str | None) -> tuple[str, ...]:
     from app.services import rule_toggles
     if rule_toggles.EXCLUSIVE_AREAS_RULE not in rule_toggles.LIBRARY:
         return HARD_AREAS
+    # GRPH-1777: an observing rule holds nothing; `claim_cluster` records what it would have.
+    if rule_toggles.observing_since(db, rule_toggles.EXCLUSIVE_AREAS_RULE, project_id):
+        return ()
     return rule_toggles.exclusive_paths(db, project_id)
 
 
@@ -5264,6 +5309,11 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     #: (mine, theirs) for the first collision of each refused cluster — the refusal names both.
     collided: list[tuple[str, str]] = []
     hards = project_hard_areas(db, project_id)
+    # GRPH-1777: the paths an OBSERVING `plan.exclusive_areas` would hold, else none.
+    from app.services import rule_toggles as rule_toggles_mod
+    observed = (rule_toggles_mod.exclusive_paths(db, project_id)
+                if not hards and rule_toggles_mod.observing_since(
+                    db, rule_toggles_mod.EXCLUSIVE_AREAS_RULE, project_id) else ())
 
     for cluster in collision_svc.clusters_for_project(db, project_id,
                                                        lease_seconds=lease_seconds,
@@ -5273,6 +5323,19 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
         free = set().union(*[o for o in overrides if members <= o]) if overrides else set()
         blocked = [r.area for r in taken if r.agent_id != agent_id and r.item_id not in free]
         overlap = hard_collide(cluster.get("areas") or [], blocked, hards)
+        if not overlap and observed:
+            would = hard_collide(cluster.get("areas") or [], blocked, observed)
+            if would:
+                from app.services import rule_observations
+                for r in taken:
+                    if r.agent_id != agent_id and r.item_id not in free and hard_collide(
+                            cluster.get("areas") or [], [r.area], observed):
+                        rule_observations.record(
+                            db, project_id, rule_toggles_mod.EXCLUSIVE_AREAS_RULE, "would_hold",
+                            item_id=(cluster.get("items") or [None])[0],
+                            detail={"areas": would, "held_by": r.agent_id,
+                                    "held_item": r.item_id})
+                        break
         if overlap:
             if len(collided) < 3:
                 collided.extend(colliding_pairs(cluster.get("areas") or [], blocked, hard=True,
@@ -6459,7 +6522,8 @@ def park(db: Session, attempt, *, agent_id: str | None = None,
 #: GRPH-1591 adds `undeclared_held`: the touchpoint gate refused the PR, so a `review` item
 #: goes back to `in_progress` for its builder, with a directive naming the files.
 OBSERVATION_KINDS = ("cut_from", "pr_opened", "salvage", "withheld", "merged_trunk",
-                     "behind_conflict", "undeclared_warned", "undeclared_held")
+                     "behind_conflict", "undeclared_warned", "undeclared_held",
+                     "rule_would_have")
 OBSERVATION_LATER = ("pushed_head",)
 
 _CUT_BASE = re.compile(r"^[0-9a-f]{7,40}$")
@@ -6886,11 +6950,35 @@ def _record_lease(db: Session, item: Item, *, branch: str, agent_id: str | None,
     return {"item_id": item.key, "kind": "lease", "recorded": True, "extended": True}
 
 
+def _record_rule_would_have(db: Session, item: Item, *, rule_id: str | None,
+                            outcome: str | None, commit: str | None, branch: str,
+                            reason: str | None) -> dict:
+    """GRPH-1778 (P91 S6): the supervisor reports what an OBSERVING supervisor-enforced rule
+    would have done. Only the rules and outcomes in `SUPERVISOR_OUTCOMES`; a rule that is not
+    observing records nothing (the supervisor read a stale toggle)."""
+    from app.services import rule_observations as ro
+    from app.services import rule_toggles
+    allowed = ro.SUPERVISOR_OUTCOMES.get((rule_id or "").strip())
+    if allowed is None:
+        raise ObservationError(
+            422, f"rule_would_have names one of {', '.join(sorted(ro.SUPERVISOR_OUTCOMES))}")
+    if outcome not in allowed:
+        raise ObservationError(422, f"{rule_id} records {', '.join(allowed)}, not {outcome!r}")
+    if not rule_toggles.observing_since(db, rule_id, item.project_id):
+        return {"item_id": item.key, "kind": "rule_would_have", "recorded": False,
+                "reason": f"{rule_id} is not observing"}
+    detail = {k: v for k, v in (("branch", branch), ("reason", (reason or "").strip())) if v}
+    ro.record(db, item.project_id, rule_id, outcome, item_id=item.id,
+              commit=(commit or None), detail=detail)
+    return {"item_id": item.key, "kind": "rule_would_have", "recorded": True}
+
+
 def record_observation(db: Session, api_key, *, item_key: str, kind: str,
                        branch: str = "", base: str | None = None,
                        url: str | None = None, commit: str | None = None,
                        reason: str | None = None, agent_id: str | None = None,
-                       seats: Sequence[str] | None = None) -> dict:
+                       seats: Sequence[str] | None = None, rule_id: str | None = None,
+                       outcome: str | None = None) -> dict:
     """Record one supervisor fact on an item this credential's wave cut.
 
     `kind="seats"` writes nothing: it is the start-up check (`check_seats`, GRPH-1648),
@@ -6923,6 +7011,9 @@ def record_observation(db: Session, api_key, *, item_key: str, kind: str,
     if not _wave_cut_item(db, api_key, item):
         raise ObservationError(404, "no such item")
     cleaned = (branch or "").strip()
+    if kind == "rule_would_have":
+        return _record_rule_would_have(db, item, rule_id=rule_id, outcome=outcome,
+                                       commit=commit, branch=cleaned, reason=reason)
     if kind == "lease":
         return _record_lease(
             db, item, branch=cleaned, agent_id=agent_id, commit=commit)

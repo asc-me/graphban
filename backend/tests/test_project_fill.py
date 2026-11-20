@@ -16,12 +16,12 @@ from sqlalchemy import create_engine, inspect, text
 from app.db import engine
 
 _BACKEND = pathlib.Path(__file__).parents[1]
-_MIGRATION = _BACKEND / "alembic" / "versions" / "0216_project_tile_fill.py"
+_MIGRATION = _BACKEND / "alembic" / "versions" / "0221_project_tile_fill.py"
 _IS_SQLITE = engine.url.drivername.startswith("sqlite")
 
 
 def _migration():
-    spec = importlib.util.spec_from_file_location("mig_0216", _MIGRATION)
+    spec = importlib.util.spec_from_file_location("mig_0221", _MIGRATION)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -189,12 +189,12 @@ def test_mcp_create_project_accepts_the_fill_and_collapses_the_default_accent(cl
 
 
 # ---- the migration, on a table that already has a row ---------------------------------
-def test_revision_is_the_single_head_after_0215():
+def test_revision_is_the_single_head_after_0220():
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory(str(_BACKEND / "alembic"))
-    assert script.get_current_head() == "0216"
-    assert script.get_revision("0216").down_revision == "0215"
+    assert script.get_current_head() == "0221"
+    assert script.get_revision("0221").down_revision == "0220"
 
 
 def test_upgrade_backfills_existing_rows_and_downgrade_removes_the_columns():
@@ -238,7 +238,7 @@ def test_postgres_downgrade_and_upgrade_keep_the_row_and_the_defaults(client):
     with engine.connect() as conn:
         pid, accent = conn.execute(text("SELECT id, accent FROM projects LIMIT 1")).one()
 
-    command.downgrade(cfg, "0215")
+    command.downgrade(cfg, "0220")
     assert {"accent2", "pattern"}.isdisjoint(
         {c["name"] for c in inspect(engine).get_columns("projects")})
 

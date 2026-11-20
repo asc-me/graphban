@@ -121,6 +121,10 @@ def _in_review_by_somebody_else(client, key, db) -> str:
     item = _item(client, key, "the work under review", ["backend/app/x.py"])
     assert items_svc.claim_item(db, item, who) is not None
     _ok(_mcp(client, key, "update_item", {"id": item, "status": "review", "agent_id": who}))
+    # GRPH-1730 withholds a branch with no PR. The column releases that gate.
+    db.expire_all()
+    db.get(Item, item).github_url = "https://github.com/o/r/pull/1"
+    db.commit()
     return item
 
 

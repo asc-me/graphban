@@ -1944,6 +1944,26 @@ class RuleToggleOut(BaseModel):
     locked_by: str | None = None
     #: `merge.done_predicates` only (GRPH-1426): each predicate `done` needs, with its source.
     effective_predicates: list[dict] | None = None
+    #: Custom rules only (GRPH-1774): the rule's state, and why it is drawn UNMEASURED.
+    state: str | None = None
+    unmeasured_reason: str | None = None
+    #: GRPH-1777: while `state` is `observing`, what the rule would have held or refused, and
+    #: `decision_due` (14 days or 10 would-have outcomes). Never promotes itself.
+    observation: dict | None = None
+
+
+class RulePromote(BaseModel):
+    reason: str
+
+
+class RuleObservationOut(BaseModel):
+    id: int
+    rule_id: str
+    outcome: str
+    item_id: str | None = None
+    commit: str | None = None
+    detail: dict
+    at: datetime
 
 
 class RuleTogglesOut(BaseModel):
@@ -1953,6 +1973,107 @@ class RuleTogglesOut(BaseModel):
     #: Why the installed pack is not in force (refused at startup), else None.
     library_reason: str | None = None
     toggles: list[RuleToggleOut]
+
+
+class CustomRuleWrite(BaseModel):
+    """A person authoring a custom rule directly; saved `active` (GRPH-1774)."""
+    model_config = {"extra": "forbid"}
+    slug: str
+    primitive: str
+    title: str
+    why: str
+    reason: str = ""
+    params: dict = {}
+    claims: str | None = None
+
+
+class RuleProposalWrite(BaseModel):
+    """A rule proposal from a person or the import CLI (GRPH-1775). `import_run` marks an import."""
+    model_config = {"extra": "forbid"}
+    kind: str
+    citations: list[dict] = []
+    rule_id: str | None = None
+    slug: str | None = None
+    primitive: str | None = None
+    title: str | None = None
+    why: str | None = None
+    params: dict | None = None
+    import_run: str | None = None
+    # kind == "guidance" (GRPH-1780): advisory text under a stage, in place of a rule change.
+    stage: str | None = None
+    label: str | None = None
+    text: str | None = None
+
+
+class RuleProposalOut(BaseModel):
+    id: int
+    project_id: str
+    kind: str
+    rule_id: str
+    primitive: str
+    draft: dict
+    params: dict
+    citations: list
+    proposer: str
+    proposer_kind: str
+    direction: str
+    loosens: bool
+    status: str
+    folded: bool = False
+    created_at: datetime
+
+
+class RuleProposalAdopt(BaseModel):
+    """Adopt one or several proposals under one reason (GRPH-1776)."""
+    model_config = {"extra": "forbid"}
+    proposal_ids: list[int]
+    reason: str
+
+
+class RuleProposalDismiss(BaseModel):
+    model_config = {"extra": "forbid"}
+    reason: str
+
+
+class RuleProposalDecisionOut(RuleProposalOut):
+    decided_by: str | None = None
+    decided_reason: str | None = None
+
+
+class RuleGuidanceOut(BaseModel):
+    id: int
+    project_id: str
+    kind: str
+    stage: str
+    label: str
+    text: str
+    citations: list
+    proposer: str
+    proposer_kind: str
+    status: str
+    created_at: datetime
+
+
+class CustomRuleOut(BaseModel):
+    rule_id: str
+    primitive: str
+    stage: str
+    title: str
+    why: str
+    claims: str
+    params: dict
+    state: str
+    author: str | None = None
+    reason: str = ""
+    created_at: datetime
+    on: bool
+    source: str
+    #: GRPH-1779: `project` or `org`; `override` is a project row the org's rule also exists
+    #: behind; `locked` is the org's lock holding it.
+    scope: str = "project"
+    locked: bool = False
+    override: bool = False
+    unmeasured_reason: str | None = None
 
 
 class PublishToOrgWrite(BaseModel):

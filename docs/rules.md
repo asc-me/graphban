@@ -240,3 +240,76 @@ computes `tighten` | `loosen` | `not_proposable` from the contract alone. `rule_
 is the one validator for pack templates and custom rules: it refuses an unknown primitive, a
 primitive-API major mismatch, a missing required param, a claim stronger than the primitive, and a
 stage other than the contract's (the refusal names the contract's stage; it is never corrected).
+
+## Custom rules — a template the project writes (GRPH-1774, P91 D1)
+
+A person can save a rule built from one library primitive: `POST /api/projects/{id}/rules/custom`
+with a `slug`, `primitive`, `title`, `why`, `params` and a `reason`. The rule id is
+`custom.<slug>`, unique per project. The draft goes through the same `rule_pack.validate_draft`
+the pack loader uses; the stage is the primitive's, from the contract. A person's write is
+`active` at once. `rules.person_adopts` holds: an agent API key is refused, and no MCP tool
+writes one.
+
+`rule_toggles.resolve()` and `effective()` return it with `source: custom`, and the Rules read
+lists it with author, why and state. The primitive API it was written for is stored, so when a
+primitive no longer loads (a major API break, or the primitive is gone) the rule is drawn
+UNMEASURED with the reason and resolves off — never half-enforced, the same as a pack template
+that fails to load. Custom rules are a project's own: another project cannot read or write them.
+
+## Org-scope custom rules — premium (GRPH-1779, P91 D7)
+
+An org admin authors or adopts a rule at org scope through the org path (`custom_rules.create_org`, `rule_proposals.adopt_org`, `rule_toggles.set_org_toggle`), gated by `quotas.require_org_rules` (team / enterprise, self-host too). Proposals are still filed on a project only; an org admin may adopt one a project dismissed, with their own reason, and both acts stay in history (the project's `dismiss_rule_proposal` event and the org's `adopt_rule_proposal` event with `scope: org`).
+
+- **One org-owned rule** `custom.<slug>`, unique within the org (a `custom_rules` row with `org_id`). It resolves into each project through project -> org; it is never copied onto a project, and reads say `source: org`.
+- **Project adopted first, then the org adopts:** the org rule is created and the project's row stays as a kept *override* (`override: true`, `source: custom`).
+- **Locking** the org rule (`set_org_toggle(..., {"locked": true})`; the lock is the org's `rule_toggles` row for the id) retires every project override, each with a `retire_rule_override` history event naming `rules.org_lock_holds`. A project write against a locked rule (authoring it, adopting a proposal for it) is refused naming `rules.org_lock_holds`.
+- **Observing applies at org scope:** an org adoption starts `observing`; each project's read carries its own would-have summary. An org admin promotes it (`custom_rules.promote_org`); a project cannot promote an org's rule.
+- **Audit:** an org change is one event naming `projects_changed` (and `overrides_kept` / `retired_overrides`). Nothing is re-evaluated in bulk.
+- No MCP tool does any of this (`rules.person_adopts`).
+
+
+## Rule proposals — cited suggestions (GRPH-1775, P91 D2, D3)
+
+A proposal suggests a rule change; it never makes one. `propose_rule` (MCP, any agent on the
+project) and `POST /api/projects/{id}/rules/proposals` (a person or an import run) file one;
+adopting or dismissing is a person's act (`rules.person_adopts`) and no MCP tool does either.
+
+- **Kinds:** `new_rule` (a draft), `turn_on` (a rule that is off), `tighten` (a param change).
+  Turning a rule off or removing it is refused for every proposer.
+- **Cited:** at least one citation, each resolving: an `item`, `observation` or `lesson` of this
+  project, a `file` (`path`, `lines`, `commit`) that exists at that commit on the project's repo,
+  or a `url`. A forge that cannot be read is "could not verify", which is a refusal, never a pass.
+- **Direction is computed**, by `rule_pack.direction` against the rule's current resolved value,
+  never from the proposer's claim. An agent may only tighten: a loosening (removing a path from
+  `exclusive_areas`, proposing `generated_files`) is refused naming the rule. A person or an
+  import run may propose one; it is stored with `loosens: true`. A param with no comparator is
+  not proposable.
+- **Never an invariant** of `docs/rule-candidates.md` "The line".
+- **Folded:** the same primitive and params as an open proposal appends the citations to it and
+  returns its id.
+- **Refusals name their rule:** an uncited, unresolvable, invalid or direction-less proposal is
+  refused under `rules.proposal_cited`; a loosening from an agent, turning a rule off and an
+  invariant under `rules.person_adopts`.
+
+### Adopting a proposal (GRPH-1776)
+
+A person (project owner or admin) adopts one proposal or a batch under one reason (all-or-nothing: every proposal is checked before any is applied, so a batch refused at any member, including two that create the same slug, changes nothing), or dismisses one with a reason, over REST only: `POST /api/projects/{id}/rules/proposals/adopt` and `.../{proposal_id}/dismiss`. No MCP tool does either; an agent key is refused naming `rules.person_adopts`. A custom rule adopted from a proposal (a `new_rule`, or a `turn_on` of a custom rule) starts `observing`; a `tighten` changes params and keeps the rule's state. A `turn_on` of a library rule switches it on `observing` (S5, below); a `tighten` of an observing library rule changes its params and keeps it observing from when it began, since promotion is a separate person act. The adoption event records the rule's resulting state. Its history records "proposed by X (cited …), adopted by Y" and the reason, and a batch writes one more event. A `loosens` proposal is refused in a batch and is adopted alone with its own reason. A dismissed proposal re-filed with the same citations is refused; a new citation reopens it.
+
+### An adopted rule observes before it enforces (GRPH-1777, P91 D5, D6)
+
+An observing rule is on and measured but not enforced. Where a primitive the **server** enforces would hold or refuse (`exclusive_areas` in `claim_cluster`, `evidence_required` and `done_predicates` in `items.py`, `sabotage_receipt` in `fleet.py`), an observing rule does neither: it records a would-have row (`would_hold` or `would_refuse`, with the rule id, item and commit) and lets the call through. Supervisor-enforced primitives (S6, GRPH-1778): while observing, `gbfleet` applies the pre-rule behaviour and posts the would-have to `POST /api/fleet/observations` (`kind=rule_would_have`) with item and commit — `build.generated_files` posts `would_allow` (the file the configured paths would have let through stays held) and `build.undeclared_files` in `hold` mode posts `would_hold` (nothing is held). Brief/doc-read primitives (`build.test_scope`, `plan.path_classes`) and `review.staff_every_row` are stated "observing, not applied" and measure nothing: `observation.unmeasured` is true and every would-have count is `null`, never 0. `GET /api/rules/toggles` and each rule's `resolve` expose `state` (`observing` | `active`) and, while observing, `observation: {since, would_hold, would_refuse, would_have, decision_due, decision_due_reason}`.
+
+- Nothing is re-evaluated in bulk on adopt, promote or lock; the value is read at the next check. Any direct toggle write from the Rules page is immediate and ends observing.
+- **Promote** is a person's REST act with a reason (`POST /api/projects/{id}/rules/{rule_id}/promote`): the rule becomes `active` at the primitive's real level. An agent key is refused naming `rules.person_adopts`. Would-have rows are the rule's history, kept for the life of the project; promotion or removal never purges them, and they are attributed to the rule, never to its proposer.
+- **Nudge**: `decision_due` is reported once 14 days have passed or 10 would-have outcomes exist, whichever comes first. It never promotes itself; the rule stays observing until a person acts.
+- **D6**: evaluation never reads the proposer or the adopter; the agent that proposed a rule is held and recorded like any other.
+
+## Guidance for requirements no primitive expresses (GRPH-1780, P91 D8)
+
+When no primitive can say a requirement, file it as **guidance**: `propose_rule` with `kind: guidance`
+(or `POST /api/projects/{id}/rules/proposals` with `stage`, `label`, `text`, `citations`). It needs a
+citation like any proposal. A person adopts or dismisses it (`.../rules/guidance/{id}/adopt|dismiss`);
+adopted guidance is **advisory** text, shown in the delegation brief of an item in that stage (at most
+three entries). Each filing increments a primitive-gap count by stage and short label, never the text.
+Gap counts stay on the box; they are in the box push (`counts.primitive_gaps`) only under the existing
+`box_push_counts` opt-in.

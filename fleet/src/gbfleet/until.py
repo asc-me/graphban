@@ -250,6 +250,10 @@ class Report:
         payload["vendors_launched"] = launched
         payload["vendors_not_launched"] = [
             v for v in (self.wave.vendors_tried if self.wave else []) if v not in launched]
+        # GRPH-1753. Always present. Empty means no spawn raised. A missing key
+        # reads the same way, which is how a process that died on the exception
+        # used to leave the summary.
+        payload["spawn_failed"] = list(self.wave.spawn_failed) if self.wave else []
         if self.detail:
             payload["detail"] = self.detail
         return payload
@@ -918,6 +922,12 @@ def _loop(
     agent_id = str(identity.get("agent_id") or identity.get("id"))
     empty = 0
     delegated: set[str] = set()
+    # GRPH-1753. Items whose spawn raised this pass. Skipped until the pass is
+    # exhausted so the next item can start; cleared so the next pass retries.
+    # Not `delegated`: marking them delegated hides them until the process
+    # restarts, and the restart is what the open row then refuses.
+    cooled: set[str] = set()
+    fail_rounds = 0
     # GRPH-1315: which child each delegated item was handed to. `delegated` stops THIS loop
     # offering an item while a child has it; once that child exits the server's state is the
     # answer again. Without this, a bounced item back in `next` was never offered by the
@@ -1001,6 +1011,30 @@ def _loop(
         return (launch_for(res.winner.harness, res.winner.model),
                 (res.winner.harness, res.winner.model))
 
+    def _record_spawn_failed(seed: str, exc: BaseException) -> None:
+        """One spawn exception, class and message, on the summary and the log."""
+        text = str(exc).strip()
+        # ConfigError is how `_spawn_one` re-raises a failure `_start` already
+        # named (`UnrenderableSeat: ...`). Prefixing ConfigError would hide that.
+        if not isinstance(exc, ConfigError) and type(exc).__name__ not in text:
+            text = f"{type(exc).__name__}: {text}"
+        line = f"{seed}: {text}" if seed else text
+        wave.spawn_failed.append(line)
+        observe.emit("spawn_failed", item=seed or "", detail=line,
+                     error=type(exc).__name__)
+
+    def _withdraw_spawn(seed: str, tier: str) -> None:
+        """Close the delegation this pass opened. A failure here must not kill the run."""
+        if not seed:
+            return
+        try:
+            planner.call(
+                "delegate", id=seed, lane="backend", tier=tier or "cheap",
+                agent_id=agent_id, withdraw=True,
+            )
+        except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+            observe.emit("withdraw_failed", item=seed, detail=str(exc))
+
     def failover(seat, seed, want, factory, chosen):
         """GRPH-1247, GRPH-1372. Spawn; on a vendor limit, take the next record or vendor.
 
@@ -1046,7 +1080,7 @@ def _loop(
                         owners[seed] = children[-1]
                     if chosen[0] and chosen[0] not in wave.vendors_launched:
                         wave.vendors_launched.append(chosen[0])
-                    return
+                    return "spawned"
                 except VendorLimit as caught:
                     exc = caught
                     _mark_exhausted(wave, caught, chosen[0], record)
@@ -1065,6 +1099,21 @@ def _loop(
                                      detail=f"{record.name if record else chosen[0]} exhausted; "
                                             f"continuing on {left.name} ({chosen[0]})")
                         continue
+                except (ToolFailed, ServerUnreachable, NotPermitted):
+                    # A server error stops the wave (`server_error`, one FAILED line).
+                    # Cooling the item would hide that and keep spawning.
+                    raise
+                except Exception as exc:
+                    # GRPH-1753. One item's spawn failure is not the wave's death.
+                    # Withdraw the delegation this pass opened and cool the item so
+                    # the next one can start. The same failure on every pass is what
+                    # ends the run, as `spawn_failed`, not an unhandled traceback.
+                    _record_spawn_failed(seed, exc)
+                    if seed:
+                        _withdraw_spawn(seed, want or "cheap")
+                        cooled.add(seed)
+                        delegated.discard(seed)
+                    return "failed"
             nxt = next_candidate(seed, want)
             if nxt is None:
                 wave.reason = "capacity"
@@ -1278,9 +1327,25 @@ def _loop(
             seed, code, want = _delegate_next(planner, agent_id, wave_name, delegated,
                                               request, prd, repo, base, line=line, held=held,
                                               merger=merger, bound_out=flags,
-                                              live=live, owners=owners)
+                                              live=live, owners=owners, skip=cooled)
             for refused_item, why in flags.get("refused", ()):
                 _note_refused(wave, refused_item, why)
+            if seed is None and cooled and not flags.get("pinned_until"):
+                # Every remaining candidate already failed this pass. A live child
+                # is not a failing pass — it may be the item we moved on to.
+                if not live:
+                    fail_rounds += 1
+                    if fail_rounds >= empty_ticks:
+                        wave.reason = "spawn_failed"
+                        report = _leave(
+                            "spawn_failed", 1, review=reviews, waits=waits,
+                            outside=outside)
+                        report.detail = (
+                            wave.spawn_failed[-1] if wave.spawn_failed else "spawn_failed")
+                        return report
+                    cooled.clear()
+                sleep(poll)
+                continue
             if seed is None and flags.get("pinned_until"):
                 # GRPH-1332. A bounced item is reserved for its live author: a wait, not
                 # idle. The pin ends with its expiry or the author going offline, so this is
@@ -1346,7 +1411,9 @@ def _loop(
                 if chosen[0]:
                     seat = replace(seat, declare=matrix_mod.declaration(chosen[0], chosen[1], want or None, matrix))
                 _cap_children(wave, limits, item=seed)
-                failover(seat, seed, want, factory, chosen)
+                if failover(seat, seed, want, factory, chosen) == "failed":
+                    continue
+                fail_rounds = 0
                 wd.progress(f"spawned for {seed}")
                 continue
             else:
@@ -1404,7 +1471,9 @@ def _loop(
                 if chosen[0]:
                     seat = replace(seat, declare=matrix_mod.declaration(chosen[0], chosen[1], want or None, matrix))
                 _cap_children(wave, limits, item=seed)
-                failover(seat, seed, want, factory, chosen)
+                if failover(seat, seed, want, factory, chosen) == "failed":
+                    continue
+                fail_rounds = 0
                 wd.progress(f"spawned for {seed}")
                 continue
 
@@ -1436,6 +1505,27 @@ def _loop(
         # not paid on a poll where `need` or a live review spawn decides nothing spawns.
         unheld_review = [r for r in rows if not review_held(r)]
         ci_waiting: list[dict] = []
+        pr_waiting: list[dict] = []
+        # GRPH-1730: a pushed review row with no linked PR is opened here, before a
+        # reviewer is spawned. `gh pr create` dying on a rate limit used to be the last
+        # try, and every later reviewer was refused `pr_missing` for the same head.
+        #
+        # Not gated on `review_busy`. A second ready row spawns a reviewer, and that
+        # seat used to be handed the unlinked row by `claim_review` (it orders by
+        # sort_order). Holding it dropped the row from `unheld_review`, and gating this
+        # call on `not review_busy` then skipped the retry for the whole lease. The
+        # open is retried while that other reviewer is live. `claim_review` withholds
+        # the row (`pr_unlinked`) until the PR is linked, so the spawned seat cannot
+        # take it; the skip on the seat names the same ids.
+        if unheld_review and need <= 0:
+            unheld_review, pr_waiting = _pr_opened(
+                unheld_review, repo, base, ci_logged, planner=planner)
+        for row in pr_waiting:
+            wait_line = f"{row.get('id')}: review waits on its PR being opened"
+            if wait_line not in waits:
+                waits.append(wait_line)
+            if wait_line not in wave.review_waits:
+                wave.review_waits.append(wait_line)
         if unheld_review and need <= 0 and not review_busy:
             unheld_review, ci_waiting, ci_blocked = _ci_attested(
                 unheld_review, repo, ci_logged, planner=planner, agent_id=agent_id)
@@ -1467,6 +1557,12 @@ def _loop(
             _cap_children(wave, limits)
             before = len(wave.spawned)
             kids = len(children)
+            # The empty item is deliberate: the seat reviews whatever claim_review
+            # hands it. The unlinked rows are not among those. The skip is the same
+            # list, named in the instruction; the withhold is what enforces it.
+            waiting_ids = tuple(str(r.get("id")) for r in pr_waiting if r.get("id"))
+            if waiting_ids:
+                seat = replace(seat, review_skip=waiting_ids)
             failover(seat, "", "", launch_factory, (adapter, ""))
             if len(children) > kids:
                 review_spawned.append(children[-1])
@@ -1485,10 +1581,15 @@ def _loop(
             sleep(poll)
             continue
 
-        if ci_waiting:
+        if ci_waiting or pr_waiting:
             # GRPH-1392: CI is still running at these heads. That is a wait, not unsigned
             # work: keep polling until it settles, then the branch above spawns (green) or
             # blocks (red). CI finishes on its own, so this is bounded.
+            # GRPH-1730: a row with no PR is the same shape. The next poll opens it again.
+            for row in pr_waiting:
+                wait_line = f"{row.get('id')}: review waits on its PR being opened"
+                if wait_line not in waits:
+                    waits.append(wait_line)
             for row in ci_waiting:
                 wait_line = f"{row.get('id')}: review waits on CI"
                 if wait_line not in waits:
@@ -2483,6 +2584,7 @@ def _delegate_next(
     bound_out: dict | None = None,
     live: list | None = None,
     owners: dict[str, object] | None = None,
+    skip: set[str] | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """Write the delegation for the seed of the next free cluster, before its seat is minted.
 
@@ -2501,6 +2603,9 @@ def _delegate_next(
     except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
         observe.emit("delegate_skipped", detail=f"collision_clusters: {exc}")
         return None, None, None
+    # GRPH-1753. Cooled items failed this pass. They are not delegated: the next
+    # pass retries them. Hiding them here is what lets the rest of the pass spawn.
+    aside = skip or set()
     seed: str | None = None
     lane = "backend"
     want = str(request or "cheap")
@@ -2522,7 +2627,7 @@ def _delegate_next(
         details_for: dict[str, dict] = {}
         occupiers: dict[str, list[str]] = {}
         for item_id in items:
-            if item_id in delegated:
+            if item_id in delegated or item_id in aside:
                 continue
             try:
                 got = planner.call("get_item_details", id=item_id) or {}
@@ -2564,7 +2669,7 @@ def _delegate_next(
         # than on the one item this loop happens to delegate.
         clean: list[str] = []
         for candidate in items:
-            if candidate in delegated or candidate not in details_for:
+            if candidate in delegated or candidate in aside or candidate not in details_for:
                 continue
             details = details_for[candidate]
             if not _seed_ready(details):
@@ -3000,6 +3105,134 @@ def ci_stuck_detail(row: dict) -> str:
     detail = _latest_refusal(row).split("): ", 1)[-1]
     return (f"{row.get('id')}: sign_off refused pr_ci_not_green ({detail[:300]}); another "
             "reviewer cannot clear it — needs a CI attestation or an owner close")
+
+
+def _done_refusals(row: dict) -> list[str]:
+    """Every `refused at done` note on the row, oldest first."""
+    found: list[str] = []
+    for ev in row.get("evidence") or []:
+        if not isinstance(ev, dict):
+            continue
+        detail = str(ev.get("detail") or "")
+        if detail.startswith("refused at `done` ("):
+            found.append(detail)
+    return found
+
+
+def _pr_missing_is_the_only_refusal(row: dict) -> bool:
+    """True when nothing but `pr_missing` has refused this row, including no refusal yet.
+
+    A different refusal is a verdict a reviewer can clear, so this gate leaves that row
+    spawnable. No refusal yet is the same gate: the first spawn is the one that used to
+    walk into `pr_missing` on a branch nobody had proposed.
+    """
+    return all(d.startswith("refused at `done` (pr_missing)") for d in _done_refusals(row))
+
+
+def _is_pr_url(url: str) -> bool:
+    low = (url or "").lower()
+    return "/pull/" in low or "/merge_requests/" in low
+
+
+def _linked_pr(row: dict) -> str:
+    """A PR url already on the row, or "".
+
+    `sign_off` refuses `pr_missing` until one is linked. Evidence is what a review
+    listing carries; `github_url` is read when a fuller record has it.
+    """
+    direct = str(row.get("github_url") or "")
+    if _is_pr_url(direct):
+        return direct
+    pr = row.get("pr")
+    if isinstance(pr, dict) and _is_pr_url(str(pr.get("url") or "")):
+        return str(pr["url"])
+    for ev in row.get("evidence") or []:
+        if isinstance(ev, dict) and _is_pr_url(str(ev.get("url") or "")):
+            return str(ev["url"])
+    return ""
+
+
+def _stamp_link(row: dict, branch: str, url: str) -> None:
+    """Remember the link on this poll's copy, so the same pass does not open it twice."""
+    evidence = list(row.get("evidence") or [])
+    evidence.append({
+        "kind": "url",
+        "url": url,
+        "detail": f"draft PR opened by gbfleet for {branch}",
+    })
+    row["evidence"] = evidence
+
+
+def _record_pr(planner, item: str, branch: str, url: str) -> bool:
+    """Link `url` on the item. False when it did not land — `sign_off` would still refuse."""
+    if planner is None or not item or not url:
+        return False
+    try:
+        planner.post_observation(item_id=item, kind="pr_opened", branch=branch, url=url)
+    except Exception:  # noqa: BLE001 — a lost link is a wait, not a spawn
+        return False
+    return True
+
+
+def _note_pr_wait(logged: set, item: str, reason: str) -> None:
+    key = ("review_waits_on_pr", item, (reason or "")[:200])
+    if key in logged:
+        return
+    logged.add(key)
+    observe.emit("review_waits_on_pr", item=item, detail=f"{item}: {reason}")
+
+
+def _pr_opened(rows: list[dict], repo: Path, base: str, logged: set, *,
+               planner=None) -> tuple[list[dict], list[dict]]:
+    """Split unheld review rows into (has a linked PR, waiting for one) (GRPH-1730).
+
+    A reviewer's `sign_off` is refused `pr_missing` for a branch with no linked PR, so a
+    spawn for one is wasted: nine reviewers passed the same head on GRPH-1727 after
+    `gh pr create` hit the GraphQL rate limit once and was never tried again. The PR is
+    opened HERE, each poll, before a reviewer is spawned. A rate limit falls back to the
+    REST pulls endpoint inside `propose` (GRPH-1752); this is the retry of that failure,
+    and of any other transient `gh` error, on the next poll.
+
+    A row whose open failed is held back. A `skipped` answer (no gh, no base) does not
+    hold a row: a repo that cannot propose must not wedge its review queue. A row that
+    already carries some other `done` refusal keeps its reviewer.
+    """
+    from . import propose
+    from .supervisor import _branch_head
+
+    ready: list[dict] = []
+    waiting: list[dict] = []
+    for row in rows:
+        branch = str(row.get("branch") or "")
+        item = str(row.get("id") or "")
+        if not branch or _linked_pr(row) or not _pr_missing_is_the_only_refusal(row):
+            ready.append(row)
+            continue
+        try:
+            subject = propose.title_subject(repo, branch, base)
+            title, body = propose.describe(branch, [item] if item else [], subject)
+            got = propose.propose(
+                repo, branch, base, title=title, body=body,
+                head=_branch_head(repo, branch),
+                items=[item] if item else ())
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            got = propose.Proposed(branch=branch, reason=f"gh could not run: {exc}")
+        if got.url:
+            # An existing PR and a PR this call just opened are the same fact: until the
+            # url is on the item, the next sign_off is still `pr_missing`.
+            if _record_pr(planner, item, branch, got.url):
+                _stamp_link(row, branch, got.url)
+                ready.append(row)
+                continue
+            _note_pr_wait(logged, item, got.reason or "PR opened but not recorded on the item")
+            waiting.append(row)
+            continue
+        if got.skipped:
+            ready.append(row)
+            continue
+        _note_pr_wait(logged, item, got.reason or "no PR")
+        waiting.append(row)
+    return ready, waiting
 
 
 def ci_verdict(repo: Path, branch: str) -> tuple[str, str, str]:
@@ -3517,6 +3750,11 @@ def _staff_every_row(planner: Graphban) -> bool:
         return False
     for t in (got or {}).get("toggles") or []:
         if t.get("rule_id") == STAFF_EVERY_ROW:
+            if t.get("state") == "observing":
+                # GRPH-1778: observing, not applied. Staffing widens to rows this wave did not
+                # cut, which the observations route cannot record, so the rules read says
+                # UNMEASURED for it, never 0.
+                return False
             on = t.get("on")
             return bool(on.get("value") if isinstance(on, dict) else on)
     return False
