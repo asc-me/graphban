@@ -1920,6 +1920,10 @@ class RuleProposalWrite(BaseModel):
     why: str | None = None
     params: dict | None = None
     import_run: str | None = None
+    # kind == "guidance" (GRPH-1780): advisory text under a stage, in place of a rule change.
+    stage: str | None = None
+    label: str | None = None
+    text: str | None = None
 
 
 class RuleProposalOut(BaseModel):
@@ -1937,6 +1941,20 @@ class RuleProposalOut(BaseModel):
     loosens: bool
     status: str
     folded: bool = False
+    created_at: datetime
+
+
+class RuleGuidanceOut(BaseModel):
+    id: int
+    project_id: str
+    kind: str
+    stage: str
+    label: str
+    text: str
+    citations: list
+    proposer: str
+    proposer_kind: str
+    status: str
     created_at: datetime
 
 
