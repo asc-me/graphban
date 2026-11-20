@@ -22,7 +22,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 BRANCH_PREFIX = "gb/"
 
@@ -587,6 +587,38 @@ def remote_name(repo: Path | str, branch: str) -> RemoteName:
     return RemoteName(known=True, exists=False, remote=remote)
 
 
+def worktree_key(path: str | Path) -> str:
+    """One spelling for a checkout path.
+
+    `git worktree list --porcelain` prints `C:/Users/...`. `str(Path)` on
+    Windows is `C:\\Users\\...`. A substring check of one against the other
+    reads a checkout that is still there as absent (GRPH-1785).
+    """
+    text = str(path).strip().strip('"')
+    if "\\" in text or (len(text) >= 2 and text[1] == ":"):
+        text = PureWindowsPath(text).as_posix()
+    else:
+        text = PurePosixPath(text).as_posix()
+    if len(text) > 1:
+        text = text.rstrip("/")
+    return text
+
+
+def porcelain_lists_worktree(text: str, path: str | Path) -> bool:
+    """True when `git worktree list --porcelain` names `path`.
+
+    Separators are normalised on both sides. A forward-slash line matches a
+    backslash path, and the reverse.
+    """
+    prefix = "worktree "
+    want = worktree_key(path)
+    return any(
+        worktree_key(line[len(prefix):]) == want
+        for line in text.splitlines()
+        if line.startswith(prefix)
+    )
+
+
 def worktree_holding(repo: Path | str, branch: str) -> Path | None:
     """The worktree in this clone that has `branch` checked out, or None.
 
@@ -599,7 +631,7 @@ def worktree_holding(repo: Path | str, branch: str) -> Path | None:
     current: Path | None = None
     for line in _git(repo, "worktree", "list", "--porcelain").splitlines():
         if line.startswith("worktree "):
-            current = Path(line.split(" ", 1)[1])
+            current = Path(worktree_key(line.split(" ", 1)[1]))
         elif line == f"branch refs/heads/{branch}" and current is not None:
             return current
     return None
@@ -911,7 +943,7 @@ def registered_worktrees(repo: Path) -> set[Path]:
     out = _git(repo, "worktree", "list", "--porcelain")
     prefix = "worktree "
     return {
-        Path(line[len(prefix):].strip()).resolve()
+        Path(worktree_key(line[len(prefix):])).resolve()
         for line in out.splitlines()
         if line.startswith(prefix)
     }
@@ -1571,7 +1603,7 @@ def _checkout_of(repo: Path | str, branch: str) -> Path | None:
     path: Path | None = None
     for line in out.splitlines():
         if line.startswith("worktree "):
-            path = Path(line[len("worktree "):].strip())
+            path = Path(worktree_key(line[len("worktree "):]))
         elif line.strip() == f"branch refs/heads/{branch}":
             return path
     return None

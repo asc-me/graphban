@@ -13,6 +13,7 @@ from gbfleet.cli import make_launch_factory
 from gbfleet.client import ALLOWED_TOOLS, Graphban
 from gbfleet.seat import Seat
 from gbfleet.supervisor import Limits
+from gbfleet.worktree import porcelain_lists_worktree, worktree_key
 from gbfleet.until import PLANNER_TOOLS, Report, run
 
 from tests.test_supervisor import KEY, _factory, _seats
@@ -3322,6 +3323,18 @@ def _clone_with_held_branch(tmp_path: Path, *, dirty: bool) -> tuple[Path, Path]
     return repo, stale
 
 
+def _assert_slash_spellings_match(path: Path) -> None:
+    """`C:/...` in porcelain and `C:\\...` from `str(Path)` are one checkout.
+
+    Both reclaim tests call this, so a raw `str(path) in listed` check fails
+    here on every OS, not only on Windows.
+    """
+    from pathlib import PureWindowsPath
+
+    forward = "worktree " + worktree_key(path) + "\n"
+    assert porcelain_lists_worktree(forward, PureWindowsPath(worktree_key(path)))
+
+
 def _capture_emit(monkeypatch):
     from gbfleet import observe
 
@@ -3382,7 +3395,10 @@ def test_a_clean_pushed_worktree_holding_the_branch_is_removed_and_resumed(
         ["git", "worktree", "list", "--porcelain"],
         cwd=repo, capture_output=True, text=True, check=True,
     ).stdout
-    assert str(stale) not in listed
+    # Git prints `C:/...`; `str(stale)` is `C:\...` on Windows. A substring
+    # check passes while the checkout is still listed (GRPH-1785).
+    assert not porcelain_lists_worktree(listed, stale)
+    _assert_slash_spellings_match(stale)
     assert not stale.exists()
     assert any(name == "resume_reclaimed" and fields.get("item") == "GRPH-1690"
                and fields.get("branch") == "gb/line-104" for name, fields in events)
@@ -3455,4 +3471,27 @@ def test_a_live_child_keeps_the_worktree_that_holds_the_branch(tmp_path: Path):
         ["git", "worktree", "list", "--porcelain"],
         cwd=repo, capture_output=True, text=True, check=True,
     ).stdout
-    assert str(stale) in listed
+    assert porcelain_lists_worktree(listed, stale)
+    _assert_slash_spellings_match(stale)
+
+
+def test_porcelain_lists_a_windows_checkout_printed_with_forward_slashes():
+    """GRPH-1785. Git's porcelain line is `worktree C:/Users/...`. `str(Path)`
+    on Windows is `C:\\Users\\...`. Those are the same checkout.
+
+    Sabotage: make `porcelain_lists_worktree` a raw `str(path) in text` check.
+    This fails, because the backslash spelling is not a substring of the
+    forward-slash line.
+    """
+    from pathlib import PureWindowsPath
+
+    listed = (
+        "worktree C:/Users/runner/AppData/Local/Temp/line-104\n"
+        "HEAD abcdef\n"
+        "branch refs/heads/gb/line-104\n"
+    )
+    stale = PureWindowsPath(r"C:\Users\runner\AppData\Local\Temp\line-104")
+    assert porcelain_lists_worktree(listed, stale)
+    assert not porcelain_lists_worktree(
+        listed, PureWindowsPath(r"C:\Users\runner\AppData\Local\Temp\other"),
+    )
