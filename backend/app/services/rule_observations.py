@@ -120,6 +120,9 @@ def promote(db: Session, actor: object, project_id: str, rule_id: str, reason: s
     from app.services import custom_rules
     if custom_rules.is_custom(rule_id):
         crow = custom_rules.get(db, rule_id, project_id)
+        if crow.org_id:
+            raise Validation(f"{rule_id} is owned by the org; an org admin promotes it",
+                             hint="a project promotes only a rule it holds itself")
         if crow.state != "observing":
             raise Validation(f"{rule_id} is not observing")
         before = summary(db, project_id, rule_id, crow.created_at)
