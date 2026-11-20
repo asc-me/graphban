@@ -273,7 +273,13 @@ def fill_legacy_projects(db: Session, cloud_project_id: str) -> None:
 
 def clear(db: Session) -> None:
     """Unlink's half of the deployment link: delete the token, the sign-in in flight, the
-    legacy key and every mapping, so each project is local only again."""
+    legacy key and every mapping, so each project is local only again.
+
+    Pushes and pulls stop because the credential is gone. ``sync_manifest`` stays.
+    A relink resumes from those confirmed hashes and sends only entities that
+    changed while the box was unlinked (GRPH-1738). Deleting the manifest here
+    would make that relink a full re-backfill of every entity.
+    """
     link = _link(db)
     if link is not None:
         # Clearing, not a credential: an empty string is "no token held".

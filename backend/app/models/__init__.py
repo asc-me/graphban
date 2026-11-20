@@ -2429,6 +2429,10 @@ class SyncProject(Base):
     #: these columns are the audit, not a grant. Null on a row that was never opted in.
     enabled_by: Mapped[str | None] = mapped_column(String, nullable=True)
     enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: A purge the console has not confirmed (GRPH-1738). ``digests`` or ``local`` is the
+    #: level waiting on ``DELETE`` 200. Null means no purge is owed — a different fact
+    #: from a purge that succeeded, which clears this and the manifest together.
+    pending_purge: Mapped[str | None] = mapped_column(String, nullable=True)
     #: Exclusive cursor for `GET /api/sync/proposals`. Empty until the first page.
     #: A 304 does not clear it: the console sends no cursor on an idle poll.
     proposal_cursor: Mapped[str] = mapped_column(
@@ -4068,6 +4072,42 @@ class RuleToggle(Base):
                         name="ck_rule_toggles_lock_is_org_only"),
         UniqueConstraint("rule_id", "org_id", name="uq_rule_toggles_org"),
         UniqueConstraint("rule_id", "project_id", name="uq_rule_toggles_project"),
+    )
+
+
+class CustomRule(Base):
+    """A rule a person wrote from a library primitive (GRPH-1774 / P91 D1).
+
+    Scoped to a project (`project_id`) or, from S7, an org (`org_id`): exactly one. `rule_id` is
+    `custom.<slug>`, unique per scope. `stage` is the primitive's, copied from the contract at
+    write time; `primitive_api` is the primitive API the draft was validated against, so a
+    later major break reads as UNMEASURED rather than half-enforced. `state` is `observing`
+    (measured, not enforced) or `active`.
+    """
+
+    __tablename__ = "custom_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    rule_id: Mapped[str] = mapped_column(String, index=True)
+    org_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id"), nullable=True)
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
+    primitive: Mapped[str] = mapped_column(String)
+    primitive_api: Mapped[str] = mapped_column(String)
+    stage: Mapped[str] = mapped_column(String)
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    title: Mapped[str] = mapped_column(String)
+    why: Mapped[str] = mapped_column(Text)
+    claims: Mapped[str] = mapped_column(String)
+    state: Mapped[str] = mapped_column(String, default="active")
+    author_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        CheckConstraint("(org_id IS NULL) <> (project_id IS NULL)",
+                        name="ck_custom_rules_one_scope"),
+        UniqueConstraint("rule_id", "org_id", name="uq_custom_rules_org"),
+        UniqueConstraint("rule_id", "project_id", name="uq_custom_rules_project"),
     )
 
 

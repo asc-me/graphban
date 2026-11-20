@@ -81,6 +81,7 @@
 "tests/test_credential_selection.py": 0.79,
 "tests/test_credentials_resolution.py": 0.82,
 "tests/test_cross_reference_keys.py": 1.7,
+"tests/test_custom_rules.py": 0.5,
 "tests/test_cross_tenant.py": 7.12,
 "tests/test_cross_tenant_writes.py": 1.41,
 "tests/test_cursor_hooks.py": 0.41,

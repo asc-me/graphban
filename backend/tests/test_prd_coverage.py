@@ -318,6 +318,80 @@ def test_decompose_flags_an_oversized_section_and_splits_three_ways(client, auth
     assert again["proposals"] == []
 
 
+def test_partial_split_files_the_omitted_pieces_as_a_remainder(client, auth):
+    """Naming one of three pieces must not drop the other two.
+
+    Coverage counts by section, so filing only One used to mark Work covered and a
+    later decompose skipped Two and Three. Their clauses have to be on an item, and
+    the reply has to name the pieces that were not filed on their own.
+    """
+    from sqlalchemy import select
+
+    from app.models import Link
+    from app.services.fleet import parse_acceptance
+    from tests.prd_approve import approve_id
+
+    body = (
+        "# Spec\n\n## Small\none thing\n\n## Work\n"
+        "### One\ndo the first\n### Two\ndo the second\n### Three\ndo the third\n\n"
+        "## Acceptance criteria\n### Small\n- small is done\n"
+        "### One\n- first is done\n### Two\n- second is done\n### Three\n- third is done\n"
+    )
+    prd = client.post("/api/prds", json={
+        "title": "Partial Split", "body": body, "project_id": "core",
+    }, headers=auth).json()
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    work = next(p for p in dry["proposals"] if p["section"] == "Work")
+    assert [s["heading"] for s in work["sub_items"]] == ["One", "Two", "Three"]
+    assert "_gbody" not in work["sub_items"][0] and "_preamble" not in work
+    assert dry["unfiled_pieces"] is None
+    assert dry["split_remainders"] == []
+
+    approve_id(prd["id"])
+    key = client.post("/api/api-keys", json={"name": "partial-split", "project_id": "core"},
+                      headers=auth).json()["plaintext"]
+    out = _mcp(client, key, "decompose_prd", {
+        "prd_id": prd["id"], "create": True,
+        "splits": {"Work": ["One"]},
+        "touchpoints": {"Work": ["backend/app/work.py"], "Small": ["backend/app/small.py"]},
+    })["structuredContent"]
+    db = SessionLocal()
+    items = [db.get(items_svc.Item, i) for i in out["created"]]
+    by_title = {i.title: i for i in items}
+    assert set(by_title) == {
+        "Implement: Small",
+        "Implement: Work — One",
+        "Implement: Work — remainder",
+    }
+    one = by_title["Implement: Work — One"]
+    rem = by_title["Implement: Work — remainder"]
+    assert one.prd_section == "Work" and rem.prd_section == "Work"
+    assert one.status == "backlog" and rem.status == "backlog"
+    assert parse_acceptance(one.description)[0] == ["first is done"]
+    assert parse_acceptance(rem.description)[0] == ["second is done", "third is done"]
+    assert "do the second" in rem.description and "do the third" in rem.description
+    assert "second is done" not in one.description
+    assert "third is done" not in one.description
+    assert out["unfiled_pieces"] == []
+    assert out["split_remainders"] == [{
+        "section": "Work",
+        "headings": ["Two", "Three"],
+        "item_id": rem.id,
+    }]
+    filed = "\n".join(i.description or "" for i in items)
+    for clause in ("first is done", "second is done", "third is done", "small is done"):
+        assert clause in filed
+    links = list(db.scalars(select(Link).where(Link.reason == "split of Work")))
+    assert len(links) == 1
+    assert {links[0].a, links[0].b} == {one.id, rem.id}
+    db.close()
+
+    again = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    assert again["proposals"] == []
+    assert again["unfiled_pieces"] is None
+    assert again["split_remainders"] == []
+
+
 def test_named_design_pages_become_a_design_block_and_a_ui_item(client, auth):
     """A section that names two design pages files an item holding both, plus a UI item."""
     from sqlalchemy import select
