@@ -152,16 +152,34 @@ def test_an_adapter_without_a_debug_flag_reports_nothing_rather_than_something(
     assert not [a for a in launch.argv if "debug" in a]
 
 
+def _release_after_first_reading(monkeypatch, scripts, *, when=lambda wave: True):
+    """GRPH-1715: hold a `silent_until_released` child open until the supervisor has taken
+    a reading of it (and `when(wave)` holds), instead of for a fixed 1.5 s a loaded runner
+    can spend before its first sample."""
+    release = scripts["silent_until_released"].parent / "release"
+    original = supervisor._watch_output
+
+    def watch_then_release(wave, children, limits, **kw):
+        original(wave, children, limits, **kw)
+        if when(wave):
+            release.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(supervisor, "_watch_output", watch_then_release)
+
+
 # --- the supervisor, end to end ------------------------------------------------------
 
 def test_a_child_that_produces_nothing_is_reported_quiet(
-    git_repo: Path, tmp_path: Path, scripts, state: Path
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch
 ):
     workspace = tmp_path / "ws"
+    # Released only once the supervisor has REPORTED the silence; the 10 s cap bounds a
+    # sabotaged run and is never what a passing test waits on.
+    _release_after_first_reading(monkeypatch, scripts, when=lambda wave: bool(wave.silent))
     wave = up(
         git_repo,
         _seats(1),
-        _factory(scripts, "silent_then_exits"),
+        _factory(scripts, "silent_until_released"),
         _server(workspace),
         limits=Limits(max_workers=1, quiet_after=0.1),
         state=state,
@@ -273,7 +291,7 @@ def test_a_child_that_keeps_writing_is_not_reported_quiet(
 
 
 def test_debug_mode_emits_a_reading_per_poll_and_plain_mode_does_not(
-    git_repo: Path, tmp_path: Path, scripts, state: Path
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch
 ):
     """Always measured, printed only on request.
 
@@ -283,8 +301,9 @@ def test_debug_mode_emits_a_reading_per_poll_and_plain_mode_does_not(
     both halves, because a flag that changes nothing is the easiest kind to ship.
     """
     workspace = tmp_path / "ws"
+    _release_after_first_reading(monkeypatch, scripts)
     up(
-        git_repo, _seats(1), _factory(scripts, "silent_then_exits"), _server(workspace),
+        git_repo, _seats(1), _factory(scripts, "silent_until_released"), _server(workspace),
         limits=Limits(max_workers=1, quiet_after=0.1), state=state,
         workspace=workspace, poll=0.05, debug=True,
     )
@@ -297,8 +316,9 @@ def test_debug_mode_emits_a_reading_per_poll_and_plain_mode_does_not(
     # this passed here and failed there with WinError 32 (GRPH-588).
     (state / LOG_FILE).write_text("", encoding="utf-8")
     workspace2 = tmp_path / "ws2"
+    (scripts["silent_until_released"].parent / "release").unlink(missing_ok=True)
     up(
-        git_repo, _seats(1), _factory(scripts, "silent_then_exits", adapter="fake2"),
+        git_repo, _seats(1), _factory(scripts, "silent_until_released", adapter="fake2"),
         _server(workspace2), limits=Limits(max_workers=1, quiet_after=0.1), state=state,
         workspace=workspace2, poll=0.05, wave_name="wave2",
     )

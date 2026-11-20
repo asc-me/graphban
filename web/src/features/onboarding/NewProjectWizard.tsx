@@ -21,7 +21,27 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { keys, useConfirmSetup } from "@/lib/queries";
 
-export const PROJECT_ACCENTS = ["#c6f24e", "#a78bfa", "#7ca2ff", "#e0b34a", "#5fd07a", "#ff8f8f"];
+/* Twelve accents, in hue order. Left out on purpose: operator orange (#ff8a3d) marks the
+   operator plane, and the five status tokens — --color-st-done #5fd07a, --color-st-next
+   #7ca2ff, --color-st-review #e0b34a, --color-st-blocked #ff6b6b, --color-st-backlog
+   #8b949e — so a project tile never reads as a status. Mint, Sky, Indigo, Rose and Sand
+   sit next to a status hue and are kept lighter than it. */
+export const PROJECT_ACCENT_SWATCHES = [
+  { hex: "#c6f24e", name: "Lime" },
+  { hex: "#a6ebc4", name: "Mint" },
+  { hex: "#4fd1c5", name: "Teal" },
+  { hex: "#67d4f0", name: "Cyan" },
+  { hex: "#a3cfff", name: "Sky" },
+  { hex: "#9d9cff", name: "Indigo" },
+  { hex: "#a78bfa", name: "Violet" },
+  { hex: "#d58cf0", name: "Orchid" },
+  { hex: "#f47fb4", name: "Pink" },
+  { hex: "#ffb3c1", name: "Rose" },
+  { hex: "#e6d2a8", name: "Sand" },
+  { hex: "#efd76a", name: "Yellow" },
+] as const;
+
+export const PROJECT_ACCENTS = PROJECT_ACCENT_SWATCHES.map((swatch) => swatch.hex);
 
 type Step = "identity" | "repo" | "model" | "review";
 const STEPS: Step[] = ["identity", "repo", "model", "review"];
@@ -405,16 +425,16 @@ export function NewProjectWizard({
                   <span id="pw-accent" className={cn(LABEL, "mb-2")}>
                     Accent
                   </span>
-                  <div role="radiogroup" aria-labelledby="pw-accent" className="flex gap-2.5">
-                    {PROJECT_ACCENTS.map((c) => (
+                  <div role="radiogroup" aria-labelledby="pw-accent" className="flex flex-wrap gap-2">
+                    {PROJECT_ACCENT_SWATCHES.map((swatch) => (
                       <button
-                        key={c}
+                        key={swatch.hex}
                         type="button"
                         role="radio"
-                        aria-checked={accent === c}
-                        tabIndex={accent === c ? 0 : -1}
+                        aria-checked={accent === swatch.hex}
+                        tabIndex={accent === swatch.hex ? 0 : -1}
                         disabled={!!createdId}
-                        onClick={() => setAccent(c)}
+                        onClick={() => setAccent(swatch.hex)}
                         onKeyDown={(e) =>
                           radioArrows(e, {
                             values: PROJECT_ACCENTS,
@@ -423,16 +443,17 @@ export function NewProjectWizard({
                             locked: !!createdId,
                           })
                         }
-                        aria-label={`accent ${c}`}
+                        aria-label={swatch.name}
+                        title={swatch.name}
                         className="h-7 w-7 rounded-[8px] transition-transform hover:scale-110"
                         style={{
-                          background: c,
+                          background: swatch.hex,
                           // Selection is a box-shadow, not outline. An inline outline beats
                           // the global :focus-visible rule, so keyboard focus disappears.
                           // The 4px ring sits inside a 5px focus offset (design RING_ON).
                           // The 2px inner stop is the dialog surface (bg-surface-3).
                           boxShadow:
-                            accent === c
+                            accent === swatch.hex
                               ? "0 0 0 2px var(--color-surface-3), 0 0 0 4px var(--color-fg)"
                               : undefined,
                           outlineOffset: "5px",
