@@ -759,3 +759,53 @@ def test_decompose_links_a_slice_label_when_the_heading_is_not_quoted(client, au
     assert only["matched"] == "S1"
     assert "slice label" in only["why"]
     assert dry["link_cycles"] == []
+
+
+def test_flat_clause_maps_to_a_numbered_heading_by_name(client, auth):
+    """A flat clause names the section; the heading's number and parentheticals do not.
+
+    GRPH-1795: the second tier compared the raw title, so "4. Data model" never
+    occurred inside "the data model" and every numbered PRD came back with no
+    clause mapped. "Auth" is listed before the longer titles so a first-hit
+    match would claim the tokens clause, and "Tokens" is listed after so a
+    last-hit match would too.
+    """
+    body = (
+        "# Spec\n\n"
+        "## 4. Data model\n"
+        "Rows stay put.\n\n"
+        "## 5. API\n"
+        "Callers must be known.\n\n"
+        "## Auth\n"
+        "Who may enter.\n\n"
+        "## Auth tokens\n"
+        "How a credential is issued.\n\n"
+        "## Tokens\n"
+        "A credential's lifetime.\n\n"
+        "## 6. Export (v1)\n"
+        "A file leaves.\n\n"
+        "## Acceptance criteria\n"
+        "- The data model migration rewrites nothing\n"
+        "- The API refuses anonymous callers\n"
+        "- Issue Auth tokens to each caller\n"
+        "- The rapid checker runs nightly\n"
+        "- The migration rewrites nothing else\n"
+        "- The export writes one file\n"
+    )
+    prd = client.post("/api/prds", json={"title": "Numbered", "body": body}, headers=auth).json()
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    by = {p["section"]: p for p in dry["proposals"]}
+    assert by["4. Data model"]["acceptance"] == ["The data model migration rewrites nothing"]
+    assert by["5. API"]["acceptance"] == ["The API refuses anonymous callers"]
+    assert by["Auth tokens"]["acceptance"] == ["Issue Auth tokens to each caller"]
+    assert by["6. Export (v1)"]["acceptance"] == ["The export writes one file"]
+    assert by["Auth"]["acceptance"] == []
+    assert by["Tokens"]["acceptance"] == []
+    assert dry["unassigned_clauses"] == [
+        "The rapid checker runs nightly",
+        "The migration rewrites nothing else",
+    ]
+    assert "4. Data model" not in dry["no_acceptance"]
+    assert "5. API" not in dry["no_acceptance"]
+    assert "Auth" in dry["no_acceptance"]
+    assert "Tokens" in dry["no_acceptance"]
