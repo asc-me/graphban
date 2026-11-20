@@ -2281,6 +2281,14 @@ _FLEET_ONLY_ARGS = {
                            "it is not. Recorded against the delegation.",
         },
         **_BOUND_ONLY_ARG,
+        # GRPH-1753. A spawn that raised has nothing to replace the open row with.
+        # Re-delegating would withdraw it and open another, which is the orphan the
+        # next planner is then refused for. `withdraw` closes and stops.
+        "withdraw": {
+            "type": "boolean",
+            "description": "Close your open delegation on `id` and open nothing. "
+                           "For a spawn that never started.",
+        },
     },
     "mint_enrolment": {
         **_SEAT_SCOPE_ARG,
@@ -3537,6 +3545,16 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                                     "register_agent on this connection first")
         agent = db.get(Agent, me)
         try:
+            if args.get("withdraw"):
+                # GRPH-1753. Close the row this caller just opened. Do not mint, and do not
+                # open a replacement — a replacement is what the next planner is refused for.
+                # The refusal shares the raise below: a second `errors.Conflict` is a bare
+                # 409, and the ratchet only goes down.
+                withdrew = delegation_svc.withdraw(db, agent=agent, item=item)
+                return {"delegation_id": withdrew or "",
+                        "state": "closed" if withdrew else "absent",
+                        "withdrew": withdrew, "enrolment_code": None, "bound_only": False,
+                        "brief": {}}
             row, withdrew, code = delegation_svc.delegate(
                 db, agent=agent, item=item, lane=args["lane"], tier=args["tier"],
                 note=args.get("note", ""), lease_seconds=items_svc.DEFAULT_LEASE_SECONDS,

@@ -256,6 +256,10 @@ class Wave:
     spawned: list[Child] = field(default_factory=list)
     reaped: list[Reaped] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
+    #: GRPH-1753. Spawn exceptions caught per item, one line each
+    #: ("<item>: <Class>: <message>"). Empty means no spawn raised — a missing
+    #: list would read the same way, which is how a killed process used to look.
+    spawn_failed: list[str] = field(default_factory=list)
     #: Observation writes (base, lease, PR, salvage) the server refused or never answered
     #: (GRPH-1346). Also in `failures`, one line each, but a count is what the summary can
     #: key `ok` on: a wave whose every record was dropped must not read as clean.
@@ -1488,8 +1492,23 @@ def _start(
                 _report_event(wave, ledger, seat, "limit_hit", limit.said or str(limit))
                 raise
             except LaunchFailed as failed:
-                _report_event(wave, ledger, seat, "spawn_failed", str(failed))
+                _report_event(wave, ledger, seat, "spawn_failed",
+                              f"{type(failed).__name__}: {failed}")
                 raise
+            except (ToolFailed, ServerUnreachable, NotPermitted):
+                # GRPH-1753. A roster read that answered with an error is the wave's
+                # stop (`server-error`, one FAILED line), not this seat's spawn failure.
+                # Wrapping it as LaunchFailed recorded a second line and let the wave
+                # continue into the same read.
+                raise
+            except Exception as exc:
+                # GRPH-1753. seat.write raises UnrenderableSeat, and a full disk or a
+                # missing binary can raise before spawn() wraps it as LaunchFailed.
+                # Those killed `until` with the delegation still open. Name the class,
+                # then fall into the handler below so the empty worktree is reaped.
+                text = f"{type(exc).__name__}: {exc}"
+                _report_event(wave, ledger, seat, "spawn_failed", text)
+                raise LaunchFailed(text) from exc
             _report_event(wave, ledger, seat, "registered")
         except (LaunchFailed, wt_mod.GitError, wt_mod.BranchExists, SetupFailed) as exc:
             wave.failures.append(f"{agent_slot}: {exc}")

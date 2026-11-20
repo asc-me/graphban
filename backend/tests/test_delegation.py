@@ -256,6 +256,46 @@ def test_the_owner_withdraws_by_redelegating(client, key, db):
     assert dsvc.state(rows[second["delegation_id"]]) == "open"
 
 
+def test_withdraw_closes_the_open_delegation_and_opens_nothing(client, key, db):
+    """GRPH-1753. A spawn that never started has nothing to replace the row with.
+
+    Re-delegating would close this row and open another, which is the orphan the next
+    planner is refused for. `withdraw: true` closes and stops. Sabotage: ignore the
+    flag in the delegate handler and this leaves an open row.
+    """
+    item = _item(client, key)
+    me = _agent(client, key, "planner")
+    other = _agent(client, key, "planner-2")
+    first = _ok(_delegate(client, key, item, me))
+    closed = _ok(_delegate(client, key, item, me, withdraw=True))
+    assert closed["withdrew"] == first["delegation_id"]
+    assert closed["delegation_id"] == first["delegation_id"]
+    assert closed["state"] == "closed"
+    assert closed["enrolment_code"] is None
+    from app import mcp_server
+    bad = _violates(closed, mcp_server._OUTPUT_SCHEMAS["delegate"])
+    assert bad == [], bad
+    rows = _rows(db)
+    assert rows and all(r.closed_reason == "withdrawn" for r in rows)
+    assert all(dsvc.state(r) == "closed" for r in rows)
+    nxt = _ok(_delegate(client, key, item, other))
+    assert nxt["delegation_id"] != first["delegation_id"]
+    assert dsvc.state(_rows(db)[-1]) == "open"
+
+
+def test_withdraw_by_someone_else_is_refused(client, key, db):
+    """Another agent's open row is still refused. Withdraw does not close it."""
+    item = _item(client, key)
+    me = _agent(client, key, "planner")
+    other = _agent(client, key, "planner-2")
+    first = _ok(_delegate(client, key, item, me))
+    err = _err(_delegate(client, key, item, other, withdraw=True))
+    assert err["code"] == "conflict"
+    assert "already has an open delegation" in err["message"]
+    assert first["delegation_id"] in err["message"]
+    assert any(dsvc.state(r) == "open" for r in _rows(db))
+
+
 def _violates(payload: dict, schema: dict) -> list[str]:
     """Declared-vs-actual JSON types for the keys a schema names. Hand-rolled rather than
     pulling in `jsonschema`: this asks one narrow question, and the first version of this

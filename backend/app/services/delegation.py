@@ -1070,6 +1070,34 @@ def refuse_bound_collision(db: Session, *, agent: Agent, item: Item) -> None:
             detail={"held_by": ", ".join(holders), "areas": pairs})
 
 
+def withdraw(db: Session, *, agent: Agent, item: Item) -> str | None:
+    """Close this caller's open delegation on `item` and open nothing (GRPH-1753).
+
+    Re-delegating withdraws by replacement (D14). A spawn that raised never started a
+    child, so there is nothing to replace the row with — and an open row blocks every
+    later planner until the lease expires. Another agent's open row is still refused.
+    """
+    now = _now()
+    rows = _open_rows(db, item)
+    for row in rows:
+        if row.delegated_by != agent.id and _is_open(row, now=now):
+            age = int((now - (_aware(row.created_at) or now)).total_seconds())
+            raise DelegationRefused(
+                f"{item.key} already has an open delegation ({row.id}) from {row.delegated_by}, "
+                f"{age}s old",
+                hint="wait for it to expire; only its owner can withdraw it",
+                detail={"delegation_id": row.id, "delegated_by": row.delegated_by,
+                        "age_seconds": age})
+    withdrew: str | None = None
+    for row in rows:
+        if row.delegated_by == agent.id and _is_open(row, now=now):
+            row.closed_reason = "withdrawn"
+            row.closed_at = now
+            withdrew = row.id
+    db.commit()
+    return withdrew
+
+
 def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
              note: str = "", lease_seconds: int, seat: bool = False, api_key=None,
              wave: str | None = None,
