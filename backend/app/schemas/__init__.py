@@ -13,6 +13,7 @@ from app.services import tool_tiers as tool_tiers_svc
 # imports schemas (nor does anything they import), so neither can cycle back here.
 from app.services import items as items_svc
 from app.services import preferences as prefs_svc
+from app.services import projects as projects_svc
 
 
 class ORMModel(BaseModel):
@@ -503,11 +504,30 @@ class UsageOut(BaseModel):
 
 
 # ---- Projects ----
+def _optional_hex(v: str | None, field: str) -> str | None:
+    if v is None:
+        return None
+    return projects_svc.normalize_hex(v, field=field)
+
+
+def _optional_pattern(v: str | None) -> str | None:
+    # None is "omit" on PATCH. An explicit null is still None here; the service
+    # refuses it, because `pattern` is not nullable.
+    if v is None:
+        return None
+    return projects_svc.normalize_pattern(v)
+
+
 class ProjectOut(ORMModel):
     id: str
     name: str
     tag: str  # short key prefix; item/request/PRD keys render from it (PRD-13)
+    # The one solid colour for chips, graph nodes, borders and text.
     accent: str
+    # Ombre's second colour. Null = solid. Only shapes the tile fill.
+    accent2: str | None = None
+    # Tile pattern. Only shapes the tile fill. `none` is unpatterned.
+    pattern: str = "none"
     visibility: str
     description: str
     share_global_memory: bool
@@ -564,12 +584,33 @@ class ProjectCreate(BaseModel):
     # Optional: derived from `name` when omitted. NOT on ProjectUpdate — changing a tag
     # has to go through the retag path so it records tag history (AL-258).
     tag: str | None = None
+    # The one solid colour (#rrggbb). Not the tile's second colour.
     accent: str = "#c6f24e"
+    # Ombre's second colour. Null = solid. Equal to `accent` is stored as null.
+    # Only shapes the tile fill.
+    accent2: str | None = None
+    # Pattern over the tile fill. Only shapes the tile fill.
+    pattern: str = "none"
     description: str = ""
     # Hosted-only (AL-74b): the org to create the project under. Optional when the
     # caller belongs to exactly one org (defaulted server-side); required otherwise.
     # Ignored on self-host, where projects have no org.
     org_id: str | None = None
+
+    @field_validator("accent")
+    @classmethod
+    def _accent(cls, v: str) -> str:
+        return projects_svc.normalize_hex(v, field="accent")
+
+    @field_validator("accent2")
+    @classmethod
+    def _accent2(cls, v: str | None) -> str | None:
+        return _optional_hex(v, "accent2")
+
+    @field_validator("pattern")
+    @classmethod
+    def _pattern(cls, v: str) -> str:
+        return projects_svc.normalize_pattern(v)
 
 
 # ---- Items ----
@@ -1359,7 +1400,13 @@ class ProjectRetagIn(BaseModel):
 
 class ProjectUpdate(BaseModel):
     name: str | None = None
+    # The one solid colour (#rrggbb). Not the tile's second colour.
     accent: str | None = None
+    # Null clears the ombre. Equal to the stored accent is stored as null.
+    # Only shapes the tile fill.
+    accent2: str | None = None
+    # Only shapes the tile fill. Null is refused: the column is not nullable.
+    pattern: str | None = None
     visibility: str | None = None
     description: str | None = None
     share_global_memory: bool | None = None
@@ -1381,6 +1428,21 @@ class ProjectUpdate(BaseModel):
     release_ref: str | None = None
     # Null or blank clears; stored normalized (services/projects.normalize_repo_url).
     repo_url: str | None = None
+
+    @field_validator("accent")
+    @classmethod
+    def _accent(cls, v: str | None) -> str | None:
+        return _optional_hex(v, "accent")
+
+    @field_validator("accent2")
+    @classmethod
+    def _accent2(cls, v: str | None) -> str | None:
+        return _optional_hex(v, "accent2")
+
+    @field_validator("pattern")
+    @classmethod
+    def _pattern(cls, v: str | None) -> str | None:
+        return _optional_pattern(v)
 
     @field_validator("memory_write_mode")
     @classmethod

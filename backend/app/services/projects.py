@@ -26,6 +26,61 @@ from app.models import (
 )
 
 
+# Tile fill only. `accent` stays the one solid colour for chips, nodes, borders and text.
+TILE_PATTERNS = (
+    "none", "speckled", "crosshatch", "chevron",
+    "herringbone", "stripes", "paisley", "bubbles",
+)
+_HEX_COLOUR = re.compile(r"^#[0-9a-f]{6}$")
+
+
+def normalize_hex(value: str, *, field: str) -> str:
+    """`#rrggbb` only. Stored lowercase so an equal pair cannot hide behind case."""
+    text = value.strip().lower()
+    if _HEX_COLOUR.fullmatch(text) is None:
+        raise ValueError(f"{field} must be #rrggbb")
+    return text
+
+
+def normalize_pattern(value: str) -> str:
+    if value not in TILE_PATTERNS:
+        raise ValueError(f"pattern must be one of: {', '.join(TILE_PATTERNS)}")
+    return value
+
+
+def apply_tile_fill(project: Project, changed: dict) -> None:
+    """Write accent / accent2 / pattern from a create or PATCH dump.
+
+    `accent2` null clears the ombre. A second colour equal to `accent`
+    (case-insensitive) is stored as null, so an ombre never quietly renders
+    solid. `pattern` null is not a clear — the column is not nullable.
+    """
+    accent = project.accent
+    if "accent" in changed:
+        raw = changed["accent"]
+        if raw is None:
+            raise ValueError("accent must be #rrggbb")
+        accent = normalize_hex(raw, field="accent")
+        project.accent = accent
+
+    if "accent2" in changed:
+        raw2 = changed["accent2"]
+        accent2 = None if raw2 is None else normalize_hex(raw2, field="accent2")
+    else:
+        accent2 = project.accent2
+
+    if accent2 is not None and accent2.lower() == accent.lower():
+        accent2 = None
+    if "accent2" in changed or accent2 != project.accent2:
+        project.accent2 = accent2
+
+    if "pattern" in changed:
+        raw_pattern = changed["pattern"]
+        if not isinstance(raw_pattern, str):
+            raise ValueError(f"pattern must be one of: {', '.join(TILE_PATTERNS)}")
+        project.pattern = normalize_pattern(raw_pattern)
+
+
 def unique_slug(db: Session, name: str) -> str:
     """A free project id derived from the name. Ids are frozen at creation and every
     entity key renders from the project's TAG, not this — so a suffixed slug is only
@@ -47,6 +102,8 @@ def create_project(
     accent: str = "",
     description: str = "",
     org_id: str | None = None,
+    accent2: str | None = None,
+    pattern: str = "none",
 ) -> Project:
     """Create a project and make `owner_user_id` its owner.
 
@@ -80,10 +137,16 @@ def create_project(
         id=unique_slug(db, name),
         tag=resolved_tag,
         name=name,
-        accent=accent or "#c6f24e",
+        accent="#c6f24e",
         description=description or "",
         org_id=org_id,
+        pattern="none",
     )
+    apply_tile_fill(project, {
+        "accent": accent or "#c6f24e",
+        "accent2": accent2,
+        "pattern": pattern,
+    })
     db.add(project)
     db.flush()
     # PRD-43 D8: assign random public_path_id via platform_config.

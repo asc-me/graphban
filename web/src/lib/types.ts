@@ -38,12 +38,28 @@ export interface User {
   initials: string;
 }
 
+/** Tile pattern laid over a project's fill. `none` is unpatterned. */
+export type ProjectPattern =
+  | "none"
+  | "speckled"
+  | "crosshatch"
+  | "chevron"
+  | "herringbone"
+  | "stripes"
+  | "paisley"
+  | "bubbles";
+
 export interface Project {
   id: string;
   name: string;
   /** Short key prefix: item/request/PRD keys render as <TAG>-<n> / -R<n> / -P<n> (PRD-13). */
   tag: string;
+  /** The one solid colour for chips, graph nodes, borders and text. Not the tile's second colour. */
   accent: string;
+  /** Ombre's second colour. Null = solid. Only shapes the tile fill. */
+  accent2?: string | null;
+  /** Pattern over the tile fill. Only shapes the tile fill. */
+  pattern?: ProjectPattern;
   visibility: string;
   description: string;
   share_global_memory: boolean;
