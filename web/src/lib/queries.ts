@@ -767,6 +767,46 @@ export function useSetRuleToggle(projectId: string) {
   });
 }
 
+export function useRuleProposals(projectId: string) {
+  return useQuery({
+    queryKey: ["rule-proposals", projectId],
+    queryFn: () => api.ruleProposals(projectId),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+export function useCustomRules(projectId: string) {
+  return useQuery({
+    queryKey: ["custom-rules", projectId],
+    queryFn: () => api.customRules(projectId),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+function invalidateProposals(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ["rule-proposals"] });
+  qc.invalidateQueries({ queryKey: ["custom-rules"] });
+  invalidateRuleToggles(qc);
+}
+
+export function useAdoptRuleProposals(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { ids: number[]; reason: string }) => api.adoptRuleProposals(projectId, v.ids, v.reason),
+    onSuccess: () => invalidateProposals(qc),
+  });
+}
+
+export function useDismissRuleProposal(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: number; reason: string }) => api.dismissRuleProposal(projectId, v.id, v.reason),
+    onSuccess: () => invalidateProposals(qc),
+  });
+}
+
 export function useSetRuleToggles(projectId: string) {
   const qc = useQueryClient();
   return useMutation({

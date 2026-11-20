@@ -1302,6 +1302,24 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
+  /** Open rule proposals (GRPH-1775). */
+  ruleProposals: (projectId: string, status = "open") =>
+    request<import("@/lib/types").RuleProposal[]>(
+      `/projects/${encodeURIComponent(projectId)}/rules/proposals?status=${encodeURIComponent(status)}`,
+    ),
+  /** A person adopts one or several proposals under one reason; a loosening is refused in a batch. */
+  adoptRuleProposals: (projectId: string, proposalIds: number[], reason: string) =>
+    request<import("@/lib/types").RuleProposal[]>(`/projects/${encodeURIComponent(projectId)}/rules/proposals/adopt`, {
+      method: "POST",
+      body: JSON.stringify({ proposal_ids: proposalIds, reason }),
+    }),
+  dismissRuleProposal: (projectId: string, proposalId: number, reason: string) =>
+    request<import("@/lib/types").RuleProposal>(
+      `/projects/${encodeURIComponent(projectId)}/rules/proposals/${proposalId}/dismiss`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
+  customRules: (projectId: string) =>
+    request<import("@/lib/types").CustomRule[]>(`/projects/${encodeURIComponent(projectId)}/rules/custom`),
   /** Several of a project's own values under one reason, all-or-nothing (GRPH-1594). A refusal
    *  names the rule it refused (`<rule_id>: ...`) and nothing was saved. */
   setRuleToggles: (projectId: string, body: RuleToggleBatchWrite) =>

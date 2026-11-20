@@ -3844,3 +3844,47 @@ export interface BlockingFix { id: string; status: string; blocks: string[] }
 
 /** `/prds/{id}/completeness`. `blocking_fixes` is absent when the server did not compute it. */
 export interface PrdCompleteness { blocking_fixes?: BlockingFix[] }
+
+/** A cited file span, an item, an observation, a lesson or a url (GRPH-1775). */
+export type RuleProposalCitation =
+  | { kind: "file"; ref: { path: string; commit: string; lines: string } }
+  | { kind: "item" | "observation" | "lesson" | "url"; ref: string };
+
+/** A rule proposal (GRPH-1775 / P91 D2). `loosens` is the server's own direction verdict. */
+export interface RuleProposal {
+  id: number;
+  project_id: string;
+  kind: string;
+  rule_id: string;
+  primitive: string;
+  draft: Record<string, unknown>;
+  params: Record<string, unknown>;
+  citations: RuleProposalCitation[];
+  proposer: string;
+  proposer_kind: string;
+  direction: string;
+  loosens: boolean;
+  status: string;
+  folded: boolean;
+  created_at: string;
+  decided_by?: string | null;
+  decided_reason?: string | null;
+}
+
+/** A custom rule with its author and why (GRPH-1774 / P91 D1). */
+export interface CustomRule {
+  rule_id: string;
+  primitive: string;
+  stage: string;
+  title: string;
+  why: string;
+  claims: string;
+  params: Record<string, unknown>;
+  state: string;
+  author: string | null;
+  reason: string;
+  created_at: string;
+  on: boolean;
+  source: string;
+  unmeasured_reason?: string | null;
+}
