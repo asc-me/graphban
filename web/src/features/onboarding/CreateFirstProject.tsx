@@ -5,17 +5,16 @@ import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
+import { PROJECT_ACCENTS } from "@/features/onboarding/projectAccents";
 import { TagField, useTagField } from "@/features/onboarding/TagField";
 import { api } from "@/lib/api";
 import { keys } from "@/lib/queries";
-
-const ACCENTS = ["#c6f24e", "#a78bfa", "#7ca2ff", "#e0b34a", "#5fd07a", "#ff8f8f"];
 
 export function CreateFirstProject() {
   const qc = useQueryClient();
   const { setActiveId } = useProjectCtx();
   const [name, setName] = React.useState("");
-  const [accent, setAccent] = React.useState(ACCENTS[0]);
+  const [accent, setAccent] = React.useState(PROJECT_ACCENTS[0]);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const tagField = useTagField(name);
@@ -75,7 +74,7 @@ export function CreateFirstProject() {
 
         <p className="mb-2 font-mono text-[10px] uppercase tracking-wide text-faint">Accent</p>
         <div className="mb-6 flex flex-wrap gap-2.5">
-          {ACCENTS.map((c) => (
+          {PROJECT_ACCENTS.map((c) => (
             <button
               key={c}
               type="button"
