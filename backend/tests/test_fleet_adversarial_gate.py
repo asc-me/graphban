@@ -294,10 +294,13 @@ DESC_ONE_CLAUSE = """\
 """
 
 
-def _ready_with_description(client, key, *, effort, description, base=CUT_FROM):
+def _ready_with_description(client, key, *, effort, description, base=CUT_FROM,
+                            builder_evidence=None):
     """Like `_ready_for_review` but stamps a description on the item at creation.
 
-    Records a base for the same reason — see `_ready_for_review`.
+    Records a base for the same reason — see `_ready_for_review`. `builder_evidence` is
+    posted by the BUILDER before review, so a test can prove a builder receipt is not
+    counted as the reviewer's own.
     """
     worker = _ok(client, key, "register_agent",
                  {"branch": "gb/test", "label": "w", "capabilities": {"instance": "w"}})
@@ -310,6 +313,10 @@ def _ready_with_description(client, key, *, effort, description, base=CUT_FROM):
             {"id": c["item"]["id"], "agent_id": worker["agent_id"],
              "evidence": [{"kind": "note",
                            "detail": f"gbfleet: branch cut from {base} (`gb/test`)"}]})
+    if builder_evidence:
+        _ok(client, key, "update_item",
+            {"id": c["item"]["id"], "agent_id": worker["agent_id"],
+             "evidence": builder_evidence})
     _ok(client, key, "update_item",
         {"id": c["item"]["id"], "status": "review", "agent_id": worker["agent_id"]})
     reviewer = _ok(client, key, "register_agent",
@@ -725,8 +732,19 @@ DESC_SCREENSHOT = """\
 
 
 def test_screenshot_clause_needs_the_reviewers_own_screenshot(client, key):
+    """'Reviewer-authored' is the clause's defining word (GRPH-945 clause 4): the BUILDER's
+    screenshot and url receipts are already on the item, and they must not stand in for the
+    reviewer's. Without them on the record, a gate reading the merged evidence would pass
+    this test too."""
     item, reviewer = _ready_with_description(
-        client, key, effort=1, description=DESC_SCREENSHOT)
+        client, key, effort=1, description=DESC_SCREENSHOT,
+        builder_evidence=[
+            {"kind": "screenshot", "detail": "builder's header shot",
+             "url": "https://example.test/builder.png"},
+            {"kind": "url", "detail": "builder's preview", "url": "https://example.test/preview"},
+        ])
+    held = _ok(client, key, "get_item_details", {"id": item})["evidence"]
+    assert {e["kind"] for e in held} >= {"screenshot", "url"}, held
     clause = {"kind": "test", "detail": "the header shows the project name in a screenshot"}
 
     res = _rpc(client, key, "sign_off", {
