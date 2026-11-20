@@ -28,6 +28,7 @@ from datetime import datetime, timedelta, timezone
 from app.models import Agent, Item, Observation, Project, RuleDecisionPull
 from app.services import rule_measure
 from app.services import rule_pack
+from app.services import rule_proposals
 from app.services import rule_toggles
 
 logger = logging.getLogger("graphban.box_push")
@@ -238,6 +239,11 @@ def build_box_push(db: Session, *, with_counts: bool = False) -> dict | None:
         }
         if with_counts:
             entry["counts"] = project_counts(db, project_id)
+            # GRPH-1780: primitive gaps ride the same opt-in as the other counts, stage and
+            # label only. Without it they stay on the box.
+            gaps = rule_proposals.gap_counts(db, project_id)
+            if gaps:
+                entry["counts"]["primitive_gaps"] = gaps
             entry["publishing"] = _publishing(by_id[project_id])
         projects.append(entry)
     if not projects:

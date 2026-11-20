@@ -643,7 +643,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "propose_rule",
         "description": (
-            "Cited rule suggestion; agents only tighten."
+            "Cited rule suggestion; agents tighten only. guidance: draft{stage,label,text}"
         ),
         "inputSchema": {
             "type": "object",
@@ -3491,6 +3491,14 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "propose_rule":
         # P91 D2: any agent on the project may SUGGEST; nothing here adopts (rules.person_adopts).
         draft = args.get("draft") or {}  # {slug, primitive, title, why, params} or {rule_id, params}
+        who = fleet_svc.caller_identity(args.get("agent_id"), key)
+        if args.get("kind") == rule_proposals_svc.GUIDANCE_KIND:
+            # P91 D8: advisory text, cited; a person adopts it (rules.person_adopts).
+            g = rule_proposals_svc.file_guidance(
+                db, project_id=pid, proposer_kind="agent", proposer=who,
+                stage=draft.get("stage"), label=draft.get("label"), text=draft.get("text"),
+                citations=args.get("citations"))
+            return rule_proposals_svc.guidance_view(g)
         row, folded = rule_proposals_svc.propose(
             db, project_id=pid, proposer_kind="agent",
             proposer=fleet_svc.caller_identity(args.get("agent_id"), key),

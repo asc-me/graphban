@@ -12,7 +12,7 @@ from app.config import settings
 from app.db import get_db
 from app.models import Organization, Project, User
 from app.errors import AppError, NotFound, Refused, Validation
-from app.schemas import (CustomRuleOut, CustomRuleWrite, RuleProposalAdopt, RuleProposalDecisionOut, RuleProposalDismiss, RuleProposalOut, RuleProposalWrite, ObservationBackfillOut, ObservationsOut,
+from app.schemas import (RuleGuidanceOut, CustomRuleOut, CustomRuleWrite, RuleProposalAdopt, RuleProposalDecisionOut, RuleProposalDismiss, RuleProposalOut, RuleProposalWrite, ObservationBackfillOut, ObservationsOut,
                          RecommendedRulesOut, RefusalCoverageOut, RuleSuggestionOut,
                          RulesFlowOut, RulesOut, RuleToggleBatchOut, RuleToggleBatchWrite,
                          RuleToggleOut, RuleTogglesOut, RuleToggleWrite, UnmappedRefusalsOut)
@@ -280,13 +280,13 @@ def list_rule_proposals(project_id: str, status: str | None = None,
     return rule_proposals.list_for_project(db, project_id, status)
 
 
-@router.post("/projects/{project_id}/rules/proposals", response_model=RuleProposalOut,
-             status_code=201)
+@router.post("/projects/{project_id}/rules/proposals",
+             response_model=RuleProposalOut | RuleGuidanceOut, status_code=201)
 def create_rule_proposal(project_id: str, body: RuleProposalWrite, db: Session = Depends(get_db),
                          principal=Depends(get_user_or_agent_key)):
     """A person or the import CLI proposes a rule change. Direction is computed by the server; a
     person or an import run may propose a loosening (flagged `loosens`), an agent key may not."""
-    data = body.model_dump(exclude={"import_run"})
+    data = body.model_dump(exclude={"import_run", "stage", "label", "text"})
     if isinstance(principal, User):
         authz.require_writable(db, principal.id, project_id)
         kind, who = ("import", f"import:{body.import_run}") if body.import_run else (
@@ -298,6 +298,11 @@ def create_rule_proposal(project_id: str, body: RuleProposalWrite, db: Session =
         if project_id not in allowed:
             raise HTTPException(404, "no such project")
     try:
+        if body.kind == rule_proposals.GUIDANCE_KIND:
+            g = rule_proposals.file_guidance(
+                db, project_id=project_id, proposer_kind=kind, proposer=who, stage=body.stage,
+                label=body.label, text=body.text, citations=body.citations)
+            return rule_proposals.guidance_view(g)
         row, folded = rule_proposals.propose(db, project_id=project_id, proposer_kind=kind,
                                              proposer=who, **data)
     except NotFound as e:
@@ -340,6 +345,36 @@ def dismiss_rule_proposal(project_id: str, proposal_id: int, body: RuleProposalD
                           principal=Depends(get_user_or_agent_key)):
     r = _adoption(rule_proposals.dismiss, db, principal, project_id, proposal_id, body.reason)
     return dict(rule_proposals.view(r), decided_by=r.decided_by, decided_reason=r.decided_reason)
+
+
+@router.get("/projects/{project_id}/rules/guidance", response_model=list[RuleGuidanceOut])
+def list_rule_guidance(project_id: str, status: str | None = None,
+                       db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    authz.require_readable(db, user.id, project_id)
+    return rule_proposals.list_guidance(db, project_id, status)
+
+
+@router.post("/projects/{project_id}/rules/guidance/{guidance_id}/{decision}",
+             response_model=RuleGuidanceOut)
+def decide_rule_guidance(project_id: str, guidance_id: str, decision: str,
+                         db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """A person adopts or dismisses guidance (`rules.person_adopts`). `get_current_user` is a
+    person's token; an agent key does not reach this route. The project check runs before the
+    id and decision are read, so another org's caller is refused on the project alone."""
+    authz.require_writable(db, user.id, project_id)
+    if decision not in ("adopt", "dismiss") or not guidance_id.isdigit():
+        raise HTTPException(404, "no such guidance decision")
+    try:
+        row = rule_proposals.decide_guidance(db, user, project_id, int(guidance_id),
+                                             adopt=decision == "adopt")
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except AppError as e:
+        raise HTTPException(422, str(e)) from e
+    events_svc.record_user(db, user, action=f"{decision}_rule_guidance", target_type="rule",
+                           target_id=str(row.id), project_id=project_id,
+                           meta={"stage": row.stage, "label": row.label})
+    return rule_proposals.guidance_view(row)
 
 
 # Org rule toggles are served by the console (GBC-P8). `set_org_toggle` / `org_view` stay
