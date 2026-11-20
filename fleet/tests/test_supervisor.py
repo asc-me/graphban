@@ -1803,5 +1803,10 @@ def test_a_wave_that_cut_children_without_a_recorded_base_says_so(tmp_path: Path
 
     quiet = io.StringIO()
     report(Wave(), out=quiet)
-    assert "BASE" not in quiet.getvalue()
+    # A heading that starts with BASE is the wave-base line (`BASE origin/main`,
+    # `BASE unrecorded`). `HELD IN BASE 0` is a different fact — how many items were
+    # not rebuilt because their work is already in the base (GRPH-1024) — and a quiet
+    # wave still prints that count. What this wave must not claim is that it cut
+    # children without resolving a base.
+    assert not any(line.startswith("BASE") for line in quiet.getvalue().splitlines())
 

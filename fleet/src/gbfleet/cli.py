@@ -645,6 +645,11 @@ def report(wave: Wave, out=None) -> None:
     for taken in wave.remote_taken:
         print(f"BRANCH TAKEN {taken}", file=out)
     print(f"spawned {len(wave.spawned)}", file=out)
+    # GRPH-1024. Always, zero included. `spawned 0` beside `HELD IN BASE 0` is nothing
+    # to do. `spawned 0` beside a count is the queue that used to exit idle with no line.
+    print(f"HELD IN BASE {len(wave.in_base)}", file=out)
+    for item_id, why in sorted(wave.in_base.items()):
+        print(f"  {item_id}: {why}", file=out)
     for child in wave.spawned:
         latency = (
             f"{child.registration_latency:.1f}s"

@@ -452,6 +452,12 @@ class Wave:
     #: `review` rows held up because a live child is running: one line per row, naming the
     #: child's item (GRPH-1349).
     review_waits: list[str] = field(default_factory=list)
+    #: GRPH-1024. Items this wave did not re-delegate because their work is already in
+    #: the base: item id -> the signal that matched and what it believed. Present and
+    #: empty by default. A missing map would read as "nothing was held", which is how a
+    #: bounced remainder exited the wave as idle. A bounce is not an entry — it is
+    #: delegated, because the remainder is the work.
+    in_base: dict[str, str] = field(default_factory=dict)
     #: Branches pushed but NOT proposed as a PR, with why (GRPH-949): a change outside every
     #: declared touchpoint, or a base the trunk has moved past in a way that matters — a
     #: shared file, a merge conflict, or a behind-check that could not be asked (GRPH-1087).

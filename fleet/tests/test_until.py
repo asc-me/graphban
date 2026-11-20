@@ -1873,6 +1873,45 @@ def test_report_collided_carries_the_actual_overlap():
     assert payload["collided"]["fleet/src/gbfleet/supervisor.py"] == ["gb/w-1", "gb/w-2"]
 
 
+def test_the_wave_report_counts_what_it_held_as_already_in_base():
+    """GRPH-1024. The JSON report always names how many items were not re-delegated
+    because their work is already in the base, and why. Zero is present: a missing
+    key is the idle exit that hid a queue of remainders for weeks.
+
+    Sabotage: drop `held_in_base` or `in_base` from `as_json`, or stop printing
+    `HELD IN BASE` from `cli.report`. This fails.
+    """
+    import io
+
+    from gbfleet.cli import report
+    from gbfleet.supervisor import Wave
+
+    empty = Report(ok=True, reason="idle", exit=0, wave=Wave()).as_json()
+    assert empty["held_in_base"] == 0
+    assert empty["in_base"] == {}
+    assert Report(ok=True, reason="idle", exit=0).as_json()["held_in_base"] == 0
+    assert Report(ok=True, reason="idle", exit=0).as_json()["in_base"] == {}
+
+    why = ("branch gb/x reaches origin/main; "
+           "believed pr https://example/pull/1 says work existed")
+    wave = Wave()
+    wave.in_base = {"GRPH-890": why}
+    payload = Report(ok=True, reason="idle", exit=0, spawned=0, wave=wave).as_json()
+    assert payload["held_in_base"] == 1
+    assert payload["in_base"] == {"GRPH-890": why}
+    assert payload["reason"] == "idle" and payload["spawned"] == 0
+
+    out = io.StringIO()
+    report(wave, out=out)
+    text = out.getvalue()
+    assert "HELD IN BASE 1" in text
+    assert f"GRPH-890: {why}" in text
+
+    quiet = io.StringIO()
+    report(Wave(), out=quiet)
+    assert "HELD IN BASE 0" in quiet.getvalue()
+
+
 class _SeedPlanner:
     """Enough of Graphban.call for `_delegate_next` (GRPH-886)."""
 
@@ -2003,6 +2042,171 @@ def test_a_refused_review_offer_falls_back_to_the_hold(tmp_path: Path, monkeypat
     assert "MERGED" not in seen
 
 
+def _bounced_and_sibling(monkeypatch, *, bounce: str):
+    """MERGED's branch is in the base. SIB shares one of its files. `bounce` is MERGED's
+    bounce_reason — empty means the control, a sentence means a remainder."""
+    from gbfleet import worktree as wt
+
+    monkeypatch.setattr(wt, "reaches", lambda repo, base, ref: ref == "gb/merged")
+    brief = {"lane": {"value": "backend"}, "tier": {"value": "cheap"}, "blocked_by": []}
+    shared = "fleet/src/gbfleet/until.py"
+    return {
+        "MERGED": {"id": "MERGED", "status": "next", "branch": "gb/merged",
+                   "pr": "https://github.com/o/r/pull/1", "brief": brief, "evidence": [],
+                   "bounce_reason": bounce, "touchpoints": [shared, "fleet/tests/test_until.py"]},
+        "SIB": {"id": "SIB", "status": "next", "branch": "gb/sib", "brief": brief,
+                "evidence": [], "bounce_reason": "", "touchpoints": [shared]},
+    }
+
+
+def test_a_bounced_item_whose_first_half_merged_is_delegated(tmp_path: Path, monkeypatch, caplog):
+    """GRPH-1024. An item in `next` with a bounce, whose earlier work is in the base, is
+    delegated. It is not offered for review of the merged half, and it is not recorded
+    as held.
+
+    Sabotage: `if why and bounced` -> `if why and False`. This fails: seed is None.
+    """
+    import logging
+
+    from gbfleet.until import _delegate_next
+
+    planner = _SeedPlanner(
+        [{"items": ["MERGED"]}],
+        {"MERGED": _bounced_and_sibling(monkeypatch, bounce="clause 4 is still unpinned")["MERGED"]},
+    )
+    held_map: dict[str, str] = {}
+    with caplog.at_level(logging.INFO, logger="gbfleet"):
+        seed, code, _want = _delegate_next(
+            planner, "GRPH-A1", "w", set(), None, repo=tmp_path, base="origin/main",
+            in_base=held_map,
+        )
+    assert seed == "MERGED" and code == "WORKER-X"
+    assert planner.delegated == ["MERGED"]
+    assert planner.updates == []
+    assert held_map == {}
+    remainder = [r for r in caplog.records if r.message == "delegate_remainder"]
+    assert len(remainder) == 1
+    detail = remainder[0].gbfleet["detail"]
+    assert "bounce asks for the remainder" in detail
+    assert "branch gb/merged reaches origin/main" in detail
+    assert "pr https://github.com/o/r/pull/1" in detail
+    assert "believed" in detail
+
+
+def test_an_unbounced_item_already_in_base_is_still_held_and_counted(
+        tmp_path: Path, monkeypatch, caplog):
+    """GRPH-1024 control, and GRPH-930 / GRPH-983 still hold. No bounce: the item
+    occupies its files, the sibling that shares one is not the seed, and `in_base`
+    names the signal. GRPH-1408 still offers the unsigned item for review. When that
+    offer is refused, the hold line carries the same signal.
+
+    Sabotage: treat the unbounced item as a remainder. This fails: seed is SIB and
+    `in_base` is empty.
+    """
+    import logging
+
+    from gbfleet.until import _delegate_next
+
+    details = _bounced_and_sibling(monkeypatch, bounce="")
+    held_map: dict[str, str] = {}
+    planner = _SeedPlanner([{"items": ["SIB", "MERGED"]}], details)
+    seed, _code, _want = _delegate_next(
+        planner, "GRPH-A1", "w", set(), None, repo=tmp_path, base="origin/main",
+        in_base=held_map,
+    )
+    assert seed is None and planner.delegated == []
+    assert [(u["id"], u["status"]) for u in planner.updates] == [("MERGED", "review")]
+    reason = held_map["MERGED"]
+    assert reason.startswith("branch gb/merged reaches origin/main")
+    assert "believed pr https://github.com/o/r/pull/1 says work existed" in reason
+
+    refused = _SeedPlanner([{"items": ["SIB", "MERGED"]}], details, refuse_update=True)
+    refused_map: dict[str, str] = {}
+    with caplog.at_level(logging.INFO, logger="gbfleet"):
+        seed, _code, _want = _delegate_next(
+            refused, "GRPH-A1", "w", set(), None, repo=tmp_path, base="origin/main",
+            in_base=refused_map,
+        )
+    assert seed is None and refused.delegated == [] and refused.updates == []
+    assert refused_map["MERGED"] == reason
+    held = [r for r in caplog.records
+            if r.message == "delegate_held" and r.gbfleet.get("item") == "MERGED"]
+    assert len(held) == 1 and reason in held[0].gbfleet["detail"]
+    assert "fleet/src/gbfleet/until.py" in held[0].gbfleet["detail"]
+
+
+def test_a_bounced_item_in_base_does_not_block_its_files_siblings(
+        tmp_path: Path, monkeypatch):
+    """GRPH-1024 cascade. The bounced item shares `until.py` with SIB. SIB is still
+    the seed: one remainder must not make its file's other items unclaimable.
+
+    SIB is listed first, so a wrong occupier removes SIB before the bounced item
+    could be chosen. Sabotage: `if why and bounced` -> `if why and False`. This
+    fails: seed is None.
+    """
+    from gbfleet.until import _delegate_next
+
+    planner = _SeedPlanner(
+        [{"items": ["SIB", "MERGED"]}],
+        _bounced_and_sibling(monkeypatch, bounce="the documenting half did not merge"),
+    )
+    held_map: dict[str, str] = {}
+    seed, code, _want = _delegate_next(
+        planner, "GRPH-A1", "w", set(), None, repo=tmp_path, base="origin/main",
+        in_base=held_map,
+    )
+    assert seed == "SIB" and code == "WORKER-X"
+    assert planner.delegated == ["SIB"]
+    assert "MERGED" not in held_map
+    assert planner.updates == []
+
+
+def test_in_base_reason_names_each_signal(tmp_path: Path, monkeypatch):
+    """The three signals read as three sentences. One shared 'already in base' would
+    leave an operator unable to tell a branch receipt from a squash."""
+    from gbfleet import propose as propose_mod
+    from gbfleet import worktree as wt
+    from gbfleet.until import _already_in_base, _in_base_reason
+
+    def reaches(repo, base, ref):
+        return ref in {"gb/merged", "abc123"}
+
+    monkeypatch.setattr(wt, "reaches", reaches)
+    branch_reason = _in_base_reason(
+        {"branch": "gb/merged", "pr": "https://github.com/o/r/pull/1", "evidence": []},
+        tmp_path, "origin/main")
+    assert branch_reason == (
+        "branch gb/merged reaches origin/main; "
+        "believed pr https://github.com/o/r/pull/1 says work existed")
+    assert _already_in_base(
+        {"branch": "gb/merged", "pr": "https://github.com/o/r/pull/1"},
+        tmp_path, "origin/main") is True
+
+    commit_reason = _in_base_reason(
+        {"branch": "gb/ahead", "evidence": [{"kind": "test", "commit": "abc123"}]},
+        tmp_path, "origin/main")
+    assert commit_reason == (
+        "commit abc123 reaches origin/main; believed a test receipt about gb/ahead")
+    assert "branch gb/ahead reaches" not in commit_reason
+
+    monkeypatch.setattr(propose_mod, "view", lambda *a, **kw: (
+        {"state": "MERGED", "number": 42, "mergeCommit": {"oid": "c" * 40}}, ""))
+    squash = {
+        "branch": "feature",
+        "evidence": [{"commit": "pre-squash", "kind": "sabotage"}],
+        "pr": "https://github.com/o/r/pull/42",
+    }
+    # `feature` and `pre-squash` are not ancestors. The forge is the signal.
+    squash_reason = _in_base_reason(squash, tmp_path, "origin/main")
+    # Carrier and sha are GRPH-1023's `_merged_pr_of`. "believed the forge" is the
+    # GRPH-1024 signal name, so this sentence is not an ancestry hold.
+    assert squash_reason == (
+        f"PR #42 (the item's pr) is MERGED at {'c' * 40}; believed the forge, "
+        "because ancestry did not find the work in origin/main")
+    assert _already_in_base(squash, tmp_path, "origin/main") is True
+    assert "branch feature reaches" not in squash_reason
+
+
 def test_a_blocked_items0_is_not_the_seed(tmp_path: Path):
     """GRPH-886. items[0] still names an unfinished dependency; the next ready member is the seed.
 
@@ -2060,7 +2264,7 @@ def test_already_in_base_recognises_squash_merged_pr(tmp_path, monkeypatch):
     """A squash-merged item's pre-squash SHA is not ancestral to main, but the forge says
     the PR is MERGED. The work IS in base — the squash SHA carries it (GRPH-930)."""
     from gbfleet import propose as propose_mod
-    from gbfleet.until import _already_in_base
+    from gbfleet.until import _already_in_base, _in_base_reason
 
     repo = _git_repo(tmp_path)
     pre_squash = _branch_and_commit(repo, "feature")
@@ -2074,6 +2278,10 @@ def test_already_in_base_recognises_squash_merged_pr(tmp_path, monkeypatch):
         "pr": "https://github.com/o/r/pull/42",
     }
     assert _already_in_base(details, repo, "main") is True
+    reason = _in_base_reason(details, repo, "main")
+    assert "is MERGED" in reason
+    assert "believed the forge" in reason
+    assert "branch feature reaches" not in reason
 
 
 def test_already_in_base_open_pr_is_not_in_base(tmp_path, monkeypatch):
