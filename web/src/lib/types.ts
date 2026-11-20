@@ -1481,6 +1481,11 @@ export interface LocalSyncProject {
   queued: number;
   parked: { count: number; reasons: string[] };
   backlog_bytes: number;
+  /**
+   * The outbox table is at its 100 MB cap. `false` means that table was measured
+   * and is under the cap. `null` means this read did not measure it — not "fine".
+   */
+  backlog_full: boolean | null;
   /** Why the queue is not moving. Null means it is not held. */
   held_by: "budget" | "retry_after" | "contract" | null;
   last_push_at: string | null;

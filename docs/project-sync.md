@@ -163,9 +163,13 @@ A box admin is required for every write. A non-admin is `403` with
 with no `sync_project` row is `sync_level: local`. It is not reported as
 digests, and it is not reported as synced. Each object carries `cloud_permission`,
 `backfill` (`total`, `confirmed`, `parked`, `state`), `queued`, `parked`
-(`count`, `reasons`), `backlog_bytes`, `held_by` (`budget`, `retry_after`,
-`contract`, or null), `last_push_at`, and `last_push_result`. `unknown` is
-returned as `unknown`. The same facts are copied onto each `mapping` row.
+(`count`, `reasons`), `backlog_bytes`, `backlog_full`, `held_by` (`budget`,
+`retry_after`, `contract`, or null), `last_push_at`, and `last_push_result`.
+`backlog_full` is `true` when `backlog_bytes()` of the outbox table is at the
+100 MB cap, `false` when that table was measured under it, and null when this
+read did not measure the table. Null is not under the cap. `unknown` is
+returned as `unknown`. The same facts are copied onto each `mapping` row. A
+mapping this read did not measure keeps `backlog_full` null.
 `held_by: retry_after` means this project still has an unparked row and the
 box is inside a console `Retry-After` (a 429, a timeout, or a 5xx). A 429
 records `last_push_result: unknown` and does not park the row.

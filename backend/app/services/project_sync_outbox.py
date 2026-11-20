@@ -46,8 +46,8 @@ CHANGE_CLASSES = (CHANGE_STATUS, CHANGE_NEW, CHANGE_EDIT, CHANGE_HISTORY)
 _RANK = {name: i for i, name in enumerate(CHANGE_CLASSES)}
 
 #: D11. One row per entity is what enforces it; `backlog_bytes` is the estimate of the rows
-#: actually stored, so a later screen can say `backlog full` rather than report zero for a
-#: table nobody measured.
+#: actually stored. `backlog_full` compares that estimate to this cap. A read that did not
+#: measure the table reports null, not "under the cap".
 CAP_BYTES = 100 * 1024 * 1024
 
 _STATUS_ACTIONS = frozenset({"claim_next", "release_item", "sign_off"})
@@ -230,6 +230,17 @@ def _row_bytes(row: SyncOutbox) -> int:
 def backlog_bytes(db: Session) -> int:
     """Bytes the stored rows estimate to. Zero means the table was counted and is empty."""
     return sum(_row_bytes(row) for row in db.scalars(select(SyncOutbox)).all())
+
+
+def backlog_full(measured: int | None) -> bool | None:
+    """Whether a measured outbox is at or over `CAP_BYTES`.
+
+    ``None`` means this read did not measure the table. That is not under the cap:
+    a caller that did not look must not report false.
+    """
+    if measured is None:
+        return None
+    return measured >= CAP_BYTES
 
 
 def project_queue(db: Session, project_id: str) -> dict:
