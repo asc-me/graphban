@@ -4188,14 +4188,33 @@ def acceptance_clauses(body: str) -> list[tuple[str, str]]:
     return out
 
 
+def _clause_title_pattern(title: str) -> re.Pattern[str] | None:
+    """Word-boundary pattern for `title` as a clause would name it.
+
+    The leading number and parentheticals go first — the same cleaning `_section_key`
+    does, and for the same reason. Every PRD in this repo numbers its headings, so the
+    raw title ("4. Data model") is never what a clause writes ("the data model"). A
+    number left in the pattern mapped every such clause to nothing. Unlike
+    `_heading_matcher` there is no 4-character floor: a clause that says "API" is the
+    match this exists to make, and the lookaround still refuses "API" inside "rapid".
+    """
+    cleaned = re.sub(r"\(.*?\)", " ", _SECTION_NUMBER.sub("", title or ""))
+    words = [w for w in re.split(r"[^A-Za-z0-9]+", cleaned) if w]
+    if not words:
+        return None
+    # Same join as `_heading_matcher`: "Non-goals", "Non Goals" and "nongoals" agree.
+    inner = r"[\s\-_/]*".join(re.escape(w) for w in words)
+    return re.compile(rf"(?<![A-Za-z0-9]){inner}(?![A-Za-z0-9])", re.IGNORECASE)
+
+
 def _clause_section(clause: str, group: str, titles: list[str]) -> str | None:
     """The section a clause belongs to: its sub-heading names it, else the clause does."""
     def named(text: str) -> str | None:
-        low = text.lower()
         key = _section_key(text)
         hits = [t for t in titles if key and _section_key(t) == key]
         if not hits:
-            hits = [t for t in titles if t.lower() in low]
+            hits = [t for t in titles
+                    if (pat := _clause_title_pattern(t)) is not None and pat.search(text or "")]
         # Longest title wins, so "Auth tokens" is not claimed by a section called "Auth".
         return max(hits, key=len) if hits else None
     return (named(group) if group else None) or named(clause)
