@@ -2461,7 +2461,9 @@ class SyncManifest(Base):
     project_id: Mapped[str] = mapped_column(String, primary_key=True)
     entity_type: Mapped[str] = mapped_column(String, primary_key=True)
     entity_id: Mapped[str] = mapped_column(String, primary_key=True)
-    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # version_of() is a signed 63-bit hash. INTEGER is int4 on Postgres and
+    # overflows on confirm (GRPH-1768). sync_outbox.version stays a counter.
+    version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
