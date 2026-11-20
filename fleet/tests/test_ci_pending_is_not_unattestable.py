@@ -34,7 +34,7 @@ def test_in_progress_run_keeps_polling_and_records_a_wait(
 ):
     calls = {"n": 0}
 
-    def fake(repo, row):
+    def fake(repo, row, logged=None):
         return "run 77 CI in_progress" if calls["n"] < 10 else ""
 
     def sleep(_):
@@ -51,7 +51,7 @@ def test_in_progress_run_keeps_polling_and_records_a_wait(
 def test_no_run_for_the_head_still_exits_unattestable(
     git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch,
 ):
-    monkeypatch.setattr(until_mod, "ci_run_in_progress", lambda repo, row: "")
+    monkeypatch.setattr(until_mod, "ci_run_in_progress", lambda repo, row, logged=None: "")
     result, roles = _go(git_repo, tmp_path, scripts, state, lambda _: None)
     assert roles == []
     assert result.reason == "review-ci-unattestable"

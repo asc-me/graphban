@@ -1223,7 +1223,7 @@ def _loop(
             # attestation will arrive. Those rows wait; only the rest can end the wave.
             ci_pending: dict[str, str] = {}
             for r in list(ci_stuck):
-                running = ci_run_in_progress(repo, r)
+                running = ci_run_in_progress(repo, r, ci_logged)
                 if running:
                     ci_pending[str(r["id"])] = running
                     ci_stuck.remove(r)
@@ -3065,17 +3065,23 @@ def ci_unattestable(row: dict) -> bool:
             and "cooldown over" in detail)
 
 
-def ci_run_in_progress(repo: Path, row: dict) -> str:
+def ci_run_in_progress(repo: Path, row: dict, logged: set | None = None) -> str:
     """GRPH-1417. A description of a CI run for this row's head that is queued or in progress,
     or "". Asks the forge (`gh run list`); any failure to ask reads as "none", so an
     unreachable forge falls back to the GRPH-1409 exit rather than waiting forever.
+
+    The branch is `review_ci_branch` (GRPH-1770): the reviewer's CI check reads the
+    recorded PR's head when that head is another branch descending from `item.branch`.
+    A run at that PR head counts, not only a run of the commit the refusal named.
     """
     import subprocess
     m = re.search(r"commit ([0-9a-f]{7,40})", _latest_refusal(row))
-    branch = str(row.get("branch") or "")
+    branch, pr_head = review_ci_branch(repo, row, logged)
     if not m or not branch:
         return ""
-    sha = m.group(1)
+    wanted = [m.group(1)]
+    if pr_head and pr_head not in wanted:
+        wanted.append(pr_head)
     try:
         done = subprocess.run(
             ["gh", "run", "list", "--branch", branch, "--limit", "50",
@@ -3087,7 +3093,8 @@ def ci_run_in_progress(repo: Path, row: dict) -> str:
     except (OSError, ValueError, subprocess.SubprocessError):
         return ""
     for run in runs:
-        if (str(run.get("headSha") or "").startswith(sha)
+        head_sha = str(run.get("headSha") or "")
+        if (any(head_sha.startswith(sha) for sha in wanted)
                 and run.get("status") in ("queued", "in_progress", "waiting", "pending", "requested")):
             return f"run {run.get('databaseId')} {run.get('name') or ''} {run.get('status')}".replace("  ", " ")
     return ""
@@ -3150,6 +3157,15 @@ def _linked_pr(row: dict) -> str:
         if isinstance(ev, dict) and _is_pr_url(str(ev.get("url") or "")):
             return str(ev["url"])
     return ""
+
+
+def _recorded_pr_url(row: dict) -> str:
+    """The row's PR url, including a string `pr` field `_linked_pr` does not read."""
+    found = _linked_pr(row)
+    if found:
+        return found
+    pr = row.get("pr")
+    return pr.strip() if isinstance(pr, str) and _is_pr_url(pr) else ""
 
 
 def _stamp_link(row: dict, branch: str, url: str) -> None:
@@ -3342,6 +3358,68 @@ def _take_external_red(row: dict, item: str, head: str, job: str, logged: set,
     ready.append(row)
 
 
+def _tip(repo: Path, branch: str) -> str:
+    """`branch`'s commit, or "" when this clone cannot name it."""
+    if not branch:
+        return ""
+    try:
+        return wt_mod._git(repo, "rev-parse", branch).strip()
+    except (OSError, wt_mod.GitError):
+        return ""
+
+
+def _note_branch_mismatch(logged: set | None, row: dict, item_branch: str, item_head: str,
+                          pr_branch: str, pr_head: str) -> None:
+    """One `review_branch_mismatch` for this pair of heads. A repeat poll says nothing."""
+    item = str(row.get("id") or "")
+    key = ("review_branch_mismatch", item,
+           f"{item_branch}@{item_head}|{pr_branch}@{pr_head}")
+    if logged is not None and key in logged:
+        return
+    if logged is not None:
+        logged.add(key)
+    detail = (f"{item}: review_branch_mismatch item.branch {item_branch}"
+              f"@{item_head[:12] or '?'} pr {pr_branch}@{pr_head[:12] or '?'}")
+    observe.emit("review_branch_mismatch", item=item, branch=item_branch,
+                 pr_branch=pr_branch, commit=item_head, pr_head=pr_head, detail=detail)
+
+
+def review_ci_branch(repo: Path, row: dict, logged: set | None = None) -> tuple[str, str]:
+    """`(branch, pr_head)` the review gate and the reviewer's CI check read (GRPH-1770).
+
+    `item.branch` and "" unless the item's recorded PR has its head on another branch
+    that descends from `item.branch`. That PR head is where CI ran: GRPH-1715 sat in
+    review for two hours because `gb/line-17` was red while PR #1878 on `gb/line-12`
+    was green, and every check asked `gh` about `item.branch`.
+
+    A different head that does not descend is not that PR. The drain emits one
+    `review_branch_mismatch` naming both branches and both heads, and the checks stay
+    on `item.branch`. Looking only at `item.branch` and saying nothing is how the row
+    waited. No recorded PR, or a PR that cannot be read, is not a mismatch: there are
+    not two heads to name, and the checks stay on `item.branch`.
+    """
+    item_branch = str(row.get("branch") or "").strip()
+    url = _recorded_pr_url(row)
+    if not item_branch or not url:
+        return item_branch, ""
+    from . import propose
+    try:
+        pr, _err = propose.view(repo, url)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pr = None
+    if not isinstance(pr, dict):
+        return item_branch, ""
+    pr_branch = str(pr.get("headRefName") or "").strip()
+    pr_head = str(pr.get("headRefOid") or "").strip()
+    if not pr_branch or pr_branch == item_branch:
+        return item_branch, ""
+    item_head = _tip(repo, item_branch)
+    if item_head and pr_head and wt_mod.is_ancestor(repo, item_head, pr_head):
+        return pr_branch, pr_head
+    _note_branch_mismatch(logged, row, item_branch, item_head, pr_branch, pr_head)
+    return item_branch, ""
+
+
 def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
                  planner: Graphban | None = None,
                  agent_id: str = "") -> tuple[list[dict], list[dict], list[dict]]:
@@ -3369,7 +3447,11 @@ def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
     blocked: list[dict] = []
     for row in rows:
         item = str(row.get("id") or "")
-        state, head, job = ci_verdict(repo, str(row.get("branch") or ""))
+        # GRPH-1770: CI for a recorded PR whose head is another branch is that head's,
+        # not `item.branch`. A head that does not descend stays on `item.branch` and
+        # is named; it is not skipped in silence.
+        branch, _pr_head = review_ci_branch(repo, row, logged)
+        state, head, job = ci_verdict(repo, branch)
         if state == "pending":
             key = ("review_waits_on_ci", item, head)
             if key not in logged:
@@ -3393,13 +3475,13 @@ def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
                 observe.emit("review_ci_red", item=item, commit=head, job=job,
                              detail=f"{item}: CI failed at {head[:12]}: {job}")
             if planner is not None and _rerun_transport_flake(
-                    repo, str(row.get("branch") or ""), item, head, logged):
+                    repo, branch, item, head, logged):
                 # GRPH-1501: the check could not run; it was rerun, so wait for it.
                 waiting.append(row)
                 continue
             if planner is not None and _return_or_block_ci_red(
                     planner, row, head, job, agent_id,
-                    repo=repo, branch=str(row.get("branch") or "")):
+                    repo=repo, branch=branch):
                 blocked.append(row)
                 continue
         if (state == "green" and planner is not None
