@@ -84,7 +84,12 @@ def is_filed_fix(db: Session, item) -> bool:
 
 def check_fix_scope(*, kind: str | None, line_id: str | None, prd_id: str | None,
                     prd_section: str) -> None:
-    """A fix must say where it lives (GRPH-1683); there is no default scope."""
+    """A fix must say where it lives (GRPH-1683).
+
+    `create_item` may already have filled `line_id` from the project's maintenance line
+    (GRPH-1798). This check does not look the line up itself: a fix that still has
+    neither scope is refused, which is the behaviour when the project has no line.
+    """
     if kind != "fix":
         return
     if not line_id and not prd_id:
@@ -304,6 +309,27 @@ def get_item(db: Session, item_id: str) -> Item | None:
     return db.get(Item, keys.resolve_item(db, item_id) or item_id)
 
 
+def default_maintenance_line(db: Session, *, kind: str | None, explicit_kind: bool,
+                             agent_create: bool, prd_id: str | None,
+                             line_id: str | None, project_id: str) -> tuple[str | None, bool]:
+    """GRPH-1798. A filed fix with neither scope lands on the project's maintenance line.
+
+    An explicit `prd_id` or `line_id` is returned unchanged. A project with no line
+    returns the caller's `line_id` and False, so the scope refusal is unchanged.
+
+    Only a filed fix takes the default: an explicit `kind=fix`, or any fix an agent
+    files (a `bug` tag defaults kind there too). A non-agent bug-tagged default is
+    the historical path that predates the filing rules and stays unscoped.
+    """
+    if kind != "fix" or not (explicit_kind or agent_create) or prd_id or line_id:
+        return line_id, False
+    from app.services import lines as lines_svc
+    line = lines_svc.get_line(db, project_id)
+    if line is None:
+        return line_id, False
+    return line.id, True
+
+
 def create_item(
     db: Session,
     *,
@@ -363,6 +389,9 @@ def create_item(
     _check_severity(severity, kind)
     if db.get(Project, project_id) is None:
         raise ValueError(f"unknown project: {project_id!r}")
+    line_id, line_defaulted = default_maintenance_line(
+        db, kind=kind, explicit_kind=explicit_kind, agent_create=agent_create,
+        prd_id=prd_id, line_id=line_id, project_id=project_id)
     check_line(line_id, prd_id, kind)
     blocked = None
     distinct: list[tuple[Item, str]] = []
@@ -462,6 +491,10 @@ def create_item(
         harness_svc.on_bug_filed(db, item)
         if commit:
             db.commit()
+    if line_defaulted:
+        # Reply-only. Not a column: a later read of the row must not say the line was
+        # defaulted, and a refresh must not drop the flag before the caller serializes.
+        db.info.setdefault("line_defaulted", set()).add(item.id)
     return item
 
 

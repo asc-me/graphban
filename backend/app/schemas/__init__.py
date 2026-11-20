@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+from pydantic import (
+    BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator, model_serializer,
+)
 
 # Imports nothing from `app`, so this cannot cycle back through schemas.
 from app.services import tool_tiers as tool_tiers_svc
@@ -776,6 +778,17 @@ class ItemWritten(ItemOut):
     read and list shapes stay exactly as they were."""
 
     touchpoint_warnings: list[dict] = []
+    #: GRPH-1798. True only on the create that stored the project's maintenance line because
+    #: the caller sent neither `prd_id` nor `line_id`. Omitted when false, so an update and
+    #: a create that named its scope keep the previous shape.
+    line_defaulted: bool = False
+
+    @model_serializer(mode="wrap")
+    def _omit_line_defaulted_when_false(self, handler):
+        data = handler(self)
+        if not data.get("line_defaulted"):
+            data.pop("line_defaulted", None)
+        return data
 
 
 #: What the project list leaves out by default (GRPH-1228): the per-item fields that are large

@@ -76,7 +76,10 @@ def create_item(
             severity=body.severity,
             blocks=body.blocks,
         )
-        return _with_warnings(db, created, body.touchpoints)
+        written = _with_warnings(db, created, body.touchpoints)
+        if created.id in db.info.get("line_defaulted", ()):
+            written.line_defaulted = True
+        return written
     except items_svc.MissingAttestation as e:
         raise HTTPException(409, str(e))
     except ValueError as e:
