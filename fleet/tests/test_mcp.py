@@ -33,7 +33,7 @@ def fleet(git_repo: Path, tmp_path: Path, scripts, state: Path) -> Fleet:
         repo=git_repo,
         workspace=workspace,
         client=_server(workspace),
-        launch_for=lambda name, model="", tuning=None: _factory(scripts, "works_then_waits", adapter=name),
+        launch_for=lambda name, model="", tuning=None: _factory(scripts, "works_until_released", adapter=name),
     )
 
 
@@ -179,7 +179,8 @@ def test_spawn_starts_one_child_and_returns_its_identity(fleet: Fleet):
     value = _value(_call(fleet, "spawn", adapter="claude", enrolment_code="WORKER-1"))
     try:
         assert value["agent_id"]
-        assert value["running"] is True
+        assert value["running"] is True, [
+            (c.process.returncode, c.tail()) for c in fleet.children]
         assert value["branch"].startswith("gb/")
         assert value["registration_latency"] is not None
         assert len(fleet.children) == 1
@@ -518,11 +519,13 @@ def test_ps_names_the_children_that_have_gone_quiet(git_repo: Path, tmp_path: Pa
     """
     from gbfleet.supervisor import Limits
 
-    fleet = _fleet_with(git_repo, tmp_path, scripts, "silent_then_exits",
+    fleet = _fleet_with(git_repo, tmp_path, scripts, "silent_until_released",
                         limits=Limits(quiet_after=0.0))
-    _call(fleet, "spawn", adapter="fake", enrolment_code="enrol-1")
-
-    listed = _value(_call(fleet, "ps"))
+    spawned = _value(_call(fleet, "spawn", adapter="fake", enrolment_code="enrol-1"))
+    try:
+        listed = _value(_call(fleet, "ps"))
+    finally:
+        _call(fleet, "stop", agent_id=spawned["agent_id"])
     assert listed["quiet"], "a child that has written nothing is not named as quiet"
     assert listed["quiet_after"] == 0.0
 
@@ -634,7 +637,8 @@ def test_spawn_refuses_past_max_workers(fleet: Fleet):
     first = _value(_call(fleet, "spawn", adapter="claude", enrolment_code="WORKER-1"))
     try:
         result = _call(fleet, "spawn", adapter="claude", enrolment_code="WORKER-2")
-        assert result["isError"] is True
+        assert result.get("isError") is True, (result, [
+            (c.process.returncode, c.tail()) for c in fleet.children])
         assert "max_workers" in result["content"][0]["text"]
         assert len([c for c in fleet.children if c.running]) == 1
     finally:

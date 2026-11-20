@@ -881,6 +881,12 @@ export const api = {
     if (proposal.ladder?.length) q.set("ladder", proposal.ladder.join(","));
     if (proposal.routing_mode) q.set("routing_mode", proposal.routing_mode);
     if (proposal.subscription_order?.length) q.set("subscription_order", proposal.subscription_order.join(","));
+    for (const [rung, ids] of Object.entries(proposal.rung_order ?? {})) {
+      if (ids?.length) q.set(`${rung}_order`, ids.join(","));
+    }
+    for (const [rung, tie] of Object.entries(proposal.rung_tie_break ?? {})) {
+      if (tie) q.set(`${rung}_tie_break`, tie);
+    }
     if (proposal.days) q.set("days", String(proposal.days));
     return request<import("@/lib/types").RoutingReplay>(`/harness/capacity/replay?${q.toString()}`);
   },

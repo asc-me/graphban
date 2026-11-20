@@ -52,9 +52,34 @@ export interface LineInfo {
 
 const CHIP = "flex-none rounded-md border px-1.5 py-px font-mono text-[9px] uppercase tracking-wide";
 
+/** SECURITY: amber mono, the PROTO chip's size (GRPH-1744). */
+export function SecurityChip() {
+  return (
+    <span
+      className="flex-none whitespace-nowrap rounded-md border border-[#3a2f1a] bg-[rgba(224,179,74,0.08)] px-1.5 py-0.5 font-mono text-[9px] tracking-[0.5px] text-[#e0b34a]"
+      data-testid="badge-security"
+    >
+      SECURITY
+    </span>
+  );
+}
+
+/**
+ * What a line item still needs, as one quiet line — not a chip, and not a column: the item stays
+ * in its status column (GRPH-1744).
+ */
+export function NeedsLine({ needs, className }: { needs?: string[]; className?: string }) {
+  if (!needs || needs.length === 0) return null;
+  return (
+    <span className={`text-[11.5px] text-muted ${className ?? ""}`} data-testid="line-needs">
+      {needs.join(" · ")}
+    </span>
+  );
+}
+
+/** Chips beside a line or fix item. Readiness is not one of them: see NeedsLine. */
 export function LineBadges({
   item,
-  needs = [],
   blockedBy = [],
   blocks = [],
 }: {
@@ -70,16 +95,7 @@ export function LineBadges({
           FIX
         </span>
       )}
-      {item.severity === "security" && (
-        <span className={`${CHIP} border-[rgba(255,107,107,0.4)] text-st-blocked`} data-testid="badge-security">
-          SECURITY
-        </span>
-      )}
-      {needs.length > 0 && (
-        <span className={`${CHIP} border-[#3a2f1a] normal-case text-[#e0b34a]`} data-testid="badge-needs">
-          {needs.join(" · ")}
-        </span>
-      )}
+      {item.severity === "security" && <SecurityChip />}
       {item.status === "blocked" && blockedBy.length > 0 && (
         <span className={`${CHIP} border-[rgba(255,107,107,0.3)] text-st-blocked`} data-testid="badge-blocked-by">
           BLOCKED <span className="normal-case">by {blockedBy.join(", ")}</span>

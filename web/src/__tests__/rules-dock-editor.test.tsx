@@ -505,12 +505,12 @@ describe("GRPH-1725 layout C", () => {
     // Seven stages are 1696 wide: a 1500-wide strip fits them at (1500 - 48) / 1696.
     resize(1500, 300);
     await waitFor(() => expect(canvas).toHaveAttribute("data-zoom", "0.856"));
-    // A short strip (FULL) is height-bound: the card row fits (110 - 16) / 128.
+    // A short strip (FULL) is height-bound: the card and its glow room fit (110 - 8) / (157 + 2 × 28) (GRPH-1728).
     const before = Number(canvas.getAttribute("data-fits"));
     await user.click(screen.getByTestId("rules-dock-height-full"));
     expect(Number(canvas.getAttribute("data-fits"))).toBeGreaterThan(before); // the preset change refits
     resize(1500, 110);
-    await waitFor(() => expect(canvas).toHaveAttribute("data-zoom", "0.734"));
+    await waitFor(() => expect(canvas).toHaveAttribute("data-zoom", "0.479"));
   });
 
   it("FULL gives the dock the space under the page header", async () => {

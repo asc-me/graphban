@@ -483,7 +483,11 @@ def test_alembic_stays_single_head_with_0140_in_the_chain():
     # on 0146 (GRPH-1137, decision waits) on 0145 (GRPH-1134, item done_at)
     # on 0144 (GRPH-1133, per-user UI preferences) on 0143
     # (GRPH-1127, scan finding grain); linear through 0140.
-    assert script.get_heads() == ["0210"]
+    assert script.get_heads() == ["0214"]
+    assert script.get_revision("0214").down_revision == "0213"  # GRPH-1692, external design artifact
+    assert script.get_revision("0213").down_revision == "0212"  # GRPH-1768, manifest bigint
+    assert script.get_revision("0212").down_revision == "0211"  # GRPH-1737, proposal receipts
+    assert script.get_revision("0211").down_revision == "0210"  # GRPH-1733, sync outbox
     assert script.get_revision("0210").down_revision == "0209"  # GRPH-1677, remote specs
     assert script.get_revision("0209").down_revision == "0208"  # GRPH-1712, routing candidates
     assert script.get_revision("0208").down_revision == "0207"  # GRPH-1685, seat line_id

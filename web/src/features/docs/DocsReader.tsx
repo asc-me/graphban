@@ -18,6 +18,33 @@ const GUIDES = [
   { kind: "sections", label: "Setup steps" },
 ] as const;
 
+// A surface whose pinned controls sit under the floating trigger hides it while it is open —
+// the rules dock's Save row (GRPH-1729). A count, so two holders never un-hide each other.
+let triggerHolds = 0;
+const triggerListeners = new Set<() => void>();
+function subscribeTriggerHolds(fn: () => void) {
+  triggerListeners.add(fn);
+  return () => {
+    triggerListeners.delete(fn);
+  };
+}
+function triggerHidden() {
+  return triggerHolds > 0;
+}
+
+/** Hide the floating docs trigger while `hidden` is true; the "?" shortcut still opens the docs. */
+export function useHideDocsTrigger(hidden: boolean) {
+  React.useEffect(() => {
+    if (!hidden) return;
+    triggerHolds += 1;
+    triggerListeners.forEach((fn) => fn());
+    return () => {
+      triggerHolds -= 1;
+      triggerListeners.forEach((fn) => fn());
+    };
+  }, [hidden]);
+}
+
 /** Open the reader on the page you're on — the tour's "Read more" (GRPH-1363). */
 export function openDocsReader() {
   window.dispatchEvent(new Event(OPEN_EVENT));
@@ -30,6 +57,7 @@ export function DocsReader({ agentOpen = false, hasProject = true }: { agentOpen
   const [rendered, setRendered] = React.useState(false);
   const [thanks, setThanks] = React.useState(false);
   const { pathname } = useLocation();
+  const heldHidden = React.useSyncExternalStore(subscribeTriggerHolds, triggerHidden, triggerHidden);
   const plannerRoute = /\/(home|tracker|prds|memory|requests)(\/|$)/.test(pathname);
   const navigate = useNavigate();
   const doc = docFor(pathname);
@@ -103,8 +131,9 @@ export function DocsReader({ agentOpen = false, hasProject = true }: { agentOpen
   return (
     <>
       {/* Floating trigger — hover lift only on fine pointers. Hidden while the agent rail
-          is open so the last shard card stays readable (GRPH-923). */}
-      {!agentOpen && (
+          is open so the last shard card stays readable (GRPH-923), and while a surface holds it
+          hidden — the rules dock's Save row sits right under it (GRPH-1729). */}
+      {!agentOpen && !heldHidden && (
       <button
         onClick={() => openDocs("pointer")}
         title="Docs for this page"

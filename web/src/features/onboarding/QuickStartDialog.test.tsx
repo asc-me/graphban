@@ -12,6 +12,9 @@
  * - the chip reopens on the first unfinished step and is gone after Finish;
  * - hosted never shows step ⓪.
  */
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -19,6 +22,7 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AppFrame } from "@/components/shell/AppFrame";
+import { PROJECT_ACCENT_SWATCHES } from "@/features/onboarding/projectAccents";
 import type { Onboarding, ProjectSetup, SetupStatus } from "@/lib/types";
 
 import { AGENT_ACTIVE_WINDOW_MS, agentIsWorking, Hero, heroState } from "./QuickStartDialog";
@@ -627,6 +631,124 @@ describe("deriveMarks", () => {
   });
 });
 
+
+describe("accent swatches leave the focus ring alone (GRPH-1767)", () => {
+  const QUICK_RING = "0 0 0 2px var(--color-surface-2), 0 0 0 4px var(--color-fg)";
+  const FIRST_RING = "0 0 0 2px var(--color-surface-3), 0 0 0 4px var(--color-fg)";
+
+  function expectSelectedRing(el: HTMLElement, shadow: string) {
+    // An inline outline beats the global :focus-visible rule. The selected swatch must not set one.
+    expect(el.style.outline).toBe("");
+    expect(el).toHaveStyle({ boxShadow: shadow, outlineOffset: "5px" });
+    // The focus ring starts outside the 4px selection ring, so the two do not overlap.
+    expect(Number.parseFloat(el.style.outlineOffset)).toBeGreaterThan(4);
+  }
+
+  it("quick start: a focused swatch, selected or not, has no inline outline", async () => {
+    const user = userEvent.setup();
+    renderFrame();
+    await enter(user, "project");
+    expect(await screen.findByRole("heading", { name: "Create your project" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Advanced" }));
+    const selected = screen.getByRole("button", { name: "accent #c6f24e" });
+    const other = screen.getByRole("button", { name: "accent #a78bfa" });
+    expectSelectedRing(selected, QUICK_RING);
+    expect(other.style.outline).toBe("");
+    expect(other.style.boxShadow).toBe("");
+    expect(other).toHaveStyle({ outlineOffset: "5px" });
+
+    selected.focus();
+    expect(selected).toHaveFocus();
+    expect(selected.style.outline).toBe("");
+    await user.click(other);
+    expect(other).toHaveAttribute("aria-pressed", "true");
+    expectSelectedRing(other, QUICK_RING);
+    expect(selected).toHaveAttribute("aria-pressed", "false");
+    expect(selected.style.outline).toBe("");
+    expect(selected.style.boxShadow).toBe("");
+  });
+
+  it("first project: a focused swatch, selected or not, has no inline outline", async () => {
+    const user = userEvent.setup();
+    // Finished onboarding and no project is the only path that still mounts CreateFirstProject.
+    srv.onboarding = { quickstart_finished_at: "2026-11-01T00:00:00Z" };
+    srv.projects = [];
+    renderFrame();
+    expect(await screen.findByRole("heading", { name: "Create your first project" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    const selected = screen.getByRole("button", { name: "accent #c6f24e" });
+    const other = screen.getByRole("button", { name: "accent #a78bfa" });
+    expectSelectedRing(selected, FIRST_RING);
+    expect(other.style.outline).toBe("");
+    expect(other.style.boxShadow).toBe("");
+    expect(other).toHaveStyle({ outlineOffset: "5px" });
+
+    selected.focus();
+    expect(selected).toHaveFocus();
+    expect(selected.style.outline).toBe("");
+    await user.click(other);
+    expect(other).toHaveAttribute("aria-pressed", "true");
+    expectSelectedRing(other, FIRST_RING);
+    expect(selected).toHaveAttribute("aria-pressed", "false");
+    expect(selected.style.outline).toBe("");
+    expect(selected.style.boxShadow).toBe("");
+  });
+});
+
+describe("accent pickers offer the twelve hues (GRPH-1769)", () => {
+  const HERE = dirname(fileURLToPath(import.meta.url));
+  const PALETTE = PROJECT_ACCENT_SWATCHES.map((swatch) => swatch.hex);
+  // The old six included these. Blocked's token is #ff6b6b; #ff8f8f is the near-blocked
+  // swatch the wizard already dropped, so it is banned by name as well as by the token scan.
+  const NAMED_STATUS = ["#7ca2ff", "#e0b34a", "#5fd07a", "#ff8f8f"];
+
+  function themeHexTokens(css: string): Record<string, string> {
+    const tokens: Record<string, string> = {};
+    for (const match of css.matchAll(/--(color-[a-z0-9_-]+):\s*(#[0-9a-fA-F]{6})\s*;/g)) {
+      tokens[match[1]!] = match[2]!.toLowerCase();
+    }
+    return tokens;
+  }
+
+  function offeredAccents(): string[] {
+    return screen.getAllByRole("button", { name: /^accent / }).map((el) => {
+      const hex = (el.getAttribute("aria-label") ?? "").replace(/^accent /, "").toLowerCase();
+      expect(el).toHaveStyle({ backgroundColor: hex });
+      return hex;
+    });
+  }
+
+  function expectPalette(hexes: string[]) {
+    expect(hexes).toEqual(PALETTE);
+    const tokens = themeHexTokens(readFileSync(join(HERE, "../../index.css"), "utf8"));
+    const palette = new Set(hexes);
+    // Lime is the brand accent, so it is also --color-st-in_progress. Every other
+    // status token must be absent, or a new project tile reads as a status.
+    const overlaps = Object.entries(tokens).filter(
+      ([key, value]) => key.startsWith("color-st-") && palette.has(value),
+    );
+    expect(overlaps).toEqual([["color-st-in_progress", "#c6f24e"]]);
+    for (const banned of NAMED_STATUS) expect(palette.has(banned)).toBe(false);
+  }
+
+  it("quick start offers the twelve hues, in that order, and no status colour but lime", async () => {
+    const user = userEvent.setup();
+    renderFrame();
+    await enter(user, "project");
+    expect(await screen.findByRole("heading", { name: "Create your project" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Advanced" }));
+    expectPalette(offeredAccents());
+  });
+
+  it("first project offers the twelve hues, in that order, and no status colour but lime", async () => {
+    srv.onboarding = { quickstart_finished_at: "2026-11-01T00:00:00Z" };
+    srv.projects = [];
+    renderFrame();
+    expect(await screen.findByRole("heading", { name: "Create your first project" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expectPalette(offeredAccents());
+  });
+});
 
 describe("step ① posture check (GRPH-1365)", () => {
   const GOOD = {

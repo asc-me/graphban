@@ -66,11 +66,34 @@ const row = (label: string) => within(layer("expanded")).getByRole("link", { nam
 const badges = () => layer("expanded").querySelectorAll("[data-badge]");
 const openBadges = () => layer("expanded").querySelectorAll('[data-inline="open"] [data-badge]');
 
+/**
+ * The row label is in the first paint. The badge is a later commit: the project
+ * list resolves, then `/counts`. On a loaded runner that exceeds Testing Library's
+ * 1s default, and a read of the row reports the label — expected "10", got
+ * "Tracker" (GRPH-1759). The wait is real (GRPH-1536).
+ */
+const COUNTS_LANDED = { timeout: 10_000 };
+
+/** The badge span for a page row. Absent until the counts read lands. */
+function badgeOf(label: string): HTMLElement {
+  const node = row(label).querySelector("[data-badge]");
+  if (!(node instanceof HTMLElement)) throw new Error(`${label} has no badge yet`);
+  return node;
+}
+
+async function shownBadge(label: string): Promise<HTMLElement> {
+  return waitFor(() => {
+    const node = badgeOf(label);
+    expect(node).toBeInTheDocument();
+    return node;
+  }, COUNTS_LANDED);
+}
+
 /** Fold a section out of the expanded accordion and return its panel. */
 async function fold(user: ReturnType<typeof userEvent.setup>, section: string) {
   await user.click(within(layer("expanded")).getByRole("button", { name: section }));
   const panel = document.getElementById(`nav-${section.toLowerCase()}`)!;
-  await waitFor(() => expect(panel).toHaveAttribute("data-inline", "open"));
+  await waitFor(() => expect(panel).toHaveAttribute("data-inline", "open"), COUNTS_LANDED);
   return panel;
 }
 
@@ -79,21 +102,24 @@ afterEach(() => {
   counts.mockReset();
 });
 
-describe("GRPH-1151 badge counts", () => {
+describe("GRPH-1151 badge counts", { timeout: 20_000 }, () => {
   it("shows each page's mapped field inline", async () => {
     counts.mockResolvedValue(COUNTS);
     wrap(<LeftNav hosted />, "/p/CORE/tracker");
-    await waitFor(() => expect(row("Tracker")).toHaveTextContent("10"));
-    expect(row("Requests")).toHaveTextContent("6");
+    // The badge, not the row: the row's text is the label until the count commits.
+    expect(await shownBadge("Tracker")).toHaveTextContent(/^10$/);
+    expect(await shownBadge("Requests")).toHaveTextContent(/^6$/);
     expect(row("Triage")).not.toHaveTextContent(/\d/);
     expect(row("Specs")).not.toHaveTextContent(/\d/);
+    expect(row("Triage").querySelector("[data-badge]")).toBeNull();
+    expect(row("Specs").querySelector("[data-badge]")).toBeNull();
   });
 
   it("shows Build counts in its folded-out rows and Live green with the live suffix", async () => {
     const user = userEvent.setup();
     counts.mockResolvedValue(COUNTS);
     wrap(<LeftNav hosted />, "/p/CORE/tracker");
-    await waitFor(() => expect(row("Tracker")).toHaveTextContent("10"));
+    expect(await shownBadge("Tracker")).toHaveTextContent(/^10$/);
 
     const build = await fold(user, "Build");
     expect(within(build).getByRole("link", { name: /Code graph/ })).toHaveTextContent("2,184");
@@ -112,10 +138,10 @@ describe("GRPH-1151 badge counts", () => {
     localStorage.setItem(SIDEBAR_STORAGE_KEY, "1");
     counts.mockResolvedValue(COUNTS);
     wrap(<LeftNav hosted />, "/p/CORE/tracker");
-    await waitFor(() => expect(counts).toHaveBeenCalled());
+    await waitFor(() => expect(counts).toHaveBeenCalled(), COUNTS_LANDED);
     await user.click(within(layer("rail")).getByRole("button", { name: "Build" }));
-    const build = await screen.findByRole("dialog", { name: "Build" });
-    await waitFor(() => expect(within(build).getByRole("link", { name: /Code graph/ })).toHaveTextContent("2,184"));
+    const build = await screen.findByRole("dialog", { name: "Build" }, COUNTS_LANDED);
+    await waitFor(() => expect(within(build).getByRole("link", { name: /Code graph/ })).toHaveTextContent("2,184"), COUNTS_LANDED);
     expect(within(build).getByRole("link", { name: /MCP Tools/ })).toHaveTextContent("24");
   });
 
@@ -129,14 +155,14 @@ describe("GRPH-1151 badge counts", () => {
       fireEvent.mouseEnter(live);
       expect(tip).toHaveTextContent("OBSERVE");
       expect(tip).toHaveTextContent("5 live");
-    });
+    }, COUNTS_LANDED);
     expect(within(tip).getByText("5 live").className).toContain("text-st-done");
   });
 
   it("renders no badge while the counts are loading", async () => {
     counts.mockReturnValue(new Promise<ShellCounts>(() => {}));
     wrap(<LeftNav hosted />, "/p/CORE/tracker");
-    await waitFor(() => expect(counts).toHaveBeenCalled());
+    await waitFor(() => expect(counts).toHaveBeenCalled(), COUNTS_LANDED);
     expect(badges()).toHaveLength(0);
     expect(row("Tracker")).not.toHaveTextContent("0");
   });
@@ -145,7 +171,7 @@ describe("GRPH-1151 badge counts", () => {
     const user = userEvent.setup();
     counts.mockRejectedValue(new Error("500"));
     wrap(<LeftNav hosted />, "/p/CORE/tracker");
-    await waitFor(() => expect(counts).toHaveBeenCalled());
+    await waitFor(() => expect(counts).toHaveBeenCalled(), COUNTS_LANDED);
     // Let the rejection settle before asserting the absence.
     await new Promise((r) => setTimeout(r, 0));
     expect(badges()).toHaveLength(0);
@@ -158,7 +184,7 @@ describe("GRPH-1151 badge counts", () => {
     const user = userEvent.setup();
     counts.mockResolvedValue({ ...COUNTS, items_open: 0, review: 0, live_agents: 0 });
     wrap(<LeftNav hosted />, "/p/CORE/tracker");
-    await waitFor(() => expect(openBadges()).toHaveLength(2));
+    await waitFor(() => expect(openBadges()).toHaveLength(2), COUNTS_LANDED);
     expect(row("Tracker")).toHaveTextContent("0");
     const observe = await fold(user, "Observe");
     expect(within(observe).getByText("0 live")).toBeInTheDocument();

@@ -12,6 +12,7 @@ import "@/index.css";
  * `fix_in_build` is in force); `?state=absent` serves a pack with no `build.found_bug` template.
  */
 const state = new URLSearchParams(location.search).get("state") ?? "on";
+const flow = new URLSearchParams(location.search).get("flow");
 const PROJECT = { id: "p1", name: "Core Platform", tag: "CP" };
 const RULE = {
   id: "build.found_bug", stage: "build", title: "What a builder does with a bug it finds",
@@ -22,10 +23,29 @@ const RULE = {
   locked: false, used: state === "on", label: null, skills: null,
 };
 const f = (value: unknown) => ({ value, source: "project" });
+// GRPH-1728: `?flow=p74` serves the strip the owner saw on p74-walk — Build carries the longest real
+// tally (9 enforced · 3 checked · 1 advisory · 1 unmeasured) — and a stage at every level.
+const mk = (stage: string, n: number, enforcement: string, extra: Record<string, unknown> = {}) =>
+  Array.from({ length: n }, (_, i) => ({
+    ...RULE, id: `${stage}.${enforcement}_${i}`, stage, title: `${enforcement} rule ${i + 1}`,
+    enforcement, used: true, control: "fixed", params: null, ...extra,
+  }));
+const P74 = [
+  { id: "plan", title: "Plan", summary: "", state: "enforced", rules: mk("plan", 2, "enforced") },
+  { id: "build", title: "Build", summary: "What a builder must do while building.", state: "advisory", rules: [
+    { ...RULE, used: true }, ...mk("build", 9, "enforced"), ...mk("build", 2, "checked"), ...mk("build", 1, "advisory"),
+    ...mk("build", 1, "checked", { unmeasured_reason: "refused by the pack loader" }),
+  ] },
+  { id: "review", title: "Review", summary: "", state: "advisory", rules: [
+    ...mk("review", 12, "enforced"), ...mk("review", 10, "checked"), ...mk("review", 11, "advisory"),
+    ...mk("review", 13, "checked", { unmeasured_reason: "refused by the pack loader" }), ...mk("review", 14, "checked", { used: false }),
+  ] },
+  { id: "ship", title: "Ship", summary: "", state: "checked", rules: mk("ship", 3, "checked") },
+];
 function answer(path: string): unknown {
   if (path === "/api/rules/flow") return {
     version: "1.0.0", model: "prs_to_base", control: { state: "local", writable: true, message: "", org_name: "" }, edges: [],
-    stages: [{ id: "build", title: "Build", summary: "What a builder must do while building.", state: "checked", rules: state === "absent" ? [] : [RULE] }],
+    stages: flow === "p74" ? P74 : [{ id: "build", title: "Build", summary: "What a builder must do while building.", state: "checked", rules: state === "absent" ? [] : [RULE] }],
   };
   if (path === "/api/rules/toggles") return { library_loaded: true, toggles: [] };
   if (path.endsWith("/gitops")) return {

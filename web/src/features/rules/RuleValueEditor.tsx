@@ -135,24 +135,34 @@ export function RuleValueEditor(props: EditorProps) {
   );
 }
 
+/** One bordered option card with a radio; shared by every choice in the rules editor. */
+function RadioCard({ name, value, label, explain, risky, checked, onChange }: { name: string; value: string; label: string; explain: string; risky?: boolean; checked: boolean; onChange: () => void }) {
+  return (
+    <label className={cn("flex items-start gap-2 rounded-[6px] border px-2 py-1.5 text-[12px] text-fg-2", checked ? "border-accent" : "border-[#2a333a]")}>
+      <input type="radio" name={name} value={value} aria-label={label} checked={checked} onChange={onChange} className="accent-accent mt-0.5" />
+      <span>
+        <span className="text-fg">{label}</span>
+        {risky && <span className={cn(MONO, "ml-2 text-[10px] text-[#ffb454]")}>RISKY</span>}
+        <span className="block text-muted-2">{explain}</span>
+      </span>
+    </label>
+  );
+}
+
 function EnumCards({ ruleId, name, value, onChange, options }: EditorProps & { value: string; options: EnumOption[] }) {
   return (
     <div role="radiogroup" aria-label={GROUP_LABELS[`${ruleId}:${name}`] ?? name} className="flex flex-col gap-1.5" data-testid={`rules-enum-${name}`}>
       {options.map((m) => (
-        <label
+        <RadioCard
           key={m.value}
-          className={cn(
-            "flex items-start gap-2 rounded-[6px] border px-2 py-1.5 text-[12px] text-fg-2",
-            value === m.value ? "border-accent" : "border-[#2a333a]",
-          )}
-        >
-          <input type="radio" name={`${ruleId}-${name}`} value={m.value} aria-label={m.label} checked={value === m.value} onChange={() => onChange(m.value)} />
-          <span>
-            <span className="text-fg">{m.label}</span>
-            {m.risky && <span className={cn(MONO, "ml-2 text-[10px] text-[#ffb454]")}>RISKY</span>}
-            <span className="block text-muted-2">{m.explain}</span>
-          </span>
-        </label>
+          name={`${ruleId}-${name}`}
+          value={m.value}
+          label={m.label}
+          explain={m.explain}
+          risky={m.risky}
+          checked={value === m.value}
+          onChange={() => onChange(m.value)}
+        />
       ))}
     </div>
   );
@@ -331,31 +341,32 @@ function GeneratedFiles(props: EditorProps & { value: string[] }) {
   const emit = (m: "add" | "replace", list: string[]) => onChange(m === "add" ? [...defaults, ...list] : list);
   return (
     <div className="flex flex-col gap-1.5" data-testid="rules-generated-files">
-      <div role="radiogroup" aria-label="Generated files" className="flex flex-col gap-1">
+      <div role="radiogroup" aria-label="Generated files" className="flex flex-col gap-1.5">
         {(
           [
             ["add", "Add to defaults", "Keep the built-in generated files and add yours."],
             ["replace", "Replace defaults", "Only the files listed here are ignored."],
           ] as const
         ).map(([v, label, explain]) => (
-          <label key={v} className="flex items-start gap-2 text-[12px] text-fg-2">
-            <input
-              type="radio"
-              name="generated-files-mode"
-              aria-label={label}
-              checked={mode === v}
-              onChange={() => {
-                setMode(v);
-                emit(v, extras);
-              }}
-            />
-            <span>
-              <span className="text-fg">{label}</span>
-              <span className="block text-muted-2">{explain}</span>
-            </span>
-          </label>
+          <RadioCard
+            key={v}
+            name="generated-files-mode"
+            value={v}
+            label={label}
+            explain={explain}
+            checked={mode === v}
+            onChange={() => {
+              setMode(v);
+              emit(v, extras);
+            }}
+          />
         ))}
       </div>
+      {mode === "add" && (
+        <p className={cn(MONO, "break-all text-small text-muted-2")} data-testid="rules-generated-defaults">
+          Built in: {defaults.join(", ")}
+        </p>
+      )}
       <ListRows {...props} value={extras} onChange={(l) => emit(mode, l as string[])} counted />
     </div>
   );

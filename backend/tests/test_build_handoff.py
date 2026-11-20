@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from app.models import DesignSet, Item
+from app.models import DesignSet, Item, Link
 from app.services import design_sets as ds_svc
 from app.services import prds as prd_svc
+from tests.prd_approve import approve
 from tests.test_design_review import (  # noqa: F401
     COMPILER, be, db, pid, world, _ready,
 )
@@ -18,6 +19,9 @@ def _gate(db, pid, sid, sections):
     db.commit()
 
 
+_TP = {"Tokens": ["web/tokens.css"], "Spacing": ["web/spacing.css"]}
+
+
 def _items(db, prd):
     return {i.prd_section: i for i in db.scalars(select(Item).where(Item.prd_id == prd.id))}
 
@@ -25,7 +29,7 @@ def _items(db, prd):
 def test_unaccepted_gated_section_files_blocked_and_others_normal(db, pid, world):
     prd, sid = world
     _gate(db, pid, sid, ["Tokens"])
-    prd_svc.decompose(db, prd, create=True)
+    prd_svc.decompose(db, prd, create=True, touchpoints=_TP)
     items = _items(db, prd)
     assert items["Tokens"].status == "blocked"
     assert "not approved to build" in items["Tokens"].description
@@ -40,7 +44,7 @@ def test_accepted_gate_cites_revision_and_goes_stale(db, pid, world, be):
     _gate(db, pid, sid, ["Tokens", "Spacing"])
     _ready(db, pid, sid, be)
     ds_svc.accept_design(db, pid, sid, "agent:GRPH-A2", "dana")
-    prd_svc.decompose(db, prd, create=True)
+    prd_svc.decompose(db, prd, create=True, touchpoints=_TP)
     items = _items(db, prd)
     tok = items["Tokens"]
     assert tok.status == "backlog"
@@ -66,7 +70,7 @@ def test_a_screen_brief_hands_off_without_pasted_headings(db, pid, world):
         db, pid, sid, "Teal only.", sections=["Tokens"],
         screens=[{"screen": "home", "brief": "The dialog names the org. Next stays enabled."}])
     assert ds_svc.get_design_set(db, pid, sid)["alignment"]["approved_to_build"] is True
-    prd_svc.decompose(db, prd, create=True)
+    prd_svc.decompose(db, prd, create=True, touchpoints=_TP)
     tok = _items(db, prd)["Tokens"]
     assert tok.status == "backlog", tok.blocker
     assert tok.blocker == ""
@@ -85,8 +89,50 @@ def test_an_aligned_set_on_a_baselined_prd_hands_off_with_no_accept(db, pid, wor
     db.commit()
     ds_svc.compile_prompts(db, pid, sid)
     assert ds_svc.get_design_set(db, pid, sid)["alignment"]["approved_to_build"] is True
-    prd_svc.decompose(db, prd, create=True)
+    prd_svc.decompose(db, prd, create=True, touchpoints=_TP)
     tok = _items(db, prd)["Tokens"]
     assert tok.status == "backlog", tok.blocker
     assert db.get(DesignSet, sid).prd_hash in tok.description
     assert "aligned to" in tok.description
+
+
+def test_inline_prose_names_two_design_pages():
+    text = (
+        "Design pages (artifact https://claude.ai/artifact/3ViKQpSZw2gJD4bnHxCATb):\n"
+        "**Fix Dialog**, **Tracker - File a Fix**\n"
+    )
+    assert ds_svc.parse_inline_design(text) == {
+        "url": "https://claude.ai/artifact/3ViKQpSZw2gJD4bnHxCATb",
+        "pages": ["Fix Dialog", "Tracker - File a Fix"],
+    }
+    fenced = "```\nDesign: https://claude.ai/artifact/abc\nPages: Secret\n```\n"
+    assert ds_svc.parse_inline_design(fenced) is None
+
+
+def test_external_artifact_pages_reach_the_item_and_a_ui_item(db, pid):
+    """Pages registered on the set, not written in the section, still become the design block."""
+    body = (
+        "# Spec\n\n## The line\nList unscoped fixes.\n\n"
+        "## Acceptance criteria\n### The line\n- listed\n"
+    )
+    prd = prd_svc.create_prd(db, title="Ext", project_id=pid, body=body)
+    approve(db, prd)
+    recorded = ds_svc.register_external_artifact(
+        db, pid, prd.id, "https://claude.ai/artifact/abc",
+        {"The line": ["Fix Dialog", "Tracker - File a Fix"]})
+    assert recorded["external_artifact"]["url"] == "https://claude.ai/artifact/abc"
+    assert recorded["sections"] == []  # a reference, not a gate
+    out = prd_svc.decompose(
+        db, prd, create=True,
+        touchpoints={"The line": ["backend/app/lines.py", "web/src/features/line/Line.tsx"]})
+    assert out["ui_without_design"] == []
+    items = {i.title: i for i in db.scalars(select(Item).where(Item.prd_id == prd.id))}
+    behaviour, ui = items["Implement: The line"], items["Implement: The line UI"]
+    for it in (behaviour, ui):
+        assert "https://claude.ai/artifact/abc" in it.description
+        assert "Fix Dialog" in it.description and "Tracker - File a Fix" in it.description
+    assert behaviour.touchpoints == ["backend/app/lines.py"]
+    assert behaviour.status == "backlog"
+    assert ui.touchpoints == ["web/src/features/line/Line.tsx"]
+    link = db.scalars(select(Link).where(Link.a == ui.id, Link.b == behaviour.id)).first()
+    assert link is not None and link.type == "dependency"

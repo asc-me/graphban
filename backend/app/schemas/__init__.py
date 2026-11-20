@@ -1875,6 +1875,9 @@ class RuleToggleOut(BaseModel):
     #: GRPH-1631: per field (`on`, `params`), what a Reset (null) lands on: `org` when the org
     #: has a row setting that field, else `platform default`.
     inherits: dict[str, str] | None = None
+    #: GRPH-1727: per field (`on`, `params`), the value a Reset (null) lands on — the org row's
+    #: value when it sets that field, else the library default. A client draws it after Reset.
+    inherited: dict | None = None
     locked: bool
     locked_by: str | None = None
     #: `merge.done_predicates` only (GRPH-1426): each predicate `done` needs, with its source.

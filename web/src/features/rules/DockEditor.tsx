@@ -294,21 +294,38 @@ export function DockEditor({
         e.on = draft.on;
         lines.push({ key: "on/off", before: on ? "ON" : "OFF", after: draft.on ? "ON" : "OFF" });
       }
+      const writeParams = (cleaned: Params) => {
+        const changed = Object.keys(cleaned).filter((k) => !sameValue(cleaned[k], current[k]));
+        if (changed.length === 0) return;
+        e.params = cleaned; // the whole object: the write replaces params, it does not merge
+        for (const k of changed) {
+          lines.push({ key: k, before: showValue(current[k]), after: showValue(cleaned[k]) });
+          const after = cleaned[k];
+          const opt = typeof after === "string" ? enumFor(rule.id, k)?.find((o) => o.value === after) : undefined;
+          if (opt?.risky) risks.push(`${opt.label}: ${opt.explain}`);
+        }
+      };
+      // GRPH-1727: the value a reset lands on, when the read carries it (older servers do not).
+      const inherited = t?.inherited?.params as Params | undefined;
+      const from = inheritsFor(t?.inherits?.params, orgName);
       if (draft.resetParams && t?.params.source === "project") {
-        e.params = null;
-        lines.push({ key: "params", before: "project values", after: `inherited (${inheritsFor(t.inherits?.params, orgName)})` });
-      } else if (draft.params) {
-        const cleaned = cleanParams(draft.params);
-        const changed = Object.keys(cleaned).filter((k) => JSON.stringify(cleaned[k]) !== JSON.stringify(current[k]));
-        if (changed.length > 0) {
-          e.params = cleaned; // the whole object: the write replaces params, it does not merge
-          for (const k of changed) {
-            lines.push({ key: k, before: showValue(current[k]), after: showValue(cleaned[k]) });
-            const after = cleaned[k];
-            const opt = typeof after === "string" ? enumFor(rule.id, k)?.find((o) => o.value === after) : undefined;
-            if (opt?.risky) risks.push(`${opt.label}: ${opt.explain}`);
+        const edited = draft.params ? cleanParams(draft.params) : null;
+        if (edited && inherited && !sameValue(edited, cleanParams(inherited))) {
+          // Reset, then edited: the edit starts from the inherited value and is saved as the
+          // project's own — e.g. the defaults plus one more path.
+          writeParams(edited);
+        } else {
+          e.params = null;
+          const keys = inherited ? [...new Set([...Object.keys(current), ...Object.keys(inherited)])] : [];
+          const differ = keys.filter((k) => !sameValue(current[k], inherited?.[k]));
+          if (inherited && differ.length > 0) {
+            for (const k of differ) lines.push({ key: k, before: showValue(current[k]), after: `${showValue(inherited[k])} (inherited: ${from})` });
+          } else {
+            lines.push({ key: "params", before: "project values", after: `inherited (${from})` });
           }
         }
+      } else if (draft.params) {
+        writeParams(cleanParams(draft.params));
       }
       if (e.on !== undefined || e.params !== undefined) entry = e;
     } else if (field && gitops && draft.gitops !== undefined) {
@@ -332,6 +349,13 @@ export function DockEditor({
   const reasonOk = reason.trim().length >= MIN_REASON;
   const needsReason = !!entry; // a gitops-only save carries no audit reason
   const canSave = dirty && !firstParamError && editable && (!needsReason || reasonOk) && (risks.length === 0 || confirmed);
+  const reasonBlocks = needsReason && !reasonOk && dirty && !firstParamError && editable && (risks.length === 0 || confirmed);
+  const reasonLen = reason.trim().length;
+  const reasonHint = reasonBlocks
+    ? reasonLen === 0
+      ? `Add a reason (${MIN_REASON}+ characters) to save`
+      : `Add a reason (${MIN_REASON}+ characters) to save — ${MIN_REASON - reasonLen} more needed`
+    : null;
   const saving = saveRules.isPending || saveGitops.isPending;
 
   function reset() {
@@ -397,7 +421,14 @@ export function DockEditor({
   }
 
   const savedParams: Params = (rule.params?.value as Params | null) ?? {};
-  const params: Params = draft.params ?? savedParams;
+  // GRPH-1727: after "Reset to inherited" the editors draw the inherited value, and an edit
+  // starts from it — the reset is kept, not dropped. An older read without `inherited` falls
+  // back to the project value, and an edit then replaces the reset as before.
+  const inheritedParams = t?.params.source === "project" ? (t?.inherited?.params as Params | undefined) : undefined;
+  const resetShown = !!draft.resetParams && !!inheritedParams;
+  const baseParams: Params = resetShown && inheritedParams ? inheritedParams : savedParams;
+  const params: Params = draft.params ?? baseParams;
+  const paramKeys = resetShown && inheritedParams ? [...new Set([...Object.keys(savedParams), ...Object.keys(inheritedParams)])] : Object.keys(savedParams);
   const level = ruleLevel(rule);
   const meta = LEVELS[level];
   const builtin = groupOf(rule) === "builtin";
@@ -622,7 +653,7 @@ export function DockEditor({
 
         {builtin && <ReadOnlyReason>Built in: this holds by how Graphban works, so every control here is read-only.</ReadOnlyReason>}
 
-        {editableLib && Object.keys(savedParams).length > 0 && (
+        {editableLib && paramKeys.length > 0 && (
           <div className="flex flex-col gap-1.5">
             <table className="w-full table-fixed border-collapse overflow-hidden rounded-[8px] border border-[#2a333a] text-left" data-testid="rules-dock-params">
               <colgroup>
@@ -638,7 +669,8 @@ export function DockEditor({
                 </tr>
               </thead>
               <tbody>
-                {Object.entries(savedParams).map(([k, v]) => {
+                {paramKeys.map((k) => {
+                  const v = savedParams[k];
                   const shown = params[k] ?? v;
                   const changed = JSON.stringify(shown) !== JSON.stringify(v);
                   const scalar = isScalarParam(rule.id, k, v);
@@ -651,7 +683,13 @@ export function DockEditor({
                       hideLabel
                       compact
                       effectivePredicates={t?.effective_predicates}
-                      onChange={(nv) => setDraft((d) => ({ ...d, resetParams: false, params: { ...(d.params ?? savedParams), [k]: nv } }))}
+                      onChange={(nv) =>
+                        setDraft((d) => {
+                          const keep = !!d.resetParams && !!inheritedParams;
+                          const base = keep && inheritedParams ? inheritedParams : savedParams;
+                          return { ...d, resetParams: keep, params: { ...(d.params ?? base), [k]: nv } };
+                        })
+                      }
                       onError={(m) =>
                         setParamErrors((e) => {
                           const { [`${rule.id}:${k}`]: _drop, ...rest } = e;
@@ -681,13 +719,21 @@ export function DockEditor({
                         <td className="px-2.5 py-2">
                           <span className="flex flex-col items-start gap-1">
                             <SourceChip source={t?.params.source} locked={rule.locked ?? false} testId={`rules-dock-source-${k}`} />
+                            {resetShown && (
+                              <span className="text-small text-muted" data-testid={`rules-dock-inherited-${k}`}>
+                                inherited from {inheritsFor(t?.inherits?.params, orgName)}
+                              </span>
+                            )}
                             {changed && <span className={cn(MONO, "break-all text-small text-muted")}>was {showValue(v)}</span>}
                             {t?.params.source === "project" && !draft.resetParams && (
                               <button
                                 type="button"
                                 disabled={!editable}
                                 data-testid={`rules-dock-reset-${k}`}
-                                onClick={() => setDraft((d) => ({ ...d, resetParams: true, params: undefined }))}
+                                onClick={() => {
+                                  setDraft((d) => ({ ...d, resetParams: true, params: undefined }));
+                                  setEpoch((n) => n + 1); // remount the editors on the inherited value
+                                }}
                                 className="text-left text-small text-accent underline disabled:opacity-50"
                               >
                                 Reset to inherited
@@ -839,20 +885,27 @@ export function DockEditor({
               )}
               <div className="flex flex-wrap items-center gap-2" data-testid="rules-dock-save-row">
                 {needsReason && (
+                  <label className="flex min-w-[160px] flex-1 flex-col gap-0.5">
+                    <span className="text-micro font-semibold text-fg-2" data-testid="rules-dock-reason-label">
+                      Why (required)
+                    </span>
                   <Input
                     aria-label="Reason"
+                    aria-required="true"
+                    aria-describedby={reasonHint ? "rules-dock-reason-hint" : undefined}
                     value={reason}
-                    className="h-7 min-w-[160px] flex-1 text-small"
+                    className="h-7 w-full text-small"
                     placeholder="Why? One sentence, saved as the audit record (required)"
                     onChange={(e) => setReason(e.target.value)}
                   />
+                  </label>
                 )}
                 <button
                   type="button"
                   disabled={!canSave || saving}
                   onClick={() => void save()}
                   data-testid="rules-dock-save-button"
-                  title="⌘↵ / Ctrl+↵"
+                  title={reasonHint ?? "⌘↵ / Ctrl+↵"}
                   className="h-7 flex-none rounded-[8px] bg-accent px-3 text-body font-semibold text-[#0a0c0e] disabled:opacity-50"
                 >
                   {saving ? "Saving…" : nChanges ? `Save ${nChanges} change${nChanges === 1 ? "" : "s"}` : "Save"}
@@ -867,9 +920,9 @@ export function DockEditor({
                   Discard
                 </button>
               </div>
-              {needsReason && reason.length > 0 && !reasonOk && (
-                <span className="text-micro text-muted" data-testid="rules-dock-reason-short">
-                  At least {MIN_REASON} characters.
+              {reasonHint && (
+                <span id="rules-dock-reason-hint" className="text-micro text-[#ffb454]" data-testid="rules-dock-reason-hint">
+                  {reasonHint}
                 </span>
               )}
             </>
@@ -902,6 +955,15 @@ export function DockEditor({
       </aside>
     </section>
   );
+}
+
+/** Equal param values, key order aside (a map read back from JSON may reorder). */
+function sameValue(a: unknown, b: unknown): boolean {
+  const norm = (x: unknown): unknown =>
+    x && typeof x === "object" && !Array.isArray(x)
+      ? Object.fromEntries(Object.entries(x as Record<string, unknown>).sort(([p], [q]) => p.localeCompare(q)).map(([k, v]) => [k, norm(v)]))
+      : x;
+  return JSON.stringify(norm(a)) === JSON.stringify(norm(b));
 }
 
 function modeLabel(ruleId: string, v: Params[string]): string {
