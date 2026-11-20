@@ -9,14 +9,15 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
-from app.models import Membership, Project, User
-from app.schemas import (LoginIn, PasswordChangeIn, PasswordResetConfirmIn,
+from app.models import ApiKey, Membership, Organization, OrgMembership, Project, User
+from app.schemas import (MeOut, ProfileIn, LoginIn, PasswordChangeIn, PasswordResetConfirmIn,
                          PasswordResetRequestIn, PreferencesIn, PreferencesOut,
                          RefreshIn, RegisterIn, TokenOut, UserOut)
 from app.security.deps import get_current_user
 from app.security.jwt import create_access_token, create_refresh_token, decode_token
 from app.security.net import client_ip
 from app.security.passwords import hash_password, verify_password
+from app.services import handles as handles_svc
 from app.services import orgs as orgs_svc
 from app.services import password_reset as reset_svc
 from app.services import preferences as preferences_svc
@@ -224,9 +225,131 @@ def confirm_password_reset(body: PasswordResetConfirmIn, db: Session = Depends(g
     )
 
 
-@router.get("/me", response_model=UserOut)
-def me(user: User = Depends(get_current_user)):
-    return user
+def _api_key_summary(db: Session, user: User) -> dict:
+    keys = list(db.scalars(select(ApiKey).where(ApiKey.user_id == user.id)))
+    pids = {k.project_id for k in keys if k.project_id}
+    names = sorted(db.scalars(select(Project.name).where(Project.id.in_(pids)))) if pids else []
+    return {"count": len(keys), "projects": names}
+
+
+def _me_out(db: Session, user: User) -> MeOut:
+    # Not model_validate(user): the ORM's `api_keys` is the relationship, not the summary.
+    return MeOut(id=user.id, name=user.name, handle=user.handle, email=user.email,
+                 avatar=user.avatar, avatar2=user.avatar2,
+                 avatar_pattern=user.avatar_pattern, initials=user.initials,
+                 api_keys=_api_key_summary(db, user))
+
+
+@router.get("/me", response_model=MeOut)
+def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return _me_out(db, user)
+
+
+def _refuse(field: str, code: str, **extra) -> HTTPException:
+    return HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                         {"field": field, "code": code, **extra})
+
+
+def _my_orgs(db: Session, user: User) -> list[tuple[str, str]]:
+    """(org_id, org_name) for each org the caller belongs to; hosted mode only."""
+    if not settings.hosted_mode:
+        return []
+    rows = db.execute(
+        select(Organization.id, Organization.name)
+        .join(OrgMembership, OrgMembership.org_id == Organization.id)
+        .where(OrgMembership.user_id == user.id).order_by(Organization.id)).all()
+    return [(r[0], r[1]) for r in rows]
+
+
+def _handle_problem(db: Session, user: User, handle: str) -> tuple[str, str | None] | None:
+    """(code, org name) when `handle` cannot be used by `user`, else None.
+
+    Reads only the caller's own orgs, so the answer never reveals another tenant."""
+    try:
+        handles_svc.validate(handle)
+    except ValueError as exc:
+        return ("handle_reserved" if str(exc) == "reserved" else "handle_invalid", None)
+    orgs = _my_orgs(db, user)
+    if orgs:
+        hit = handles_svc.check_free(db, handle, [o[0] for o in orgs], exclude_user=user.id)
+        if hit is not None:
+            return ("handle_taken", dict(orgs)[hit])
+    elif not settings.hosted_mode and handles_svc.box_handle_taken(db, handle, exclude_user=user.id):
+        return ("handle_taken", None)
+    return None
+
+
+@router.patch("/me", response_model=MeOut)
+def update_me(body: ProfileIn, user: User = Depends(get_current_user),
+              db: Session = Depends(get_db)):
+    """Edit the caller's profile, all or nothing (GRPH-1788). Refusals are field-level:
+    `{detail: {field, code, org?}}` with 422."""
+    changed = body.model_dump(exclude_unset=True)
+    if "name" in changed:
+        name = (changed["name"] or "").strip()
+        if not name:
+            raise _refuse("name", "name_required")
+        changed["name"] = name
+    if "initials" in changed:
+        ini = (changed["initials"] or "").strip()
+        if not 1 <= len(ini) <= 3:
+            raise _refuse("initials", "initials_invalid")
+        changed["initials"] = ini
+    old_handle = user.handle
+    new_handle = None
+    if "handle" in changed:
+        new_handle = (changed["handle"] or "").strip().lstrip("@")
+        # An unchanged handle is never re-judged: a legacy one that breaks the format
+        # must not block saving the other fields.
+        if new_handle == old_handle:
+            new_handle = None
+        else:
+            problem = _handle_problem(db, user, new_handle)
+            if problem is not None:
+                code, org = problem
+                extra = {"org": org} if code == "handle_taken" and org else {}
+                raise _refuse("handle", code, **extra)
+    for f in ("avatar", "avatar_pattern"):
+        if f in changed and changed[f] is None:
+            raise _refuse(f, f"{f}_invalid")
+    try:
+        handles_svc.apply_dot(user, {k: v for k, v in changed.items()
+                                     if k in ("avatar", "avatar2", "avatar_pattern")})
+    except ValueError as exc:
+        db.rollback()
+        msg = str(exc)
+        field = ("avatar2" if msg.startswith("avatar2") else
+                 "avatar_pattern" if msg.startswith("pattern") else "avatar")
+        raise _refuse(field, f"{field}_invalid") from None
+    if "name" in changed:
+        user.name = changed["name"]
+    if "initials" in changed:
+        user.initials = changed["initials"]
+    if new_handle is not None:
+        org_ids = [o[0] for o in _my_orgs(db, user)]
+        handles_svc.write_holds(db, user, old_handle, org_ids)
+        if org_ids:
+            for m in db.scalars(select(OrgMembership).where(
+                    OrgMembership.user_id == user.id, OrgMembership.handle == old_handle)):
+                m.handle = new_handle
+        user.handle = new_handle
+    db.commit()
+    db.refresh(user)
+    return _me_out(db, user)
+
+
+@router.get("/me/handle-check")
+def handle_check(handle: str, user: User = Depends(get_current_user),
+                 db: Session = Depends(get_db)):
+    """Is `handle` usable by the caller? Covers only the caller's own orgs (GRPH-1788)."""
+    if not ratelimit.allow_handle_check(user.id):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "too many handle checks; try again shortly")
+    handle = handle.strip().lstrip("@")
+    problem = None if handle == user.handle else _handle_problem(db, user, handle)
+    if problem is None:
+        return {"handle": handle, "available": True, "code": None, "org": None}
+    code, org = problem
+    return {"handle": handle, "available": False, "code": code, "org": org}
 
 
 class OnboardingMarkIn(BaseModel):

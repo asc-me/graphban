@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 385 of the 385. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 386 of the 386. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -52,7 +52,9 @@ Five public surfaces are mounted on the org host: `/{path_id}/feedback`,
 | DELETE | `/api/machines/{id}` | session | Remove one of the caller's machines (404 for anyone else's) |
 | POST | `/api/auth/logout` | JWT | Bump `token_version`, so every access AND refresh token issued so far — on any device — stops validating immediately. What `gb logout` calls, which is why criterion 3 of PRD-40 checks the token against the server rather than checking that a file was deleted |
 | POST | `/api/auth/me/password` | JWT | Change the caller's password. Bumps `token_version`, so every previously issued token stops working, including the caller's, and returns a fresh pair so the caller stays signed in |
-| GET | `/api/auth/me` | JWT | Current user |
+| GET | `/api/auth/me` | JWT | Current user: `id`, `name`, `handle`, `email`, `avatar`, `avatar2`, `avatar_pattern`, `initials`, and `api_keys` (`{count, projects}`: how many keys the caller holds and the names of the projects they are bound to) |
+| PATCH | `/api/auth/me` | JWT | `{name?, handle?, initials?, avatar?, avatar2?, avatar_pattern?}`, all or nothing (GRPH-1788). A refusal is 422 `{detail: {field, code, org?}}`: `handle_taken` (carries the org name, never a user id; an in-use handle and a held one answer identically), `handle_reserved`, `handle_invalid`, `name_required`, `initials_invalid`, `avatar_invalid`, `avatar2_invalid`, `avatar_pattern_invalid`. Hosted mode checks a new handle against every org the caller belongs to and writes 30-day holds on the old one; self-host checks the box. An unchanged handle is never re-validated. `avatar2` equal to `avatar` is stored null |
+| GET | `/api/auth/me/handle-check` | JWT | `?handle=` returns `{handle, available, code, org}` for the caller's own orgs only. Rate-limited per user (429 past 30 a minute) |
 | GET | `/api/auth/me/memberships` | JWT | Current user's project access |
 | GET | `/api/me/alerts` | JWT | The caller's open alerts (GRPH-1527, P75 D4): `{unread, alerts: [{id, kind, project, project_tag, title, impact, drain, question, body, wait, ticket, prd, asked_by, created_at, read}]}`, newest first. `title` is the wait item's own title and `project_tag` its project's tag; `question` is the agent's full question. `impact` is derived, not stored: `drain_waiting` when `drain` is `live` for the item's PRD, else `blocks` when a ticket depends on the wait (`ticket` is non-null), else `question`. `drain` is `live`, `not_live` or `unknown`; `unknown` never yields `drain_waiting`. The only `kind` is `response_needed`: a decision wait was handed to a person (`needs_person=true`, or unanswered past `QUESTION_GRACE_SECONDS`). Answering the wait clears its alerts, so they drop out of this list and the count |
 | POST | `/api/me/alerts/{alert_id}/read` | JWT | Mark one of the caller's alerts read and return the same body as `GET /api/me/alerts`. 404 for an id that is not the caller's |

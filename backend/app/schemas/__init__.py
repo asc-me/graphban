@@ -90,7 +90,26 @@ class UserOut(ORMModel):
     handle: str
     email: EmailStr
     avatar: str
+    avatar2: str | None = None
+    avatar_pattern: str = "none"
     initials: str
+
+
+class MeOut(UserOut):
+    """`GET /auth/me`: the profile plus a summary of the caller's API keys (GRPH-1788)."""
+    api_keys: dict = {"count": 0, "projects": []}
+
+
+class ProfileIn(BaseModel):
+    """`PATCH /auth/me` (GRPH-1788). Every field optional; unknown fields are refused.
+    Value rules live in the router so refusals are field-level, not a bare 422."""
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    handle: str | None = None
+    initials: str | None = None
+    avatar: str | None = None
+    avatar2: str | None = None
+    avatar_pattern: str | None = None
 
 
 # ---- Per-user UI preferences (PRD-60 D1 / GRPH-1133) ----
