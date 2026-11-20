@@ -643,8 +643,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "propose_rule",
         "description": (
-            "Cited rule suggestion; agents only tighten. kind=guidance files advisory text for a "
-            "requirement no primitive expresses: draft {stage, label, text}, plus citations."
+            "Cited rule suggestion; agents tighten only. guidance: draft{stage,label,text}"
         ),
         "inputSchema": {
             "type": "object",
