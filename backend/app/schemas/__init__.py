@@ -283,6 +283,7 @@ class OrgOut(BaseModel):
     name: str
     plan: str
     role: str  # the requesting user's role in this org
+    handle: str | None = None  # the caller's org-only handle, only where it differs from the account handle
 
 
 class OrgProjectAccessOut(BaseModel):
@@ -505,6 +506,11 @@ class InvitePreviewOut(BaseModel):
 
 class InviteAcceptIn(BaseModel):
     token: str
+    handle: str | None = None  # org-only handle, on a retry after `handle_taken`
+
+
+class OrgHandleIn(BaseModel):
+    handle: str
 
 
 # ---- Plans & quotas (hosted-only, AL-75) ----

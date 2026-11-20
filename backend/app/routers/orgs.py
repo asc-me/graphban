@@ -49,6 +49,7 @@ from app.schemas import (
     TeamGrantIn,
     TeamGrantOut,
     TeamOut,
+    OrgHandleIn,
     OrgOut,
     OrgRequestCreate,
     OrgRequestOut,
@@ -92,7 +93,8 @@ def list_orgs(db: Session = Depends(get_db), user: User = Depends(get_current_us
     for seat in seats:
         org = db.get(Organization, seat.org_id)
         if org is not None:
-            out.append(OrgOut(id=org.id, name=org.name, plan=org.plan, role=seat.role))
+            out.append(OrgOut(id=org.id, name=org.name, plan=org.plan, role=seat.role,
+                              handle=seat.handle if seat.handle and seat.handle != user.handle else None))
     return out
 
 
@@ -532,11 +534,33 @@ def accept_invite(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    org = orgs_svc.accept_invite(db, body.token, user)
+    org = orgs_svc.accept_invite(db, body.token, user, body.handle)
     role = authz.org_role(db, user.id, org.id) or "member"
     events_svc.record_user(db, user, action="accept_org_invite", target_type="org",
                            target_id=org.id, meta={"role": role})
-    return OrgOut(id=org.id, name=org.name, plan=org.plan, role=role)
+    seat = db.scalar(select(OrgMembership).where(
+        OrgMembership.org_id == org.id, OrgMembership.user_id == user.id))
+    handle = seat.handle if seat and seat.handle != user.handle else None
+    return OrgOut(id=org.id, name=org.name, plan=org.plan, role=role, handle=handle)
+
+
+@router.patch("/orgs/{org_id}/me/handle", response_model=OrgOut)
+def set_my_org_handle(
+    org_id: str,
+    body: OrgHandleIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Change your own org-only handle. Same rules as accepting an invite; the old handle is
+    held in this org for 30 days. A non-member gets the same 404 as an unknown org."""
+    org = db.get(Organization, org_id)
+    if org is None or authz.org_role(db, user.id, org_id) is None:
+        raise HTTPException(404, "organization not found")
+    seat = orgs_svc.set_org_handle(db, org, user, body.handle)
+    events_svc.record_user(db, user, action="set_org_handle", target_type="org", target_id=org_id,
+                           meta={})
+    return OrgOut(id=org.id, name=org.name, plan=org.plan, role=seat.role,
+                  handle=seat.handle if seat.handle != user.handle else None)
 
 
 # ---- PRD-43 D4: org-wide feedback enable-all -------------------------------
