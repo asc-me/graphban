@@ -6,10 +6,14 @@
  * Nothing is created until Review → Create project. When Maintenance is on, the line is
  * created after the project exists (GRPH-1749). The model choice is applied right after
  * that, through the same writer the Quick Start model step uses.
+ *
+ * The identity accent is a solid colour or an ombre, plus a tile pattern (GRPH-1750).
+ * The second colour, the pattern and the live tile all paint through `projectFill`.
  */
 import { useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
+import { ProjectTile } from "@/components/ProjectTile";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -21,7 +25,9 @@ import { TagField, useTagField } from "@/features/onboarding/TagField";
 import { type GraphicSpec, HeroDrawing, LogoMark, prefersReducedMotion, WizardKeyframes } from "@/features/onboarding/WizardGraphic";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { PROJECT_PATTERNS, projectFill } from "@/lib/projectFill";
 import { keys, useConfirmSetup } from "@/lib/queries";
+import type { ProjectPattern } from "@/lib/types";
 
 export { PROJECT_ACCENTS, PROJECT_ACCENT_SWATCHES };
 
@@ -129,6 +135,76 @@ export function radioArrows<T>(
 
 const LABEL = "mb-1.5 block font-mono text-[10px] uppercase tracking-wide text-faint";
 
+/** Selection ring. Box-shadow, not outline, so the global :focus-visible ring stays visible. */
+const SWATCH_RING = "0 0 0 2px var(--color-surface-3), 0 0 0 4px var(--color-fg)";
+const COLOURS = PROJECT_ACCENTS as readonly string[];
+const MODES = [false, true] as const;
+
+/** Four steps along the palette. An ombre moves its second colour here when the two would match. */
+function shiftAccent(hex: string): string {
+  const i = COLOURS.indexOf(hex);
+  return COLOURS[(Math.max(0, i) + 4) % COLOURS.length]!;
+}
+
+function accentName(hex: string): string {
+  return PROJECT_ACCENT_SWATCHES.find((swatch) => swatch.hex === hex)?.name ?? hex;
+}
+
+/** "Lime → Indigo ombre · paisley", or "Lime · no pattern" when the fill is solid and plain. */
+function accentSummary(ombre: boolean, accent: string, accent2: string, pattern: ProjectPattern): string {
+  const named = PROJECT_PATTERNS.find((p) => p.id === pattern)?.name ?? "None";
+  const tail = pattern === "none" ? "no pattern" : named.toLowerCase();
+  if (ombre && accent2 !== accent) return `${accentName(accent)} → ${accentName(accent2)} ombre · ${tail}`;
+  return `${accentName(accent)} · ${tail}`;
+}
+
+function FillSwatch({
+  name,
+  fill,
+  on,
+  disabled,
+  dimmed,
+  onClick,
+  onKeyDown,
+  pattern,
+}: {
+  name: string;
+  fill: string;
+  on: boolean;
+  disabled?: boolean;
+  dimmed?: boolean;
+  onClick: () => void;
+  onKeyDown: (e: React.KeyboardEvent<HTMLButtonElement>) => void;
+  pattern?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={on}
+      aria-label={name}
+      title={name}
+      tabIndex={on ? 0 : -1}
+      disabled={disabled}
+      onClick={onClick}
+      onKeyDown={onKeyDown}
+      className={cn(
+        "rounded-[8px] p-0 transition-transform hover:scale-110 disabled:hover:scale-100",
+        pattern ? "h-7 w-7" : "h-[26px] w-[26px]",
+      )}
+      style={
+        {
+          "--tile-fill": fill,
+          background: "var(--tile-fill)",
+          boxShadow: on ? SWATCH_RING : undefined,
+          outlineOffset: "5px",
+          opacity: dimmed ? 0.25 : undefined,
+        } as React.CSSProperties
+      }
+    />
+  );
+}
+
 /** The spec and caption the left panel draws for where the wizard is (GRPH-1587). */
 export function graphicFor(o: {
   step: Step;
@@ -170,7 +246,7 @@ export function graphicFor(o: {
   return { spec: { kind: "single", from: "YOU", to: T }, caption: o.busy ? `CREATING · ${T}` : `REVIEW · ${T}` };
 }
 
-function Graphic({ spec, caption, accent, still }: { spec: GraphicSpec; caption: string; accent: string; still: boolean }) {
+function Graphic({ spec, caption, fill, still }: { spec: GraphicSpec; caption: string; fill: string; still: boolean }) {
   return (
     <div aria-hidden="true" className="relative hidden w-[380px] shrink-0 overflow-hidden border-r border-line-2 bg-bg md:block">
       <div className="absolute inset-0">
@@ -182,7 +258,11 @@ function Graphic({ spec, caption, accent, still }: { spec: GraphicSpec; caption:
         <span className="font-mono text-[10px] tracking-wide text-faint">LOCAL</span>
       </div>
       <div className="absolute bottom-5 left-[22px] right-[22px] flex items-center gap-2">
-        <span data-testid="pw-accent-square" className="h-2 w-2 rounded-[2px]" style={{ background: accent }} />
+        <span
+          data-testid="pw-accent-square"
+          className="h-2 w-2 rounded-[2px]"
+          style={{ background: fill, "--tile-fill": fill } as React.CSSProperties}
+        />
         <span data-testid="pw-caption" className="font-mono text-[10.5px] tracking-wide text-faint-2">
           {caption}
         </span>
@@ -223,7 +303,11 @@ export function NewProjectWizard({
   const confirm = useConfirmSetup();
   const [step, setStep] = React.useState<Step>("identity");
   const [name, setName] = React.useState("");
-  const [accent, setAccent] = React.useState(PROJECT_ACCENTS[0]);
+  const [accent, setAccent] = React.useState<string>(PROJECT_ACCENTS[0]);
+  // The design seeds the second colour four steps along, so the first ombre is already a pair.
+  const [accent2, setAccent2] = React.useState<string>(shiftAccent(PROJECT_ACCENTS[0]));
+  const [ombre, setOmbre] = React.useState(false);
+  const [pattern, setPattern] = React.useState<ProjectPattern>("none");
   const [repo, setRepo] = React.useState("");
   const [line, setLine] = React.useState(false);
   const [lineMade, setLineMade] = React.useState(false);
@@ -245,6 +329,9 @@ export function NewProjectWizard({
     setStep("identity");
     setName("");
     setAccent(PROJECT_ACCENTS[0]);
+    setAccent2(shiftAccent(PROJECT_ACCENTS[0]));
+    setOmbre(false);
+    setPattern("none");
     setRepo("");
     setLine(false);
     setLineMade(false);
@@ -291,7 +378,13 @@ export function NewProjectWizard({
     let failedAt: "project" | "line" | "followup" = "project";
     try {
       if (!id) {
-        const p = await api.createProject({ name: name.trim(), tag: tagField.tag || undefined, accent });
+        const p = await api.createProject({
+          name: name.trim(),
+          tag: tagField.tag || undefined,
+          accent,
+          accent2: ombre ? accent2 : null,
+          pattern,
+        });
         id = p.id;
         setCreatedId(id);
       }
@@ -369,12 +462,32 @@ export function NewProjectWizard({
   const summary: [string, string, Step, boolean][] = [
     ["NAME", name, "identity", false],
     ["TAG", `${T} · ${T}-12, ${T}-R33`, "identity", true],
-    ["ACCENT", accent, "identity", true],
+    ["ACCENT", accentSummary(ombre, accent, accent2, pattern), "identity", false],
     ["REPOSITORY", repo.trim() || "None yet", "repo", true],
     ["MAINTENANCE LINE", line ? `${T}-L1 · Maintenance` : "Not now", "line", line],
     ["MODEL", MODEL_LABEL[model], "model", false],
   ];
+  const sentAccent2 = ombre ? accent2 : null;
+  const fill = projectFill({ accent, accent2: sentAccent2, pattern });
   const graphic = graphicFor({ step, name, tag: T, repo, repoOk, line, model, busy, created: ready, failed: !!error && !createdId });
+
+  function chooseAccent(hex: string) {
+    if (createdId) return;
+    setAccent(hex);
+    // An ombre never ends on its own start. Moving FROM onto TO pushes TO four steps on.
+    if (ombre && hex === accent2) setAccent2(shiftAccent(hex));
+  }
+
+  function chooseMode(next: boolean) {
+    if (createdId) return;
+    if (next && accent2 === accent) setAccent2(shiftAccent(accent));
+    setOmbre(next);
+  }
+
+  function chooseSecond(hex: string) {
+    if (createdId || hex === accent) return;
+    setAccent2(hex);
+  }
 
   return (
     <Dialog open={open} onOpenChange={close}>
@@ -392,7 +505,7 @@ export function NewProjectWizard({
           Create a project in five steps.
         </DialogDescription>
         <WizardKeyframes />
-        <Graphic spec={graphic.spec} caption={graphic.caption} accent={accent} still={still} />
+        <Graphic spec={graphic.spec} caption={graphic.caption} fill={fill} still={still} />
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className="flex items-center gap-2 py-3.5 pl-6 pr-12">
             <span className="font-mono text-[10px] tracking-wide text-faint">NEW PROJECT</span>
@@ -460,45 +573,143 @@ export function NewProjectWizard({
                 ) : (
                   <TagField tag={tagField.tag} setTag={tagField.setTag} status={tagField.status} compact />
                 )}
-                <div>
-                  <span id="pw-accent" className={cn(LABEL, "mb-2")}>
-                    Accent
-                  </span>
-                  <div role="radiogroup" aria-labelledby="pw-accent" className="flex flex-wrap gap-2">
-                    {PROJECT_ACCENT_SWATCHES.map((swatch) => (
-                      <button
-                        key={swatch.hex}
-                        type="button"
-                        role="radio"
-                        aria-checked={accent === swatch.hex}
-                        tabIndex={accent === swatch.hex ? 0 : -1}
-                        disabled={!!createdId}
-                        onClick={() => setAccent(swatch.hex)}
-                        onKeyDown={(e) =>
-                          radioArrows(e, {
-                            values: PROJECT_ACCENTS,
-                            current: accent,
-                            set: setAccent,
-                            locked: !!createdId,
-                          })
-                        }
-                        aria-label={swatch.name}
-                        title={swatch.name}
-                        className="h-7 w-7 rounded-[8px] transition-transform hover:scale-110"
-                        style={{
-                          background: swatch.hex,
-                          // Selection is a box-shadow, not outline. An inline outline beats
-                          // the global :focus-visible rule, so keyboard focus disappears.
-                          // The 4px ring sits inside a 5px focus offset (design RING_ON).
-                          // The 2px inner stop is the dialog surface (bg-surface-3).
-                          boxShadow:
-                            accent === swatch.hex
-                              ? "0 0 0 2px var(--color-surface-3), 0 0 0 4px var(--color-fg)"
-                              : undefined,
-                          outlineOffset: "5px",
-                        }}
-                      />
-                    ))}
+                <div className="flex flex-col gap-[9px]">
+                  <div className="flex items-center gap-2.5">
+                    <span className={cn(LABEL, "mb-0")}>Accent</span>
+                    <span className="flex-1" />
+                    <div
+                      role="radiogroup"
+                      aria-label="Accent style"
+                      className="inline-flex rounded-[8px] border border-line-2 bg-surface p-0.5"
+                    >
+                      {MODES.map((value) => {
+                        const on = ombre === value;
+                        return (
+                          <button
+                            key={value ? "ombre" : "solid"}
+                            type="button"
+                            role="radio"
+                            aria-checked={on}
+                            tabIndex={on ? 0 : -1}
+                            disabled={!!createdId}
+                            onClick={() => chooseMode(value)}
+                            onKeyDown={(e) =>
+                              radioArrows(e, { values: MODES, current: ombre, set: chooseMode, locked: !!createdId })
+                            }
+                            className={cn(
+                              "h-6 rounded-[6px] px-2.5 font-mono text-[10.5px] tracking-wide",
+                              on ? "bg-accent/[.14] text-fg" : "text-muted",
+                            )}
+                            style={{ boxShadow: on ? SWATCH_RING : undefined, outlineOffset: "5px" }}
+                          >
+                            {value ? "OMBRE" : "SOLID"}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-[18px]">
+                    <div className="flex min-w-0 flex-1 flex-col gap-3">
+                      <div className="flex items-center gap-2.5">
+                        {ombre && (
+                          <span className="w-[30px] shrink-0 font-mono text-meta tracking-wide text-faint">FROM</span>
+                        )}
+                        <div
+                          role="radiogroup"
+                          aria-label={ombre ? "Ombre, first colour" : "Accent colour"}
+                          className="flex flex-wrap gap-2"
+                        >
+                          {PROJECT_ACCENT_SWATCHES.map((swatch) => (
+                            <FillSwatch
+                              key={swatch.hex}
+                              name={swatch.name}
+                              fill={projectFill({ accent: swatch.hex, accent2: sentAccent2, pattern })}
+                              on={accent === swatch.hex}
+                              disabled={!!createdId}
+                              onClick={() => chooseAccent(swatch.hex)}
+                              onKeyDown={(e) =>
+                                radioArrows(e, {
+                                  values: COLOURS,
+                                  current: accent,
+                                  set: chooseAccent,
+                                  locked: !!createdId,
+                                })
+                              }
+                            />
+                          ))}
+                        </div>
+                      </div>
+                      {ombre && (
+                        <div
+                          className="pw-anim flex items-center gap-2.5"
+                          style={still ? undefined : { animation: "pwReveal .2s ease-out" }}
+                        >
+                          <span className="w-[30px] shrink-0 font-mono text-meta tracking-wide text-faint">TO</span>
+                          <div role="radiogroup" aria-label="Ombre, second colour" className="flex flex-wrap gap-2">
+                            {PROJECT_ACCENT_SWATCHES.map((swatch) => {
+                              const same = swatch.hex === accent;
+                              return (
+                                <FillSwatch
+                                  key={swatch.hex}
+                                  name={same ? `${swatch.name}, same as the first colour` : swatch.name}
+                                  fill={projectFill({ accent, accent2: swatch.hex, pattern })}
+                                  on={accent2 === swatch.hex}
+                                  disabled={!!createdId || same}
+                                  dimmed={same}
+                                  onClick={() => chooseSecond(swatch.hex)}
+                                  onKeyDown={(e) =>
+                                    radioArrows(e, {
+                                      values: COLOURS,
+                                      current: accent2,
+                                      set: chooseSecond,
+                                      locked: !!createdId,
+                                      disabled: (hex) => hex === accent,
+                                    })
+                                  }
+                                />
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                      <div className="flex items-baseline gap-2">
+                        <span id="pw-pattern" className={cn(LABEL, "mb-0")}>
+                          Pattern
+                        </span>
+                        <span
+                          data-testid="pw-pattern-name"
+                          aria-hidden="true"
+                          className="font-mono text-[10px] uppercase tracking-wide text-fg"
+                        >
+                          {PROJECT_PATTERNS.find((p) => p.id === pattern)?.name}
+                        </span>
+                      </div>
+                      <div role="radiogroup" aria-labelledby="pw-pattern" className="flex flex-wrap gap-2.5">
+                        {PROJECT_PATTERNS.map((option) => (
+                          <FillSwatch
+                            key={option.id}
+                            pattern
+                            name={option.name}
+                            fill={projectFill({ accent, accent2: sentAccent2, pattern: option.id })}
+                            on={pattern === option.id}
+                            disabled={!!createdId}
+                            onClick={() => setPattern(option.id)}
+                            onKeyDown={(e) =>
+                              radioArrows(e, {
+                                values: PROJECT_PATTERNS.map((p) => p.id),
+                                current: pattern,
+                                set: setPattern,
+                                locked: !!createdId,
+                              })
+                            }
+                          />
+                        ))}
+                      </div>
+                    </div>
+                    <div aria-hidden="true" className="flex shrink-0 flex-col items-center gap-1.5">
+                      <ProjectTile project={{ tag: T, accent, accent2: sentAccent2, pattern }} size={52} />
+                      <span className="font-mono text-meta tracking-wide text-faint">TILE</span>
+                    </div>
                   </div>
                 </div>
               </>
@@ -675,7 +886,14 @@ export function NewProjectWizard({
                     >
                       <dt className="font-mono text-[10px] tracking-wide text-faint">{k}</dt>
                       <dd className="m-0 flex min-w-0 items-center gap-2">
-                        {k === "ACCENT" && <span className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: accent }} />}
+                        {k === "ACCENT" && (
+                          <span
+                            data-testid="pw-review-swatch"
+                            aria-hidden="true"
+                            className="h-3.5 w-3.5 shrink-0 rounded-[4px]"
+                            style={{ background: fill, "--tile-fill": fill } as React.CSSProperties}
+                          />
+                        )}
                         <span className={cn("truncate text-body", mono && "font-mono", v === "None yet" || v === "Not now" ? "text-faint" : "text-fg")}>{v}</span>
                       </dd>
                       {createdId && st === "identity" ? (
@@ -706,12 +924,7 @@ export function NewProjectWizard({
             {ready && (
               <>
                 <div className="flex items-center gap-3 rounded-[12px] border border-line bg-surface px-4 py-3.5">
-                  <span
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] font-mono text-small font-semibold text-bg"
-                    style={{ background: accent }}
-                  >
-                    {tagField.tag}
-                  </span>
+                  <ProjectTile project={{ tag: tagField.tag, accent, accent2: sentAccent2, pattern }} size={32} />
                   <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                     <p className="truncate text-lead font-semibold">{name}</p>
                     <p className="font-mono text-small text-muted">
