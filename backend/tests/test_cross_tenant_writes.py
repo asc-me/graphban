@@ -103,6 +103,10 @@ def _project_scoped_writes(client) -> dict[str, dict]:
                 body = {n: _dummy(p, comps) for n, p in props.items() if n in required}
             found[f"{verb.upper()} {path}"] = {
                 "verb": verb, "path": path, "in_param": in_param, "body": body,
+                # A typed path id (an integer proposal id) needs a value of its type, or the
+                # probe is a 422 on the path and the route is never asked the question.
+                "path_dummies": {p["name"]: _dummy(p.get("schema", {}), comps)
+                                 for p in op.get("parameters", []) if p.get("in") == "path"},
             }
     return found
 
@@ -142,7 +146,8 @@ def test_every_project_scoped_write_blocks_another_org(client, tenants):
         url = spec["path"].replace("{project_id}", pb)
         if "{" in url:  # another resource id we do not have — give it something shaped right
             import re
-            url = re.sub(r"\{[^}]+\}", "probe", url)
+            url = re.sub(r"\{([^}]+)\}",
+                         lambda m: str(spec["path_dummies"].get(m.group(1), "probe")), url)
         body = dict(spec["body"] or {})
         if spec["in_param"] and "{project_id}" not in spec["path"]:
             url += ("&" if "?" in url else "?") + f"project_id={pb}"
