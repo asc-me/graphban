@@ -318,6 +318,7 @@
 "tests/test_presence_no_write_path.py": 0.24,
 "tests/test_presence_on_call.py": 1.07,
 "tests/test_prioritization.py": 0.26,
+"tests/test_profile_api.py": 2.0,
 "tests/test_project_summaries.py": 0.62,
 "tests/test_project_sync_api.py": 5.0,
 "tests/test_project_sync_backfill.py": 0.1,
