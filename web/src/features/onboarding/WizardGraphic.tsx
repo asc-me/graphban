@@ -5,10 +5,12 @@
  *
  * One drawing, five shapes:
  *  - pulse    — identity: the project tile pulsing in the middle.
- *  - single   — repo / review: a hub on the left feeding one target tile. `lit` once there is
- *               something real to connect (a valid remote, a created project).
+ *  - single   — repo / review / maintenance: a hub on the left feeding one target tile.
+ *               `lit` once there is something real to connect (a valid remote, a created
+ *               project, a maintenance line).
  *  - fan      — model: the hub fans out to OFFLINE / OLLAMA / CLAUDE, the chosen one drawn.
- *  - broken   — a failed create: the line amber, dashed, stalled halfway.
+ *  - broken   — the line amber, dashed, stalled halfway. A failed create, or fixes with no
+ *               maintenance line (GRPH-1749).
  *
  * Everything moving carries `pw-anim`; under prefers-reduced-motion nothing gets an animation
  * at all (not just a CSS override), so the panel is a still frame.

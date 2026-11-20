@@ -197,7 +197,9 @@ def test_a_console_that_does_not_advertise_specs_gets_nothing(client, auth, db, 
     monkeypatch.setattr(code_sync, "_push_box_on_sync", lambda *a: {})
     monkeypatch.setattr(code_sync, "_publish_digests_on_sync", lambda *a: None)
     monkeypatch.setattr(code_sync, "_pull_triage_on_sync", lambda *a: None)
-    assert code_sync._sync_tail(db, URL, KEY) == {"rules": {}, "box": {}}
+    out = code_sync._sync_tail(db, URL, KEY)
+    assert out["rules"] == {} and out["box"] == {}
+    assert "specs" not in out and "digests" not in out
 
 
 def test_a_probe_failure_reads_as_not_served(client, auth, db, console, monkeypatch):

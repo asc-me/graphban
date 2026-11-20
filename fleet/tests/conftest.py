@@ -446,6 +446,19 @@ def scripts(tmp_path: Path) -> dict[str, Path]:
         "    time.sleep(0.02)\n",
     )
 
+    # `silent_then_exits` held open by the test instead of by a 1.5 s budget (GRPH-1715).
+    # It writes nothing and stays alive until the test releases it, so "a live child that
+    # has said nothing" is a state the test waits for, not a window a slow runner can miss.
+    # The 10 s cap only bounds a sabotaged run.
+    write(
+        "silent_until_released",
+        "import pathlib, time\n"
+        "here = pathlib.Path(__file__).resolve().parent\n"
+        "end = time.time() + 10\n"
+        "while time.time() < end and not (here / 'release').exists():\n"
+        "    time.sleep(0.02)\n",
+    )
+
     # Leaves an uncommitted diff and keeps running, so a partition can interrupt it with
     # work in the tree — the case where "the work survives, the claim does not" has
     # something to survive.

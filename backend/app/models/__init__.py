@@ -345,6 +345,13 @@ class Organization(Base):
     feedback_default_on: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false(), nullable=False
     )
+    # Publish destination the org admin saves (GRPH-1761). The console stores these two
+    # strings and never reaches into a box. Empty is unconfigured — there is no default
+    # remote or branch. A box pulls them; it does not invent `main`.
+    publish_repo_url: Mapped[str] = mapped_column(
+        String(1024), default="", server_default="", nullable=False)
+    publish_branch: Mapped[str] = mapped_column(
+        String(255), default="", server_default="", nullable=False)
 
 
 class SlugRedirect(Base):
@@ -2323,6 +2330,29 @@ class SyncStorageConfig(Base):
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
                                                  onupdate=utcnow)
+    # Publish destination on this box (GRPH-1761). One pair for the deployment, beside the
+    # folder path. `destination_source` is `` (unset) | local | org. `previous_path` is the
+    # path a link replaced; it is shown and never used as the next publish target. Empty
+    # pull state means this box has not pulled, which is not the same as a pull that got
+    # no answer (`unknown`).
+    repo_path: Mapped[str] = mapped_column(String(1024), default="", server_default="",
+                                           nullable=False)
+    repo_branch: Mapped[str] = mapped_column(String(255), default="", server_default="",
+                                             nullable=False)
+    previous_path: Mapped[str] = mapped_column(String(1024), default="", server_default="",
+                                               nullable=False)
+    received_url: Mapped[str] = mapped_column(String(1024), default="", server_default="",
+                                              nullable=False)
+    received_branch: Mapped[str] = mapped_column(String(255), default="", server_default="",
+                                                 nullable=False)
+    destination_source: Mapped[str] = mapped_column(String(16), default="", server_default="",
+                                                    nullable=False)
+    publish_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False)
+    destination_pull_state: Mapped[str] = mapped_column(
+        String(16), default="", server_default="", nullable=False)
+    destination_pull_reason: Mapped[str] = mapped_column(
+        String(400), default="", server_default="", nullable=False)
 
 
 class CodeSyncState(Base):
@@ -2399,6 +2429,10 @@ class SyncProject(Base):
     #: these columns are the audit, not a grant. Null on a row that was never opted in.
     enabled_by: Mapped[str | None] = mapped_column(String, nullable=True)
     enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: A purge the console has not confirmed (GRPH-1738). ``digests`` or ``local`` is the
+    #: level waiting on ``DELETE`` 200. Null means no purge is owed — a different fact
+    #: from a purge that succeeded, which clears this and the manifest together.
+    pending_purge: Mapped[str | None] = mapped_column(String, nullable=True)
     #: Exclusive cursor for `GET /api/sync/proposals`. Empty until the first page.
     #: A 304 does not clear it: the console sends no cursor on an idle poll.
     proposal_cursor: Mapped[str] = mapped_column(
@@ -4041,6 +4075,42 @@ class RuleToggle(Base):
     )
 
 
+class CustomRule(Base):
+    """A rule a person wrote from a library primitive (GRPH-1774 / P91 D1).
+
+    Scoped to a project (`project_id`) or, from S7, an org (`org_id`): exactly one. `rule_id` is
+    `custom.<slug>`, unique per scope. `stage` is the primitive's, copied from the contract at
+    write time; `primitive_api` is the primitive API the draft was validated against, so a
+    later major break reads as UNMEASURED rather than half-enforced. `state` is `observing`
+    (measured, not enforced) or `active`.
+    """
+
+    __tablename__ = "custom_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    rule_id: Mapped[str] = mapped_column(String, index=True)
+    org_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id"), nullable=True)
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
+    primitive: Mapped[str] = mapped_column(String)
+    primitive_api: Mapped[str] = mapped_column(String)
+    stage: Mapped[str] = mapped_column(String)
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    title: Mapped[str] = mapped_column(String)
+    why: Mapped[str] = mapped_column(Text)
+    claims: Mapped[str] = mapped_column(String)
+    state: Mapped[str] = mapped_column(String, default="active")
+    author_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        CheckConstraint("(org_id IS NULL) <> (project_id IS NULL)",
+                        name="ck_custom_rules_one_scope"),
+        UniqueConstraint("rule_id", "org_id", name="uq_custom_rules_org"),
+        UniqueConstraint("rule_id", "project_id", name="uq_custom_rules_project"),
+    )
+
+
 class InstalledRulePack(Base):
     """A rule pack a person accepted (GRPH-1329 / PRD-P63 D10, D12). The newest row is the pack
     in force; older rows are the install history. The artifact and its signature are stored
@@ -4281,6 +4351,11 @@ class DesignSet(Base):
         Boolean, default=False, server_default=false(), nullable=False)
     # The PRD section headings the set gates.
     sections: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Pages that live in an external artifact, not a compiled screen (GRPH-1692).
+    # {"url": "https://...", "pages": {"Section": ["Page"]}}. This is a reference,
+    # not a gate: `sections` is what blocks a build, and an unaccepted gate would
+    # block the item this reference exists to inform.
+    external_artifact: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_by: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

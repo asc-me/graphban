@@ -648,6 +648,60 @@ def unblock(db: Session, item_id: str, *, actor=None, surface: str = "rest") -> 
     return {"item": item.key, "status": item.status, "event_id": eid}
 
 
+def release_when_blocking_fix_done(db: Session, fix: Item) -> list[str]:
+    """After `fix` reaches `done`, return items it was the last open blocking fix for.
+
+    The dependency is `item DEPENDS ON fix` with reason ``blocking fix``. Each such
+    item that is blocked only by that filing goes through `unblock`. A typed wait,
+    a manual blocker, or a second blocking fix that is still open is left alone
+    (GRPH-1772).
+    """
+    from sqlalchemy import select
+
+    from app.models import Link
+    from app.services.items import BLOCKING_FIX_BLOCKER_SUFFIX, BLOCKING_FIX_REASON
+
+    if fix.status != "done":
+        return []
+    dependent_ids = db.scalars(select(Link.a).where(
+        Link.type == "dependency", Link.b == fix.id,
+        Link.reason == BLOCKING_FIX_REASON)).all()
+    released: list[str] = []
+    for dep_id in dict.fromkeys(dependent_ids):
+        dependent = db.get(Item, dep_id)
+        if dependent is None or dependent.status != "blocked":
+            continue
+        if not _blocked_only_by_filing(db, dependent, BLOCKING_FIX_BLOCKER_SUFFIX):
+            continue
+        if _open_blocking_fixes(db, dependent, BLOCKING_FIX_REASON):
+            continue
+        unblock(db, dependent.id)
+        released.append(dependent.id)
+    return released
+
+
+def _blocked_only_by_filing(db: Session, item: Item, suffix: str) -> bool:
+    """The block is the text filing writes, not a wait and not a person's note."""
+    if wait_tags_on(item) or unfinished_wait_deps(db, item):
+        return False
+    return (item.blocker or "").endswith(suffix)
+
+
+def _open_blocking_fixes(db: Session, item: Item, reason: str) -> list[Item]:
+    from sqlalchemy import select
+
+    from app.models import Link
+
+    ids = db.scalars(select(Link.b).where(
+        Link.type == "dependency", Link.a == item.id, Link.reason == reason)).all()
+    open_fixes: list[Item] = []
+    for dep_id in dict.fromkeys(ids):
+        dep = db.get(Item, dep_id)
+        if dep is not None and dep.status != "done":
+            open_fixes.append(dep)
+    return open_fixes
+
+
 def release_claim(db: Session, item_id: str, *, actor=None, surface: str = "rest") -> dict:
     """Drop the lease and return the item to `next` with no holder."""
     from app.services import fleet as fleet_svc

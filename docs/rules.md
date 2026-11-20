@@ -228,3 +228,30 @@ A project can only *change* a rule once the box's pack carries it.
 | `memory.write_mode` (`mode`) | 0.6.0 | 1.10.0 | 2026.11.35 |
 
 `gitops.merge_method` is a gitops field, not a library rule, and needs no template.
+
+## Primitive stage and direction (P91 S1)
+
+Every primitive in the contract (`docs/rule-primitive-contract.json`, primitive API 1.11.0)
+declares a `stage` (one of the seven) and an `on_direction`: whether switching the rule on
+`tighten`s or `loosen`s what agents may do (`generated_files` loosens; the rest tighten). A param
+may declare a `comparator` (`greater_tightens`, `greater_loosens`, `superset_tightens`,
+`superset_loosens`); a param with none is not proposable as a change. `rule_pack.direction()`
+computes `tighten` | `loosen` | `not_proposable` from the contract alone. `rule_pack.validate_draft()`
+is the one validator for pack templates and custom rules: it refuses an unknown primitive, a
+primitive-API major mismatch, a missing required param, a claim stronger than the primitive, and a
+stage other than the contract's (the refusal names the contract's stage; it is never corrected).
+
+## Custom rules — a template the project writes (GRPH-1774, P91 D1)
+
+A person can save a rule built from one library primitive: `POST /api/projects/{id}/rules/custom`
+with a `slug`, `primitive`, `title`, `why`, `params` and a `reason`. The rule id is
+`custom.<slug>`, unique per project. The draft goes through the same `rule_pack.validate_draft`
+the pack loader uses; the stage is the primitive's, from the contract. A person's write is
+`active` at once. `rules.person_adopts` holds: an agent API key is refused, and no MCP tool
+writes one.
+
+`rule_toggles.resolve()` and `effective()` return it with `source: custom`, and the Rules read
+lists it with author, why and state. The primitive API it was written for is stored, so when a
+primitive no longer loads (a major API break, or the primitive is gone) the rule is drawn
+UNMEASURED with the reason and resolves off — never half-enforced, the same as a pack template
+that fails to load. Custom rules are a project's own: another project cannot read or write them.

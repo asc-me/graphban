@@ -120,6 +120,10 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
          "Linking, re-pointing or unlinking this deployment's cloud org is done by the box's "
          "operator or an owner/admin of one of their projects, not by any member.",
          "enforced", _src("app/routers/sync.py", "refuse_unless_box_admin"), "code", scope="org"),
+    Rule("sync.destination_owned_by_org", "build", "The org owns a linked box's destination",
+         "On a linked deployment the publish URL and branch are set by the org admin; a local "
+         "path and branch saved on the box are refused and the stored pair is left as it is.",
+         "enforced", _src("app/routers/sync.py", "put_box_destination"), "code", scope="org"),
     Rule("sync.publish_to_org_needs_admin", "build", "Publish to org needs a project admin",
          "Turning a project's publish-to-org switches (specs, item digests) off or on is done by "
          "its owner or an admin, not by any member.",
@@ -408,8 +412,12 @@ def _library_entries(db: Session, project_id: str | None) -> list[dict]:
     PRIMITIVE provides; a rule that is off stays in the list and `rule_used` draws it not used."""
     from app.services import rule_toggles
     out = []
+    from app.services import custom_rules
     for t in rule_toggles.effective(db, project_id):
-        lib = rule_toggles.LIBRARY[t["rule_id"]]
+        if custom_rules.is_custom(t["rule_id"]):
+            lib = custom_rules.library_rule(custom_rules.get(db, t["rule_id"], project_id))
+        else:
+            lib = rule_toggles.LIBRARY[t["rule_id"]]
         out.append({
             "id": lib.id, "stage": lib.stage, "title": lib.title, "summary": lib.summary,
             "enforcement": lib.enforcement, "channel": None,
