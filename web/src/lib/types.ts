@@ -3482,6 +3482,46 @@ export interface RuleToggle {
   locked_by: string | null;
   /** Only on `merge.done_predicates`: each predicate `done` needs and where it came from. */
   effective_predicates?: EffectivePredicate[];
+  /** GRPH-1777: `observing` (on, measured, not enforced) or `active`. */
+  state?: string | null;
+  /** Present while `state` is `observing`; null/absent reads UNMEASURED, never 0. */
+  observation?: RuleObservationSummary | null;
+}
+
+/** What an observing rule has recorded since it began observing (GRPH-1777). */
+export interface RuleObservationSummary {
+  since: string | null;
+  would_hold: number | null;
+  would_refuse: number | null;
+  would_have: number | null;
+  decision_due: boolean;
+  decision_due_reason: string | null;
+}
+
+/** One would-have outcome row; the rule's own history, kept across promotion. */
+export interface RuleObservation {
+  id: number;
+  rule_id: string;
+  outcome: "would_hold" | "would_refuse";
+  item_id: string | null;
+  commit: string | null;
+  detail: Record<string, unknown>;
+  at: string;
+}
+
+/** Adopted or open guidance for a stage: ADVISORY text with its citations (GRPH-1780). */
+export interface RuleGuidance {
+  id: number;
+  project_id: string;
+  kind: string;
+  stage: string;
+  label: string;
+  text: string;
+  citations: RuleProposalCitation[];
+  proposer: string;
+  proposer_kind: string;
+  status: string;
+  created_at: string;
 }
 
 export interface EffectivePredicate {

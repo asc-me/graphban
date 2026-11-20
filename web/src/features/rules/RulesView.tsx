@@ -18,6 +18,7 @@ import { useCanvasListbox, type CanvasListNode } from "@/lib/graph/useGraphKeybo
 import { useGraphViewport, zoomAbout } from "@/lib/graph/useGraphViewport";
 import { useGitops, useRulePack, useRulePackAvailable, useRulesFlow, useUnmappedRefusals } from "@/lib/queries";
 import { projectPath, settingsPath, tagFromPath } from "@/lib/routes";
+import { ObservingRules } from "./ObservingRules";
 import { StageProposals } from "./StageProposals";
 import type { RuleFlowRule, RuleStage, RuleSuggestion, RulesFlow } from "@/lib/types";
 
@@ -1290,6 +1291,7 @@ function StageDock({
       ) : (
         <>
         <StageProposals stageId={stage!.id} ruleIds={stage!.rules.map((r) => r.id)} />
+        <ObservingRules stageId={stage!.id} ruleIds={stage!.rules.map((r) => r.id)} />
         <DockEditor
           key={stage!.id}
           stage={stage!}
