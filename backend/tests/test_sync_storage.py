@@ -563,3 +563,182 @@ def test_a_server_error_is_unknown_and_leaves_the_pair(client, auth, monkeypatch
     body = client.post(f"{DEST}/pull", headers=auth).json()
     assert body["url"] == "github.com/acme/app" and body["publishing"] is True
     assert body["pull"]["state"] == "unknown" and body["pull"]["reason"]
+
+
+# ---- opt in (GRPH-1762) ---------------------------------------------------------------------
+
+PUB = f"{URL}/publishing"
+CRED = f"{URL}/credential"
+SECRET = "ghp_s3cr3t-token-bytes-0123456789"
+
+
+def _pushes(monkeypatch, outcome=None):
+    calls = []
+
+    def push(db):
+        calls.append(1)
+        return outcome if outcome is not None else {"result": "published", "reason": ""}
+
+    monkeypatch.setattr("app.services.sync_storage._push_now", push)
+    return calls
+
+
+def _credential_file(tmp_path):
+    f = tmp_path / "deploy-key"
+    f.write_text(SECRET + "\n")
+    return f
+
+
+def _ready(client, auth, tmp_path, *, branch="policy"):
+    """A local destination and a credential file, both saved by the box admin."""
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    r = client.put(DEST, json={"path": str(repo), "branch": branch}, headers=auth)
+    assert r.status_code == 200, r.text
+    cred = _credential_file(tmp_path)
+    r = client.put(CRED, json={"path": str(cred)}, headers=auth)
+    assert r.status_code == 200, r.text
+    return cred
+
+
+def _row():
+    from app.models import SyncStorageConfig
+    from app.services.sync_storage import SINGLETON_ID
+
+    db = SessionLocal()
+    row = db.get(SyncStorageConfig, SINGLETON_ID)
+    out = {"publish_enabled": row.publish_enabled, "credential_mode": row.credential_mode,
+           "credential_path": row.credential_path}
+    db.close()
+    return out
+
+
+def test_a_new_deployment_has_publishing_off_and_no_commit_runs(client, auth, monkeypatch):
+    import subprocess
+
+    runs = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: runs.append(a))
+    calls = _pushes(monkeypatch)
+    fact = _fact(client, auth)
+    assert fact["publishing"] is False
+    assert fact["credential"] == {"set": False}
+    assert calls == [] and runs == []
+
+
+def test_box_admin_turns_it_on_and_one_push_of_the_earned_set_runs(client, auth, tmp_path,
+                                                                    monkeypatch):
+    cred = _ready(client, auth, tmp_path)
+    calls = _pushes(monkeypatch)
+    r = client.put(PUB, json={"enabled": True}, headers=auth)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["publishing"] is True and body["credential"] == {"set": True}
+    assert body["push"] == {"result": "published", "reason": ""}
+    assert calls == [1]
+    # Already on: turning it on again pushes nothing more.
+    again = client.put(PUB, json={"enabled": True}, headers=auth)
+    assert again.status_code == 200 and again.json()["push"] is None
+    assert calls == [1]
+    # The console and the specs screen see only whether a credential is set.
+    shown = client.get(f"{URL}?project_id=core", headers=auth).text
+    assert str(cred) not in shown and SECRET not in shown
+
+
+def test_the_git_credential_counts_as_set(client, auth, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    client.put(DEST, json={"path": str(repo), "branch": "policy"}, headers=auth)
+    r = client.put(CRED, json={"path": ""}, headers=auth)
+    assert r.status_code == 200 and r.json()["credential"] == {"set": True}
+    calls = _pushes(monkeypatch)
+    assert client.put(PUB, json={"enabled": True}, headers=auth).status_code == 200
+    assert calls == [1]
+    cleared = client.put(CRED, json={"path": None}, headers=auth)
+    assert cleared.json()["credential"] == {"set": False}
+
+
+def test_an_org_admin_cannot_turn_it_on(client, auth, tmp_path, monkeypatch):
+    org = _org(client, auth, monkeypatch)
+    monkeypatch.setattr(settings, "hosted_mode", False)
+    _ready(client, auth, tmp_path)
+    _seat(org["id"], "u4", "admin")  # Kate: an org admin, not an admin of this box
+    kate = _login(client, "kate@ascme-labs.com")
+    calls = _pushes(monkeypatch)
+    seen = client.get(f"{URL}?project_id=core", headers=kate)
+    assert seen.status_code == 200 and seen.json()["destination"]["publishing"] is False
+    refused = client.put(PUB, json={"enabled": True}, headers=kate)
+    assert refused.status_code == 403, refused.text
+    assert refused.json()["rule_id"] == "sync.publishing_needs_box_admin"
+    assert client.put(CRED, json={"path": ""}, headers=kate).status_code == 403
+    assert _row()["publish_enabled"] is False and calls == []
+
+
+def test_a_blank_branch_is_refused_and_named(client, auth, tmp_path, monkeypatch):
+    _ready(client, auth, tmp_path, branch="")
+    calls = _pushes(monkeypatch)
+    r = client.put(PUB, json={"enabled": True}, headers=auth)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["field"] == "branch" and "branch" in r.json()["detail"]["message"]
+    assert _row()["publish_enabled"] is False and calls == []
+
+
+def test_no_credential_is_refused_and_named(client, auth, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    client.put(DEST, json={"path": str(repo), "branch": "policy"}, headers=auth)
+    calls = _pushes(monkeypatch)
+    r = client.put(PUB, json={"enabled": True}, headers=auth)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["field"] == "credential"
+    assert "credential" in r.json()["detail"]["message"]
+    assert _row()["publish_enabled"] is False and calls == []
+
+
+def test_a_publish_error_omits_the_credential_path_and_bytes(client, auth, tmp_path, monkeypatch):
+    cred = _ready(client, auth, tmp_path)
+    leak = f"fatal: could not read {cred}: key {SECRET} rejected by remote"
+    _pushes(monkeypatch, {"result": "rejected", "reason": leak})
+    body = client.put(PUB, json={"enabled": True}, headers=auth).json()
+    assert body["push"]["result"] == "rejected"
+    assert str(cred) not in body["push"]["reason"] and SECRET not in body["push"]["reason"]
+    assert "rejected by remote" in body["push"]["reason"]
+
+    def boom(db):
+        raise RuntimeError(f"git push failed using {cred} ({SECRET})")
+
+    client.put(PUB, json={"enabled": False}, headers=auth)
+    monkeypatch.setattr("app.services.sync_storage._push_now", boom)
+    raised = client.put(PUB, json={"enabled": True}, headers=auth)
+    assert raised.status_code == 200, raised.text
+    text = raised.text
+    assert str(cred) not in text and SECRET not in text
+    assert raised.json()["push"]["result"] == "failed"
+
+
+def test_the_push_is_not_run_until_this_deployment_has_one(client, auth, tmp_path):
+    _ready(client, auth, tmp_path)
+    body = client.put(PUB, json={"enabled": True}, headers=auth).json()
+    # GRPH-1764 is The push. Until it is on this deployment the answer is an absence.
+    assert body["push"]["result"] == "not_run" and body["push"]["reason"]
+
+
+def test_an_org_branch_change_turns_it_off_and_keeps_the_credential(client, auth, tmp_path,
+                                                                     monkeypatch):
+    client.post("/api/sync/link",
+                json={"cloud_url": "https://cloud.example", "api_key": "gb_sk_x"}, headers=auth)
+    pair = {"url": "github.com/acme/app", "branch": "policy"}
+    monkeypatch.setattr("app.services.sync_storage.fetch_org_destination",
+                        lambda url, key: _Resp(200, dict(pair)))
+    assert client.post(f"{DEST}/pull", headers=auth).json()["state"] == "configured"
+    cred = _credential_file(tmp_path)
+    client.put(CRED, json={"path": str(cred)}, headers=auth)
+    _pushes(monkeypatch)
+    assert client.put(PUB, json={"enabled": True}, headers=auth).json()["publishing"] is True
+
+    pair["branch"] = "policy-2026"
+    body = client.post(f"{DEST}/pull", headers=auth).json()
+    assert body["branch"] == "policy-2026" and body["publishing"] is False
+    assert body["credential"] == {"set": True}
+    row = _row()
+    assert row["publish_enabled"] is False
+    assert row["credential_mode"] == "file" and row["credential_path"] == str(cred)

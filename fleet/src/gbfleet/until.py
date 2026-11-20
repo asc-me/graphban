@@ -2297,13 +2297,157 @@ def _attested_here(entry: dict, branch: str) -> bool:
     return not named or named == branch
 
 
+def _tip(repo: Path, ref: str) -> str:
+    """The commit `ref` names in this clone, or "" when git cannot say."""
+    if not ref:
+        return ""
+    try:
+        done = subprocess.run(
+            ["git", "rev-parse", "--verify", ref],
+            cwd=str(repo), capture_output=True, text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
+def _names_token(text: str, token: str) -> bool:
+    """True when `token` appears as its own token, not as a prefix of a longer key."""
+    if not token:
+        return False
+    return re.search(rf"(?<![\w/.-]){re.escape(token)}(?![\w/.-])", text) is not None
+
+
+def _url_text_names_item(entry: dict, details: dict, propose_mod) -> bool:
+    """Does this url receipt's own text say it is about this item?
+
+    The supervisor writes "draft PR opened by gbfleet for <branch>". A receipt that
+    names another item's key — "opened PR #803 for GRPH-891" on GRPH-890 — does not.
+    """
+    detail = str(entry.get("detail") or "")
+    branch = str(details.get("branch") or "").strip()
+    key = str(details.get("id") or "").strip()
+    if branch and propose_mod._receipt_branch(detail) == branch:
+        return True
+    return _names_token(detail, key) or _names_token(detail, branch)
+
+
+def _pr_text_names_item(pr: dict, item_id: str) -> bool:
+    """Does the forge's title or body name this item, as its own token?
+
+    A branch lookup returns the PR whose head is that branch. On a shared branch
+    that PR is another item's merge: GRPH-890's branch `gb/p45-followups` resolves
+    to PR #920, which names GRPH-990/995/996 and not GRPH-890. The head equalling
+    the branch is how the forge found the PR, not proof it is this item's. An
+    empty title and body names nothing, and that is not a match.
+    """
+    text = f"{pr.get('title') or ''}\n{pr.get('body') or ''}"
+    return _names_token(text, item_id)
+
+
+def _pr_label(pr: dict, selector: str) -> str:
+    number = pr.get("number")
+    if isinstance(number, int) or (isinstance(number, str) and str(number).isdigit()):
+        return f"#{int(number)}"
+    found = re.search(r"/pull/(\d+)", selector or str(pr.get("url") or ""))
+    return f"#{found.group(1)}" if found else (selector or "PR")
+
+
+def _merge_sha(pr: dict) -> str:
+    got = pr.get("mergeCommit")
+    if isinstance(got, dict) and str(got.get("oid") or "").strip():
+        return str(got["oid"]).strip()
+    return str(pr.get("headRefOid") or "").strip()
+
+
+def _merged_line(pr: dict, selector: str, carrier: str) -> str:
+    """"PR #900 (a url receipt) is MERGED at c0ffee000000" — carrier and sha, named."""
+    sha = _merge_sha(pr)
+    at = f" at {sha}" if sha else ""
+    return f"PR {_pr_label(pr, selector)} ({carrier}) is MERGED{at}"
+
+
+def _merged_pr_of(details: dict, repo: Path) -> str:
+    """Why this item's own PR is MERGED, or "".
+
+    Candidates, in order: the item's `pr` field (its own, by declaration), every
+    `/pull/` url receipt, then the item's branch. A url receipt is believed only
+    when its text names this item's key or its branch, or the forge reports
+    `headRefName` equal to that branch. A PR found by the branch name is believed
+    only when its title or body names this item — the head match is the lookup.
+    A MERGED PR that fails its check gets `in_base_ignored` and is skipped, so a
+    sibling receipt, or a sibling PR that shares the branch, cannot hide this
+    item's own PR and cannot hold the item.
+
+    The receipt stays. Evidence only appends, so an item already poisoned this way
+    (GRPH-890, and any sibling of it) becomes delegable by not believing the
+    receipt — there is nothing to retract.
+
+    A declared `pr` is the only candidate when it is set. That is the PR the item
+    named, and a url beside it is not a second opinion, the same rule `pr_selector`
+    already uses. Only a definitive MERGED counts; an open PR or an unreachable
+    forge is "".
+    """
+    from . import propose as propose_mod
+
+    branch = str(details.get("branch") or "").strip()
+    declared = str(details.get("pr") or "").strip()
+    candidates: list[tuple[str, str, dict | None]] = []
+    if declared:
+        candidates.append((declared, "the item's pr", None))
+    else:
+        for entry in details.get("evidence") or []:
+            if not isinstance(entry, dict) or entry.get("kind") != "url":
+                continue
+            url = str(entry.get("url") or "").strip()
+            if "/pull/" not in url:
+                continue
+            candidates.append((url, "a url receipt", entry))
+        if branch:
+            candidates.append((branch, "the item's branch", None))
+
+    item_id = str(details.get("id") or "")
+    for selector, carrier, entry in candidates:
+        pr, _err = propose_mod.view(repo, selector)
+        if not isinstance(pr, dict):
+            continue
+        merged = str(pr.get("state") or "").upper() == "MERGED"
+        if entry is not None:
+            ours = _url_text_names_item(entry, details, propose_mod)
+            head = str(pr.get("headRefName") or "").strip()
+            # About this item only. `if False` here believes every url receipt.
+            if not ours and not (branch and head == branch):
+                if merged:
+                    observe.emit(
+                        "in_base_ignored", item=item_id,
+                        detail=_merged_line(pr, selector, carrier),
+                    )
+                continue
+        # About this item only. `if False` here believes every PR the branch names.
+        # The head equalling the branch is how the forge found the PR, not proof.
+        if carrier == "the item's branch" and not _pr_text_names_item(pr, item_id):
+            if merged:
+                observe.emit(
+                    "in_base_ignored", item=item_id,
+                    detail=_merged_line(pr, selector, carrier),
+                )
+            continue
+        if merged:
+            return _merged_line(pr, selector, carrier)
+        if entry is None and carrier == "the item's pr":
+            return ""
+    return ""
+
+
 def _in_base_reason(details: dict, repo: Path | None, base: str) -> str:
     """Why this item's work is already in `base`, or "" when it is not.
 
-    Empty covers "not in the base" and "this clone cannot tell" (`reaches` is None).
-    A non-empty string names the signal that matched and what it believed, so an
-    operator can tell a correct hold from a bounced remainder (GRPH-1024) without
-    reading this function. `_already_in_base` is this answer as a bool.
+    The string names the signal that matched and what it believed (GRPH-1024), and
+    for a forge match the carrier and the sha (GRPH-1023), so a hold can be read
+    without the source. "" is "not in the base". No repo or no base is also "", and
+    that is not a hold: a clone that cannot look must not read as merged. Empty also
+    covers "this clone cannot tell" (`reaches` is None). `_already_in_base` is this
+    answer as a bool.
 
     A git-merged item still `next` (waiting on sign-off) is not a new build.
 
@@ -2331,6 +2475,16 @@ def _in_base_reason(details: dict, repo: Path | None, base: str) -> str:
        as GRPH-981 and the item's bounce history was lost. An attestation that NAMES a branch
        is therefore only believed about that branch. One with no branch recorded is still
        believed, because refusing it would drop the receipts written before that was recorded.
+
+    3. **A sibling PR's url, and a sibling PR that shares the branch (GRPH-1023).**
+       GRPH-983 hardened the attestation. The url carrier was the same hole, and so is
+       the branch lookup behind it: `gh pr view <branch>` returns whichever PR has that
+       head. GRPH-890 carried one url whose text says it belongs to GRPH-891 (PR #803,
+       head `fix/release-notes-squash`). Ignoring that url still left the branch
+       `gb/p45-followups`, whose merged PR #920 names GRPH-990/995/996 and not GRPH-890.
+       Believing it held the item and the wave exited idle. `_merged_pr_of` believes a
+       url about this item only, and a branch-found PR only when its title or body names
+       this item. The poisoned receipt stays and is not believed.
     """
     if not base or repo is None:
         return ""
@@ -2348,7 +2502,8 @@ def _in_base_reason(details: dict, repo: Path | None, base: str) -> str:
 
     # Ancestry is necessary, not sufficient (1): an empty branch is an ancestor too. A receipt
     # that work existed — a commit recorded for this branch, or this item's PR — is the second
-    # signal, and git cannot supply it.
+    # signal, and git cannot supply it. The sentence names what was believed (GRPH-1024) and,
+    # when this clone can name it, the tip sha (GRPH-1023).
     if branch and wt_reaches(repo, base, branch) is True:
         commits: list[str] = []
         for entry in usable:
@@ -2365,7 +2520,9 @@ def _in_base_reason(details: dict, repo: Path | None, base: str) -> str:
                 believed.append(f"commit receipt {shown}")
             if pr:
                 believed.append(f"pr {pr}")
-            return (f"branch {branch} reaches {base}; "
+            sha = _tip(repo, branch)
+            at = f" at {sha}" if sha else ""
+            return (f"branch {branch} reaches {base}{at}; "
                     f"believed {' and '.join(believed)} says work existed")
     seen: list[str] = []
     for entry in usable:
@@ -2378,20 +2535,20 @@ def _in_base_reason(details: dict, repo: Path | None, base: str) -> str:
             about = f" about {branch}" if branch else ""
             return (f"commit {commit} reaches {base}; "
                     f"believed a {kind} receipt{about}")
-    # GRPH-930: SHA ancestry says "not in base", but a squash merge rewrites the SHA.
-    # Ask the forge whether this item's PR is MERGED — that fact survives the rewrite.
-    # Only a definitive MERGED counts; an open PR or an unreachable forge leaves the
-    # answer empty (the original git-only verdict), not a hold.
-    merged, label = deps._pr_state(repo, details)
-    if merged is True:
-        named = label or "the item's PR"
-        return (f"{named} is MERGED; believed the forge, "
+    # GRPH-930 / GRPH-1023. SHA ancestry says "not in base", but a squash merge rewrites
+    # the SHA. Ask the forge about this item's own PR only — a sibling url, and a merged
+    # PR found by the branch name that does not name this item, are not it. The carrier
+    # and the sha come from `_merged_pr_of`; "believed the forge" names the signal
+    # (GRPH-1024) so an operator can tell it from an ancestry hold.
+    merged_line = _merged_pr_of(details, repo)
+    if merged_line:
+        return (f"{merged_line}; believed the forge, "
                 f"because ancestry did not find the work in {base}")
     return ""
 
 
 def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
-    """True when `_in_base_reason` names a signal. Empty is not in the base."""
+    """True when `_in_base_reason` names a signal. The reason names the carrier."""
     return bool(_in_base_reason(details, repo, base))
 
 
@@ -2746,9 +2903,12 @@ def _delegate_next(
                     if _offer_merged_for_review(planner, item_id, got, base):
                         delegated.add(item_id)
                         continue
+                    # GRPH-1023: the carrier and the sha, so the next operator can see which
+                    # receipt did it rather than reading this function.
                     observe.emit(
                         "delegate_held", item=item_id,
-                        detail=f"{why}; " + _holds_sentence(item_id, occupiers[item_id]),
+                        detail=f"already in {base} (unsigned, git-merged): {why}; "
+                               + _holds_sentence(item_id, occupiers[item_id]),
                     )
         for item_id in occupiers:
             details_for.pop(item_id, None)

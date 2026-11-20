@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 386 of the 386. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 388 of the 388. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -502,9 +502,11 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | POST | `/api/platform/gdrive/connect` | JWT | Record the Drive account and folder for this project |
 | POST | `/api/platform/gdrive/disconnect` | JWT | Clear that connection |
 | POST | `/api/platform/gdrive/sync` | JWT | Two-way sync of this project's PRDs with the connected folder's `PRDs/` subdirectory |
-| GET | `/api/platform/sync-storage` | JWT | Sync storage on Specs (GRPH-1320): the folder path, the blob directory, whether the index is available (or why not), each PRD row's sync state (`in_sync`, `not_exported`, `ledger_changed`, `file_changed`, `conflict`, `read_failed`, `unknown`), a read-only preview report, and the publish destination (GRPH-1761: `state`, `source`, `url`, `path`, `branch`, `previous`, `editable`, `publishing`, `pull`, `code_remote_match`). Writes nothing. `editable` is false for a non-admin and for every caller while the box is linked |
+| GET | `/api/platform/sync-storage` | JWT | Sync storage on Specs (GRPH-1320): the folder path, the blob directory, whether the index is available (or why not), each PRD row's sync state (`in_sync`, `not_exported`, `ledger_changed`, `file_changed`, `conflict`, `read_failed`, `unknown`), a read-only preview report, and the publish destination (GRPH-1761: `state`, `source`, `url`, `path`, `branch`, `previous`, `editable`, `publishing`, `credential` (GRPH-1762: `{set}` only — never the path or the bytes), `pull`, `code_remote_match`). Writes nothing. `editable` is false for a non-admin and for every caller while the box is linked |
 | PUT | `/api/platform/sync-storage` | JWT (project owner; 400 hosted) | Save the box's sync configuration: `folder_path`, `blob_dir` (absolute paths; empty restores the default under `SYNC_DIR`). An unreadable path is saved and shown as a failure on that fact |
 | POST | `/api/platform/sync-storage/run` | JWT (400 hosted) | Run sync for this project into `<folder>/<project>/PRDs`, then return the refreshed facts and row states plus `run` (the report). An unreadable file is a read failure, not a conflict; a failed export leaves the ledger as it was |
+| PUT | `/api/platform/sync-storage/publishing` | JWT (box admin, rule `sync.publishing_needs_box_admin`; 400 hosted) | GRPH-1762: `{enabled}`. Turning it on is a 422 `{field, message}` naming the empty destination field (`path`, `url`, `branch`) or `credential`, and the switch stays off; accepted, it runs one push of the current earned set and answers its outcome as `push` (redacted of the credential path and bytes; `not_run` while this deployment has no push). Off never pushes. An org admin who is not a box admin is 403 |
+| PUT | `/api/platform/sync-storage/credential` | JWT (box admin; 400 hosted) | GRPH-1762: `{path}` — an absolute file path on this box, `""` for the box's own git credential, or `null` to clear. The answer says only whether a credential is set. A destination change that turns publishing off keeps it |
 
 ## Deployment settings (PRD-47 S15)
 

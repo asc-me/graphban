@@ -124,6 +124,12 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
          "On a linked deployment the publish URL and branch are set by the org admin; a local "
          "path and branch saved on the box are refused and the stored pair is left as it is.",
          "enforced", _src("app/routers/sync.py", "put_box_destination"), "code", scope="org"),
+    Rule("sync.publishing_needs_box_admin", "build", "Publishing needs a box admin",
+         "Turning this deployment's git publishing on or off, and setting its credential, is "
+         "done by an admin of the box. An org admin and a non-admin on the box see the switch "
+         "and cannot change it; the org never turns publishing on for a machine.",
+         "enforced", _src("app/routers/platform.py", "_refuse_unless_box_admin"), "code",
+         scope="org"),
     Rule("sync.publish_to_org_needs_admin", "build", "Publish to org needs a project admin",
          "Turning a project's publish-to-org switches (specs, item digests) off or on is done by "
          "its owner or an admin, not by any member.",
