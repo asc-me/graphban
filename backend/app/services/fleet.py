@@ -4340,6 +4340,9 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     item.claimed_at = None
     db.commit()
     db.refresh(item)
+    # GRPH-1772. This path writes `done` itself, so `update_item`'s release does not run.
+    from app.services.waits import release_when_blocking_fix_done
+    release_when_blocking_fix_done(db, item)
     from app.services import observations as observations_svc
     observations_svc.on_sign_off(db, item, fresh)
     observations_svc.on_rules_passed(db, item, SIGN_OFF_RULES)
