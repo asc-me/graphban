@@ -163,6 +163,40 @@ def last_run(name: str) -> tuple[str, int]:
         return "", 0
 
 
+def _drain_log(name: str) -> tuple[bool, str]:
+    """`(stalled, log_state)` from the service stdout log while the pid is alive.
+
+    `loop_silent` is the watchdog saying the loop has written nothing for longer than
+    its poll window (GRPH-1786). That is stalled. A file we could not read is `unread`,
+    which is not a clean running. A file that is not there yet is `absent`. Anything
+    else that was actually read is `live`.
+    """
+    path = CONFIG_DIR / "logs" / f"{name}.log"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return False, "absent"
+    except OSError:
+        return False, "unread"
+    if _last_json_event(text) == "loop_silent":
+        return True, "stalled"
+    return False, "live"
+
+
+def _last_json_event(text: str) -> str:
+    for ln in reversed(text.splitlines()):
+        ln = ln.strip()
+        if not ln.startswith("{"):
+            continue
+        try:
+            doc = json.loads(ln)
+        except ValueError:
+            continue
+        if isinstance(doc, dict) and "event" in doc:
+            return str(doc.get("event") or "")
+    return ""
+
+
 def _reason_in(lines: list[str]) -> tuple[str, int] | None:
     for ln in reversed(lines):
         ln = ln.strip()
@@ -968,6 +1002,13 @@ class Status:
     #: log was not consulted; "" means it was and held no reason.
     run_reason: str | None = None
     unready: int = 0
+    #: The process is alive and the loop has logged `loop_silent` (GRPH-1786). A pid is
+    #: not a working drain: launchd kept the 2026-11-20 process as running for 50 minutes
+    #: after it stopped writing.
+    stalled: bool = False
+    #: "live", "stalled", "absent", "unread", or "" when status did not look at the log.
+    #: Empty is the constructed-Status default and still reads as running.
+    log_state: str = ""
 
     @property
     def idle(self) -> bool:
@@ -998,6 +1039,12 @@ class Status:
         if self.running is None:
             return f"{self.name}: installed at {self.unit_path}, running unknown — {self.detail}"
         if self.running:
+            if self.stalled:
+                return f"{self.name}: stalled ({where}, {self.unit_path})"
+            if self.log_state == "unread":
+                return f"{self.name}: running, log unread ({where}, {self.unit_path})"
+            if self.log_state == "absent":
+                return f"{self.name}: running, no log yet ({where}, {self.unit_path})"
             return f"{self.name}: running ({where}, {self.unit_path})"
         if self.idle:
             return (f"{self.name}: idle between runs, last exit 0 ({where}, "
@@ -1032,11 +1079,13 @@ def status(name: str = DEFAULT_NAME, *, kind: str = "") -> Status:
         alive, detail, last_exit = _running_systemd(name)
     died = alive is False and last_exit not in (None, 0)
     run_reason, unready = last_run(name) if alive is False and last_exit == 0 else (None, 0)
+    stalled, log_state = _drain_log(name) if alive else (False, "")
     return Status(name=name, kind=kind, installed=True, running=alive, unit_path=unit,
                   detail=detail, linger=linger(), path_env=_path_in(unit, kind),
                   last_exit=last_exit, logon_policy=policy,
                   reason=err_reason(name) if died else "",
-                  run_reason=run_reason, unready=unready)
+                  run_reason=run_reason, unready=unready,
+                  stalled=stalled, log_state=log_state)
 
 
 def _path_in(unit: Path, kind: str) -> str:

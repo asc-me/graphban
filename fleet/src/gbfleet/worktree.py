@@ -26,6 +26,11 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 BRANCH_PREFIX = "gb/"
 
+#: Bound on every git command that can talk to a remote, and on `_git` (push goes
+#: through it). A fetch with no timeout is a waitpid the until loop never leaves
+#: (GRPH-1786). Two minutes is the same bound `propose` already uses for `git fetch`.
+GIT_NETWORK_TIMEOUT = 120.0
+
 #: Credential files a vendor forces INSIDE the worktree (PRD-22 D-f). Cursor has no
 #: per-invocation config flag and reads `.cursor/mcp.json` from the project directory,
 #: and each child's worktree is its own project directory — so this is where a live
@@ -142,10 +147,45 @@ class Disposition(str, Enum):
     LEFT_DIRTY = "left_dirty"
 
 
-def _git(cwd: Path | str, *args: str, check: bool = True) -> str:
-    proc = subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, text=True
+def _note_git_timeout(args: list[str]) -> None:
+    from . import observe
+
+    observe.emit(
+        "git_timeout",
+        argv=" ".join(args[:6]),
+        timeout=GIT_NETWORK_TIMEOUT,
     )
+
+
+def _bounded_git(args: list[str], cwd: Path | str) -> subprocess.CompletedProcess[str]:
+    """Run `args` and return. A timeout is a finished process with code 124, plus a log line.
+
+    The until loop calls this on the thread that also polls. `subprocess.run` without
+    a timeout is a wait that never becomes a log line.
+    """
+    from . import observe
+
+    observe.touch_loop()
+    try:
+        return subprocess.run(
+            args, cwd=str(cwd), capture_output=True, text=True,
+            timeout=GIT_NETWORK_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        _note_git_timeout(args)
+        return subprocess.CompletedProcess(
+            args, 124, "", f"timed out after {GIT_NETWORK_TIMEOUT:g}s",
+        )
+
+
+def _git(cwd: Path | str, *args: str, check: bool = True) -> str:
+    proc = _bounded_git(["git", *args], cwd)
+    if proc.returncode == 124:
+        if not check:
+            return ""
+        raise GitError(
+            f"git {' '.join(args)} timed out after {GIT_NETWORK_TIMEOUT:g}s in {cwd}"
+        )
     if check and proc.returncode != 0:
         raise GitError(
             f"git {' '.join(args)} failed in {cwd} ({proc.returncode}): "
@@ -565,11 +605,8 @@ def remote_name(repo: Path | str, branch: str) -> RemoteName:
     remote = remote_for(repo)
     if not remote:
         return RemoteName(known=True, exists=False)
-    proc = subprocess.run(
-        ["git", "ls-remote", "--heads", remote, f"refs/heads/{branch}"],
-        cwd=str(repo),
-        capture_output=True,
-        text=True,
+    proc = _bounded_git(
+        ["git", "ls-remote", "--heads", remote, f"refs/heads/{branch}"], repo,
     )
     if proc.returncode != 0:
         reason = (proc.stderr or proc.stdout or "").strip().replace("\n", " ")
@@ -1261,10 +1298,7 @@ def _ensure_local_branch(repo: Path, branch: str) -> None:
         return
     remote = remote_for(repo)
     if remote:
-        subprocess.run(
-            ["git", "fetch", "--quiet", remote, branch],
-            cwd=str(repo), capture_output=True, text=True,
-        )
+        _bounded_git(["git", "fetch", "--quiet", remote, branch], repo)
         tracking = f"refs/remotes/{remote}/{branch}"
         if _git(repo, "rev-parse", "--verify", "--quiet", tracking, check=False).strip():
             _git(repo, "branch", branch, f"{remote}/{branch}")
@@ -1440,8 +1474,7 @@ def refresh_ref(repo: Path | str, remote: str, ref: str) -> bool:
     if not remote or not ref.startswith(f"{remote}/"):
         return False
     branch = ref.split("/", 1)[1]
-    proc = subprocess.run(["git", "fetch", "--quiet", remote, branch],
-                          cwd=str(repo), capture_output=True, text=True)
+    proc = _bounded_git(["git", "fetch", "--quiet", remote, branch], repo)
     return proc.returncode == 0
 
 
@@ -1462,10 +1495,7 @@ def resolve_base(repo: Path | str, remote: str, branch: str) -> str:
             f"--base {branch}: repository has no remote to resolve it against"
         )
     ref = f"{remote}/{branch}"
-    proc = subprocess.run(
-        ["git", "fetch", "--quiet", remote, branch],
-        cwd=str(repo), capture_output=True, text=True,
-    )
+    proc = _bounded_git(["git", "fetch", "--quiet", remote, branch], repo)
     if proc.returncode != 0:
         raise BaseBranchNotFound(
             f"--base {branch}: could not fetch {ref} from {remote} "
