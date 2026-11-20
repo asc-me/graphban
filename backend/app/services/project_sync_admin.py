@@ -112,18 +112,55 @@ def _raise_if_refused(started: dict) -> None:
         raise ValueError(started["reason"])
 
 
+def _point(db: Session, project_id: str, cloud_project_id: str, tag: str) -> None:
+    """Map this one project to ``cloud_project_id``. No other row is touched.
+
+    A new row starts at ``digests`` (the column default), so the level change
+    that follows is the one that turns sync on. Re-pointing is refused while
+    the project syncs or owes a purge: its manifest describes the old replica.
+    """
+    row = db.get(SyncProject, project_id)
+    if row is None:
+        db.add(SyncProject(local_project_id=project_id, cloud_project_id=cloud_project_id,
+                           cloud_project_tag=tag, sync_level=outbox.SYNC_LEVEL_DIGESTS))
+        db.commit()
+        return
+    if (row.cloud_project_id or "").strip() == cloud_project_id:
+        if tag:
+            row.cloud_project_tag = tag
+            db.commit()
+        return
+    if row.sync_level == outbox.SYNC_LEVEL_SYNC or (row.pending_purge or ""):
+        raise ValueError(
+            "this project syncs to another cloud project — set it to local only first")
+    row.cloud_project_id = cloud_project_id
+    row.cloud_project_tag = tag
+    row.last_push_at = row.last_push_result = row.last_push_reason = None
+    db.commit()
+
+
 def configure_project(db: Session, project_id: str, *, sync_level: str | None,
                       cloud_permission: str | None, create_in_org: bool,
-                      purge: bool, user: User) -> dict:
-    """Apply one project's level, create-in-org, and permission.
+                      purge: bool, user: User, cloud_project_id: str | None = None,
+                      cloud_project_tag: str = "") -> dict:
+    """Apply one project's level, create-in-org or cloud target, and permission.
 
-    ``tag_taken`` raises ``TagTaken`` and stores no mapping. The caller turns
-    that into 409. A missing project is ``LookupError``.
+    ``tag_taken`` raises ``TagTaken`` and stores no mapping. A project that is
+    already mapped keeps its mapping: create-in-org then syncs to the cloud
+    project it has, and a refusal changes nothing. The caller turns
+    ``TagTaken`` into 409. A missing project is ``LookupError``.
     """
     if db.get(Project, project_id) is None:
         raise LookupError(project_id)
-    if sync_level is None and cloud_permission is None and not create_in_org:
+    target = (cloud_project_id or "").strip()
+    if sync_level is None and cloud_permission is None and not create_in_org and not target:
         raise ValueError("nothing to change")
+    if target and create_in_org:
+        raise ValueError("cloud_project_id and create_in_org are exclusive")
+    if target and sync_level not in (outbox.SYNC_LEVEL_SYNC, outbox.SYNC_LEVEL_DIGESTS):
+        raise ValueError("cloud_project_id needs sync_level sync or digests")
+    if target:
+        _point(db, project_id, target, (cloud_project_tag or "").strip())
 
     started: dict | None = None
     if sync_level == lifecycle.LEVEL_LOCAL:

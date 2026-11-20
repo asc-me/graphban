@@ -493,7 +493,8 @@ def put_project_sync(project_id: str, body: ProjectSyncIn, db: Session = Depends
         return project_admin.configure_project(
             db, project_id, sync_level=body.sync_level,
             cloud_permission=body.cloud_permission, create_in_org=body.create_in_org,
-            purge=body.purge, user=user,
+            purge=body.purge, user=user, cloud_project_id=body.cloud_project_id,
+            cloud_project_tag=body.cloud_project_tag,
         )
     except project_admin.TagTaken as e:
         return JSONResponse(

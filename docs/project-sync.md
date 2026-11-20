@@ -171,10 +171,20 @@ box is inside a console `Retry-After` (a 429, a timeout, or a 5xx). A 429
 records `last_push_result: unknown` and does not park the row.
 
 `PUT /api/sync/projects/{id}` body is `{sync_level?, cloud_permission?,
-create_in_org?, purge?}`. `sync_level` is `sync`, `digests`, or `local`.
-`create_in_org` with no stored cloud id calls the console register. A `409`
-answers `{detail: tag_taken, owner_label}` and stores no mapping. `purge`
+create_in_org?, purge?, cloud_project_id?, cloud_project_tag?}`. `sync_level` is
+`sync`, `digests`, or `local`. `create_in_org` with no stored cloud id calls the
+console register. A `409` answers `{detail: tag_taken, owner_label}` and stores
+no mapping. A project that is already mapped keeps its mapping: create-in-org
+syncs to the cloud project it has, and a refusal changes nothing. `purge`
 defaults to true when leaving `sync`.
+
+`cloud_project_id` (with `sync_level` `sync` or `digests`, never with
+`create_in_org`) maps this one project to an existing cloud project. No other
+project's mapping changes, unlike `PUT /api/sync/projects`. A local-only project
+needs it, or `create_in_org`, to leave local only: `digests` never creates a cloud
+project. Re-pointing a project that syncs, or that still owes a purge, is `422`
+— set it to local only first. The wizard's ③ and Settings → Sync both save one
+project at a time this way.
 
 `POST /api/sync/projects/{id}/retry-parked` clears this project's parked rows
 and returns `{retried}`. Zero means the project was read and nothing was parked.

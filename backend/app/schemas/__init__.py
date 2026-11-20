@@ -1175,6 +1175,10 @@ class ProjectSyncIn(BaseModel):
     cloud_permission: str | None = None  # read_only | comments | proposals
     create_in_org: bool = False
     purge: bool = True
+    #: Point this one project at an existing cloud project (sync or digests). It touches
+    #: no other project's mapping, unlike ``PUT /api/sync/projects``.
+    cloud_project_id: str | None = None
+    cloud_project_tag: str = ""
 
 
 class SyncBudgetIn(BaseModel):

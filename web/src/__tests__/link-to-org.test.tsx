@@ -464,14 +464,33 @@ describe("LinkToOrgWizard", () => {
 
   it("③ saves the tag from the reachable-projects answer with the mapping (GRPH-1562)", async () => {
     const user = userEvent.setup();
-    api.syncSaveProjectMap.mockResolvedValue({ mapping: [] });
     wizard(signedIn, { initialStep: 3 });
     await screen.findByLabelText("Cloud project for Core");
     await user.click(screen.getByRole("button", { name: "Next →" }));
-    await waitFor(() => expect(api.syncSaveProjectMap).toHaveBeenCalled());
-    expect(api.syncSaveProjectMap.mock.calls[0][0]).toEqual([
-      { local_project_id: "core", cloud_project_id: CORE_ID, cloud_project_tag: "CORE" },
-    ]);
+    await waitFor(() => expect(api.putProjectSync).toHaveBeenCalled());
+    expect(api.putProjectSync).toHaveBeenCalledWith("core", {
+      sync_level: "sync", cloud_project_id: CORE_ID, cloud_project_tag: "CORE",
+    });
+    // One project at a time: nothing replaces the whole map.
+    expect(api.syncSaveProjectMap).not.toHaveBeenCalled();
+  });
+
+  it("a refused create on a mapped project never drops its mapping first", async () => {
+    const user = userEvent.setup();
+    const err = new Error(JSON.stringify({ detail: "tag_taken", owner_label: "Bea" }));
+    (err as Error & { status: number }).status = 409;
+    api.putProjectSync.mockRejectedValue(err);
+    wizard(
+      { ...signedIn, projects: [proj("core", "Core", { mapped: true, cloud_project_id: CORE_ID, cloud_project_tag: "CORE" })] },
+      { initialStep: 3 },
+    );
+    const box = await screen.findByLabelText("Cloud project for Core");
+    await user.selectOptions(box, "Create in org");
+    await user.click(screen.getByRole("button", { name: "Next →" }));
+    expect(await screen.findByText("Bea already uses this tag.")).toBeInTheDocument();
+    expect(api.putProjectSync).toHaveBeenCalledWith("core", { sync_level: "sync", create_in_org: true });
+    expect(api.syncSaveProjectMap).not.toHaveBeenCalled();
+    expect(api.putProjectSync).not.toHaveBeenCalledWith("core", { sync_level: "local" });
   });
 
   it("④ with no stored tag and no projects read shows ☁ ?, never the id", () => {

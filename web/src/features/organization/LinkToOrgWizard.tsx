@@ -52,7 +52,7 @@ function storedChoice(projects: SyncProjectState[]): Record<string, SyncChoice> 
 }
 
 /** `409 tag_taken` carries the owner. Anything else is a normal save error. */
-function takenOwner(e: unknown): string | null {
+export function takenOwner(e: unknown): string | null {
   if (typeof e !== "object" || e === null || (e as { status?: number }).status !== 409) return null;
   const message = e instanceof Error ? e.message : "";
   try {
@@ -464,28 +464,26 @@ export function LinkToOrgWizard({
     setSaving(true);
     setErr(null);
     const entries = status.projects.map((p) => ({ p, row: rowOf(p.project_id) }));
-    const real = (row: SyncChoice) => row.level !== "local" && !!row.target && row.target !== CREATE;
     try {
       // Local first, while the mapping row still exists, so leaving sync can purge.
       for (const { p, row } of entries) {
         if (row.level === "local") await api.putProjectSync(p.project_id, { sync_level: "local" });
       }
-      await api.syncSaveProjectMap(
-        entries.filter(({ row }) => real(row)).map(({ p, row }) => ({
-          local_project_id: p.project_id,
-          cloud_project_id: row.target,
-          cloud_project_tag: cloud.projects.find((c) => c.id === row.target)?.tag ?? "",
-        })),
-      );
+      // Each project is saved on its own. Nothing replaces the whole map, so a refused
+      // create leaves every stored mapping, its own included, where it was.
       const found: Record<string, string> = {};
       const prog: Record<string, { confirmed: number; total: number }> = {};
       for (const { p, row } of entries) {
         if (row.level === "local") continue;
-        const body = row.level === "digests"
-          ? { sync_level: "digests" }
-          : row.target === CREATE
-            ? { sync_level: "sync", create_in_org: true }
-            : { sync_level: "sync" };
+        const body = row.target === CREATE
+          ? { sync_level: "sync", create_in_org: true }
+          : !row.target
+            ? { sync_level: row.level }
+            : {
+              sync_level: row.level,
+              cloud_project_id: row.target,
+              cloud_project_tag: cloud.projects.find((c) => c.id === row.target)?.tag ?? "",
+            };
         try {
           const saved = await api.putProjectSync(p.project_id, body);
           if (saved?.backfill && typeof saved.backfill.total === "number") {

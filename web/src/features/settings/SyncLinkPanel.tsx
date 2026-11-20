@@ -15,11 +15,19 @@ import * as React from "react";
 import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { Button } from "@/components/ui/button";
 import { LinkedPanel } from "@/features/organization/LinkedPanel";
-import { LinkToOrgWizard, useLinkFlow } from "@/features/organization/LinkToOrgWizard";
+import { LinkToOrgWizard, tagOf, takenOwner, useLinkFlow } from "@/features/organization/LinkToOrgWizard";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { useSyncBudget, useSyncLocal, useSyncOrg, useSyncStatus } from "@/lib/queries";
-import type { LocalSyncProject, SyncBudget, SyncProjectState, SyncProjectStatus } from "@/lib/types";
+import { errorDetail } from "@/lib/errors";
+import { useProjects, useSyncBudget, useSyncLocal, useSyncOrg, useSyncStatus } from "@/lib/queries";
+import type {
+  CloudProject,
+  LocalSyncProject,
+  SyncBudget,
+  SyncMappingRow,
+  SyncProjectState,
+  SyncProjectStatus,
+} from "@/lib/types";
 import { useSearchParams } from "react-router-dom";
 
 // A self-hosted instance links to a cloud tenant, then pushes its locally-built code graph up
@@ -193,6 +201,155 @@ function pushWord(result: LocalSyncProject["last_push_result"]): string {
   return "not pushed";
 }
 
+const CREATE = "create";
+
+/** The first choice for a project with no mapping: the cloud project whose tag matches,
+ *  else create-in-org. The same default the wizard's ③ uses. */
+function defaultTarget(tag: string, cloud: CloudProject[]): string {
+  const want = tag.trim().toUpperCase();
+  const hit = want ? cloud.find((c) => (c.tag || "").trim().toUpperCase() === want) : undefined;
+  return hit?.id || CREATE;
+}
+
+/**
+ * One local project's level, target, permission and queue (GRPH-1739). An unmapped
+ * project picks where it syncs, as at the wizard's ③: Create in org or an existing cloud
+ * project. A mapped project keeps its cloud project. A refused save shows why, and the
+ * radios stay on what the server kept.
+ */
+function ProjectSyncRow({
+  row,
+  name,
+  tag,
+  mapping,
+  cloud,
+  readOnly,
+}: {
+  row: LocalSyncProject;
+  name: string;
+  tag: string;
+  mapping: SyncMappingRow | undefined;
+  cloud: CloudProject[];
+  readOnly: boolean;
+}) {
+  const qc = useQueryClient();
+  const mapped = row.sync_level !== "local" && mapping != null;
+  const [target, setTarget] = React.useState(() => defaultTarget(tag, cloud));
+  const [touched, setTouched] = React.useState(false);
+  const [error, setError] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!touched) setTarget(defaultTarget(tag, cloud));
+  }, [tag, cloud, touched]);
+
+  async function run(fn: () => Promise<unknown>, fallback: string) {
+    setError("");
+    setBusy(true);
+    try {
+      await fn();
+    } catch (e) {
+      const owner = takenOwner(e);
+      setError(owner !== null ? `${owner} already uses this tag.` : errorDetail(e, fallback));
+    } finally {
+      setBusy(false);
+      await qc.invalidateQueries({ queryKey: ["sync-local"] });
+    }
+  }
+
+  function levelBody(level: "sync" | "digests" | "local") {
+    if (level === "local" || mapped) return { sync_level: level };
+    if (target === CREATE) return { sync_level: level, create_in_org: true };
+    return {
+      sync_level: level,
+      cloud_project_id: target,
+      cloud_project_tag: cloud.find((c) => c.id === target)?.tag ?? "",
+    };
+  }
+
+  const saveLevel = (level: "sync" | "digests" | "local") =>
+    run(() => api.putProjectSync(row.project_id, levelBody(level)), "Could not save the sync level.");
+  const savePermission = (cloud_permission: string) =>
+    run(() => api.putProjectSync(row.project_id, { cloud_permission }), "Could not save the permission.");
+  const retry = () => run(() => api.retryParked(row.project_id), "Could not retry the parked rows.");
+
+  // Digests sends to a cloud project that already exists; it never creates one.
+  const digestsBlocked = !mapped && target === CREATE;
+  const where = mapped ? `☁ ${mapping?.cloud_project_tag || "?"}` : null;
+
+  return (
+    <div className="mb-3 space-y-1 rounded-[8px] border border-line px-3 py-2">
+      <div className="flex items-center gap-2">
+        <span className="font-mono text-[12px] text-fg-2">{name}</span>
+        {where && <span className="font-mono text-[10px] text-faint">{where}</span>}
+      </div>
+      <fieldset className="flex flex-wrap gap-2" aria-label={`Sync level for ${name}`}>
+        {([
+          ["sync", "Sync to org"],
+          ["digests", "Digests only"],
+          ["local", "Local only"],
+        ] as const).map(([level, label]) => (
+          <label key={level} className="flex items-center gap-1 text-small">
+            <input
+              type="radio"
+              name={`settings-level-${row.project_id}`}
+              checked={row.sync_level === level}
+              disabled={readOnly || busy || (level === "digests" && digestsBlocked)}
+              onChange={() => void saveLevel(level)}
+            />
+            {label}
+          </label>
+        ))}
+      </fieldset>
+      {!mapped && (
+        <label className="flex items-center gap-2 text-small">
+          <span className="text-faint">Cloud project</span>
+          <select
+            aria-label={`Cloud project for ${name}`}
+            value={target}
+            disabled={readOnly || busy}
+            onChange={(e) => {
+              setTouched(true);
+              setTarget(e.target.value);
+            }}
+            className="h-8 rounded-[8px] border border-control bg-surface-2 px-2 text-[12px]"
+          >
+            <option value={CREATE}>Create in org</option>
+            {cloud.map((c) => (
+              <option key={c.id} value={c.id}>{tagOf(c)}</option>
+            ))}
+          </select>
+        </label>
+      )}
+      <label className="flex items-center gap-2 text-small">
+        <span className="text-faint">Permission</span>
+        <select
+          aria-label={`Cloud permission for ${name}`}
+          value={row.cloud_permission ?? "comments"}
+          disabled={readOnly || busy || row.sync_level === "local"}
+          onChange={(e) => void savePermission(e.target.value)}
+          className="h-8 rounded-[8px] border border-control bg-surface-2 px-2 text-[12px]"
+        >
+          {PERMISSIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
+      </label>
+      <p className="font-mono text-[10px] text-muted">
+        {row.backfill.confirmed} of {row.backfill.total} · queued {row.queued}
+        {" · "}parked {row.parked.count}
+        {row.parked.reasons.length ? ` (${row.parked.reasons.join(", ")})` : ""}
+        {" · "}last push {pushWord(row.last_push_result)}
+        {row.held_by ? ` · held by ${row.held_by}` : ""}
+      </p>
+      <Button size="sm" variant="ghost" disabled={readOnly || busy} onClick={() => void retry()}>
+        Retry now
+      </Button>
+      {error && <p role="alert" className="text-small text-st-blocked">{error}</p>}
+    </div>
+  );
+}
+
 /**
  * Per-project sync level, permission, queue and the box budget (GRPH-1739).
  * Rendered only once the wizard is closed, so Finish in background lands here.
@@ -208,6 +365,7 @@ function ProjectSyncCard({
   const qc = useQueryClient();
   const localQ = useSyncLocal();
   const budgetQ = useSyncBudget();
+  const projectsQ = useProjects();
   const names = new Map(statusProjects.map((p) => [p.project_id, p.name]));
   const [bytes, setBytes] = React.useState("");
   const [requests, setRequests] = React.useState("");
@@ -219,22 +377,6 @@ function ProjectSyncCard({
     setRequests(String(budgetQ.data.requests_per_min));
   }, [budgetQ.data]);
 
-  async function saveLevel(id: string, sync_level: string) {
-    try {
-      await api.putProjectSync(id, { sync_level });
-      await qc.invalidateQueries({ queryKey: ["sync-local"] });
-    } catch {
-      /* the next read shows the level the server kept */
-    }
-  }
-  async function savePermission(id: string, cloud_permission: string) {
-    await api.putProjectSync(id, { cloud_permission });
-    await qc.invalidateQueries({ queryKey: ["sync-local"] });
-  }
-  async function retry(id: string) {
-    await api.retryParked(id);
-    await qc.invalidateQueries({ queryKey: ["sync-local"] });
-  }
   async function saveBudget() {
     setBudgetErr("");
     const body: SyncBudget = { bytes_per_min: Number(bytes), requests_per_min: Number(requests) };
@@ -252,6 +394,12 @@ function ProjectSyncCard({
 
   const body = localQ.data;
   const unread = localQ.isError || body == null || body.local == null;
+  // An unreachable console still allows Create in org; it just offers no existing project.
+  const cloud = React.useMemo(
+    () => (body?.status === "ok" ? body.projects ?? [] : []),
+    [body],
+  );
+  const mappings = new Map((body?.mapping ?? []).map((m) => [m.local_project_id, m]));
 
   return (
     <div className="mt-4 border-t border-line pt-3" data-testid="project-sync">
@@ -263,56 +411,17 @@ function ProjectSyncCard({
       {!localQ.isLoading && body?.local && body.local.length === 0 && (
         <p className="text-small text-faint">No local projects.</p>
       )}
-      {body?.local?.map((row) => {
-        const name = names.get(row.project_id) ?? row.project_id;
-        return (
-          <div key={row.project_id} className="mb-3 space-y-1 rounded-[8px] border border-line px-3 py-2">
-            <div className="font-mono text-[12px] text-fg-2">{name}</div>
-            <fieldset className="flex flex-wrap gap-2" aria-label={`Sync level for ${name}`}>
-              {([
-                ["sync", "Sync to org"],
-                ["digests", "Digests only"],
-                ["local", "Local only"],
-              ] as const).map(([level, label]) => (
-                <label key={level} className="flex items-center gap-1 text-small">
-                  <input
-                    type="radio"
-                    name={`settings-level-${row.project_id}`}
-                    checked={row.sync_level === level}
-                    disabled={readOnly}
-                    onChange={() => void saveLevel(row.project_id, level)}
-                  />
-                  {label}
-                </label>
-              ))}
-            </fieldset>
-            <label className="flex items-center gap-2 text-small">
-              <span className="text-faint">Permission</span>
-              <select
-                aria-label={`Cloud permission for ${name}`}
-                value={row.cloud_permission ?? "comments"}
-                disabled={readOnly || row.sync_level === "local"}
-                onChange={(e) => void savePermission(row.project_id, e.target.value)}
-                className="h-8 rounded-[8px] border border-control bg-surface-2 px-2 text-[12px]"
-              >
-                {PERMISSIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-            </label>
-            <p className="font-mono text-[10px] text-muted">
-              {row.backfill.confirmed} of {row.backfill.total} · queued {row.queued}
-              {" · "}parked {row.parked.count}
-              {row.parked.reasons.length ? ` (${row.parked.reasons.join(", ")})` : ""}
-              {" · "}last push {pushWord(row.last_push_result)}
-              {row.held_by ? ` · held by ${row.held_by}` : ""}
-            </p>
-            <Button size="sm" variant="ghost" disabled={readOnly} onClick={() => void retry(row.project_id)}>
-              Retry now
-            </Button>
-          </div>
-        );
-      })}
+      {body?.local?.map((row) => (
+        <ProjectSyncRow
+          key={row.project_id}
+          row={row}
+          name={names.get(row.project_id) ?? row.project_id}
+          tag={projectsQ.data?.find((x) => x.id === row.project_id)?.tag ?? ""}
+          mapping={mappings.get(row.project_id)}
+          cloud={cloud}
+          readOnly={readOnly}
+        />
+      ))}
       <div className="mt-2 space-y-1">
         <div className="font-mono text-[10px] uppercase tracking-wide text-faint">Box budget</div>
         {budgetQ.isLoading && <p className="text-small text-faint">Reading budget…</p>}

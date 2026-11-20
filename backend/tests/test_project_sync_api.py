@@ -261,3 +261,69 @@ def test_a_429_reports_held_by_retry_after_and_unknown(client, auth, db, monkeyp
         assert "retry_after" not in (row["parked"]["reasons"])
     finally:
         flush.reset_runtime()
+
+
+def test_a_local_only_project_picks_a_cloud_project_without_touching_others(client, auth, db):
+    """Settings and the wizard send one project's target. Other mappings stay."""
+    db.add(SyncProject(local_project_id="core", cloud_project_id="cloud-1", sync_level="digests"))
+    db.commit()
+    # Digests on an unmapped project needs a target. Without one it is 422.
+    assert client.put(
+        "/api/sync/projects/web", headers=auth, json={"sync_level": "digests"},
+    ).status_code == 422
+    picked = client.put(
+        "/api/sync/projects/web", headers=auth,
+        json={"sync_level": "digests", "cloud_project_id": "cloud-2", "cloud_project_tag": "WA"},
+    )
+    assert picked.status_code == 200, picked.text
+    assert picked.json()["project"]["sync_level"] == "digests"
+    with SessionLocal() as check:
+        web = check.get(SyncProject, "web")
+        assert web is not None and web.cloud_project_id == "cloud-2"
+        assert web.cloud_project_tag == "WA"
+        core = check.get(SyncProject, "core")
+        assert core is not None and core.cloud_project_id == "cloud-1"
+    both = client.put(
+        "/api/sync/projects/web", headers=auth,
+        json={"sync_level": "sync", "cloud_project_id": "cloud-2", "create_in_org": True},
+    )
+    assert both.status_code == 422
+    local_target = client.put(
+        "/api/sync/projects/web", headers=auth,
+        json={"sync_level": "local", "cloud_project_id": "cloud-2"},
+    )
+    assert local_target.status_code == 422
+
+
+def test_a_syncing_project_is_not_repointed(client, auth, db):
+    db.add(SyncProject(local_project_id="core", cloud_project_id="cloud-1", sync_level="sync"))
+    db.commit()
+    moved = client.put(
+        "/api/sync/projects/core", headers=auth,
+        json={"sync_level": "sync", "cloud_project_id": "cloud-9"},
+    )
+    assert moved.status_code == 422
+    with SessionLocal() as check:
+        assert check.get(SyncProject, "core").cloud_project_id == "cloud-1"
+
+
+def test_a_refused_create_keeps_the_existing_mapping(client, auth, db, monkeypatch):
+    """Create in org on a project that is already mapped does not drop its row."""
+    fake = FakeConsole()
+    fake.add_deployment(TOKEN, engineer="eng-ada", label="Ada")
+    fake.add_deployment(BEA, engineer="eng-bea", label="Bea")
+    _bind_transport(monkeypatch, fake)
+    _link(db)
+    db.add(SyncProject(local_project_id="core", cloud_project_id="cloud-1", sync_level="digests"))
+    db.commit()
+    fake.handle(httpx.Request(
+        "POST", f"{CONSOLE}/api/sync/projects",
+        headers={"authorization": f"Bearer {BEA}", "x-sync-contract": CONTRACT,
+                 "content-type": "application/json"},
+        json={"tag": "CP", "name": "Bea's copy"},
+    ))
+    client.put("/api/sync/projects/core", headers=auth,
+               json={"sync_level": "sync", "create_in_org": True})
+    with SessionLocal() as check:
+        row = check.get(SyncProject, "core")
+        assert row is not None and row.cloud_project_id == "cloud-1"
