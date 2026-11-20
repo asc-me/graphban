@@ -80,6 +80,10 @@ def set_link(db: Session, *, cloud_url: str, api_key: str, org: str = "") -> Syn
     db.commit()
     db.refresh(link)
     _reset_org_cache()
+    # Linking turns publishing off now. The URL and branch arrive on the pull, which is not
+    # done here: this call must not open a connection (every existing link test would pay it).
+    from app.services import sync_storage
+    sync_storage.note_link(db)
     return link
 
 
@@ -94,6 +98,8 @@ def clear_link(db: Session) -> None:
         link.linked_at = None
         db.commit()
     _reset_org_cache()
+    from app.services import sync_storage
+    sync_storage.note_unlink(db)
 
 
 # ---- who may link (GRPH-1223) ------------------------------------------------------------
@@ -781,7 +787,19 @@ def _sync_tail(db: Session, url: str, key: str) -> dict:
     decisions = _pull_triage_on_sync(db, url, key)
     if decisions is not None:
         out["triage_decisions"] = decisions
+    out["destination"] = _pull_destination_on_sync(db, url, key)
     return out
+
+
+def _pull_destination_on_sync(db: Session, url: str, key: str) -> dict:
+    """The box's sync cadence also pulls the org destination (GRPH-1761). Never fatal."""
+    from app.services import sync_storage
+
+    try:
+        return sync_storage.pull_destination(db, cloud_url=url, api_key=key)
+    except Exception as e:  # noqa: BLE001 — the graph push already landed; never undo it
+        db.rollback()
+        return {"error": f"{type(e).__name__}: {e}"}
 
 
 def _pull_rules_on_sync(db: Session, url: str, key: str) -> dict:

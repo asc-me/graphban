@@ -345,6 +345,13 @@ class Organization(Base):
     feedback_default_on: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false(), nullable=False
     )
+    # Publish destination the org admin saves (GRPH-1761). The console stores these two
+    # strings and never reaches into a box. Empty is unconfigured — there is no default
+    # remote or branch. A box pulls them; it does not invent `main`.
+    publish_repo_url: Mapped[str] = mapped_column(
+        String(1024), default="", server_default="", nullable=False)
+    publish_branch: Mapped[str] = mapped_column(
+        String(255), default="", server_default="", nullable=False)
 
 
 class SlugRedirect(Base):
@@ -2323,6 +2330,29 @@ class SyncStorageConfig(Base):
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
                                                  onupdate=utcnow)
+    # Publish destination on this box (GRPH-1761). One pair for the deployment, beside the
+    # folder path. `destination_source` is `` (unset) | local | org. `previous_path` is the
+    # path a link replaced; it is shown and never used as the next publish target. Empty
+    # pull state means this box has not pulled, which is not the same as a pull that got
+    # no answer (`unknown`).
+    repo_path: Mapped[str] = mapped_column(String(1024), default="", server_default="",
+                                           nullable=False)
+    repo_branch: Mapped[str] = mapped_column(String(255), default="", server_default="",
+                                             nullable=False)
+    previous_path: Mapped[str] = mapped_column(String(1024), default="", server_default="",
+                                               nullable=False)
+    received_url: Mapped[str] = mapped_column(String(1024), default="", server_default="",
+                                              nullable=False)
+    received_branch: Mapped[str] = mapped_column(String(255), default="", server_default="",
+                                                 nullable=False)
+    destination_source: Mapped[str] = mapped_column(String(16), default="", server_default="",
+                                                    nullable=False)
+    publish_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False)
+    destination_pull_state: Mapped[str] = mapped_column(
+        String(16), default="", server_default="", nullable=False)
+    destination_pull_reason: Mapped[str] = mapped_column(
+        String(400), default="", server_default="", nullable=False)
 
 
 class CodeSyncState(Base):
