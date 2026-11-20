@@ -278,3 +278,7 @@ adopting or dismissing is a person's act (`rules.person_adopts`) and no MCP tool
 - **Refusals name their rule:** an uncited, unresolvable, invalid or direction-less proposal is
   refused under `rules.proposal_cited`; a loosening from an agent, turning a rule off and an
   invariant under `rules.person_adopts`.
+
+### Adopting a proposal (GRPH-1776)
+
+A person (project owner or admin) adopts one proposal or a batch under one reason, or dismisses one with a reason, over REST only: `POST /api/projects/{id}/rules/proposals/adopt` and `.../{proposal_id}/dismiss`. No MCP tool does either; an agent key is refused naming `rules.person_adopts`. A rule adopted from a proposal starts `observing`. Its history records "proposed by X (cited …), adopted by Y" and the reason, and a batch writes one more event. A `loosens` proposal is refused in a batch and is adopted alone with its own reason. A dismissed proposal re-filed with the same citations is refused; a new citation reopens it.
