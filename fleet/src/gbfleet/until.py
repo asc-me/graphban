@@ -1099,6 +1099,10 @@ def _loop(
                                      detail=f"{record.name if record else chosen[0]} exhausted; "
                                             f"continuing on {left.name} ({chosen[0]})")
                         continue
+                except (ToolFailed, ServerUnreachable, NotPermitted):
+                    # A server error stops the wave (`server_error`, one FAILED line).
+                    # Cooling the item would hide that and keep spawning.
+                    raise
                 except Exception as exc:
                     # GRPH-1753. One item's spawn failure is not the wave's death.
                     # Withdraw the delegation this pass opened and cool the item so

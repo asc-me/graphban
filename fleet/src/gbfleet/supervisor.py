@@ -1495,6 +1495,12 @@ def _start(
                 _report_event(wave, ledger, seat, "spawn_failed",
                               f"{type(failed).__name__}: {failed}")
                 raise
+            except (ToolFailed, ServerUnreachable, NotPermitted):
+                # GRPH-1753. A roster read that answered with an error is the wave's
+                # stop (`server-error`, one FAILED line), not this seat's spawn failure.
+                # Wrapping it as LaunchFailed recorded a second line and let the wave
+                # continue into the same read.
+                raise
             except Exception as exc:
                 # GRPH-1753. seat.write raises UnrenderableSeat, and a full disk or a
                 # missing binary can raise before spawn() wraps it as LaunchFailed.

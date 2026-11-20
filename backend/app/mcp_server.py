@@ -3536,22 +3536,17 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             raise errors.Validation("delegate needs a registered agent: pass agent_id, or "
                                     "register_agent on this connection first")
         agent = db.get(Agent, me)
-        if args.get("withdraw"):
-            # GRPH-1753. Close the row this caller just opened. Do not mint, and do not
-            # open a replacement — a replacement is what the next planner is refused for.
-            try:
-                withdrew = delegation_svc.withdraw(db, agent=agent, item=item)
-            except delegation_svc.DelegationRefused as e:
-                detail = "; ".join(f"{k}={v}" for k, v in e.detail.items())
-                msg = f"{e} ({detail})" if detail else str(e)
-                if e.code == "validation":
-                    raise errors.Validation(msg, hint=e.hint)
-                raise errors.Conflict(msg, hint=e.hint)
-            return {"delegation_id": withdrew or "",
-                    "state": "closed" if withdrew else "absent",
-                    "withdrew": withdrew, "enrolment_code": None, "bound_only": False,
-                    "brief": {}}
         try:
+            if args.get("withdraw"):
+                # GRPH-1753. Close the row this caller just opened. Do not mint, and do not
+                # open a replacement — a replacement is what the next planner is refused for.
+                # The refusal shares the raise below: a second `errors.Conflict` is a bare
+                # 409, and the ratchet only goes down.
+                withdrew = delegation_svc.withdraw(db, agent=agent, item=item)
+                return {"delegation_id": withdrew or "",
+                        "state": "closed" if withdrew else "absent",
+                        "withdrew": withdrew, "enrolment_code": None, "bound_only": False,
+                        "brief": {}}
             row, withdrew, code = delegation_svc.delegate(
                 db, agent=agent, item=item, lane=args["lane"], tier=args["tier"],
                 note=args.get("note", ""), lease_seconds=items_svc.DEFAULT_LEASE_SECONDS,
