@@ -137,6 +137,9 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         # PRD-P63 S2a (GRPH-1262). A read. Setting a toggle is deliberately NOT here: D10
         # keeps that a person's REST request, so no agent can switch off a rule reviewing it.
         "get_rule_toggles",
+        # P91 S3 (GRPH-1775). QUALITY: files a cited suggestion; nothing adopts it
+        # (rules.person_adopts), and the server refuses an agent's loosening.
+        "propose_rule",
         # P75 S1. QUALITY: records an answer on a decision wait. Refused for the filing agent,
         # and an agent answer must cite a source that resolves.
         "answer_wait",

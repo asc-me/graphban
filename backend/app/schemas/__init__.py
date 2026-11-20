@@ -1908,6 +1908,38 @@ class CustomRuleWrite(BaseModel):
     claims: str | None = None
 
 
+class RuleProposalWrite(BaseModel):
+    """A rule proposal from a person or the import CLI (GRPH-1775). `import_run` marks an import."""
+    model_config = {"extra": "forbid"}
+    kind: str
+    citations: list[dict] = []
+    rule_id: str | None = None
+    slug: str | None = None
+    primitive: str | None = None
+    title: str | None = None
+    why: str | None = None
+    params: dict | None = None
+    import_run: str | None = None
+
+
+class RuleProposalOut(BaseModel):
+    id: int
+    project_id: str
+    kind: str
+    rule_id: str
+    primitive: str
+    draft: dict
+    params: dict
+    citations: list
+    proposer: str
+    proposer_kind: str
+    direction: str
+    loosens: bool
+    status: str
+    folded: bool = False
+    created_at: datetime
+
+
 class CustomRuleOut(BaseModel):
     rule_id: str
     primitive: str

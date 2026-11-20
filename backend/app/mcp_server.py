@@ -68,6 +68,7 @@ from app.services import tool_tiers
 from app.services import waits as waits_svc
 from app.services import delegation as delegation_svc
 from app.services import entitlements as entitlements_svc
+from app.services import rule_proposals as rule_proposals_svc
 from app.services import rule_toggles as rule_toggles_svc
 from app.services import headroom as headroom_svc
 from app.services import quotas
@@ -635,6 +636,20 @@ TOOLS: list[dict[str, Any]] = [
             "lock. A person sets them."
         ),
         "inputSchema": {"type": "object", "properties": {"project_id": {"type": "string"}}},
+    },
+    {
+        "name": "propose_rule",
+        "description": (
+            "Cited rule suggestion; agents only tighten."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string"},
+                "draft": {"type": "object"},
+                "citations": {"type": "array"},
+            },
+        },
     },
     {
         "name": "list_entitlements",
@@ -1576,7 +1591,7 @@ _PROJECT_SCOPED = {
     "create_line", "unscoped_fixes", "put_document", "get_document", "search_docs",
     "open_design", "put_preamble", "put_set_constraints",
     "confirm_tier", "get_design_set",
-    "compile_prompts", "put_canvas", "file_finding", "resolve_finding",
+    "compile_prompts", "put_canvas", "file_finding", "resolve_finding", "propose_rule",
 }
 # Tools that ACCEPT `project_id`, which is a different question from the one above.
 #
@@ -1838,6 +1853,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     },
     "list_entitlements": {"type": "object", "properties": {"entitlements": {"type": "array"}}},
     "get_rule_toggles": {"type": "object", "properties": {"toggles": {"type": "array"}}},
+    "propose_rule": {"type": "object", "properties": {"id": {"type": "integer"}}},
     "set_entitlement": {"type": "object", "properties": {"id": {"type": "string"}}},
     "report_entitlement_event": {"type": "object", "properties": {"admitted": {"type": "boolean"}}},
     "report_utilization": {"type": "object", "properties": {"recorded": {"type": "boolean"}}},
@@ -2346,6 +2362,8 @@ _FLEET_ONLY_ARGS = {
     # headroom. A worker that sends no agent_id is still resolved from the connection's single
     # live agent; the dispatcher reads an agent_id whether or not it was advertised.
     "create_item": {"agent_id": {"type": "string"}},
+    # GRPH-1775. The proposer is stamped from it; same reason as create_item's.
+    "propose_rule": {"agent_id": {"type": "string"}},
     "fleet_status": {"view": {
         "type": "string", "enum": ["lean", "live", "full"],
         "description": "lean (default) drops display-only fields; live drops offline agents "
@@ -3467,6 +3485,17 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "get_rule_toggles":
         return {"library_loaded": rule_toggles_svc.library_loaded(),
                 "toggles": rule_toggles_svc.effective(db, pid)}
+    if name == "propose_rule":
+        # P91 D2: any agent on the project may SUGGEST; nothing here adopts (rules.person_adopts).
+        draft = args.get("draft") or {}  # {slug, primitive, title, why, params} or {rule_id, params}
+        row, folded = rule_proposals_svc.propose(
+            db, project_id=pid, proposer_kind="agent",
+            proposer=fleet_svc.caller_identity(args.get("agent_id"), key),
+            kind=args.get("kind") or "", citations=args.get("citations"),
+            rule_id=draft.get("rule_id"),
+            slug=draft.get("slug"), primitive=draft.get("primitive"), title=draft.get("title"),
+            why=draft.get("why"), params=draft.get("params"))
+        return rule_proposals_svc.view(row, folded=folded)
     if name == "list_entitlements":
         return {"entitlements": entitlements_svc.list_entitlements(
             db, entitlements_svc.org_for_project(db, pid))}
