@@ -26,8 +26,9 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.errors import NotFound, Refused, Validation
-from app.models import Item, MemoryShard, Observation, Project, RuleProposal
+from app.models import CustomRule, Item, MemoryShard, Observation, Project, RuleProposal
 from app.services import custom_rules
+from app.services import events as events_svc
 from app.services import rule_pack
 from app.services import rule_toggles as T
 
@@ -253,6 +254,17 @@ def propose(db: Session, *, project_id: str, proposer_kind: str, proposer: str, 
         RuleProposal.kind == kind, RuleProposal.primitive == primitive)
     if kind != "new_rule":
         q = q.where(RuleProposal.rule_id == rule_id)
+    # A dismissed proposal stays dismissed until it brings a citation it did not have.
+    dq = select(RuleProposal).where(
+        RuleProposal.project_id == project_id, RuleProposal.status == "dismissed",
+        RuleProposal.kind == kind, RuleProposal.primitive == primitive)
+    if kind != "new_rule":
+        dq = dq.where(RuleProposal.rule_id == rule_id)
+    for dis in db.scalars(dq.order_by(RuleProposal.id)):
+        if dis.params == new_params and all(c in (dis.citations or []) for c in cites):
+            _refuse(f"a proposal for {rule_id!r} with these params was dismissed"
+                    + (f" ({dis.decided_reason})" if dis.decided_reason else ""),
+                    hint="cite something new to reopen it")
     for open_p in db.scalars(q.order_by(RuleProposal.id)):
         if open_p.params == new_params:
             have = list(open_p.citations or [])
@@ -283,3 +295,126 @@ def list_for_project(db: Session, project_id: str, status: str | None = None) ->
     if status:
         q = q.where(RuleProposal.status == status)
     return [view(r) for r in db.scalars(q.order_by(RuleProposal.id))]
+
+
+# ---- adoption (GRPH-1776 / P91 D4) -------------------------------------------------------
+# A person's act (`rules.person_adopts`): REST only, project owner or admin. Every rule adopted
+# from a proposal starts `observing` (D5); direct Rules-page writes stay immediate.
+
+def _now():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc)
+
+
+def _history(p: RuleProposal) -> str:
+    cites = ", ".join(f"{c['kind']}:{c['ref'] if isinstance(c['ref'], str) else c['ref'].get('path')}"
+                      for c in (p.citations or []))
+    return f"proposed by {p.proposer} (cited {cites})"
+
+
+def _open_proposal(db: Session, project_id: str, proposal_id: int) -> RuleProposal:
+    p = db.get(RuleProposal, proposal_id)
+    if p is None or p.project_id != project_id:
+        raise NotFound(f"proposal {proposal_id!r} not found in this project")
+    if p.status != "open":
+        raise Validation(f"proposal {proposal_id} is {p.status}, not open")
+    return p
+
+
+def _apply_adoption(db: Session, user, p: RuleProposal, reason: str, batch: bool) -> None:
+    """Apply one proposal to the session, uncommitted."""
+    pid = p.project_id
+    if p.kind == "new_rule":
+        d = p.draft or {}
+        bad = rule_pack.validate_draft(d)
+        if bad:
+            raise Validation(f"the draft is no longer valid: {bad}")
+        if custom_rules._row(db, p.rule_id, pid) is not None:
+            raise Validation(f"{p.rule_id} already exists in this project")
+        db.add(CustomRule(rule_id=p.rule_id, project_id=pid, primitive=p.primitive,
+                          primitive_api=rule_pack.PRIMITIVE_API, stage=d["stage"],
+                          params=copy.deepcopy(p.params or {}), title=d["title"],
+                          why=d["summary"], claims=d["claims"], state="observing",
+                          author_id=user.id, reason=reason))
+        state = "observing"
+    elif custom_rules.is_custom(p.rule_id):
+        row = custom_rules.get(db, p.rule_id, pid)
+        row.params = copy.deepcopy(p.params or {})
+        if p.kind == "turn_on":
+            row.state = "observing"
+        state = row.state
+    else:
+        if p.kind == "turn_on":
+            # D5: an adopted rule starts observing. A library rule has no observing state yet
+            # (it arrives with S5, GRPH-1777), and switching it on here would enforce at once.
+            raise Validation(
+                f"proposal {p.id} turns on library rule {p.rule_id!r}, which would enforce at "
+                "once: a library rule cannot start observing until S5 (GRPH-1777)",
+                hint="dismiss it, or switch the rule on from the Rules page")
+        changes: dict = {"params": copy.deepcopy(p.params or {})}
+        row, before, old = T._stage_project_toggle(db, pid, p.rule_id, changes, user)
+        db.flush()
+        T._record_project_toggle(db, pid, p.rule_id, row, before, old, user, reason)
+        state = "on" if T.resolve(db, p.rule_id, pid)["on"]["value"] else "off"
+    p.status = "adopted"
+    p.decided_by = user.handle or user.name
+    p.decided_reason = reason
+    p.decided_at = _now()
+    events_svc.record_user(
+        db, user, action="adopt_rule_proposal", target_type="rule", target_id=p.rule_id,
+        project_id=pid,
+        meta={"proposal_id": p.id, "kind": p.kind, "state": state, "reason": reason,
+              "batch": batch, "history": f"{_history(p)}, adopted by {p.decided_by}",
+              "proposer": p.proposer, "proposer_kind": p.proposer_kind,
+              "citations": p.citations, "adopted_by": p.decided_by})
+
+
+def adopt(db: Session, actor: object, project_id: str, proposal_ids: list[int],
+          reason: str) -> list[RuleProposal]:
+    """Adopt one proposal or a batch under one reason, all-or-nothing. A `loosens` proposal is
+    refused in a batch (naming it); adopted alone it needs its own reason."""
+    user = T._check_project_writer(db, actor, project_id)
+    why = T._reason(reason)
+    ids = list(dict.fromkeys(proposal_ids))
+    if not ids:
+        raise Validation("name at least one proposal to adopt")
+    batch = len(ids) > 1
+    try:
+        rows = [_open_proposal(db, project_id, i) for i in ids]
+        if batch:
+            loose = [p.id for p in rows if p.loosens]
+            if loose:
+                raise Validation(
+                    f"proposal {', '.join(map(str, loose))} loosens a rule and cannot be adopted "
+                    "in a batch", hint="adopt it alone, with its own reason")
+        for p in rows:
+            _apply_adoption(db, user, p, why, batch)
+            db.flush()
+        if batch:
+            events_svc.record_user(
+                db, user, action="adopt_rule_proposals", target_type="project",
+                target_id=project_id, project_id=project_id,
+                meta={"proposal_ids": ids, "rule_ids": [p.rule_id for p in rows],
+                      "reason": why})
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+    return rows
+
+
+def dismiss(db: Session, actor: object, project_id: str, proposal_id: int,
+            reason: str) -> RuleProposal:
+    user = T._check_project_writer(db, actor, project_id)
+    why = T._reason(reason)
+    p = _open_proposal(db, project_id, proposal_id)
+    p.status = "dismissed"
+    p.decided_by = user.handle or user.name
+    p.decided_reason = why
+    p.decided_at = _now()
+    events_svc.record_user(
+        db, user, action="dismiss_rule_proposal", target_type="rule", target_id=p.rule_id,
+        project_id=project_id,
+        meta={"proposal_id": p.id, "reason": why, "history": _history(p)})
+    db.commit()
+    return p
