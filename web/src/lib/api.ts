@@ -1445,6 +1445,10 @@ export const api = {
     }),
   runSyncStorage: (projectId: string) =>
     request<SyncStorageStatus>(`/platform/sync-storage/run${projectQuery(projectId)}`, { method: "POST" }),
+  // The box's publish destination (GRPH-1761). One pair for the deployment. The org admin
+  // owns it while the box is linked; this save is the unlinked local path and branch.
+  saveDestination: (body: { path: string; branch: string }) =>
+    request<PublishDestination>("/sync/destination", { method: "PUT", body: JSON.stringify(body) }),
 
   // Local↔cloud sync link (AL-141). Status/link/unlink are instance-wide; push/purge/
   // export/import are per-project (the credential is resolved server-side).
@@ -1816,6 +1820,23 @@ export interface SyncStorageRow {
   error: string;
 }
 
+/** The box's publish destination (GRPH-1761). Absent on a payload means it was not reported,
+ * which is not the same as unconfigured. */
+export interface PublishDestination {
+  state: "configured" | "unconfigured";
+  source: "org" | "local" | null;
+  url: string;
+  path: string;
+  branch: string;
+  /** Null: there is no previous path. A path here is shown and is not the next publish target. */
+  previous: { path: string } | null;
+  editable: boolean;
+  publishing: boolean;
+  /** `state` null: this box has not pulled. That is not `unknown`. */
+  pull: { state: "ok" | "unknown" | "refused" | null; reason: string };
+  code_remote_match: { checked: boolean; projects: { project_id: string; repo_url: string }[] };
+}
+
 export interface SyncStorageStatus {
   folder: SyncPathFact;
   blob_dir: SyncPathFact;
@@ -1826,6 +1847,8 @@ export interface SyncStorageStatus {
   last_run: { at: string | null; export_status: "ok" | "failed" | "not_run" | null; error: string };
   /** Present on the run response only: the report of the sync that just ran (null if it could not run). */
   run?: SyncReport | null;
+  /** Omitted when this response did not carry a destination. That is "not reported", not unconfigured. */
+  destination?: PublishDestination;
 }
 
 /** One hash conflict from a sync report: facts only, neither body. */

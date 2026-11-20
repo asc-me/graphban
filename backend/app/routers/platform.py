@@ -643,13 +643,24 @@ def _require_self_hosted_box() -> None:
                                  "deployment does not take filesystem paths")
 
 
+def _with_destination(db: Session, user: User, payload: dict) -> dict:
+    """Who may edit is a fact about the caller. The service stays principal-free and forces
+    editable false while the box is linked, even when this passes true."""
+    from app.services import code_sync
+
+    payload["destination"] = sync_storage_svc.destination_fact(
+        db, editable=code_sync.is_box_admin(db, user))
+    return payload
+
+
 @router.get("/sync-storage")
 def get_sync_storage(project_id: str = "core", db: Session = Depends(get_db),
                      user: User = Depends(get_current_user)):
     """Sync storage on Specs (GRPH-1320): the folder path, the blob directory, whether the
-    index is available, and each PRD row's sync state, read without syncing."""
+    index is available, and each PRD row's sync state, read without syncing. Includes the
+    publish destination (GRPH-1761)."""
     authz.require_readable(db, user.id, project_id)
-    return sync_storage_svc.status(db, project_id)
+    return _with_destination(db, user, sync_storage_svc.status(db, project_id))
 
 
 @router.put("/sync-storage")
@@ -664,7 +675,7 @@ def put_sync_storage(body: SyncStorageIn, project_id: str = "core", db: Session 
         sync_storage_svc.update_config(db, **body.model_dump(exclude_unset=True))
     except errors.Validation as e:
         raise HTTPException(422, str(e) + (f" — {e.hint}" if getattr(e, "hint", "") else ""))
-    return sync_storage_svc.status(db, project_id)
+    return _with_destination(db, user, sync_storage_svc.status(db, project_id))
 
 
 @router.post("/sync-storage/run")
@@ -673,7 +684,7 @@ def run_sync_storage(project_id: str = "core", db: Session = Depends(get_db),
     """Run sync, then return the refreshed facts and row states plus the run's report."""
     authz.require_writable(db, user.id, project_id)
     _require_self_hosted_box()
-    return sync_storage_svc.run(db, project_id)
+    return _with_destination(db, user, sync_storage_svc.run(db, project_id))
 
 
 class PlanGrantIn(BaseModel):

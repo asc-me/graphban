@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 371 of the 371. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 374 of the 374. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -130,6 +130,11 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | GET | `/api/sync/rule-decisions` | MCP (sync key) | Cloud side of the rule pull (GRPH-1297): the org's toggles with params, locks and applied profile as one versioned record (the version is a hash of the decisions). `404` for a non-sync key or a project in no org |
 | POST | `/api/sync/rule-decisions/applied` | MCP (sync key) | The box reports the version it applied; the cloud's "last synced" is only ever this report. Deployments in `/api/sync/org-overview` carry `rules` (applied vs published version, `pending`, `overdue`) |
 | POST | `/api/sync/pull-rules` | session (box admin) | BOX side: pull the org's published rule decisions, apply them as the org layer (project → org → platform, locks hold), then report the version applied — on demand; every `POST /api/sync/push` (and `graphban sync`) already does this as part of the sync, never failing the push. `409` when not linked, as `/push` |
+| GET | `/api/orgs/{org_id}/destination` | JWT (org member) | The publish destination the org admin saved (GRPH-1761): `{url, branch, state, code_remote_match}`. `state` is `configured` only when both strings are set, otherwise `unconfigured`. Any org seat can read, including a role named `viewer`. Empty strings are unconfigured — there is no default remote or branch |
+| PATCH | `/api/orgs/{org_id}/destination` | JWT (org admin) | Save `{url?, branch?}`. Owner or admin only; a member or a role named `viewer` is `403` and the stored pair is unchanged. A URL equal to a project's `repo_url` (the normalized `host/owner/name` form) is allowed. The console stores the pair and does not reach into a box |
+| GET | `/api/sync/destination` | MCP (sync key) | Cloud side of the pull: `{url, branch}` for the credential's org. `404` when the credential has no org. An unconfigured org answers with empty strings — `404` means no org, not an empty pair |
+| PUT | `/api/sync/destination` | JWT (box admin) | Box side, unlinked only: save `{path, branch}`. One pair for the deployment. Empty either field is `unconfigured` and no commit is attempted. A linked box is `403` (`the org admin owns the destination`) and the stored pair is unchanged. A non-admin is `403` and the pair is unchanged |
+| POST | `/api/sync/destination/pull` | JWT (box admin) | Box side: pull the org pair now. The same pull runs on every sync and never fails the push. No answer (network, timeout, 5xx, 408) leaves the destination and the publishing flag as they were and records `pull.state: unknown` with a reason. A 4xx is `refused` and does not clear the pair. The same pair pulled again does not turn publishing off |
 
 ## Rules (PRD-61)
 
@@ -481,7 +486,7 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | POST | `/api/platform/gdrive/connect` | JWT | Record the Drive account and folder for this project |
 | POST | `/api/platform/gdrive/disconnect` | JWT | Clear that connection |
 | POST | `/api/platform/gdrive/sync` | JWT | Two-way sync of this project's PRDs with the connected folder's `PRDs/` subdirectory |
-| GET | `/api/platform/sync-storage` | JWT | Sync storage on Specs (GRPH-1320): the folder path, the blob directory, whether the index is available (or why not), each PRD row's sync state (`in_sync`, `not_exported`, `ledger_changed`, `file_changed`, `conflict`, `read_failed`, `unknown`), and a read-only preview report. Writes nothing |
+| GET | `/api/platform/sync-storage` | JWT | Sync storage on Specs (GRPH-1320): the folder path, the blob directory, whether the index is available (or why not), each PRD row's sync state (`in_sync`, `not_exported`, `ledger_changed`, `file_changed`, `conflict`, `read_failed`, `unknown`), a read-only preview report, and the publish destination (GRPH-1761: `state`, `source`, `url`, `path`, `branch`, `previous`, `editable`, `publishing`, `pull`, `code_remote_match`). Writes nothing. `editable` is false for a non-admin and for every caller while the box is linked |
 | PUT | `/api/platform/sync-storage` | JWT (project owner; 400 hosted) | Save the box's sync configuration: `folder_path`, `blob_dir` (absolute paths; empty restores the default under `SYNC_DIR`). An unreadable path is saved and shown as a failure on that fact |
 | POST | `/api/platform/sync-storage/run` | JWT (400 hosted) | Run sync for this project into `<folder>/<project>/PRDs`, then return the refreshed facts and row states plus `run` (the report). An unreadable file is a read failure, not a conflict; a failed export leaves the ledger as it was |
 

@@ -647,6 +647,18 @@ export function useSaveSyncStorage(projectId: string) {
   });
 }
 
+/** Save the unlinked box's path and branch (GRPH-1761). One pair for the deployment, so every
+ * project's sync-storage read is refreshed. */
+export function useSaveDestination(_projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { path: string; branch: string }) => api.saveDestination(body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sync-storage"] });
+    },
+  });
+}
+
 export function useRunSyncStorage(projectId: string) {
   const qc = useQueryClient();
   return useMutation({

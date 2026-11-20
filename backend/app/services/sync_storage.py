@@ -24,7 +24,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app import errors
-from app.models import DocumentChunk, SyncState, SyncStorageConfig, utcnow
+from app.models import DocumentChunk, Organization, Project, SyncState, SyncStorageConfig, utcnow
 from app.services import drive_sync
 from app.services import prds as prd_svc
 
@@ -221,6 +221,7 @@ def status(db: Session, project_id: str) -> dict:
             "conflict_details": [{**d, "prd_id": k(d["prd_id"])} for d in rep["conflict_details"]],
             "read_failures": [{**f, "prd_id": k(f["prd_id"])} for f in rep["read_failures"]],
         }
+    out["destination"] = destination_fact(db, editable=False)
     return out
 
 
@@ -285,3 +286,274 @@ def run(db: Session, project_id: str) -> dict:
     row.last_error = error[:400]
     db.commit()
     return {**status(db, project_id), "run": result}
+
+
+# ---- publish destination (GRPH-1761) -------------------------------------------------------
+# The console stores a URL and a branch. The box pulls them. Nothing here shells out to git,
+# and nothing here turns publishing on — a link, an unlink, or a changed pair turns it off.
+
+_URL_MAX = 1024
+_BRANCH_MAX = 255
+_REASON_MAX = 400
+
+
+class DestinationOwned(Exception):
+    """This box is linked. The org admin owns the destination; a local save is refused."""
+
+
+def _clip(value: str, limit: int, name: str) -> str:
+    value = (value or "").strip()
+    if "\x00" in value or len(value) > limit:
+        raise errors.Validation(f"{name} is not usable")
+    return value
+
+
+def _branch(value: str) -> str:
+    """A branch is whatever the admin typed. Empty is allowed and means unconfigured.
+    Nothing substitutes `main`."""
+    return _clip(value, _BRANCH_MAX, "branch")
+
+
+def _repo_path(value: str) -> str:
+    """Empty is unconfigured, not the sync-folder default. A non-empty path must be absolute.
+    It is saved even when this box cannot read it."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if len(value) > MAX_PATH or "\x00" in value:
+        raise errors.Validation("path is not a usable path")
+    if not os.path.isabs(value):
+        raise errors.Validation("path must be an absolute path on this box",
+                                hint=f"got {value!r}")
+    return os.path.normpath(value)
+
+
+def is_linked(db: Session) -> bool:
+    from app.services import code_sync
+
+    return bool(code_sync.link_status(db).get("linked"))
+
+
+def _match(db: Session, url: str, *, org_id: str | None = None) -> dict:
+    """Exact string equality with `Project.repo_url`. `checked` is always true: an empty
+    project list means this looked and nothing matched, not that nobody looked."""
+    projects: list[dict] = []
+    if url:
+        q = select(Project).where(Project.repo_url == url)
+        if org_id is not None:
+            q = q.where(Project.org_id == org_id)
+        projects = [{"project_id": p.id, "repo_url": p.repo_url} for p in db.scalars(q)]
+    return {"checked": True, "projects": projects}
+
+
+def destination_fact(db: Session, *, editable: bool = False) -> dict:
+    """The box's destination. `state` is configured only when the active value and the branch
+    are both set. `pull.state` null means this box has not pulled. `previous` null means there
+    is no earlier path — not that a path was cleared."""
+    row = get_config(db)
+    source = row.destination_source or ""
+    linked = is_linked(db)
+    if source == "org":
+        active, branch = row.received_url, row.received_branch
+        url, path = active, ""
+    elif source == "local":
+        active, branch = row.repo_path, row.repo_branch
+        url, path = "", active
+    else:
+        active, branch = "", ""
+        url, path = "", ""
+    return {
+        "state": "configured" if active and branch else "unconfigured",
+        "source": source or None,
+        "url": url,
+        "path": path,
+        "branch": branch if source else "",
+        "previous": {"path": row.previous_path} if row.previous_path else None,
+        "editable": bool(editable) and not linked,
+        "publishing": bool(row.publish_enabled),
+        "pull": {
+            "state": row.destination_pull_state or None,
+            "reason": row.destination_pull_reason or "",
+        },
+        "code_remote_match": _match(db, url if source == "org" else ""),
+    }
+
+
+def org_destination(db: Session, org: Organization) -> dict:
+    """What the org admin saved. No publishing flag: the switch lives on the box."""
+    url = org.publish_repo_url or ""
+    branch = org.publish_branch or ""
+    return {
+        "url": url,
+        "branch": branch,
+        "state": "configured" if url and branch else "unconfigured",
+        "code_remote_match": _match(db, url, org_id=org.id),
+    }
+
+
+def save_org(db: Session, org: Organization, *, url: str | None = None,
+             branch: str | None = None) -> dict:
+    """Store the org's URL and branch. Any non-empty string is allowed, including a value
+    equal to a project's `repo_url` (`github.com/acme/app`). Empty is unconfigured."""
+    if url is not None:
+        org.publish_repo_url = _clip(url, _URL_MAX, "url")
+    if branch is not None:
+        org.publish_branch = _branch(branch)
+    db.commit()
+    db.refresh(org)
+    return org_destination(db, org)
+
+
+def save_local(db: Session, *, path: str, branch: str) -> dict:
+    """The unlinked box's path and branch. Refused, with the stored pair left as it is, when
+    the box is linked."""
+    if is_linked(db):
+        raise DestinationOwned("the org admin owns the destination")
+    path = _repo_path(path)
+    branch = _branch(branch)
+    row = get_config(db)
+    changed = (path != row.repo_path or branch != row.repo_branch
+               or row.destination_source == "org")
+    if path != row.repo_path and row.repo_path:
+        row.previous_path = row.repo_path
+    row.repo_path = path
+    row.repo_branch = branch
+    row.received_url = ""
+    row.received_branch = ""
+    row.destination_source = "local" if (path or branch) else ""
+    if changed:
+        row.publish_enabled = False
+    db.commit()
+    return destination_fact(db, editable=True)
+
+
+def note_link(db: Session) -> None:
+    """A link arrived. Publishing goes off even when the pull that follows gets no answer.
+    The path stays until a pull actually adopts the org's pair."""
+    row = get_config(db)
+    row.publish_enabled = False
+    db.commit()
+
+
+def note_unlink(db: Session) -> None:
+    """An unlink arrived. A pair that came from the org is cleared and the previous path is
+    not put back. A pair that was only ever local stays, and publishing is off either way.
+    Calling this twice leaves the same row."""
+    row = get_config(db)
+    if row.destination_source == "org":
+        row.received_url = ""
+        row.received_branch = ""
+        row.destination_source = ""
+        row.repo_path = ""
+        row.repo_branch = ""
+    else:
+        row.received_url = ""
+        row.received_branch = ""
+    row.publish_enabled = False
+    db.commit()
+
+
+def _adopt(row: SyncStorageConfig, url: str, branch: str) -> None:
+    """Apply a destination the console actually answered with. The same pair again does not
+    turn publishing off. The first adopt from a local path stashes that path and stops using it."""
+    url = (url or "").strip()
+    branch = (branch or "").strip()
+    if (len(url) > _URL_MAX or len(branch) > _BRANCH_MAX or "\x00" in url or "\x00" in branch):
+        row.destination_pull_state = "refused"
+        row.destination_pull_reason = "the org destination is not usable"
+        return
+    changed_source = row.destination_source != "org"
+    changed_value = row.received_url != url or row.received_branch != branch
+    if changed_source and row.repo_path:
+        row.previous_path = row.repo_path
+    if changed_source:
+        row.repo_path = ""
+        row.repo_branch = ""
+    row.received_url = url
+    row.received_branch = branch
+    row.destination_source = "org"
+    if changed_source or changed_value:
+        row.publish_enabled = False
+    row.destination_pull_state = "ok"
+    row.destination_pull_reason = ""
+
+
+def _record_pull(db: Session, state: str, reason: str) -> None:
+    """Write only the pull outcome. The destination and the publishing flag stay as they were."""
+    row = get_config(db)
+    row.destination_pull_state = state
+    row.destination_pull_reason = (reason or "")[:_REASON_MAX]
+    db.commit()
+
+
+def fetch_org_destination(base_url: str, api_key: str):
+    """GET the org's destination. Tests replace this; the box never pushes a destination."""
+    import httpx
+
+    return httpx.get(
+        f"{base_url.rstrip('/')}/api/sync/destination",
+        headers={"X-API-Key": api_key},
+        timeout=30.0,
+    )
+
+
+def _credentials(db: Session, cloud_url: str, api_key: str) -> tuple[str, str] | None:
+    if cloud_url and api_key:
+        return cloud_url, api_key
+    from app.services import code_sync
+
+    try:
+        return code_sync._target(db, "", "")
+    except code_sync.NotLinked:
+        return None
+
+
+def pull_destination(db: Session, *, cloud_url: str = "", api_key: str = "",
+                     fetch=None) -> dict:
+    """Pull the org's URL and branch. No answer (network, timeout, 5xx, 408) records
+    `unknown` and leaves the destination and publishing flag untouched. A 4xx is `refused`:
+    an answer, and not "the org cleared the repo". A body with neither key is not a
+    destination. Missing keys on a real destination are empty, never `main`."""
+    creds = _credentials(db, cloud_url, api_key)
+    if creds is None:
+        return destination_fact(db, editable=False)
+    url, key = creds
+    fetch = fetch or fetch_org_destination
+    try:
+        resp = fetch(url, key)
+    except Exception as e:  # network, timeout, HTTPError, or a transport that raised
+        # Any failure to obtain a document is "no answer". It must not clear the pair.
+        _record_pull(db, "unknown", f"{type(e).__name__}: {e}")
+        return destination_fact(db, editable=False)
+    status = getattr(resp, "status_code", None) or 0
+    if status >= 500 or status in (408, 425, 429) or status <= 0:
+        _record_pull(db, "unknown", f"the console answered {status}" if status else
+                     "the console gave no answer")
+        return destination_fact(db, editable=False)
+    if status >= 400:
+        _record_pull(db, "refused", f"the console answered {status}")
+        return destination_fact(db, editable=False)
+    try:
+        data = resp.json()
+    except (ValueError, TypeError) as e:
+        _record_pull(db, "unknown", f"the console answered without a destination: {type(e).__name__}")
+        return destination_fact(db, editable=False)
+    if not isinstance(data, dict) or ("url" not in data and "branch" not in data):
+        _record_pull(db, "unknown", "the console answered without a destination")
+        return destination_fact(db, editable=False)
+    row = get_config(db)
+    _adopt(row, str(data.get("url") or ""), str(data.get("branch") or ""))
+    db.commit()
+    return destination_fact(db, editable=False)
+
+
+def publish_target(db: Session) -> dict | None:
+    """Where the next publish would write. None when either half is missing, so an
+    unconfigured destination does not fall back to the previous path."""
+    row = get_config(db)
+    source = row.destination_source or ""
+    if source == "org" and row.received_url and row.received_branch:
+        return {"kind": "remote", "url": row.received_url, "branch": row.received_branch}
+    if source == "local" and row.repo_path and row.repo_branch:
+        return {"kind": "path", "path": row.repo_path, "branch": row.repo_branch}
+    return None
