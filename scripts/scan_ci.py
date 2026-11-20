@@ -27,7 +27,10 @@ are different strings because they ask different people for different things:
 posted on its OWN receipt (`attest_ci.receipt`), never beside `suite_green`, and with
 `head_commit` on every run, pass or fail, so an older pass stops covering a head that failed.
 A read timeout or a connection reset on that post is retried, then reported as an attestation
-failure. It is not an uncaught traceback, and it is not a scan finding.
+failure. It is not an uncaught traceback, and it is not a scan finding. A timeout whose
+receipt is already on the item — the write committed and the response never arrived — is
+not a failure (GRPH-1784). A timeout when the item has no such receipt still fails, and the
+message says the scans were clean.
 
 The scan rows are also recorded (`record_scan`, explicit `category`) so the Stack overlay can
 show them. The attestation never depends on those rows: a failed post is logged and changes
@@ -453,21 +456,82 @@ def _retry_backoff(seconds: float) -> None:
     time.sleep(seconds)
 
 
+def _evidence_has_receipt(item, receipt: dict) -> bool:
+    """True when `item` already carries the attestation this run tried to post.
+
+    Identity is the run reference, the commit, and the predicate we sent — name and
+    `passed`. The server rebuilds the stored row (it adds `detail` and `schema_version`),
+    so equality on the whole dict would miss a write that landed. An empty `run_ref`
+    matches only another empty one: a different run that named its own ref does not.
+    """
+    if not isinstance(item, dict):
+        return False
+    evidence = item.get("evidence")
+    if not isinstance(evidence, list):
+        return False
+    want_ref = str(receipt.get("run_ref") or "")
+    want_commit = str(receipt.get("commit") or "")
+    preds = receipt.get("predicates") or []
+    if not preds or not isinstance(preds[0], dict):
+        return False
+    want_name = preds[0].get("name")
+    want_passed = preds[0].get("passed")
+    if not want_name or not isinstance(want_passed, bool):
+        return False
+    for row in evidence:
+        if not isinstance(row, dict) or row.get("kind") != "attestation":
+            continue
+        if str(row.get("commit") or "") != want_commit:
+            continue
+        if str(row.get("run_ref") or "") != want_ref:
+            continue
+        for pred in row.get("predicates") or []:
+            if (isinstance(pred, dict) and pred.get("name") == want_name
+                    and pred.get("passed") is want_passed):
+                return True
+    return False
+
+
+def _receipt_landed(url: str, key: str, item_key: str, receipt: dict) -> bool:
+    """Whether the ledger already stored this run's receipt.
+
+    A timed-out response is not proof either way: the write can commit and the
+    client still see `TimeoutError`. Reading the item is the confirmation. A read
+    that fails, times out, or returns nothing is not a stored receipt — absence
+    is not success, and the job stays red.
+    """
+    try:
+        item = attest_ci.call_tool(url, key, "get_item_details", {"id": item_key})
+    except Exception:  # noqa: BLE001 — a read we cannot finish is not a stored receipt
+        return False
+    return _evidence_has_receipt(item, receipt)
+
+
 def _write_attestation(url: str, key: str, item_key: str, head: str, receipt: dict) -> None:
     """Post one item's receipt. Retry a read timeout or reset; re-raise the last one.
 
     Not `attest_ci.with_retry`: that treats every OSError as transient, and this catch has
     to name TimeoutError so dropping it from `ATTEST_TRANSIENT` is a visible failure.
+
+    After the retries, a `TimeoutError` whose receipt is already on the item returns.
+    The response was lost; the write was not. A timeout with no such receipt still
+    raises, and so does a connection reset — that one is not this confirmation.
     """
+    last: BaseException | None = None
     for n in range(attest_ci.LEDGER_ATTEMPTS):
         try:
             attest_ci.call_tool(url, key, "update_item",
                                 {"id": item_key, "head_commit": head, "evidence": [receipt]})
             return
-        except ATTEST_TRANSIENT:
+        except ATTEST_TRANSIENT as exc:
+            last = exc
             if n == attest_ci.LEDGER_ATTEMPTS - 1:
-                raise
+                break
             _retry_backoff(attest_ci.LEDGER_BACKOFF * (2 ** n))
+    if isinstance(last, TimeoutError) and _receipt_landed(url, key, item_key, receipt):
+        return
+    assert last is not None
+    raise last
 
 
 def _attest_error(item_key: str, exc: BaseException, *, scans_passed: bool) -> str:

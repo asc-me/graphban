@@ -181,5 +181,5 @@ def test_contract_and_cited_rule():
     c = json.loads((Path(__file__).parents[2] / "docs/rule-primitive-contract.json").read_text())
     p = next(x for x in c["primitives"] if x["id"] == "found_bug")
     assert p["level"] == "enforced" and p["params"] == [
-        {"name": "mode", "required": False, "type": "str"}]
+        {"name": "mode", "required": False, "type": "str", "comparator": None}]
     assert RULE in R.LIBRARY_BOUND_RULE_IDS

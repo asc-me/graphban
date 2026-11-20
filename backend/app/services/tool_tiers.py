@@ -116,6 +116,8 @@ TOOL_TIERS: dict[str, str] = {
         # PRD-P63 S2a: rule toggles are a person's setting, read by the primitives in-process;
         # an agent asking which library rules are on is not on the path of a task.
         "get_rule_toggles",
+        # P91 S3: suggesting a rule is rare and never mid-task; a person adopts.
+        "propose_rule",
     )},
 }
 

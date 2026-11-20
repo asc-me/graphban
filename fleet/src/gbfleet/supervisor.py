@@ -103,6 +103,10 @@ class Limits:
     #: blamed on the network. A child in one long tool call will trip this and that is
     #: fine; it is an observation, not an accusation.
     quiet_after: float = 300.0
+    #: Cap on vendor subagents each child may start (GRPH-1726). None = say nothing, so the
+    #: instruction is unchanged; 0 = tell the child not to spawn any. Written into the
+    #: instruction only; no adapter strips the tool.
+    subagents: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1258,7 +1262,7 @@ def start_one(
     # outcome. `prepare` no-ops when `.gbagent.toml` has no [setup]; a setup that
     # fails refuses the spawn (SetupFailed ⊂ ConfigRefused).
     prepare(tree.path)
-    launch = launch_factory(seat, tree, _instruction_file(tree, seat, wave_name), debug_file)
+    launch = launch_factory(seat, tree, _instruction_file(tree, seat, wave_name, limits.subagents), debug_file)
     child = spawn(
         launch, tree.path, tree.branch, _logs(workspace, f"{wave_name}-{slot}"), base=tree.base,
         # Built per wave under the workspace, not the worktree: a stub directory inside the
@@ -1534,7 +1538,8 @@ def _start(
     return started
 
 
-def _instruction_file(tree: Worktree, seat: Seat, wave_name: str) -> Path:
+def _instruction_file(tree: Worktree, seat: Seat, wave_name: str,
+                      subagents: int | None = None) -> Path:
     """The child's marching orders, on disk rather than on the command line.
 
     The instruction carries the enrolment code, and argv is visible to every process on
@@ -1545,7 +1550,8 @@ def _instruction_file(tree: Worktree, seat: Seat, wave_name: str) -> Path:
     path = tree.path / ".gbfleet-instruction"
     path.write_text(instruction_for(seat, tree.path, tree.branch,
                                          behind_ref=tree.behind_ref,
-                                         conflicts=tree.behind_conflicts),
+                                         conflicts=tree.behind_conflicts,
+                                         subagents=subagents),
                     encoding="utf-8")
     # This file carries the enrolment CODE, so it is the more sensitive of the two and
     # was protected by the same call that does nothing on Windows.

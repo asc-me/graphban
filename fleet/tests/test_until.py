@@ -2393,16 +2393,16 @@ def test_the_loop_spawns_beside_a_live_child_for_a_free_cluster(
     first child's leaves the read, as on the real server, so one free cluster remains.
     Spawning twice is not enough — the bug spawned the second once the first was reaped —
     so the second launch must land inside the first child's wall clock."""
-    import time
-
     workspace = tmp_path / "ws"
     planner, supervisor = _clients(workspace, clusters=2, workers=1, sticky_clusters=True,
                                    drop_delegated=True)
     inner = _factory(scripts, "sleeper")
-    launched: list[float] = []
+    # GRPH-1715: ordering, not a wall-clock window. Each launch records how many children
+    # were alive at that moment; the second must see the first still running.
+    alive_at_launch: list[int] = []
 
     def factory(*args, **kwargs):
-        launched.append(time.monotonic())
+        alive_at_launch.append(len(_running_pids(git_repo, state)))
         return inner(*args, **kwargs)
 
     wall = 4.0
@@ -2413,7 +2413,7 @@ def test_the_loop_spawns_beside_a_live_child_for_a_free_cluster(
         limits=Limits(max_workers=3, max_children=2, child_wall_clock=wall),
     )
     assert result.spawned == 2, result.detail
-    assert launched[1] - launched[0] < wall / 2, "the second child waited out the first"
+    assert alive_at_launch[1] >= 1, "the second child waited out the first"
 
 
 def _staffing_run(git_repo, tmp_path, scripts, state, *, staff_every_row):
@@ -3095,3 +3095,10 @@ def test_a_row_whose_ci_run_is_in_progress_gets_no_reviewer_and_waits(
         )
     assert roles == []
     assert len(ticks) > 3  # waited past empty_ticks instead of exiting
+
+
+def test_negative_subagents_exits_before_any_seat(monkeypatch, capsys):
+    from gbfleet.cli import main
+    monkeypatch.setenv("GBFLEET_API_KEY", "k")
+    assert main(["until", "--server", "http://x", "--project", "p", "--adapter", "claude", "--subagents", "-1"]) == 2
+    assert "--subagents must be 0 or more" in capsys.readouterr().err

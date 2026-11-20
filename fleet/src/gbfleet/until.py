@@ -3162,8 +3162,11 @@ def transport_flake_jobs(repo: Path, branch: str) -> list[str]:
         if not m:
             return []
         try:
+            # Actions logs carry pytest colour. `gh api` refuses that body unless
+            # this flag is set, and the CI-red note then names no tests (GRPH-1758).
             got = propose._gh(repo, "api",
-                              f"repos/{{owner}}/{{repo}}/actions/jobs/{m.group(1)}/logs")
+                              f"repos/{{owner}}/{{repo}}/actions/jobs/{m.group(1)}/logs",
+                              "--allow-escape-sequences")
         except (OSError, subprocess.SubprocessError):
             return []
         if got.returncode != 0:
@@ -3250,7 +3253,8 @@ def failed_test_summary(repo: Path, branch: str) -> str:
             continue
         try:
             got = propose._gh(repo, "api",
-                              f"repos/{{owner}}/{{repo}}/actions/jobs/{m.group(1)}/logs")
+                              f"repos/{{owner}}/{{repo}}/actions/jobs/{m.group(1)}/logs",
+                              "--allow-escape-sequences")
         except (OSError, subprocess.SubprocessError) as exc:
             parts.append(f"{name}: log could not be read ({exc})")
             continue

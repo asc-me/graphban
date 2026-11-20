@@ -11,20 +11,22 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.models import Organization, Project, User
-from app.errors import NotFound, Refused, Validation
-from app.schemas import (ObservationBackfillOut, ObservationsOut,
+from app.errors import AppError, NotFound, Refused, Validation
+from app.schemas import (CustomRuleOut, CustomRuleWrite, RuleProposalOut, RuleProposalWrite, ObservationBackfillOut, ObservationsOut,
                          RecommendedRulesOut, RefusalCoverageOut, RuleSuggestionOut,
                          RulesFlowOut, RulesOut, RuleToggleBatchOut, RuleToggleBatchWrite,
                          RuleToggleOut, RuleTogglesOut, RuleToggleWrite, UnmappedRefusalsOut)
 from app.security import authz
 from app.security.deps import get_current_user, get_user_or_agent_key
 from app.services import code_graph
+from app.services import custom_rules
 from app.services import collision
 from app.services import events as events_svc
 from app.services import gitops as gitops_svc
 from app.services import observations as observations_svc
 from app.services import quotas
 from app.services import rule_pack
+from app.services import rule_proposals
 from app.services import rules as rules_svc
 from app.services import rule_measure
 from app.services import rules_org
@@ -245,6 +247,69 @@ def set_project_rule_toggles(body: RuleToggleBatchWrite, project_id: str = "core
             project_id=project_id, meta={"fields": changed})
     by_id = {t["rule_id"]: t for t in rule_toggles.effective(db, project_id)}
     return {"toggles": [by_id[w["rule_id"]] for w in writes]}
+
+
+# ---- custom rules (GRPH-1774 / P91 D1) ---------------------------------------------------
+@router.get("/projects/{project_id}/rules/custom", response_model=list[CustomRuleOut])
+def list_custom_rules(project_id: str, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    """The project's custom rules with author, why and state. Another project's are never here."""
+    authz.require_readable(db, user.id, project_id)
+    return custom_rules.list_for_project(db, project_id)
+
+
+@router.post("/projects/{project_id}/rules/custom", response_model=CustomRuleOut,
+             status_code=201)
+def create_custom_rule(project_id: str, body: CustomRuleWrite, db: Session = Depends(get_db),
+                       principal=Depends(get_user_or_agent_key)):
+    """A person authors a custom rule; it takes effect at once (`active`). Either credential
+    reaches here only so an agent key is refused by name (`rules.person_adopts`), not by a
+    bare 401."""
+    try:
+        row = custom_rules.create(db, principal, project_id, **body.model_dump())
+    except Validation as e:
+        raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
+    return custom_rules.view(db, row)
+
+
+# ---- rule proposals (GRPH-1775 / P91 D2) -------------------------------------------------
+@router.get("/projects/{project_id}/rules/proposals", response_model=list[RuleProposalOut])
+def list_rule_proposals(project_id: str, status: str | None = None,
+                        db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    authz.require_readable(db, user.id, project_id)
+    return rule_proposals.list_for_project(db, project_id, status)
+
+
+@router.post("/projects/{project_id}/rules/proposals", response_model=RuleProposalOut,
+             status_code=201)
+def create_rule_proposal(project_id: str, body: RuleProposalWrite, db: Session = Depends(get_db),
+                         principal=Depends(get_user_or_agent_key)):
+    """A person or the import CLI proposes a rule change. Direction is computed by the server; a
+    person or an import run may propose a loosening (flagged `loosens`), an agent key may not."""
+    data = body.model_dump(exclude={"import_run"})
+    if isinstance(principal, User):
+        authz.require_writable(db, principal.id, project_id)
+        kind, who = ("import", f"import:{body.import_run}") if body.import_run else (
+            "person", principal.handle or principal.name)
+    else:
+        # An API key is an agent however it labels itself: `import_run` is a person's claim.
+        kind, who = "agent", f"agent:{getattr(principal, 'name', None) or getattr(principal, 'id', '')}"
+        allowed = authz.key_writable_ids(db, principal)
+        if project_id not in allowed:
+            raise HTTPException(404, "no such project")
+    try:
+        row, folded = rule_proposals.propose(db, project_id=project_id, proposer_kind=kind,
+                                             proposer=who, **data)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except AppError as e:
+        raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
+    if isinstance(principal, User):
+        events_svc.record_user(db, principal, action="propose_rule", target_type="rule",
+                               target_id=row.rule_id, project_id=project_id,
+                               meta={"kind": row.kind, "direction": row.direction,
+                                     "folded": folded})
+    return rule_proposals.view(row, folded=folded)
 
 
 # Org rule toggles are served by the console (GBC-P8). `set_org_toggle` / `org_view` stay

@@ -1882,6 +1882,9 @@ class RuleToggleOut(BaseModel):
     locked_by: str | None = None
     #: `merge.done_predicates` only (GRPH-1426): each predicate `done` needs, with its source.
     effective_predicates: list[dict] | None = None
+    #: Custom rules only (GRPH-1774): the rule's state, and why it is drawn UNMEASURED.
+    state: str | None = None
+    unmeasured_reason: str | None = None
 
 
 class RuleTogglesOut(BaseModel):
@@ -1891,6 +1894,67 @@ class RuleTogglesOut(BaseModel):
     #: Why the installed pack is not in force (refused at startup), else None.
     library_reason: str | None = None
     toggles: list[RuleToggleOut]
+
+
+class CustomRuleWrite(BaseModel):
+    """A person authoring a custom rule directly; saved `active` (GRPH-1774)."""
+    model_config = {"extra": "forbid"}
+    slug: str
+    primitive: str
+    title: str
+    why: str
+    reason: str = ""
+    params: dict = {}
+    claims: str | None = None
+
+
+class RuleProposalWrite(BaseModel):
+    """A rule proposal from a person or the import CLI (GRPH-1775). `import_run` marks an import."""
+    model_config = {"extra": "forbid"}
+    kind: str
+    citations: list[dict] = []
+    rule_id: str | None = None
+    slug: str | None = None
+    primitive: str | None = None
+    title: str | None = None
+    why: str | None = None
+    params: dict | None = None
+    import_run: str | None = None
+
+
+class RuleProposalOut(BaseModel):
+    id: int
+    project_id: str
+    kind: str
+    rule_id: str
+    primitive: str
+    draft: dict
+    params: dict
+    citations: list
+    proposer: str
+    proposer_kind: str
+    direction: str
+    loosens: bool
+    status: str
+    folded: bool = False
+    created_at: datetime
+
+
+class CustomRuleOut(BaseModel):
+    rule_id: str
+    primitive: str
+    stage: str
+    title: str
+    why: str
+    claims: str
+    params: dict
+    state: str
+    author: str | None = None
+    reason: str = ""
+    created_at: datetime
+    on: bool
+    source: str
+    unmeasured_reason: str | None = None
 
 
 class PublishToOrgWrite(BaseModel):

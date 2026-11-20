@@ -44,6 +44,11 @@ def check_line(line_id: str | None, prd_id: str | None, kind: str | None) -> Non
 #: What `severity` may hold (GRPH-1683). Empty = not recorded.
 SEVERITIES = ["security"]
 
+#: The dependency reason and the blocker text filing a blocking fix writes (GRPH-1696).
+#: `release_when_blocking_fix_done` reads both. A manual blocker does not end with the suffix.
+BLOCKING_FIX_REASON = "blocking fix"
+BLOCKING_FIX_BLOCKER_SUFFIX = ": blocking fix filed on this item"
+
 #: The three exits an agent that finds a defect has. Every fix refusal quotes them.
 FIX_EXITS = (
     "a defect has three exits: fix it on the item you hold (only when build.found_bug is "
@@ -420,7 +425,7 @@ def create_item(
         # In the same transaction as the fix: a blocking fix with nothing waiting on it is
         # the state this refuses.
         db.add(Link(project_id=blocked.project_id, a=blocked.id, b=item.id, type="dependency",
-                    reason="blocking fix", confidence=1.0))
+                    reason=BLOCKING_FIX_REASON, confidence=1.0))
     if distinct or origin is not None:
         from app.models import Link
         db.flush()
@@ -443,7 +448,7 @@ def create_item(
         holder = blocked.claimed_by
         if holder and release_item(db, blocked.id, holder, to_status="blocked",
                                    reason=f"blocked by the fix {item.key} it filed") is not None:
-            blocked.blocker = f"{item.key}: blocking fix filed on this item"
+            blocked.blocker = f"{item.key}{BLOCKING_FIX_BLOCKER_SUFFIX}"
             if commit:
                 db.commit()
                 db.refresh(item)
@@ -2610,12 +2615,16 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         stamp_baseline_at_start(db, item)
 
     if item.status == "done" and prev_status != "done":
-        from app.services.waits import release_waiters, wait_tags_on
+        from app.services.waits import (
+            release_waiters, release_when_blocking_fix_done, wait_tags_on,
+        )
 
         if wait_tags_on(item):
             # The wait is the human act. Clearing it unblocks the original unless
             # another unmet dep remains. Does not rewrite `in_progress`.
             release_waiters(db, item)
+        # GRPH-1772. `sign_off` writes `done` itself and calls this same helper.
+        release_when_blocking_fix_done(db, item)
         # A stored `code` link to finished work is noise every read pays for (GRPH-1068);
         # `related_items` still finds it by live overlap.
         # Committed even when nothing matched: the DELETE alone opens a write transaction, and

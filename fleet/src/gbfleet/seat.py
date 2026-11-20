@@ -384,8 +384,25 @@ BOUND_ONLY_INSTRUCTION = (
 )
 
 
+def subagent_clause(subagents: int | None) -> str:
+    """The run's cap on vendor subagents, as one paragraph (GRPH-1726). Empty when the flag
+    was omitted, so the instruction stays byte-identical. Advice, not a deny: no adapter
+    strips the tool."""
+    if subagents is None:
+        return ""
+    if subagents == 0:
+        return ("Do not spawn vendor subagents (Task, spawn_subagent or the like). "
+                "Do the work yourself in this process.")
+    return (f"You may start at most {subagents} vendor subagent(s) (Task, spawn_subagent or "
+            "the like). Those subagents do not register, do not set parent_agent_id, and do "
+            "not call claim, sign_off, bounce, or mint_enrolment. You, the fleet child, "
+            "integrate their edits, commit, and move the item to review. You still do not "
+            "set parent_agent_id yourself.")
+
+
 def instruction_for(seat: Seat, worktree: Path, branch: str, *,
-                    behind_ref: str = "", conflicts: list[str] | None = None) -> str:
+                    behind_ref: str = "", conflicts: list[str] | None = None,
+                    subagents: int | None = None) -> str:
     # `review_only` first. A seat cannot be both that and bound — the server refuses to mint
     # one that is — and if that ever changed, the narrower promise is the one to state.
     if seat.review_only:
@@ -418,6 +435,9 @@ def instruction_for(seat: Seat, worktree: Path, branch: str, *,
                  f"{', '.join(conflicts)}. It was not merged. Before anything else run "
                  f"`git merge {behind_ref or 'main'}` (no rebase, no force-push), resolve "
                  "keeping both sides, and commit. Your copy of AGENTS.md may be stale until you do.")
+    clause = subagent_clause(subagents)
+    if clause:
+        text += "\n\n" + clause
     return text
 
 
@@ -463,7 +483,13 @@ def _as_json(config: dict) -> str:
 #: 1.0.5, `grok mcp add --transport http graphban <url> --header "X-API-Key: ..."`
 #: writes exactly `url`, `enabled` and a `headers` sub-table. There is no `type` or
 #: `transport` key at all — grok infers HTTP from the presence of `url`.
-_GROK_RENDERED = frozenset({"type", "url", "headers"})
+_GROK_RENDERED = frozenset({"type", "url", "headers", "command", "args", "env"})
+
+#: stdio, measured on grok 1.0.89 from servers added to `~/.grok/config.toml`: `command`
+#: (string), `args` (array of strings), `env` (inline table), `enabled`. No `type` key
+#: either way — grok tells the transports apart by `url` versus `command`.
+_GROK_STDIO = frozenset({"command", "args", "env"})
+_GROK_HTTP = frozenset({"url", "headers"})
 
 _BARE_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -521,20 +547,38 @@ def _as_toml(config: dict) -> str:
                 "Dropping them would give the child a seat missing exactly what was "
                 "added, so this refuses instead. Teach _as_toml the new field."
             )
-        # `type` is carried by the neutral config but has no TOML spelling: grok reads
-        # the transport off `url`. So it is CHECKED and then not emitted — a stdio seat
-        # rendered this way would silently become an HTTP one.
-        transport = spec.get("type", "http")
-        if transport != "http":
+        # `type` is carried by the neutral config but has no TOML spelling: grok reads the
+        # transport off `url` versus `command`. So it is CHECKED against the fields and then
+        # not emitted — a server whose fields disagree with its type would otherwise
+        # silently become the other transport.
+        has_url, has_cmd = "url" in spec, "command" in spec
+        transport = spec.get("type", "stdio" if has_cmd and not has_url else "http")
+        if transport not in ("http", "stdio"):
             raise UnrenderableSeat(
-                f"server {name!r} is transport {transport!r}, but grok infers transport "
-                "from `url` and only HTTP can be expressed here. Rendering it anyway "
-                "would silently turn it into an HTTP server."
+                f"server {name!r} is transport {transport!r}; grok's config.toml can only "
+                "say HTTP (`url`) or stdio (`command`)."
+            )
+        wrong = sorted(set(spec) & (_GROK_HTTP if transport == "stdio" else _GROK_STDIO))
+        if wrong or (transport == "stdio" and not has_cmd) or (transport == "http" and not has_url):
+            raise UnrenderableSeat(
+                f"server {name!r} is transport {transport!r} but carries "
+                f"{wrong or ('no command' if transport == 'stdio' else 'no url')}. grok infers "
+                "the transport from `url` versus `command`, so rendering it would silently "
+                "turn it into the other one."
             )
         table = f"mcp_servers.{_toml_key(name)}"
         lines = [f"[{table}]"]
-        if "url" in spec:
+        if transport == "http":
             lines.append(f"url = {_toml_string(str(spec['url']))}")
+        else:
+            lines.append(f"command = {_toml_string(str(spec['command']))}")
+            args = spec.get("args") or []
+            if args:
+                lines.append("args = [" + ", ".join(_toml_string(str(a)) for a in args) + "]")
+            env = spec.get("env") or {}
+            if env:
+                pairs = ", ".join(f"{_toml_key(k)} = {_toml_string(str(v))}" for k, v in env.items())
+                lines.append(f"env = {{ {pairs} }}")
         lines.append("enabled = true")
         headers = spec.get("headers") or {}
         if headers:

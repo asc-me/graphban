@@ -412,7 +412,10 @@ CORE_TOKENS = 9178  # GRPH-1695: +26, distinct_from/found_during on create_item;
 # prd 3731 -> 3750 (GRPH-1495): reference documents on put_document and search_docs.
 # prd 3848 -> 3864 (GRPH-1691): `decompose_prd` gains `splits` (+16). The whole bill is
 # this tier; CORE_TOKENS does not move. Same delta as MEASURED_TOKENS 18021 -> 18037.
-TIER_TOKENS = {"prd": 3864, "codegraph": 1795, "fleet": 1733, "misc": 1463}
+# prd 3864 -> 3863 (GRPH-1690): `depends_on`, `drop_links` and `add_links`, paid by
+# dropping the touchpoints and splits property descriptions. CORE_TOKENS does not move.
+TIER_TOKENS = {"prd": 3863, "codegraph": 1795, "fleet": 1733, "misc": 1577}
+# misc 1463 -> 1577 (GRPH-1775, P91 S3): `propose_rule`. The whole bill is this tier.
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.
 # codegraph 1786 -> 1789 (GRPH-1060): record_scan's category enum gains "deadcode".
 # codegraph -> 1791 with both: measured when GRPH-1060 and GRPH-1061 met on main.

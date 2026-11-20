@@ -228,3 +228,53 @@ A project can only *change* a rule once the box's pack carries it.
 | `memory.write_mode` (`mode`) | 0.6.0 | 1.10.0 | 2026.11.35 |
 
 `gitops.merge_method` is a gitops field, not a library rule, and needs no template.
+
+## Primitive stage and direction (P91 S1)
+
+Every primitive in the contract (`docs/rule-primitive-contract.json`, primitive API 1.11.0)
+declares a `stage` (one of the seven) and an `on_direction`: whether switching the rule on
+`tighten`s or `loosen`s what agents may do (`generated_files` loosens; the rest tighten). A param
+may declare a `comparator` (`greater_tightens`, `greater_loosens`, `superset_tightens`,
+`superset_loosens`); a param with none is not proposable as a change. `rule_pack.direction()`
+computes `tighten` | `loosen` | `not_proposable` from the contract alone. `rule_pack.validate_draft()`
+is the one validator for pack templates and custom rules: it refuses an unknown primitive, a
+primitive-API major mismatch, a missing required param, a claim stronger than the primitive, and a
+stage other than the contract's (the refusal names the contract's stage; it is never corrected).
+
+## Custom rules — a template the project writes (GRPH-1774, P91 D1)
+
+A person can save a rule built from one library primitive: `POST /api/projects/{id}/rules/custom`
+with a `slug`, `primitive`, `title`, `why`, `params` and a `reason`. The rule id is
+`custom.<slug>`, unique per project. The draft goes through the same `rule_pack.validate_draft`
+the pack loader uses; the stage is the primitive's, from the contract. A person's write is
+`active` at once. `rules.person_adopts` holds: an agent API key is refused, and no MCP tool
+writes one.
+
+`rule_toggles.resolve()` and `effective()` return it with `source: custom`, and the Rules read
+lists it with author, why and state. The primitive API it was written for is stored, so when a
+primitive no longer loads (a major API break, or the primitive is gone) the rule is drawn
+UNMEASURED with the reason and resolves off — never half-enforced, the same as a pack template
+that fails to load. Custom rules are a project's own: another project cannot read or write them.
+
+## Rule proposals — cited suggestions (GRPH-1775, P91 D2, D3)
+
+A proposal suggests a rule change; it never makes one. `propose_rule` (MCP, any agent on the
+project) and `POST /api/projects/{id}/rules/proposals` (a person or an import run) file one;
+adopting or dismissing is a person's act (`rules.person_adopts`) and no MCP tool does either.
+
+- **Kinds:** `new_rule` (a draft), `turn_on` (a rule that is off), `tighten` (a param change).
+  Turning a rule off or removing it is refused for every proposer.
+- **Cited:** at least one citation, each resolving: an `item`, `observation` or `lesson` of this
+  project, a `file` (`path`, `lines`, `commit`) that exists at that commit on the project's repo,
+  or a `url`. A forge that cannot be read is "could not verify", which is a refusal, never a pass.
+- **Direction is computed**, by `rule_pack.direction` against the rule's current resolved value,
+  never from the proposer's claim. An agent may only tighten: a loosening (removing a path from
+  `exclusive_areas`, proposing `generated_files`) is refused naming the rule. A person or an
+  import run may propose one; it is stored with `loosens: true`. A param with no comparator is
+  not proposable.
+- **Never an invariant** of `docs/rule-candidates.md` "The line".
+- **Folded:** the same primitive and params as an open proposal appends the citations to it and
+  returns its id.
+- **Refusals name their rule:** an uncited, unresolvable, invalid or direction-less proposal is
+  refused under `rules.proposal_cited`; a loosening from an agent, turning a rule off and an
+  invariant under `rules.person_adopts`.

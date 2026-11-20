@@ -17,6 +17,7 @@ const api = vi.hoisted(() => ({
   tagSuggestion: vi.fn(),
   tagCheck: vi.fn(),
   createProject: vi.fn(),
+  createLine: vi.fn(),
 }));
 vi.mock("@/lib/api", () => ({ api }));
 
@@ -111,13 +112,16 @@ describe("project tag field", () => {
     await waitFor(() => expect(tagInput().value).toBe("GW"));
     await waitFor(() => expect(screen.getByRole("button", { name: /next/i })).toBeEnabled());
 
-    for (let i = 0; i < 3; i++) await user.click(screen.getByRole("button", { name: /next/i }));
+    // Name & tag → Repository → Maintenance → Model → Review. Not now is the default,
+    // so finishing must not create a maintenance line.
+    for (let i = 0; i < 4; i++) await user.click(screen.getByRole("button", { name: /next/i }));
     await user.click(screen.getByRole("button", { name: /create project/i }));
     await waitFor(() =>
       expect(api.createProject).toHaveBeenCalledWith(
         expect.objectContaining({ name: "Graph Widgets", tag: "GW" }),
       ),
     );
+    expect(api.createLine).not.toHaveBeenCalled();
   });
 
   it("previews what keys will look like", async () => {
