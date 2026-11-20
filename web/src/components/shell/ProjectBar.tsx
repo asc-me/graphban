@@ -1,6 +1,7 @@
 import { ChevronDown } from "lucide-react";
 import { useLocation } from "react-router-dom";
 
+import { ProjectTile } from "@/components/ProjectTile";
 import { CloudTag } from "@/components/shell/CloudTag";
 import { ProjectSwitcher } from "@/components/shell/ProjectSwitcher";
 import { useProjectCtx } from "@/features/ProjectContext";
@@ -55,10 +56,7 @@ export function ProjectBar() {
                 t["aria-expanded"] ? "border-control-hover bg-surface-2" : "border-control",
               )}
             >
-              <span
-                className="h-[7px] w-[7px] shrink-0 rounded-sm"
-                style={{ background: active.accent }}
-              />
+              <ProjectTile project={active} size={28} />
               <span className="text-[13.5px] font-semibold tracking-[-0.15px]">{active.name}</span>
               <span className="rounded border border-line-2 px-1.5 py-px font-mono text-meta text-muted">
                 {active.tag}
