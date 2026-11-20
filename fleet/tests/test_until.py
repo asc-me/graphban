@@ -2131,6 +2131,300 @@ def test_already_in_base_no_pr_with_unmerged_sha_is_not_in_base(tmp_path, monkey
     assert _already_in_base(details, repo, "main") is False
 
 
+# --- GRPH-1023: a sibling's PR url, and a sibling PR on this branch, are not this merge ---
+
+_SIBLING_URL = "https://github.com/asc-me/graphban/pull/803"
+_OWN_URL = "https://github.com/o/r/pull/900"
+_OWN_SHA = "c0ffee000000"
+_SIBLING_SHA = "b74e2af7" + "ab" * 16
+_BRANCH_SHA = "f4bf35b51d1ddf4048426ebcd43652f164f99a4d"
+
+
+def _ahead(repo: Path, name: str) -> None:
+    """One commit on `name`, left checked out on main. `name` may contain slashes."""
+    run = lambda *a: _sp.run(["git", *a], cwd=repo, capture_output=True, text=True)
+    run("checkout", "-q", "-b", name)
+    (repo / "work.txt").write_text(name + "\n")
+    run("add", "-A")
+    run("commit", "-qm", name)
+    run("checkout", "-q", "main")
+
+
+def _grph890(repo: Path) -> dict:
+    """GRPH-890's shape: branch ahead of main, one url receipt that names another item."""
+    _ahead(repo, "gb/p45-followups")
+    return {
+        "id": "GRPH-890",
+        "status": "next",
+        "branch": "gb/p45-followups",
+        "touchpoints": ["docs/prd-44-pstack.md"],
+        "evidence": [{
+            "kind": "url",
+            "url": _SIBLING_URL,
+            "detail": "WALK-A9 opened PR #803 for GRPH-891 (squash-aware release notes)",
+        }],
+    }
+
+
+def _view_by_url(answers: dict):
+    """`propose.view` that answers per selector. Anything else is "no PR", not MERGED."""
+
+    def view(_repo, selector, **_kw):
+        for needle, pr in answers.items():
+            if needle in str(selector):
+                return pr, ""
+        return None, f"no PR for {selector}"
+
+    return view
+
+
+def _own_merged_pr() -> dict:
+    return {
+        "state": "MERGED", "number": 900, "headRefName": "gb/p45-followups",
+        "title": "GRPH-900: the work", "body": "draft for gb/p45-followups",
+        "mergeCommit": {"oid": _OWN_SHA},
+    }
+
+
+def _sibling_merged_pr() -> dict:
+    return {
+        "state": "MERGED", "number": 803, "headRefName": "fix/release-notes-squash",
+        "title": "Release notes read squash landings, not only merges (GRPH-891)",
+        "body": "",
+        "mergeCommit": {"oid": _SIBLING_SHA},
+    }
+
+
+def _shared_branch_merged_pr() -> dict:
+    """PR #920: MERGED, head is this item's branch, and it names other items."""
+    return {
+        "state": "MERGED", "number": 920, "headRefName": "gb/p45-followups",
+        "title": "GRPH-990: follow-ups",
+        "body": (
+            "Opened by `gbfleet` after reaping `gb/p45-followups`.\n\n"
+            "Items: GRPH-990, GRPH-995, GRPH-996\n"
+        ),
+        "mergeCommit": {"oid": _BRANCH_SHA},
+    }
+
+
+def _grph890_view():
+    """The measured forge. #803 is the sibling url; #920 is what the branch resolves to.
+
+    A stub that answers only `/pull/803` never resolves the branch candidate, so a
+    check that believes every merged PR the branch names stays green.
+    """
+    return _view_by_url({
+        "/pull/803": _sibling_merged_pr(),
+        "gb/p45-followups": _shared_branch_merged_pr(),
+    })
+
+
+def test_a_siblings_merged_pr_url_does_not_make_an_item_read_as_merged(tmp_path, monkeypatch):
+    """GRPH-890's measured reading. The url receipt names GRPH-891 and PR #803 is MERGED
+    on `fix/release-notes-squash`. The branch `gb/p45-followups` resolves to MERGED PR
+    #920, whose title and body name GRPH-990/995/996 and not GRPH-890. Neither is this
+    item's merge.
+
+    Sabotage: `_merged_pr_of`, `if not ours and not (branch and head == branch)` ->
+    `if False` (believe every url receipt). This goes True on #803.
+
+    Sabotage: `_merged_pr_of`, `if carrier == "the item's branch" and not
+    _pr_text_names_item(pr, item_id)` -> `if False` (believe every PR the branch names).
+    This goes True on #920.
+    """
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import _already_in_base, _in_base_reason
+
+    repo = _git_repo(tmp_path)
+    monkeypatch.setattr(propose_mod, "view", _grph890_view())
+    item = _grph890(repo)
+
+    assert _in_base_reason(item, repo, "main") == ""
+    assert _already_in_base(item, repo, "main") is False
+
+
+def test_the_siblings_url_does_not_stop_the_item_being_delegated(tmp_path, monkeypatch):
+    """THE CALL. `_already_in_base` False is not enough: `_delegate_next` is what refuses
+    the item and leaves the wave idle. GRPH-890's shape, with the branch resolving to
+    #920, is still the seed. Both ignored PRs are named.
+
+    Sabotage: either `if False` in `_merged_pr_of`. This delegates nothing.
+    """
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import _delegate_next
+
+    repo = _git_repo(tmp_path)
+    monkeypatch.setattr(propose_mod, "view", _grph890_view())
+    events: list[tuple] = []
+    monkeypatch.setattr(
+        "gbfleet.until.observe.emit", lambda ev, **kw: events.append((ev, kw)),
+    )
+    brief = {"lane": {"value": "backend"}, "tier": {"value": "cheap"}, "blocked_by": []}
+    item = {**_grph890(repo), "brief": brief}
+    planner = _SeedPlanner([{"items": ["GRPH-890"]}], {"GRPH-890": item})
+
+    seed, code, _want = _delegate_next(
+        planner, "GRPH-A1", "w", set(), None, repo=repo, base="main",
+    )
+
+    assert seed == "GRPH-890" and code == "WORKER-X"
+    assert planner.delegated == ["GRPH-890"]
+    ignored = [kw["detail"] for ev, kw in events if ev == "in_base_ignored"]
+    assert any("PR #803" in line and _SIBLING_SHA in line for line in ignored)
+    assert any("PR #920" in line and _BRANCH_SHA in line and "the item's branch" in line
+               for line in ignored)
+    assert not any(ev == "delegate_held" for ev, _kw in events)
+
+
+def test_an_items_own_merged_pr_receipt_still_holds_it(tmp_path, monkeypatch):
+    """The control for GRPH-930. The item's OWN merged url is still a hold, and the
+    reason names the carrier and the sha. A refused review offer is the path that
+    emits `delegate_held`; the reason is on that line.
+
+    Sabotage: drop the url from the candidates. The reason is empty and the item is delegated.
+    """
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import _already_in_base, _delegate_next, _in_base_reason
+
+    repo = _git_repo(tmp_path)
+    monkeypatch.setattr(propose_mod, "view", _view_by_url({"/pull/900": _own_merged_pr()}))
+    events: list[tuple] = []
+    monkeypatch.setattr(
+        "gbfleet.until.observe.emit", lambda ev, **kw: events.append((ev, kw)),
+    )
+    brief = {"lane": {"value": "backend"}, "tier": {"value": "cheap"}, "blocked_by": []}
+    item = {
+        "id": "GRPH-900",
+        "status": "next",
+        "branch": "gb/p45-followups",
+        "touchpoints": ["docs/prd-44-pstack.md"],
+        "brief": brief,
+        "evidence": [{
+            "kind": "url",
+            "url": _OWN_URL,
+            "detail": "draft PR opened by gbfleet for gb/p45-followups",
+        }],
+    }
+    _ahead(repo, "gb/p45-followups")
+
+    reason = _in_base_reason(item, repo, "main")
+    assert "PR #900" in reason
+    assert "url receipt" in reason
+    assert _OWN_SHA in reason
+    assert _already_in_base(item, repo, "main") is True
+
+    planner = _SeedPlanner(
+        [{"items": ["GRPH-900"]}], {"GRPH-900": item}, refuse_update=True,
+    )
+    seed, _code, _want = _delegate_next(
+        planner, "GRPH-A1", "w", set(), None, repo=repo, base="main",
+    )
+    assert seed is None and planner.delegated == []
+    held = [kw for ev, kw in events if ev == "delegate_held"]
+    assert len(held) == 1
+    assert "PR #900" in held[0]["detail"]
+    assert "url receipt" in held[0]["detail"]
+    assert _OWN_SHA in held[0]["detail"]
+
+
+def test_a_receipt_naming_nothing_is_believed_when_the_forge_says_its_head_is_ours(
+        tmp_path, monkeypatch):
+    """A url receipt with no item key and no branch is still this item's PR when the
+    forge's `headRefName` is the item's branch. Refusing every nameless receipt would
+    drop the ones written before the supervisor started naming the branch."""
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import _already_in_base, _in_base_reason
+
+    repo = _git_repo(tmp_path)
+    _ahead(repo, "gb/p45-followups")
+    monkeypatch.setattr(propose_mod, "view", _view_by_url({"/pull/900": _own_merged_pr()}))
+    item = {
+        "id": "GRPH-900",
+        "branch": "gb/p45-followups",
+        "evidence": [{
+            "kind": "url",
+            "url": _OWN_URL,
+            "detail": "opened a pull request",
+        }],
+    }
+
+    reason = _in_base_reason(item, repo, "main")
+    assert _already_in_base(item, repo, "main") is True
+    assert "PR #900" in reason and "url receipt" in reason and _OWN_SHA in reason
+
+
+def test_a_siblings_receipt_written_first_does_not_hide_the_items_own(tmp_path, monkeypatch):
+    """Evidence only appends, and the sibling url was written first. Skipping it has to
+    keep looking: the item's own merged PR is the hold, named as #900, not #803.
+
+    Sabotage: the url `if False` in `_merged_pr_of`. The reason names #803, and the
+    ignored event never fires.
+    """
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import _in_base_reason
+
+    repo = _git_repo(tmp_path)
+    _ahead(repo, "gb/p45-followups")
+    monkeypatch.setattr(propose_mod, "view", _view_by_url({
+        "/pull/803": _sibling_merged_pr(),
+        "/pull/900": _own_merged_pr(),
+    }))
+    events: list[tuple] = []
+    monkeypatch.setattr(
+        "gbfleet.until.observe.emit", lambda ev, **kw: events.append((ev, kw)),
+    )
+    item = {
+        "id": "GRPH-890",
+        "branch": "gb/p45-followups",
+        "evidence": [
+            {
+                "kind": "url",
+                "url": _SIBLING_URL,
+                "detail": "WALK-A9 opened PR #803 for GRPH-891 (squash-aware release notes)",
+            },
+            {
+                "kind": "url",
+                "url": _OWN_URL,
+                "detail": "draft PR opened by gbfleet for gb/p45-followups",
+            },
+        ],
+    }
+
+    reason = _in_base_reason(item, repo, "main")
+    assert "PR #900" in reason and "url receipt" in reason and _OWN_SHA in reason
+    assert "PR #803" not in reason
+    ignored = [kw for ev, kw in events if ev == "in_base_ignored"]
+    assert ignored and "PR #803" in ignored[0]["detail"] and _SIBLING_SHA in ignored[0]["detail"]
+
+
+def test_a_branch_pr_that_names_this_item_still_holds(tmp_path, monkeypatch):
+    """The branch fallback still holds a squash merge when the PR the branch resolves
+    to names this item. Refusing every branch lookup would re-open GRPH-930 for an
+    item whose only selector is its branch."""
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import _already_in_base, _in_base_reason
+
+    repo = _git_repo(tmp_path)
+    _ahead(repo, "gb/p45-followups")
+    pr = _shared_branch_merged_pr()
+    pr["number"] = 921
+    pr["title"] = "GRPH-890: the pstack doc"
+    pr["body"] = "Opened by `gbfleet` after reaping `gb/p45-followups`.\n\nItems: GRPH-890\n"
+    pr["mergeCommit"] = {"oid": _OWN_SHA}
+    monkeypatch.setattr(propose_mod, "view", _view_by_url({"gb/p45-followups": pr}))
+    item = {
+        "id": "GRPH-890",
+        "status": "next",
+        "branch": "gb/p45-followups",
+        "touchpoints": ["docs/prd-44-pstack.md"],
+    }
+
+    reason = _in_base_reason(item, repo, "main")
+    assert _already_in_base(item, repo, "main") is True
+    assert "PR #921" in reason and "the item's branch" in reason and _OWN_SHA in reason
+
+
 # ---- GRPH-988, bounce 1: the two unpinned `_take_seat` call sites -------------------------
 #
 # The reviewer of PR #899 mutated both and got 0 failures each:
