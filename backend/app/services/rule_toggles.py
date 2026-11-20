@@ -273,15 +273,25 @@ def _resolve(rule: LibraryRule, proj: RuleToggle | None, org: RuleToggle | None,
     def inherits(attr: str) -> str:
         return "org" if org is not None and getattr(org, attr) is not None else "platform default"
 
+    # GRPH-1727: the VALUE a Reset would land on, so a client can draw it before it saves —
+    # the org row's value when it sets that field, else the platform default.
+    def inherited(attr: str, default):
+        if org is not None and getattr(org, attr) is not None:
+            return copy.deepcopy(getattr(org, attr))
+        return copy.deepcopy(default)
+
     # Kept beside `on`/`params`, not inside them, so their `{value, source}` shape is unchanged.
     out = {"rule_id": rule.id, "on": first("on", rule.default_on),
            "params": first("params", _default_params(rule)),
            "inherits": {"on": inherits("on"), "params": inherits("params")},
+           "inherited": {"on": inherited("on", rule.default_on),
+                         "params": inherited("params", _default_params(rule))},
            "locked": locked, "locked_by": org_id if locked else None}
     if rule.id == MEMORY_WRITE_MODE_RULE:
         # GRPH-1603: a write mode is always in force; only its `mode` is a choice.
         out["on"], out["inherits"]["on"] = {"value": True, "source": "platform default"}, \
             "platform default"
+        out["inherited"]["on"] = True
     return out
 
 

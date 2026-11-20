@@ -3,7 +3,9 @@ import { ChevronDown, ChevronUp } from "lucide-react";
 
 import { cn } from "@/lib/cn";
 import { useFleetPolicy, useHarnessReplay, useSaveFleetPolicy } from "@/lib/queries";
-import type { FleetPolicy, HarnessCapacityEntitlement, RoutingReplayProposal } from "@/lib/types";
+import type {
+  FleetPolicy, HarnessCapacityEntitlement, LadderRungId, RoutingReplayProposal, RungPreference,
+} from "@/lib/types";
 import { STATE } from "./capacityLook";
 
 function defaultPolicy(): FleetPolicy {
@@ -28,6 +30,7 @@ function mergePolicy(saved: FleetPolicy | null | undefined): FleetPolicy {
     ladder: saved.ladder ?? null,
     routing_mode: saved.routing_mode ?? "next_available",
     subscription_order: saved.subscription_order ?? null,
+    rung_preference: saved.rung_preference ?? null,
     tie_break: saved.tie_break ?? "soonest_reset",
     when_exhausted: saved.when_exhausted ?? "fall_through",
   };
@@ -54,10 +57,57 @@ function ruleNext(tie: TieBreak, exhausted: WhenExhausted): string {
   return `${head} Among available entitlements on one rung, ${rule}; unknown follows; exhausted, broken, and unreachable are skipped.`;
 }
 const RULE_CUSTOM = (
-  "Each item goes to the highest subscription in this list that has headroom. Entries that are "
-  + "exhausted, broken or quiet are skipped, not removed — they take work again when they report "
-  + "headroom. Org API keys and local follow on the fallback ladder."
+  "Each item goes to the highest subscription in this list that has headroom, then the highest "
+  + "API key within budget, then the highest local model. Entries that are exhausted, broken or "
+  + "quiet are skipped, not removed — they take work again when they report headroom."
 );
+
+/** GRPH-1713: rungs whose order lives in `rung_preference` (the subscription rung's is `subscription_order`). */
+type OrderRung = "api_key" | "local";
+const ORDER_RUNGS: { id: OrderRung; label: string; empty: string }[] = [
+  { id: "api_key", label: "API keys", empty: "No API key entitlements to rank." },
+  { id: "local", label: "Local models", empty: "No local entitlements to rank." },
+];
+const RUNG_LABELS: { id: LadderRungId; label: string }[] = [
+  { id: "subscription", label: "Subscription" },
+  { id: "api_key", label: "API key" },
+  { id: "local", label: "Local" },
+];
+type RungTies = Record<LadderRungId, TieBreak | "">;
+type RungOrders = Record<OrderRung, string[]>;
+
+/** `cloud` rides the api_key rung, as the router reads it. */
+function rungOfKind(kind: string): LadderRungId | null {
+  if (kind === "subscription") return "subscription";
+  if (kind === "api_key" || kind === "cloud") return "api_key";
+  if (kind === "local") return "local";
+  return null;
+}
+
+function savedRungTies(pref: FleetPolicy["rung_preference"]): RungTies {
+  return {
+    subscription: pref?.subscription?.tie_break ?? "",
+    api_key: pref?.api_key?.tie_break ?? "",
+    local: pref?.local?.tie_break ?? "",
+  };
+}
+
+function buildRungPreference(
+  orders: RungOrders,
+  ties: RungTies,
+  custom: boolean,
+): FleetPolicy["rung_preference"] {
+  const out: Partial<Record<LadderRungId, RungPreference>> = {};
+  for (const r of RUNG_LABELS) {
+    const entry: RungPreference = {};
+    if (custom && r.id !== "subscription" && orders[r.id as OrderRung].length) {
+      entry.order = orders[r.id as OrderRung];
+    }
+    if (ties[r.id]) entry.tie_break = ties[r.id] as TieBreak;
+    if (Object.keys(entry).length) out[r.id] = entry;
+  }
+  return Object.keys(out).length ? out : null;
+}
 
 /** Saved order first; any subscription not yet in policy sorts after. */
 function editableSubscriptionOrder(
@@ -118,6 +168,56 @@ function Choice<T extends string>({
         })}
       </div>
     </div>
+  );
+}
+
+/** GRPH-1713: an up/down-ranked list of one rung's entitlements. */
+function RankList({ ids, byId, rowTestId, onMove }: {
+  ids: string[];
+  byId: Map<string, HarnessCapacityEntitlement>;
+  rowTestId: string;
+  onMove: (i: number, d: number) => void;
+}) {
+  return (
+    <ol className="flex max-w-[720px] flex-col gap-1">
+      {ids.map((id, i) => {
+        const e = byId.get(id);
+        if (!e) return null;
+        const s = STATE[e.state];
+        const live = e.state === "available";
+        // The router probes unknown and broken with one child; exhausted and unreachable wait.
+        return (
+          <li
+            key={id}
+            data-testid={rowTestId}
+            data-entitlement={id}
+            className={cn("grid grid-cols-[20px_minmax(0,1fr)_auto_auto] items-center gap-2.5 rounded-[8px] border border-line-2/70 bg-[#0d1114] py-1.5 pl-2.5 pr-2", !live && "opacity-60")}
+          >
+            <span className="text-right font-mono text-[10.5px] text-faint">{i + 1}</span>
+            <span className="flex min-w-0 flex-col gap-px">
+              <span className="truncate font-mono text-[12px] text-fg">{e.id}</span>
+              <span className="text-[10.5px] text-faint">{[e.kind, e.plan_label, e.runner?.label].filter(Boolean).join(" · ")}</span>
+            </span>
+            <span data-testid="routing-row-now" className={cn("inline-flex items-center gap-[5px] whitespace-nowrap font-mono text-[10px]", s.text)}>
+              <span aria-hidden="true">{s.glyph}</span>
+              {live
+                ? "takes work now"
+                : e.state === "unknown" || e.state === "broken"
+                  ? `probed one item at a time · ${s.word.toLowerCase()}`
+                  : `skipped now · ${s.word.toLowerCase()}`}
+            </span>
+            <span className="flex gap-[3px]">
+              <button type="button" className={arrow} disabled={i === 0} onClick={() => onMove(i, -1)} aria-label={`Move ${e.id} up`}>
+                <ChevronUp size={11} strokeWidth={2.4} />
+              </button>
+              <button type="button" className={arrow} disabled={i === ids.length - 1} onClick={() => onMove(i, 1)} aria-label={`Move ${e.id} down`}>
+                <ChevronDown size={11} strokeWidth={2.4} />
+              </button>
+            </span>
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
@@ -186,6 +286,27 @@ export function RoutingMode({
     [entitlements],
   );
 
+  const rungEntitlements = useMemo(() => {
+    const by: Record<OrderRung, HarnessCapacityEntitlement[]> = { api_key: [], local: [] };
+    for (const e of entitlements) {
+      const r = rungOfKind(e.kind);
+      if (r === "api_key" || r === "local") by[r].push(e);
+    }
+    return by;
+  }, [entitlements]);
+  const savedPref = saved.rung_preference;
+  const savedOrders = useMemo<RungOrders>(() => ({
+    api_key: editableSubscriptionOrder(savedPref?.api_key?.order, rungEntitlements.api_key.map((e) => e.id)),
+    local: editableSubscriptionOrder(savedPref?.local?.order, rungEntitlements.local.map((e) => e.id)),
+  }), [savedPref, rungEntitlements]);
+  const savedTies = useMemo(() => savedRungTies(savedPref), [savedPref]);
+  const [rungOrders, setRungOrders] = useState<RungOrders>({ api_key: [], local: [] });
+  const [rungTies, setRungTies] = useState<RungTies>({ subscription: "", api_key: "", local: "" });
+  const savedOrdersKey = JSON.stringify(savedOrders);
+  const savedTiesKey = JSON.stringify(savedTies);
+  useEffect(() => { setRungOrders(savedOrders); }, [savedOrdersKey]);
+  useEffect(() => { setRungTies(savedTies); }, [savedTiesKey]);
+
   const [mode, setMode] = useState<Mode>("next_available");
   const [order, setOrder] = useState<string[]>([]);
   const [tie, setTie] = useState<TieBreak>("soonest_reset");
@@ -209,7 +330,9 @@ export function RoutingMode({
     mode !== (saved.routing_mode ?? "next_available")
     || tie !== savedTie
     || exhausted !== savedExhausted
-    || (mode === "custom_hierarchy" && JSON.stringify(order) !== JSON.stringify(savedOrder));
+    || JSON.stringify(rungTies) !== savedTiesKey
+    || (mode === "custom_hierarchy" && JSON.stringify(order) !== JSON.stringify(savedOrder))
+    || (mode === "custom_hierarchy" && JSON.stringify(rungOrders) !== savedOrdersKey);
 
   useEffect(() => { onDraft?.(dirty); }, [dirty, onDraft]);
 
@@ -224,12 +347,20 @@ export function RoutingMode({
     [o[i], o[j]] = [o[j], o[i]];
     setOrder(o);
   };
+  const moveIn = (rung: OrderRung) => (i: number, d: number) => {
+    const o = rungOrders[rung].slice();
+    const j = i + d;
+    if (j < 0 || j >= o.length) return;
+    [o[i], o[j]] = [o[j], o[i]];
+    setRungOrders({ ...rungOrders, [rung]: o });
+  };
 
   const apply = () => {
     const body: FleetPolicy = {
       ...saved,
       routing_mode: mode,
       subscription_order: mode === "custom_hierarchy" ? order : null,
+      rung_preference: buildRungPreference(rungOrders, rungTies, mode === "custom_hierarchy"),
       tie_break: tie,
       when_exhausted: exhausted,
     };
@@ -241,6 +372,8 @@ export function RoutingMode({
     setOrder(editableSubscriptionOrder(saved.subscription_order, subscriptions.map((e) => e.id)));
     setTie(savedTie);
     setExhausted(savedExhausted);
+    setRungOrders(savedOrders);
+    setRungTies(savedTies);
   };
 
   const proposal = useMemo<RoutingReplayProposal>(() => ({
@@ -248,7 +381,9 @@ export function RoutingMode({
     when_exhausted: exhausted,
     routing_mode: mode,
     subscription_order: mode === "custom_hierarchy" ? order : null,
-  }), [tie, exhausted, mode, order]);
+    rung_order: mode === "custom_hierarchy" ? rungOrders : null,
+    rung_tie_break: Object.fromEntries(Object.entries(rungTies).filter(([, t]) => t)),
+  }), [tie, exhausted, mode, order, rungOrders, rungTies]);
 
   const byId = new Map(subscriptions.map((e) => [e.id, e]));
   const topLive = order.find((id) => byId.get(id)?.state === "available");
@@ -314,48 +449,31 @@ export function RoutingMode({
           {subscriptions.length === 0 ? (
             <p className="text-[12px] text-muted">No subscription entitlements to rank.</p>
           ) : (
-            <ol className="flex max-w-[720px] flex-col gap-1">
-              {order.map((id, i) => {
-                const e = byId.get(id);
-                if (!e) return null;
-                const s = STATE[e.state];
-                const live = e.state === "available";
-                // The router probes unknown and broken with one child; exhausted and unreachable wait.
-                return (
-                  <li
-                    key={id}
-                    data-testid="routing-subscription-row"
-                    data-entitlement={id}
-                    className={cn("grid grid-cols-[20px_minmax(0,1fr)_auto_auto] items-center gap-2.5 rounded-[8px] border border-line-2/70 bg-[#0d1114] py-1.5 pl-2.5 pr-2", !live && "opacity-60")}
-                  >
-                    <span className="text-right font-mono text-[10.5px] text-faint">{i + 1}</span>
-                    <span className="flex min-w-0 flex-col gap-px">
-                      <span className="truncate font-mono text-[12px] text-fg">{e.id}</span>
-                      <span className="text-[10.5px] text-faint">{[e.kind, e.plan_label, e.runner?.label].filter(Boolean).join(" · ")}</span>
-                    </span>
-                    <span data-testid="routing-row-now" className={cn("inline-flex items-center gap-[5px] whitespace-nowrap font-mono text-[10px]", s.text)}>
-                      <span aria-hidden="true">{s.glyph}</span>
-                      {live
-                        ? "takes work now"
-                        : e.state === "unknown" || e.state === "broken"
-                          ? `probed one item at a time · ${s.word.toLowerCase()}`
-                          : `skipped now · ${s.word.toLowerCase()}`}
-                    </span>
-                    <span className="flex gap-[3px]">
-                      <button type="button" className={arrow} disabled={i === 0} onClick={() => move(i, -1)} aria-label={`Move ${e.id} up`}>
-                        <ChevronUp size={11} strokeWidth={2.4} />
-                      </button>
-                      <button type="button" className={arrow} disabled={i === order.length - 1} onClick={() => move(i, 1)} aria-label={`Move ${e.id} down`}>
-                        <ChevronDown size={11} strokeWidth={2.4} />
-                      </button>
-                    </span>
-                  </li>
-                );
-              })}
-            </ol>
+            <RankList ids={order} byId={byId} rowTestId="routing-subscription-row" onMove={move} />
           )}
         </div>
       )}
+
+      {mode === "custom_hierarchy" && ORDER_RUNGS.map((r) => (
+        <div key={r.id} data-testid="routing-rung-stack" data-rung={r.id} className="flex flex-col gap-1">
+          <span className="text-[10.5px] text-faint">{r.label} · ranked among themselves</span>
+          {rungEntitlements[r.id].length === 0 ? (
+            <p className="text-[12px] text-muted">{r.empty}</p>
+          ) : (
+            <RankList
+              ids={rungOrders[r.id]}
+              byId={new Map(rungEntitlements[r.id].map((e) => [e.id, e]))}
+              rowTestId="routing-rung-row"
+              onMove={moveIn(r.id)}
+            />
+          )}
+        </div>
+      ))}
+
+      <p data-testid="routing-ladder-fixed" className="text-small text-faint">
+        The ladder order is fixed — subscription, then API key, then local. A rung&apos;s order and
+        tie-break rank entitlements within that rung only; none lifts one past the ladder.
+      </p>
 
       <div className="flex flex-wrap items-start gap-4">
         <Choice
@@ -372,6 +490,23 @@ export function RoutingMode({
           value={exhausted}
           onChange={setExhausted}
         />
+      </div>
+
+      <div data-testid="routing-rung-ties" className="flex flex-wrap items-end gap-3">
+        {RUNG_LABELS.map((r) => (
+          <label key={r.id} className="flex flex-col gap-1">
+            <span className="text-[10.5px] text-faint">{r.label} ties by</span>
+            <select
+              data-testid={`routing-rung-tie-${r.id}`}
+              value={rungTies[r.id]}
+              onChange={(ev) => setRungTies({ ...rungTies, [r.id]: ev.target.value as TieBreak | "" })}
+              className="rounded-[8px] border border-control bg-surface-2 px-2 py-[4px] text-[12px] text-fg-2"
+            >
+              <option value="">as above</option>
+              {TIE_BREAKS.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+            </select>
+          </label>
+        ))}
       </div>
 
       <ReplayLine projectId={projectId} proposal={proposal} draft={dirty} />

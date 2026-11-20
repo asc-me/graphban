@@ -216,11 +216,26 @@ export function valueText(value: string | boolean | null): string | null {
 // ── Layout (fixed, from `Rules.dc.html`) ───────────────────────────────────────
 
 export const STAGE_W = 208;
-export const STAGE_H = 128;
 export const STAGE_Y = 56;
+/**
+ * A stage card's tally sits in two columns, one level to a cell that never wraps, so the six
+ * levels take at most three rows and the card's height is known before it is drawn (GRPH-1728:
+ * a wrapping tally ran past the card and `overflow-hidden` clipped its bar).
+ */
+export const TALLY_COLS = 2;
+export const TALLY_ROW_H = 15;
+export const TALLY_MAX_ROWS = Math.ceil(LEVEL_ORDER.length / TALLY_COLS);
+/** Everything in a stage card but its tally rows: border, padding, index, title, pill, bar and the gaps. */
+export const STAGE_CHROME_H = 112;
+export const STAGE_H = STAGE_CHROME_H + TALLY_MAX_ROWS * TALLY_ROW_H;
+/**
+ * Room a stage card's foreignObject keeps on every side for the selected card's ring and glow
+ * (`0 0 0 3px` and `0 0 24px`) and the 2px hover lift, so the glow is never cut at the card's edge.
+ */
+export const STAGE_GLOW = 28;
 export const CHIP_W = 192;
 export const CHIP_H = 50;
-export const CHIP_Y = 208;
+export const CHIP_Y = STAGE_Y + STAGE_H + 24;
 export const CHIP_STEP = 58;
 export const CHIPS_SHOWN = 3;
 export const PACK_W = 368;
@@ -229,6 +244,11 @@ export const PACK_H = 64;
 export const OUTLINE_ZOOM = 0.55;
 
 export const stageX = (i: number) => 24 + i * 240;
+
+/** How many rows a stage card's tally takes. */
+export function tallyRows(rules: RuleFlowRule[]): number {
+  return Math.ceil(tally(rules).length / TALLY_COLS);
+}
 
 export function columnBottom(n: number): number {
   if (n === 0) return STAGE_Y + STAGE_H;

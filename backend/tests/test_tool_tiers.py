@@ -410,10 +410,11 @@ CORE_TOKENS = 9178  # GRPH-1695: +26, distinct_from/found_during on create_item;
 # prd 4140 -> 3731 (GRPH-1368): the three accept tools are removed.
 # fleet 1559 -> 1733 (GRPH-1480): report_utilization in the fleet tier.
 # prd 3731 -> 3750 (GRPH-1495): reference documents on put_document and search_docs.
-# prd 3868 -> 3936 (GRPH-1690): decompose_prd proposes `depends_on` and takes `drop_links` /
-# `add_links`. CORE_TOKENS does not move — the tool is planner-gated, so this tier is the
-# whole bill and a worker or reviewer never pays for a tool it cannot call.
-TIER_TOKENS = {"prd": 3936, "codegraph": 1795, "fleet": 1733, "misc": 1463}
+# prd 3848 -> 3864 (GRPH-1691): `decompose_prd` gains `splits` (+16). The whole bill is
+# this tier; CORE_TOKENS does not move. Same delta as MEASURED_TOKENS 18021 -> 18037.
+# prd 3864 -> 3863 (GRPH-1690): `depends_on`, `drop_links` and `add_links`, paid by
+# dropping the touchpoints and splits property descriptions. CORE_TOKENS does not move.
+TIER_TOKENS = {"prd": 3863, "codegraph": 1795, "fleet": 1733, "misc": 1463}
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.
 # codegraph 1786 -> 1789 (GRPH-1060): record_scan's category enum gains "deadcode".
 # codegraph -> 1791 with both: measured when GRPH-1060 and GRPH-1061 met on main.

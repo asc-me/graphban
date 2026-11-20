@@ -166,9 +166,9 @@ export function RuleReviewSheet({
                   type="button"
                   onClick={() => onDrop(c.ruleId)}
                   data-testid={`rules-review-drop-${c.ruleId}`}
-                  className="self-start text-small text-muted hover:text-fg"
+                  className="h-6 self-start rounded-[6px] border border-control px-2 text-small text-fg-2 hover:text-fg"
                 >
-                  Drop: keep its current value
+                  Keep current value (exception)
                 </button>
               )}
             </div>

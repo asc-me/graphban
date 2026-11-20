@@ -265,12 +265,34 @@ def set_decision(item: Item, question: str | None, options: list | None) -> None
     item.tags = tags
 
 
+def open_decision_waits(db: Session, project_id: str) -> list[Item]:
+    """Unanswered ``wait:decision`` items in this project.
+
+    ``done`` is closed, and a stored answer is closed. An empty list means
+    this project has none open. It does not mean the question was not asked:
+    the caller named the project.
+    """
+    from sqlalchemy import select
+
+    rows = db.scalars(select(Item).where(
+        Item.project_id == project_id, Item.status != "done")).all()
+    open_rows: list[Item] = []
+    for item in rows:
+        if "wait:decision" not in {str(tag).lower() for tag in item.tags or []}:
+            continue
+        decision = item.decision if isinstance(item.decision, dict) else {}
+        if decision.get("answer"):
+            continue
+        open_rows.append(item)
+    return open_rows
+
+
 def _event(db: Session, action: str, items: dict[str, tuple[Item, dict]], *, actor, surface: str,
-           meta: dict | None = None, primary: Item) -> int:
+           meta: dict | None = None, primary: Item, actor_type: str = "user") -> int:
     from app.models import Event
 
     ev = Event(
-        actor_type="user", actor_id=getattr(actor, "id", "") or "",
+        actor_type=actor_type, actor_id=getattr(actor, "id", "") or "",
         actor_label=getattr(actor, "handle", "") or getattr(actor, "name", "") or "",
         surface=surface, action=f"blocker.{action}", target_type="item",
         target_id=primary.key, project_id=primary.project_id,
@@ -279,6 +301,12 @@ def _event(db: Session, action: str, items: dict[str, tuple[Item, dict]], *, act
     )
     db.add(ev)
     db.flush()
+    # Decision waits write the audit row here, not through events.record (GRPH-1733).
+    from app.services import project_sync_outbox as outbox
+    outbox.note_event(
+        db, project_id=primary.project_id, target_type="item", target_id=primary.key,
+        action=f"blocker.{action}", meta=ev.meta,
+    )
     return ev.id
 
 
@@ -456,7 +484,8 @@ def carries_own_work(db: Session, item: Item) -> bool:
 
 def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: str | None = None,
                 actor=None, surface: str = "rest", agent: str | None = None,
-                source: dict | None = None, needs_person: bool = False) -> dict:
+                source: dict | None = None, needs_person: bool = False,
+                proposal_id: str | None = None) -> dict:
     """Record the answer on a decision wait, mark it done, and release what waited on it.
 
     An item that asks its own question (`carries_own_work`) is not marked done: the answer is
@@ -543,8 +572,13 @@ def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: s
         db.refresh(dep)
     released = [d.key for d, b in touched.values()
                 if d is not wait and b["status"] == "blocked" and d.status != "blocked"]
+    answer_meta = {"released": released}
+    if proposal_id:
+        # The cloud proposal that answered this wait. The actor type is cloud
+        # only for that path; a person answering from the box stays `user`.
+        answer_meta["proposal_id"] = proposal_id
     eid = _event(db, "answer", touched, actor=actor, surface=surface, primary=wait,
-                 meta={"released": released})
+                 meta=answer_meta, actor_type="cloud" if proposal_id else "user")
     alerts_svc.clear_for_item(db, wait.id)
     db.commit()
     db.refresh(wait)
@@ -706,6 +740,12 @@ def undo(db: Session, item_id: str, *, actor=None, surface: str = "rest") -> dic
         surface=surface, action="blocker.undo", target_type="item", target_id=item.key,
         project_id=item.project_id, meta={"undoes": last.id, "action": last.action})
     db.add(ev)
+    db.flush()
+    from app.services import project_sync_outbox as outbox
+    outbox.note_event(
+        db, project_id=item.project_id, target_type="item", target_id=item.key,
+        action="blocker.undo", meta=ev.meta,
+    )
     db.commit()
     return {"item": item.key, "undone": last.action, "event_id": ev.id}
 

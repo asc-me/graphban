@@ -345,6 +345,57 @@ body::before {
   button { cursor: pointer; }
   a { color: var(--color-accent); text-decoration: none; }
   a:hover { color: var(--color-accent-hi); }
+
+  /* Themed native radios/checkboxes (GRPH-1754): hollow accent ring unchecked,
+     accent-filled when checked. `input:where(...)` keeps element specificity
+     (0,0,1) so these beat Tailwind preflight's `input { border-radius: 0 }` in
+     this layer, while utilities still override them. Inputs that are sr-only or
+     already appearance-none (switches built on a hidden checkbox) are excluded. */
+  input:where([type="radio"]:not(.sr-only):not(.appearance-none)),
+  input:where([type="checkbox"]:not(.sr-only):not(.appearance-none)) {
+    appearance: none;
+    -webkit-appearance: none;
+    flex: none;
+    width: 14px;
+    height: 14px;
+    margin-top: 2px;
+    cursor: pointer;
+    background-color: transparent;
+    background-repeat: no-repeat;
+    background-position: center;
+    border: 1.5px solid color-mix(in srgb, var(--color-accent) 70%, transparent);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    input:where([type="radio"]:not(.sr-only):not(.appearance-none)),
+    input:where([type="checkbox"]:not(.sr-only):not(.appearance-none)) {
+      transition: border-color .12s ease, background-color .12s ease;
+    }
+  }
+  input:where([type="radio"]:not(.sr-only):not(.appearance-none)) { border-radius: 999px; }
+  input:where([type="checkbox"]:not(.sr-only):not(.appearance-none)) { border-radius: 3px; }
+  input:where([type="radio"]:not(.sr-only):not(.appearance-none)):checked {
+    border-color: var(--color-accent);
+    background-image: radial-gradient(circle, var(--color-accent) 0 3px, transparent 3.5px);
+  }
+  input:where([type="checkbox"]:not(.sr-only):not(.appearance-none)):checked {
+    border-color: var(--color-accent);
+    background-color: var(--color-accent);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 7.2l2.6 2.6L11 4.4' fill='none' stroke='%230a0b0d' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  }
+  input:where([type="checkbox"]:not(.sr-only):not(.appearance-none)):indeterminate {
+    border-color: var(--color-accent);
+    background-color: var(--color-accent);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3.5 7h7' fill='none' stroke='%230a0b0d' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E");
+  }
+  input:where([type="radio"]:not(.sr-only):not(.appearance-none)):hover:not(:disabled),
+  input:where([type="checkbox"]:not(.sr-only):not(.appearance-none)):hover:not(:disabled) {
+    border-color: var(--color-accent);
+  }
+  input:where([type="radio"]:not(.sr-only):not(.appearance-none)):disabled,
+  input:where([type="checkbox"]:not(.sr-only):not(.appearance-none)):disabled {
+    opacity: .45;
+    cursor: not-allowed;
+  }
 }
 
 /* Updates panel motion (GRPH-1331), ported from the design's .u- classes with tokens. */

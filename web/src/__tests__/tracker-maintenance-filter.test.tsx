@@ -71,7 +71,7 @@ beforeEach(() => {
   served = [item({ id: "AL-1", title: "Plain feature" })];
 });
 
-const chip = () => screen.findByRole("button", { name: /^Maintenance\s*\d+$/ });
+const chip = () => screen.findByRole("button", { name: /^Maintenance filter/ });
 
 describe("tracker Maintenance filter (GRPH-1701)", () => {
   it("shows only the line's items and leaves the status chips unselected", async () => {
@@ -83,7 +83,7 @@ describe("tracker Maintenance filter (GRPH-1701)", () => {
     const user = userEvent.setup();
     renderTracker();
     await screen.findByText("Plain feature");
-    await waitFor(() => expect(screen.getByRole("button", { name: /^Maintenance\s*1$/ })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Maintenance filter, 1 item on the line" })).toBeInTheDocument());
     await user.click(await chip());
     expect(screen.queryByText("Plain feature")).not.toBeInTheDocument();
     expect(screen.getByText("Line fix")).toBeInTheDocument();
@@ -102,7 +102,7 @@ describe("tracker Maintenance filter (GRPH-1701)", () => {
     const user = userEvent.setup();
     renderTracker();
     await screen.findByText("Plain feature");
-    await waitFor(() => expect(screen.getByRole("button", { name: /^Maintenance\s*1$/ })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Maintenance filter, 1 item on the line" })).toBeInTheDocument());
     await user.click(await chip());
     expect(await screen.findByText("Line fix")).toBeInTheDocument();
     expect(screen.queryByText("Plain feature")).not.toBeInTheDocument();
@@ -130,7 +130,7 @@ describe("tracker Maintenance filter (GRPH-1701)", () => {
   it("shows the unscoped count beside the filter, 0 included", async () => {
     renderTracker();
     await screen.findByText("Plain feature");
-    await waitFor(() => expect(screen.getByTestId("unscoped-count")).toHaveTextContent("Unscoped fixes0"));
+    await waitFor(() => expect(screen.getByTestId("unscoped-count")).toHaveTextContent("0 unscoped"));
   });
 
   it("shows an unscoped-count failure as an error, never as 0", async () => {
@@ -140,7 +140,7 @@ describe("tracker Maintenance filter (GRPH-1701)", () => {
     renderTracker();
     await screen.findByText("Plain feature");
     await waitFor(() => expect(screen.getByTestId("unscoped-count")).toHaveTextContent("could not load"));
-    expect(screen.getByTestId("unscoped-count")).not.toHaveTextContent(/Unscoped fixes\s*0/);
+    expect(screen.getByTestId("unscoped-count")).not.toHaveTextContent(/0 unscoped/);
   });
 
   it("names what an unready line item needs", async () => {
@@ -149,7 +149,7 @@ describe("tracker Maintenance filter (GRPH-1701)", () => {
     const user = userEvent.setup();
     renderTracker();
     await user.click(await chip());
-    await waitFor(() => expect(screen.getByTestId("badge-needs")).toHaveTextContent("needs acceptance · needs a file"));
+    await waitFor(() => expect(screen.getByTestId("line-needs")).toHaveTextContent("needs acceptance · needs a file"));
   });
 
   it("labels an item blocked by a fix, and the fix says what it blocks", async () => {

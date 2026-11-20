@@ -32,7 +32,9 @@ def test_decompose_fills_gaps_and_links(client, auth):
     assert len(made["created"]) == 2
     db = SessionLocal()
     it = db.get(items_svc.Item, made["created"][0])
-    assert it.prd_id == prd["id"] and it.prd_section == "Ingest" and it.status == "backlog"
+    assert it.prd_id == prd["id"] and it.prd_section == "Ingest"
+    # No code graph here, so no touchpoints could be proposed: filed blocked, not backlog.
+    assert it.status == "blocked" and "touchpoints" in it.blocker
     db.close()
 
     # Now those sections are covered — a second decompose finds no gaps.
@@ -186,7 +188,151 @@ def test_decompose_carries_per_item_acceptance_past_framing_budget(client, auth)
     statuses = {db.get(items_svc.Item, i).prd_section: db.get(items_svc.Item, i).status
                 for i in made["created"]}
     db.close()
-    assert statuses == {"Ingest": "backlog", "Transform": "backlog", "Export": "blocked"}
+    assert statuses == {"Ingest": "blocked", "Transform": "blocked", "Export": "blocked"}  # no touchpoints
+
+
+def test_decompose_proposes_touchpoints_from_code_graph(client, auth):
+    from app.services import code_graph
+    from tests.prd_approve import approve_id
+
+    prd = client.post("/api/prds", json={
+        "title": "Widgets Spec",
+        "body": ("# Widgets Spec\n\n## Fix the parser\nchange backend/app/widgets.py to trim\n\n"
+                 "## Elsewhere\nsomething nobody has code for\n\n"
+                 "## Acceptance criteria\n### Fix the parser\n- trimmed\n### Elsewhere\n- done\n"),
+    }, headers=auth).json()
+    db = SessionLocal()
+    pid = db.get(prd_svc.Prd, prd["id"]).project_id
+    code_graph.describe_code(db, project_id=pid, nodes=[
+        {"path": "backend/app/widgets.py", "kind": "file", "summary": "widgets"}])
+    db.close()
+
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    by = {p["section"]: p for p in dry["proposals"]}
+    assert by["Fix the parser"]["touchpoints"] == ["backend/app/widgets.py"]
+    assert by["Fix the parser"]["touchpoint_evidence"][0]["evidence"]
+    assert by["Fix the parser"]["blocked"] is False
+    assert dry["no_touchpoints"] == ["Elsewhere"]
+    assert by["Elsewhere"]["blocked"] is True
+
+    approve_id(prd["id"])
+    made = client.post(f"/api/prds/{prd['id']}/decompose?create=true", headers=auth).json()
+    db = SessionLocal()
+    its = {i.prd_section: i for i in (db.get(items_svc.Item, x) for x in made["created"])}
+    assert its["Fix the parser"].touchpoints == ["backend/app/widgets.py"]
+    assert its["Fix the parser"].status == "backlog"
+    assert its["Elsewhere"].status == "blocked" and "touchpoints" in its["Elsewhere"].blocker
+    db.close()
+
+
+def test_decompose_flags_an_oversized_section_and_splits_three_ways(client, auth):
+    """Three sub-headings, a clause under each: flagged, and create files three linked items.
+
+    The pieces are inserted blocked and the split links are added before any of them
+    becomes backlog, so a drain cannot claim one while the others are still unlinked.
+    """
+    from sqlalchemy import event, select
+
+    from app.models import Item, Link
+    from app.services.fleet import parse_acceptance
+    from tests.prd_approve import approve_id
+
+    body = (
+        "# Spec\n\n## Small\none thing\n\n## Work\n"
+        "### One\ndo the first\n### Two\ndo the second\n### Three\ndo the third\n\n"
+        "## Acceptance criteria\n### Small\n- small is done\n"
+        "### One\n- first is done\n### Two\n- second is done\n### Three\n- third is done\n"
+    )
+    prd = client.post("/api/prds", json={"title": "Split Spec", "body": body, "project_id": "core"},
+                      headers=auth).json()
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    by = {p["section"]: p for p in dry["proposals"]}
+    assert set(by) == {"Small", "Work"}
+    assert by["Small"]["oversized"] is False
+    assert by["Small"]["oversized_reason"] == ""
+    assert by["Small"]["sub_items"] == []
+    assert {s["signal"]: s["threshold"] for s in by["Small"]["size"]} == {
+        "acceptance_clauses": 2, "touchpoint_areas": 2, "body_chars": 3000,
+    }
+    assert all(s["exceeded"] is False for s in by["Small"]["size"])
+
+    work = by["Work"]
+    assert work["oversized"] is True
+    assert work["oversized_reason"] == "acceptance_clauses 3 > 2"
+    clauses = next(s for s in work["size"] if s["signal"] == "acceptance_clauses")
+    assert clauses["value"] == 3 and clauses["exceeded"] is True
+    assert [s["heading"] for s in work["sub_items"]] == ["One", "Two", "Three"]
+    assert [s["clauses"] for s in work["sub_items"]] == [
+        ["first is done"], ["second is done"], ["third is done"],
+    ]
+    assert dry["unassigned_clauses"] == []
+    assert "Work" not in dry["no_acceptance"]
+
+    approve_id(prd["id"])
+    seen: list[str] = []
+
+    def _on_status(target, value, old, _initiator):
+        if (target.title or "").startswith("Implement: Work —") and value == "backlog" and old == "blocked":
+            seen.append("backlog")
+
+    def _on_link(_target, _args, kwargs):
+        if str(kwargs.get("reason", "")).startswith("split of "):
+            seen.append("link")
+
+    event.listen(Item.status, "set", _on_status)
+    event.listen(Link, "init", _on_link)
+    try:
+        key = client.post("/api/api-keys", json={"name": "split-agent", "project_id": "core"},
+                          headers=auth).json()["plaintext"]
+        made = _mcp(client, key, "decompose_prd", {
+            "prd_id": prd["id"], "create": True,
+            "splits": {"Work": ["One", "Two", "Three"]},
+            "touchpoints": {"Work": ["backend/app/work.py"], "Small": ["backend/app/small.py"]},
+        })["structuredContent"]
+    finally:
+        event.remove(Item.status, "set", _on_status)
+        event.remove(Link, "init", _on_link)
+
+    assert seen == ["link", "link", "backlog", "backlog", "backlog"]
+    assert len(made["created"]) == 4
+    db = SessionLocal()
+    items = [db.get(items_svc.Item, i) for i in made["created"]]
+    small = next(i for i in items if i.prd_section == "Small")
+    pieces = [i for i in items if i.prd_section == "Work"]
+    assert small.status == "backlog" and small.touchpoints == ["backend/app/small.py"]
+    assert len(pieces) == 3
+    assert {i.status for i in pieces} == {"backlog"}
+    assert {i.blocker for i in pieces} == {""}
+    by_title = {i.title: i for i in pieces}
+    assert parse_acceptance(by_title["Implement: Work — One"].description)[0] == ["first is done"]
+    assert parse_acceptance(by_title["Implement: Work — Two"].description)[0] == ["second is done"]
+    assert "first is done" not in parse_acceptance(by_title["Implement: Work — Three"].description)[0]
+    links = list(db.scalars(select(Link).where(Link.reason == "split of Work")))
+    assert len(links) == 2
+    assert {lnk.type for lnk in links} == {"semantic"}
+    ids = {i.id for i in pieces}
+    assert {lnk.a for lnk in links} | {lnk.b for lnk in links} == ids
+    db.close()
+
+    again = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    assert again["proposals"] == []
+
+
+def test_decompose_touchpoint_override(client, auth):
+    from tests.prd_approve import approve_id
+
+    prd = client.post("/api/prds", json={
+        "title": "Ov Spec",
+        "body": "# Ov\n\n## Thing\nbuild it\n\n## Acceptance criteria\n### Thing\n- built\n",
+    }, headers=auth).json()
+    approve_id(prd["id"])
+    db = SessionLocal()
+    out = prd_svc.decompose(db, prd_svc.get_prd(db, prd["id"]), create=True,
+                            touchpoints={"Thing": ["a/b.py"]})
+    it = db.get(items_svc.Item, out["created"][0])
+    assert it.touchpoints == ["a/b.py"] and it.status == "backlog"
+    assert out["no_touchpoints"] == []
+    db.close()
 
 
 # ---- GRPH-1690: decompose proposes the dependencies between sections -------------------
@@ -216,25 +362,18 @@ def _dep_links(db, created):
 
 
 def test_decompose_proposes_depends_on_in_the_direction_the_body_says(client, auth):
-    """The named case: section B names section A's heading, so B depends on A — not A on B.
-
-    That is the defect. A drain that can start before the thing it drains exists, ordered by
-    a link that was either missing or backwards, and the backwards one is worse because it
-    looks like it worked.
-    """
+    """Section B names section A's heading, so B depends on A."""
     prd = client.post("/api/prds", json={"title": "Line", "body": _LINE_PRD},
                       headers=auth).json()
     dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
     by = {p["section"]: p for p in dry["proposals"]}
     assert [d["section"] for d in by["Draining the line"]["depends_on"]] == ["The line"]
     assert by["The line"]["depends_on"] == []
-    # WHY, quoting the text that decided it — a link nobody can check is a link nobody can
-    # drop, and `drop_links` is only usable if the reason is on the proposal.
     only = by["Draining the line"]["depends_on"][0]
     assert only["why"] == 'body names the section heading "The line"'
     assert only["matched"] == "the line"
     assert dry["link_cycles"] == [] and dry["links_skipped"] == []
-    assert dry["links"] == []  # a dry run proposes; it writes nothing
+    assert dry["links"] == []
 
 
 def test_decompose_create_writes_the_link_in_the_same_direction(client, auth):
@@ -246,7 +385,7 @@ def test_decompose_create_writes_the_link_in_the_same_direction(client, auth):
                       headers=auth).json()
     approve_id(prd["id"])
     made = client.post(f"/api/prds/{prd['id']}/decompose?create=true", headers=auth).json()
-    assert [(l["section"], l["depends_on"]) for l in made["links"]] == [
+    assert [(row["section"], row["depends_on"]) for row in made["links"]] == [
         ("Draining the line", "The line")]
     db = SessionLocal()
     by_section = {db.get(items_svc.Item, i).prd_section: i for i in made["created"]}
@@ -255,19 +394,11 @@ def test_decompose_create_writes_the_link_in_the_same_direction(client, auth):
     db.close()
     assert [(r.a, r.b) for r in rows] == [
         (by_section["Draining the line"], by_section["The line"])]
-    # The row explains itself where the board shows it, and says it was inferred rather than
-    # stated by the author — `confidence` is the field that carries that distinction.
     assert 'body names the section heading "The line"' in rows[0].reason
     assert rows[0].confidence == prd_svc._INFERRED_LINK_CONFIDENCE
 
 
 def test_decompose_links_a_term_one_section_defines_and_another_uses(client, auth):
-    """The second signal: no heading is named, but an identifier is introduced and reused.
-
-    The dependent writes the identifier in backticks too, which is why ownership goes to the
-    FIRST section carrying it rather than to the only one — uniqueness would have discarded
-    exactly the case this exists to catch.
-    """
     body = (
         "# Fleet\n\n"
         "## Supervisor\n"
@@ -286,11 +417,6 @@ def test_decompose_links_a_term_one_section_defines_and_another_uses(client, aut
 
 
 def test_decompose_reports_a_cycle_instead_of_creating_it(client, auth):
-    """Two sections naming each other is a contradiction, not an ordering.
-
-    Reported and cut rather than created: a cyclic dependency makes both items unclaimable
-    forever, which is a worse outcome than either one being unordered.
-    """
     from tests.prd_approve import approve_id
 
     body = ("# Cycle\n\n## Alpha\nReads the Beta output.\n\n## Beta\nReads the Alpha output.\n\n"
@@ -302,7 +428,6 @@ def test_decompose_reports_a_cycle_instead_of_creating_it(client, auth):
     cut = dry["link_cycles"][0]["cut"]
     assert (cut["section"], cut["depends_on"]) == ("Alpha", "Beta")
     assert "cycle" in dry["link_cycles"][0]["reason"]
-    # The surviving edge is the one written the way a PRD is written: later names earlier.
     assert [d["section"] for d in by["Beta"]["depends_on"]] == ["Alpha"]
     assert by["Alpha"]["depends_on"] == []
 
@@ -317,11 +442,7 @@ def test_decompose_reports_a_cycle_instead_of_creating_it(client, auth):
 
 
 def test_decompose_names_a_reference_it_cannot_link(client, auth):
-    """A reference to a section that already has work is REPORTED, not silently dropped.
-
-    `depends_on: []` on its own would read as "this section builds on nothing", which is the
-    reassuring wrong answer; the third possibility is "it builds on something already built".
-    """
+    """A reference to a section that already has work is reported, not silently dropped."""
     body = ("# Part\n\n## Ingest\nread the feed\n\n## Export\nwrite out what Ingest produced\n\n"
             "## Acceptance criteria\n### Ingest\n- feed is read\n### Export\n- rows written\n")
     prd = client.post("/api/prds", json={"title": "Part", "body": body}, headers=auth).json()
@@ -336,8 +457,7 @@ def test_decompose_names_a_reference_it_cannot_link(client, auth):
 
 
 def test_mcp_caller_can_drop_and_add_links_per_section(client, auth):
-    """THE CALL. The inference is a reading of prose, so the caller has to be able to correct
-    it — and a service parameter no tool passes is a correction nobody can make."""
+    """The inference is a reading of prose, so the caller has to be able to correct it."""
     key = client.post("/api/api-keys", json={"name": "link-agent", "project_id": "core"},
                       headers=auth).json()["plaintext"]
     body = (
@@ -365,8 +485,6 @@ def test_mcp_caller_can_drop_and_add_links_per_section(client, auth):
     assert [d["section"] for d in by["Serve"]["depends_on"]] == ["Index"]
     assert by["Serve"]["depends_on"][0]["why"] == "added by the caller"
 
-    # An override that matches nothing is reported. Silently not applying one is
-    # indistinguishable from applying it, right up to the drain that runs in the old order.
     missed = _mcp(client, key, "decompose_prd", {
         "prd_id": prd["id"],
         "drop_links": [{"section": "Serve", "depends_on": "Store"}],
@@ -380,16 +498,13 @@ def test_mcp_caller_can_drop_and_add_links_per_section(client, auth):
 
 
 def test_mcp_decompose_prd_advertises_the_link_surface():
-    """THE CALL, statically. Payload keys an agent never reads are a clean miss, and the
-    description plus the input schema are what `tools/list` ships."""
     from app.mcp_server import TOOLS
     tool = next(t for t in TOOLS if t["name"] == "decompose_prd")
     assert "depends_on" in tool["description"]
-    assert {"drop_links", "add_links"} <= set(tool["inputSchema"]["properties"])
+    assert {"drop_links", "add_links", "splits"} <= set(tool["inputSchema"]["properties"])
 
 
 def test_mcp_decompose_create_writes_the_links_it_proposed(client, auth):
-    """THE CALL, end to end: proposing links and writing them are not the same claim."""
     from tests.prd_approve import approve_id
 
     key = client.post("/api/api-keys", json={"name": "link-writer", "project_id": "core"},
@@ -399,10 +514,32 @@ def test_mcp_decompose_create_writes_the_links_it_proposed(client, auth):
     approve_id(prd["id"])
     made = _mcp(client, key, "decompose_prd",
                 {"prd_id": prd["id"], "create": True})["structuredContent"]
-    assert [(l["section"], l["depends_on"]) for l in made["links"]] == [
+    assert [(row["section"], row["depends_on"]) for row in made["links"]] == [
         ("Draining the line", "The line")]
     db = SessionLocal()
     by_section = {db.get(items_svc.Item, i).prd_section: i for i in made["created"]}
     rows = _dep_links(db, made["created"])
     db.close()
     assert rows == [(by_section["Draining the line"], by_section["The line"])]
+
+
+def test_decompose_links_a_slice_label_when_the_heading_is_not_quoted(client, auth):
+    body = (
+        "# Spec\n\n"
+        "## S1 — The line\n"
+        "A rolling queue.\n\n"
+        "## S2 — Draining\n"
+        "Runs after S1.\n\n"
+        "## Acceptance criteria\n"
+        "### S1 — The line\n- a line can be opened\n"
+        "### S2 — Draining\n- the drain merges each fix\n"
+    )
+    prd = client.post("/api/prds", json={"title": "Slices", "body": body}, headers=auth).json()
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    by = {p["section"]: p for p in dry["proposals"]}
+    assert [d["section"] for d in by["S2 — Draining"]["depends_on"]] == ["S1 — The line"]
+    assert by["S1 — The line"]["depends_on"] == []
+    only = by["S2 — Draining"]["depends_on"][0]
+    assert only["matched"] == "S1"
+    assert "slice label" in only["why"]
+    assert dry["link_cycles"] == []

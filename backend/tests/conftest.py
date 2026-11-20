@@ -43,6 +43,10 @@ os.environ["LOG_EXPORT_SECONDS"] = "0"
 os.environ["AUTO_UPDATE_TICK_SECONDS"] = "0"
 os.environ["QUESTION_SWEEP_SECONDS"] = "0"
 os.environ["TLS_SYNC_SECONDS"] = "0"
+# The proposal pull is OFF for the suite (GRPH-1737). Its tests drive
+# `project_sync_proposals.run_due` on a fake clock. A live tick would call the
+# console, or the absence of one, in the middle of unrelated tests.
+os.environ["PROPOSAL_POLL_SECONDS"] = "0"
 # bcrypt at its minimum cost. Set before the templates are built so the SEEDED user's hash
 # is cheap too: `checkpw` reads the cost from the stored hash, and at the production 12 every
 # `auth` login cost ~180 ms — the single largest fixture cost in the suite (measured

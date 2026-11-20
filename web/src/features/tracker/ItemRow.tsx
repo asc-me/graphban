@@ -10,7 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/cn";
-import { LineBadges, type LineInfo } from "./LineBadges";
+import { LineBadges, NeedsLine, type LineInfo } from "./LineBadges";
 import { QuestionStateBadge } from "./QuestionStateBadge";
 import { CHECK_COLOR, PR_STATE_COLOR, STATUS_META, STATUS_ORDER } from "@/lib/meta";
 import type { Item, Status } from "@/lib/types";
@@ -106,7 +106,10 @@ export function ItemRow({
 
       <span className="w-16 flex-none font-mono text-small text-faint">{item.id}</span>
 
-      <span className="min-w-0 flex-1 truncate text-[13.5px] text-fg-2">{item.title}</span>
+      <span className="flex min-w-0 flex-1 items-center gap-2.5">
+        <span className="min-w-0 truncate text-[13.5px] text-fg-2">{item.title}</span>
+        <NeedsLine needs={lineInfo?.needs} className="flex-none whitespace-nowrap" />
+      </span>
 
       <QuestionStateBadge state={item.question_state} />
       <LineBadges item={item} {...lineInfo} />

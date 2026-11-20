@@ -24,7 +24,7 @@ from app.services import tool_tiers
 #
 # Raising CEILING is a decision, not a fix. The history below is a series of raises that the
 # docstring itself argues should have been trims.
-CEILING = 18120
+CEILING = 18048
 # 13592 -> 13595 (GRPH-146). `get_code_map` gained `limit`/`offset` so a bounded read is
 # possible at all, and that two-property addition did NOT fit: it cost ~73 tokens against 8 of
 # headroom. It was paid for inside the manifest rather than by raising the ceiling — four
@@ -231,14 +231,12 @@ CEILING = 18120
 # 17893 -> 17919, and CEILING 17905 -> 17935 with it (GRPH-1695). `distinct_from` and
 # `found_during` on create_item (core) and the `found_during` link type. Headroom 16.
 # Merged (GRPH-1686 + GRPH-1695): 18036, CEILING 18048. Headroom 12.
-# 18041 -> 18109, and CEILING 18048 -> 18120 with it (GRPH-1690). `decompose_prd` proposes
-# `depends_on` per section and takes `drop_links`/`add_links`, so the ordering between a PRD's
-# sections comes out of the spec and a caller can correct the inference instead of hand-linking
-# the items afterwards. On the opt-in `prd` tier and planner-gated besides — TIER_TOKENS["prd"]
-# 3868 -> 3936 is the whole bill and CORE_TOKENS does not move, so a worker or a reviewer never
-# pays for a tool it cannot call. The description was trimmed first, which bought 8 of the 76.
-# Headroom 11.
-MEASURED_TOKENS = 18109  # P75 S1: +170 for answer_wait (ceiling 17775). GRPH-1650's
+# 18021 -> 18037 (GRPH-1691). `decompose_prd` gains `splits`. Paid by trimming that
+# tool's description and the touchpoints hint. CEILING stays 18048. Headroom 11.
+# 18037 -> 18036 (GRPH-1690). `decompose_prd` gains `depends_on`, `drop_links` and
+# `add_links`. Paid by dropping the touchpoints and splits property descriptions and
+# shortening the tool description. CEILING stays 18048. Headroom 12.
+MEASURED_TOKENS = 18036  # P75 S1: +170 for answer_wait (ceiling 17775). GRPH-1650's
 # create_item `agent_id` is fleet-only (_FLEET_ONLY_ARGS), so it costs this manifest nothing.
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
