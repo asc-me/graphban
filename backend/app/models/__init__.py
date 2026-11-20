@@ -4041,6 +4041,42 @@ class RuleToggle(Base):
     )
 
 
+class CustomRule(Base):
+    """A rule a person wrote from a library primitive (GRPH-1774 / P91 D1).
+
+    Scoped to a project (`project_id`) or, from S7, an org (`org_id`): exactly one. `rule_id` is
+    `custom.<slug>`, unique per scope. `stage` is the primitive's, copied from the contract at
+    write time; `primitive_api` is the primitive API the draft was validated against, so a
+    later major break reads as UNMEASURED rather than half-enforced. `state` is `observing`
+    (measured, not enforced) or `active`.
+    """
+
+    __tablename__ = "custom_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    rule_id: Mapped[str] = mapped_column(String, index=True)
+    org_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id"), nullable=True)
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
+    primitive: Mapped[str] = mapped_column(String)
+    primitive_api: Mapped[str] = mapped_column(String)
+    stage: Mapped[str] = mapped_column(String)
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    title: Mapped[str] = mapped_column(String)
+    why: Mapped[str] = mapped_column(Text)
+    claims: Mapped[str] = mapped_column(String)
+    state: Mapped[str] = mapped_column(String, default="active")
+    author_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        CheckConstraint("(org_id IS NULL) <> (project_id IS NULL)",
+                        name="ck_custom_rules_one_scope"),
+        UniqueConstraint("rule_id", "org_id", name="uq_custom_rules_org"),
+        UniqueConstraint("rule_id", "project_id", name="uq_custom_rules_project"),
+    )
+
+
 class InstalledRulePack(Base):
     """A rule pack a person accepted (GRPH-1329 / PRD-P63 D10, D12). The newest row is the pack
     in force; older rows are the install history. The artifact and its signature are stored
