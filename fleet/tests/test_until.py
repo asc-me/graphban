@@ -82,6 +82,8 @@ def _clients(
     brief_tier: dict | None = None,
     maintenance_line: dict | None = None,
     backlog: list | None = None,
+    item_rows: list | None = None,
+    updates: list | None = None,
 ):
     """Planner + supervisor clients sharing one mock Graphban.
 
@@ -246,7 +248,15 @@ def _clients(
             if args.get("status") in ("backlog", "next"):
                 return _mcp({"results": [r for r in (backlog or [])
                                          if r.get("status") == args.get("status")]}, rid)
+            # `item_status` asks with no status and no query. A hold search also has
+            # no status, and answering it with these rows would adopt a hold the
+            # fixture never wrote.
+            if item_rows is not None and not args.get("status") and not args.get("query"):
+                return _mcp({"results": list(item_rows)}, rid)
             return _mcp({"results": []}, rid)
+        if tool == "update_item" and updates is not None:
+            updates.append(dict(args))
+            return _mcp({"id": args.get("id"), "status": args.get("status") or "next"}, rid)
         if tool == "retire_wave":
             return _mcp({"seats_revoked": 0, "agents": 0}, rid)
         trees = sorted(p for p in workspace.glob("*") if p.is_dir() and p.name != "logs")
@@ -3102,3 +3112,180 @@ def test_negative_subagents_exits_before_any_seat(monkeypatch, capsys):
     monkeypatch.setenv("GBFLEET_API_KEY", "k")
     assert main(["until", "--server", "http://x", "--project", "p", "--adapter", "claude", "--subagents", "-1"]) == 2
     assert "--subagents must be 0 or more" in capsys.readouterr().err
+
+
+# ---- GRPH-1785: a stale worktree holding the bounced branch ---------------------------
+
+
+def _clone_with_held_branch(tmp_path: Path, *, dirty: bool) -> tuple[Path, Path]:
+    """A clone whose `gb/line-104` is checked out in a linked worktree.
+
+    The branch is pushed and matches `origin`. `gb/line-44` exists at `main` and
+    is not checked out: that is the unrelated branch a failed resume started a
+    child on. Returns `(repo, stale_worktree)`.
+    """
+    bare = tmp_path / "remote.git"
+    bare.mkdir()
+    subprocess.run(["git", "init", "--bare", "-q", str(bare)], check=True)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def g(*args: str, cwd: Path = repo) -> None:
+        subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
+
+    g("init", "-q", "-b", "main")
+    g("config", "user.email", "t@t.t")
+    g("config", "user.name", "t")
+    g("remote", "add", "origin", str(bare))
+    (repo / "README.md").write_text("x\n")
+    g("add", "-A")
+    g("commit", "-qm", "first")
+    g("push", "-q", "-u", "origin", "main")
+    g("checkout", "-q", "-b", "gb/line-104")
+    (repo / "kept.py").write_text("round-1\n")
+    g("add", "-A")
+    g("commit", "-qm", "round 1")
+    g("push", "-q", "-u", "origin", "gb/line-104")
+    g("checkout", "-q", "main")
+    g("branch", "gb/line-44")
+    stale = tmp_path / "line-104"
+    g("worktree", "add", "-q", str(stale), "gb/line-104")
+    if dirty:
+        (stale / "dirty.txt").write_text("unpushed\n")
+    return repo, stale
+
+
+def _capture_emit(monkeypatch):
+    from gbfleet import observe
+
+    events: list[tuple[str, dict]] = []
+    real = observe.emit
+
+    def capture(event, **fields):
+        events.append((event, dict(fields)))
+        return real(event, **fields)
+
+    monkeypatch.setattr(observe, "emit", capture)
+    return events
+
+
+_HELD = {
+    "id": "GRPH-1690",
+    "status": "next",
+    "claimed_by": "",
+    "branch": "gb/line-104",
+    "bounce_reason": "tests failed",
+    "touchpoints": ["fleet/src/gbfleet/until.py"],
+}
+
+
+def test_a_clean_pushed_worktree_holding_the_branch_is_removed_and_resumed(
+    tmp_path: Path, scripts, state: Path, monkeypatch,
+):
+    """GRPH-1785. The previous builder's worktree is clean, pushed, and owned by
+    no live child. Resume removes it and starts on `gb/line-104`, the item's branch.
+
+    Sabotage: skip the reclaim and fall through to a fresh `gb/wave-*` cut. This
+    child's branch is no longer `gb/line-104`, and `kept.py` is not on it.
+    """
+    repo, stale = _clone_with_held_branch(tmp_path, dirty=False)
+    workspace = tmp_path / "ws"
+    events = _capture_emit(monkeypatch)
+    planner, supervisor = _clients(
+        workspace, clusters=1, workers=0, bound_seats=True,
+        cluster_items=[["GRPH-1690"]],
+        item_rows=[dict(_HELD)],
+    )
+    result = run(
+        repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+        limits=Limits(max_workers=1, max_children=1),
+        base_branch="main",
+    )
+    assert result.spawned == 1, result.as_json()
+    child = result.wave.spawned[0]
+    assert child.branch == "gb/line-104", [c.branch for c in result.wave.spawned]
+    show = subprocess.run(
+        ["git", "show", "gb/line-104:kept.py"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    assert show == "round-1\n"
+    listed = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    assert str(stale) not in listed
+    assert not stale.exists()
+    assert any(name == "resume_reclaimed" and fields.get("item") == "GRPH-1690"
+               and fields.get("branch") == "gb/line-104" for name, fields in events)
+    assert not any(name == "resume_blocked" for name, _fields in events)
+
+
+def test_a_dirty_holder_does_not_start_the_child_on_another_branch(
+    tmp_path: Path, scripts, state: Path, monkeypatch,
+):
+    """GRPH-1785. The branch is still checked out and this drain will not take the
+    worktree. No child starts, on `gb/line-44` or on a fresh `gb/wave-*`. The drain
+    emits `resume_blocked` naming the item and the blocking worktree, withdraws the
+    delegation, and does not mark the item blocked.
+
+    Sabotage: delete the `ResumeBlocked` raise in `_start` so the `while tree is
+    None` fresh cut runs. A child is spawned and `gb/wave-` appears.
+    """
+    repo, stale = _clone_with_held_branch(tmp_path, dirty=True)
+    workspace = tmp_path / "ws"
+    events = _capture_emit(monkeypatch)
+    delegations: list[dict] = []
+    updates: list[dict] = []
+    planner, supervisor = _clients(
+        workspace, clusters=1, workers=0, bound_seats=True,
+        cluster_items=[["GRPH-1690"]],
+        item_rows=[dict(_HELD)],
+        delegations=delegations,
+        updates=updates,
+    )
+    result = run(
+        repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+        limits=Limits(max_workers=1, max_children=1),
+        base_branch="main",
+    )
+    assert result.spawned == 0, result.as_json()
+    assert result.wave.spawned == []
+    assert result.reason == "spawn_failed", result.as_json()
+    blocked = [fields for name, fields in events if name == "resume_blocked"]
+    assert len(blocked) == 1, events
+    assert blocked[0]["item"] == "GRPH-1690"
+    assert blocked[0]["branch"] == "gb/line-104"
+    assert Path(blocked[0]["worktree"]).resolve() == stale.resolve()
+    assert any(d.get("id") == "GRPH-1690" and d.get("withdraw") is True for d in delegations)
+    assert not any(u.get("status") == "blocked" for u in updates)
+    assert (stale / "dirty.txt").is_file()
+    branches = subprocess.run(
+        ["git", "branch", "--list", "gb/wave-*"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    assert branches.strip() == ""
+
+
+def test_a_live_child_keeps_the_worktree_that_holds_the_branch(tmp_path: Path):
+    """GRPH-1785. A running child owns the checkout, so resume does not remove it.
+
+    Sabotage: drop the live-child check in `_reclaim_idle_worktree`. This returns
+    True and `line-104` is gone.
+    """
+    from types import SimpleNamespace
+
+    from gbfleet.supervisor import _reclaim_idle_worktree
+
+    repo, stale = _clone_with_held_branch(tmp_path, dirty=False)
+    child = SimpleNamespace(running=True, worktree=stale)
+    assert _reclaim_idle_worktree(repo, "gb/line-104", stale, [child]) is False
+    assert stale.exists()
+    listed = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    assert str(stale) in listed

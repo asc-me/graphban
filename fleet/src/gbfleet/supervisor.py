@@ -431,6 +431,12 @@ class Wave:
     resumed: list[str] = field(default_factory=list)
     #: Resume attempted and abandoned — spawn from HEAD, leftover ref stays listed.
     resume_misses: list[str] = field(default_factory=list)
+    #: GRPH-1785. The item's own branch could not be checked out, so this seat was
+    #: not started on any other branch. Each entry is {item, branch, worktree}.
+    #: `worktree` is the checkout that holds the branch, or "" when resume failed
+    #: without one. The drain emits `resume_blocked` from these and withdraws the
+    #: delegation, so the item stays claimable.
+    resume_blocked: list[dict] = field(default_factory=list)
     #: Names this wave refused because the remote already had them (GRPH-1088). The
     #: next free slot is cut instead. Recorded as the refusal `create` raised, so the
     #: report says which name and which commit were left alone.
@@ -1306,6 +1312,86 @@ def registration_window(limits: Limits, launch: Launch) -> float:
     return REGISTRATION_WINDOW
 
 
+class ResumeBlocked(Exception):
+    """The item's branch could not be checked out, so no child is started.
+
+    `worktree` is the checkout that holds the branch, or "" when resume failed
+    without naming one. The drain emits `resume_blocked` and withdraws the
+    delegation. Starting on any other branch is the defect this exists to close
+    (GRPH-1785).
+    """
+
+    def __init__(self, item: str, branch: str, worktree: str = "") -> None:
+        self.item = item
+        self.branch = branch
+        self.worktree = worktree
+        where = worktree or "an unknown checkout"
+        super().__init__(
+            f"{item}: {branch} is held by {where}; not starting on another branch"
+        )
+
+
+def _child_is_running(child: Child) -> bool:
+    running = getattr(child, "running", False)
+    return bool(running() if callable(running) else running)
+
+
+def _live_child_owns(path: Path, children: Sequence[Child]) -> bool:
+    """True when a still-running child was started in `path`."""
+    try:
+        want = path.resolve()
+    except OSError:
+        want = Path(path)
+    for child in children:
+        if not _child_is_running(child):
+            continue
+        try:
+            if Path(child.worktree).resolve() == want:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _reclaim_idle_worktree(
+    repo: Path, branch: str, holder: Path, children: Sequence[Child],
+) -> bool:
+    """Remove `holder` when this drain may take the branch back (GRPH-1785).
+
+    All four have to be true: it is a linked worktree of this clone, no live
+    child owns it, it is clean, and its HEAD is the remote tip of `branch`.
+    Any one missing leaves the checkout where it is. The primary worktree is
+    never removed. `git worktree remove` is not forced.
+    """
+    try:
+        if holder.resolve() == Path(repo).resolve():
+            return False
+    except OSError:
+        return False
+    if _live_child_owns(holder, children):
+        return False
+    if wt_mod.is_dirty(holder):
+        return False
+    if not wt_mod.matches_remote_head(repo, branch, holder):
+        return False
+    try:
+        wt_mod.remove_worktree(repo, holder)
+    except wt_mod.GitError:
+        return False
+    return True
+
+
+def _worktree_in_resume_error(detail: str) -> str:
+    """The path from git's 'already used by worktree at', or ""."""
+    marker = "already used by worktree at "
+    if marker not in detail:
+        return ""
+    raw = detail.split(marker, 1)[1].splitlines()[0].strip()
+    if len(raw) >= 2 and raw[0] in "'\"" and raw[-1] == raw[0]:
+        raw = raw[1:-1]
+    return raw.strip()
+
+
 def _start(
     wave: Wave,
     seats: Sequence[Seat],
@@ -1382,17 +1468,46 @@ def _start(
             if bounced and bounced not in taken:
                 slot = bounced.rsplit("-", 1)[-1] or slot
                 agent_slot = f"{wave_name}-{slot}"
-                try:
-                    tree = wt_mod.resume_bounced(
-                        repo, workspace / f"{wave_name}-{slot}-bounce", bounced,
-                        base=base,
+                holder = wt_mod.worktree_holding(repo, bounced)
+                if holder is not None and _reclaim_idle_worktree(
+                    repo, bounced, holder, started,
+                ):
+                    observe.emit(
+                        "resume_reclaimed",
+                        item=seat.item or "",
+                        branch=bounced,
+                        worktree=str(holder),
                     )
-                    wave.resumed.append(bounced)
-                    taken.add(bounced)
-                    _record_resume_merge(wave, client, seat.item, tree)
-                except wt_mod.ResumeFailed as exc:
-                    wave.resume_misses.append(str(exc))
-                    observe.emit("resume_miss", detail=str(exc), branch=bounced)
+                    holder = None
+                blocking = "" if holder is None else str(holder)
+                if holder is not None:
+                    # Still checked out, and not ours to take. Do not add a second
+                    # worktree for it — git will refuse — and do not start elsewhere.
+                    wave.resume_misses.append(
+                        f"{bounced}: already used by worktree at {holder}"
+                    )
+                else:
+                    try:
+                        tree = wt_mod.resume_bounced(
+                            repo, workspace / f"{wave_name}-{slot}-bounce", bounced,
+                            base=base,
+                        )
+                        wave.resumed.append(bounced)
+                        taken.add(bounced)
+                        _record_resume_merge(wave, client, seat.item, tree)
+                    except wt_mod.ResumeFailed as exc:
+                        wave.resume_misses.append(str(exc))
+                        observe.emit(
+                            "resume_miss", detail=str(exc), branch=bounced,
+                            item=seat.item or "",
+                        )
+                        blocking = blocking or _worktree_in_resume_error(str(exc))
+                if tree is None:
+                    # GRPH-1785. The item's branch was not checked out. Do not fall
+                    # through to a salvage or a fresh gb/<wave>-* cut: that is how a
+                    # bounced item was built on an unrelated branch. The drain emits
+                    # resume_blocked and leaves the item claimable.
+                    raise ResumeBlocked(seat.item or "", bounced, blocking)
             if tree is None:
                 # Bound seats resume only the salvage that names their item. An unbound
                 # seat still walks the list, skipping branches this wave already took.
@@ -1510,6 +1625,14 @@ def _start(
                 _report_event(wave, ledger, seat, "spawn_failed", text)
                 raise LaunchFailed(text) from exc
             _report_event(wave, ledger, seat, "registered")
+        except ResumeBlocked as blocked:
+            wave.resume_blocked.append({
+                "item": blocked.item,
+                "branch": blocked.branch,
+                "worktree": blocked.worktree,
+            })
+            _note_unredeemed(wave, seat, str(blocked))
+            continue
         except (LaunchFailed, wt_mod.GitError, wt_mod.BranchExists, SetupFailed) as exc:
             wave.failures.append(f"{agent_slot}: {exc}")
             vendor_limit = isinstance(exc, VendorLimit)

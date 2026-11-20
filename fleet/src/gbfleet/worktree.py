@@ -83,7 +83,12 @@ class SeatPathIsTracked(GitError):
 
 
 class ResumeFailed(RuntimeError):
-    """Could not check out a salvage branch. Spawn from HEAD instead; do not abort."""
+    """Could not check out the branch this spawn meant to resume.
+
+    A salvage with no item of its own may still spawn from HEAD. An item that
+    already has a branch must not (GRPH-1785): the caller leaves it claimable
+    instead of starting the child on some other branch.
+    """
 
 
 class BranchExists(RuntimeError):
@@ -580,6 +585,48 @@ def remote_name(repo: Path | str, branch: str) -> RemoteName:
         if len(parts) >= 2 and parts[1] == want:
             return RemoteName(known=True, exists=True, remote=remote, sha=parts[0])
     return RemoteName(known=True, exists=False, remote=remote)
+
+
+def worktree_holding(repo: Path | str, branch: str) -> Path | None:
+    """The worktree in this clone that has `branch` checked out, or None.
+
+    The primary checkout is included. A detached worktree is not: it does not
+    lock the branch name, so `worktree add` of that branch can still succeed.
+    """
+    branch = (branch or "").strip()
+    if not branch:
+        return None
+    current: Path | None = None
+    for line in _git(repo, "worktree", "list", "--porcelain").splitlines():
+        if line.startswith("worktree "):
+            current = Path(line.split(" ", 1)[1])
+        elif line == f"branch refs/heads/{branch}" and current is not None:
+            return current
+    return None
+
+
+def matches_remote_head(repo: Path | str, branch: str, worktree: Path) -> bool:
+    """True when `worktree`'s HEAD is the remote tip of `branch`.
+
+    No remote, or no remote-tracking ref, is not a match. Absence is not "the
+    same commit": a checkout we could not compare is not one to remove.
+    """
+    remote = remote_for(repo)
+    if not remote:
+        return False
+    local = _git(worktree, "rev-parse", "HEAD").strip()
+    remote_sha = _git(
+        repo, "rev-parse", "--verify", "--quiet",
+        f"refs/remotes/{remote}/{branch}", check=False,
+    ).strip()
+    if not local or not remote_sha:
+        return False
+    return local == remote_sha
+
+
+def remove_worktree(repo: Path | str, path: Path) -> None:
+    """Remove a linked worktree. A dirty tree is refused; never `--force`."""
+    _git(repo, "worktree", "remove", str(path))
 
 
 def remote_for(repo: Path | str) -> str:
