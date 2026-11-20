@@ -3095,3 +3095,10 @@ def test_a_row_whose_ci_run_is_in_progress_gets_no_reviewer_and_waits(
         )
     assert roles == []
     assert len(ticks) > 3  # waited past empty_ticks instead of exiting
+
+
+def test_negative_subagents_exits_before_any_seat(monkeypatch, capsys):
+    from gbfleet.cli import main
+    monkeypatch.setenv("GBFLEET_API_KEY", "k")
+    assert main(["until", "--server", "http://x", "--project", "p", "--adapter", "claude", "--subagents", "-1"]) == 2
+    assert "--subagents must be 0 or more" in capsys.readouterr().err
