@@ -1083,6 +1083,12 @@ function ProjectStep({
               <p className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-faint">Accent</p>
               <div className="flex flex-wrap gap-2.5">
                 {ACCENTS.map((c) => (
+                  // Selection is a box-shadow, not outline. An inline outline beats
+                  // the global :focus-visible rule, so keyboard focus disappears.
+                  // The 4px ring sits inside a 5px focus offset. The 2px inner stop
+                  // matches this well (bg-surface-2), not the dialog surface-3.
+                  // Keep this note outside the opening tag. A quote mark inside it is
+                  // read as a string, and the tag scan then swallows a later control.
                   <button
                     key={c}
                     type="button"
@@ -1092,10 +1098,6 @@ function ProjectStep({
                     className="h-6 w-6 rounded-[7px] focus-visible:outline-2 focus-visible:outline-focus"
                     style={{
                       background: c,
-                      // Selection is a box-shadow, not outline. An inline outline beats
-                      // the global :focus-visible rule, so keyboard focus disappears.
-                      // The 4px ring sits inside a 5px focus offset. The 2px inner stop
-                      // matches this well (bg-surface-2), not the dialog's surface-3.
                       boxShadow:
                         accent === c
                           ? "0 0 0 2px var(--color-surface-2), 0 0 0 4px var(--color-fg)"
