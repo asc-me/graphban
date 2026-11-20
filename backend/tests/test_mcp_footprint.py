@@ -24,7 +24,7 @@ from app.services import tool_tiers
 #
 # Raising CEILING is a decision, not a fix. The history below is a series of raises that the
 # docstring itself argues should have been trims.
-CEILING = 18048
+CEILING = 18160
 # 13592 -> 13595 (GRPH-146). `get_code_map` gained `limit`/`offset` so a bounded read is
 # possible at all, and that two-property addition did NOT fit: it cost ~73 tokens against 8 of
 # headroom. It was paid for inside the manifest rather than by raising the ceiling — four
@@ -233,7 +233,12 @@ CEILING = 18048
 # Merged (GRPH-1686 + GRPH-1695): 18036, CEILING 18048. Headroom 12.
 # 18021 -> 18037 (GRPH-1691). `decompose_prd` gains `splits`. Paid by trimming that
 # tool's description and the touchpoints hint. CEILING stays 18048. Headroom 11.
-MEASURED_TOKENS = 18037  # P75 S1: +170 for answer_wait (ceiling 17775). GRPH-1650's
+# 18037 -> 18036 (GRPH-1690). `decompose_prd` gains `depends_on`, `drop_links` and
+# `add_links`. Paid by dropping the touchpoints and splits property descriptions and
+# shortening the tool description. CEILING stays 18048. Headroom 12.
+# 18036 -> 18150 (GRPH-1775, P91 S3): `propose_rule` in the misc tier, +114, and CEILING
+# 18048 -> 18160 with it. Headroom 10. One-line description; args folded into `draft`.
+MEASURED_TOKENS = 18158  # P75 S1: +170 for answer_wait (ceiling 17775). GRPH-1650's
 # create_item `agent_id` is fleet-only (_FLEET_ONLY_ARGS), so it costs this manifest nothing.
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming

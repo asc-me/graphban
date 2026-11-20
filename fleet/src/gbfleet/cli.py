@@ -349,6 +349,11 @@ def build_parser() -> argparse.ArgumentParser:
     until.add_argument("--wave", default="wave", help="wave name, used in branch names")
     until.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     until.add_argument(
+        "--subagents", type=int, default=None, metavar="N",
+        help="tell each child it may start at most N vendor subagents (0 = none). Written "
+             "into the instruction only; omitted leaves the instruction unchanged",
+    )
+    until.add_argument(
         "--request", choices=["cheap", "frontier"], default=None,
         help="tier to REQUEST on each delegation this loop writes (PRD-35/36); default follows "
              "the brief's suggestion. Observational: the child declares what it actually is",
@@ -767,6 +772,9 @@ def _until(args) -> int:
     if args.line is not None and args.prd:
         print("gbfleet until: --prd and --line cannot be combined", file=sys.stderr)
         return 2
+    if args.subagents is not None and args.subagents < 0:
+        print("gbfleet until: --subagents must be 0 or more", file=sys.stderr)
+        return 2
     template = [a for a in (args.argv or []) if a != "--"]
     try:
         factory = (
@@ -860,6 +868,7 @@ def _until(args) -> int:
                 child_wall_clock=args.child_wall_clock,
                 quiet_after=args.quiet_after,
                 registration_window=args.registration_window,
+                subagents=args.subagents,
             ),
             workspace=Path(args.workspace) if args.workspace else None,
             debug=args.debug,

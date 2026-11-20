@@ -4061,6 +4061,9 @@ class RuleToggle(Base):
     on: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     params: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     locked: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    #: GRPH-1777 (P91 D5): a project row's rule is `observing` while this is set — on, measured,
+    #: not enforced. Promotion clears it; any other write to the row clears it too.
+    observing_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
                                                  onupdate=utcnow)
@@ -4073,6 +4076,23 @@ class RuleToggle(Base):
         UniqueConstraint("rule_id", "org_id", name="uq_rule_toggles_org"),
         UniqueConstraint("rule_id", "project_id", name="uq_rule_toggles_project"),
     )
+
+
+class RuleObservation(Base):
+    """One outcome an observing rule WOULD have had (GRPH-1777 / P91 D5): `would_hold` or
+    `would_refuse`. Rule history, kept for the life of the project: promotion or removal never
+    purges it, and it is attributed to the rule, never to whoever proposed or adopted it."""
+
+    __tablename__ = "rule_observations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    rule_id: Mapped[str] = mapped_column(String, index=True)
+    outcome: Mapped[str] = mapped_column(String)
+    item_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    commit: Mapped[str | None] = mapped_column(String, nullable=True)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class CustomRule(Base):
@@ -4109,6 +4129,77 @@ class CustomRule(Base):
         UniqueConstraint("rule_id", "org_id", name="uq_custom_rules_org"),
         UniqueConstraint("rule_id", "project_id", name="uq_custom_rules_project"),
     )
+
+
+class RuleProposal(Base):
+    """A suggested rule change, cited and direction-checked (GRPH-1775 / P91 D2).
+
+    `kind` is `new_rule` | `turn_on` | `tighten`; turning a rule off is never a proposal. `rule_id`
+    is the rule it targets (`custom.<slug>` for a new one). `direction` and `loosens` are computed
+    by `rule_pack.direction` against the rule's resolved value, never taken from the proposer.
+    `proposer_kind` is `agent` | `person` | `import`. `status` is `open` | `adopted` |
+    `dismissed` | `superseded`; no MCP tool moves it off `open` (`rules.person_adopts`).
+    """
+
+    __tablename__ = "rule_proposals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    kind: Mapped[str] = mapped_column(String)
+    rule_id: Mapped[str] = mapped_column(String)
+    primitive: Mapped[str] = mapped_column(String)
+    draft: Mapped[dict] = mapped_column(JSON, default=dict)
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    citations: Mapped[list] = mapped_column(JSON, default=list)
+    proposer: Mapped[str] = mapped_column(String)
+    proposer_kind: Mapped[str] = mapped_column(String)
+    direction: Mapped[str] = mapped_column(String)
+    loosens: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    status: Mapped[str] = mapped_column(String, default="open", server_default="open")
+    decided_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    decided_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RuleGuidance(Base):
+    """Advisory text for a requirement no primitive expresses (GRPH-1780 / P91 D8).
+
+    Filed with a citation, `open` until a person adopts it (`rules.person_adopts`); adopted
+    guidance rides in the delegation brief of an item in its `stage`. Never enforced.
+    """
+
+    __tablename__ = "rule_guidance"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    stage: Mapped[str] = mapped_column(String)
+    label: Mapped[str] = mapped_column(String)
+    text: Mapped[str] = mapped_column(Text)
+    citations: Mapped[list] = mapped_column(JSON, default=list)
+    proposer: Mapped[str] = mapped_column(String)
+    proposer_kind: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="open", server_default="open")
+    decided_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PrimitiveGapCount(Base):
+    """How often a requirement of this stage and short label had no primitive (GRPH-1780).
+
+    Stage, label and a count. Never the guidance text. Stays on the box unless the box's counts
+    opt-in (`box_push`) is on.
+    """
+
+    __tablename__ = "primitive_gap_counts"
+    __table_args__ = (UniqueConstraint("project_id", "stage", "label"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    stage: Mapped[str] = mapped_column(String)
+    label: Mapped[str] = mapped_column(String)
+    count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class InstalledRulePack(Base):

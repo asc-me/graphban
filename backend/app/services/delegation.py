@@ -62,6 +62,8 @@ UNDECLARED = "undeclared"
 #: D17: the brief's caps. Response size never touches the manifest ceiling.
 SUMMARY_MAX = 600
 LESSONS_MAX = 5
+#: P91 D8: adopted guidance in a brief. Each entry is capped by its filing (`TEXT_MAX`).
+GUIDANCE_MAX = 3
 NOTE_MAX = 200
 #: PRD-38 D10 / PRD-41 D15: `measured_for_lane` plus `capabilities` stay inside this
 #: serialised bound. A result payload that grows quietly costs every spawn's context.
@@ -316,6 +318,10 @@ _CI_HANDOFF_LINE = (
 _SCOPES_WITH_CI_HANDOFF = frozenset({"agent_targeted", "agent_and_pr"})
 
 
+#: Stands in for `test_scope` in `_text` while `build.test_scope` is observing (GRPH-1778).
+OBSERVING_NOTE = "observing"
+
+
 def test_scope_line(mode: str, engines: list[str] | None = None) -> str:
     """GRPH-1405: one line naming the project's test-scope mode and what it asks of this
     builder or reviewer. Under `agent_full` it names the engines (GRPH-1429)."""
@@ -353,7 +359,7 @@ def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[
           attempts: list[dict], test_scope: str | None = None,
           test_engines: list[str] | None = None,
           checklist_matched: list[str] | None = None, found_bug: str | None = None,
-          answered: list[dict] | None = None) -> str:
+          answered: list[dict] | None = None, guidance: list[dict] | None = None) -> str:
     """Prose for a spawn prompt, derived from the fields and nothing else (D16). Deliberately
     excludes the lane and tier suggestions so a pasted brief cannot become the default."""
     lines = [f"Item {item.key}: {item.title}"]
@@ -395,7 +401,14 @@ def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[
         else:
             lines.append(f"Answered {a['wait']}: {a['question']} -> {a['answer']}"
                          f" ({_answer_source_text(a)})")
-    if test_scope:
+    for g in guidance or []:
+        lines.append(f"Guidance ({g['label']}, advisory): {g['text']}")
+    if test_scope == OBSERVING_NOTE:
+        # GRPH-1778: an observing brief-read rule is stated, not applied, and measures nothing.
+        lines.append("Test scope: observing, not applied — the project is trying this rule "
+                     "out; follow the default test scope. Nothing is measured for it.")
+        lines.append(_CI_HANDOFF_LINE)
+    elif test_scope:
         lines.append(test_scope_line(test_scope, test_engines))
         if test_scope in _SCOPES_WITH_CI_HANDOFF:
             lines.append(_CI_HANDOFF_LINE)
@@ -484,6 +497,9 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
     summary = _summary(item.description)
     from app.services import rule_toggles
     path_classes = rule_toggles.path_classes(db, item.project_id)
+    if rule_toggles.observing_since(db, rule_toggles.PATH_CLASSES_RULE, item.project_id):
+        # GRPH-1778: observing, not applied — the lane and checklist read today's globs.
+        path_classes = {k: list(v) for k, v in rule_toggles.PATH_CLASSES_DEFAULT.items()}
     checklist, checklist_matched = checklist_match(touchpoints, path_classes)
     caps = capabilities_of(item)
     spend = item_spend(db, item.id)
@@ -495,14 +511,24 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
     measured_lane = measured_for_lane(db, item, caps)
     mix = mix_counts(db, item.project_id)
     test_scope = rule_toggles.test_scope_mode(db, item.project_id)
+    test_scope_text = test_scope
+    if rule_toggles.observing_since(db, rule_toggles.TEST_SCOPE_RULE, item.project_id):
+        test_scope_text = OBSERVING_NOTE  # GRPH-1778: stated "observing, not applied"
+        test_scope = rule_toggles.TEST_SCOPE_DEFAULT
     test_engines = rule_toggles.test_scope_engines(db, item.project_id)
     found_bug = rule_toggles.found_bug_mode(db, item.project_id)
     answered = answered_decisions(db, item)
+    from app.services import rule_proposals
+    guidance = rule_proposals.adopted_for_stage(
+        db, item.project_id, rule_proposals.STAGE_OF_STATUS.get(item.status, "Build"),
+        GUIDANCE_MAX)
     return {
         "item": item.key,
         "title": item.title,
         "summary": summary,
         "answered_decisions": answered,
+        # P91 D8: adopted advisory text for this item's stage. Not enforced.
+        "guidance": guidance,
         "touchpoints": touchpoints,
         "blocked_by": blocked_by,
         "ready": bool(items_svc.claimable(item)) and prioritization.ready(ctx, item),
@@ -520,9 +546,9 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
         "pinned": _pinned(item),
         "text": _text(item, summary=summary, touchpoints=touchpoints, blocked_by=blocked_by,
                       checklist=checklist, lessons=lessons, previous=previous,
-                      attempts=attempts, test_scope=test_scope,
+                      attempts=attempts, test_scope=test_scope_text,
                       test_engines=test_engines, checklist_matched=checklist_matched, found_bug=found_bug,
-                      answered=answered),
+                      answered=answered, guidance=guidance),
         "test_scope": test_scope,
         "found_bug": found_bug,
         # PRD-41 D5 / D15: the set the resolver will score, inside the measured_for_lane cap.
@@ -1058,6 +1084,34 @@ def refuse_bound_collision(db: Session, *, agent: Agent, item: Item) -> None:
             "seat would claim straight through that collision",
             hint="delegate another item, or delegate without a seat and let the divvy decide",
             detail={"held_by": ", ".join(holders), "areas": pairs})
+
+
+def withdraw(db: Session, *, agent: Agent, item: Item) -> str | None:
+    """Close this caller's open delegation on `item` and open nothing (GRPH-1753).
+
+    Re-delegating withdraws by replacement (D14). A spawn that raised never started a
+    child, so there is nothing to replace the row with — and an open row blocks every
+    later planner until the lease expires. Another agent's open row is still refused.
+    """
+    now = _now()
+    rows = _open_rows(db, item)
+    for row in rows:
+        if row.delegated_by != agent.id and _is_open(row, now=now):
+            age = int((now - (_aware(row.created_at) or now)).total_seconds())
+            raise DelegationRefused(
+                f"{item.key} already has an open delegation ({row.id}) from {row.delegated_by}, "
+                f"{age}s old",
+                hint="wait for it to expire; only its owner can withdraw it",
+                detail={"delegation_id": row.id, "delegated_by": row.delegated_by,
+                        "age_seconds": age})
+    withdrew: str | None = None
+    for row in rows:
+        if row.delegated_by == agent.id and _is_open(row, now=now):
+            row.closed_reason = "withdrawn"
+            row.closed_at = now
+            withdrew = row.id
+    db.commit()
+    return withdrew
 
 
 def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,

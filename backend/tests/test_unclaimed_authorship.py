@@ -42,6 +42,8 @@ def _sent_unclaimed(client, key, title="inline work", agent_id=None):
     with SessionLocal() as s:
         row = _row(s, item_id)
         row.branch = "gb/inline"
+        # GRPH-1730 withholds a branch with no PR. The column releases that gate.
+        row.github_url = "https://github.com/o/r/pull/1"
         # And where it was cut from. These tests are about AUTHORSHIP, not about bases: since
         # GRPH-1007 a sign-off whose `commit_is_not_the_base` could not run is refused, so
         # without this every test here would fail on the predicate it is not about.

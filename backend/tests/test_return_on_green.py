@@ -34,6 +34,14 @@ def _to_review(client, key, worker, title):
     item = claimed["item"]["id"]
     _ok(client, key, "update_item",
         {"id": item, "status": "review", "agent_id": worker})
+    # GRPH-1730 withholds a branch with no PR. The column releases that gate.
+    from app.db import SessionLocal
+    s = SessionLocal()
+    try:
+        s.get(Item, item).github_url = "https://github.com/o/r/pull/1"
+        s.commit()
+    finally:
+        s.close()
     return item
 
 

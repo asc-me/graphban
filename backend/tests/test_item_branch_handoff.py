@@ -137,6 +137,10 @@ def test_the_reviewer_reads_the_branch_off_the_item(client, key, db):
     item = _item(client, key)
     assert items_svc.claim_item(db, item, who) is not None
     _ok(_mcp(client, key, "update_item", {"id": item, "status": "review", "agent_id": who}))
+    # GRPH-1730 withholds a branch with no PR. The column releases that gate.
+    db.expire_all()
+    db.get(Item, item).github_url = "https://github.com/o/r/pull/1"
+    db.commit()
 
     details = _ok(_mcp(client, key, "get_item_details", {"id": item}))
     assert details.get("branch") == "gb/wave-3", details.get("branch")

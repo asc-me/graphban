@@ -767,6 +767,84 @@ export function useSetRuleToggle(projectId: string) {
   });
 }
 
+export function useRuleProposals(projectId: string) {
+  return useQuery({
+    queryKey: ["rule-proposals", projectId],
+    queryFn: () => api.ruleProposals(projectId),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+export function useAdoptedProposals(projectId: string) {
+  return useQuery({
+    queryKey: ["rule-proposals", projectId, "adopted"],
+    queryFn: () => api.ruleProposals(projectId, "adopted"),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+export function useRuleObservations(projectId: string, ruleId: string, enabled = true) {
+  return useQuery({
+    queryKey: ["rule-observations", projectId, ruleId],
+    queryFn: () => api.ruleObservations(projectId, ruleId),
+    enabled: !!projectId && enabled,
+    retry: false,
+  });
+}
+
+export function useRuleGuidance(projectId: string) {
+  return useQuery({
+    queryKey: ["rule-guidance", projectId],
+    queryFn: () => api.ruleGuidance(projectId),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+export function usePromoteRule(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { ruleId: string; reason: string }) => api.promoteRule(projectId, v.ruleId, v.reason),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["rule-observations"] });
+      invalidateProposals(qc);
+    },
+  });
+}
+
+export function useCustomRules(projectId: string) {
+  return useQuery({
+    queryKey: ["custom-rules", projectId],
+    queryFn: () => api.customRules(projectId),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+function invalidateProposals(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ["rule-proposals"] });
+  qc.invalidateQueries({ queryKey: ["custom-rules"] });
+  invalidateRuleToggles(qc);
+}
+
+export function useAdoptRuleProposals(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { ids: number[]; reason: string }) => api.adoptRuleProposals(projectId, v.ids, v.reason),
+    onSuccess: () => invalidateProposals(qc),
+  });
+}
+
+export function useDismissRuleProposal(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: number; reason: string }) => api.dismissRuleProposal(projectId, v.id, v.reason),
+    onSuccess: () => invalidateProposals(qc),
+  });
+}
+
 export function useSetRuleToggles(projectId: string) {
   const qc = useQueryClient();
   return useMutation({

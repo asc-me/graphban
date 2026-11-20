@@ -103,6 +103,10 @@ class Limits:
     #: blamed on the network. A child in one long tool call will trip this and that is
     #: fine; it is an observation, not an accusation.
     quiet_after: float = 300.0
+    #: Cap on vendor subagents each child may start (GRPH-1726). None = say nothing, so the
+    #: instruction is unchanged; 0 = tell the child not to spawn any. Written into the
+    #: instruction only; no adapter strips the tool.
+    subagents: int | None = None
 
 
 @dataclass(frozen=True)
@@ -252,6 +256,10 @@ class Wave:
     spawned: list[Child] = field(default_factory=list)
     reaped: list[Reaped] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
+    #: GRPH-1753. Spawn exceptions caught per item, one line each
+    #: ("<item>: <Class>: <message>"). Empty means no spawn raised — a missing
+    #: list would read the same way, which is how a killed process used to look.
+    spawn_failed: list[str] = field(default_factory=list)
     #: Observation writes (base, lease, PR, salvage) the server refused or never answered
     #: (GRPH-1346). Also in `failures`, one line each, but a count is what the summary can
     #: key `ok` on: a wave whose every record was dropped must not read as clean.
@@ -1254,7 +1262,7 @@ def start_one(
     # outcome. `prepare` no-ops when `.gbagent.toml` has no [setup]; a setup that
     # fails refuses the spawn (SetupFailed ⊂ ConfigRefused).
     prepare(tree.path)
-    launch = launch_factory(seat, tree, _instruction_file(tree, seat, wave_name), debug_file)
+    launch = launch_factory(seat, tree, _instruction_file(tree, seat, wave_name, limits.subagents), debug_file)
     child = spawn(
         launch, tree.path, tree.branch, _logs(workspace, f"{wave_name}-{slot}"), base=tree.base,
         # Built per wave under the workspace, not the worktree: a stub directory inside the
@@ -1484,8 +1492,23 @@ def _start(
                 _report_event(wave, ledger, seat, "limit_hit", limit.said or str(limit))
                 raise
             except LaunchFailed as failed:
-                _report_event(wave, ledger, seat, "spawn_failed", str(failed))
+                _report_event(wave, ledger, seat, "spawn_failed",
+                              f"{type(failed).__name__}: {failed}")
                 raise
+            except (ToolFailed, ServerUnreachable, NotPermitted):
+                # GRPH-1753. A roster read that answered with an error is the wave's
+                # stop (`server-error`, one FAILED line), not this seat's spawn failure.
+                # Wrapping it as LaunchFailed recorded a second line and let the wave
+                # continue into the same read.
+                raise
+            except Exception as exc:
+                # GRPH-1753. seat.write raises UnrenderableSeat, and a full disk or a
+                # missing binary can raise before spawn() wraps it as LaunchFailed.
+                # Those killed `until` with the delegation still open. Name the class,
+                # then fall into the handler below so the empty worktree is reaped.
+                text = f"{type(exc).__name__}: {exc}"
+                _report_event(wave, ledger, seat, "spawn_failed", text)
+                raise LaunchFailed(text) from exc
             _report_event(wave, ledger, seat, "registered")
         except (LaunchFailed, wt_mod.GitError, wt_mod.BranchExists, SetupFailed) as exc:
             wave.failures.append(f"{agent_slot}: {exc}")
@@ -1521,7 +1544,8 @@ def _start(
     return started
 
 
-def _instruction_file(tree: Worktree, seat: Seat, wave_name: str) -> Path:
+def _instruction_file(tree: Worktree, seat: Seat, wave_name: str,
+                      subagents: int | None = None) -> Path:
     """The child's marching orders, on disk rather than on the command line.
 
     The instruction carries the enrolment code, and argv is visible to every process on
@@ -1532,7 +1556,8 @@ def _instruction_file(tree: Worktree, seat: Seat, wave_name: str) -> Path:
     path = tree.path / ".gbfleet-instruction"
     path.write_text(instruction_for(seat, tree.path, tree.branch,
                                          behind_ref=tree.behind_ref,
-                                         conflicts=tree.behind_conflicts),
+                                         conflicts=tree.behind_conflicts,
+                                         subagents=subagents),
                     encoding="utf-8")
     # This file carries the enrolment CODE, so it is the more sensitive of the two and
     # was protected by the same call that does nothing on Windows.
@@ -2014,6 +2039,13 @@ def _held_for_undeclared(wave: Wave, child: Child, repo: Path, items: list[str],
     wave.undeclared.pop(child.branch, None)
     _note_touchpoints(wave, child, client)
     missing = wave.undeclared.get(child.branch) or []
+    mode, observing = _undeclared_rule(client)
+    if missing and observing:
+        # GRPH-1778: observing, so nothing is held; what a hold would have done is posted.
+        if mode == "hold":
+            _post_would_have(wave, client, items, UNDECLARED_RULE, "would_hold",
+                             child, "would have held: " + _shown(missing))
+        return False
     if not missing or _undeclared_mode(client) == "warn":
         return False
     _hold_undeclared(wave, client, items, child.branch, missing, in_review=set(items))
@@ -2106,7 +2138,17 @@ def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) 
         wave.declared_unread[child.branch] = "; ".join(unread)
     if declared:
         missing = tp_mod.undeclared(measured, declared)
-        allowed = generated_paths(client)
+        configured, observing = _generated_rule(client)
+        # GRPH-1778: an observing loosening applies the pre-rule list, and says what the
+        # configured one would have let through.
+        allowed = DEFAULT_GENERATED if observing else configured
+        if observing:
+            would = [f for f in missing if is_generated(f, configured)
+                     and not is_generated(f, allowed)]
+            if would:
+                _post_would_have(wave, client, _branch_items(child), GENERATED_RULE,
+                                 "would_allow", child,
+                                 "would have let through: " + ", ".join(would[:8]))
         generated = [f for f in missing if is_generated(f, allowed)]
         if generated:
             # GRPH-1352: the repo's own generators rewrite these on any migration or test
@@ -2147,6 +2189,29 @@ def generated_paths(client: Graphban | None) -> tuple[str, ...]:
     """The paths the undeclared-file hold ignores: the project's resolved
     `build.generated_files` rule. When it cannot be read — no client, the server does not
     answer, or the pack does not carry the rule — today's list is used and that is logged."""
+    return _generated_rule(client)[0]
+
+
+def _is_observing(toggle: dict) -> bool:
+    return toggle.get("state") == "observing"
+
+
+def _post_would_have(wave: Wave, client: Graphban | None, items: list[str], rule_id: str,
+                     outcome: str, child, reason: str) -> None:
+    """GRPH-1778 (P91 D5): an observing supervisor rule applied the pre-rule behaviour; post
+    what it would have done, per item, with the branch head. Never fatal."""
+    commit = ""
+    wt = getattr(child, "worktree", None)
+    if wt:
+        commit = _branch_head(Path(wt), child.branch)
+    for item_id in items:
+        _observe(wave, client, item_id, "would-have outcome not recorded",
+                 kind="rule_would_have", rule_id=rule_id, outcome=outcome,
+                 branch=child.branch, commit=commit or None, reason=reason)
+
+
+def _generated_rule(client: Graphban | None) -> tuple[tuple[str, ...], bool]:
+    """(configured paths, whether the rule is observing) — see `generated_paths`."""
     why = ""
     allowed = getattr(client, "allowed", None)
     if client is None:
@@ -2166,13 +2231,13 @@ def generated_paths(client: Graphban | None) -> tuple[str, ...]:
                     params = params.get("value") if isinstance(params, dict) and "value" in params else params
                     paths = (params or {}).get("paths") if isinstance(params, dict) else None
                     if isinstance(paths, list) and all(isinstance(x, str) for x in paths):
-                        return tuple(paths)
+                        return tuple(paths), _is_observing(t)
                     why = f"{GENERATED_RULE} has no readable `paths`"
                     break
             else:
                 why = f"{GENERATED_RULE} is not in the server's rule toggles"
     observe.emit("generated_files_rule_unread", detail=f"{why}; using the built-in list")
-    return DEFAULT_GENERATED
+    return DEFAULT_GENERATED, False
 
 
 def is_generated(path: str, paths: tuple[str, ...] | list[str] | None = None) -> bool:
@@ -2906,23 +2971,34 @@ def _record_cut_from(wave: Wave, client, item_id: str | None, branch: str, base:
              kind="cut_from", branch=branch, base=base)
 
 
-def _undeclared_mode(client: Graphban | None) -> str:
-    """The project's `build.undeclared_files` mode (GRPH-1425): `hold` or `warn`. Anything
-    unreadable — no client, a client not allowed the tool, a server without the rule — is
-    `hold`, today's behaviour: a hold is never loosened by not knowing."""
+UNDECLARED_RULE = "build.undeclared_files"
+
+
+def _undeclared_rule(client: Graphban | None) -> tuple[str, bool]:
+    """(configured mode, whether the rule is observing). Anything unreadable — no client, a
+    client not allowed the tool, a server without the rule — is `hold`, not observing."""
     if client is None:
-        return "hold"
+        return "hold", False
     try:
         got = client.call("get_rule_toggles")
     except (NotPermitted, ToolFailed, ServerUnreachable):
-        return "hold"
+        return "hold", False
     for t in (got or {}).get("toggles") or []:
-        if t.get("rule_id") == "build.undeclared_files":
+        if t.get("rule_id") == UNDECLARED_RULE:
             params = t.get("params")
             value = params.get("value") if isinstance(params, dict) else None
             mode = (value or {}).get("mode") if isinstance(value, dict) else None
-            return "warn" if mode == "warn" else "hold"
-    return "hold"
+            return ("warn" if mode == "warn" else "hold"), _is_observing(t)
+    return "hold", False
+
+
+def _undeclared_mode(client: Graphban | None) -> str:
+    """The project's `build.undeclared_files` mode (GRPH-1425): `hold` or `warn`. Anything
+    unreadable — no client, a client not allowed the tool, a server without the rule — is
+    `hold`, today's behaviour: a hold is never loosened by not knowing. While the rule is
+    observing (GRPH-1778) it holds nothing, so it reads `warn`."""
+    mode, observing = _undeclared_rule(client)
+    return "warn" if observing else mode
 
 
 def _refuse_proposal(wave: Wave, branch: str, *, undeclared_mode: str = "hold") -> str:
