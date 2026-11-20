@@ -3524,6 +3524,11 @@ _PROSE_SECTIONS = {
     # "Decisions" may well be design decisions that do need building.
     "decisionsfromgrilling",
 }
+# A heading that joins two or more of these keys with "and" or "&" is framing even
+# when the concatenated key is not listed. "Goals and non-goals" keys to
+# `goalsandnongoals`, which is absent, so decompose proposed it as work (GRPH-1796).
+# The pairs already listed above ("risksandopenquestions") predate that rule and
+# still match as a single key. Do not add the next pair here.
 
 
 # A leading section NUMBER, which carries no meaning for classification. Requires a real
@@ -3546,6 +3551,31 @@ def _section_key(title: str) -> str:
     """
     cleaned = _SECTION_NUMBER.sub("", title or "")
     return re.sub(r"[^a-z0-9]+", "", re.sub(r"\(.*?\)", " ", cleaned).lower())
+
+
+# "and" is a word; "&" may sit against either heading ("Goals & Non-goals", "Goals&Non-goals").
+_FRAMING_JOIN = re.compile(r"\s+and\s+|\s*&\s*", re.IGNORECASE)
+
+
+def _joined_framing_keys(title: str) -> list[str] | None:
+    """Framing keys when `title` is two or more of them joined by "and" or "&".
+
+    The whole heading is not a framing key: normalisation deletes the joiner, so
+    "Goals and non-goals" and "Goals & Non-goals" become `goalsandnongoals` and
+    `goalsnongoals`, neither of which is listed. Each part is looked up instead.
+    A part that is not a framing key — "data model" in "Decisions and data model" —
+    returns None, and the heading stays buildable. Plain "Decisions" is deliberately
+    not a framing key, so this must not swallow it by joining.
+    """
+    cleaned = _SECTION_NUMBER.sub("", title or "")
+    cleaned = re.sub(r"\(.*?\)", " ", cleaned)
+    parts = [p.strip() for p in _FRAMING_JOIN.split(cleaned) if p.strip()]
+    if len(parts) < 2:
+        return None
+    keys = [re.sub(r"[^a-z0-9]+", "", part.lower()) for part in parts]
+    if any(not key or key not in _PROSE_SECTIONS for key in keys):
+        return None
+    return keys
 
 
 #: An explicit declaration a PRD author can put anywhere inside a section's body. It BEATS
@@ -3581,6 +3611,11 @@ def classify_section(title: str, body: str = "") -> tuple[bool, str]:
     the allowlist and a section called plain "Decisions" deliberately is not, because it may
     be design decisions that do need building — so an author whose framing-named section
     holds real work needs a way to say so that does not require editing this file.
+
+    A heading joined from two or more framing keys by "and" or "&" is framing too
+    (GRPH-1796). Listing each pair cannot keep up — "Goals and non-goals" was proposed
+    as work because `goalsandnongoals` is not a key. A part that is not a framing key
+    keeps the heading buildable. The markers above still win.
     """
     if _FRAMING_MARKER.search(body or ""):
         return False, "marked <!-- framing -->"
@@ -3588,6 +3623,9 @@ def classify_section(title: str, body: str = "") -> tuple[bool, str]:
         return True, "marked <!-- buildable -->"
     if _section_key(title) in _PROSE_SECTIONS:
         return False, "a conventional framing heading"
+    joined = _joined_framing_keys(title)
+    if joined:
+        return False, "framing headings joined by and or &: " + ", ".join(joined)
     return True, "no framing marker and not a conventional framing heading"
 
 
