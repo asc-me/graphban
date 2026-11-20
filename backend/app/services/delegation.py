@@ -318,6 +318,10 @@ _CI_HANDOFF_LINE = (
 _SCOPES_WITH_CI_HANDOFF = frozenset({"agent_targeted", "agent_and_pr"})
 
 
+#: Stands in for `test_scope` in `_text` while `build.test_scope` is observing (GRPH-1778).
+OBSERVING_NOTE = "observing"
+
+
 def test_scope_line(mode: str, engines: list[str] | None = None) -> str:
     """GRPH-1405: one line naming the project's test-scope mode and what it asks of this
     builder or reviewer. Under `agent_full` it names the engines (GRPH-1429)."""
@@ -399,7 +403,12 @@ def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[
                          f" ({_answer_source_text(a)})")
     for g in guidance or []:
         lines.append(f"Guidance ({g['label']}, advisory): {g['text']}")
-    if test_scope:
+    if test_scope == OBSERVING_NOTE:
+        # GRPH-1778: an observing brief-read rule is stated, not applied, and measures nothing.
+        lines.append("Test scope: observing, not applied — the project is trying this rule "
+                     "out; follow the default test scope. Nothing is measured for it.")
+        lines.append(_CI_HANDOFF_LINE)
+    elif test_scope:
         lines.append(test_scope_line(test_scope, test_engines))
         if test_scope in _SCOPES_WITH_CI_HANDOFF:
             lines.append(_CI_HANDOFF_LINE)
@@ -488,6 +497,9 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
     summary = _summary(item.description)
     from app.services import rule_toggles
     path_classes = rule_toggles.path_classes(db, item.project_id)
+    if rule_toggles.observing_since(db, rule_toggles.PATH_CLASSES_RULE, item.project_id):
+        # GRPH-1778: observing, not applied — the lane and checklist read today's globs.
+        path_classes = {k: list(v) for k, v in rule_toggles.PATH_CLASSES_DEFAULT.items()}
     checklist, checklist_matched = checklist_match(touchpoints, path_classes)
     caps = capabilities_of(item)
     spend = item_spend(db, item.id)
@@ -499,6 +511,10 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
     measured_lane = measured_for_lane(db, item, caps)
     mix = mix_counts(db, item.project_id)
     test_scope = rule_toggles.test_scope_mode(db, item.project_id)
+    test_scope_text = test_scope
+    if rule_toggles.observing_since(db, rule_toggles.TEST_SCOPE_RULE, item.project_id):
+        test_scope_text = OBSERVING_NOTE  # GRPH-1778: stated "observing, not applied"
+        test_scope = rule_toggles.TEST_SCOPE_DEFAULT
     test_engines = rule_toggles.test_scope_engines(db, item.project_id)
     found_bug = rule_toggles.found_bug_mode(db, item.project_id)
     answered = answered_decisions(db, item)
@@ -530,7 +546,7 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
         "pinned": _pinned(item),
         "text": _text(item, summary=summary, touchpoints=touchpoints, blocked_by=blocked_by,
                       checklist=checklist, lessons=lessons, previous=previous,
-                      attempts=attempts, test_scope=test_scope,
+                      attempts=attempts, test_scope=test_scope_text,
                       test_engines=test_engines, checklist_matched=checklist_matched, found_bug=found_bug,
                       answered=answered, guidance=guidance),
         "test_scope": test_scope,

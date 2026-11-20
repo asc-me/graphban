@@ -3750,6 +3750,11 @@ def _staff_every_row(planner: Graphban) -> bool:
         return False
     for t in (got or {}).get("toggles") or []:
         if t.get("rule_id") == STAFF_EVERY_ROW:
+            if t.get("state") == "observing":
+                # GRPH-1778: observing, not applied. Staffing widens to rows this wave did not
+                # cut, which the observations route cannot record, so the rules read says
+                # UNMEASURED for it, never 0.
+                return False
             on = t.get("on")
             return bool(on.get("value") if isinstance(on, dict) else on)
     return False
