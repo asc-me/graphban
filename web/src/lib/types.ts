@@ -1448,11 +1448,47 @@ export interface SyncMappingRow {
   last_push_reason: string | null;
 }
 
+/** One local project's sync state from `GET /api/sync/projects` `local` (GRPH-1739). */
+export interface SyncBackfill {
+  total: number;
+  confirmed: number;
+  parked: number;
+  state: "running" | "done" | "parked" | "refused";
+}
+
+export interface LocalSyncProject {
+  project_id: string;
+  /** No mapping row is `local`. It is not reported as digests. */
+  sync_level: "sync" | "digests" | "local";
+  cloud_permission: "read_only" | "comments" | "proposals" | null;
+  backfill: SyncBackfill;
+  queued: number;
+  parked: { count: number; reasons: string[] };
+  backlog_bytes: number;
+  /** Why the queue is not moving. Null means it is not held. */
+  held_by: "budget" | "retry_after" | "contract" | null;
+  last_push_at: string | null;
+  /** `unknown` is a real result. It is not a success. */
+  last_push_result: "ok" | "refused" | "unknown" | null;
+}
+
+export interface SyncBudget {
+  bytes_per_min: number;
+  requests_per_min: number;
+}
+
+export interface ProjectSyncResult {
+  project: LocalSyncProject;
+  backfill: (SyncBackfill & { seeded?: number; skipped?: number; reason?: string | null; owner_label?: string | null }) | null;
+}
+
 export interface CloudProjectsResult {
   status: "ok" | "refused" | "unknown";
   projects?: CloudProject[];
   reason?: string;
   mapping: SyncMappingRow[];
+  /** Absent means this response was not the project-sync read. An empty list means none exist. */
+  local?: LocalSyncProject[];
 }
 
 export interface ProjectPushResult {
@@ -3482,6 +3518,46 @@ export interface RuleToggle {
   locked_by: string | null;
   /** Only on `merge.done_predicates`: each predicate `done` needs and where it came from. */
   effective_predicates?: EffectivePredicate[];
+  /** GRPH-1777: `observing` (on, measured, not enforced) or `active`. */
+  state?: string | null;
+  /** Present while `state` is `observing`; null/absent reads UNMEASURED, never 0. */
+  observation?: RuleObservationSummary | null;
+}
+
+/** What an observing rule has recorded since it began observing (GRPH-1777). */
+export interface RuleObservationSummary {
+  since: string | null;
+  would_hold: number | null;
+  would_refuse: number | null;
+  would_have: number | null;
+  decision_due: boolean;
+  decision_due_reason: string | null;
+}
+
+/** One would-have outcome row; the rule's own history, kept across promotion. */
+export interface RuleObservation {
+  id: number;
+  rule_id: string;
+  outcome: "would_hold" | "would_refuse";
+  item_id: string | null;
+  commit: string | null;
+  detail: Record<string, unknown>;
+  at: string;
+}
+
+/** Adopted or open guidance for a stage: ADVISORY text with its citations (GRPH-1780). */
+export interface RuleGuidance {
+  id: number;
+  project_id: string;
+  kind: string;
+  stage: string;
+  label: string;
+  text: string;
+  citations: RuleProposalCitation[];
+  proposer: string;
+  proposer_kind: string;
+  status: string;
+  created_at: string;
 }
 
 export interface EffectivePredicate {

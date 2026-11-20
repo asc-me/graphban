@@ -776,6 +776,44 @@ export function useRuleProposals(projectId: string) {
   });
 }
 
+export function useAdoptedProposals(projectId: string) {
+  return useQuery({
+    queryKey: ["rule-proposals", projectId, "adopted"],
+    queryFn: () => api.ruleProposals(projectId, "adopted"),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+export function useRuleObservations(projectId: string, ruleId: string, enabled = true) {
+  return useQuery({
+    queryKey: ["rule-observations", projectId, ruleId],
+    queryFn: () => api.ruleObservations(projectId, ruleId),
+    enabled: !!projectId && enabled,
+    retry: false,
+  });
+}
+
+export function useRuleGuidance(projectId: string) {
+  return useQuery({
+    queryKey: ["rule-guidance", projectId],
+    queryFn: () => api.ruleGuidance(projectId),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+export function usePromoteRule(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { ruleId: string; reason: string }) => api.promoteRule(projectId, v.ruleId, v.reason),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["rule-observations"] });
+      invalidateProposals(qc);
+    },
+  });
+}
+
 export function useCustomRules(projectId: string) {
   return useQuery({
     queryKey: ["custom-rules", projectId],
@@ -1005,6 +1043,17 @@ export function useSyncStatus() {
 // refetches it. Asked only while the window is open on a linked box.
 export function useSyncOrg(enabled: boolean) {
   return useQuery({ queryKey: ["sync-org"], queryFn: () => api.syncOrg(), enabled, retry: false });
+}
+
+/** Box project-sync read (`GET /api/sync/projects`). Instance-wide, like the link.
+ *  A missing `local` is "this body was not that read", not "there are no projects". */
+export function useSyncLocal() {
+  return useQuery({ queryKey: ["sync-local"], queryFn: () => api.syncCloudProjects(), retry: false });
+}
+
+/** Live flush budget. Instance-wide. An error is not a budget of zero. */
+export function useSyncBudget(enabled = true) {
+  return useQuery({ queryKey: ["sync-budget"], queryFn: () => api.syncBudget(), enabled, retry: false });
 }
 
 /** `DELETE /api/sync/link` from the Organization window. The link is instance-wide, so the

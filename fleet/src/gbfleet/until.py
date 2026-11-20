@@ -3323,6 +3323,103 @@ def review_ci_branch(repo: Path, row: dict, logged: set | None = None) -> tuple[
     return item_branch, ""
 
 
+#: How many times the same head may show only an external check red before it is held
+#: (GRPH-1757). Below this the head stays reviewable. A bounce is never one of the exits.
+EXTERNAL_RED_HOLD_AFTER = 3
+
+#: Tail of the blocker `_hold_external_red` writes. Not the dependency hold mark: that
+#: lift clears only its own sentence, and this one is not a missing commit.
+EXTERNAL_HOLD_MARK = "[gbfleet external check hold]"
+
+
+def external_hold_text(checks: str) -> str:
+    """The blocker a person reads when an external check stays red (GRPH-1757).
+
+    Names the check. Avoids the words the builder-CI sweep treats as "the author blocked
+    on a missing local engine", so that sweep does not reopen this hold into a rebuild.
+    """
+    shown = checks.strip() or "unknown check"
+    return (f"external check still red: {shown}. "
+            f"Repo actions passed; not returned to the author. {EXTERNAL_HOLD_MARK}")
+
+
+def _lift_external_hold(planner: Graphban, item: str, agent_id: str) -> None:
+    """Clear the external-check hold once the head is actually green."""
+    args: dict = {"id": item, "blocker": ""}
+    if agent_id:
+        args["agent_id"] = agent_id
+    try:
+        planner.call("update_item", **args)
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("ci_red_external_unlifted", item=item, detail=str(exc))
+        return
+    observe.emit("ci_red_external_lifted", item=item,
+                 detail=f"{item}: external check hold cleared; the head is green")
+
+
+def _external_cycles(logged: set, item: str, head: str) -> int:
+    n = 0
+    while ("ci_red_external_cycle", item, f"{head}#{n + 1}") in logged:
+        n += 1
+    return n
+
+
+def _hold_external_red(planner: Graphban, item: str, checks: str, head: str,
+                       agent_id: str) -> bool:
+    """Write the named hold. False when the write was refused — the caller then waits
+    and retries, and does not bounce."""
+    note = (f"gbfleet: external check still red after {EXTERNAL_RED_HOLD_AFTER} reads "
+            f"at {head[:12]}: {checks}. Not returned to the author.")
+    args: dict = {
+        "id": item,
+        "blocker": external_hold_text(checks),
+        "evidence": [{"kind": "note", "detail": note}],
+    }
+    if agent_id:
+        args["agent_id"] = agent_id
+    try:
+        planner.call("update_item", **args)
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("ci_red_external_unrecorded", item=item, detail=str(exc))
+        return False
+    observe.emit("ci_red_external_hold", item=item, commit=head, job=checks,
+                 detail=f"{item}: held on {checks} at {head[:12]}")
+    return True
+
+
+def _take_external_red(row: dict, item: str, head: str, job: str, logged: set,
+                       planner: Graphban | None, agent_id: str,
+                       ready: list[dict], waiting: list[dict], _blocked: list[dict]) -> None:
+    """Do not bounce. Log `ci_red_external` once, review until the hold, then hold.
+
+    The hold stays in `waiting`, not `blocked`. `blocked` is a row that left `review`
+    (a bounce). This row is still in review: dropping it there lets the drain exit
+    idle while the item sits unsigned, which reads as a clear queue.
+    """
+    if EXTERNAL_HOLD_MARK in str(row.get("blocker") or ""):
+        waiting.append(row)
+        return
+    n = _external_cycles(logged, item, head) + 1
+    logged.add(("ci_red_external_cycle", item, f"{head}#{n}"))
+    log_key = ("ci_red_external", item, head)
+    if log_key not in logged:
+        logged.add(log_key)
+        from . import propose
+        unread = str(getattr(propose.ci_rollup, "required_note", "") or "")
+        extra = f" ({unread})" if unread else ""
+        observe.emit(
+            "ci_red_external", item=item, commit=head, job=job,
+            detail=f"{item}: external check red at {head[:12]}: {job}{extra}")
+    if n >= EXTERNAL_RED_HOLD_AFTER:
+        hold_key = ("ci_red_external_hold", item, head)
+        if hold_key not in logged:
+            if planner is not None and _hold_external_red(planner, item, job, head, agent_id):
+                logged.add(hold_key)
+        waiting.append(row)
+        return
+    ready.append(row)
+
+
 def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
                  planner: Graphban | None = None,
                  agent_id: str = "") -> tuple[list[dict], list[dict], list[dict]]:
@@ -3331,6 +3428,11 @@ def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
     A reviewer cannot `sign_off` until CI has attested the head, so a spawn against pending
     CI is wasted: those rows are held back, logged once per head as `review_waits_on_ci`, and
     returned second so the loop keeps polling for them instead of reading them as unsigned.
+
+    An `external` row — every Actions job passed, and only a third-party or non-required
+    check is red — is not bounced (GRPH-1757). It stays reviewable and logs
+    `ci_red_external` naming the check. The same head still external after
+    `EXTERNAL_RED_HOLD_AFTER` reads is a named hold, never a bounce.
 
     A red row is bounced to its author ONCE (GRPH-1472), the reason naming the failing job
     and tests, and no reviewer is spawned for it. A later red head on a row already bounced
@@ -3358,6 +3460,14 @@ def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
                              detail=f"{item}: CI has not finished at {head[:12]}")
             waiting.append(row)
             continue
+        if state == "external":
+            # GRPH-1757. A third-party status (Unkey preview, Vercel, …) is not an Actions
+            # failure. Bouncing here sends the author to rebuild code that already passed,
+            # and the next attempt escalates off the cheap tier. Below the hold the head is
+            # reviewable; the same red head N times is a named hold, never a bounce.
+            _take_external_red(row, item, head, job, logged, planner, agent_id,
+                               ready, waiting, blocked)
+            continue
         if state == "red":
             key = ("review_ci_red", item, head)
             if key not in logged:
@@ -3374,6 +3484,9 @@ def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
                     repo=repo, branch=branch):
                 blocked.append(row)
                 continue
+        if (state == "green" and planner is not None
+                and EXTERNAL_HOLD_MARK in str(row.get("blocker") or "")):
+            _lift_external_hold(planner, item, agent_id)
         ready.append(row)
     return ready, waiting, blocked
 

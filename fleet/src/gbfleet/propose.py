@@ -125,18 +125,118 @@ _PASSING = {"SUCCESS", "SKIPPED", "NEUTRAL"}
 _RUNNING = {"", "PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING", "REQUESTED"}
 
 
+def is_actions_job(check: dict) -> bool:
+    """True when this rollup entry is a GitHub Actions job (GRPH-1757).
+
+    `gh pr view --json statusCheckRollup` (cli/cli `api/export_pr.go`) writes a CheckRun
+    with `workflowName` taken from the Actions workflow, and a StatusContext with
+    `context`/`state`/`targetUrl` and no `workflowName` key. A third-party check run
+    still has the key, and the value is empty. An entry that only has `name` — the shape
+    this repo's own tests and older callers use for an Actions job — has no
+    `workflowName` key at all, so a missing key stays an Actions job. An empty string is
+    the third-party check run, unless its URL is an Actions job page.
+    """
+    if not isinstance(check, dict):
+        return False
+    if "workflowName" in check:
+        if str(check.get("workflowName") or "").strip():
+            return True
+        url = str(check.get("detailsUrl") or "")
+        return "/actions/runs/" in url or "/actions/jobs/" in url
+    if str(check.get("__typename") or "") == "StatusContext":
+        return False
+    if check.get("context") and not check.get("name"):
+        return False
+    return bool(check.get("name"))
+
+
+def _check_verdict(check: dict) -> str:
+    return str(check.get("conclusion") or check.get("state") or "").upper()
+
+
+def _check_name(check: dict) -> str:
+    return str(check.get("name") or check.get("context") or "unknown check")
+
+
+def _branch_path(base: str) -> str:
+    """Percent-encode a branch name for one `gh api` path segment.
+
+    Unreserved characters (RFC 3986) stay as themselves. A slash in
+    `release/2026.11.30` becomes `%2F`, which is what the rules route expects.
+    The encoding lives here: this module may not import a network library, and
+    the path parser that would do it sits in one (`test_only_the_named_doors_make_requests`).
+    """
+    out: list[str] = []
+    for byte in base.encode("utf-8"):
+        if (48 <= byte <= 57 or 65 <= byte <= 90 or 97 <= byte <= 122
+                or byte in b"-._~"):
+            out.append(chr(byte))
+        else:
+            out.append(f"%{byte:02X}")
+    return "".join(out)
+
+
+def required_contexts(repo: Path, base: str) -> set[str] | None:
+    """Status-check contexts the base branch requires, or None when the read failed.
+
+    An empty set means the rules endpoint answered and none are configured. None means
+    nobody could look — a 404, a non-JSON body, a missing base — and must not be read as
+    "nothing is required". `gh api repos/{owner}/{repo}/rules/branches/{base}` is the
+    aggregated rules view (classic protection and rulesets). `base` is percent-encoded
+    so a slash in the branch name stays one path segment.
+    """
+    if not base or not find():
+        return None
+    try:
+        done = _gh(repo, "api", f"repos/{{owner}}/{{repo}}/rules/branches/{_branch_path(base)}")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    try:
+        rules = json.loads(done.stdout or "")
+    except ValueError:
+        return None
+    if not isinstance(rules, list):
+        return None
+    names: set[str] = set()
+    for rule in rules:
+        if not isinstance(rule, dict) or rule.get("type") != "required_status_checks":
+            continue
+        params = rule.get("parameters") or {}
+        checks = params.get("required_status_checks") if isinstance(params, dict) else None
+        if not isinstance(checks, list):
+            continue
+        for entry in checks:
+            if isinstance(entry, str) and entry:
+                names.add(entry)
+            elif isinstance(entry, dict) and entry.get("context"):
+                names.add(str(entry["context"]))
+    return names
+
+
 def ci_rollup(repo: Path, branch: str) -> tuple[str, str, str]:
     """(state, head, failing_job) for `branch`'s PR — the one reading of its check rollup.
 
-    state is `green` (every check passed), `pending` (none failed, some still running), `red`
-    (one failed — `failing_job` names it) or `unknown`: no `gh`, no PR, an unreadable answer,
-    or a PR with NO checks. No checks is unknown rather than pending (GRPH-1392): a repo
-    without CI would otherwise wait on it forever.
+    state is `green` (every check passed), `pending` (no repo-CI failure, some still
+    running), `red` (an Actions job failed, or a required check failed — `failing_job`
+    names it), `external` (every Actions job passed and the only failures are third-party
+    statuses or other non-required checks — `failing_job` names those; GRPH-1757), or
+    `unknown`: no `gh`, no PR, an unreadable answer, or a PR with NO checks. No checks is
+    unknown rather than pending (GRPH-1392): a repo without CI would otherwise wait on it
+    forever.
+
+    `external` is not green. `ci_green` stays false while a third-party check is red.
+    `ci_rollup.required_note` is "" after a read that could see the required set, and
+    `required checks unread` when that read failed — an empty note is not "we looked and
+    none are required" unless the rules call itself succeeded.
     """
+    ci_rollup.required_note = ""
     if not branch or not find():
         return "unknown", "", ""
     try:
-        done = _gh(repo, "pr", "view", branch, "--json", "headRefOid,statusCheckRollup")
+        done = _gh(repo, "pr", "view", branch, "--json",
+                   "headRefOid,baseRefName,statusCheckRollup")
     except (OSError, subprocess.SubprocessError):
         return "unknown", "", ""
     if done.returncode != 0:
@@ -147,18 +247,52 @@ def ci_rollup(repo: Path, branch: str) -> tuple[str, str, str]:
         return "unknown", "", ""
     head = str(data.get("headRefOid") or "")
     rollup = data.get("statusCheckRollup") or []
-    if not head or not rollup:
+    if not head or not isinstance(rollup, list) or not rollup:
         return "unknown", head, ""
-    running = False
+    actions_failed: list[str] = []
+    actions_running = False
+    external_failed: list[str] = []
+    external_running = False
     for check in rollup:
-        verdict = str(check.get("conclusion") or check.get("state") or "").upper()
+        if not isinstance(check, dict):
+            continue
+        verdict = _check_verdict(check)
+        name = _check_name(check)
+        if is_actions_job(check):
+            if verdict in _PASSING:
+                continue
+            if verdict in _RUNNING:
+                actions_running = True
+                continue
+            actions_failed.append(name)
+            continue
         if verdict in _PASSING:
             continue
         if verdict in _RUNNING:
-            running = True
+            external_running = True
             continue
-        return "red", head, str(check.get("name") or check.get("context") or "unknown job")
-    return ("pending" if running else "green"), head, ""
+        external_failed.append(name)
+    if actions_failed:
+        return "red", head, actions_failed[0]
+    required: set[str] | None = None
+    if external_failed:
+        required = required_contexts(repo, str(data.get("baseRefName") or ""))
+        if required is None:
+            # Looked and could not tell. Do not promote the external failure into repo CI:
+            # that is the bounce GRPH-1757 removes. The note says the set was unread.
+            ci_rollup.required_note = "required checks unread"
+        else:
+            required_hit = [name for name in external_failed if name in required]
+            if required_hit:
+                return "red", head, required_hit[0]
+    if actions_running or (external_running and not external_failed):
+        return "pending", head, ""
+    if external_failed:
+        return "external", head, ", ".join(external_failed)
+    return "green", head, ""
+
+
+ci_rollup.required_note = ""
 
 
 def ci_green(repo: Path, branch: str, head: str) -> bool:

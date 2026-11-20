@@ -733,6 +733,12 @@ def set_org_toggle(db: Session, org_id: str, rule_id: str, changes: dict, *, act
     anything is committed: no RuleToggle row, no event, no published-version stamp. The reply
     is what the write would return, so a preview and the write cannot disagree."""
     user = _require_person(db, actor)
+    if rule_id.startswith("custom."):  # GRPH-1779: the org's own custom rule — lock only
+        from app.services import custom_rules
+        authz.require_org_admin(db, user.id, org_id)
+        quotas.require_org_rules(db, org_id)
+        return custom_rules.set_org_toggle(db, user, org_id, rule_id, changes, reason=reason,
+                                           dry_run=dry_run)
     rule = _rule(rule_id)
     why = _reason(reason)
     authz.require_org_admin(db, user.id, org_id)

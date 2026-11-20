@@ -318,6 +318,7 @@
 "tests/test_presence_on_call.py": 1.07,
 "tests/test_prioritization.py": 0.26,
 "tests/test_project_summaries.py": 0.62,
+"tests/test_project_sync_api.py": 5.0,
 "tests/test_project_sync_backfill.py": 0.1,
 "tests/test_project_sync_client.py": 6.76,
 "tests/test_project_sync_flush.py": 8.98,
