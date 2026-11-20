@@ -359,13 +359,20 @@ def _stage_adoption(db: Session, user, p: RuleProposal, reason: str, batch: bool
         changes: dict = {"params": copy.deepcopy(p.params or {})}
         if p.kind == "turn_on":
             changes["on"] = True
+        prior = T._row(db, p.rule_id, project_id=pid)
+        was_observing = prior.observing_since if prior is not None else None
         toggle = T._stage_project_toggle(db, pid, p.rule_id, changes, user)
         if p.kind == "turn_on":
             # D5 (GRPH-1777): an adopted library rule starts observing, not enforcing.
             toggle[0].observing_since = utcnow()
+        elif was_observing is not None and hasattr(toggle[0], "observing_since"):
+            # D5: promotion is a separate person act. Adopting a tighten on an observing rule
+            # changes its params and keeps it observing, from when it began.
+            toggle[0].observing_since = was_observing
         db.flush()
-        state = ("observing" if p.kind == "turn_on"
-                 else "on" if T.resolve(db, p.rule_id, pid)["on"]["value"] else "off")
+        resolved = T.resolve(db, p.rule_id, pid)
+        state = ("observing" if p.kind == "turn_on" or resolved.get("state") == "observing"
+                 else "on" if resolved["on"]["value"] else "off")
     p.status = "adopted"
     p.decided_by = user.handle or user.name
     p.decided_reason = reason

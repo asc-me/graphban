@@ -126,6 +126,46 @@ def test_library_turn_on_adoption_starts_observing(client, env, monkeypatch):
     assert _events(env["pid"], "adopt_rule_proposal")[0]["state"] == "observing"
 
 
+def test_library_tighten_adoption_keeps_an_observing_rule_observing(client, env, monkeypatch):
+    """D5 (GRPH-1777): promotion is a separate person act. Adopting a `tighten` on an observing
+    library rule changes its params and leaves it observing, from when it began."""
+    from app.db import SessionLocal
+    from app.services import rule_toggles as T
+    from app.services.rule_toggles import LibraryRule
+    rule = LibraryRule(id=T.EXCLUSIVE_AREAS_RULE, stage="build", title="Areas", summary="s",
+                       enforcement="advisory", enforcer=None, default_on=False,
+                       default_params={"paths": []})
+    monkeypatch.setattr(T, "LIBRARY", {rule.id: rule})
+
+    def adopt(kind, paths):
+        r = client.post(_base(env), headers=env["h"], json={
+            "kind": kind, "rule_id": rule.id, "params": {"paths": paths},
+            "citations": env["cites"]})
+        assert r.status_code == 201, r.text
+        a = client.post(_base(env) + "/adopt", headers=env["h"],
+                        json={"proposal_ids": [r.json()["id"]], "reason": kind})
+        assert a.status_code == 200, a.text
+
+    def state():
+        db = SessionLocal()
+        try:
+            return T.resolve(db, rule.id, env["pid"]), T._row(db, rule.id, project_id=env["pid"])
+        finally:
+            db.close()
+
+    adopt("turn_on", ["db"])
+    _, row = state()
+    since = row.observing_since
+    assert since is not None
+    adopt("tighten", ["db", "x"])
+    resolved, row = state()
+    assert resolved["state"] == "observing"
+    assert resolved["params"]["value"]["paths"] == ["db", "x"]
+    assert row.observing_since == since
+    assert [m["state"] for m in _events(env["pid"], "adopt_rule_proposal")] == [
+        "observing", "observing"]
+
+
 def test_tighten_adoption_records_real_state(client, env):
     h = env["h"]
     ok = client.post(f"/api/projects/{env['pid']}/rules/custom", headers=h, json={
