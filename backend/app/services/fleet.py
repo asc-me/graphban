@@ -6522,7 +6522,8 @@ def park(db: Session, attempt, *, agent_id: str | None = None,
 #: GRPH-1591 adds `undeclared_held`: the touchpoint gate refused the PR, so a `review` item
 #: goes back to `in_progress` for its builder, with a directive naming the files.
 OBSERVATION_KINDS = ("cut_from", "pr_opened", "salvage", "withheld", "merged_trunk",
-                     "behind_conflict", "undeclared_warned", "undeclared_held")
+                     "behind_conflict", "undeclared_warned", "undeclared_held",
+                     "rule_would_have")
 OBSERVATION_LATER = ("pushed_head",)
 
 _CUT_BASE = re.compile(r"^[0-9a-f]{7,40}$")
@@ -6949,11 +6950,35 @@ def _record_lease(db: Session, item: Item, *, branch: str, agent_id: str | None,
     return {"item_id": item.key, "kind": "lease", "recorded": True, "extended": True}
 
 
+def _record_rule_would_have(db: Session, item: Item, *, rule_id: str | None,
+                            outcome: str | None, commit: str | None, branch: str,
+                            reason: str | None) -> dict:
+    """GRPH-1778 (P91 S6): the supervisor reports what an OBSERVING supervisor-enforced rule
+    would have done. Only the rules and outcomes in `SUPERVISOR_OUTCOMES`; a rule that is not
+    observing records nothing (the supervisor read a stale toggle)."""
+    from app.services import rule_observations as ro
+    from app.services import rule_toggles
+    allowed = ro.SUPERVISOR_OUTCOMES.get((rule_id or "").strip())
+    if allowed is None:
+        raise ObservationError(
+            422, f"rule_would_have names one of {', '.join(sorted(ro.SUPERVISOR_OUTCOMES))}")
+    if outcome not in allowed:
+        raise ObservationError(422, f"{rule_id} records {', '.join(allowed)}, not {outcome!r}")
+    if not rule_toggles.observing_since(db, rule_id, item.project_id):
+        return {"item_id": item.key, "kind": "rule_would_have", "recorded": False,
+                "reason": f"{rule_id} is not observing"}
+    detail = {k: v for k, v in (("branch", branch), ("reason", (reason or "").strip())) if v}
+    ro.record(db, item.project_id, rule_id, outcome, item_id=item.id,
+              commit=(commit or None), detail=detail)
+    return {"item_id": item.key, "kind": "rule_would_have", "recorded": True}
+
+
 def record_observation(db: Session, api_key, *, item_key: str, kind: str,
                        branch: str = "", base: str | None = None,
                        url: str | None = None, commit: str | None = None,
                        reason: str | None = None, agent_id: str | None = None,
-                       seats: Sequence[str] | None = None) -> dict:
+                       seats: Sequence[str] | None = None, rule_id: str | None = None,
+                       outcome: str | None = None) -> dict:
     """Record one supervisor fact on an item this credential's wave cut.
 
     `kind="seats"` writes nothing: it is the start-up check (`check_seats`, GRPH-1648),
@@ -6986,6 +7011,9 @@ def record_observation(db: Session, api_key, *, item_key: str, kind: str,
     if not _wave_cut_item(db, api_key, item):
         raise ObservationError(404, "no such item")
     cleaned = (branch or "").strip()
+    if kind == "rule_would_have":
+        return _record_rule_would_have(db, item, rule_id=rule_id, outcome=outcome,
+                                       commit=commit, branch=cleaned, reason=reason)
     if kind == "lease":
         return _record_lease(
             db, item, branch=cleaned, agent_id=agent_id, commit=commit)

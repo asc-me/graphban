@@ -27,7 +27,19 @@ from app.models import CustomRule, RuleObservation, RuleToggle, utcnow
 from app.services import events as events_svc
 from app.services import rule_toggles as T
 
-OUTCOMES = ("would_hold", "would_refuse")
+OUTCOMES = ("would_hold", "would_refuse", "would_allow")
+#: GRPH-1778 (S6): rules whose primitive is READ by a brief or a doc, not enforced by anything
+#: that can measure a refusal. Observing, they are stated as "observing, not applied" and their
+#: would-have count is UNMEASURED (None), never 0.
+UNMEASURED_RULES = ("build.test_scope", "plan.path_classes", "review.staff_every_row")
+#: Supervisor-enforced rules whose would-have outcome `gbfleet` posts to the observations route,
+#: with the outcomes each may post: a loosening would have let a file through, a tightening
+#: would have held. `review.staff_every_row` widens staffing to rows this wave did not cut, which the
+#: route cannot record, so it is UNMEASURED too.
+SUPERVISOR_OUTCOMES = {
+    "build.generated_files": ("would_allow",),
+    "build.undeclared_files": ("would_hold",),
+}
 DUE_DAYS = 14
 DUE_OUTCOMES = 10
 
@@ -67,6 +79,13 @@ def summary(db: Session, project_id: str | None, rule_id: str,
             since: datetime | None) -> dict:
     """What an observing rule reports: its would-have counts since it began observing, and
     whether a decision is due."""
+    if rule_id in UNMEASURED_RULES:
+        out = {"since": since, "would_hold": None, "would_refuse": None, "would_allow": None,
+               "would_have": None, "unmeasured": True,
+               "decision_due": False, "decision_due_reason": None}
+        if since is not None and utcnow() - _aware(since) >= timedelta(days=DUE_DAYS):
+            out["decision_due"], out["decision_due_reason"] = True, f"observing for {DUE_DAYS} days"
+        return out
     counts = {o: 0 for o in OUTCOMES}
     if project_id and since is not None:
         q = (select(RuleObservation.outcome, func.count()).where(
@@ -82,7 +101,8 @@ def summary(db: Session, project_id: str | None, rule_id: str,
         elif utcnow() - _aware(since) >= timedelta(days=DUE_DAYS):
             due, why = True, f"observing for {DUE_DAYS} days"
     return {"since": since, "would_hold": counts["would_hold"],
-            "would_refuse": counts["would_refuse"], "would_have": total,
+            "would_refuse": counts["would_refuse"], "would_allow": counts["would_allow"],
+            "would_have": total,
             "decision_due": due, "decision_due_reason": why}
 
 
