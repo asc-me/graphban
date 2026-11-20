@@ -498,3 +498,55 @@ def test_retry_parked_on_an_empty_project_is_zero_not_a_wipe(db):
     box.at(DUE)
     assert flush.retry_parked(db, "") == 0
     assert db.scalars(select(SyncOutbox).where(SyncOutbox.parked_reason == "contract")).all()
+
+
+def _incompressible(size: int) -> str:
+    import base64
+    import os
+    return base64.b64encode(os.urandom(size)).decode()
+
+
+def test_an_entity_too_big_for_an_empty_minute_parks_and_the_rest_still_flush(db):
+    """At the D11 defaults (256 KB/min, 1 MiB batches) a body over 256 KB can never
+    go out. It parks instead of sitting at the head of the queue, and the smaller
+    entity behind it sends in the same pass.
+    """
+    box = _Box(db, FakeConsole())
+    big = items_svc.create_item(
+        db, project_id="core", title="big", status="next",
+        description=_incompressible(300 * 1024),
+    )
+    small = _item(db, "small")
+    _dirty(db, big, T0)
+    _dirty(db, small, T0)
+    assert flush.gzip_size([payload.entity(db, "item", big.key)]) > BYTE_BUDGET
+    assert box.at(DUE) == 1
+    assert _row(db, small) is None and _manifest(db, small) is not None
+    parked = _row(db, big)
+    assert parked is not None and parked.parked_reason == "too_large"
+    assert parked.parked_contract is None
+    assert _manifest(db, big) is None
+    pushes = _pushes(box.wire.events)
+    assert len(pushes) == 1 and all(size <= BYTE_BUDGET for _, _, size in pushes)
+    assert [row["id"] for row in box.fake.entities(box.cloud_id)] == [small.key]
+    # Parked, it no longer holds the queue: a later edit to another entity sends.
+    other = _item(db, "later")
+    _dirty(db, other, DUE + WINDOW)
+    assert box.at(DUE + WINDOW * 2) == 1
+    assert _manifest(db, other) is not None
+
+
+def test_a_parked_oversized_entity_sends_once_the_budget_can_carry_it(db, monkeypatch):
+    box = _Box(db, FakeConsole())
+    big = items_svc.create_item(
+        db, project_id="core", title="big", status="next",
+        description=_incompressible(300 * 1024),
+    )
+    _dirty(db, big, T0)
+    assert box.at(DUE) == 0
+    assert _row(db, big).parked_reason == "too_large"
+    assert _pushes(box.wire.events) == []
+    monkeypatch.setattr(settings, "sync_flush_bytes_per_min", 1024 * 1024)
+    assert flush.retry_parked(db, "core") == 1
+    assert box.at(DUE + WINDOW) == 1
+    assert _row(db, big) is None and _manifest(db, big) is not None

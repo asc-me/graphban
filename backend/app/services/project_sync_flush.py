@@ -223,7 +223,11 @@ def _confirm(db: Session, row: SyncOutbox, record: dict, now: datetime) -> None:
 
 
 def _afford(ready: list[tuple], state: FlushState, now: datetime) -> list[tuple]:
-    """The prefix that fits this minute and the batch cap. Empty means send nothing."""
+    """The prefix that fits this minute and the batch cap. Empty means send nothing.
+
+    Every entity reaching here fits an empty minute on its own (oversized ones are
+    parked first), so an empty prefix only means this minute's budget is spent.
+    """
     if not ready or _requests_used(state, now) >= _request_limit():
         return []
     room = _byte_limit() - _bytes_used(state, now)
@@ -238,14 +242,12 @@ def _afford(ready: list[tuple], state: FlushState, now: datetime) -> list[tuple]
         if size > room or size > BATCH_BYTES:
             break
         chosen = trial
-    if chosen:
-        return chosen
-    # One entity that cannot fit a normal batch still has to be offered, or it
-    # sits at the head of the queue forever. It still has to fit the minute.
-    size = gzip_size([ready[0][2]])
-    if size > BATCH_BYTES and size <= room:
-        return [ready[0]]
-    return []
+    return chosen
+
+
+def _ceiling() -> int:
+    """The largest body any single request can carry: an empty minute or the batch cap."""
+    return min(_byte_limit(), BATCH_BYTES)
 
 
 def _note_attempts(rows: list[tuple]) -> None:
@@ -311,6 +313,15 @@ def flush_once(db: Session, *, now: datetime, transport=None, state: FlushState 
                 # The console already has this body. Sending it would be a no-op.
                 # A version that moved while we looked is a newer edit, so the row stays.
                 _delete_if_unchanged(db, row, seen)
+                continue
+            ceiling = _ceiling()
+            if ceiling > 0 and gzip_size([record]) > ceiling:
+                # No minute can ever carry it. Left in the queue it would sit at the
+                # head forever and block every row behind it, so it parks and the
+                # rest of the project keeps flushing. The 4h backstop and Retry now
+                # offer it again, e.g. after an admin raises the budget.
+                _park([row], reason="too_large", contract=None, now=now)
+                _mark(mapping, result="refused", reason="too_large", now=now)
                 continue
             ready.append((row, seen, record))
         while ready:
