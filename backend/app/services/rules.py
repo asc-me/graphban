@@ -408,8 +408,12 @@ def _library_entries(db: Session, project_id: str | None) -> list[dict]:
     PRIMITIVE provides; a rule that is off stays in the list and `rule_used` draws it not used."""
     from app.services import rule_toggles
     out = []
+    from app.services import custom_rules
     for t in rule_toggles.effective(db, project_id):
-        lib = rule_toggles.LIBRARY[t["rule_id"]]
+        if custom_rules.is_custom(t["rule_id"]):
+            lib = custom_rules.library_rule(custom_rules.get(db, t["rule_id"], project_id))
+        else:
+            lib = rule_toggles.LIBRARY[t["rule_id"]]
         out.append({
             "id": lib.id, "stage": lib.stage, "title": lib.title, "summary": lib.summary,
             "enforcement": lib.enforcement, "channel": None,
