@@ -776,6 +776,44 @@ export function useRuleProposals(projectId: string) {
   });
 }
 
+export function useAdoptedProposals(projectId: string) {
+  return useQuery({
+    queryKey: ["rule-proposals", projectId, "adopted"],
+    queryFn: () => api.ruleProposals(projectId, "adopted"),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+export function useRuleObservations(projectId: string, ruleId: string, enabled = true) {
+  return useQuery({
+    queryKey: ["rule-observations", projectId, ruleId],
+    queryFn: () => api.ruleObservations(projectId, ruleId),
+    enabled: !!projectId && enabled,
+    retry: false,
+  });
+}
+
+export function useRuleGuidance(projectId: string) {
+  return useQuery({
+    queryKey: ["rule-guidance", projectId],
+    queryFn: () => api.ruleGuidance(projectId),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+export function usePromoteRule(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { ruleId: string; reason: string }) => api.promoteRule(projectId, v.ruleId, v.reason),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["rule-observations"] });
+      invalidateProposals(qc);
+    },
+  });
+}
+
 export function useCustomRules(projectId: string) {
   return useQuery({
     queryKey: ["custom-rules", projectId],

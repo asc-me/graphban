@@ -1318,6 +1318,21 @@ export const api = {
       `/projects/${encodeURIComponent(projectId)}/rules/proposals/${proposalId}/dismiss`,
       { method: "POST", body: JSON.stringify({ reason }) },
     ),
+  /** A person promotes an observing rule to active, with a reason (GRPH-1777). */
+  promoteRule: (projectId: string, ruleId: string, reason: string) =>
+    request<RuleToggle>(
+      `/projects/${encodeURIComponent(projectId)}/rules/${encodeURIComponent(ruleId)}/promote`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
+  /** The would-have rows of one rule. */
+  ruleObservations: (projectId: string, ruleId: string) =>
+    request<import("@/lib/types").RuleObservation[]>(
+      `/projects/${encodeURIComponent(projectId)}/rules/${encodeURIComponent(ruleId)}/observations`,
+    ),
+  ruleGuidance: (projectId: string, status = "adopted") =>
+    request<import("@/lib/types").RuleGuidance[]>(
+      `/projects/${encodeURIComponent(projectId)}/rules/guidance?status=${encodeURIComponent(status)}`,
+    ),
   customRules: (projectId: string) =>
     request<import("@/lib/types").CustomRule[]>(`/projects/${encodeURIComponent(projectId)}/rules/custom`),
   /** Several of a project's own values under one reason, all-or-nothing (GRPH-1594). A refusal
