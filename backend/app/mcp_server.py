@@ -450,7 +450,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "decompose_prd",
         "description": (
             "One task per uncovered section. Missing acceptance or touchpoints: blocked. "
-            "`oversized` names the signal; `splits` files the pieces blocked, linked, then backlog. "
+            "`depends_on` from the body. "
+            "`oversized`; `splits` files pieces blocked, linked, then backlog. "
             "Needs approved (grill). Framing skipped unless `include_prose`."
         ),
         "inputSchema": {
@@ -459,8 +460,10 @@ TOOLS: list[dict[str, Any]] = [
                 "prd_id": {"type": "string"},
                 "create": {"type": "boolean"},
                 "include_prose": {"type": "boolean"},
-                "touchpoints": {"type": "object", "description": "{section: [paths]}"},
-                "splits": {"type": "object", "description": "{section: [headings]}"},
+                "touchpoints": {"type": "object"},
+                "splits": {"type": "object"},
+                "drop_links": {"type": "array"},
+                "add_links": {"type": "array"},
             },
             "required": ["prd_id"],
         },
@@ -4022,6 +4025,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             include_prose=bool(args.get("include_prose", False)),
             touchpoints=args.get("touchpoints") or None,
             splits=args.get("splits") if isinstance(args.get("splits"), dict) else None,
+            drop_links=args.get("drop_links"),
+            add_links=args.get("add_links"),
         )
     if name == "create_prd":
         prd = prd_svc.create_prd(

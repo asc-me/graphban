@@ -233,7 +233,10 @@ CEILING = 18048
 # Merged (GRPH-1686 + GRPH-1695): 18036, CEILING 18048. Headroom 12.
 # 18021 -> 18037 (GRPH-1691). `decompose_prd` gains `splits`. Paid by trimming that
 # tool's description and the touchpoints hint. CEILING stays 18048. Headroom 11.
-MEASURED_TOKENS = 18037  # P75 S1: +170 for answer_wait (ceiling 17775). GRPH-1650's
+# 18037 -> 18036 (GRPH-1690). `decompose_prd` gains `depends_on`, `drop_links` and
+# `add_links`. Paid by dropping the touchpoints and splits property descriptions and
+# shortening the tool description. CEILING stays 18048. Headroom 12.
+MEASURED_TOKENS = 18036  # P75 S1: +170 for answer_wait (ceiling 17775). GRPH-1650's
 # create_item `agent_id` is fleet-only (_FLEET_ONLY_ARGS), so it costs this manifest nothing.
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
