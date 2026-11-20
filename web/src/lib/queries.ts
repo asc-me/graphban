@@ -4,7 +4,7 @@ import * as React from "react";
 import { api } from "./api";
 import { httpsAddress, probeTrust } from "@/lib/https";
 import type { OnboardingMark, SetupConfirm } from "./types";
-import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, RoutingReplayProposal, Item, ItemCreateBody, ItemDetail, LessonFilters, LogExportPatch, RequestItem, RuleProfileApplyWrite, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
+import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, RoutingReplayProposal, Item, ItemCreateBody, ItemDetail, LessonFilters, LogExportPatch, Project, RequestItem, RuleProfileApplyWrite, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
 
 export const keys = {
   me: ["me"] as const,
@@ -1207,6 +1207,15 @@ export function useMe() {
 
 export function useProjects() {
   return useQuery({ queryKey: keys.projects, queryFn: () => api.projects() });
+}
+
+/** PATCH a project and refresh every surface that paints its tile or accent. */
+export function useUpdateProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: Partial<Project> }) => api.updateProject(id, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.projects }),
+  });
 }
 
 /** Switcher rows for every readable project (GRPH-1131). One aggregate read, not N collections. */
