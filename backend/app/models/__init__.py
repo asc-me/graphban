@@ -144,7 +144,19 @@ class Project(Base):
     # uniqueness on both engines. Changing it is one UPDATE: keys are rendered, never
     # stored, so no other row in the database moves. See app/tagging.py.
     tag: Mapped[str] = mapped_column(String, unique=True)
+    # The ONE solid colour used wherever a single colour is needed: chips, graph
+    # nodes, borders, text. The tile's second colour and its pattern are
+    # `accent2` and `pattern`; they never stand in for this.
     accent: Mapped[str] = mapped_column(String, default="#c6f24e")
+    # Ombre's second colour. Null means the tile is solid. A value equal to
+    # `accent` is stored as null, so an ombre never quietly renders solid.
+    # Only shapes the tile fill.
+    accent2: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Pattern laid over the tile fill. One of services.projects.TILE_PATTERNS;
+    # `none` is unpatterned. Only shapes the tile fill, same as `accent2`.
+    pattern: Mapped[str] = mapped_column(
+        String, nullable=False, default="none", server_default="none"
+    )
     # Package names this project publishes — `@acme/core`, `acme-core` (PRD-21 D3). The
     # registry a sibling's manifest dependency resolves against. A monorepo is ONE project
     # that provides several names: the galaxy's resolution is the checkout, not the

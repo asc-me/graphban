@@ -106,6 +106,7 @@ import type {
   PrdSummary,
   PrdVersion,
   Project,
+  ProjectPattern,
   ProjectSummary,
   RequestComment,
   RequestItem,
@@ -533,6 +534,10 @@ export const api = {
     /** Omit to let the server derive one from `name`. */
     tag?: string;
     accent?: string;
+    /** Ombre second colour, `#rrggbb`. Equal to `accent` is stored as null. */
+    accent2?: string | null;
+    /** Tile pattern. Only shapes the tile fill. */
+    pattern?: ProjectPattern;
     description?: string;
     org_id?: string;
   }) => request<Project>("/projects", { method: "POST", body: JSON.stringify(body) }),
