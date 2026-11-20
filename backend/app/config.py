@@ -368,6 +368,12 @@ class Settings(BaseSettings):
     # How often the leader re-checks the leaf (renewal, debounced names); `0` disables.
     tls_sync_seconds: int = 300
 
+    # How often the leader wakes to pull cloud proposals (GRPH-1737). The wake
+    # is a tick; the per-project interval (60s, or 10s while a decision is
+    # open) is computed, not configured. `0` disables the loop — the value the
+    # test suite runs at, which drives `project_sync_proposals.run_due` itself.
+    proposal_poll_seconds: int = 1
+
     # LLM call spans (GRPH-225). How long `llm_call_spans` rows live; 0 or negative
     # keeps everything. The table is telemetry, not the ledger — unbounded growth of
     # per-call rows is the difference between a cost panel and an ops incident.

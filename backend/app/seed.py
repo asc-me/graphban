@@ -29,14 +29,16 @@ from app.security.passwords import hash_password
 # bandit B105: the local demo seed's documented login, never used outside `seed`.
 SEED_PASSWORD = "graphban"  # nosec B105
 
+# Demo project accents are the wizard palette (GRPH-1747): Core is Lime, Web App is
+# Sky, Infra is Sand. The status tokens stay off project tiles.
 PROJECTS = [
     dict(id="core", name="Core Platform", tag="CP", accent="#c6f24e", visibility="private",
          description="Graphban itself — the agent-native tracker + memory core.",
          share_global_memory=True, auto_extract=True, mcp_enabled=True, embed_model="text-embedding-3-small"),
-    dict(id="web", name="Web App", tag="WA", accent="#7ca2ff", visibility="private",
+    dict(id="web", name="Web App", tag="WA", accent="#a3cfff", visibility="private",
          description="Marketing site + hosted dashboard for graphban.dev.",
          share_global_memory=True, auto_extract=True, mcp_enabled=False, embed_model="text-embedding-3-small"),
-    dict(id="infra", name="Infra", tag="INFR", accent="#e0b34a", visibility="private",
+    dict(id="infra", name="Infra", tag="INFR", accent="#e6d2a8", visibility="private",
          description="Deploy, CI, and self-host packaging.",
          share_global_memory=False, auto_extract=False, mcp_enabled=True, embed_model="nomic-embed-text (Ollama)"),
 ]

@@ -373,6 +373,43 @@ describe("docked editor", () => {
     expect(confirm).not.toHaveBeenCalled();
   });
 
+  it("Recommended header with unsaved dock draft asks first", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm");
+    vi.mocked(api.recommendedRules).mockResolvedValue({ sources: [], suggestions: [] });
+    view("/rules?stage=build");
+    await screen.findByRole("region", { name: "Build stage inspector" });
+    await user.click(screen.getByRole("button", { name: "Add path" }));
+    await user.type(screen.getByLabelText("paths 2"), "b.lock");
+    expect(screen.getByTestId("rules-dock-diff")).toBeInTheDocument();
+    await user.click(screen.getByTestId("rules-open-recommended"));
+    expect(screen.getByTestId("rules-stage-leave")).toHaveTextContent("unsaved changes");
+    expect(screen.getByRole("region", { name: "Build stage inspector" })).toBeInTheDocument();
+    await user.click(screen.getByTestId("rules-stage-leave-stay"));
+    expect(screen.queryByTestId("rules-stage-leave")).toBeNull();
+    expect(screen.getByLabelText("paths 2")).toHaveValue("b.lock");
+    await user.click(screen.getByTestId("rules-open-recommended"));
+    await user.click(screen.getByTestId("rules-stage-leave-confirm"));
+    await screen.findByTestId("rules-recommended");
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("a ?rule= focus does not pull later selections back to the focused stage", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.recommendedRules).mockResolvedValue({ sources: [], suggestions: [] });
+    view("/rules?rule=build.generated_files");
+    await screen.findByRole("region", { name: "Build stage inspector" });
+    await user.click(screen.getByTestId("rules-stage-merge"));
+    expect(await screen.findByRole("region", { name: "Merge stage inspector" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Build stage inspector" })).toBeNull());
+    await user.click(screen.getByTestId("rules-stage-build"));
+    await screen.findByRole("region", { name: "Build stage inspector" });
+    await user.click(screen.getByTestId("rules-open-recommended"));
+    await screen.findByTestId("rules-recommended");
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Build stage inspector" })).toBeNull());
+    expect(screen.queryByTestId("rules-stage-leave")).toBeNull();
+  });
+
   it("history shows who, when, reason and before → after", async () => {
     vi.mocked(api.events).mockResolvedValue({
       results: [
