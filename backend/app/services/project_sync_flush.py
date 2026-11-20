@@ -19,7 +19,7 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -118,10 +118,40 @@ def _parked(db: Session) -> list[SyncOutbox]:
     ).all())
 
 
-def _park(rows: list[SyncOutbox], *, reason: str, contract: str | None) -> None:
+def _park(rows: list[SyncOutbox], *, reason: str, contract: str | None, now: datetime) -> None:
+    """Park ``rows`` and restart their wait.
+
+    ``first_dirty_at`` is the park time while a row is parked: the 4h backstop counts
+    from it, and every re-park moves it, so a row the console keeps refusing waits
+    another 4h each time instead of going out on every pass once the first stamp is old.
+    """
     for row in rows:
         row.parked_reason = reason
         row.parked_contract = contract
+        row.first_dirty_at = now
+
+
+def _delete_if_unchanged(db: Session, row: SyncOutbox, seen: int) -> bool:
+    """Delete the outbox row only if the STORED version is still ``seen``.
+
+    The check is in the DELETE itself, not on the in-memory attribute: another session
+    (or a statement this session's identity map never saw) may have bumped the version
+    during the send, and that newer change has to stay queued. Returns whether it went.
+    """
+    table = SyncOutbox.__table__
+    gone = db.execute(
+        delete(table).where(
+            table.c.project_id == row.project_id,
+            table.c.entity_type == row.entity_type,
+            table.c.entity_id == row.entity_id,
+            table.c.version == seen,
+        )
+    ).rowcount
+    if gone:
+        db.expunge(row)
+    else:
+        db.expire(row)
+    return bool(gone)
 
 
 def _requeue(db: Session, advertised: str, now: datetime) -> None:
@@ -131,7 +161,7 @@ def _requeue(db: Session, advertised: str, now: datetime) -> None:
     """
     horizon = now - _BACKSTOP
     for row in _parked(db):
-        parked_at = _aware(row.first_dirty_at)
+        parked_at = _aware(row.first_dirty_at)  # the park time; see _park
         version_moved = bool(row.parked_contract) and row.parked_contract != advertised
         if version_moved or parked_at <= horizon:
             row.parked_reason = None
@@ -251,7 +281,7 @@ def flush_once(db: Session, *, now: datetime, transport=None, state: FlushState 
         advertised = contract.version or ""
         _requeue(db, advertised, now)
         db.flush()
-        _park(due(db, now), reason="contract", contract=advertised or None)
+        _park(due(db, now), reason="contract", contract=advertised or None, now=now)
         for pid, _rows in _by_project(owed):
             _mark(db.get(SyncProject, pid), result="refused", reason="contract", now=now)
         db.commit()
@@ -280,8 +310,7 @@ def flush_once(db: Session, *, now: datetime, transport=None, state: FlushState 
             if manifest is not None and manifest.hash == record["hash"]:
                 # The console already has this body. Sending it would be a no-op.
                 # A version that moved while we looked is a newer edit, so the row stays.
-                if row.version == seen:
-                    db.delete(row)
+                _delete_if_unchanged(db, row, seen)
                 continue
             ready.append((row, seen, record))
         while ready:
@@ -305,12 +334,13 @@ def flush_once(db: Session, *, now: datetime, transport=None, state: FlushState 
             if result.status == "refused" and result.reason == "contract":
                 version = result.version or advertised
                 _park([row for row, _, _ in fitted] + [row for row, _, _ in ready[len(fitted):]],
-                      reason="contract", contract=version)
+                      reason="contract", contract=version, now=now)
                 _mark(mapping, result="refused", reason="contract", now=now)
                 db.commit()
                 return sent
             if result.status != "ok":
-                _park([row for row, _, _ in fitted], reason=result.reason or "refused", contract=None)
+                _park([row for row, _, _ in fitted], reason=result.reason or "refused", contract=None,
+                      now=now)
                 _mark(mapping, result="refused", reason=result.reason, now=now)
                 db.commit()
                 return sent
@@ -322,16 +352,14 @@ def flush_once(db: Session, *, now: datetime, transport=None, state: FlushState 
             for outbox_row, seen, record in fitted:
                 key = (record["type"], record["id"])
                 if key in refused and key not in stored:
-                    outbox_row.parked_reason = refused[key]
-                    outbox_row.parked_contract = None
+                    _park([outbox_row], reason=refused[key], contract=None, now=now)
                     continue
                 if key not in stored:
                     continue
                 _confirm(db, outbox_row, record, now)
-                # Read the version we captured, not the attribute after a concurrent edit.
-                # The row stays dirty when that version moved during the send.
-                if outbox_row.version == seen:
-                    db.delete(outbox_row)
+                # The stored version decides, not the attribute: a change committed
+                # during the send keeps the row dirty.
+                _delete_if_unchanged(db, outbox_row, seen)
             state.failures = 0
             state.not_before = None
             _mark(mapping, result="ok", reason=None, now=now)

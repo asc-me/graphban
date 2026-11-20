@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.config import Settings, settings
 from app.db import SessionLocal
@@ -344,7 +344,10 @@ def test_parked_rows_requeue_after_four_hours(db):
     assert box.at(T0 + timedelta(hours=1)) == 0
     assert _row(db, item).parked_reason == "contract"
     assert len(_pushes(box.wire.events)) == 1  # the refusal itself; nothing since
-    assert box.at(T0 + timedelta(hours=4)) == 1
+    # The backstop counts from the park (DUE), not from when the row first went dirty.
+    assert box.at(T0 + timedelta(hours=4)) == 0
+    assert len(_pushes(box.wire.events)) == 1
+    assert box.at(DUE + timedelta(hours=4)) == 1
     assert _row(db, item) is None
     assert _manifest(db, item) is not None
     assert len(_pushes(box.wire.events)) == 2
@@ -394,6 +397,71 @@ def test_an_edit_during_send_stays_dirty_after_confirm(db):
     assert _manifest(db, item).hash == payload.entity(db, "item", item.key)["hash"]
     titles = [row["body"]["title"] for row in box.fake.entities(box.cloud_id)]
     assert "changed while the bytes were in flight" in titles
+
+
+def test_a_still_refused_row_waits_another_four_hours_after_each_retry(db):
+    item = _item(db, "always refused")
+    box = _Box(db, RefuseOne(item.key))
+    _dirty(db, item, T0)
+    assert box.at(DUE) == 1  # the batch was accepted; this entity was refused
+    assert _row(db, item).parked_reason == "forbidden_type"
+    assert len(_pushes(box.wire.events)) == 1
+    assert box.at(DUE + timedelta(hours=4) - timedelta(seconds=1)) == 0
+    assert len(_pushes(box.wire.events)) == 1
+    assert box.at(DUE + timedelta(hours=4)) == 1  # the backstop retry
+    assert len(_pushes(box.wire.events)) == 2
+    assert _row(db, item).parked_reason == "forbidden_type"  # refused again: re-parked
+    # The re-park re-arms the backstop. A stale first stamp would send on every pass.
+    for minutes in (1, 5, 60, 239):
+        assert box.at(DUE + timedelta(hours=4, minutes=minutes)) == 0
+    assert len(_pushes(box.wire.events)) == 2
+    assert box.at(DUE + timedelta(hours=8)) == 1
+    assert len(_pushes(box.wire.events)) == 3
+
+
+def test_an_edit_committed_by_another_session_during_send_stays_dirty(db):
+    box = _Box(db, FakeConsole())
+    item = _item(db, "before")
+    _dirty(db, item, T0)
+    key = ("core", "item", item.key)
+    sent_version = db.get(SyncOutbox, key).version
+
+    def edit_elsewhere(request, inner):
+        other = SessionLocal()
+        try:
+            outbox.capture(
+                other, project_id="core", entity_type="item", entity_id=item.key,
+                change_class=outbox.CHANGE_EDIT, now=DUE,
+            )
+            other.commit()
+        finally:
+            other.close()
+        return inner.handle_request(request)
+
+    box.wire.on_push = edit_elsewhere
+    assert box.at(DUE) == 1
+    row = _row(db, item)
+    assert row is not None  # the newer version is still queued
+    assert row.version == sent_version + 1
+    assert _manifest(db, item) is not None
+
+
+def test_a_version_bump_the_identity_map_did_not_see_stays_dirty(db):
+    box = _Box(db, FakeConsole())
+    item = _item(db, "before")
+    _dirty(db, item, T0)
+
+    def raw_bump(request, inner):
+        db.execute(
+            text("UPDATE sync_outbox SET version = version + 1 "
+                 "WHERE project_id = 'core' AND entity_type = 'item' AND entity_id = :eid"),
+            {"eid": item.key},
+        )
+        return inner.handle_request(request)
+
+    box.wire.on_push = raw_bump
+    assert box.at(DUE) == 1
+    assert _row(db, item) is not None
 
 
 def test_an_unchanged_entity_is_not_sent_again(db):
