@@ -162,3 +162,40 @@ def test_migration_backfills_only_the_membership_handle_and_round_trips():
     run(mod.downgrade)
     with eng.connect() as c:
         assert c.execute(text("SELECT org_id, user_id, role FROM org_memberships")).one() == ("o1", "u1", "owner")
+
+
+@pytest.mark.skipif(
+    __import__("app.db", fromlist=["engine"]).engine.url.drivername.startswith("sqlite"),
+    reason="Alembic owns the schema on Postgres only")
+def test_postgres_downgrade_and_upgrade_round_trip_the_handle_schema(client):
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import inspect
+
+    from app.db import engine
+    from app.migrate import _BACKEND_ROOT
+
+    cfg = Config(str(_BACKEND_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(_BACKEND_ROOT / "alembic"))
+
+    def uniques(table):
+        return {c["name"] for c in inspect(engine).get_unique_constraints(table)}
+
+    assert "uq_org_membership_handle" in uniques("org_memberships")
+    assert "users_handle_key" not in uniques("users")
+    assert inspect(engine).has_table("handle_holds")
+
+    command.downgrade(cfg, "0221")
+    assert "handle" not in {c["name"] for c in inspect(engine).get_columns("org_memberships")}
+    assert {"avatar2", "avatar_pattern"}.isdisjoint(
+        {c["name"] for c in inspect(engine).get_columns("users")})
+    assert "users_handle_key" in uniques("users")
+    assert not inspect(engine).has_table("handle_holds")
+
+    command.upgrade(cfg, "head")
+    assert "uq_org_membership_handle" in uniques("org_memberships")
+    assert "users_handle_key" not in uniques("users")
+    with engine.connect() as conn:
+        assert conn.execute(text(
+            "SELECT count(*) FROM org_memberships m JOIN users u ON u.id = m.user_id "
+            "WHERE m.handle <> u.handle")).scalar() == 0
