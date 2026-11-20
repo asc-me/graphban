@@ -321,16 +321,26 @@ def _open_proposal(db: Session, project_id: str, proposal_id: int) -> RulePropos
     return p
 
 
-def _apply_adoption(db: Session, user, p: RuleProposal, reason: str, batch: bool) -> None:
-    """Apply one proposal to the session, uncommitted."""
+def _stage_adoption(db: Session, user, p: RuleProposal, reason: str, batch: bool,
+                    claimed_slugs: set[str]):
+    """Check and apply one proposal to the session, uncommitted, recording NOTHING.
+
+    Returns a callable that records the proposal's audit events. Events commit
+    (`events.record`), so the caller runs every recorder only after every proposal in the
+    batch has staged: no commit may land before the last refusal point."""
     pid = p.project_id
+    toggle = None
     if p.kind == "new_rule":
         d = p.draft or {}
         bad = rule_pack.validate_draft(d)
         if bad:
             raise Validation(f"the draft is no longer valid: {bad}")
+        if p.rule_id in claimed_slugs:
+            raise Validation(f"proposal {p.id} creates {p.rule_id}, which another proposal in "
+                             "this batch already creates", hint="adopt one of them, dismiss the other")
         if custom_rules._row(db, p.rule_id, pid) is not None:
             raise Validation(f"{p.rule_id} already exists in this project")
+        claimed_slugs.add(p.rule_id)
         db.add(CustomRule(rule_id=p.rule_id, project_id=pid, primitive=p.primitive,
                           primitive_api=rule_pack.PRIMITIVE_API, stage=d["stage"],
                           params=copy.deepcopy(p.params or {}), title=d["title"],
@@ -352,27 +362,36 @@ def _apply_adoption(db: Session, user, p: RuleProposal, reason: str, batch: bool
                 "once: a library rule cannot start observing until S5 (GRPH-1777)",
                 hint="dismiss it, or switch the rule on from the Rules page")
         changes: dict = {"params": copy.deepcopy(p.params or {})}
-        row, before, old = T._stage_project_toggle(db, pid, p.rule_id, changes, user)
+        toggle = T._stage_project_toggle(db, pid, p.rule_id, changes, user)
         db.flush()
-        T._record_project_toggle(db, pid, p.rule_id, row, before, old, user, reason)
         state = "on" if T.resolve(db, p.rule_id, pid)["on"]["value"] else "off"
     p.status = "adopted"
     p.decided_by = user.handle or user.name
     p.decided_reason = reason
     p.decided_at = _now()
-    events_svc.record_user(
-        db, user, action="adopt_rule_proposal", target_type="rule", target_id=p.rule_id,
-        project_id=pid,
-        meta={"proposal_id": p.id, "kind": p.kind, "state": state, "reason": reason,
-              "batch": batch, "history": f"{_history(p)}, adopted by {p.decided_by}",
-              "proposer": p.proposer, "proposer_kind": p.proposer_kind,
-              "citations": p.citations, "adopted_by": p.decided_by})
+    db.flush()
+
+    def record() -> None:
+        if toggle is not None:
+            row, before, old = toggle
+            T._record_project_toggle(db, pid, p.rule_id, row, before, old, user, reason)
+        events_svc.record_user(
+            db, user, action="adopt_rule_proposal", target_type="rule", target_id=p.rule_id,
+            project_id=pid,
+            meta={"proposal_id": p.id, "kind": p.kind, "state": state, "reason": reason,
+                  "batch": batch, "history": f"{_history(p)}, adopted by {p.decided_by}",
+                  "proposer": p.proposer, "proposer_kind": p.proposer_kind,
+                  "citations": p.citations, "adopted_by": p.decided_by})
+    return record
 
 
 def adopt(db: Session, actor: object, project_id: str, proposal_ids: list[int],
           reason: str) -> list[RuleProposal]:
     """Adopt one proposal or a batch under one reason, all-or-nothing. A `loosens` proposal is
-    refused in a batch (naming it); adopted alone it needs its own reason."""
+    refused in a batch (naming it); adopted alone it needs its own reason.
+
+    Every proposal is checked and staged before any audit event is recorded, because recording
+    an event commits: a refusal at any member leaves every proposal open and no rule changed."""
     user = T._check_project_writer(db, actor, project_id)
     why = T._reason(reason)
     ids = list(dict.fromkeys(proposal_ids))
@@ -387,19 +406,21 @@ def adopt(db: Session, actor: object, project_id: str, proposal_ids: list[int],
                 raise Validation(
                     f"proposal {', '.join(map(str, loose))} loosens a rule and cannot be adopted "
                     "in a batch", hint="adopt it alone, with its own reason")
-        for p in rows:
-            _apply_adoption(db, user, p, why, batch)
-            db.flush()
-        if batch:
-            events_svc.record_user(
-                db, user, action="adopt_rule_proposals", target_type="project",
-                target_id=project_id, project_id=project_id,
-                meta={"proposal_ids": ids, "rule_ids": [p.rule_id for p in rows],
-                      "reason": why})
+        slugs: set[str] = set()
+        recorders = [_stage_adoption(db, user, p, why, batch, slugs) for p in rows]
         db.commit()
     except BaseException:
         db.rollback()
         raise
+    # The adoption is committed; audit events follow (each commits on its own, and a failed
+    # audit never undoes the audited act — events.record).
+    for rec in recorders:
+        rec()
+    if batch:
+        events_svc.record_user(
+            db, user, action="adopt_rule_proposals", target_type="project",
+            target_id=project_id, project_id=project_id,
+            meta={"proposal_ids": ids, "rule_ids": [p.rule_id for p in rows], "reason": why})
     return rows
 
 

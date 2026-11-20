@@ -143,3 +143,51 @@ def test_tighten_adoption_records_real_state(client, env):
     live = next(x for x in rules if x["rule_id"] == "custom.live")
     meta = _events(env["pid"], "adopt_rule_proposal")[0]
     assert meta["state"] == live["state"] == "active"
+
+
+def _rule_exists(pid, rule_id):
+    from app.db import SessionLocal
+    from app.models import CustomRule
+    db = SessionLocal()
+    try:
+        return db.query(CustomRule).filter(CustomRule.project_id == pid,
+                                           CustomRule.rule_id == rule_id).first() is not None
+    finally:
+        db.close()
+
+
+def test_mixed_batch_refused_at_second_member_applies_nothing(client, env, monkeypatch):
+    """All-or-nothing: a batch refused at its second member leaves the first proposal open and
+    no rule created — recording an event commits, so nothing may record before the last check."""
+    from app.services import rule_toggles as T
+    from app.services.rule_toggles import LibraryRule
+    rule = LibraryRule(id=T.EXCLUSIVE_AREAS_RULE, stage="build", title="Areas", summary="s",
+                       enforcement="advisory", enforcer=None, default_on=False,
+                       default_params={"paths": []})
+    first = _agent_prop(env, client)
+    monkeypatch.setattr(T, "LIBRARY", {rule.id: rule})
+    second = client.post(_base(env), headers=env["h"], json={
+        "kind": "turn_on", "rule_id": rule.id, "params": {"paths": ["db"]},
+        "citations": env["cites"]})
+    assert second.status_code == 201, second.text
+    r = client.post(_base(env) + "/adopt", headers=env["h"],
+                    json={"proposal_ids": [first, second.json()["id"]], "reason": "both"})
+    assert r.status_code == 422, r.text
+    assert not _rule_exists(env["pid"], "custom.areas")
+    open_ids = {p["id"] for p in client.get(_base(env) + "?status=open", headers=env["h"]).json()}
+    assert first in open_ids
+    assert not _events(env["pid"], "adopt_rule_proposal")
+
+
+def test_batch_with_duplicate_slug_refused_applies_nothing(client, env):
+    a = _agent_prop(env, client)
+    b = client.post(_base(env), headers=env["h"], json={
+        "kind": "new_rule", "primitive": "exclusive_areas", "slug": "areas", "title": "A2",
+        "why": "w", "params": {"paths": ["other"]}, "citations": env["cites"]})
+    assert b.status_code == 201, b.text
+    r = client.post(_base(env) + "/adopt", headers=env["h"],
+                    json={"proposal_ids": [a, b.json()["id"]], "reason": "both"})
+    assert r.status_code == 422 and "custom.areas" in r.text, r.text
+    assert not _rule_exists(env["pid"], "custom.areas")
+    assert len(client.get(_base(env) + "?status=open", headers=env["h"]).json()) == 2
+    assert not _events(env["pid"], "adopt_rule_proposal")
