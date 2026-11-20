@@ -21,6 +21,7 @@ import {
   PlannerEmpty,
   PlannerError,
 } from "@/components/planner/PlannerStates";
+import { ProjectTile } from "@/components/ProjectTile";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { STATUS_META, STATUS_ORDER, TYPE_META } from "@/lib/meta";
 import {
@@ -145,7 +146,7 @@ export function ProjectHome() {
   return (
     <div className="max-w-[1180px] px-6 pb-16 pt-6">
       <div className="flex flex-wrap items-center gap-2.5">
-        <span className="h-2.5 w-2.5 rounded-[3px]" style={{ background: active.accent }} />
+        <ProjectTile project={active} size={32} />
         <h1 className="text-[19px] font-semibold tracking-[-0.3px]">{active.name}</h1>
         <span className="rounded border border-line-2 px-1.5 py-px font-mono text-[10px] text-muted">
           {active.tag}

@@ -2,6 +2,7 @@ import { Check, Plus, Search } from "lucide-react";
 import * as React from "react";
 import { createPortal } from "react-dom";
 
+import { ProjectTile } from "@/components/ProjectTile";
 import { CloudTag } from "@/components/shell/CloudTag";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { NewProjectDialog } from "@/features/onboarding/NewProjectDialog";
@@ -49,17 +50,8 @@ function matches(p: Project, q: string): boolean {
   return p.name.toLowerCase().includes(needle) || (p.tag ?? "").toLowerCase().includes(needle);
 }
 
-export function ProjectTile({ project }: { project: Pick<Project, "name" | "accent"> | null }) {
-  const accent = project?.accent ?? "#c6f24e";
-  return (
-    <span
-      className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg border font-mono text-small font-semibold"
-      style={{ color: accent, borderColor: `${accent}4d`, background: `${accent}24` }}
-    >
-      {(project?.name ?? "?").slice(0, 1).toUpperCase()}
-    </span>
-  );
-}
+/** The rail and the card import the tile from here. The component lives in one place. */
+export { ProjectTile };
 
 /**
  * The project switcher (GRPH-P59 §D3): one searchable popover behind the sidebar card, the
