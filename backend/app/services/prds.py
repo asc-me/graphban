@@ -4502,6 +4502,61 @@ def _file_split(db: Session, prd: Prd, section: str, fidelity: str, subs: list[d
     return [item.id for item, _blocker in made]
 
 
+def _remainder_piece(prd: Prd, pr: dict, left: list[dict], context: str) -> dict:
+    """One item for the suggested pieces a partial split did not name.
+
+    Coverage counts by ``prd_section``. Filing only the accepted pieces marks the
+    section covered, and a later decompose never offers the rest — their bodies and
+    clauses have to land on an item in this same call, or they are gone.
+    """
+    from app.services.fleet import parse_acceptance
+
+    chunks = []
+    for sub in left:
+        gbody = sub.get("_gbody") or ""
+        chunks.append(f"### {sub['heading']}" + (f"\n{gbody}" if gbody else ""))
+    body = "\n\n".join(
+        part for part in (pr.get("_preamble") or "", "\n\n".join(chunks)) if part)
+    clauses: list[str] = []
+    seen: set[str] = set()
+    for clause in pr.get("_level_clauses") or []:
+        if clause not in seen:
+            seen.add(clause)
+            clauses.append(clause)
+    for sub in left:
+        for clause in sub.get("_own_clauses") or []:
+            if clause not in seen:
+                seen.add(clause)
+                clauses.append(clause)
+    touchpoints: list[str] = []
+    seen_paths: set[str] = set()
+    for sub in left:
+        for path in sub.get("touchpoints") or []:
+            if path not in seen_paths:
+                seen_paths.add(path)
+                touchpoints.append(path)
+    no_clause = not clauses and not parse_acceptance(body)[0]
+    return {
+        "title": f"Implement: {pr['section']} — remainder",
+        "description": _compose_task(
+            prd, body, clauses, context,
+            pr.get("_gate_text") or "", pr.get("_design_text") or ""),
+        "touchpoints": touchpoints,
+        "blocker": _piece_blocker(
+            prd.key, no_clause, not touchpoints, pr.get("_gate_blocker") or ""),
+    }
+
+
+def _strip_split_scratch(proposals: list[dict]) -> None:
+    """Drop the piece text the filing loop needed. It is not part of the proposal."""
+    for pr in proposals:
+        for key in ("_preamble", "_level_clauses", "_gate_text", "_design_text", "_gate_blocker"):
+            pr.pop(key, None)
+        for sub in pr.get("sub_items") or []:
+            sub.pop("_gbody", None)
+            sub.pop("_own_clauses", None)
+
+
 def _is_web_touchpoint(path: str) -> bool:
     """A touchpoint under `web/`. The UI item takes these; the behaviour item keeps the rest."""
     norm = (path or "").replace("\\", "/").lstrip("/")
@@ -4540,7 +4595,13 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
     A section whose acceptance clauses, touchpoint areas, or body length exceed the
     measured constants is ``oversized``, naming the signal and its value, with suggested
     sub-items (one per sub-heading or bold piece). ``splits={section: [headings]}`` with
-    create=True files those pieces instead of the one item: blocked, linked, then backlog."""
+    create=True files those pieces instead of the one item: blocked, linked, then backlog.
+    A partial list also files one remainder carrying every other suggested piece's body
+    and clauses. Coverage counts by section, so the omitted pieces would otherwise never
+    be offered again. ``split_remainders`` names those headings. ``unfiled_pieces`` lists
+    any suggested piece whose clauses landed on no created item; it is null when
+    ``create`` is false, because nothing was filed and an empty list would read as a
+    clean pass."""
     from app.services import design_sets as design_svc
 
     cov = coverage(db, prd)
@@ -4614,13 +4675,14 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
         preamble = next((text for heading, text in groups if heading == ""), "")
         real = [(heading, text) for heading, text in groups if heading]
         sub_items: list[dict] = []
+        level = section_level.get(p["section"], [])
         # Suggested only once the section is already too big. A short section with two
         # headings is still one child; the caller is not offered a split it did not need.
         if size["oversized"] and len(real) >= 2:
-            level = section_level.get(p["section"], [])
             for heading, gbody in real:
                 piece = "\n\n".join(part for part in (preamble, gbody) if part)
-                sub_clauses = level + per_heading.get((p["section"], heading), [])
+                own = list(per_heading.get((p["section"], heading), []))
+                sub_clauses = level + own
                 if given:
                     sub_tps = list(given)
                 else:
@@ -4638,6 +4700,9 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                         prd, piece, sub_clauses, context, gate_text, design_text),
                     "blocker": _piece_blocker(
                         prd.key, sub_no_clause, not sub_tps, gate["blocker"] if gate else ""),
+                    # Piece text the remainder is built from. Stripped before the reply.
+                    "_gbody": gbody,
+                    "_own_clauses": own,
                 })
         # Named pages (inline or the set's external artifact) mean the prototype
         # already exists (GRPH-1692). The section is then specifiable against that
@@ -4663,6 +4728,13 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             "oversized_reason": size["oversized_reason"],
             "size": size["size"],
             "sub_items": sub_items,
+            # Filing scratch, stripped before the reply. The remainder is built at create
+            # time, once `splits` says which pieces were not named.
+            "_preamble": preamble,
+            "_level_clauses": list(level),
+            "_gate_text": gate_text,
+            "_design_text": design_text,
+            "_gate_blocker": gate["blocker"] if gate else "",
         })
         if split_ui and design is not None:
             ui_items.append({
@@ -4695,6 +4767,10 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                 db, prd.id, title, text) is None:
             ui_without_design.append(title)
     created = []
+    # Empty means this call filed no remainder. Null `unfiled_pieces` means create did
+    # not run, so nobody looked — not "every piece landed".
+    split_remainders: list[dict] = []
+    unfiled_pieces: list[dict] | None = None
     if create:
         if prd.status != "approved":
             raise DecomposeRequiresApproval(
@@ -4702,16 +4778,44 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                 f"this PRD is {prd.status}. Dry-run (create=false) still proposes."
             )
         behaviour_ids: dict[str, list[str]] = {}
+        unfiled_pieces = []
         for pr in proposals:
             accepted = _accepted_headings(
                 splits, pr["section"], [s["heading"] for s in pr["sub_items"]])
             if accepted:
                 chosen = [s for s in pr["sub_items"] if s["heading"] in accepted]
+                left = [s for s in pr["sub_items"] if s["heading"] not in accepted]
+                # A partial list used to file only `chosen`. One item on the section is
+                # enough for coverage to skip it next time, so Two and Three were gone
+                # and the reply did not say so.
+                if chosen and left:
+                    chosen = [*chosen, _remainder_piece(prd, pr, left, context)]
                 if chosen:
                     ids = _file_split(
                         db, prd, pr["section"], pr["fidelity"], chosen)
                     created.extend(ids)
                     behaviour_ids[pr["section"]] = ids
+                    if left:
+                        split_remainders.append({
+                            "section": pr["section"],
+                            "headings": [s["heading"] for s in left],
+                            "item_id": ids[-1],
+                        })
+                    texts = []
+                    for iid in ids:
+                        filed = db.get(Item, iid)
+                        texts.append((filed.description or "") if filed is not None else "")
+                    blob = "\n".join(texts)
+                    for sub in pr["sub_items"]:
+                        own = sub.get("_own_clauses") or []
+                        gbody = sub.get("_gbody") or ""
+                        gone = [c for c in own if c not in blob]
+                        if gone or (not own and gbody and gbody not in blob):
+                            unfiled_pieces.append({
+                                "section": pr["section"],
+                                "heading": sub["heading"],
+                                "clauses": gone,
+                            })
                     continue
             item = items_svc.create_item(
                 db, title=pr["title"], description=pr["description"],
@@ -4760,7 +4864,9 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
     # created item further up: that column holds the frozen id deliberately (GRPH-319), because
     # a stored rendering would rot the moment the project is retagged. Displayed keys render;
     # stored ids freeze — and this dict is read, not stored.
+    _strip_split_scratch(proposals)
     return {"prd_id": prd.key, "proposals": proposals, "created": created,
             "unassigned_clauses": unassigned, "no_acceptance": no_acceptance,
             "no_touchpoints": no_touchpoints, "ui_items": ui_items,
-            "ui_skipped": ui_skipped, "ui_without_design": ui_without_design}
+            "ui_skipped": ui_skipped, "ui_without_design": ui_without_design,
+            "split_remainders": split_remainders, "unfiled_pieces": unfiled_pieces}
