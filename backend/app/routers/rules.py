@@ -296,7 +296,7 @@ def create_rule_proposal(project_id: str, body: RuleProposalWrite, db: Session =
         kind, who = "agent", f"agent:{getattr(principal, 'name', None) or getattr(principal, 'id', '')}"
         allowed = authz.key_writable_ids(db, principal)
         if project_id not in allowed:
-            raise HTTPException(403, f"project {project_id!r} is outside this key's write scope")
+            raise HTTPException(404, "no such project")
     try:
         row, folded = rule_proposals.propose(db, project_id=project_id, proposer_kind=kind,
                                              proposer=who, **data)

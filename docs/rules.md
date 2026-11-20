@@ -275,3 +275,6 @@ adopting or dismissing is a person's act (`rules.person_adopts`) and no MCP tool
 - **Never an invariant** of `docs/rule-candidates.md` "The line".
 - **Folded:** the same primitive and params as an open proposal appends the citations to it and
   returns its id.
+- **Refusals name their rule:** an uncited, unresolvable, invalid or direction-less proposal is
+  refused under `rules.proposal_cited`; a loosening from an agent, turning a rule off and an
+  invariant under `rules.person_adopts`.

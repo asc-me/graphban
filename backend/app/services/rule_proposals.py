@@ -18,6 +18,7 @@ from __future__ import annotations
 import copy
 import re
 from collections.abc import Callable
+from typing import NoReturn
 
 import httpx
 from sqlalchemy import select
@@ -29,6 +30,9 @@ from app.models import Item, MemoryShard, Observation, Project, RuleProposal
 from app.services import custom_rules
 from app.services import rule_pack
 from app.services import rule_toggles as T
+
+#: The registry rule every refusal of a malformed or uncited proposal names.
+CITED_RULE = "rules.proposal_cited"
 
 KINDS = ("new_rule", "turn_on", "tighten")
 OFF_KINDS = ("turn_off", "off", "remove", "delete", "disable")
@@ -88,53 +92,54 @@ FILE_READER: FileReader = _github_file_exists
 
 # ---- citations ---------------------------------------------------------------------------
 
-def _refuse(detail: str, hint: str | None = None, rule_id: str | None = None) -> Refused:
-    return Refused(422, detail, rule_id=rule_id, hint=hint)
+def _refuse(detail: str, hint: str | None = None) -> NoReturn:
+    """A proposal that is not cited, checkable and well-formed does not exist (`CITED_RULE`)."""
+    raise Refused(422, detail, rule_id=CITED_RULE, hint=hint)
 
 
 def _resolve_citation(db: Session, project: Project, c: object) -> dict:
     if not isinstance(c, dict) or c.get("kind") not in CITATION_KINDS:
-        raise _refuse(f"a citation must be an object with kind one of {CITATION_KINDS}")
+        _refuse(f"a citation must be an object with kind one of {CITATION_KINDS}")
     kind, ref = c["kind"], c.get("ref")
     if kind == "file":
         f = ref if isinstance(ref, dict) else {}
         path, commit, lines = f.get("path"), f.get("commit"), f.get("lines")
         if not (isinstance(path, str) and path and isinstance(commit, str) and commit):
-            raise _refuse("a `file` citation's ref needs `path` and `commit` (and `lines`)")
+            _refuse("a `file` citation's ref needs `path` and `commit` (and `lines`)")
         if path.startswith("/") or ".." in path.split("/"):
-            raise _refuse(f"file citation path {path!r} must be repo-relative")
+            _refuse(f"file citation path {path!r} must be repo-relative")
         got = FILE_READER(project.repo_url or "", path, commit)
         if got is None:
-            raise _refuse(f"could not verify {path!r} at {commit[:12]}: the project's forge was "
+            _refuse(f"could not verify {path!r} at {commit[:12]}: the project's forge was "
                           "not readable", hint="set the project's repo_url and retry")
         if not got:
-            raise _refuse(f"{path!r} does not exist at {commit[:12]}")
+            _refuse(f"{path!r} does not exist at {commit[:12]}")
         return {"kind": "file", "ref": {"path": path, "commit": commit,
                                         "lines": str(lines) if lines else ""}}
     if not isinstance(ref, (str, int)) or isinstance(ref, bool) or not str(ref).strip():
-        raise _refuse(f"a `{kind}` citation needs a `ref`")
+        _refuse(f"a `{kind}` citation needs a `ref`")
     ref = str(ref).strip()
     if kind == "item":
         it = db.get(Item, ref)
         if it is None or it.project_id != project.id:
-            raise _refuse(f"cited item {ref!r} does not exist in this project")
+            _refuse(f"cited item {ref!r} does not exist in this project")
     elif kind == "observation":
         o = db.get(Observation, int(ref)) if ref.isdigit() else None
         if o is None or o.project_id != project.id:
-            raise _refuse(f"cited observation {ref!r} does not exist in this project")
+            _refuse(f"cited observation {ref!r} does not exist in this project")
     elif kind == "lesson":
         s = db.get(MemoryShard, ref)
         if s is None or s.project_id != project.id:
-            raise _refuse(f"cited lesson {ref!r} does not exist in this project")
+            _refuse(f"cited lesson {ref!r} does not exist in this project")
     else:  # url
         if not re.match(r"^https?://[^\s/]+\S*$", ref):
-            raise _refuse(f"cited url {ref!r} is not an http(s) url")
+            _refuse(f"cited url {ref!r} is not an http(s) url")
     return {"kind": kind, "ref": ref}
 
 
 def _citations(db: Session, project: Project, raw: object) -> list[dict]:
     if not isinstance(raw, list) or not raw:
-        raise _refuse("a proposal needs at least one citation",
+        _refuse("a proposal needs at least one citation",
                       hint="cite an item, observation, lesson, file at a commit, or url")
     out: list[dict] = []
     for c in raw:
@@ -179,8 +184,8 @@ def propose(db: Session, *, project_id: str, proposer_kind: str, proposer: str, 
         raise Validation(f"kind must be one of {KINDS}")
     for inv, why_inv in INVARIANTS.items():
         if target == inv or (primitive or "") == inv:
-            raise _refuse(f"{inv!r} is an invariant ({why_inv}); it is not a team setting",
-                          rule_id=T.PERSON_RULE)
+            raise Refused(422, f"{inv!r} is an invariant ({why_inv}); it is not a team "
+                          "setting", rule_id=T.PERSON_RULE)
     if params is not None and not isinstance(params, dict):
         raise Validation("`params` must be an object")
     cites = _citations(db, project, citations)
@@ -204,7 +209,7 @@ def propose(db: Session, *, project_id: str, proposer_kind: str, proposer: str, 
             raise Validation("a `new_rule` needs a `title` and a `why`")
         bad = rule_pack.validate_draft(draft)
         if bad:
-            raise _refuse(f"the draft is invalid: {bad}")
+            _refuse(f"the draft is invalid: {bad}")
         if custom_rules._row(db, rule_id, project_id) is not None:
             raise Validation(f"{rule_id} already exists in this project")
         direction = rule_pack.direction(primitive, None, params)
@@ -219,7 +224,7 @@ def propose(db: Session, *, project_id: str, proposer_kind: str, proposer: str, 
         cur_params = copy.deepcopy(cur["params"]["value"] or {})
         if kind == "turn_on":
             if cur["on"]["value"]:
-                raise _refuse(f"{rule_id!r} is already on")
+                _refuse(f"{rule_id!r} is already on")
             new_params = {**cur_params, **params}
             direction = rule_pack.direction(primitive, None, new_params)
         else:  # tighten
@@ -227,14 +232,14 @@ def propose(db: Session, *, project_id: str, proposer_kind: str, proposer: str, 
                 raise Validation("a `tighten` needs the `params` to change")
             new_params = {**cur_params, **params}
             if new_params == cur_params:
-                raise _refuse(f"{rule_id!r} already has those params")
+                _refuse(f"{rule_id!r} already has those params")
             direction = rule_pack.direction(primitive, cur_params, new_params)
             if direction == "not_proposable":
-                raise _refuse(f"{rule_id!r} has a changed param with no comparator, so its "
+                _refuse(f"{rule_id!r} has a changed param with no comparator, so its "
                               "direction cannot be computed; a person sets it")
         draft = {"params": new_params}
     if direction == "not_proposable":
-        raise _refuse(f"the change to {rule_id!r} has no computable direction")
+        _refuse(f"the change to {rule_id!r} has no computable direction")
     loosens = direction == "loosen"
     if loosens and proposer_kind == "agent":
         raise Refused(403, f"proposing {rule_id!r} would loosen it; an agent may only tighten",

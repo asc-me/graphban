@@ -213,6 +213,11 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
     Rule("rules.toggle_needs_admin", "learn", "Toggles need a project admin",
          "A project's library rule toggles are set by its owner or an admin.",
          "enforced", _src("app/services/rule_toggles.py", "Refused"), "code"),
+    Rule("rules.proposal_cited", "learn", "A rule proposal is cited and checkable",
+         "A rule proposal needs a citation that resolves (an item, observation or lesson of the "
+         "project, a file present at the cited commit, or a url), a valid draft and a "
+         "computable direction; a citation that could not be checked is a refusal.",
+         "enforced", _src("app/services/rule_proposals.py", "Refused"), "code"),
     Rule("line.one_per_project", "plan", "One maintenance line per project",
          "A project has at most one maintenance line; a second create_line is refused and "
          "names the existing line.",
