@@ -1940,6 +1940,23 @@ class RuleProposalOut(BaseModel):
     created_at: datetime
 
 
+class RuleProposalAdopt(BaseModel):
+    """Adopt one or several proposals under one reason (GRPH-1776)."""
+    model_config = {"extra": "forbid"}
+    proposal_ids: list[int]
+    reason: str
+
+
+class RuleProposalDismiss(BaseModel):
+    model_config = {"extra": "forbid"}
+    reason: str
+
+
+class RuleProposalDecisionOut(RuleProposalOut):
+    decided_by: str | None = None
+    decided_reason: str | None = None
+
+
 class CustomRuleOut(BaseModel):
     rule_id: str
     primitive: str

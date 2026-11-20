@@ -12,7 +12,7 @@ from app.config import settings
 from app.db import get_db
 from app.models import Organization, Project, User
 from app.errors import AppError, NotFound, Refused, Validation
-from app.schemas import (CustomRuleOut, CustomRuleWrite, RuleProposalOut, RuleProposalWrite, ObservationBackfillOut, ObservationsOut,
+from app.schemas import (CustomRuleOut, CustomRuleWrite, RuleProposalAdopt, RuleProposalDecisionOut, RuleProposalDismiss, RuleProposalOut, RuleProposalWrite, ObservationBackfillOut, ObservationsOut,
                          RecommendedRulesOut, RefusalCoverageOut, RuleSuggestionOut,
                          RulesFlowOut, RulesOut, RuleToggleBatchOut, RuleToggleBatchWrite,
                          RuleToggleOut, RuleTogglesOut, RuleToggleWrite, UnmappedRefusalsOut)
@@ -310,6 +310,36 @@ def create_rule_proposal(project_id: str, body: RuleProposalWrite, db: Session =
                                meta={"kind": row.kind, "direction": row.direction,
                                      "folded": folded})
     return rule_proposals.view(row, folded=folded)
+
+
+def _adoption(fn, *args):
+    try:
+        return fn(*args)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except Validation as e:
+        raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
+
+
+@router.post("/projects/{project_id}/rules/proposals/adopt",
+             response_model=list[RuleProposalDecisionOut])
+def adopt_rule_proposals(project_id: str, body: RuleProposalAdopt, db: Session = Depends(get_db),
+                         principal=Depends(get_user_or_agent_key)):
+    """A person adopts one proposal or a batch under one reason. Refused for an agent key naming
+    `rules.person_adopts`; a `loosens` proposal is refused in a batch."""
+    rows = _adoption(rule_proposals.adopt, db, principal, project_id, body.proposal_ids,
+                     body.reason)
+    return [dict(rule_proposals.view(r), decided_by=r.decided_by,
+                 decided_reason=r.decided_reason) for r in rows]
+
+
+@router.post("/projects/{project_id}/rules/proposals/{proposal_id}/dismiss",
+             response_model=RuleProposalDecisionOut)
+def dismiss_rule_proposal(project_id: str, proposal_id: int, body: RuleProposalDismiss,
+                          db: Session = Depends(get_db),
+                          principal=Depends(get_user_or_agent_key)):
+    r = _adoption(rule_proposals.dismiss, db, principal, project_id, proposal_id, body.reason)
+    return dict(rule_proposals.view(r), decided_by=r.decided_by, decided_reason=r.decided_reason)
 
 
 # Org rule toggles are served by the console (GBC-P8). `set_org_toggle` / `org_view` stay
