@@ -1045,6 +1045,17 @@ export function useSyncOrg(enabled: boolean) {
   return useQuery({ queryKey: ["sync-org"], queryFn: () => api.syncOrg(), enabled, retry: false });
 }
 
+/** Box project-sync read (`GET /api/sync/projects`). Instance-wide, like the link.
+ *  A missing `local` is "this body was not that read", not "there are no projects". */
+export function useSyncLocal() {
+  return useQuery({ queryKey: ["sync-local"], queryFn: () => api.syncCloudProjects(), retry: false });
+}
+
+/** Live flush budget. Instance-wide. An error is not a budget of zero. */
+export function useSyncBudget(enabled = true) {
+  return useQuery({ queryKey: ["sync-budget"], queryFn: () => api.syncBudget(), enabled, retry: false });
+}
+
 /** `DELETE /api/sync/link` from the Organization window. The link is instance-wide, so the
  *  gitops views drop with it rather than first-painting a pre-unlink contract. */
 export function useSyncUnlink() {

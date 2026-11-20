@@ -140,16 +140,16 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "list_projects",
-        "description": "List all projects (id, name, tag, accent, description). `tag` is the short prefix its item/request/PRD keys render with. Use an id as the `project_id` override.",
+        "description": (
+            "`accent` is the one solid colour. `accent2` (null means solid) and `pattern` fill the tile."
+        ),
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "create_project",
         "description": (
-            "Create a project when the one you need doesn't exist yet. SELF-HOST ONLY, and only "
-            "while this instance is not linked to a cloud org. `tag` is derived from the name "
-            "when omitted. A HUMAN should still confirm it's the right workspace — you can "
-            "create one, but you can't know it's the one they meant."
+            "SELF-HOST ONLY, unlinked to a cloud org. `tag` derived if omitted. "
+            "`accent2` (#rrggbb) and `pattern` fill the tile; equal to accent stores null only."
         ),
         "inputSchema": {
             "type": "object",
@@ -157,6 +157,8 @@ TOOLS: list[dict[str, Any]] = [
                 "name": {"type": "string"},
                 "tag": {"type": "string", "description": "2-4 chars, e.g. GB. Derived if omitted."},
                 "description": {"type": "string"},
+                "accent2": {"type": "string"},
+                "pattern": {"type": "string", "enum": list(projects_svc.TILE_PATTERNS)},
             },
             "required": ["name"],
         },
@@ -336,9 +338,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "publish_memory",
         "description": (
-            "SUBMIT one of your candidate shards for adjudication — an independent judge decides, "
-            "not you. Returns `{shard, verdict}`; `kept: false` is a normal outcome. Needs the project "
-            "to allow agent adjudication and a real chat model, else the shard stays a candidate."
+            "SUBMIT your own candidate shard; an independent judge decides not you. "
+            "`kept: false` is normal. Needs agent adjudication and a real chat model, else "
+            "the shard stays a candidate."
         
         ),
         "inputSchema": {
@@ -1718,6 +1720,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "properties": {"results": {"type": "array", "items": {
             "type": "object",
             "properties": {"id": _STR, "name": _STR, "tag": _STR, "accent": _STR,
+                           "accent2": _NULLABLE_STR, "pattern": _STR,
                            "description": _STR},
         }}},
     },
@@ -1752,6 +1755,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "type": "object",
         "properties": {
             "id": _STR, "name": _STR, "tag": _STR, "description": _STR,
+            "accent2": _NULLABLE_STR, "pattern": _STR,
             "usable_by_this_key": {"type": "boolean"}, "confirm": _STR,
         },
     },
@@ -3105,6 +3109,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             project = projects_svc.create_project(
                 db, name=args["name"], owner_user_id=key.user_id,
                 tag=args.get("tag"), description=args.get("description", ""),
+                accent2=args.get("accent2"),
+                pattern=args["pattern"] if "pattern" in args else "none",
             )
         except ValueError as e:
             raise errors.Validation(str(e)) from e
@@ -3116,6 +3122,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         return {
             "id": project.id, "name": project.name, "tag": project.tag,
             "description": project.description,
+            "accent2": project.accent2, "pattern": project.pattern,
             # A key PINNED to another project still can't write here — it was minted for
             # one project and creating a second doesn't widen it. Say so, or the next
             # call 403s and reads like a bug.
@@ -3128,6 +3135,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "list_projects":
         return {"results": [
             {"id": p.id, "name": p.name, "tag": p.tag, "accent": p.accent,
+             "accent2": p.accent2, "pattern": p.pattern,
              "description": p.description}
             for p in db.scalars(select(Project).order_by(Project.name)).all()
             if p.id in readable

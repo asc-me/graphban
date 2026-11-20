@@ -3107,6 +3107,173 @@ def test_a_row_whose_ci_run_is_in_progress_gets_no_reviewer_and_waits(
     assert len(ticks) > 3  # waited past empty_ticks instead of exiting
 
 
+# ---- GRPH-1770: the review gate reads the recorded PR's head, not only item.branch ----
+
+
+_PR_URL = "https://github.com/asc-me/graphban/pull/1878"
+
+
+class _CiPlanner:
+    def call(self, tool, /, **args):
+        return {}
+
+
+def _sha_from(repo: Path, branch: str, parent: str) -> str:
+    run = lambda *a: subprocess.run(
+        ["git", *a], cwd=repo, check=True, capture_output=True, text=True)
+    run("checkout", "-q", "-B", branch, parent)
+    (repo / branch.replace("/", "_")).write_text(branch + "\n")
+    run("add", "-A")
+    run("commit", "-qm", branch)
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
+                         check=True, capture_output=True, text=True).stdout.strip()
+    run("checkout", "-q", "main")
+    return sha
+
+
+def _pr_row(branch: str) -> dict:
+    return {
+        "id": "GRPH-1715",
+        "status": "review",
+        "branch": branch,
+        "pr": _PR_URL,
+        "evidence": [{"kind": "url", "url": _PR_URL,
+                      "detail": "draft PR opened by gbfleet for gb/line-12"}],
+    }
+
+
+def test_a_green_pr_head_that_descends_from_a_red_item_branch_is_reviewable(
+    tmp_path, monkeypatch,
+):
+    """GRPH-1770. item.branch is red. The recorded PR is on another branch, green, and
+    that head descends from item.branch. The review gate reads the PR head, so the row
+    is reviewable.
+
+    Sabotage: pass `row['branch']` to `ci_verdict` again and this fails — the row is
+    bounced for the red branch instead of left ready.
+    """
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import _ci_attested
+
+    repo = _git_repo(tmp_path)
+    red = _sha_from(repo, "gb/line-17", "main")
+    green = _sha_from(repo, "gb/line-12", "gb/line-17")
+    asked: list[str] = []
+
+    def verdict(_repo, branch):
+        asked.append(branch)
+        if branch == "gb/line-12":
+            return ("green", green, "")
+        if branch == "gb/line-17":
+            return ("red", red, "backend-postgres")
+        return ("unknown", "", "")
+
+    events: list[tuple] = []
+    monkeypatch.setattr(propose_mod, "view", lambda *_a, **_k: (
+        {"headRefName": "gb/line-12", "headRefOid": green}, ""))
+    monkeypatch.setattr(until, "ci_verdict", verdict)
+    monkeypatch.setattr(until.observe, "emit", lambda ev, **kw: events.append((ev, kw)))
+    row = _pr_row("gb/line-17")
+    ready, waiting, blocked = _ci_attested(
+        [row], repo, set(), planner=_CiPlanner(), agent_id="GRPH-P1")
+    assert ready == [row] and waiting == [] and blocked == []
+    assert asked == ["gb/line-12"]
+    assert not any(ev == "review_branch_mismatch" for ev, _ in events)
+
+
+def test_a_pr_head_that_does_not_descend_is_named_not_skipped(tmp_path, monkeypatch):
+    """The other half of GRPH-1770. The PR's branch is not a descendant of item.branch,
+    so the gate does not treat that green head as this item's CI. It emits one
+    `review_branch_mismatch` naming both branches and both heads, and still judges
+    item.branch.
+
+    Sabotage: drop `_note_branch_mismatch` and this fails — the row is bounced with
+    no event, which is the silent skip.
+    """
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import _ci_attested
+
+    repo = _git_repo(tmp_path)
+    red = _sha_from(repo, "gb/line-17", "main")
+    other = _sha_from(repo, "gb/line-12", "main")
+    asked: list[str] = []
+
+    def verdict(_repo, branch):
+        asked.append(branch)
+        if branch == "gb/line-12":
+            return ("green", other, "")
+        return ("red", red, "backend-postgres")
+
+    events: list[tuple] = []
+    monkeypatch.setattr(propose_mod, "view", lambda *_a, **_k: (
+        {"headRefName": "gb/line-12", "headRefOid": other}, ""))
+    monkeypatch.setattr(until, "ci_verdict", verdict)
+    monkeypatch.setattr(until, "failed_test_summary", lambda *_a: "")
+    monkeypatch.setattr(until, "transport_flake_jobs", lambda *_a: [])
+    monkeypatch.setattr(until.observe, "emit", lambda ev, **kw: events.append((ev, kw)))
+    row = _pr_row("gb/line-17")
+    ready, _waiting, blocked = _ci_attested(
+        [row], repo, set(), planner=_CiPlanner(), agent_id="GRPH-P1")
+    assert ready == [] and blocked == [row]
+    assert asked == ["gb/line-17"]
+    mismatches = [kw for ev, kw in events if ev == "review_branch_mismatch"]
+    assert len(mismatches) == 1
+    kw = mismatches[0]
+    assert kw["branch"] == "gb/line-17" and kw["pr_branch"] == "gb/line-12"
+    assert kw["commit"].startswith(red[:12]) and kw["pr_head"].startswith(other[:12])
+    assert "gb/line-17" in kw["detail"] and "gb/line-12" in kw["detail"]
+    assert red[:12] in kw["detail"] and other[:12] in kw["detail"]
+    # Once per pair of heads, not once per poll.
+    again, _, _ = _ci_attested([row], repo, {("review_branch_mismatch", "GRPH-1715",
+                                              f"gb/line-17@{red}|gb/line-12@{other}")},
+                               planner=_CiPlanner(), agent_id="GRPH-P1")
+    assert again == []
+    assert len([ev for ev, _ in events if ev == "review_branch_mismatch"]) == 1
+
+
+def test_the_reviewer_ci_check_reads_a_run_at_the_pr_head(tmp_path, monkeypatch):
+    """GRPH-1770. The reviewer's CI check (`ci_run_in_progress`) lists runs on the PR
+    branch and counts a run at the PR head, not only the commit the refusal named on
+    item.branch.
+
+    Sabotage: list `item.branch` again and this fails — the in-progress run is on the
+    PR branch, so the check answers "" and the drain does not wait.
+    """
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import ci_run_in_progress
+
+    repo = _git_repo(tmp_path)
+    red = _sha_from(repo, "gb/line-17", "main")
+    green = _sha_from(repo, "gb/line-12", "gb/line-17")
+    asked: list[str] = []
+
+    real_run = subprocess.run
+
+    def fake_run(cmd, **k):
+        # review_ci_branch resolves the PR head with git before the gh run list.
+        if not cmd or cmd[0] != "gh":
+            return real_run(cmd, **k)
+        branch = cmd[cmd.index("--branch") + 1]
+        asked.append(branch)
+        payload = []
+        if branch == "gb/line-12":
+            payload = [{"databaseId": 9, "status": "in_progress", "name": "CI",
+                        "headSha": green}]
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(propose_mod, "view", lambda *_a, **_k: (
+        {"headRefName": "gb/line-12", "headRefOid": green}, ""))
+    monkeypatch.setattr(until.subprocess, "run", fake_run)
+    row = _pr_row("gb/line-17")
+    row["evidence"] = [
+        {"kind": "note", "detail": "refused at `done` (pr_ci_not_green): cooldown over, "
+         f"no suite_green at commit {red}"},
+        row["evidence"][0],
+    ]
+    assert "9" in ci_run_in_progress(repo, row, set())
+    assert asked == ["gb/line-12"]
+
+
 def test_negative_subagents_exits_before_any_seat(monkeypatch, capsys):
     from gbfleet.cli import main
     monkeypatch.setenv("GBFLEET_API_KEY", "k")

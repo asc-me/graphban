@@ -38,12 +38,28 @@ export interface User {
   initials: string;
 }
 
+/** Tile pattern laid over a project's fill. `none` is unpatterned. */
+export type ProjectPattern =
+  | "none"
+  | "speckled"
+  | "crosshatch"
+  | "chevron"
+  | "herringbone"
+  | "stripes"
+  | "paisley"
+  | "bubbles";
+
 export interface Project {
   id: string;
   name: string;
   /** Short key prefix: item/request/PRD keys render as <TAG>-<n> / -R<n> / -P<n> (PRD-13). */
   tag: string;
+  /** The one solid colour for chips, graph nodes, borders and text. Not the tile's second colour. */
   accent: string;
+  /** Ombre's second colour. Null = solid. Only shapes the tile fill. */
+  accent2?: string | null;
+  /** Pattern over the tile fill. Only shapes the tile fill. */
+  pattern?: ProjectPattern;
   visibility: string;
   description: string;
   share_global_memory: boolean;
@@ -1448,11 +1464,47 @@ export interface SyncMappingRow {
   last_push_reason: string | null;
 }
 
+/** One local project's sync state from `GET /api/sync/projects` `local` (GRPH-1739). */
+export interface SyncBackfill {
+  total: number;
+  confirmed: number;
+  parked: number;
+  state: "running" | "done" | "parked" | "refused";
+}
+
+export interface LocalSyncProject {
+  project_id: string;
+  /** No mapping row is `local`. It is not reported as digests. */
+  sync_level: "sync" | "digests" | "local";
+  cloud_permission: "read_only" | "comments" | "proposals" | null;
+  backfill: SyncBackfill;
+  queued: number;
+  parked: { count: number; reasons: string[] };
+  backlog_bytes: number;
+  /** Why the queue is not moving. Null means it is not held. */
+  held_by: "budget" | "retry_after" | "contract" | null;
+  last_push_at: string | null;
+  /** `unknown` is a real result. It is not a success. */
+  last_push_result: "ok" | "refused" | "unknown" | null;
+}
+
+export interface SyncBudget {
+  bytes_per_min: number;
+  requests_per_min: number;
+}
+
+export interface ProjectSyncResult {
+  project: LocalSyncProject;
+  backfill: (SyncBackfill & { seeded?: number; skipped?: number; reason?: string | null; owner_label?: string | null }) | null;
+}
+
 export interface CloudProjectsResult {
   status: "ok" | "refused" | "unknown";
   projects?: CloudProject[];
   reason?: string;
   mapping: SyncMappingRow[];
+  /** Absent means this response was not the project-sync read. An empty list means none exist. */
+  local?: LocalSyncProject[];
 }
 
 export interface ProjectPushResult {

@@ -89,6 +89,7 @@ const mocks = vi.hoisted(() => ({
   syncCloudProjects: vi.fn(),
   syncSaveProjectMap: vi.fn(),
   syncPushAll: vi.fn(),
+  putProjectSync: vi.fn(),
 }));
 
 /** Only `control.state` is read by the nav entry. */
@@ -112,6 +113,7 @@ vi.mock("@/lib/api", () => ({
     syncCloudProjects: mocks.syncCloudProjects,
     syncSaveProjectMap: mocks.syncSaveProjectMap,
     syncPushAll: mocks.syncPushAll,
+    putProjectSync: mocks.putProjectSync,
     dashboard: vi.fn(async () => ({
       items_total: 0, items_by_status: {}, effort_total: 0, done_count: 0, in_progress_count: 0,
       blocked_count: 0, requests_total: 0, requests_by_type: {}, requests_by_status: {},
@@ -414,7 +416,8 @@ describe("Organization window, linked: the P67 overview (GRPH-1564, L3/L4)", () 
   it("④ nothing to push → Done shows the Linked as summary", async () => {
     const user = userEvent.setup();
     const dialog = await toStepFourFromOverview(user);
-    await user.selectOptions(await within(dialog).findByRole("combobox", { name: "Cloud project for core" }), "Local only");
+    const boxes = await within(dialog).findAllByRole("combobox");
+    for (const box of boxes) await user.selectOptions(box, "Local only");
     await user.click(within(dialog).getByRole("button", { name: "Next →" }));
     expect(await within(dialog).findByText("Nothing to push. Every project is local only.")).toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "Done" }));

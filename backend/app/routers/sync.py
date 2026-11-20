@@ -18,6 +18,7 @@ place.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -26,7 +27,9 @@ from app.config import settings
 from app.db import get_db
 from app.errors import Refused, Validation
 from app.models import ApiKey, Organization, Project, SyncLink, User
-from app.schemas import GitopsView, SyncLinkIn, SyncOrgOverviewOut, SyncStatusOut
+from app.schemas import (
+    GitopsView, ProjectSyncIn, SyncBudgetIn, SyncLinkIn, SyncOrgOverviewOut, SyncStatusOut,
+)
 from app.security import authz
 from app.security.deps import get_agent_key, get_current_user
 from app.services import code_graph
@@ -35,6 +38,8 @@ from app.services import events as events_svc
 from app.services import galaxy as galaxy_svc
 from app.services import gitops
 from app.services import link_device
+from app.services import project_sync_admin as project_admin
+from app.services import project_sync_flush as project_flush
 from app.services import sync_storage as sync_storage_svc
 
 router = APIRouter(prefix="/sync", tags=["sync"])
@@ -421,18 +426,38 @@ class ProjectMapIn(BaseModel):
     mappings: list[ProjectMapping]
 
 
-def _mapping_view(db: Session) -> list[dict]:
-    return [{"local_project_id": pid, **link_device.project_view(m)}
-            for pid, m in sorted(link_device.mappings(db).items())]
+def _mapping_view(db: Session, local: list[dict] | None = None) -> list[dict]:
+    """Stored local → cloud rows, plus the per-project sync facts from ``local``.
+
+    ``last_push_result`` is the stored word. ``unknown`` is left as ``unknown``."""
+    facts = {row["project_id"]: row for row in (local if local is not None else project_admin.local_projects(db))}
+    out = []
+    for pid, mapping in sorted(link_device.mappings(db).items()):
+        extra = facts.get(pid, {})
+        out.append({
+            "local_project_id": pid,
+            **link_device.project_view(mapping),
+            "sync_level": extra.get("sync_level"),
+            "cloud_permission": extra.get("cloud_permission"),
+            "backfill": extra.get("backfill"),
+            "queued": extra.get("queued", 0),
+            "parked": extra.get("parked", {"count": 0, "reasons": []}),
+            "backlog_bytes": extra.get("backlog_bytes", 0),
+            "held_by": extra.get("held_by"),
+        })
+    return out
 
 
 @router.get("/projects")
 def list_cloud_projects(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """The cloud projects the linked engineer can reach, read live from the console (box
     admin): `ok {projects}` (possibly empty), `refused {reason}` or `unknown {reason}`, never
-    an empty list for an unreachable console. `mapping` is the stored local → cloud map."""
+    an empty list for an unreachable console. `mapping` is the stored local → cloud map.
+    `local` is every local project: sync level, permission, backfill, queue, and hold.
+    A project with no mapping is `local`, not digests. `unknown` stays `unknown`."""
     refuse_unless_box_admin(db, user, "map projects of")
-    return {**_linked(code_sync.console_projects, db), "mapping": _mapping_view(db)}
+    local = project_admin.local_projects(db)
+    return {**_linked(code_sync.console_projects, db), "mapping": _mapping_view(db, local), "local": local}
 
 
 @router.put("/projects")
@@ -452,6 +477,65 @@ def put_project_map(body: ProjectMapIn, db: Session = Depends(get_db),
     tags = {m.cloud_project_id.strip(): m.cloud_project_tag.strip() for m in body.mappings}
     code_sync.set_project_map(db, list(pairs.items()), tags)
     return {"mapping": _mapping_view(db)}
+
+
+@router.put("/projects/{project_id}")
+def put_project_sync(project_id: str, body: ProjectSyncIn, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """Set one project's sync level, cloud permission, or create it in the org (box admin).
+
+    ``409`` ``{detail: tag_taken, owner_label}`` stores no mapping. The admin check is
+    this function's first act: an invalid level is ``422`` only after it, so a non-admin
+    is refused rather than told the body is wrong.
+    """
+    refuse_unless_box_admin(db, user, "set the sync level of")
+    try:
+        return project_admin.configure_project(
+            db, project_id, sync_level=body.sync_level,
+            cloud_permission=body.cloud_permission, create_in_org=body.create_in_org,
+            purge=body.purge, user=user, cloud_project_id=body.cloud_project_id,
+            cloud_project_tag=body.cloud_project_tag,
+        )
+    except project_admin.TagTaken as e:
+        return JSONResponse(
+            status_code=409, content={"detail": "tag_taken", "owner_label": e.owner_label},
+        )
+    except LookupError:
+        raise HTTPException(404, f"no local project {project_id!r}")
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@router.post("/projects/{project_id}/retry-parked")
+def retry_project_parked(project_id: str, db: Session = Depends(get_db),
+                         user: User = Depends(get_current_user)):
+    """Put this project's parked outbox rows back on the queue (box admin).
+
+    ``retried`` is how many were parked. Zero means the project was read and had none."""
+    refuse_unless_box_admin(db, user, "retry parked rows of")
+    if db.get(Project, project_id) is None:
+        raise HTTPException(404, f"no local project {project_id!r}")
+    return {"retried": project_flush.retry_parked(db, project_id)}
+
+
+@router.get("/budget")
+def get_sync_budget(user: User = Depends(get_current_user)):
+    """The live per-box flush budget. The env values are what the process started with;
+    a PUT replaces them until restart. Any signed-in user can read it."""
+    del user
+    return project_flush.budget_view()
+
+
+@router.put("/budget")
+def put_sync_budget(body: SyncBudgetIn, db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
+    """Replace the live flush budget (box admin). Negative is ``422``. Zero is a ceiling.
+    A non-admin is ``403`` and the running budget is unchanged."""
+    refuse_unless_box_admin(db, user, "set the sync budget of")
+    try:
+        return project_flush.set_budget(body.bytes_per_min, body.requests_per_min)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
 
 
 @router.post("/push")
