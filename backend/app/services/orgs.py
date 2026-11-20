@@ -345,7 +345,7 @@ def create_org(db: Session, user: User, name: str) -> Organization:
     # PRD-43 D8: assign random public_host.
     org.public_host = _ensure_unique_random_slug(db)
     org.public_host_custom = False
-    db.add(OrgMembership(org_id=org.id, user_id=user.id, role="owner"))
+    db.add(OrgMembership(org_id=org.id, user_id=user.id, role="owner", handle=user.handle))
     db.commit()
     db.refresh(org)
     return org
@@ -570,7 +570,7 @@ def accept_invite(db: Session, token: str, user: User) -> Organization:
         )
     )
     if existing is None:
-        db.add(OrgMembership(org_id=invite.org_id, user_id=user.id, role=invite.role))
+        db.add(OrgMembership(org_id=invite.org_id, user_id=user.id, role=invite.role, handle=user.handle))
     invite.status = "accepted"
     invite.accepted_at = utcnow()
     invite.accepted_user_id = user.id

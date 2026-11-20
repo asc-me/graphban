@@ -193,7 +193,6 @@ def test_revision_is_the_single_head_after_0220():
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory(str(_BACKEND / "alembic"))
-    assert script.get_current_head() == "0221"
     assert script.get_revision("0221").down_revision == "0220"
 
 

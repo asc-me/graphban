@@ -23,6 +23,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     event,
+    select,
     false,
     true,
 )
@@ -73,9 +74,17 @@ class User(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[str] = mapped_column(String)
-    handle: Mapped[str] = mapped_column(String, unique=True)
+    # The account handle. Not globally unique (GRPH-1787): a handle is unique per org via
+    # `OrgMembership.handle`; on a self-hosted box (no orgs) `services/handles.py` keeps it
+    # unique on the box.
+    handle: Mapped[str] = mapped_column(String)
     email: Mapped[str] = mapped_column(String, unique=True)
     avatar: Mapped[str] = mapped_column(String, default="#a78bfa")
+    # The dot reuses the project tile's shape: `avatar` is the solid colour, `avatar2` the
+    # ombre second colour (null = solid, null when equal to `avatar`), `avatar_pattern` one of
+    # `services.projects.TILE_PATTERNS`.
+    avatar2: Mapped[str | None] = mapped_column(String, nullable=True)
+    avatar_pattern: Mapped[str] = mapped_column(String, default="none", server_default="none")
     initials: Mapped[str] = mapped_column(String, default="")
     password_hash: Mapped[str] = mapped_column(String)
     # Bumped on logout / password change to revoke every outstanding token: it's
@@ -396,9 +405,37 @@ class OrgMembership(Base):
     org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     role: Mapped[str] = mapped_column(String, default="member")  # owner | admin | member
+    # The handle this user goes by inside this org (GRPH-1787); backfilled from the account
+    # handle. A `before_insert` hook fills it from the user when a caller leaves it unset.
+    handle: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
-    __table_args__ = (UniqueConstraint("org_id", "user_id", name="uq_org_membership"),)
+    __table_args__ = (
+        UniqueConstraint("org_id", "user_id", name="uq_org_membership"),
+        UniqueConstraint("org_id", "handle", name="uq_org_membership_handle"),
+    )
+
+
+@event.listens_for(OrgMembership, "before_insert")
+def _default_membership_handle(mapper, connection, target) -> None:
+    if not target.handle:
+        target.handle = connection.execute(
+            select(User.__table__.c.handle).where(User.__table__.c.id == target.user_id)
+        ).scalar_one()
+
+
+class HandleHold(Base):
+    """A released handle reserved in one org for 30 days (GRPH-1787), cloud only."""
+
+    __tablename__ = "handle_holds"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"))
+    handle: Mapped[str] = mapped_column(String)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (Index("ix_handle_holds_org_handle", "org_id", "handle"),)
 
 
 class OrgRequest(Base):
