@@ -2297,11 +2297,15 @@ def _attested_here(entry: dict, branch: str) -> bool:
     return not named or named == branch
 
 
-def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
-    """True when this item's branch or an attested commit is already in `base`.
+def _in_base_reason(details: dict, repo: Path | None, base: str) -> str:
+    """Why this item's work is already in `base`, or "" when it is not.
 
-    A git-merged item still `next` (waiting on sign-off) is not a new build. `reaches`
-    returns None when this clone cannot tell; that is not "merged".
+    Empty covers "not in the base" and "this clone cannot tell" (`reaches` is None).
+    A non-empty string names the signal that matched and what it believed, so an
+    operator can tell a correct hold from a bounced remainder (GRPH-1024) without
+    reading this function. `_already_in_base` is this answer as a bool.
+
+    A git-merged item still `next` (waiting on sign-off) is not a new build.
 
     GRPH-930: a squash merge rewrites the SHA, so `reaches` returns False for a commit
     whose work IS in the base via the squash. When the forge says the PR is MERGED, the
@@ -2329,7 +2333,7 @@ def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
        believed, because refusing it would drop the receipts written before that was recorded.
     """
     if not base or repo is None:
-        return False
+        return ""
     from .worktree import reaches as wt_reaches
 
     branch = str(details.get("branch") or "").strip()
@@ -2346,8 +2350,23 @@ def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
     # that work existed — a commit recorded for this branch, or this item's PR — is the second
     # signal, and git cannot supply it.
     if branch and wt_reaches(repo, base, branch) is True:
-        if usable or str(details.get("pr") or "").strip():
-            return True
+        commits: list[str] = []
+        for entry in usable:
+            commit = str(entry.get("commit") or "").strip()
+            if commit and commit not in commits:
+                commits.append(commit)
+        pr = str(details.get("pr") or "").strip()
+        if commits or pr:
+            believed: list[str] = []
+            if commits:
+                shown = ", ".join(commits[:3])
+                if len(commits) > 3:
+                    shown += f" (+{len(commits) - 3} more)"
+                believed.append(f"commit receipt {shown}")
+            if pr:
+                believed.append(f"pr {pr}")
+            return (f"branch {branch} reaches {base}; "
+                    f"believed {' and '.join(believed)} says work existed")
     seen: list[str] = []
     for entry in usable:
         commit = str(entry.get("commit") or "").strip()
@@ -2355,12 +2374,25 @@ def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
             continue
         seen.append(commit)
         if wt_reaches(repo, base, commit) is True:
-            return True
+            kind = str(entry.get("kind") or "receipt")
+            about = f" about {branch}" if branch else ""
+            return (f"commit {commit} reaches {base}; "
+                    f"believed a {kind} receipt{about}")
     # GRPH-930: SHA ancestry says "not in base", but a squash merge rewrites the SHA.
     # Ask the forge whether this item's PR is MERGED — that fact survives the rewrite.
     # Only a definitive MERGED counts; an open PR or an unreachable forge leaves the
-    # answer as False (the original git-only verdict), not True.
-    return deps._pr_is_merged(repo, details) is True
+    # answer empty (the original git-only verdict), not a hold.
+    merged, label = deps._pr_state(repo, details)
+    if merged is True:
+        named = label or "the item's PR"
+        return (f"{named} is MERGED; believed the forge, "
+                f"because ancestry did not find the work in {base}")
+    return ""
+
+
+def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
+    """True when `_in_base_reason` names a signal. Empty is not in the base."""
+    return bool(_in_base_reason(details, repo, base))
 
 
 def _hold(planner: Graphban, item_id: str, details: dict, absent: list[dict], base: str) -> bool:
@@ -2631,6 +2663,7 @@ def _delegate_next(
     live: list | None = None,
     owners: dict[str, object] | None = None,
     skip: set[str] | None = None,
+    in_base: dict[str, str] | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """Write the delegation for the seed of the next free cluster, before its seat is minted.
 
@@ -2666,6 +2699,11 @@ def _delegate_next(
         # mark it delegated — hiding the merged id would make a colliding sibling the seed on
         # the next tick (SA-467/470).
         #
+        # GRPH-1024: a next/backlog member that carries a bounce is the exception. Its
+        # earlier work being in the base does not mean the item is finished — the bounce
+        # is the remainder — and occupying its files is what made the queue behind it
+        # undelegable. It stays a candidate.
+        #
         # GRPH-951: ITS files, not the whole cluster. A cluster is joined by transitivity, and
         # SA-576 in review idled a wave of screens whose files it never named. A sibling whose
         # touchpoints collide with no occupier's (by the server's rule, mirrored in
@@ -2686,19 +2724,32 @@ def _delegate_next(
             status = str(got.get("status") or "")
             if status == "review":
                 occupiers[item_id] = _touchpoints_of(got)
-            elif status in ("next", "backlog") and _already_in_base(got, repo, base):
-                occupiers[item_id] = _touchpoints_of(got)
-                # GRPH-1408: merged but unsigned is unreviewed work in the base. Holding it
-                # forever left GRPH-1359 waiting on a reviewer started by hand. Moved to
-                # `review`, it is a review row, and the drain staffs a reviewer for it.
-                if _offer_merged_for_review(planner, item_id, got, base):
-                    delegated.add(item_id)
-                    continue
-                observe.emit(
-                    "delegate_held", item=item_id,
-                    detail=f"already in {base} (unsigned, git-merged); "
-                           + _holds_sentence(item_id, occupiers[item_id]),
-                )
+            elif status in ("next", "backlog"):
+                why = _in_base_reason(got, repo, base)
+                # A bounce is a request for new work. `bounce_reason` is never cleared
+                # (GRPH-378), so "bounced" is readable and "bounce already addressed" is
+                # not. Re-delegating a hand-merged bounce is the cheaper of the two errors.
+                bounced = str(got.get("bounce_reason") or "").strip()
+                if why and bounced:
+                    observe.emit(
+                        "delegate_remainder", item=item_id,
+                        detail=(f"{item_id}: bounce asks for the remainder; "
+                                f"earlier work is in {base} ({why})"),
+                    )
+                elif why:
+                    occupiers[item_id] = _touchpoints_of(got)
+                    if in_base is not None:
+                        in_base[item_id] = why
+                    # GRPH-1408: merged but unsigned is unreviewed work in the base. Holding it
+                    # forever left GRPH-1359 waiting on a reviewer started by hand. Moved to
+                    # `review`, it is a review row, and the drain staffs a reviewer for it.
+                    if _offer_merged_for_review(planner, item_id, got, base):
+                        delegated.add(item_id)
+                        continue
+                    observe.emit(
+                        "delegate_held", item=item_id,
+                        detail=f"{why}; " + _holds_sentence(item_id, occupiers[item_id]),
+                    )
         for item_id in occupiers:
             details_for.pop(item_id, None)
         for item_id in list(details_for):
