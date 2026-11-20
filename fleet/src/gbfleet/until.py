@@ -2415,7 +2415,8 @@ def _merged_pr_of(details: dict, repo: Path) -> str:
                     )
                 continue
         # About this item only. `if False` here believes every PR the branch names.
-        if False:
+        # The head equalling the branch is how the forge found the PR, not proof.
+        if carrier == "the item's branch" and not _pr_text_names_item(pr, item_id):
             if merged:
                 observe.emit(
                     "in_base_ignored", item=item_id,
