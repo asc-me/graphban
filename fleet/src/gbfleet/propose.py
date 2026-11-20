@@ -784,8 +784,11 @@ CI_PREDICATE = "suite_green"
 #: D2). Required only on a merge into the release ref, and only against the ACTUAL head.
 SCANS_PREDICATE = "scans_clean"
 #: What `gh pr view --json` is asked for. `mergeCommit` is null until the PR is merged.
-_PR_FIELDS = ("number,url,state,isDraft,mergeable,mergeStateStatus,headRefOid,headRefName,"
-              "baseRefName,isCrossRepository,mergeCommit")
+#: `title` and `body` tell a branch lookup apart from this item's PR: `gh pr view
+#: <branch>` returns whichever PR has that head, and on a shared branch that is
+#: another item's merge (GRPH-1023). The head name is the lookup, not proof.
+_PR_FIELDS = ("number,url,title,body,state,isDraft,mergeable,mergeStateStatus,"
+              "headRefOid,headRefName,baseRefName,isCrossRepository,mergeCommit")
 
 
 @dataclass(frozen=True)
