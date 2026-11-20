@@ -783,7 +783,7 @@ describe("project accents stay off the status colours (GRPH-1747)", () => {
     }
     expect(palette.has("#ff8a3d")).toBe(false);
 
-    const source = readFileSync(join(HERE, "NewProjectWizard.tsx"), "utf8");
+    const source = readFileSync(join(HERE, "projectAccents.ts"), "utf8");
     for (const name of [
       "operator orange",
       "--color-st-done",

@@ -25,6 +25,7 @@ import { InviteeLinkCard } from "@/features/onboarding/InviteeLinkCard";
 import { StartupPromptRows } from "@/features/onboarding/StartupPrompts";
 import { TagField, useTagField } from "@/features/onboarding/TagField";
 import { postureView, type PostureWarning } from "@/features/onboarding/posture";
+import { PROJECT_ACCENTS } from "@/features/onboarding/projectAccents";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import {
@@ -53,8 +54,6 @@ import {
   type QsStep,
   type StepMark,
 } from "./quickStartProgress";
-
-const ACCENTS = ["#c6f24e", "#a78bfa", "#7ca2ff", "#e0b34a", "#5fd07a", "#ff8f8f"];
 
 type Where = "this_computer" | "dedicated_server";
 type ModelChoice = "offline" | "ollama" | "claude";
@@ -927,7 +926,7 @@ function ProjectStep({
   const confirm = useConfirmSetup();
   const creating = !projectId;
   const [name, setName] = React.useState("");
-  const [accent, setAccent] = React.useState(ACCENTS[0]);
+  const [accent, setAccent] = React.useState(PROJECT_ACCENTS[0]);
   const [ticked, setTicked] = React.useState(confirmed);
   const [repo, setRepo] = React.useState(repoUrl);
   const posture = useInstancePosture();
@@ -1082,7 +1081,7 @@ function ProjectStep({
             <div>
               <p className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-faint">Accent</p>
               <div className="flex flex-wrap gap-2.5">
-                {ACCENTS.map((c) => (
+                {PROJECT_ACCENTS.map((c) => (
                   // Selection is a box-shadow, not outline. An inline outline beats
                   // the global :focus-visible rule, so keyboard focus disappears.
                   // The 4px ring sits inside a 5px focus offset. The 2px inner stop
