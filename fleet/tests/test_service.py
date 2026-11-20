@@ -336,6 +336,64 @@ def test_a_drain_between_cycles_is_idle_not_broken():
 def test_a_running_service_is_never_idle():
     live = service.Status(name="d", kind="systemd", installed=True, running=True, last_exit=0)
     assert not live.idle
+    assert "running" in live.line() and "stalled" not in live.line()
+
+
+def _running_unit(tmp_path: Path, monkeypatch, name: str):
+    unit = tmp_path / "unit.plist"
+    unit.write_bytes(b"x")
+    monkeypatch.setattr(service, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(service, "unit_path_for", lambda n, k: unit)
+    monkeypatch.setattr(service, "_running_launchd", lambda label: (True, "pid 1", 0))
+    monkeypatch.setattr(service, "linger", lambda: None)
+    return service.status(name, kind="launchd")
+
+
+def test_a_running_drain_that_logged_loop_silent_is_stalled(tmp_path: Path, monkeypatch):
+    """GRPH-1786. launchd still has a pid. The log says the loop stopped writing.
+    The line an operator reads must say stalled, and must not say running.
+
+    Sabotage: drop the `stalled` branch in `Status.line` and this still says running.
+    """
+    name = "drain-1786"
+    log = tmp_path / "logs" / f"{name}.log"
+    log.parent.mkdir()
+    log.write_text(
+        '{"event": "child", "pid": 9}\n'
+        '{"event": "loop_silent", "silent_for": 301, "polls": 300}\n',
+        encoding="utf-8",
+    )
+    state = _running_unit(tmp_path, monkeypatch, name)
+    assert state.stalled and state.running is True
+    line = state.line()
+    assert line == f"{name}: stalled (launchd, {state.unit_path})"
+    assert ": running" not in line
+
+
+def test_a_running_drain_with_a_live_log_still_says_running(tmp_path: Path, monkeypatch):
+    name = "drain-1786-live"
+    log = tmp_path / "logs" / f"{name}.log"
+    log.parent.mkdir()
+    log.write_text('{"event": "child", "pid": 9}\n', encoding="utf-8")
+    state = _running_unit(tmp_path, monkeypatch, name)
+    assert not state.stalled
+    assert "running" in state.line() and "stalled" not in state.line()
+
+
+def test_a_running_drain_with_no_log_yet_does_not_read_as_a_confirmed_log(tmp_path, monkeypatch):
+    state = _running_unit(tmp_path, monkeypatch, "drain-1786-absent")
+    assert state.log_state == "absent" and not state.stalled
+    assert "no log yet" in state.line()
+
+
+def test_a_running_drain_whose_log_cannot_be_read_says_so(tmp_path: Path, monkeypatch):
+    name = "drain-1786-unread"
+    log = tmp_path / "logs" / f"{name}.log"
+    log.parent.mkdir()
+    log.mkdir()
+    state = _running_unit(tmp_path, monkeypatch, name)
+    assert state.log_state == "unread" and not state.stalled
+    assert "log unread" in state.line()
 
 
 # --- finding a drain nobody remembered installing -----------------------------------

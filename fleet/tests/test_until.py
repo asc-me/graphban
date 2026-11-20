@@ -3495,3 +3495,204 @@ def test_porcelain_lists_a_windows_checkout_printed_with_forward_slashes():
     assert not porcelain_lists_worktree(
         listed, PureWindowsPath(r"C:\Users\runner\AppData\Local\Temp\other"),
     )
+
+
+def test_a_server_that_accepts_and_never_replies_does_not_stall_the_loop(tmp_path, git_repo):
+    """GRPH-1786. The loop's first read is fleet_status. A peer that accepts and
+    sends nothing must be logged and left behind inside the deadline.
+
+    This socket read is bounded twice: httpx's phase timeout and `_wait_bounded`.
+    Either one returns this thread inside the join, so removing only the caller
+    deadline does not hang it. The read that httpx cannot unblock, and the
+    sabotage that does hang, is the next test.
+    """
+    import io
+    import socket
+    import threading
+
+    from gbfleet import observe
+    from gbfleet.client import ServerUnreachable
+    from gbfleet.until import Limits, Wave, _loop
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)
+    stop = threading.Event()
+    held: list[socket.socket] = []
+
+    def serve():
+        while not stop.is_set():
+            try:
+                listener.settimeout(0.2)
+                conn, _ = listener.accept()
+            except OSError:
+                continue
+            held.append(conn)
+
+    threading.Thread(target=serve, daemon=True).start()
+    port = listener.getsockname()[1]
+    buf = io.StringIO()
+    observe.configure(tmp_path, stream=buf)
+    supervisor = Graphban(
+        base_url=f"http://127.0.0.1:{port}", api_key="k", deadline=0.4, timeout=30.0,
+    )
+
+    class _Down:
+        allowed = frozenset({"fleet_status", "search_items", "get_context"})
+
+        def fleet_status(self, **kw):
+            return self.call("fleet_status", **kw)
+
+        def call(self, tool, /, **kw):
+            raise ServerUnreachable(f"down during {tool}", tool=tool)
+
+        def post_attempt(self, **kw):
+            return None
+
+    moved: dict = {}
+
+    def sleep(seconds):
+        moved["slept"] = seconds
+        raise RuntimeError("moved on")
+
+    def go():
+        try:
+            _loop(
+                Wave(), [], set(), lambda: None, git_repo, tmp_path / "ws", "w", "k",
+                f"http://127.0.0.1:{port}",
+                lambda *a, **k: None, _Down(), supervisor, {"agent_id": "A-1"}, [],
+                Limits(), 1.0, sleep, False,
+                empty_ticks=1, mint_tries=1, mint_budget=1.0, minted_start=0,
+            )
+        except RuntimeError as exc:
+            moved["exc"] = str(exc)
+        except Exception as exc:  # noqa: BLE001 - the assertion is that the thread ended
+            moved["exc"] = f"{type(exc).__name__}: {exc}"
+
+    th = threading.Thread(target=go, daemon=True)
+    started = time.monotonic()
+    th.start()
+    th.join(3.0)
+    elapsed = time.monotonic() - started
+    stop.set()
+    listener.close()
+    for conn in held:
+        conn.close()
+    supervisor.close()
+    assert not th.is_alive(), "timed out: until loop still blocked on a server that never replies"
+    assert elapsed < 2.5, elapsed
+    names = [
+        json.loads(line)["event"]
+        for line in buf.getvalue().splitlines() if line.startswith("{")
+    ]
+    assert held, "the server never accepted; this did not reach a hung read"
+    assert "preferences" in names, names
+    assert any(name in names for name in ("call_timeout", "retry")), names
+    assert moved.get("exc"), moved
+
+
+def test_a_read_the_socket_timeout_cannot_unblock_still_returns_the_loop(tmp_path, git_repo):
+    """GRPH-1786. `close()` does not wake a blocked read. The caller-side deadline
+    has to return anyway, and the loop has to log that and keep going.
+
+    Sabotage: make `_wait_bounded` wait until the worker sets `done` and this
+    thread is still alive at the join bound.
+    """
+    import io
+    import threading
+
+    from gbfleet import observe
+    from gbfleet.client import ServerUnreachable
+    from gbfleet.until import Limits, Wave, _loop
+
+    class _Stuck(httpx.BaseTransport):
+        def handle_request(self, request):
+            time.sleep(30)
+            raise httpx.ReadTimeout("stuck", request=request)
+
+        def close(self):
+            pass
+
+    buf = io.StringIO()
+    observe.configure(tmp_path, stream=buf)
+    supervisor = Graphban(
+        base_url="http://127.0.0.1:9", api_key="k", deadline=0.4, timeout=30.0,
+        transport=_Stuck(),
+    )
+
+    class _Down:
+        allowed = frozenset({"fleet_status", "search_items"})
+
+        def call(self, tool, /, **kw):
+            raise ServerUnreachable(f"down during {tool}", tool=tool)
+
+        def post_attempt(self, **kw):
+            return None
+
+        def fleet_status(self, **kw):
+            return self.call("fleet_status", **kw)
+
+    moved: dict = {}
+
+    def sleep(seconds):
+        moved["slept"] = seconds
+        raise RuntimeError("moved on")
+
+    def go():
+        try:
+            _loop(
+                Wave(), [], set(), lambda: None, git_repo, tmp_path / "ws", "w", "k",
+                "http://127.0.0.1:9",
+                lambda *a, **k: None, _Down(), supervisor, {"agent_id": "A-1"}, [],
+                Limits(), 1.0, sleep, False,
+                empty_ticks=1, mint_tries=1, mint_budget=1.0, minted_start=0,
+            )
+        except RuntimeError as exc:
+            moved["exc"] = str(exc)
+        except Exception as exc:  # noqa: BLE001
+            moved["exc"] = f"{type(exc).__name__}: {exc}"
+
+    th = threading.Thread(target=go, daemon=True)
+    started = time.monotonic()
+    th.start()
+    th.join(3.0)
+    elapsed = time.monotonic() - started
+    supervisor.close()
+    assert not th.is_alive(), "timed out: until loop still waiting on a read that never returns"
+    assert elapsed < 2.5, elapsed
+    names = [
+        json.loads(line)["event"]
+        for line in buf.getvalue().splitlines() if line.startswith("{")
+    ]
+    assert "call_timeout" in names, names
+    assert "preferences" in names, names
+    assert moved.get("exc"), moved
+
+
+def test_a_fetch_that_does_not_return_is_logged_and_not_success(tmp_path, monkeypatch):
+    """GRPH-1786. `refresh_ref` is the until loop's fetch of the base. No timeout used
+    to be a waitpid with no log line.
+
+    Sabotage: drop `timeout=` from `_bounded_git` and this raises AssertionError.
+    """
+    import io
+    import subprocess
+
+    from gbfleet import observe
+    from gbfleet import worktree as wt
+
+    buf = io.StringIO()
+    observe.configure(tmp_path, stream=buf)
+
+    def boom(args, **k):
+        if "timeout" not in k:
+            raise AssertionError("git fetch has no timeout")
+        raise subprocess.TimeoutExpired(args, k["timeout"])
+
+    monkeypatch.setattr(wt.subprocess, "run", boom)
+    assert wt.refresh_ref(tmp_path, "origin", "origin/main") is False
+    names = [
+        json.loads(line)["event"]
+        for line in buf.getvalue().splitlines() if line.startswith("{")
+    ]
+    assert "git_timeout" in names, names

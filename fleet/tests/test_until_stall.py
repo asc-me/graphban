@@ -194,6 +194,42 @@ def test_a_server_that_never_finishes_the_reply_fails_within_the_deadline():
     assert exc.value.tool == "fleet_status"
 
 
+def test_silence_is_logged_with_a_live_child_and_does_not_reset_the_clock(log):
+    """GRPH-1786. The stall watchdog stays quiet while a child is live. The silence
+    watchdog must not: the hung drain still had a child pushing. Its own event must
+    not count as the loop having written, or the next check reads a fresh clock.
+    """
+    clock = _Clock()
+    observe.touch_loop(clock())
+    watch = watchdog_mod.SilenceWatch(polls=4, poll=1.0, clock=clock)
+    clock.now += 3
+    assert watch.check() is False
+    clock.now += 2
+    assert watch.check() is True
+    last = observe.loop_last_write()
+    silent = [e for e in _events(log) if e["event"] == "loop_silent"]
+    assert silent and silent[0]["silent_for"] >= 4
+    assert observe.loop_last_write() == last
+    assert watch.check() is True
+    assert [e["event"] for e in _events(log)].count("loop_silent") == 1
+
+
+def test_the_silence_thread_emits_while_the_loop_is_not_calling_it(log):
+    """The watchdog cannot be a check the blocked loop is expected to reach."""
+    observe.touch_loop()
+    watch = watchdog_mod.SilenceWatch(polls=1, poll=0.1)
+    watch.start()
+    try:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if any(e["event"] == "loop_silent" for e in _events(log)):
+                return
+            time.sleep(0.05)
+        raise AssertionError("silence thread never logged")
+    finally:
+        watch.stop()
+
+
 def test_a_normal_reply_still_decodes():
     def handler(request):
         body = json.loads(request.content)

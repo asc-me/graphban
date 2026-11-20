@@ -51,6 +51,38 @@ def _run_bounded(url, deadline, limit):
     return out
 
 
+def test_post_attempt_against_a_silent_server_returns_within_its_bound():
+    """GRPH-1786. REST used to call `.post` on the loop's thread. A peer that accepts
+    and never answers must come back as None inside the attempt bound, not block it.
+
+    Sabotage: send `_post` back to `client.post` with no caller-side deadline and
+    this thread is still alive at the join bound.
+    """
+    srv, _ = _server(lambda c: time.sleep(30))
+    out: dict = {}
+
+    def go():
+        started = time.monotonic()
+        client = Graphban(
+            base_url=f"http://127.0.0.1:{srv.getsockname()[1]}", api_key="k",
+        )
+        try:
+            out["got"] = client.post_attempt(enrolment_code="ENR-1")
+        finally:
+            out["elapsed"] = time.monotonic() - started
+            client.close()
+
+    th = threading.Thread(target=go, daemon=True)
+    th.start()
+    try:
+        th.join(5)
+        assert not th.is_alive(), "timed out: post_attempt still blocked on a silent server"
+        assert out["got"] is None
+        assert out["elapsed"] < 4, out["elapsed"]
+    finally:
+        srv.close()
+
+
 def test_silent_server_times_out_within_deadline():
     srv, _ = _server(lambda c: time.sleep(60))
     try:

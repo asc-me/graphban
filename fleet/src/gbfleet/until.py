@@ -328,6 +328,10 @@ def run(
     # watchdog turns a silent stall into a logged one and a non-zero exit (KeepAlive restarts).
     watchdog_mod.install_stack_dump()
     watchdog_mod.current = watchdog_mod.Watchdog(stall_after, clock)
+    # GRPH-1786. This thread keeps running when the loop is blocked inside a call, and it
+    # still fires when a child is live. `poll` is the interval the loop actually sleeps.
+    silence = watchdog_mod.SilenceWatch(poll=poll)
+    silence.start()
 
     try:
         if budget:
@@ -519,6 +523,8 @@ def run(
         wave.reason = "stall"
         return Report(ok=False, reason="stall", exit=1, detail=str(exc), wave=wave,
                       minted=minted, spawned=len(wave.spawned))
+    finally:
+        silence.stop()
 
 
 def _drain_live(wave, children, persist, planner, supervisor, limits, poll, sleep, debug,
@@ -1153,6 +1159,9 @@ def _loop(
                          detail=f"{prev} exhausted; continuing on {chosen[0]}")
 
     while True:
+        # GRPH-1786. A pass that is still running is not a silence, even when it has
+        # nothing new to log. A pass blocked inside the next call never reaches here.
+        observe.touch_loop()
         # GRPH-1056. This loop IS the supervisor working. An `mcp` that merely stays
         # up does not touch, and past the idle threshold the next `hold` stops it.
         # Touching here is what keeps a long drain from being read as that.
