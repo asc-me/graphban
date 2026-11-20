@@ -97,3 +97,49 @@ def test_dismiss_needs_reason(client, env):
     pid = _agent_prop(env, client)
     r = client.post(f"{_base(env)}/{pid}/dismiss", headers=env["h"], json={"reason": " "})
     assert r.status_code in (403, 422)
+
+
+def test_library_turn_on_adoption_refused_not_enforcing(client, env, monkeypatch):
+    """D5: a library rule cannot start observing before S5, so adopting its `turn_on` is
+    refused rather than switching it on enforcing."""
+    from app.services import rule_toggles as T
+    from app.services.rule_toggles import LibraryRule
+    rule = LibraryRule(id=T.EXCLUSIVE_AREAS_RULE, stage="build", title="Areas", summary="s",
+                       enforcement="advisory", enforcer=None, default_on=False,
+                       default_params={"paths": []})
+    monkeypatch.setattr(T, "LIBRARY", {rule.id: rule})
+    r = client.post(_base(env), headers=env["h"], json={
+        "kind": "turn_on", "rule_id": rule.id, "params": {"paths": ["db"]},
+        "citations": env["cites"]})
+    assert r.status_code == 201, r.text
+    prop = r.json()["id"]
+    a = client.post(_base(env) + "/adopt", headers=env["h"],
+                    json={"proposal_ids": [prop], "reason": "turn it on"})
+    assert a.status_code == 422 and "GRPH-1777" in a.text and rule.id in a.text, a.text
+    from app.db import SessionLocal
+    db = SessionLocal()
+    try:
+        assert T.resolve(db, rule.id, env["pid"])["on"]["value"] is False
+    finally:
+        db.close()
+    assert client.get(_base(env) + "?status=open", headers=env["h"]).json()[0]["id"] == prop
+    assert not _events(env["pid"], "adopt_rule_proposal")
+
+
+def test_tighten_adoption_records_real_state(client, env):
+    h = env["h"]
+    ok = client.post(f"/api/projects/{env['pid']}/rules/custom", headers=h, json={
+        "slug": "live", "primitive": "exclusive_areas", "title": "L", "why": "w",
+        "params": {"paths": ["a"]}, "reason": "r"})
+    assert ok.status_code == 201, ok.text
+    t = _call(client, env["key"], "propose_rule", {
+        "kind": "tighten", "draft": {"rule_id": "custom.live", "params": {"paths": ["a", "b"]}},
+        "citations": env["cites"]})
+    assert not t.get("isError"), t
+    r = client.post(_base(env) + "/adopt", headers=h,
+                    json={"proposal_ids": [t["structuredContent"]["id"]], "reason": "more"})
+    assert r.status_code == 200, r.text
+    rules = client.get(f"/api/projects/{env['pid']}/rules/custom", headers=h).json()
+    live = next(x for x in rules if x["rule_id"] == "custom.live")
+    meta = _events(env["pid"], "adopt_rule_proposal")[0]
+    assert meta["state"] == live["state"] == "active"

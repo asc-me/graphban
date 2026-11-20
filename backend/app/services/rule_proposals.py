@@ -336,18 +336,26 @@ def _apply_adoption(db: Session, user, p: RuleProposal, reason: str, batch: bool
                           params=copy.deepcopy(p.params or {}), title=d["title"],
                           why=d["summary"], claims=d["claims"], state="observing",
                           author_id=user.id, reason=reason))
+        state = "observing"
     elif custom_rules.is_custom(p.rule_id):
         row = custom_rules.get(db, p.rule_id, pid)
         row.params = copy.deepcopy(p.params or {})
         if p.kind == "turn_on":
             row.state = "observing"
+        state = row.state
     else:
-        changes: dict = {"params": copy.deepcopy(p.params or {})}
         if p.kind == "turn_on":
-            changes["on"] = True
+            # D5: an adopted rule starts observing. A library rule has no observing state yet
+            # (it arrives with S5, GRPH-1777), and switching it on here would enforce at once.
+            raise Validation(
+                f"proposal {p.id} turns on library rule {p.rule_id!r}, which would enforce at "
+                "once: a library rule cannot start observing until S5 (GRPH-1777)",
+                hint="dismiss it, or switch the rule on from the Rules page")
+        changes: dict = {"params": copy.deepcopy(p.params or {})}
         row, before, old = T._stage_project_toggle(db, pid, p.rule_id, changes, user)
         db.flush()
         T._record_project_toggle(db, pid, p.rule_id, row, before, old, user, reason)
+        state = "on" if T.resolve(db, p.rule_id, pid)["on"]["value"] else "off"
     p.status = "adopted"
     p.decided_by = user.handle or user.name
     p.decided_reason = reason
@@ -355,7 +363,7 @@ def _apply_adoption(db: Session, user, p: RuleProposal, reason: str, batch: bool
     events_svc.record_user(
         db, user, action="adopt_rule_proposal", target_type="rule", target_id=p.rule_id,
         project_id=pid,
-        meta={"proposal_id": p.id, "kind": p.kind, "state": "observing", "reason": reason,
+        meta={"proposal_id": p.id, "kind": p.kind, "state": state, "reason": reason,
               "batch": batch, "history": f"{_history(p)}, adopted by {p.decided_by}",
               "proposer": p.proposer, "proposer_kind": p.proposer_kind,
               "citations": p.citations, "adopted_by": p.decided_by})
