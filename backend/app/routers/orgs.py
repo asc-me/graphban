@@ -12,6 +12,7 @@ token: preview is intentionally unauthenticated (so the accept page can render "
 email matches the invitation.
 """
 from fastapi import APIRouter, Body, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -61,6 +62,7 @@ from app.services import galaxy as galaxy_svc
 from app.services import gitops
 from app.services import orgs as orgs_svc
 from app.services import platform as platform_svc
+from app.services import sync_storage as sync_storage_svc
 from app.services import quotas
 from app.services import teams as teams_svc
 
@@ -186,6 +188,46 @@ def patch_org_gitops(org_id: str, body: GitopsPatch, db: Session = Depends(get_d
     )
     view = gitops.resolve_org(db, org_id)
     return gitops.fill_writable(view, db, user.id)
+
+
+class DestinationIn(BaseModel):
+    """Both fields optional on the wire so a patch can set one. Empty is unconfigured."""
+    url: str | None = None
+    branch: str | None = None
+
+
+@router.get("/orgs/{org_id}/destination")
+def get_org_destination(org_id: str, db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    """The URL and branch an org admin saved (GRPH-1761). Any seat can read, including a
+    role this server does not rank (a seat named viewer). The console stores the pair; it
+    does not reach into a box."""
+    authz.require_org_member(db, user.id, org_id)
+    org = db.get(Organization, org_id)
+    if org is None:
+        raise HTTPException(404, "organization not found")
+    return sync_storage_svc.org_destination(db, org)
+
+
+@router.patch("/orgs/{org_id}/destination")
+def patch_org_destination(org_id: str, body: DestinationIn, db: Session = Depends(get_db),
+                          user: User = Depends(get_current_user)):
+    """Owner or admin only. A member, and a role named viewer, are refused and the stored
+    pair is left as it was."""
+    authz.require_org_admin(db, user.id, org_id)
+    org = db.get(Organization, org_id)
+    if org is None:
+        raise HTTPException(404, "organization not found")
+    try:
+        out = sync_storage_svc.save_org(
+            db, org, url=body.url if "url" in body.model_fields_set else None,
+            branch=body.branch if "branch" in body.model_fields_set else None)
+    except Validation as e:
+        raise HTTPException(422, str(e)) from e
+    events_svc.record_user(
+        db, user, action="update_destination", target_type="org", target_id=org_id,
+        meta={"url": out["url"], "branch": out["branch"], "state": out["state"]})
+    return out
 
 
 @router.get("/orgs/{org_id}/overview")
