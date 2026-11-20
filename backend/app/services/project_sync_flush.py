@@ -49,6 +49,21 @@ class FlushState:
 
 _PROCESS = FlushState()
 
+#: Admin override of the per-box budget (GRPH-1739). ``None`` means the env default.
+#: Process-local, same as ``_PROCESS``: the flush loop and ``GET /api/sync/budget``
+#: share this process.
+_BUDGET: dict[str, int | None] = {"bytes": None, "requests": None}
+
+
+def reset_runtime() -> None:
+    """Drop the process budget override and the hold. Tests call this so one
+    case cannot leave the next one looking held or over a budget nobody set."""
+    _BUDGET["bytes"] = None
+    _BUDGET["requests"] = None
+    _PROCESS.not_before = None
+    _PROCESS.failures = 0
+    _PROCESS.sent.clear()
+
 
 def _aware(now: datetime) -> datetime:
     if now.tzinfo is None:
@@ -57,11 +72,55 @@ def _aware(now: datetime) -> datetime:
 
 
 def _byte_limit() -> int:
-    return max(0, int(settings.sync_flush_bytes_per_min))
+    raw = _BUDGET["bytes"]
+    if raw is None:
+        raw = settings.sync_flush_bytes_per_min
+    return max(0, int(raw))
 
 
 def _request_limit() -> int:
-    return max(0, int(settings.sync_flush_requests_per_min))
+    raw = _BUDGET["requests"]
+    if raw is None:
+        raw = settings.sync_flush_requests_per_min
+    return max(0, int(raw))
+
+
+def budget_view() -> dict:
+    """The live per-box budget. An override wins over the env default."""
+    return {"bytes_per_min": _byte_limit(), "requests_per_min": _request_limit()}
+
+
+def set_budget(bytes_per_min: int, requests_per_min: int) -> dict:
+    """Replace the live budget. Negative is refused. The env default is what
+    ``reset_runtime`` returns to, not what a zero means — zero is a real ceiling."""
+    if bytes_per_min < 0 or requests_per_min < 0:
+        raise ValueError("budget limits cannot be negative")
+    _BUDGET["bytes"] = int(bytes_per_min)
+    _BUDGET["requests"] = int(requests_per_min)
+    return budget_view()
+
+
+def box_hold(now: datetime) -> str | None:
+    """Why the box is not sending, or ``None`` when it is free to send.
+
+    ``retry_after`` is a wait still in the future (a 429, a timeout, a 5xx).
+    ``budget`` is this minute's ceiling already spent, or a ceiling of zero.
+    A contract park is per project and is not decided here.
+    """
+    now = _aware(now)
+    state = _PROCESS
+    if state.not_before is not None and now < _aware(state.not_before):
+        return "retry_after"
+    used_bytes = _bytes_used(state, now)
+    used_requests = _requests_used(state, now)
+    byte_limit = _byte_limit()
+    request_limit = _request_limit()
+    spent = used_requests >= request_limit or used_bytes >= byte_limit
+    if not spent:
+        return None
+    if used_bytes or used_requests or byte_limit == 0 or request_limit == 0:
+        return "budget"
+    return None
 
 
 def _prune(state: FlushState, now: datetime) -> None:

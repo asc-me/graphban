@@ -1168,6 +1168,25 @@ class SyncProjectState(BaseModel):
     last_push_reason: str | None = None
 
 
+class ProjectSyncIn(BaseModel):
+    """PUT /api/sync/projects/{id} (GRPH-1739). Omitted fields are left alone.
+    ``create_in_org`` registers the local tag when the project has no cloud id."""
+    sync_level: str | None = None  # sync | digests | local
+    cloud_permission: str | None = None  # read_only | comments | proposals
+    create_in_org: bool = False
+    purge: bool = True
+    #: Point this one project at an existing cloud project (sync or digests). It touches
+    #: no other project's mapping, unlike ``PUT /api/sync/projects``.
+    cloud_project_id: str | None = None
+    cloud_project_tag: str = ""
+
+
+class SyncBudgetIn(BaseModel):
+    """PUT /api/sync/budget. Both limits, in the same units the flusher counts."""
+    bytes_per_min: int
+    requests_per_min: int
+
+
 class SyncPendingSignIn(BaseModel):
     """A device-code sign-in in flight, as the link wizard resumes it (GRPH-1575)."""
     console_url: str

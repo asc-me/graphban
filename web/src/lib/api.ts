@@ -128,6 +128,8 @@ import type {
   LinkPollResult,
   LinkStartResult,
   ProjectPushResult,
+  ProjectSyncResult,
+  SyncBudget,
   SyncBundle,
   SyncOrgOverview,
   SyncStatus,
@@ -1499,6 +1501,26 @@ export const api = {
     request<LinkStartResult>("/sync/link/start", { method: "POST", body: JSON.stringify({ console_url }) }),
   syncLinkPoll: () => request<LinkPollResult>("/sync/link/poll"),
   syncCloudProjects: () => request<CloudProjectsResult>("/sync/projects"),
+  putProjectSync: (
+    id: string,
+    body: {
+      sync_level?: string;
+      cloud_permission?: string;
+      create_in_org?: boolean;
+      purge?: boolean;
+      cloud_project_id?: string;
+      cloud_project_tag?: string;
+    },
+  ) => request<ProjectSyncResult>(`/sync/projects/${encodeURIComponent(id)}`, {
+    method: "PUT", body: JSON.stringify(body),
+  }),
+  retryParked: (id: string) =>
+    request<{ retried: number }>(`/sync/projects/${encodeURIComponent(id)}/retry-parked`, {
+      method: "POST", body: "{}",
+    }),
+  syncBudget: () => request<SyncBudget>("/sync/budget"),
+  putSyncBudget: (body: SyncBudget) =>
+    request<SyncBudget>("/sync/budget", { method: "PUT", body: JSON.stringify(body) }),
   syncSaveProjectMap: (
     mappings: { local_project_id: string; cloud_project_id: string; cloud_project_tag?: string }[],
   ) =>

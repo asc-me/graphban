@@ -152,3 +152,44 @@ reports the stored outcome and does not apply again. Outcomes go to
 `POST /api/sync/proposals/outcomes`. A failed post stays queued (`reported`
 false) and is retried; the apply is not repeated. The actor on the item
 history is `cloud:<proposer.label>`, and the history records the proposal id.
+
+## Box admin (GRPH-1739)
+
+These routes are on the box. They are not the console's `POST /api/sync/projects`.
+A box admin is required for every write. A non-admin is `403` with
+`sync.link_needs_box_admin`, and the stored row is unchanged.
+
+`GET /api/sync/projects` adds `local`: one object per local project. A project
+with no `sync_project` row is `sync_level: local`. It is not reported as
+digests, and it is not reported as synced. Each object carries `cloud_permission`,
+`backfill` (`total`, `confirmed`, `parked`, `state`), `queued`, `parked`
+(`count`, `reasons`), `backlog_bytes`, `held_by` (`budget`, `retry_after`,
+`contract`, or null), `last_push_at`, and `last_push_result`. `unknown` is
+returned as `unknown`. The same facts are copied onto each `mapping` row.
+`held_by: retry_after` means this project still has an unparked row and the
+box is inside a console `Retry-After` (a 429, a timeout, or a 5xx). A 429
+records `last_push_result: unknown` and does not park the row.
+
+`PUT /api/sync/projects/{id}` body is `{sync_level?, cloud_permission?,
+create_in_org?, purge?, cloud_project_id?, cloud_project_tag?}`. `sync_level` is
+`sync`, `digests`, or `local`. `create_in_org` with no stored cloud id calls the
+console register. A `409` answers `{detail: tag_taken, owner_label}` and stores
+no mapping. A project that is already mapped keeps its mapping: create-in-org
+syncs to the cloud project it has, and a refusal changes nothing. `purge`
+defaults to true when leaving `sync`.
+
+`cloud_project_id` (with `sync_level` `sync` or `digests`, never with
+`create_in_org`) maps this one project to an existing cloud project. No other
+project's mapping changes, unlike `PUT /api/sync/projects`. A local-only project
+needs it, or `create_in_org`, to leave local only: `digests` never creates a cloud
+project. Re-pointing a project that syncs, or that still owes a purge, is `422`
+— set it to local only first. The wizard's ③ and Settings → Sync both save one
+project at a time this way.
+
+`POST /api/sync/projects/{id}/retry-parked` clears this project's parked rows
+and returns `{retried}`. Zero means the project was read and nothing was parked.
+
+`GET /api/sync/budget` is any signed-in user: `{bytes_per_min, requests_per_min}`.
+The env defaults (256 KiB/min and 30 requests/min) are what the process starts
+with. `PUT /api/sync/budget` replaces them for this process. Zero is a ceiling.
+Negative is `422`. A restart returns to the env.

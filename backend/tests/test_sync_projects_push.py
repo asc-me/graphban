@@ -245,11 +245,16 @@ def test_fetch_org_overview_separates_refused_from_unknown(monkeypatch):
 
 def test_sabotage_guard_projects_error_is_not_an_empty_ok(client, auth, fake, linked):
     fake.projects = (200, {"projects": []})
-    assert client.get("/api/sync/projects", headers=auth).json() == {
-        "status": "ok", "projects": [], "mapping": client.get(
-            "/api/sync/projects", headers=auth).json()["mapping"]}
+    body = client.get("/api/sync/projects", headers=auth).json()
+    # An empty cloud list is a real answer. `local` is the box's own projects and
+    # is present on that answer too — an empty `local` would mean there are none.
+    assert body["status"] == "ok" and body["projects"] == []
+    assert body["mapping"] == client.get("/api/sync/projects", headers=auth).json()["mapping"]
+    assert body["local"] and {row["project_id"] for row in body["local"]} >= {"core", "side"}
+    assert set(body) == {"status", "projects", "mapping", "local"}
     fake.projects = httpx.ConnectError("down")
-    assert client.get("/api/sync/projects", headers=auth).json()["status"] == "unknown"
+    down = client.get("/api/sync/projects", headers=auth).json()
+    assert down["status"] == "unknown" and "projects" not in down and down["local"]
 
 
 def test_unchanged_push_still_contacts_the_console_and_sees_a_refusal(client, auth, fake, linked):

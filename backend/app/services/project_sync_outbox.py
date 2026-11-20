@@ -230,3 +230,30 @@ def _row_bytes(row: SyncOutbox) -> int:
 def backlog_bytes(db: Session) -> int:
     """Bytes the stored rows estimate to. Zero means the table was counted and is empty."""
     return sum(_row_bytes(row) for row in db.scalars(select(SyncOutbox)).all())
+
+
+def project_queue(db: Session, project_id: str) -> dict:
+    """Queued count, parked count and reasons, and backlog bytes for one project.
+
+    An empty ``project_id`` matches nothing and returns zeros — the table was not
+    scanned. Zeros on a real id mean that project was read and has no rows.
+    """
+    if not project_id:
+        return {"queued": 0, "parked": 0, "reasons": [], "backlog_bytes": 0}
+    rows = list(db.scalars(
+        select(SyncOutbox).where(SyncOutbox.project_id == project_id)
+    ).all())
+    queued = parked = 0
+    reasons: list[str] = []
+    total = 0
+    for row in rows:
+        total += _row_bytes(row)
+        reason = (row.parked_reason or "").strip()
+        if reason:
+            parked += 1
+            if reason not in reasons:
+                reasons.append(reason)
+        else:
+            queued += 1
+    reasons.sort()
+    return {"queued": queued, "parked": parked, "reasons": reasons, "backlog_bytes": total}
