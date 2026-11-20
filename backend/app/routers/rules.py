@@ -12,7 +12,7 @@ from app.config import settings
 from app.db import get_db
 from app.models import Organization, Project, User
 from app.errors import NotFound, Refused, Validation
-from app.schemas import (CustomRuleOut, CustomRuleWrite, ObservationBackfillOut, ObservationsOut,
+from app.schemas import (CustomRuleOut, CustomRuleWrite, RuleProposalOut, RuleProposalWrite, ObservationBackfillOut, ObservationsOut,
                          RecommendedRulesOut, RefusalCoverageOut, RuleSuggestionOut,
                          RulesFlowOut, RulesOut, RuleToggleBatchOut, RuleToggleBatchWrite,
                          RuleToggleOut, RuleTogglesOut, RuleToggleWrite, UnmappedRefusalsOut)
@@ -26,6 +26,7 @@ from app.services import gitops as gitops_svc
 from app.services import observations as observations_svc
 from app.services import quotas
 from app.services import rule_pack
+from app.services import rule_proposals
 from app.services import rules as rules_svc
 from app.services import rule_measure
 from app.services import rules_org
@@ -269,6 +270,44 @@ def create_custom_rule(project_id: str, body: CustomRuleWrite, db: Session = Dep
     except Validation as e:
         raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
     return custom_rules.view(db, row)
+
+
+# ---- rule proposals (GRPH-1775 / P91 D2) -------------------------------------------------
+@router.get("/projects/{project_id}/rules/proposals", response_model=list[RuleProposalOut])
+def list_rule_proposals(project_id: str, status: str | None = None,
+                        db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    authz.require_readable(db, user.id, project_id)
+    return rule_proposals.list_for_project(db, project_id, status)
+
+
+@router.post("/projects/{project_id}/rules/proposals", response_model=RuleProposalOut,
+             status_code=201)
+def create_rule_proposal(project_id: str, body: RuleProposalWrite, db: Session = Depends(get_db),
+                         principal=Depends(get_user_or_agent_key)):
+    """A person or the import CLI proposes a rule change. Direction is computed by the server; a
+    person or an import run may propose a loosening (flagged `loosens`), an agent key may not."""
+    data = body.model_dump(exclude={"import_run"})
+    if isinstance(principal, User):
+        authz.require_writable(db, principal.id, project_id)
+        kind, who = ("import", f"import:{body.import_run}") if body.import_run else (
+            "person", principal.handle or principal.name)
+    else:
+        # An API key is an agent however it labels itself: `import_run` is a person's claim.
+        kind, who = "agent", f"agent:{getattr(principal, 'name', None) or getattr(principal, 'id', '')}"
+        allowed = authz.key_writable_ids(db, principal)
+        if project_id not in allowed:
+            raise HTTPException(403, f"project {project_id!r} is outside this key's write scope")
+    try:
+        row, folded = rule_proposals.propose(db, project_id=project_id, proposer_kind=kind,
+                                             proposer=who, **data)
+    except Validation as e:
+        raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
+    if isinstance(principal, User):
+        events_svc.record_user(db, principal, action="propose_rule", target_type="rule",
+                               target_id=row.rule_id, project_id=project_id,
+                               meta={"kind": row.kind, "direction": row.direction,
+                                     "folded": folded})
+    return rule_proposals.view(row, folded=folded)
 
 
 # Org rule toggles are served by the console (GBC-P8). `set_org_toggle` / `org_view` stay

@@ -196,4 +196,7 @@ def test_the_saving_is_real_and_measured(client, auth, proj):
     class Planner(Key):
         roles = ["planner"]
     planner = json.dumps({"tools": _visible_tools(Planner())})
-    assert len(planner) < len(full) * 0.92, "a planner key should still save >8%"
+    # GRPH-1775 (P91 S3): `propose_rule` is open to every role (any agent may suggest; the server
+    # refuses a loosening), so the planner pays for it too. Measured on this tree: planner 7.97%.
+    # The floor moves 8% -> 7.5% for that one tool and no further; the next tool must be gated.
+    assert len(planner) < len(full) * 0.925, "a planner key should still save >7.5%"
