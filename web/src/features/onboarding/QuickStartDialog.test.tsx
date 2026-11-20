@@ -628,6 +628,69 @@ describe("deriveMarks", () => {
 });
 
 
+describe("accent swatches leave the focus ring alone (GRPH-1767)", () => {
+  const QUICK_RING = "0 0 0 2px var(--color-surface-2), 0 0 0 4px var(--color-fg)";
+  const FIRST_RING = "0 0 0 2px var(--color-surface-3), 0 0 0 4px var(--color-fg)";
+
+  function expectSelectedRing(el: HTMLElement, shadow: string) {
+    // An inline outline beats the global :focus-visible rule. The selected swatch must not set one.
+    expect(el.style.outline).toBe("");
+    expect(el).toHaveStyle({ boxShadow: shadow, outlineOffset: "5px" });
+    // The focus ring starts outside the 4px selection ring, so the two do not overlap.
+    expect(Number.parseFloat(el.style.outlineOffset)).toBeGreaterThan(4);
+  }
+
+  it("quick start: a focused swatch, selected or not, has no inline outline", async () => {
+    const user = userEvent.setup();
+    renderFrame();
+    await enter(user, "project");
+    expect(await screen.findByRole("heading", { name: "Create your project" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Advanced" }));
+    const selected = screen.getByRole("button", { name: "accent #c6f24e" });
+    const other = screen.getByRole("button", { name: "accent #a78bfa" });
+    expectSelectedRing(selected, QUICK_RING);
+    expect(other.style.outline).toBe("");
+    expect(other.style.boxShadow).toBe("");
+    expect(other).toHaveStyle({ outlineOffset: "5px" });
+
+    selected.focus();
+    expect(selected).toHaveFocus();
+    expect(selected.style.outline).toBe("");
+    await user.click(other);
+    expect(other).toHaveAttribute("aria-pressed", "true");
+    expectSelectedRing(other, QUICK_RING);
+    expect(selected).toHaveAttribute("aria-pressed", "false");
+    expect(selected.style.outline).toBe("");
+    expect(selected.style.boxShadow).toBe("");
+  });
+
+  it("first project: a focused swatch, selected or not, has no inline outline", async () => {
+    const user = userEvent.setup();
+    // Finished onboarding and no project is the only path that still mounts CreateFirstProject.
+    srv.onboarding = { quickstart_finished_at: "2026-11-01T00:00:00Z" };
+    srv.projects = [];
+    renderFrame();
+    expect(await screen.findByRole("heading", { name: "Create your first project" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    const selected = screen.getByRole("button", { name: "accent #c6f24e" });
+    const other = screen.getByRole("button", { name: "accent #a78bfa" });
+    expectSelectedRing(selected, FIRST_RING);
+    expect(other.style.outline).toBe("");
+    expect(other.style.boxShadow).toBe("");
+    expect(other).toHaveStyle({ outlineOffset: "5px" });
+
+    selected.focus();
+    expect(selected).toHaveFocus();
+    expect(selected.style.outline).toBe("");
+    await user.click(other);
+    expect(other).toHaveAttribute("aria-pressed", "true");
+    expectSelectedRing(other, FIRST_RING);
+    expect(selected).toHaveAttribute("aria-pressed", "false");
+    expect(selected.style.outline).toBe("");
+    expect(selected.style.boxShadow).toBe("");
+  });
+});
+
 describe("step ① posture check (GRPH-1365)", () => {
   const GOOD = {
     jwt_secret_set: true, jwt_secret_strong: true, signup_open: false,
