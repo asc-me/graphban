@@ -45,7 +45,7 @@ from .adapters import AdapterError
 from .headroom import Headroom
 from .supervisor import (
     _declared_into,
-    DEFAULT_MAX_WORKERS, LaunchFactory, Limits, Merger, Wave, WaveBase,
+    DEFAULT_MAX_WORKERS, LaunchFactory, Limits, Merger, ResumeBlocked, Wave, WaveBase,
     _reap_all, _rooted, _report_exits, _start, item_status, publish_salvaged,
     record_server_error, resolve_wave_base, seats_refusal, seats_unrecordable,
     server_failed, watch_tick,
@@ -1103,6 +1103,23 @@ def _loop(
                     # A server error stops the wave (`server_error`, one FAILED line).
                     # Cooling the item would hide that and keep spawning.
                     raise
+                except ResumeBlocked as blocked:
+                    # GRPH-1785. The item's branch is held by a worktree this drain
+                    # will not take, and the child was not started on any other
+                    # branch. Withdraw the delegation opened this pass so the item
+                    # stays claimable. Cooling only skips it for this pass, so the
+                    # loop does not spin on the same checkout.
+                    observe.emit(
+                        "resume_blocked",
+                        item=blocked.item or seed,
+                        worktree=blocked.worktree,
+                        branch=blocked.branch,
+                    )
+                    if seed:
+                        _withdraw_spawn(seed, want or "cheap")
+                        cooled.add(seed)
+                        delegated.discard(seed)
+                    return "failed"
                 except Exception as exc:
                     # GRPH-1753. One item's spawn failure is not the wave's death.
                     # Withdraw the delegation this pass opened and cool the item so
@@ -1724,6 +1741,7 @@ def _spawn_one(
     ledger: Graphban | None = None,
 ) -> None:
     before = len(wave.spawned)
+    blocked_before = len(wave.resume_blocked)
     # No `room=` on purpose (GRPH-842). `_start`'s own gate is for `up`, which decides how
     # many seats to run in one go; this loop asks `_no_room` BEFORE minting, because a seat
     # minted into a full machine is a consumed enrolment nothing registers on. Passing one
@@ -1736,6 +1754,16 @@ def _spawn_one(
     )
     occupied.update(c.branch for c in children)
     persist()
+    if len(wave.spawned) == before and len(wave.resume_blocked) > blocked_before:
+        # GRPH-1785. `_start` refused to put this seat on any other branch.
+        # Raised here so the drain — not the worktree call — emits the event
+        # and withdraws the delegation. The item stays claimable.
+        last = wave.resume_blocked[-1]
+        raise ResumeBlocked(
+            str(last.get("item") or seat.item or ""),
+            str(last.get("branch") or ""),
+            str(last.get("worktree") or ""),
+        )
     if len(wave.spawned) == before and wave.failures:
         raise ConfigError(wave.failures[-1])
 
