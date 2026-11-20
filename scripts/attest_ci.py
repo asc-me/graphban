@@ -310,8 +310,14 @@ def _call(url: str, key: str, arguments: dict, *, timeout: float = 15.0) -> None
 
 
 def call_tool(url: str, key: str, name: str, arguments: dict, *,
-              timeout: float = 15.0) -> None:
-    """One MCP tool call. Raises on anything that is not a success."""
+              timeout: float = 15.0) -> dict | None:
+    """One MCP tool call. Raises on anything that is not a success.
+
+    Returns the tool's `structuredContent` when that is an object, else None. A
+    caller that only needed the raise can ignore it. `scan_ci` reads it back
+    after a timed-out `update_item`: the write can commit and the response
+    still never arrive (GRPH-1784).
+    """
     item_key = arguments.get("id", name)
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
         "name": name, "arguments": arguments,
@@ -335,6 +341,8 @@ def call_tool(url: str, key: str, name: str, arguments: dict, *,
             # foreign item from a key that is simply wrong, and this layer does not.
             raise OutOfScope(f"{item_key}: graphban refused the write: {detail}")
         raise RuntimeError(f"{item_key}: graphban refused the write: {detail}")
+    content = result.get("structuredContent")
+    return content if isinstance(content, dict) else None
 
 
 def closing_refs(text: str) -> list[str]:
