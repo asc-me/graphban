@@ -217,8 +217,8 @@ def test_contract_publishes_ids_levels_and_params():
     by = {p["id"]: p for p in c["primitives"]}
     assert by["sabotage_receipt"]["level"] == "enforced"
     assert by["sabotage_receipt"]["params"] == [
-        {"name": "min_effort", "type": "int", "required": False},
-        {"name": "min_tests_failed", "type": "int", "required": False}]
+        {"name": "min_effort", "type": "int", "required": False, "comparator": "greater_tightens"},
+        {"name": "min_tests_failed", "type": "int", "required": False, "comparator": "greater_tightens"}]
 
 
 def test_refused_template_reason_reaches_the_rules_flow(client):

@@ -63,6 +63,9 @@ TRUSTED_PUBLIC_KEYS: tuple[str, ...] = (
 STAGES = ("Spec", "Plan", "Build", "Review", "Merge", "Release", "Learn")
 #: Strongest first; a template may claim no more than its primitive provides.
 CLAIM_ORDER = ("enforced", "checked")
+DIRECTIONS = ("tighten", "loosen")
+#: int: a larger value tightens / loosens. list: a superset tightens / loosens.
+COMPARATORS = ("greater_tightens", "greater_loosens", "superset_tightens", "superset_loosens")
 PARAM_TYPES = {"int": int, "bool": bool, "str": str, "list": list}
 MAX_ARTIFACT_BYTES = 5_000_000
 
@@ -77,6 +80,9 @@ class PackRefused(Exception):
 class Param:
     type: str
     required: bool = False
+    #: Which way a change tightens, or "" when no direction is declared (the param is then not
+    #: proposable as a change). One of `COMPARATORS`.
+    comparator: str = ""
 
 
 @dataclass(frozen=True)
@@ -86,6 +92,10 @@ class Primitive:
     level: str
     enforcer: Enforcer
     params: dict[str, Param] = field(default_factory=dict)
+    #: The stage the primitive belongs to: one of `STAGES`.
+    stage: str = "Build"
+    #: What switching the rule on does: `tighten` | `loosen`.
+    on_direction: str = "tighten"
 
 
 PRIMITIVES: dict[str, Primitive] = {}
@@ -95,7 +105,14 @@ def register_primitive(p: Primitive) -> None:
     """Publish a primitive in the contract. Called at import by the module that provides it."""
     if p.level not in CLAIM_ORDER:
         raise ValueError(f"primitive {p.id!r}: level must be one of {CLAIM_ORDER}")
+    if p.stage not in STAGES:
+        raise ValueError(f"primitive {p.id!r}: stage must be one of {STAGES}")
+    if p.on_direction not in DIRECTIONS:
+        raise ValueError(f"primitive {p.id!r}: on_direction must be one of {DIRECTIONS}")
     for name, spec in p.params.items():
+        if spec.comparator and spec.comparator not in COMPARATORS:
+            raise ValueError(f"primitive {p.id!r} param {name!r}: comparator must be one of "
+                             f"{COMPARATORS}")
         if spec.type not in PARAM_TYPES:
             raise ValueError(f"primitive {p.id!r} param {name!r}: type must be one of "
                              f"{tuple(PARAM_TYPES)}")
@@ -105,29 +122,30 @@ def register_primitive(p: Primitive) -> None:
 register_primitive(Primitive(
     "sabotage_receipt", "enforced",
     Enforcer("graphban_source", "app/services/items.py"),
-    {"min_effort": Param("int"), "min_tests_failed": Param("int")}))
+    {"min_effort": Param("int", comparator="greater_tightens"),
+     "min_tests_failed": Param("int", comparator="greater_tightens")}, stage="Review"))
 register_primitive(Primitive(
     "gap_followup_link", "enforced",
-    Enforcer("graphban_source", "app/services/fleet.py")))
+    Enforcer("graphban_source", "app/services/fleet.py"), stage="Review"))
 register_primitive(Primitive(
     "reviewer_property", "enforced",
     Enforcer("graphban_source", "app/services/fleet.py"),
-    {"property": Param("str")}))
+    {"property": Param("str")}, stage="Review"))
 register_primitive(Primitive(
     "evidence_required", "enforced",
     Enforcer("graphban_source", "app/services/items.py"),
-    {"path": Param("str"), "engine": Param("str")}))
+    {"path": Param("str"), "engine": Param("str")}, stage="Build"))
 # GRPH-1273. `checked`: the server refuses nothing; `gbfleet until` reads the toggle each cycle
 # and staffs every unheld review row visible to its key, so the enforcer is the supervisor.
 register_primitive(Primitive(
     "staffing_scope", "checked",
-    Enforcer("supervisor", "gbfleet until")))
+    Enforcer("supervisor", "gbfleet until"), stage="Review"))
 register_primitive(Primitive(
     "reopen_on_red", "enforced",
-    Enforcer("graphban_source", "app/services/fleet.py")))
+    Enforcer("graphban_source", "app/services/fleet.py"), stage="Merge"))
 register_primitive(Primitive(
     "human_only_clause", "enforced",
-    Enforcer("graphban_source", "app/services/fleet.py")))
+    Enforcer("graphban_source", "app/services/fleet.py"), stage="Review"))
 # GRPH-1405. `checked`: nothing refuses on the mode itself; the delegation brief states it and
 # the operating loop / merge gates (GRPH-1403, GRPH-1404) read it. `mode` is one of
 # `rule_toggles.TEST_SCOPE_MODES`, enforced when a person sets the param.
@@ -136,45 +154,45 @@ register_primitive(Primitive(
     Enforcer("doc", "docs/rules.md"),
     # GRPH-1429/GRPH-1494: `engines` (a list) applies only under `agent_full`. Without it here
     # the loader refused any template that carried it, and `_check_params` refused every write.
-    {"mode": Param("str"), "engines": Param("list")}))
+    {"mode": Param("str"), "engines": Param("list", comparator="superset_tightens")}, stage="Build"))
 # GRPH-1425. `checked`: the supervisor reads `mode` (`hold` | `warn`) when it decides whether to
 # open a PR; the merge-time `covering` check refuses an uncovered file in either mode.
 register_primitive(Primitive(
     "undeclared_files", "checked",
     Enforcer("supervisor", "gbfleet until"),
-    {"mode": Param("str")}))
+    {"mode": Param("str")}, stage="Build"))
 # GRPH-1423. `enforced`: `fleet.hard_collide` refuses a second drain over a path in `paths`.
 # `paths` is a list of strings, checked when a person sets it (`rule_toggles._check_params`).
 register_primitive(Primitive(
     "exclusive_areas", "enforced",
     Enforcer("graphban_source", "app/services/fleet.py"),
-    {"paths": Param("list")}))
+    {"paths": Param("list", comparator="superset_tightens")}, stage="Plan"))
 # GRPH-1426. `enforced`: the done gate (`items.refuse_if_predicates_missing`, reached from
 # `update_item` and `fleet.sign_off`) refuses `done` without a passing attestation of each name.
 register_primitive(Primitive(
     "done_predicates", "enforced",
     Enforcer("graphban_source", "app/services/items.py"),
-    {"predicates": Param("list")}))
+    {"predicates": Param("list", comparator="superset_tightens")}, stage="Merge"))
 # GRPH-1424/GRPH-1494. `checked`: the supervisor reads `paths` at reap time and lets an
 # undeclared file that matches one through the hold; the server refuses nothing on it.
 register_primitive(Primitive(
     "generated_files", "checked",
     Enforcer("supervisor", "gbfleet until"),
-    {"paths": Param("list")}))
+    {"paths": Param("list", comparator="superset_loosens")}, stage="Build", on_direction="loosen"))
 # GRPH-1496. `checked`: the delegation brief reads one glob list per path class for its lane
 # and task class and names the glob that matched; the server refuses nothing on it.
 register_primitive(Primitive(
     "path_classes", "checked",
     Enforcer("graphban_source", "app/services/delegation.py"),
     {"frontend": Param("list"), "migration": Param("list"),
-     "mcp_tool": Param("list"), "docs": Param("list")}))
+     "mcp_tool": Param("list"), "docs": Param("list")}, stage="Plan"))
 # GRPH-1682. `enforced`: `items.create_item` refuses an overlapping fix under `fix_in_build` and
 # `items.update_item` refuses the move to review under `file_ticket`. `mode` is one of
 # `rule_toggles.FOUND_BUG_MODES`, enforced when a person sets the param.
 register_primitive(Primitive(
     "found_bug", "enforced",
     Enforcer("graphban_source", "app/services/items.py"),
-    {"mode": Param("str")}))
+    {"mode": Param("str")}, stage="Build"))
 # GRPH-1603. `enforced`: the memory gate (`memory._triage_prefs`) publishes or holds a candidate
 # by the mode. Backed by `Project.memory_write_mode` itself, never a toggle row
 # (`rule_toggles.MEMORY_WRITE_MODE_RULE`). `mode` is one of `memory.WRITE_MODES`, enforced when
@@ -182,11 +200,11 @@ register_primitive(Primitive(
 register_primitive(Primitive(
     "memory_write_mode", "enforced",
     Enforcer("graphban_source", "app/services/memory.py"),
-    {"mode": Param("str")}))
+    {"mode": Param("str")}, stage="Learn"))
 register_primitive(Primitive(
     "evidence_attached", "checked",
     Enforcer("graphban_source", "app/services/items.py"),
-    {"kinds": Param("str")}))
+    {"kinds": Param("str")}, stage="Review"))
 
 
 def contract() -> dict:
@@ -195,7 +213,9 @@ def contract() -> dict:
         "api_version": PRIMITIVE_API,
         "primitives": [
             {"id": p.id, "level": p.level,
-             "params": [{"name": n, "type": s.type, "required": s.required}
+             "stage": p.stage, "on_direction": p.on_direction,
+             "params": [{"name": n, "type": s.type, "required": s.required,
+                         "comparator": s.comparator or None}
                         for n, s in sorted(p.params.items())]}
             for p in sorted(PRIMITIVES.values(), key=lambda p: p.id)],
     }
@@ -264,27 +284,35 @@ def _toml(files: dict[str, bytes], name: str) -> dict:
         raise PackRefused(f"{name} is missing or unreadable: {e}") from None
 
 
-def _check_template(t: dict, api: str) -> str:
-    """The reason a template is refused, or "" when it loads."""
+def validate_draft(draft: dict, api: str | None = None) -> str:
+    """The reason a rule draft is refused, or "" when it is valid.
+
+    The one validator behind both the pack loader and custom rules. `api` is the primitive API
+    the draft targets; None means this server's own.
+    """
+    api = PRIMITIVE_API if api is None else api
     for key in ("id", "stage", "title", "summary", "primitive", "claims"):
-        if not isinstance(t.get(key), str) or not t[key]:
+        if not isinstance(draft.get(key), str) or not draft[key]:
             return f"template field {key!r} is missing"
-    if t["stage"] not in STAGES:
-        return f"unknown stage {t['stage']!r}"
-    if t["claims"] not in CLAIM_ORDER:
-        return f"unknown claim {t['claims']!r}"
-    if t.get("default", "off") not in ("on", "off"):
+    if draft["stage"] not in STAGES:
+        return f"unknown stage {draft['stage']!r}"
+    if draft["claims"] not in CLAIM_ORDER:
+        return f"unknown claim {draft['claims']!r}"
+    if draft.get("default", "off") not in ("on", "off"):
         return "default must be 'on' or 'off'"
     if _ver(api)[0] != _ver(PRIMITIVE_API)[0]:
         return (f"primitive API major mismatch: the pack targets {api}, "
                 f"this server provides {PRIMITIVE_API}")
-    prim = PRIMITIVES.get(t["primitive"])
+    prim = PRIMITIVES.get(draft["primitive"])
     if prim is None:
-        return f"primitive {t['primitive']!r} does not exist in primitive API {PRIMITIVE_API}"
-    if CLAIM_ORDER.index(t["claims"]) < CLAIM_ORDER.index(prim.level):
-        return (f"claims {t['claims']!r} but primitive {prim.id!r} only provides "
+        return f"primitive {draft['primitive']!r} does not exist in primitive API {PRIMITIVE_API}"
+    if CLAIM_ORDER.index(draft["claims"]) < CLAIM_ORDER.index(prim.level):
+        return (f"claims {draft['claims']!r} but primitive {prim.id!r} only provides "
                 f"{prim.level!r}")
-    params = t.get("params", {})
+    if draft["stage"] != prim.stage:
+        return (f"stage {draft['stage']!r} but primitive {prim.id!r} belongs to stage "
+                f"{prim.stage!r}")
+    params = draft.get("params", {})
     if not isinstance(params, dict):
         return "params must be a table"
     for name, v in params.items():
@@ -298,6 +326,58 @@ def _check_template(t: dict, api: str) -> str:
     if missing:
         return f"required param(s) {', '.join(missing)} of primitive {prim.id!r} not set"
     return ""
+
+
+def _check_template(t: dict, api: str) -> str:
+    """The reason a template is refused, or "" when it loads."""
+    return validate_draft(t, api)
+
+
+def _flip(d: str) -> str:
+    return "loosen" if d == "tighten" else "tighten"
+
+
+def direction(primitive: str, old_value: dict | None, new_value: dict | None) -> str:
+    """`tighten` | `loosen` | `not_proposable` for a change, computed from the contract only.
+
+    A value is a param table, or None for "off". Off to on moves the way the primitive's
+    `on_direction` says; on to off the opposite. Between two tables every changed param must
+    declare a comparator, else `not_proposable`; a mix of both ways is `loosen`.
+    """
+    prim = PRIMITIVES.get(primitive)
+    if prim is None:
+        return "not_proposable"
+    if old_value is None and new_value is None:
+        return "not_proposable"
+    if old_value is None:
+        return prim.on_direction
+    if new_value is None:
+        return _flip(prim.on_direction)
+    seen: set[str] = set()
+    for name in sorted(set(old_value) | set(new_value)):
+        a, b = old_value.get(name), new_value.get(name)
+        if a == b:
+            continue
+        spec = prim.params.get(name)
+        if spec is None or not spec.comparator:
+            return "not_proposable"
+        if spec.type == "list":
+            sa, sb = set(a or []), set(b or [])
+            if sb > sa:
+                grew = True
+            elif sb < sa:
+                grew = False
+            else:
+                return "not_proposable"
+        elif spec.type == "int" and a is not None and b is not None:
+            grew = b > a
+        else:
+            return "not_proposable"
+        tightens_when_grows = spec.comparator.endswith("tightens")
+        seen.add("tighten" if grew == tightens_when_grows else "loosen")
+    if not seen:
+        return "not_proposable"
+    return "loosen" if "loosen" in seen else "tighten"
 
 
 def load(artifact: bytes, signature: bytes, *, trusted_keys: tuple[str, ...] | None = None,
