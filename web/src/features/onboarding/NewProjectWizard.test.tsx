@@ -3,11 +3,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { NewProjectWizard, PROJECT_ACCENTS, PROJECT_ACCENT_SWATCHES, radioArrows } from "@/features/onboarding/NewProjectWizard";
+import { projectFill } from "@/lib/projectFill";
 
 function mockReducedMotion(reduce: boolean) {
   Object.defineProperty(window, "matchMedia", {
@@ -178,7 +179,13 @@ describe("New project wizard", () => {
     await user.click(next());
     await user.click(screen.getByRole("button", { name: /create project/i }));
     await waitFor(() =>
-      expect(api.createProject).toHaveBeenCalledWith({ name: "Core Platform", tag: "CORE", accent: "#c6f24e" }),
+      expect(api.createProject).toHaveBeenCalledWith({
+        name: "Core Platform",
+        tag: "CORE",
+        accent: "#c6f24e",
+        accent2: null,
+        pattern: "none",
+      }),
     );
     expect(api.updateProject).toHaveBeenCalledWith("core", { repo_url: "git@github.com:acme/core.git" });
     expect(confirm).toHaveBeenCalledWith({ projectId: "core", body: { decision: "offline" } });
@@ -307,6 +314,8 @@ describe("New project wizard", () => {
 
   describe("radio groups follow the WAI-ARIA keyboard model (GRPH-1613)", () => {
     const checked = () => screen.getAllByRole("radio").find((r) => r.getAttribute("aria-checked") === "true");
+    const checkedIn = (name: string) =>
+      within(screen.getByRole("radiogroup", { name })).getAllByRole("radio").find((r) => r.getAttribute("aria-checked") === "true");
     const tabStops = () => screen.getAllByRole("radio").filter((r) => r.tabIndex === 0);
 
     it("moves the Model selection with ↑ and ↓, wrapping at both ends, and focus follows", async () => {
@@ -381,36 +390,46 @@ describe("New project wizard", () => {
       expect(first).toHaveAttribute("aria-checked", "true");
       first.focus();
       await user.keyboard("{ArrowLeft}");
-      expect(checked()).toHaveAccessibleName("Yellow");
-      expect(checked()).toHaveFocus();
+      expect(checkedIn("Accent colour")).toHaveAccessibleName("Yellow");
+      expect(checkedIn("Accent colour")).toHaveFocus();
       await user.keyboard("{ArrowRight}");
-      expect(checked()).toHaveAccessibleName("Lime");
+      expect(checkedIn("Accent colour")).toHaveAccessibleName("Lime");
       await user.keyboard("{ArrowRight}");
-      expect(checked()).toHaveAccessibleName("Mint");
-      expect(checked()).toHaveFocus();
+      expect(checkedIn("Accent colour")).toHaveAccessibleName("Mint");
+      expect(checkedIn("Accent colour")).toHaveFocus();
       // GRPH-1618: ↓ is next and ↑ is previous on this horizontal group too.
       await user.keyboard("{ArrowDown}");
-      expect(checked()).toHaveAccessibleName("Teal");
-      expect(checked()).toHaveFocus();
+      expect(checkedIn("Accent colour")).toHaveAccessibleName("Teal");
+      expect(checkedIn("Accent colour")).toHaveFocus();
       await user.keyboard("{ArrowUp}");
-      expect(checked()).toHaveAccessibleName("Mint");
+      expect(checkedIn("Accent colour")).toHaveAccessibleName("Mint");
       await user.keyboard("{End}");
-      expect(checked()).toHaveAccessibleName("Yellow");
-      expect(checked()).toHaveFocus();
+      expect(checkedIn("Accent colour")).toHaveAccessibleName("Yellow");
+      expect(checkedIn("Accent colour")).toHaveFocus();
       await user.keyboard("{Home}");
-      expect(checked()).toHaveAccessibleName("Lime");
-      expect(checked()).toHaveFocus();
+      expect(checkedIn("Accent colour")).toHaveAccessibleName("Lime");
+      expect(checkedIn("Accent colour")).toHaveFocus();
     });
 
     it("is one Tab stop per group, on the checked option, and the next Tab leaves the group", async () => {
       const user = userEvent.setup();
       renderWizard();
-      expect(tabStops()).toHaveLength(1);
-      expect(tabStops()[0]).toHaveAttribute("aria-checked", "true");
+      // Solid identity: style, colour, pattern. Ombre adds the second colour as its own stop.
+      expect(screen.getAllByRole("radiogroup")).toHaveLength(3);
+      for (const group of screen.getAllByRole("radiogroup")) {
+        const stops = within(group).getAllByRole("radio").filter((r) => r.tabIndex === 0);
+        expect(stops).toHaveLength(1);
+        expect(stops[0]).toHaveAttribute("aria-checked", "true");
+      }
       await user.click(screen.getByRole("radio", { name: "Sky" }));
-      expect(tabStops()).toEqual([screen.getByRole("radio", { name: "Sky" })]);
+      const accentGroup = screen.getByRole("radiogroup", { name: "Accent colour" });
+      expect(within(accentGroup).getAllByRole("radio").filter((r) => r.tabIndex === 0)).toEqual([
+        screen.getByRole("radio", { name: "Sky" }),
+      ]);
+      screen.getByRole("radio", { name: "Sky" }).focus();
       await user.tab();
-      expect(document.activeElement?.getAttribute("role")).not.toBe("radio");
+      expect(accentGroup.contains(document.activeElement)).toBe(false);
+      expect(screen.getByRole("radiogroup", { name: "Pattern" }).contains(document.activeElement)).toBe(true);
 
       await user.clear(screen.getByLabelText("Project name"));
       await toRepo(user);
@@ -440,13 +459,13 @@ describe("New project wizard", () => {
       // A disabled radio cannot take focus in a browser; dispatch straight at it so the
       // handler's own lock is what is under test.
       fireEvent.keyDown(locked, { key: "ArrowRight" });
-      expect(checked()).toBe(locked);
+      expect(checkedIn("Accent colour")).toBe(locked);
       fireEvent.keyDown(locked, { key: "ArrowLeft" });
-      expect(checked()).toBe(locked);
+      expect(checkedIn("Accent colour")).toBe(locked);
       fireEvent.keyDown(locked, { key: "End" });
-      expect(checked()).toBe(locked);
+      expect(checkedIn("Accent colour")).toBe(locked);
       fireEvent.keyDown(locked, { key: "ArrowDown" });
-      expect(checked()).toBe(locked);
+      expect(checkedIn("Accent colour")).toBe(locked);
     });
 
     it("skips a disabled option on every key, wrapping past it (GRPH-1618)", async () => {
@@ -757,6 +776,188 @@ describe("New project wizard", () => {
   });
 });
 
+describe("accent engine (GRPH-1750)", () => {
+  const painted = (el: HTMLElement) => el.style.getPropertyValue("--tile-fill");
+  const checkedIn = (name: string) =>
+    within(screen.getByRole("radiogroup", { name }))
+      .getAllByRole("radio")
+      .find((r) => r.getAttribute("aria-checked") === "true");
+
+  it("shows one colour row in solid and reveals an independent TO row in ombre", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+    expect(screen.queryByRole("radiogroup", { name: "Ombre, second colour" })).not.toBeInTheDocument();
+    expect(screen.queryByText("FROM")).not.toBeInTheDocument();
+    expect(within(screen.getByRole("radiogroup", { name: "Accent colour" })).getAllByRole("radio")).toHaveLength(12);
+
+    await user.click(screen.getByRole("radio", { name: "OMBRE" }));
+    const from = screen.getByRole("radiogroup", { name: "Ombre, first colour" });
+    const to = screen.getByRole("radiogroup", { name: "Ombre, second colour" });
+    expect(screen.getByText("FROM")).toBeInTheDocument();
+    expect(screen.getByText("TO")).toBeInTheDocument();
+    expect(within(from).getAllByRole("radio")).toHaveLength(12);
+    expect(within(to).getAllByRole("radio")).toHaveLength(12);
+    expect(checkedIn("Ombre, first colour")).toHaveAccessibleName("Lime");
+    expect(checkedIn("Ombre, second colour")).toHaveAccessibleName("Sky");
+
+    await user.click(within(from).getByRole("radio", { name: "Teal" }));
+    expect(checkedIn("Ombre, first colour")).toHaveAccessibleName("Teal");
+    expect(checkedIn("Ombre, second colour")).toHaveAccessibleName("Sky");
+  });
+
+  it("disables the TO swatch that matches FROM, skips it with the arrows, and moves TO by four when they would match", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+    await user.click(screen.getByRole("radio", { name: "OMBRE" }));
+    const from = screen.getByRole("radiogroup", { name: "Ombre, first colour" });
+    const to = screen.getByRole("radiogroup", { name: "Ombre, second colour" });
+    const same = within(to).getByRole("radio", { name: "Lime, same as the first colour" });
+    expect(same).toBeDisabled();
+    expect(same).toHaveStyle({ opacity: "0.25" });
+    expect(same).toHaveAttribute("aria-checked", "false");
+
+    within(to).getByRole("radio", { name: "Sky" }).focus();
+    await user.keyboard("{End}");
+    expect(checkedIn("Ombre, second colour")).toHaveAccessibleName("Yellow");
+    expect(checkedIn("Ombre, second colour")).toHaveFocus();
+    await user.keyboard("{ArrowRight}");
+    expect(checkedIn("Ombre, second colour")).toHaveAccessibleName("Mint");
+    expect(checkedIn("Ombre, second colour")).toHaveFocus();
+    await user.keyboard("{ArrowLeft}");
+    expect(checkedIn("Ombre, second colour")).toHaveAccessibleName("Yellow");
+    await user.keyboard("{Home}");
+    expect(checkedIn("Ombre, second colour")).toHaveAccessibleName("Mint");
+
+    await user.click(within(to).getByRole("radio", { name: "Indigo" }));
+    await user.click(within(from).getByRole("radio", { name: "Indigo" }));
+    expect(checkedIn("Ombre, first colour")).toHaveAccessibleName("Indigo");
+    expect(checkedIn("Ombre, second colour")).toHaveAccessibleName("Rose");
+    expect(within(to).getByRole("radio", { name: "Indigo, same as the first colour" })).toBeDisabled();
+  });
+
+  it("moves TO by four when switching to ombre while the two colours match", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+    await user.click(screen.getByRole("radio", { name: "Sky" }));
+    await user.click(screen.getByRole("radio", { name: "OMBRE" }));
+    expect(checkedIn("Ombre, first colour")).toHaveAccessibleName("Sky");
+    expect(checkedIn("Ombre, second colour")).toHaveAccessibleName("Pink");
+    expect(within(screen.getByRole("radiogroup", { name: "Ombre, second colour" })).getByRole("radio", { name: "Sky, same as the first colour" })).toBeDisabled();
+  });
+
+  it("offers the eight patterns as one tab stop, and keeps the pattern name out of the group label", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+    const patterns = screen.getByRole("radiogroup", { name: "Pattern" });
+    expect(patterns).toHaveAccessibleName("Pattern");
+    expect(within(patterns).getAllByRole("radio").map((r) => r.getAttribute("aria-label"))).toEqual([
+      "None",
+      "Speckled",
+      "Cross hatch",
+      "Chevron",
+      "Herringbone",
+      "Diagonal stripes",
+      "Paisley",
+      "Bubbles",
+    ]);
+    expect(screen.getByTestId("pw-pattern-name")).toHaveTextContent("None");
+    const stops = within(patterns).getAllByRole("radio").filter((r) => r.tabIndex === 0);
+    expect(stops).toEqual([within(patterns).getByRole("radio", { name: "None" })]);
+
+    within(patterns).getByRole("radio", { name: "None" }).focus();
+    await user.keyboard("{ArrowRight}");
+    expect(checkedIn("Pattern")).toHaveAccessibleName("Speckled");
+    expect(checkedIn("Pattern")).toHaveFocus();
+    expect(patterns).toHaveAccessibleName("Pattern");
+    expect(screen.getByTestId("pw-pattern-name")).toHaveTextContent("Speckled");
+    await user.keyboard("{End}");
+    expect(checkedIn("Pattern")).toHaveAccessibleName("Bubbles");
+    await user.keyboard("{Home}");
+    expect(checkedIn("Pattern")).toHaveAccessibleName("None");
+
+    const selected = within(patterns).getByRole("radio", { name: "None" });
+    const other = within(patterns).getByRole("radio", { name: "Paisley" });
+    expect(selected.style.outline).toBe("");
+    expect(other.style.outline).toBe("");
+    expect(selected).toHaveStyle({
+      boxShadow: "0 0 0 2px var(--color-surface-3), 0 0 0 4px var(--color-fg)",
+      outlineOffset: "5px",
+    });
+    expect(other.style.boxShadow).toBe("");
+
+    const mode = screen.getByRole("radiogroup", { name: "Accent style" });
+    within(mode).getByRole("radio", { name: "SOLID" }).focus();
+    await user.keyboard("{ArrowRight}");
+    expect(checkedIn("Accent style")).toHaveAccessibleName("OMBRE");
+    expect(checkedIn("Accent style")).toHaveFocus();
+    await user.keyboard("{End}");
+    expect(checkedIn("Accent style")).toHaveAccessibleName("OMBRE");
+    await user.keyboard("{Home}");
+    expect(checkedIn("Accent style")).toHaveAccessibleName("SOLID");
+    expect(screen.getAllByRole("radiogroup")).toHaveLength(3);
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getAllByRole("radiogroup")).toHaveLength(4);
+    for (const group of screen.getAllByRole("radiogroup")) {
+      expect(within(group).getAllByRole("radio").filter((r) => r.tabIndex === 0)).toHaveLength(1);
+    }
+  });
+
+  it("paints the tile, the caption square, the review swatch and the ready card with one fill, and posts accent2 and pattern", async () => {
+    const user = userEvent.setup();
+    api.createProject.mockImplementation(async (body: { name: string; tag?: string; accent: string; accent2: string | null; pattern: string }) => ({
+      id: "core",
+      name: body.name,
+      tag: body.tag,
+      accent: body.accent,
+      accent2: body.accent2,
+      pattern: body.pattern,
+    }));
+    renderWizard();
+    await user.click(screen.getByRole("radio", { name: "OMBRE" }));
+    await user.click(within(screen.getByRole("radiogroup", { name: "Ombre, second colour" })).getByRole("radio", { name: "Indigo" }));
+    await user.click(within(screen.getByRole("radiogroup", { name: "Pattern" })).getByRole("radio", { name: "Paisley" }));
+    const expected = projectFill({ accent: "#c6f24e", accent2: "#9d9cff", pattern: "paisley" });
+    expect(painted(screen.getByTestId("project-tile"))).toBe(expected);
+    expect(painted(screen.getByTestId("pw-accent-square"))).toBe(expected);
+    expect(painted(within(screen.getByRole("radiogroup", { name: "Ombre, first colour" })).getByRole("radio", { name: "Lime" }))).toBe(expected);
+    expect(painted(within(screen.getByRole("radiogroup", { name: "Ombre, second colour" })).getByRole("radio", { name: "Indigo" }))).toBe(expected);
+    expect(painted(within(screen.getByRole("radiogroup", { name: "Pattern" })).getByRole("radio", { name: "Paisley" }))).toBe(expected);
+
+    await toRepo(user);
+    await user.click(next());
+    await user.click(next());
+    await user.click(next());
+    expect(screen.getByText("Lime → Indigo ombre · paisley")).toBeInTheDocument();
+    expect(painted(screen.getByTestId("pw-review-swatch"))).toBe(expected);
+    expect(painted(screen.getByTestId("pw-accent-square"))).toBe(expected);
+
+    await user.click(screen.getByRole("button", { name: /create project/i }));
+    expect(await screen.findByText("Core Platform is ready.")).toBeInTheDocument();
+    const created = await api.createProject.mock.results[0]?.value;
+    expect(created).toMatchObject({ accent: "#c6f24e", accent2: "#9d9cff", pattern: "paisley" });
+    expect(api.createProject).toHaveBeenCalledWith({
+      name: "Core Platform",
+      tag: "CORE",
+      accent: "#c6f24e",
+      accent2: "#9d9cff",
+      pattern: "paisley",
+    });
+    expect(painted(screen.getByTestId("project-tile"))).toBe(expected);
+    expect(painted(screen.getByTestId("pw-accent-square"))).toBe(expected);
+  });
+
+  it("reads Lime · no pattern on the review row when the accent is solid", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+    await toRepo(user);
+    await user.click(next());
+    await user.click(next());
+    await user.click(next());
+    expect(screen.getByText("Lime · no pattern")).toBeInTheDocument();
+    expect(screen.getByText("Lime · no pattern")).not.toHaveClass("font-mono");
+  });
+});
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 /** The twelve hues from the Project Wizard design, in hue order. */
@@ -829,13 +1030,16 @@ describe("project accents stay off the status colours (GRPH-1747)", () => {
 
   it("names each swatch and lets the row wrap", () => {
     renderWizard();
-    const group = screen.getByRole("radiogroup", { name: "Accent" });
+    const group = screen.getByRole("radiogroup", { name: "Accent colour" });
     expect(group.className).toContain("flex-wrap");
-    const radios = screen.getAllByRole("radio");
+    const radios = within(group).getAllByRole("radio");
     expect(radios).toHaveLength(PALETTE.length);
     radios.forEach((radio, i) => {
       const [hex, name] = PALETTE[i]!;
-      expect(radio).toHaveStyle({ backgroundColor: hex });
+      // The swatch paints `--tile-fill`. A plain colour is that variable; a pattern
+      // is a layer jsdom will not keep on `background-color`.
+      expect(radio.style.getPropertyValue("--tile-fill")).toBe(hex);
+      expect(radio.style.background).toContain("var(--tile-fill)");
       expect(radio).toHaveAccessibleName(name);
       expect(radio).toHaveAttribute("title", name);
     });
