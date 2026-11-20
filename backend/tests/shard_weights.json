@@ -189,6 +189,7 @@
 "tests/test_grill_stall.py": 0.47,
 "tests/test_grill_state.py": 0.85,
 "tests/test_grill_timeout.py": 0.2,
+"tests/test_handles.py": 2.0,
 "tests/test_harness_capabilities.py": 0.29,
 "tests/test_harness_capacity_fields.py": 0.84,
 "tests/test_harness_guidance.py": 0.17,

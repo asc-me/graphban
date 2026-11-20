@@ -48,6 +48,14 @@ def normalize_pattern(value: str) -> str:
     return value
 
 
+def normalize_second_colour(colour: str, second: str | None, *, field: str = "avatar2") -> str | None:
+    """The ombre second colour: validated `#rrggbb`, stored null when it equals `colour`."""
+    if second is None:
+        return None
+    second = normalize_hex(second, field=field)
+    return None if second == colour.lower() else second
+
+
 def apply_tile_fill(project: Project, changed: dict) -> None:
     """Write accent / accent2 / pattern from a create or PATCH dump.
 
