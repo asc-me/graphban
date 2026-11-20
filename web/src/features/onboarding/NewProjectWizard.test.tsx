@@ -1,10 +1,13 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import * as React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { NewProjectWizard, radioArrows } from "@/features/onboarding/NewProjectWizard";
+import { NewProjectWizard, PROJECT_ACCENTS, PROJECT_ACCENT_SWATCHES, radioArrows } from "@/features/onboarding/NewProjectWizard";
 
 function mockReducedMotion(reduce: boolean) {
   Object.defineProperty(window, "matchMedia", {
@@ -305,8 +308,8 @@ describe("New project wizard", () => {
     it("draws the selected accent with a box-shadow ring and leaves outline to focus-visible (GRPH-1745)", async () => {
       const user = userEvent.setup();
       renderWizard();
-      const selected = screen.getByRole("radio", { name: "accent #c6f24e" });
-      const other = screen.getByRole("radio", { name: "accent #a78bfa" });
+      const selected = screen.getByRole("radio", { name: "Lime" });
+      const other = screen.getByRole("radio", { name: "Violet" });
       // An inline outline beats the global :focus-visible rule. Neither swatch may set one.
       expect(selected.style.outline).toBe("");
       expect(other.style.outline).toBe("");
@@ -337,28 +340,28 @@ describe("New project wizard", () => {
     it("moves the Accent selection with ← and →, wrapping at both ends, and focus follows", async () => {
       const user = userEvent.setup();
       renderWizard();
-      const first = screen.getByRole("radio", { name: "accent #c6f24e" });
+      const first = screen.getByRole("radio", { name: "Lime" });
       expect(first).toHaveAttribute("aria-checked", "true");
       first.focus();
       await user.keyboard("{ArrowLeft}");
-      expect(checked()).toHaveAccessibleName("accent #ff8f8f");
+      expect(checked()).toHaveAccessibleName("Yellow");
       expect(checked()).toHaveFocus();
       await user.keyboard("{ArrowRight}");
-      expect(checked()).toHaveAccessibleName("accent #c6f24e");
+      expect(checked()).toHaveAccessibleName("Lime");
       await user.keyboard("{ArrowRight}");
-      expect(checked()).toHaveAccessibleName("accent #a78bfa");
+      expect(checked()).toHaveAccessibleName("Mint");
       expect(checked()).toHaveFocus();
       // GRPH-1618: ↓ is next and ↑ is previous on this horizontal group too.
       await user.keyboard("{ArrowDown}");
-      expect(checked()).toHaveAccessibleName("accent #7ca2ff");
+      expect(checked()).toHaveAccessibleName("Teal");
       expect(checked()).toHaveFocus();
       await user.keyboard("{ArrowUp}");
-      expect(checked()).toHaveAccessibleName("accent #a78bfa");
+      expect(checked()).toHaveAccessibleName("Mint");
       await user.keyboard("{End}");
-      expect(checked()).toHaveAccessibleName("accent #ff8f8f");
+      expect(checked()).toHaveAccessibleName("Yellow");
       expect(checked()).toHaveFocus();
       await user.keyboard("{Home}");
-      expect(checked()).toHaveAccessibleName("accent #c6f24e");
+      expect(checked()).toHaveAccessibleName("Lime");
       expect(checked()).toHaveFocus();
     });
 
@@ -367,8 +370,8 @@ describe("New project wizard", () => {
       renderWizard();
       expect(tabStops()).toHaveLength(1);
       expect(tabStops()[0]).toHaveAttribute("aria-checked", "true");
-      await user.click(screen.getByRole("radio", { name: "accent #7ca2ff" }));
-      expect(tabStops()).toEqual([screen.getByRole("radio", { name: "accent #7ca2ff" })]);
+      await user.click(screen.getByRole("radio", { name: "Sky" }));
+      expect(tabStops()).toEqual([screen.getByRole("radio", { name: "Sky" })]);
       await user.tab();
       expect(document.activeElement?.getAttribute("role")).not.toBe("radio");
 
@@ -393,7 +396,7 @@ describe("New project wizard", () => {
       await user.click(screen.getByRole("button", { name: /create project/i }));
       await screen.findByText(/was created, but a follow-up step failed/);
       for (let i = 0; i < 3; i++) await user.click(screen.getByRole("button", { name: "Back" }));
-      const locked = screen.getByRole("radio", { name: "accent #c6f24e" });
+      const locked = screen.getByRole("radio", { name: "Lime" });
       expect(locked).toBeDisabled();
       // A disabled radio cannot take focus in a browser; dispatch straight at it so the
       // handler's own lock is what is under test.
@@ -468,7 +471,7 @@ describe("New project wizard", () => {
       renderWizard();
       expect(screen.getByText("Graphban")).toBeInTheDocument();
       expect(screen.getByTestId("pw-accent-square")).toHaveStyle({ background: "#c6f24e" });
-      await user.click(screen.getByRole("radio", { name: "accent #a78bfa" }));
+      await user.click(screen.getByRole("radio", { name: "Violet" }));
       expect(screen.getByTestId("pw-accent-square")).toHaveStyle({ background: "#a78bfa" });
     });
 
@@ -561,5 +564,98 @@ describe("New project wizard", () => {
       expect(await screen.findByText("Checking…")).toBeInTheDocument();
       expect(screen.getByLabelText("Tag")).toHaveClass("w-[120px]");
     });
+  });
+});
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+/** The twelve hues from the Project Wizard design, in hue order. */
+const PALETTE: [string, string][] = [
+  ["#c6f24e", "Lime"],
+  ["#a6ebc4", "Mint"],
+  ["#4fd1c5", "Teal"],
+  ["#67d4f0", "Cyan"],
+  ["#a3cfff", "Sky"],
+  ["#9d9cff", "Indigo"],
+  ["#a78bfa", "Violet"],
+  ["#d58cf0", "Orchid"],
+  ["#f47fb4", "Pink"],
+  ["#ffb3c1", "Rose"],
+  ["#e6d2a8", "Sand"],
+  ["#efd76a", "Yellow"],
+];
+
+function themeHexTokens(css: string): Record<string, string> {
+  const tokens: Record<string, string> = {};
+  for (const match of css.matchAll(/--(color-[a-z0-9_-]+):\s*(#[0-9a-fA-F]{6})\s*;/g)) {
+    tokens[match[1]!] = match[2]!.toLowerCase();
+  }
+  return tokens;
+}
+
+describe("project accents stay off the status colours (GRPH-1747)", () => {
+  it("holds the twelve named hues, and only brand lime overlaps a status token", () => {
+    expect(PROJECT_ACCENT_SWATCHES.map((swatch) => [swatch.hex, swatch.name])).toEqual(PALETTE);
+    const accents = [...PROJECT_ACCENTS];
+    expect(accents).toEqual(PALETTE.map(([hex]) => hex));
+
+    const tokens = themeHexTokens(readFileSync(join(HERE, "../../index.css"), "utf8"));
+    for (const key of [
+      "color-st-backlog",
+      "color-st-next",
+      "color-st-in_progress",
+      "color-st-review",
+      "color-st-done",
+      "color-st-blocked",
+      "color-op-accent",
+      "color-accent-hi",
+    ]) {
+      expect(tokens[key], key).toMatch(/^#[0-9a-f]{6}$/);
+    }
+    const palette = new Set<string>(accents);
+    // Lime is the brand accent, so it is also --color-st-in_progress. The design
+    // keeps that one and excludes the other five status tokens.
+    const overlaps = Object.entries(tokens).filter(
+      ([key, value]) => key.startsWith("color-st-") && palette.has(value),
+    );
+    expect(overlaps).toEqual([["color-st-in_progress", "#c6f24e"]]);
+    for (const key of ["color-op-accent", "color-accent-hi"]) {
+      expect(palette.has(tokens[key]!)).toBe(false);
+    }
+    expect(palette.has("#ff8a3d")).toBe(false);
+
+    const source = readFileSync(join(HERE, "NewProjectWizard.tsx"), "utf8");
+    for (const name of [
+      "operator orange",
+      "--color-st-done",
+      "--color-st-next",
+      "--color-st-review",
+      "--color-st-blocked",
+      "--color-st-backlog",
+    ]) {
+      expect(source).toContain(name);
+    }
+  });
+
+  it("names each swatch and lets the row wrap", () => {
+    renderWizard();
+    const group = screen.getByRole("radiogroup", { name: "Accent" });
+    expect(group.className).toContain("flex-wrap");
+    const radios = screen.getAllByRole("radio");
+    expect(radios).toHaveLength(PALETTE.length);
+    radios.forEach((radio, i) => {
+      const [hex, name] = PALETTE[i]!;
+      expect(radio).toHaveStyle({ backgroundColor: hex });
+      expect(radio).toHaveAccessibleName(name);
+      expect(radio).toHaveAttribute("title", name);
+    });
+  });
+
+  it("seeds the demo projects with palette colours only", () => {
+    const seed = readFileSync(join(HERE, "../../../../backend/app/seed.py"), "utf8");
+    const block = seed.slice(seed.indexOf("PROJECTS = ["), seed.indexOf("\nUSERS"));
+    const accents = [...block.matchAll(/accent="(#[0-9a-fA-F]{6})"/g)].map((match) => match[1]!.toLowerCase());
+    expect(accents).toEqual(["#c6f24e", "#a3cfff", "#e6d2a8"]);
+    for (const accent of accents) expect(PROJECT_ACCENTS).toContain(accent);
   });
 });
