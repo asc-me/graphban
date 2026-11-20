@@ -2039,6 +2039,13 @@ def _held_for_undeclared(wave: Wave, child: Child, repo: Path, items: list[str],
     wave.undeclared.pop(child.branch, None)
     _note_touchpoints(wave, child, client)
     missing = wave.undeclared.get(child.branch) or []
+    mode, observing = _undeclared_rule(client)
+    if missing and observing:
+        # GRPH-1778: observing, so nothing is held; what a hold would have done is posted.
+        if mode == "hold":
+            _post_would_have(wave, client, items, UNDECLARED_RULE, "would_hold",
+                             child, "would have held: " + _shown(missing))
+        return False
     if not missing or _undeclared_mode(client) == "warn":
         return False
     _hold_undeclared(wave, client, items, child.branch, missing, in_review=set(items))
@@ -2131,7 +2138,17 @@ def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) 
         wave.declared_unread[child.branch] = "; ".join(unread)
     if declared:
         missing = tp_mod.undeclared(measured, declared)
-        allowed = generated_paths(client)
+        configured, observing = _generated_rule(client)
+        # GRPH-1778: an observing loosening applies the pre-rule list, and says what the
+        # configured one would have let through.
+        allowed = DEFAULT_GENERATED if observing else configured
+        if observing:
+            would = [f for f in missing if is_generated(f, configured)
+                     and not is_generated(f, allowed)]
+            if would:
+                _post_would_have(wave, client, _branch_items(child), GENERATED_RULE,
+                                 "would_allow", child,
+                                 "would have let through: " + ", ".join(would[:8]))
         generated = [f for f in missing if is_generated(f, allowed)]
         if generated:
             # GRPH-1352: the repo's own generators rewrite these on any migration or test
@@ -2172,6 +2189,29 @@ def generated_paths(client: Graphban | None) -> tuple[str, ...]:
     """The paths the undeclared-file hold ignores: the project's resolved
     `build.generated_files` rule. When it cannot be read — no client, the server does not
     answer, or the pack does not carry the rule — today's list is used and that is logged."""
+    return _generated_rule(client)[0]
+
+
+def _is_observing(toggle: dict) -> bool:
+    return toggle.get("state") == "observing"
+
+
+def _post_would_have(wave: Wave, client: Graphban | None, items: list[str], rule_id: str,
+                     outcome: str, child, reason: str) -> None:
+    """GRPH-1778 (P91 D5): an observing supervisor rule applied the pre-rule behaviour; post
+    what it would have done, per item, with the branch head. Never fatal."""
+    commit = ""
+    wt = getattr(child, "worktree", None)
+    if wt:
+        commit = _branch_head(Path(wt), child.branch)
+    for item_id in items:
+        _observe(wave, client, item_id, "would-have outcome not recorded",
+                 kind="rule_would_have", rule_id=rule_id, outcome=outcome,
+                 branch=child.branch, commit=commit or None, reason=reason)
+
+
+def _generated_rule(client: Graphban | None) -> tuple[tuple[str, ...], bool]:
+    """(configured paths, whether the rule is observing) — see `generated_paths`."""
     why = ""
     allowed = getattr(client, "allowed", None)
     if client is None:
@@ -2191,13 +2231,13 @@ def generated_paths(client: Graphban | None) -> tuple[str, ...]:
                     params = params.get("value") if isinstance(params, dict) and "value" in params else params
                     paths = (params or {}).get("paths") if isinstance(params, dict) else None
                     if isinstance(paths, list) and all(isinstance(x, str) for x in paths):
-                        return tuple(paths)
+                        return tuple(paths), _is_observing(t)
                     why = f"{GENERATED_RULE} has no readable `paths`"
                     break
             else:
                 why = f"{GENERATED_RULE} is not in the server's rule toggles"
     observe.emit("generated_files_rule_unread", detail=f"{why}; using the built-in list")
-    return DEFAULT_GENERATED
+    return DEFAULT_GENERATED, False
 
 
 def is_generated(path: str, paths: tuple[str, ...] | list[str] | None = None) -> bool:
@@ -2931,23 +2971,34 @@ def _record_cut_from(wave: Wave, client, item_id: str | None, branch: str, base:
              kind="cut_from", branch=branch, base=base)
 
 
-def _undeclared_mode(client: Graphban | None) -> str:
-    """The project's `build.undeclared_files` mode (GRPH-1425): `hold` or `warn`. Anything
-    unreadable — no client, a client not allowed the tool, a server without the rule — is
-    `hold`, today's behaviour: a hold is never loosened by not knowing."""
+UNDECLARED_RULE = "build.undeclared_files"
+
+
+def _undeclared_rule(client: Graphban | None) -> tuple[str, bool]:
+    """(configured mode, whether the rule is observing). Anything unreadable — no client, a
+    client not allowed the tool, a server without the rule — is `hold`, not observing."""
     if client is None:
-        return "hold"
+        return "hold", False
     try:
         got = client.call("get_rule_toggles")
     except (NotPermitted, ToolFailed, ServerUnreachable):
-        return "hold"
+        return "hold", False
     for t in (got or {}).get("toggles") or []:
-        if t.get("rule_id") == "build.undeclared_files":
+        if t.get("rule_id") == UNDECLARED_RULE:
             params = t.get("params")
             value = params.get("value") if isinstance(params, dict) else None
             mode = (value or {}).get("mode") if isinstance(value, dict) else None
-            return "warn" if mode == "warn" else "hold"
-    return "hold"
+            return ("warn" if mode == "warn" else "hold"), _is_observing(t)
+    return "hold", False
+
+
+def _undeclared_mode(client: Graphban | None) -> str:
+    """The project's `build.undeclared_files` mode (GRPH-1425): `hold` or `warn`. Anything
+    unreadable — no client, a client not allowed the tool, a server without the rule — is
+    `hold`, today's behaviour: a hold is never loosened by not knowing. While the rule is
+    observing (GRPH-1778) it holds nothing, so it reads `warn`."""
+    mode, observing = _undeclared_rule(client)
+    return "warn" if observing else mode
 
 
 def _refuse_proposal(wave: Wave, branch: str, *, undeclared_mode: str = "hold") -> str:
