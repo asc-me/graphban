@@ -66,6 +66,11 @@ def _in_review(client, key, db, *, supervised: bool, published: bool = False) ->
         "title": "work", "status": "next", "touchpoints": ["backend/app/x.py"]}))["id"]
     assert items_svc.claim_item(db, item, who) is not None
     _ok(_mcp(client, key, "update_item", {"id": item, "status": "review", "agent_id": who}))
+    # GRPH-1730 withholds a branch with no PR. github_url is not something a reviewer
+    # can read, so clearing the branch is still nothing_to_read.
+    db.expire_all()
+    db.get(Item, item).github_url = "https://github.com/o/r/pull/1"
+    db.commit()
     if supervised:
         db.add(AttemptTelemetry(
             id=f"at_{item}", item_id=item, project_id=db.get(Item, item).project_id,

@@ -19,6 +19,18 @@ from app.services import fleet
 from app.services import items as items_svc
 
 
+def _link_pr(item_id: str) -> None:
+    """GRPH-1730 withholds a branch with no PR. The column releases that gate."""
+    from app.db import SessionLocal
+
+    s = SessionLocal()
+    try:
+        s.get(Item, item_id).github_url = "https://github.com/o/r/pull/1"
+        s.commit()
+    finally:
+        s.close()
+
+
 def _ok(client, key, tool, args=None):
     r = client.post("/api/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                                       "params": {"name": tool, "arguments": args or {}}},
@@ -93,6 +105,7 @@ def test_a_reviewing_worker_can_pass_over_its_own_work(client, auth, proj, key):
     _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
     _ok(client, key, "update_item", {"id": theirs["id"], "status": "review",
                                      "agent_id": worker["agent_id"]})
+    _link_pr(theirs["id"])
 
     got = _ok(client, key, "claim_review", {"agent_id": rev["agent_id"], "skip": [mine["id"]]})
 
@@ -112,6 +125,7 @@ def test_a_reviewing_worker_can_hand_back_a_review_claim(client, auth, proj, key
     _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
     _ok(client, key, "update_item", {"id": item["id"], "status": "review",
                                      "agent_id": worker["agent_id"]})
+    _link_pr(item["id"])
     took = _ok(client, key, "claim_review", {"agent_id": rev["agent_id"]})
     assert took["claimed"]
 

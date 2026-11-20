@@ -2269,6 +2269,30 @@ WITHHELD_PUBLISH_PENDING = "publish_pending"
 WITHHELD_NOTHING_TO_READ = "nothing_to_read"
 WITHHELD_OUT_OF_SCOPE = "outside_seat_scope"
 WITHHELD_CAPABILITY = "missing_capability"
+WITHHELD_PR_UNLINKED = "pr_unlinked"
+
+
+def _review_pr_unlinked(it: Item) -> bool:
+    """A review row `sign_off` would refuse `pr_missing`, and nothing else has refused it.
+
+    A branch (or a reported head) with no linked PR. Every `done` refusal so far is
+    `pr_missing`, including none yet — the first reviewer is the one that used to walk
+    into that refusal. A different refusal still gets a reviewer. An owner close is the
+    outcome the no-PR gate does not apply to, so it is not held back here either.
+    """
+    if items_svc.recorded_pr_url(it):
+        return False
+    evidence = [e for e in (it.evidence or []) if isinstance(e, dict)]
+    if any(items_svc.is_pr_url(str(e.get("url") or "")) for e in evidence):
+        return False
+    if not (it.branch or "").strip() and not (getattr(it, "head_commit", "") or "").strip():
+        return False
+    if any(a.get("adapter") == items_svc.OWNER_CLOSE_ADAPTER
+           for a in items_svc.valid_attestations(evidence)):
+        return False
+    refusals = [str(e.get("detail") or "") for e in evidence
+                if str(e.get("detail") or "").startswith("refused at `done` (")]
+    return all(d.startswith("refused at `done` (pr_missing)") for d in refusals)
 
 
 def review_withholding(db: Session, it: Item, *, agent_id: str, me: Agent | None,
@@ -2321,6 +2345,15 @@ def review_withholding(db: Session, it: Item, *, agent_id: str, me: Agent | None
     # defects went unreviewed. Rows that predate the `update_item` gate land here.
     if not items_svc.reviewable_handoff(it):
         return WITHHELD_NOTHING_TO_READ, "it has no branch and no PR url to read"
+    # GRPH-1730. A pushed branch with no linked PR is readable and still not reviewable:
+    # sign_off refuses `pr_missing`, and a reviewer who takes the row holds it for the
+    # lease. `review_held` then hides it from the supervisor, so the PR open is never
+    # retried. Withheld until a PR url is recorded. A second ready row is what gets
+    # handed out instead — sort order used to hand this one out first.
+    if _review_pr_unlinked(it):
+        return WITHHELD_PR_UNLINKED, (
+            "its branch has no linked PR, so sign_off would be refused pr_missing. "
+            "Released when a PR url is recorded on the item")
     # GRPH-827: and inside the scope this seat was minted for. Review is scoped for the same
     # reason building is — and the reviewer is the half that can also SIGN OFF.
     if not items_svc.in_scope(it, scope):

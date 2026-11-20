@@ -1440,9 +1440,23 @@ def _loop(
         # GRPH-1730: a pushed review row with no linked PR is opened here, before a
         # reviewer is spawned. `gh pr create` dying on a rate limit used to be the last
         # try, and every later reviewer was refused `pr_missing` for the same head.
-        if unheld_review and need <= 0 and not review_busy:
+        #
+        # Not gated on `review_busy`. A second ready row spawns a reviewer, and that
+        # seat used to be handed the unlinked row by `claim_review` (it orders by
+        # sort_order). Holding it dropped the row from `unheld_review`, and gating this
+        # call on `not review_busy` then skipped the retry for the whole lease. The
+        # open is retried while that other reviewer is live. `claim_review` withholds
+        # the row (`pr_unlinked`) until the PR is linked, so the spawned seat cannot
+        # take it; the skip on the seat names the same ids.
+        if unheld_review and need <= 0:
             unheld_review, pr_waiting = _pr_opened(
                 unheld_review, repo, base, ci_logged, planner=planner)
+        for row in pr_waiting:
+            wait_line = f"{row.get('id')}: review waits on its PR being opened"
+            if wait_line not in waits:
+                waits.append(wait_line)
+            if wait_line not in wave.review_waits:
+                wave.review_waits.append(wait_line)
         if unheld_review and need <= 0 and not review_busy:
             unheld_review, ci_waiting, ci_blocked = _ci_attested(
                 unheld_review, repo, ci_logged, planner=planner, agent_id=agent_id)
@@ -1474,6 +1488,12 @@ def _loop(
             _cap_children(wave, limits)
             before = len(wave.spawned)
             kids = len(children)
+            # The empty item is deliberate: the seat reviews whatever claim_review
+            # hands it. The unlinked rows are not among those. The skip is the same
+            # list, named in the instruction; the withhold is what enforces it.
+            waiting_ids = tuple(str(r.get("id")) for r in pr_waiting if r.get("id"))
+            if waiting_ids:
+                seat = replace(seat, review_skip=waiting_ids)
             failover(seat, "", "", launch_factory, (adapter, ""))
             if len(children) > kids:
                 review_spawned.append(children[-1])

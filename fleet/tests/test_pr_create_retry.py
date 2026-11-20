@@ -195,3 +195,81 @@ def test_a_repo_that_cannot_propose_does_not_wedge_the_row(monkeypatch):
     ready, waiting = _open(row, _Planner())
 
     assert ready == [row] and not waiting
+
+
+# ---- the loop, not the helper -----------------------------------------------------------------
+# The nine tests above call `_pr_opened` directly. Dropping the waiting row from that
+# helper's return value used to leave `claim_review` free to hand it out, and gating the
+# helper on `not review_busy` then stopped the retry for the whole lease. This one goes
+# through `until.run`.
+# Sabotage: put `and not review_busy` back on the `_pr_opened` call. The second `gh pr
+# create` then lands only after the reviewer has exited, and the assertion below fails.
+
+
+def test_a_second_ready_row_does_not_let_the_reviewer_take_the_one_waiting_on_its_pr(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch,
+):
+    """Two review rows. One already has a PR; one does not, and `gh` is rate-limited.
+
+    The loop still mints a reviewer for the ready row, tells it to skip the waiting
+    one, and calls `gh pr create` again while that reviewer is still alive.
+    """
+    from gbfleet.supervisor import Limits, WaveBase
+    from tests.test_supervisor import KEY, _factory
+    from tests.test_until import _clients
+    from gbfleet.until import run
+
+    def _base(repo, client=None, *, base_branch=""):
+        return WaveBase(ref="main", source="head", note="test base")
+
+    monkeypatch.setattr(until, "resolve_wave_base", _base)
+    gh = _wire(monkeypatch, _Gh(create_error=RATE, rest_code=1))
+    workspace = tmp_path / "ws"
+    here = scripts["works_until_released"].parent
+    minted: list[dict] = []
+    seen: dict = {}
+
+    def _sleep(_seconds: float) -> None:
+        creates = sum(1 for call in gh.calls if call[:2] == ("pr", "create"))
+        if creates >= 2 and "child_gone" not in seen:
+            seen["creates"] = creates
+            seen["child_gone"] = (here / "builder-exited").exists()
+            seen["instructions"] = [
+                path.read_text(encoding="utf-8")
+                for path in workspace.rglob(".gbfleet-instruction")]
+        if creates >= 2:
+            (here / "release").write_text("", encoding="utf-8")
+
+    ready_row = {
+        "id": "GRPH-READY", "status": "review", "branch": "gb/ready",
+        "claimed_by": "GRPH-A1", "review_claimed_by": "",
+        "evidence": [{"kind": "url", "url": URL, "detail": "draft PR opened by gbfleet for gb/ready"}],
+    }
+    wait_row = {
+        "id": "GRPH-WAIT", "status": "review", "branch": "gb/wait",
+        "claimed_by": "GRPH-A1", "review_claimed_by": "",
+        "evidence": [{"kind": "note", "detail": PR_MISSING}],
+    }
+    planner, supervisor = _clients(
+        workspace, review=[wait_row, ready_row], minted_args=minted)
+    result = run(
+        git_repo, _factory(scripts, "works_until_released"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=_sleep, empty_ticks=3,
+        limits=Limits(max_workers=1, max_children=6),
+    )
+
+    assert seen.get("child_gone") is False, seen
+    assert seen["creates"] >= 2
+    assert any(args.get("review_only") for args in minted), minted
+    texts = seen["instructions"]
+    assert texts, "the review seat wrote no instruction"
+    skips = []
+    for text in texts:
+        marked = text.split("skip=", 1)
+        assert len(marked) == 2, text
+        skips.append(json.loads(marked[1].split(". Those rows", 1)[0]))
+    assert any("GRPH-WAIT" in ids and "GRPH-READY" not in ids for ids in skips), skips
+    waits = result.as_json().get("review_waits") or []
+    assert any(w == "GRPH-WAIT: review waits on its PR being opened" for w in waits), waits
+    assert result.reason == "review-unsigned"
