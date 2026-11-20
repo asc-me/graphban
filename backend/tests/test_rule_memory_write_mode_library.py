@@ -79,7 +79,8 @@ def _rule_history(pid):
 def test_the_primitive_is_published_with_a_mode_param_and_the_api_is_bumped():
     c = P.contract()
     prim = next(p for p in c["primitives"] if p["id"] == "memory_write_mode")
-    assert prim["params"] == [{"name": "mode", "type": "str", "required": False}]
+    assert prim["params"] == [{"name": "mode", "type": "str", "required": False,
+                               "comparator": None}]
     assert P._ver(c["api_version"]) >= (1, 10, 0)
     t = {"id": RULE, "stage": "Learn", "title": "t", "summary": "s",
          "primitive": "memory_write_mode", "claims": "enforced", "params": {"mode": "review"}}
