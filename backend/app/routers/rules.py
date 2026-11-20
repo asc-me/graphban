@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.models import Organization, Project, User
-from app.errors import NotFound, Refused, Validation
+from app.errors import AppError, NotFound, Refused, Validation
 from app.schemas import (CustomRuleOut, CustomRuleWrite, RuleProposalOut, RuleProposalWrite, ObservationBackfillOut, ObservationsOut,
                          RecommendedRulesOut, RefusalCoverageOut, RuleSuggestionOut,
                          RulesFlowOut, RulesOut, RuleToggleBatchOut, RuleToggleBatchWrite,
@@ -300,7 +300,9 @@ def create_rule_proposal(project_id: str, body: RuleProposalWrite, db: Session =
     try:
         row, folded = rule_proposals.propose(db, project_id=project_id, proposer_kind=kind,
                                              proposer=who, **data)
-    except Validation as e:
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except AppError as e:
         raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
     if isinstance(principal, User):
         events_svc.record_user(db, principal, action="propose_rule", target_type="rule",

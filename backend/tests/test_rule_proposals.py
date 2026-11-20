@@ -152,3 +152,12 @@ def test_new_rule_folds_across_slugs(client, env):
     other["draft"] = {**other["draft"], "slug": "areas2"}
     b = _call(client, env["key"], "propose_rule", other)["structuredContent"]
     assert b["id"] == a["id"] and b["folded"] is True
+
+
+def test_rest_unknown_rule_is_404_not_500(client, env):
+    """A `tighten` naming a rule the project does not have is a 404 on REST, never a 500."""
+    r = client.post(f"/api/projects/{env['pid']}/rules/proposals", headers=env["h"],
+                    json={"kind": "tighten", "rule_id": "custom.nope",
+                          "params": {"paths": ["a"]}, "citations": env["cites"][:1]})
+    assert r.status_code == 404, r.text
+    assert "custom.nope" in r.json()["detail"]
