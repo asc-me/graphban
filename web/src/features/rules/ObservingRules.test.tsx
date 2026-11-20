@@ -64,7 +64,7 @@ describe("ObservingRules", () => {
   });
 
   it("reads UNMEASURED, not 0, when nothing was measured; a real 0 stays 0", async () => {
-    toggles([toggle({ observation: null }), toggle({ rule_id: "merge.y", title: "Y", observation: obs({ would_hold: 0, would_have: 0 }) })]);
+    toggles([toggle({ observation: obs({ would_hold: null, would_have: null }) }), toggle({ rule_id: "merge.y", title: "Y", observation: obs({ would_hold: 0, would_have: 0 }) })]);
     view();
     expect(await screen.findByTestId("observing-merge.x")).toHaveTextContent("UNMEASURED");
     expect(screen.getByTestId("observing-merge.x")).not.toHaveTextContent("would have held 0");
