@@ -12,7 +12,7 @@ from app.config import settings
 from app.db import get_db
 from app.models import Organization, Project, User
 from app.errors import AppError, NotFound, Refused, Validation
-from app.schemas import (CustomRuleOut, CustomRuleWrite, RuleProposalAdopt, RuleProposalDecisionOut, RuleProposalDismiss, RuleProposalOut, RuleProposalWrite, ObservationBackfillOut, ObservationsOut,
+from app.schemas import (RuleObservationOut, RulePromote, CustomRuleOut, CustomRuleWrite, RuleProposalAdopt, RuleProposalDecisionOut, RuleProposalDismiss, RuleProposalOut, RuleProposalWrite, ObservationBackfillOut, ObservationsOut,
                          RecommendedRulesOut, RefusalCoverageOut, RuleSuggestionOut,
                          RulesFlowOut, RulesOut, RuleToggleBatchOut, RuleToggleBatchWrite,
                          RuleToggleOut, RuleTogglesOut, RuleToggleWrite, UnmappedRefusalsOut)
@@ -25,6 +25,7 @@ from app.services import events as events_svc
 from app.services import gitops as gitops_svc
 from app.services import observations as observations_svc
 from app.services import quotas
+from app.services import rule_observations
 from app.services import rule_pack
 from app.services import rule_proposals
 from app.services import rules as rules_svc
@@ -340,6 +341,25 @@ def dismiss_rule_proposal(project_id: str, proposal_id: int, body: RuleProposalD
                           principal=Depends(get_user_or_agent_key)):
     r = _adoption(rule_proposals.dismiss, db, principal, project_id, proposal_id, body.reason)
     return dict(rule_proposals.view(r), decided_by=r.decided_by, decided_reason=r.decided_reason)
+
+
+@router.post("/projects/{project_id}/rules/{rule_id}/promote", response_model=RuleToggleOut)
+def promote_rule(project_id: str, rule_id: str, body: RulePromote, db: Session = Depends(get_db),
+                 principal=Depends(get_user_or_agent_key)):
+    """A person promotes an observing rule to `active`. Refused for an agent key naming
+    `rules.person_adopts`; would-have history is kept (GRPH-1777)."""
+    out = _adoption(rule_observations.promote, db, principal, project_id, rule_id, body.reason)
+    meta = next((t for t in rule_toggles.effective(db, project_id)
+                 if t["rule_id"] == rule_id), {})
+    return dict(out, stage=meta.get("stage", ""), title=meta.get("title", ""))
+
+
+@router.get("/projects/{project_id}/rules/{rule_id}/observations",
+            response_model=list[RuleObservationOut])
+def rule_observation_history(project_id: str, rule_id: str, db: Session = Depends(get_db),
+                             user: User = Depends(get_current_user)):
+    authz.require_readable(db, user.id, project_id)
+    return rule_observations.history(db, project_id, rule_id)
 
 
 # Org rule toggles are served by the console (GBC-P8). `set_org_toggle` / `org_view` stay

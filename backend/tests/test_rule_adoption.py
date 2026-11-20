@@ -99,9 +99,9 @@ def test_dismiss_needs_reason(client, env):
     assert r.status_code in (403, 422)
 
 
-def test_library_turn_on_adoption_refused_not_enforcing(client, env, monkeypatch):
-    """D5: a library rule cannot start observing before S5, so adopting its `turn_on` is
-    refused rather than switching it on enforcing."""
+def test_library_turn_on_adoption_starts_observing(client, env, monkeypatch):
+    """D5 (S5, GRPH-1777): adopting a library `turn_on` switches the rule on `observing`, so it
+    measures and does not enforce."""
     from app.services import rule_toggles as T
     from app.services.rule_toggles import LibraryRule
     rule = LibraryRule(id=T.EXCLUSIVE_AREAS_RULE, stage="build", title="Areas", summary="s",
@@ -115,15 +115,15 @@ def test_library_turn_on_adoption_refused_not_enforcing(client, env, monkeypatch
     prop = r.json()["id"]
     a = client.post(_base(env) + "/adopt", headers=env["h"],
                     json={"proposal_ids": [prop], "reason": "turn it on"})
-    assert a.status_code == 422 and "GRPH-1777" in a.text and rule.id in a.text, a.text
+    assert a.status_code == 200, a.text
     from app.db import SessionLocal
     db = SessionLocal()
     try:
-        assert T.resolve(db, rule.id, env["pid"])["on"]["value"] is False
+        state = T.resolve(db, rule.id, env["pid"])
+        assert state["on"]["value"] is True and state["state"] == "observing"
     finally:
         db.close()
-    assert client.get(_base(env) + "?status=open", headers=env["h"]).json()[0]["id"] == prop
-    assert not _events(env["pid"], "adopt_rule_proposal")
+    assert _events(env["pid"], "adopt_rule_proposal")[0]["state"] == "observing"
 
 
 def test_tighten_adoption_records_real_state(client, env):
@@ -170,6 +170,9 @@ def test_mixed_batch_refused_at_second_member_applies_nothing(client, env, monke
         "kind": "turn_on", "rule_id": rule.id, "params": {"paths": ["db"]},
         "citations": env["cites"]})
     assert second.status_code == 201, second.text
+    d = client.post(_base(env) + f"/{second.json()['id']}/dismiss", headers=env["h"],
+                    json={"reason": "no"})
+    assert d.status_code == 200, d.text  # a dismissed proposal is no longer open: refused at 2nd
     r = client.post(_base(env) + "/adopt", headers=env["h"],
                     json={"proposal_ids": [first, second.json()["id"]], "reason": "both"})
     assert r.status_code == 422, r.text

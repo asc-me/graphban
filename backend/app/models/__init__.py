@@ -4061,6 +4061,9 @@ class RuleToggle(Base):
     on: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     params: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     locked: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    #: GRPH-1777 (P91 D5): a project row's rule is `observing` while this is set — on, measured,
+    #: not enforced. Promotion clears it; any other write to the row clears it too.
+    observing_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
                                                  onupdate=utcnow)
@@ -4073,6 +4076,23 @@ class RuleToggle(Base):
         UniqueConstraint("rule_id", "org_id", name="uq_rule_toggles_org"),
         UniqueConstraint("rule_id", "project_id", name="uq_rule_toggles_project"),
     )
+
+
+class RuleObservation(Base):
+    """One outcome an observing rule WOULD have had (GRPH-1777 / P91 D5): `would_hold` or
+    `would_refuse`. Rule history, kept for the life of the project: promotion or removal never
+    purges it, and it is attributed to the rule, never to whoever proposed or adopted it."""
+
+    __tablename__ = "rule_observations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    rule_id: Mapped[str] = mapped_column(String, index=True)
+    outcome: Mapped[str] = mapped_column(String)
+    item_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    commit: Mapped[str | None] = mapped_column(String, nullable=True)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class CustomRule(Base):

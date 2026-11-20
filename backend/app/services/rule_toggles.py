@@ -302,9 +302,32 @@ def resolve(db: Session, rule_id: str, project_id: str | None) -> dict:
         return custom_rules.resolve(db, rule_id, project_id)
     rule = _rule(rule_id)
     org_id = _org_of(db, project_id)
-    return _resolve(rule, _mode_layer(db, rule, _row(db, rule_id, project_id=project_id),
-                                      project_id),
-                    _row(db, rule_id, org_id=org_id), org_id)
+    prow = _row(db, rule_id, project_id=project_id)
+    out = _resolve(rule, _mode_layer(db, rule, prow, project_id),
+                   _row(db, rule_id, org_id=org_id), org_id)
+    return _annotate(db, out, prow, project_id)
+
+
+def _annotate(db: Session, out: dict, prow: RuleToggle | None, project_id: str | None) -> dict:
+    """GRPH-1777: a library rule's `state` (`observing` | `active`), and while it observes, what
+    it has recorded and whether a decision is due. A lock fixes the value, so it takes the
+    project's observing with the rest of the project layer. Read on every check: adopt, promote
+    and lock re-evaluate nothing in bulk."""
+    since = prow.observing_since if (
+        prow is not None and not out["locked"] and out["on"]["value"]) else None
+    out["state"] = "observing" if since is not None else "active"
+    if since is not None:
+        from app.services import rule_observations
+        out["observation"] = rule_observations.summary(db, project_id, out["rule_id"], since)
+    return out
+
+
+def observing_since(db: Session, rule_id: str, project_id: str | None):
+    """When the project's rule began observing, or None when it is not observing (off, locked
+    by the org, not a library rule, or active)."""
+    if rule_id not in LIBRARY or not project_id:
+        return None
+    return resolve(db, rule_id, project_id).get("observation", {}).get("since")
 
 
 def refuse_if_locked(db: Session, rule_id: str, project_id: str) -> dict | None:
@@ -410,7 +433,8 @@ def path_classes(db: Session | None, project_id: str | None) -> dict[str, list[s
     return out
 
 
-def done_predicate_list(db: Session, project_id: str | None) -> list[dict]:
+def done_predicate_list(db: Session, project_id: str | None, *,
+                        enforced: bool = False) -> list[dict]:
     """Each predicate `done` needs for a project with where it came from: `deployment` (the
     environment setting, read live, and `suite_green` for an item with code: a branch or commit
     needs a linked PR, and the PR needs CI (GRPH-1633)) or
@@ -423,17 +447,28 @@ def done_predicate_list(db: Session, project_id: str | None) -> list[dict]:
         state = resolve(db, DONE_PREDICATES_RULE, project_id)
         if state["on"]["value"]:
             have = {o["name"] for o in out}
+            observing = state.get("state") == "observing"  # GRPH-1777: measured, not enforced
             for n in (state["params"]["value"] or {}).get("predicates") or []:
                 if n not in have:
-                    out.append({"name": n, "source": "project"})
+                    if observing and enforced:
+                        continue
+                    out.append({"name": n, "source": "project",
+                                **({"observing": True} if observing else {})})
                     have.add(n)
     return out
+
+
+def observed_done_predicates(db: Session, project_id: str | None) -> list[str]:
+    """The predicates an observing `merge.done_predicates` would add to the done gate."""
+    return [p["name"] for p in done_predicate_list(db, project_id)
+            if p.get("observing") and "when" not in p]
 
 
 def done_predicate_names(db: Session, project_id: str | None) -> list[str]:
     """What the done gate requires of every item: the deployment's list plus the project's
     additions. `suite_green` for a linked PR is the cooldown's own gate, not repeated here."""
-    return [p["name"] for p in done_predicate_list(db, project_id) if "when" not in p]
+    return [p["name"] for p in done_predicate_list(db, project_id, enforced=True)
+            if "when" not in p]
 
 
 def effective(db: Session, project_id: str | None) -> list[dict]:
@@ -444,8 +479,10 @@ def effective(db: Session, project_id: str | None) -> list[dict]:
             (RuleToggle.project_id == project_id) if not org_id else
             ((RuleToggle.project_id == project_id) | (RuleToggle.org_id == org_id))))
     } if project_id else {}
-    out = [dict(_resolve(r, _mode_layer(db, r, rows.get((r.id, "project")), project_id),
-                         rows.get((r.id, "org")), org_id),
+    out = [dict(_annotate(db, _resolve(r, _mode_layer(db, r, rows.get((r.id, "project")),
+                                                      project_id),
+                                       rows.get((r.id, "org")), org_id),
+                          rows.get((r.id, "project")), project_id),
                 stage=r.stage, title=r.title)
            for r in LIBRARY.values()]
     for t in out:
@@ -577,6 +614,7 @@ def _stage_project_toggle(db: Session, project_id: str, rule_id: str, changes: d
         db.add(row)
     # A write keeps the params it does not name: they merge onto what holds for the project now.
     _apply(row, rule, changes, copy.deepcopy(before["params"]["value"]))
+    row.observing_since = None  # GRPH-1777: a direct write is immediate; adoption re-arms it
     row.updated_by = user.id
     return row, before, old
 

@@ -26,7 +26,8 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.errors import NotFound, Refused, Validation
-from app.models import CustomRule, Item, MemoryShard, Observation, Project, RuleProposal
+from app.models import (CustomRule, Item, MemoryShard, Observation, Project, RuleProposal,
+                        utcnow)
 from app.services import custom_rules
 from app.services import events as events_svc
 from app.services import rule_pack
@@ -354,17 +355,16 @@ def _stage_adoption(db: Session, user, p: RuleProposal, reason: str, batch: bool
             row.state = "observing"
         state = row.state
     else:
-        if p.kind == "turn_on":
-            # D5: an adopted rule starts observing. A library rule has no observing state yet
-            # (it arrives with S5, GRPH-1777), and switching it on here would enforce at once.
-            raise Validation(
-                f"proposal {p.id} turns on library rule {p.rule_id!r}, which would enforce at "
-                "once: a library rule cannot start observing until S5 (GRPH-1777)",
-                hint="dismiss it, or switch the rule on from the Rules page")
         changes: dict = {"params": copy.deepcopy(p.params or {})}
+        if p.kind == "turn_on":
+            changes["on"] = True
         toggle = T._stage_project_toggle(db, pid, p.rule_id, changes, user)
+        if p.kind == "turn_on":
+            # D5 (GRPH-1777): an adopted library rule starts observing, not enforcing.
+            toggle[0].observing_since = utcnow()
         db.flush()
-        state = "on" if T.resolve(db, p.rule_id, pid)["on"]["value"] else "off"
+        state = ("observing" if p.kind == "turn_on"
+                 else "on" if T.resolve(db, p.rule_id, pid)["on"]["value"] else "off")
     p.status = "adopted"
     p.decided_by = user.handle or user.name
     p.decided_reason = reason

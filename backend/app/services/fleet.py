@@ -3461,6 +3461,13 @@ def require_reviewer_sabotage(db: Session, item: Item, fresh: list) -> None:
     need = max(1, int(params.get("min_tests_failed", 1)))
     best = max((e.get("tests_failed") or 0 for e in items_svc.sabotage_receipts(fresh)),
                default=0)
+    if best < need and state.get("state") == "observing":
+        # GRPH-1777: observing records what it would have refused, and lets the sign-off through.
+        from app.services import rule_observations
+        rule_observations.record(db, item.project_id, SABOTAGE_REQUIRED_RULE, "would_refuse",
+                                 item_id=item.id, commit=item.head_commit,
+                                 detail={"need": need, "best": best})
+        return
     if best < need:
         raise SabotageRequired(
             f"{item.key} cannot be signed off while {SABOTAGE_REQUIRED_RULE} is on without a "
@@ -5097,6 +5104,9 @@ def project_hard_areas(db: Session, project_id: str | None) -> tuple[str, ...]:
     from app.services import rule_toggles
     if rule_toggles.EXCLUSIVE_AREAS_RULE not in rule_toggles.LIBRARY:
         return HARD_AREAS
+    # GRPH-1777: an observing rule holds nothing; `claim_cluster` records what it would have.
+    if rule_toggles.observing_since(db, rule_toggles.EXCLUSIVE_AREAS_RULE, project_id):
+        return ()
     return rule_toggles.exclusive_paths(db, project_id)
 
 
@@ -5266,6 +5276,11 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     #: (mine, theirs) for the first collision of each refused cluster — the refusal names both.
     collided: list[tuple[str, str]] = []
     hards = project_hard_areas(db, project_id)
+    # GRPH-1777: the paths an OBSERVING `plan.exclusive_areas` would hold, else none.
+    from app.services import rule_toggles as rule_toggles_mod
+    observed = (rule_toggles_mod.exclusive_paths(db, project_id)
+                if not hards and rule_toggles_mod.observing_since(
+                    db, rule_toggles_mod.EXCLUSIVE_AREAS_RULE, project_id) else ())
 
     for cluster in collision_svc.clusters_for_project(db, project_id,
                                                        lease_seconds=lease_seconds,
@@ -5275,6 +5290,19 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
         free = set().union(*[o for o in overrides if members <= o]) if overrides else set()
         blocked = [r.area for r in taken if r.agent_id != agent_id and r.item_id not in free]
         overlap = hard_collide(cluster.get("areas") or [], blocked, hards)
+        if not overlap and observed:
+            would = hard_collide(cluster.get("areas") or [], blocked, observed)
+            if would:
+                from app.services import rule_observations
+                for r in taken:
+                    if r.agent_id != agent_id and r.item_id not in free and hard_collide(
+                            cluster.get("areas") or [], [r.area], observed):
+                        rule_observations.record(
+                            db, project_id, rule_toggles_mod.EXCLUSIVE_AREAS_RULE, "would_hold",
+                            item_id=(cluster.get("items") or [None])[0],
+                            detail={"areas": would, "held_by": r.agent_id,
+                                    "held_item": r.item_id})
+                        break
         if overlap:
             if len(collided) < 3:
                 collided.extend(colliding_pairs(cluster.get("areas") or [], blocked, hard=True,

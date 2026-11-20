@@ -1507,6 +1507,13 @@ def require_engine_evidence(db: Session, item: Item, incoming, head: str | None 
                    f"CI's {engine} run: {CI_PREDICATE} must be attested at its current head "
                    + (f"{at[:12]}" if at else "(none is recorded; push and let CI report)")
                    + ", and an attestation at another commit or a failing one does not count.")
+    if state.get("state") == "observing":
+        # GRPH-1777: observing records what it would have refused, and lets the item through.
+        from app.services import rule_observations
+        rule_observations.record(db, item.project_id, ENGINE_EVIDENCE_RULE, "would_refuse",
+                                 item_id=item.id, commit=(head or item.head_commit),
+                                 detail={"path": path, "engine": engine})
+        return
     raise EvidenceRequired(
         f"{item.key} cannot move to review while {ENGINE_EVIDENCE_RULE} is on: it touches "
         f"{path} and carries no test receipt recording a full {engine} suite run.{waiting} Record one "
@@ -1726,6 +1733,16 @@ def refuse_if_predicates_missing(db, item, merged, head) -> None:
     if CI_PREDICATE in required and head and external_ci_green(db, item, merged, [head]):
         required = [n for n in required if n != CI_PREDICATE]
     absent = missing_predicates(merged, required, commit=head or None)
+    if not absent:
+        # GRPH-1777: an observing `merge.done_predicates` records what it would have refused.
+        from app.services import rule_observations, rule_toggles
+        watched = missing_predicates(
+            merged, rule_toggles.observed_done_predicates(db, item.project_id),
+            commit=head or None)
+        if watched:
+            rule_observations.record(db, item.project_id, rule_toggles.DONE_PREDICATES_RULE,
+                                     "would_refuse", item_id=item.id, commit=head or None,
+                                     detail={"missing": watched})
     if absent:
         attested = sorted(attested_predicates(merged, commit=head or None))
         failed = [n for n in absent
