@@ -134,6 +134,28 @@ def test_a_grok_registration_is_stored_as_xai(db, proj, key):
     assert from_name.capabilities["model"] == "grok-4.7"
 
 
+@pytest.mark.parametrize("declared, stored", [
+    ("claude", "anthropic"),
+    ("agy", "google"),
+    ("qwen-code", "alibaba"),
+    ("dsh", "deepseek"),
+    ("cursor-agent", "cursor"),
+    ("codex", "openai"),
+    ("gbagent", "gbagent"),
+    ("Anthropic", "anthropic"),
+    (" acme-labs ", " acme-labs "),
+])
+def test_registration_stores_the_company_spelling(db, proj, key, declared, stored):
+    """GRPH-1090. The roster and the predicate read one spelling. An unknown
+    string is stored unchanged — it is not mapped onto a company."""
+    a = fleet.register_agent(
+        db, project_id=proj, api_key=key,
+        capabilities={"vendor": declared, "model": "m", "tier": "cheap"})
+
+    assert a.capabilities["vendor"] == stored
+    assert a.capabilities["model"] == "m"
+
+
 def test_a_missing_vendor_is_not_filled_in_from_the_model_id(db, proj, key):
     """A model id of `grok-4.7` with no vendor is an absence, not xAI. Inferring one
     would make two silent agents the same vendor."""

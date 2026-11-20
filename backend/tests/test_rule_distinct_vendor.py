@@ -138,6 +138,22 @@ def test_vendor_aliases_are_one_vendor(client, key, monkeypatch):
     assert RULE in _refusal(_sign(client, key, item, rev))["message"]
 
 
+def test_an_adapter_name_is_not_a_different_vendor(client, key, monkeypatch):
+    """GRPH-1090. The gate and the receipt share `canonical_vendor`. `claude`
+    reviewing `anthropic` is the same company, so the distinct-vendor rule refuses."""
+    _library(monkeypatch, on=True)
+    item, rev = _ready(client, key, builder="claude", reviewer="anthropic")
+
+    assert RULE in _refusal(_sign(client, key, item, rev))["message"]
+
+
+def test_claude_reviewing_grok_still_counts_as_distinct(client, key, monkeypatch):
+    _library(monkeypatch, on=True)
+    item, rev = _ready(client, key, builder="grok", reviewer="claude")
+
+    assert _ok(client, key, "sign_off", {"id": item, "agent_id": rev})["status"] == "done"
+
+
 def test_an_unknown_property_refuses_rather_than_passes(client, key, monkeypatch):
     _library(monkeypatch, on=True, params={"property": "distinct_planet"})
     item, rev = _ready(client, key, builder="anthropic", reviewer="openai")

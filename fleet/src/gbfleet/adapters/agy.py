@@ -57,6 +57,7 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 class Agy(Adapter):
     name = "agy"
+    vendor = "google"
     binary = "agy"
     support = Support(minimum=(1, 3), maximum=(2, 0), verified_against="1.3.5")
     notes = (
