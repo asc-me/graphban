@@ -43,6 +43,9 @@ os.environ["LOG_EXPORT_SECONDS"] = "0"
 os.environ["AUTO_UPDATE_TICK_SECONDS"] = "0"
 os.environ["QUESTION_SWEEP_SECONDS"] = "0"
 os.environ["TLS_SYNC_SECONDS"] = "0"
+# The project-sync flush is OFF for the suite (GRPH-1735). Its tests drive `flush_once`
+# on a fake clock. A timer that reached the network mid-test would be a flake.
+os.environ["SYNC_FLUSH_SECONDS"] = "0"
 # The proposal pull is OFF for the suite (GRPH-1737). Its tests drive
 # `project_sync_proposals.run_due` on a fake clock. A live tick would call the
 # console, or the absence of one, in the middle of unrelated tests.
