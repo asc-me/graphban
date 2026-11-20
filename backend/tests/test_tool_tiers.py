@@ -414,7 +414,8 @@ CORE_TOKENS = 9178  # GRPH-1695: +26, distinct_from/found_during on create_item;
 # this tier; CORE_TOKENS does not move. Same delta as MEASURED_TOKENS 18021 -> 18037.
 # prd 3864 -> 3863 (GRPH-1690): `depends_on`, `drop_links` and `add_links`, paid by
 # dropping the touchpoints and splits property descriptions. CORE_TOKENS does not move.
-TIER_TOKENS = {"prd": 3863, "codegraph": 1795, "fleet": 1733, "misc": 1577}
+TIER_TOKENS = {"prd": 3863, "codegraph": 1795, "fleet": 1733, "misc": 1586}
+# misc 1577 -> 1586 (GRPH-1780, P91 S8): `propose_rule` names the guidance draft.
 # misc 1463 -> 1577 (GRPH-1775, P91 S3): `propose_rule`. The whole bill is this tier.
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.
 # codegraph 1786 -> 1789 (GRPH-1060): record_scan's category enum gains "deadcode".

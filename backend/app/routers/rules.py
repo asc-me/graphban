@@ -326,15 +326,16 @@ def list_rule_guidance(project_id: str, status: str | None = None,
 
 @router.post("/projects/{project_id}/rules/guidance/{guidance_id}/{decision}",
              response_model=RuleGuidanceOut)
-def decide_rule_guidance(project_id: str, guidance_id: int, decision: str,
+def decide_rule_guidance(project_id: str, guidance_id: str, decision: str,
                          db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """A person adopts or dismisses guidance (`rules.person_adopts`). `get_current_user` is a
-    person's token; an agent key does not reach this route."""
-    if decision not in ("adopt", "dismiss"):
-        raise HTTPException(404, "no such decision")
+    person's token; an agent key does not reach this route. The project check runs before the
+    id and decision are read, so another org's caller is refused on the project alone."""
     authz.require_writable(db, user.id, project_id)
+    if decision not in ("adopt", "dismiss") or not guidance_id.isdigit():
+        raise HTTPException(404, "no such guidance decision")
     try:
-        row = rule_proposals.decide_guidance(db, user, project_id, guidance_id,
+        row = rule_proposals.decide_guidance(db, user, project_id, int(guidance_id),
                                              adopt=decision == "adopt")
     except NotFound as e:
         raise HTTPException(404, str(e)) from e

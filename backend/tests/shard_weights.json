@@ -367,6 +367,7 @@
 "tests/test_rule_pack_multiworker.py": 0.27,
 "tests/test_rule_pack_p74.py": 0.04,
 "tests/test_rule_proposals.py": 8.05,
+"tests/test_rule_guidance.py": 3.0,
 "tests/test_rule_reopen_on_red.py": 0.84,
 "tests/test_rule_sabotage_required.py": 3.25,
 "tests/test_rule_staff_every_row.py": 0.84,
