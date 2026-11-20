@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import re
+from datetime import datetime, timezone
 from collections.abc import Callable
 from typing import NoReturn
 
@@ -26,7 +27,8 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.errors import NotFound, Refused, Validation
-from app.models import CustomRule, Item, MemoryShard, Observation, Project, RuleProposal
+from app.models import (CustomRule, Item, MemoryShard, Observation, PrimitiveGapCount, Project,
+                        RuleGuidance, RuleProposal)
 from app.services import custom_rules
 from app.services import events as events_svc
 from app.services import rule_pack
@@ -439,3 +441,96 @@ def dismiss(db: Session, actor: object, project_id: str, proposal_id: int,
         meta={"proposal_id": p.id, "reason": why, "history": _history(p)})
     db.commit()
     return p
+
+
+# ---- guidance (GRPH-1780 / P91 D8) -------------------------------------------------------
+# A requirement no primitive can express is filed as advisory text under a stage. It is cited
+# like a proposal, adopted only by a person, and shown to agents in the delegation brief.
+
+GUIDANCE_KIND = "guidance"
+GUIDANCE_STATUSES = ("open", "adopted", "dismissed")
+LABEL_MAX = 60
+TEXT_MAX = 400
+
+#: Item status -> the stage an agent working it is in. Used to pick the guidance for a brief.
+STAGE_OF_STATUS = {"backlog": "Plan", "next": "Plan", "blocked": "Plan", "in_progress": "Build",
+                   "review": "Review", "done": "Merge"}
+
+
+def file_guidance(db: Session, *, project_id: str, proposer_kind: str, proposer: str,
+                  stage: object, label: object, text: object, citations: object) -> RuleGuidance:
+    """File guidance. Cited or refused. Counts one primitive gap by stage and label, never text."""
+    if proposer_kind not in PROPOSER_KINDS:
+        raise Validation(f"proposer_kind must be one of {PROPOSER_KINDS}")
+    project = db.get(Project, project_id)
+    if project is None:
+        raise NotFound(f"project {project_id!r} not found")
+    if stage not in rule_pack.STAGES:
+        raise Validation(f"`stage` must be one of {rule_pack.STAGES}")
+    label = label.strip() if isinstance(label, str) else ""
+    text = text.strip() if isinstance(text, str) else ""
+    if not label or len(label) > LABEL_MAX:
+        raise Validation(f"`label` is a short name, 1-{LABEL_MAX} characters")
+    if not text or len(text) > TEXT_MAX:
+        raise Validation(f"`text` must be 1-{TEXT_MAX} characters")
+    cites = _citations(db, project, citations)
+    row = RuleGuidance(project_id=project_id, stage=stage, label=label, text=text,
+                       citations=cites, proposer=proposer, proposer_kind=proposer_kind,
+                       status="open")
+    db.add(row)
+    gap = db.scalar(select(PrimitiveGapCount).where(
+        PrimitiveGapCount.project_id == project_id, PrimitiveGapCount.stage == stage,
+        PrimitiveGapCount.label == label))
+    if gap is None:
+        db.add(PrimitiveGapCount(project_id=project_id, stage=stage, label=label, count=1))
+    else:
+        gap.count = (gap.count or 0) + 1
+    db.flush()
+    db.commit()
+    return row
+
+
+def guidance_view(row: RuleGuidance) -> dict:
+    return {"id": row.id, "project_id": row.project_id, "kind": GUIDANCE_KIND,
+            "stage": row.stage, "label": row.label, "text": row.text,
+            "citations": row.citations, "proposer": row.proposer,
+            "proposer_kind": row.proposer_kind, "status": row.status,
+            "created_at": row.created_at.isoformat() if row.created_at else None}
+
+
+def list_guidance(db: Session, project_id: str, status: str | None = None) -> list[dict]:
+    q = select(RuleGuidance).where(RuleGuidance.project_id == project_id)
+    if status:
+        q = q.where(RuleGuidance.status == status)
+    return [guidance_view(r) for r in db.scalars(q.order_by(RuleGuidance.id))]
+
+
+def decide_guidance(db: Session, user, project_id: str, guidance_id: int, *,
+                    adopt: bool) -> RuleGuidance:
+    """A person adopts or dismisses open guidance. No agent path reaches this (`rules.person_adopts`)."""
+    row = db.get(RuleGuidance, guidance_id)
+    if row is None or row.project_id != project_id:
+        raise NotFound(f"guidance {guidance_id!r} not found")
+    if row.status != "open":
+        raise Validation(f"guidance {guidance_id} is already {row.status}")
+    row.status = "adopted" if adopt else "dismissed"
+    row.decided_by = getattr(user, "handle", None) or getattr(user, "name", None) or user.id
+    row.decided_at = datetime.now(timezone.utc)
+    db.commit()
+    return row
+
+
+def adopted_for_stage(db: Session, project_id: str, stage: str, limit: int) -> list[dict]:
+    """Adopted guidance for one stage, oldest first, as `{label, text}` for a brief."""
+    rows = db.scalars(select(RuleGuidance).where(
+        RuleGuidance.project_id == project_id, RuleGuidance.stage == stage,
+        RuleGuidance.status == "adopted").order_by(RuleGuidance.id).limit(limit)).all()
+    return [{"label": r.label, "text": r.text} for r in rows]
+
+
+def gap_counts(db: Session, project_id: str) -> list[dict]:
+    """Stage, label and count. The copied text is not stored here and never appears."""
+    rows = db.scalars(select(PrimitiveGapCount).where(
+        PrimitiveGapCount.project_id == project_id)
+        .order_by(PrimitiveGapCount.stage, PrimitiveGapCount.label)).all()
+    return [{"stage": r.stage, "label": r.label, "count": int(r.count or 0)} for r in rows]

@@ -62,6 +62,8 @@ UNDECLARED = "undeclared"
 #: D17: the brief's caps. Response size never touches the manifest ceiling.
 SUMMARY_MAX = 600
 LESSONS_MAX = 5
+#: P91 D8: adopted guidance in a brief. Each entry is capped by its filing (`TEXT_MAX`).
+GUIDANCE_MAX = 3
 NOTE_MAX = 200
 #: PRD-38 D10 / PRD-41 D15: `measured_for_lane` plus `capabilities` stay inside this
 #: serialised bound. A result payload that grows quietly costs every spawn's context.
@@ -353,7 +355,7 @@ def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[
           attempts: list[dict], test_scope: str | None = None,
           test_engines: list[str] | None = None,
           checklist_matched: list[str] | None = None, found_bug: str | None = None,
-          answered: list[dict] | None = None) -> str:
+          answered: list[dict] | None = None, guidance: list[dict] | None = None) -> str:
     """Prose for a spawn prompt, derived from the fields and nothing else (D16). Deliberately
     excludes the lane and tier suggestions so a pasted brief cannot become the default."""
     lines = [f"Item {item.key}: {item.title}"]
@@ -395,6 +397,8 @@ def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[
         else:
             lines.append(f"Answered {a['wait']}: {a['question']} -> {a['answer']}"
                          f" ({_answer_source_text(a)})")
+    for g in guidance or []:
+        lines.append(f"Guidance ({g['label']}, advisory): {g['text']}")
     if test_scope:
         lines.append(test_scope_line(test_scope, test_engines))
         if test_scope in _SCOPES_WITH_CI_HANDOFF:
@@ -498,11 +502,17 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
     test_engines = rule_toggles.test_scope_engines(db, item.project_id)
     found_bug = rule_toggles.found_bug_mode(db, item.project_id)
     answered = answered_decisions(db, item)
+    from app.services import rule_proposals
+    guidance = rule_proposals.adopted_for_stage(
+        db, item.project_id, rule_proposals.STAGE_OF_STATUS.get(item.status, "Build"),
+        GUIDANCE_MAX)
     return {
         "item": item.key,
         "title": item.title,
         "summary": summary,
         "answered_decisions": answered,
+        # P91 D8: adopted advisory text for this item's stage. Not enforced.
+        "guidance": guidance,
         "touchpoints": touchpoints,
         "blocked_by": blocked_by,
         "ready": bool(items_svc.claimable(item)) and prioritization.ready(ctx, item),
@@ -522,7 +532,7 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
                       checklist=checklist, lessons=lessons, previous=previous,
                       attempts=attempts, test_scope=test_scope,
                       test_engines=test_engines, checklist_matched=checklist_matched, found_bug=found_bug,
-                      answered=answered),
+                      answered=answered, guidance=guidance),
         "test_scope": test_scope,
         "found_bug": found_bug,
         # PRD-41 D5 / D15: the set the resolver will score, inside the measured_for_lane cap.
