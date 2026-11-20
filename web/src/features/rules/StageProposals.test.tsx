@@ -100,4 +100,12 @@ describe("StageProposals", () => {
     expect(row).toHaveTextContent("sam");
     expect(row).toHaveTextContent("Why: outages");
   });
+
+  it("matches the API's capitalised stage against the lowercase stage id", async () => {
+    vi.mocked(api.ruleProposals).mockResolvedValue([prop({ id: 7, draft: { stage: "Plan", title: "Rule 7" } })]);
+    vi.mocked(api.customRules).mockResolvedValue([{ ...custom, stage: "Plan" }]);
+    view();
+    expect(await screen.findByTestId("proposal-7")).toHaveTextContent("Rule 7");
+    expect(screen.getByTestId("custom-rule-custom.x")).toHaveTextContent("Custom");
+  });
 });

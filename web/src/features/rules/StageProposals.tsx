@@ -159,10 +159,13 @@ export function StageProposals({ stageId, ruleIds }: { stageId: string; ruleIds:
   const [reason, setReason] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
 
+  // The API carries the primitive's capitalised stage ("Plan"); RulesView's stage ids are lowercase.
+  const here = stageId.toLowerCase();
+  const sameStage = (s: unknown) => typeof s === "string" && s.toLowerCase() === here;
   const mine = (proposals ?? []).filter(
-    (p) => p.status === "open" && (p.draft?.stage === stageId || ruleIds.includes(p.rule_id)),
+    (p) => p.status === "open" && (sameStage(p.draft?.stage) || ruleIds.includes(p.rule_id)),
   );
-  const customHere = (custom ?? []).filter((r) => r.stage === stageId);
+  const customHere = (custom ?? []).filter((r) => sameStage(r.stage));
   if (!mine.length && !customHere.length) return null;
 
   const ids = mine.filter((p) => !p.loosens && picked.has(p.id)).map((p) => p.id);
