@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 380 of the 380. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 382 of the 382. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
