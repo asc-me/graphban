@@ -231,7 +231,7 @@ A project can only *change* a rule once the box's pack carries it.
 
 ## Primitive stage and direction (P91 S1)
 
-Every primitive in the contract (`docs/rule-primitive-contract.json`, primitive API 1.10.0)
+Every primitive in the contract (`docs/rule-primitive-contract.json`, primitive API 1.11.0)
 declares a `stage` (one of the seven) and an `on_direction`: whether switching the rule on
 `tighten`s or `loosen`s what agents may do (`generated_files` loosens; the rest tighten). A param
 may declare a `comparator` (`greater_tightens`, `greater_loosens`, `superset_tightens`,

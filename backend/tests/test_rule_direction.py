@@ -49,5 +49,19 @@ def test_direction_others():
     assert d("nope", None, {}) == "not_proposable"
 
 
-def test_sabotage_receipt_direction_is_contract_driven():
-    assert rp.PRIMITIVES["generated_files"].on_direction == "loosen"
+def test_direction_is_contract_driven(monkeypatch):
+    """`direction` reads the contract alone: flip a primitive's `on_direction` and the answer flips."""
+    import dataclasses
+    p = rp.PRIMITIVES["generated_files"]
+    assert rp.direction("generated_files", None, {"paths": ["a"]}) == "loosen"
+    monkeypatch.setitem(rp.PRIMITIVES, "generated_files",
+                        dataclasses.replace(p, on_direction="tighten"))
+    assert rp.direction("generated_files", None, {"paths": ["a"]}) == "tighten"
+
+
+def test_contract_publishes_direction_under_its_own_minor():
+    """Stage/direction is additive: it ships under a minor above 1.10.0 (memory_write_mode's)."""
+    c = rp.contract()
+    assert rp._ver(c["api_version"]) >= (1, 11, 0)
+    gf = next(p for p in c["primitives"] if p["id"] == "generated_files")
+    assert gf["stage"] == "Build" and gf["on_direction"] == "loosen"
