@@ -371,6 +371,8 @@ def destination_fact(db: Session, *, editable: bool = False) -> dict:
         "previous": {"path": row.previous_path} if row.previous_path else None,
         "editable": bool(editable) and not linked,
         "publishing": bool(row.publish_enabled),
+        # Whether a credential is set, and nothing else: never the path, never the bytes.
+        "credential": {"set": credential_set(row)},
         "pull": {
             "state": row.destination_pull_state or None,
             "reason": row.destination_pull_reason or "",
@@ -557,3 +559,131 @@ def publish_target(db: Session) -> dict | None:
     if source == "local" and row.repo_path and row.repo_branch:
         return {"kind": "path", "path": row.repo_path, "branch": row.repo_branch}
     return None
+
+
+# ---- opt in (GRPH-1762) ---------------------------------------------------------------------
+# Publishing is a switch on this deployment, default off, turned on only by a box admin (the
+# router checks who; this module is principal-free). Turning it on is refused, and the switch
+# stays off, while the destination or the credential is missing. A destination change turns it
+# off (`save_local`, `_adopt`, `note_link`, `note_unlink`) and leaves the credential in place.
+
+CREDENTIAL_FILE = "file"
+CREDENTIAL_GIT = "git"
+REDACTED = "[credential]"
+
+
+class PublishRefused(Exception):
+    """Turning publishing on was refused. `field` names what is missing; the message never
+    carries the credential path or its bytes."""
+
+    def __init__(self, field: str, message: str):
+        super().__init__(message)
+        self.field = field
+
+
+def credential_set(row: SyncStorageConfig) -> bool:
+    mode = row.credential_mode or ""
+    return mode == CREDENTIAL_GIT or (mode == CREDENTIAL_FILE and bool(row.credential_path))
+
+
+def save_credential(db: Session, *, path: str | None) -> dict:
+    """Set the credential: a path to a file on this box, or empty to use the credential the
+    box's git installation already has for the remote. `None` clears it (not set). The file
+    is not read here — the push reads it, before it fetches — so an unreadable file is saved.
+    A credential change does not turn publishing on or off."""
+    row = get_config(db)
+    if path is None:
+        row.credential_mode, row.credential_path = "", ""
+    else:
+        value = (path or "").strip()
+        if not value:
+            row.credential_mode, row.credential_path = CREDENTIAL_GIT, ""
+        else:
+            if len(value) > MAX_PATH or "\x00" in value or not os.path.isabs(value):
+                # The value is not echoed: it may be the secret itself pasted in the wrong box.
+                raise errors.Validation("credential must be an absolute path to a file on this box")
+            row.credential_mode, row.credential_path = CREDENTIAL_FILE, os.path.normpath(value)
+    db.commit()
+    return destination_fact(db, editable=True)
+
+
+def _missing_destination(db: Session) -> str | None:
+    """The first empty destination field, by its name on the panel, or None."""
+    row = get_config(db)
+    source = row.destination_source or ""
+    if source == "org":
+        if not row.received_url:
+            return "url"
+        return None if row.received_branch else "branch"
+    if source == "local":
+        if not row.repo_path:
+            return "path"
+        return None if row.repo_branch else "branch"
+    # Nothing saved yet: a linked box is waiting on the org's URL, an unlinked one on its path.
+    return "url" if is_linked(db) else "path"
+
+
+def redact(db: Session, text: str) -> str:
+    """`text` with the credential path and the credential file's bytes removed. Every publish
+    error goes through this before it is stored or answered. A file this box cannot read has
+    no bytes to leak; its path is still removed."""
+    text = str(text or "")
+    row = get_config(db)
+    if (row.credential_mode or "") != CREDENTIAL_FILE or not row.credential_path:
+        return text
+    secrets: list[str] = [row.credential_path]
+    try:
+        with open(row.credential_path, "rb") as fh:
+            raw = fh.read(65536)
+    except OSError:
+        raw = b""
+    if raw:
+        decoded = raw.decode("utf-8", "replace")
+        secrets.append(decoded)
+        secrets.extend(line.strip() for line in decoded.splitlines())
+    # Longest first, so the whole file goes before any one line of it.
+    for secret in sorted({s for s in secrets if len(s) >= 4}, key=len, reverse=True):
+        text = text.replace(secret, REDACTED)
+    return text
+
+
+def _push_now(db: Session) -> dict:
+    """One push of the current earned set. The push itself is The push (GRPH-1764,
+    `services/publication_push.py`); until that module is on this deployment the answer is
+    `not_run` with that reason — an absence, never a published result."""
+    try:
+        from app.services import publication_push  # type: ignore[attr-defined]
+    except ImportError:
+        return {"result": "not_run", "reason": "this deployment has no push yet"}
+    return publication_push.push(db)
+
+
+def set_publishing(db: Session, *, enabled: bool, push=None) -> dict:
+    """Turn publishing on or off. On is refused — the switch stays off — when a destination
+    field or the credential is empty; the refusal names that field. On, once accepted, runs
+    one push of the current earned set; a push failure leaves the switch on and every ledger
+    row as it was, and its reason is redacted. Off never pushes. On while already on pushes
+    nothing."""
+    row = get_config(db)
+    if not enabled:
+        row.publish_enabled = False
+        db.commit()
+        return {**destination_fact(db, editable=True), "push": None}
+    missing = _missing_destination(db)
+    if missing:
+        raise PublishRefused(missing, f"the destination {missing} is empty")
+    if not credential_set(row):
+        raise PublishRefused("credential", "the credential is not set")
+    if row.publish_enabled:
+        return {**destination_fact(db, editable=True), "push": None}
+    row.publish_enabled = True
+    db.commit()
+    try:
+        outcome = dict((push or _push_now)(db) or {})
+    except Exception as e:  # noqa: BLE001 — a push failure never undoes the switch or a row
+        db.rollback()
+        outcome = {"result": "failed", "reason": f"{type(e).__name__}: {e}"}
+    for key in ("reason", "error"):
+        if key in outcome:
+            outcome[key] = redact(db, outcome[key])
+    return {**destination_fact(db, editable=True), "push": outcome}

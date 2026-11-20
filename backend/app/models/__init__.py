@@ -2402,6 +2402,15 @@ class SyncStorageConfig(Base):
         String(16), default="", server_default="", nullable=False)
     destination_pull_reason: Mapped[str] = mapped_column(
         String(400), default="", server_default="", nullable=False)
+    # Publish credential (GRPH-1762). `credential_mode` is `` (not set) | file | git. `git`
+    # means the box uses whatever credential its git installation already has for the remote;
+    # `file` names a file on this box. The path and the bytes never leave the box: no
+    # response, console push, repo file or publish error carries them. A destination change
+    # that turns publishing off leaves both columns as they are.
+    credential_mode: Mapped[str] = mapped_column(String(8), default="", server_default="",
+                                                 nullable=False)
+    credential_path: Mapped[str] = mapped_column(String(1024), default="", server_default="",
+                                                 nullable=False)
 
 
 class CodeSyncState(Base):
