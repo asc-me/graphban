@@ -318,6 +318,148 @@ def test_decompose_flags_an_oversized_section_and_splits_three_ways(client, auth
     assert again["proposals"] == []
 
 
+def test_named_design_pages_become_a_design_block_and_a_ui_item(client, auth):
+    """A section that names two design pages files an item holding both, plus a UI item."""
+    from sqlalchemy import select
+
+    from app.models import Link
+    from tests.prd_approve import approve_id
+
+    prd = client.post("/api/prds", json={
+        "title": "Line Spec",
+        "body": (
+            "# Line Spec\n\n## The line\nList unscoped fixes.\n\n"
+            "Design: https://claude.ai/artifact/abc\n"
+            "Pages: Fix Dialog, Tracker - File a Fix\n\n"
+            "## Acceptance criteria\n### The line\n- unscoped fixes are listed\n"
+        ),
+    }, headers=auth).json()
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    by = {p["section"]: p for p in dry["proposals"]}
+    described = by["The line"]["description"]
+    assert "## Design" in described
+    assert "https://claude.ai/artifact/abc" in described
+    assert "Fix Dialog" in described and "Tracker - File a Fix" in described
+    assert len(dry["ui_items"]) == 1
+    ui = dry["ui_items"][0]
+    assert ui["section"] == "The line" and ui["depends_on"] == "The line"
+    assert ui["touchpoints"] == ["web/"]
+    assert "Fix Dialog" in ui["description"] and "Tracker - File a Fix" in ui["description"]
+    assert dry["ui_without_design"] == [] and dry["ui_skipped"] == []
+
+    approve_id(prd["id"])
+    made = client.post(f"/api/prds/{prd['id']}/decompose?create=true", headers=auth).json()
+    assert len(made["created"]) == 2
+    db = SessionLocal()
+    items = {db.get(items_svc.Item, i).title: db.get(items_svc.Item, i) for i in made["created"]}
+    behaviour, ui_item = items["Implement: The line"], items["Implement: The line UI"]
+    assert "Fix Dialog" in behaviour.description and "Tracker - File a Fix" in behaviour.description
+    assert ui_item.touchpoints == ["web/"] and ui_item.prd_section == "The line"
+    assert ui_item.status == "backlog"
+    link = db.scalars(select(Link).where(Link.a == ui_item.id, Link.b == behaviour.id)).first()
+    assert link is not None and link.type == "dependency"
+    db.close()
+
+
+def test_ui_mention_without_a_design_page_is_listed(client, auth):
+    prd = client.post("/api/prds", json={
+        "title": "Bare UI",
+        "body": "# Bare\n\n## The screen\nThe UI shows the count.\n\n## The line\nStore the count.\n",
+    }, headers=auth).json()
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    assert dry["ui_without_design"] == ["The screen"]
+    assert dry["ui_items"] == []
+
+
+def test_web_only_section_names_pages_and_says_why_it_did_not_split(client, auth):
+    prd = client.post("/api/prds", json={
+        "title": "Web only",
+        "body": (
+            "# Web\n\n## The line\nDraw the row.\n\n"
+            "Design: https://claude.ai/artifact/abc\n"
+            "Pages: Fix Dialog, Tracker - File a Fix\n\n"
+            "## Acceptance criteria\n### The line\n- the row is drawn\n"
+        ),
+    }, headers=auth).json()
+    db = SessionLocal()
+    out = prd_svc.decompose(
+        db, prd_svc.get_prd(db, prd["id"]),
+        touchpoints={"The line": ["web/src/Line.tsx"]})
+    db.close()
+    assert out["ui_items"] == []
+    assert out["ui_skipped"] == [{
+        "section": "The line",
+        "why": prd_svc._UI_ALREADY_WEB,
+    }]
+    assert out["proposals"][0]["touchpoints"] == ["web/src/Line.tsx"]
+    assert "Fix Dialog" in out["proposals"][0]["description"]
+    assert "Tracker - File a Fix" in out["proposals"][0]["description"]
+
+
+def test_a_framed_section_with_design_pages_says_why_no_ui_item(client, auth):
+    prd = client.post("/api/prds", json={
+        "title": "Framed",
+        "body": (
+            "# Framed\n\n## Goals\nShip the line.\n\n"
+            "Design: https://claude.ai/artifact/abc\n"
+            "Pages: Home\n\n"
+            "## The line\nStore the count.\n"
+        ),
+    }, headers=auth).json()
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    assert dry["ui_items"] == []
+    assert dry["ui_skipped"] == [{
+        "section": "Goals",
+        "why": "this section is not filed as build work, so no UI item was hung off it",
+    }]
+
+
+def test_a_split_section_carries_the_design_block_and_files_a_ui_item(client, auth):
+    """An oversized section filed as pieces still carries ## Design, and one UI item depends on each piece."""
+    from sqlalchemy import select
+
+    from app.models import Link
+    from tests.prd_approve import approve_id
+
+    body = (
+        "# Spec\n\n## Work\n"
+        "Design: https://claude.ai/artifact/abc\n"
+        "Pages: Fix Dialog, Tracker - File a Fix\n\n"
+        "### One\ndo the first\n### Two\ndo the second\n### Three\ndo the third\n\n"
+        "## Acceptance criteria\n"
+        "### One\n- first is done\n### Two\n- second is done\n### Three\n- third is done\n"
+    )
+    prd = client.post("/api/prds", json={"title": "Split Design", "body": body}, headers=auth).json()
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    work = next(p for p in dry["proposals"] if p["section"] == "Work")
+    assert "## Design" in work["description"]
+    assert "Fix Dialog" in work["description"] and "Tracker - File a Fix" in work["description"]
+    assert [s["heading"] for s in work["sub_items"]] == ["One", "Two", "Three"]
+    for sub in work["sub_items"]:
+        assert "## Design" in sub["description"]
+        assert "Fix Dialog" in sub["description"] and "Tracker - File a Fix" in sub["description"]
+    assert len(dry["ui_items"]) == 1 and dry["ui_items"][0]["depends_on"] == "Work"
+
+    approve_id(prd["id"])
+    db = SessionLocal()
+    out = prd_svc.decompose(
+        db, prd_svc.get_prd(db, prd["id"]), create=True,
+        splits={"Work": ["One", "Two", "Three"]},
+        touchpoints={"Work": ["backend/app/work.py", "web/src/Work.tsx"]})
+    items = [db.get(items_svc.Item, i) for i in out["created"]]
+    pieces = [i for i in items if i.title.startswith("Implement: Work —")]
+    ui = next(i for i in items if i.title == "Implement: Work UI")
+    assert len(pieces) == 3
+    for piece in pieces:
+        assert "## Design" in piece.description
+        assert "Fix Dialog" in piece.description
+        assert piece.touchpoints == ["backend/app/work.py"]
+    assert ui.touchpoints == ["web/src/Work.tsx"] and ui.prd_section == "Work"
+    links = list(db.scalars(select(Link).where(Link.a == ui.id, Link.type == "dependency")))
+    assert {lnk.b for lnk in links} == {piece.id for piece in pieces}
+    db.close()
+
+
 def test_decompose_touchpoint_override(client, auth):
     from tests.prd_approve import approve_id
 
