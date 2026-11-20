@@ -33,6 +33,7 @@ from app.models import (
 )
 from app.security import authz
 from app.services import email as email_svc
+from app.services import handles as handles_svc
 from app.services import quotas
 
 
@@ -542,7 +543,28 @@ def _validate_pending(invite: OrgInvite | None) -> OrgInvite:
     return invite
 
 
-def accept_invite(db: Session, token: str, user: User) -> Organization:
+def suggest_handle(db: Session, base: str, org_id: str, user_id: str | None = None) -> str:
+    """A handle derived from `base` that is free in `org_id` (reads only that org)."""
+    stem = (base or "member")[:20].strip("-") or "member"
+    for n in range(2, 1000):
+        cand = f"{stem}-{n}"
+        try:
+            handles_svc.validate(cand)
+        except ValueError:
+            continue
+        if handles_svc.check_free(db, cand, [org_id], exclude_user=user_id) is None:
+            return cand
+    return f"{stem[:14]}-{uuid.uuid4().hex[:8]}"
+
+
+def _handle_error(db: Session, org: Organization, handle: str, user: User, code: str) -> HTTPException:
+    return HTTPException(409, {
+        "code": code, "org_id": org.id, "org_name": org.name,
+        "suggested": suggest_handle(db, handle, org.id, user.id),
+    })
+
+
+def accept_invite(db: Session, token: str, user: User, handle: str | None = None) -> Organization:
     """Join the invite's org as the accepting user. Commits.
 
     The invite is email-bound: the logged-in user's email must match the address it
@@ -570,7 +592,17 @@ def accept_invite(db: Session, token: str, user: User) -> Organization:
         )
     )
     if existing is None:
-        db.add(OrgMembership(org_id=invite.org_id, user_id=user.id, role=invite.role, handle=user.handle))
+        # The check reads ONLY the inviting org. A clash refuses with a suggestion; it
+        # never blocks the join itself (a retry with a free `handle` takes the seat).
+        chosen = handle if handle is not None else user.handle
+        if handle is not None:
+            try:
+                handles_svc.validate(handle)
+            except ValueError as e:
+                raise HTTPException(422, f"invalid handle: {e}") from e
+        if handles_svc.check_free(db, chosen, [org.id], exclude_user=user.id) is not None:
+            raise _handle_error(db, org, chosen, user, "handle_taken")
+        db.add(OrgMembership(org_id=invite.org_id, user_id=user.id, role=invite.role, handle=chosen))
     invite.status = "accepted"
     invite.accepted_at = utcnow()
     invite.accepted_user_id = user.id
@@ -615,3 +647,24 @@ def pending_invites(db: Session, org_id: str) -> list[OrgInvite]:
             .order_by(OrgInvite.created_at.desc())
         )
     )
+
+
+def set_org_handle(db: Session, org: Organization, user: User, handle: str) -> OrgMembership:
+    """Change `user`'s org-only handle in `org`; holds the old one there for 30 days. Commits."""
+    seat = db.scalar(select(OrgMembership).where(
+        OrgMembership.org_id == org.id, OrgMembership.user_id == user.id))
+    if seat is None:
+        raise HTTPException(404, "organization not found")
+    try:
+        handles_svc.validate(handle)
+    except ValueError as e:
+        raise HTTPException(422, f"invalid handle: {e}") from e
+    if handle == seat.handle:
+        return seat
+    if handles_svc.check_free(db, handle, [org.id], exclude_user=user.id) is not None:
+        raise _handle_error(db, org, handle, user, "handle_taken")
+    old = seat.handle
+    seat.handle = handle
+    handles_svc.write_holds(db, user, old, [org.id])
+    db.commit()
+    return seat

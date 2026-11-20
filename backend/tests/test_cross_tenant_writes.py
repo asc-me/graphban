@@ -211,3 +211,11 @@ def test_a_route_that_refuses_both_credentials_is_reported_too(client, tenants):
     with pytest.raises(AssertionError) as e:
         test_every_project_scoped_write_blocks_another_org(client, broken)
     assert "401 with both a JWT and an API key" in str(e.value)
+
+
+def test_org_handle_write_blocks_another_org(client, tenants):
+    """`PATCH /orgs/{org_id}/me/handle` names an org, not a project, so the project sweep
+    above cannot see it. Probe it directly: alex is not in org B."""
+    r = client.patch(f"/api/orgs/{tenants['org_b']}/me/handle", json={"handle": "probe-handle"},
+                     headers=tenants["alex"])
+    assert _blocked(r.status_code), r.text
