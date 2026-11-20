@@ -4281,6 +4281,11 @@ class DesignSet(Base):
         Boolean, default=False, server_default=false(), nullable=False)
     # The PRD section headings the set gates.
     sections: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Pages that live in an external artifact, not a compiled screen (GRPH-1692).
+    # {"url": "https://...", "pages": {"Section": ["Page"]}}. This is a reference,
+    # not a gate: `sections` is what blocks a build, and an unaccepted gate would
+    # block the item this reference exists to inform.
+    external_artifact: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_by: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
