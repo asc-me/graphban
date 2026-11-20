@@ -62,8 +62,8 @@ def test_alembic_head_is_the_proposal_migration():
     cfg.set_main_option("script_location", str(backend / "alembic"))
     cfg.set_main_option("path_separator", "os")
     script = ScriptDirectory.from_config(cfg)
-    assert script.get_heads() == ["0218"]
-    assert script.get_revision("0218").down_revision == "0217"  # GRPH-1775, rule proposals
+    assert script.get_heads() == ["0219"]
+    assert script.get_revision("0219").down_revision == "0218"  # GRPH-1777, rule observations
     assert script.get_revision("0217").down_revision == "0216"  # GRPH-1774, custom rules
     assert script.get_revision("0216").down_revision == "0215"  # GRPH-1738, sync pending purge
     assert script.get_revision("0215").down_revision == "0214"  # GRPH-1761, publish destination
