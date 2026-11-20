@@ -278,3 +278,13 @@ adopting or dismissing is a person's act (`rules.person_adopts`) and no MCP tool
 - **Refusals name their rule:** an uncited, unresolvable, invalid or direction-less proposal is
   refused under `rules.proposal_cited`; a loosening from an agent, turning a rule off and an
   invariant under `rules.person_adopts`.
+
+## Guidance for requirements no primitive expresses (GRPH-1780, P91 D8)
+
+When no primitive can say a requirement, file it as **guidance**: `propose_rule` with `kind: guidance`
+(or `POST /api/projects/{id}/rules/proposals` with `stage`, `label`, `text`, `citations`). It needs a
+citation like any proposal. A person adopts or dismisses it (`.../rules/guidance/{id}/adopt|dismiss`);
+adopted guidance is **advisory** text, shown in the delegation brief of an item in that stage (at most
+three entries). Each filing increments a primitive-gap count by stage and short label, never the text.
+Gap counts stay on the box; they are in the box push (`counts.primitive_gaps`) only under the existing
+`box_push_counts` opt-in.
