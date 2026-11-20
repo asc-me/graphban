@@ -2429,6 +2429,10 @@ class SyncProject(Base):
     #: these columns are the audit, not a grant. Null on a row that was never opted in.
     enabled_by: Mapped[str | None] = mapped_column(String, nullable=True)
     enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: A purge the console has not confirmed (GRPH-1738). ``digests`` or ``local`` is the
+    #: level waiting on ``DELETE`` 200. Null means no purge is owed — a different fact
+    #: from a purge that succeeded, which clears this and the manifest together.
+    pending_purge: Mapped[str | None] = mapped_column(String, nullable=True)
     #: Exclusive cursor for `GET /api/sync/proposals`. Empty until the first page.
     #: A 304 does not clear it: the console sends no cursor on an idle poll.
     proposal_cursor: Mapped[str] = mapped_column(
