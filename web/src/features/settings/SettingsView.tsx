@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Check, Copy, Github, HardDrive, KeyRound, RefreshCw, ShieldCheck } from "lucide-react";
 import * as React from "react";
 
+import { ProjectThemePicker, themeFromProject, themePatch, type ProjectThemeValue } from "@/components/ProjectThemePicker";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
@@ -18,11 +19,12 @@ import { SyncLinkPanel } from "@/features/settings/SyncLinkPanel";
 import { PublishToOrgPanel } from "@/features/settings/PublishToOrgPanel";
 import { CloudTag } from "@/components/shell/CloudTag";
 import { useProjectCtx } from "@/features/ProjectContext";
+import { prefersReducedMotion } from "@/features/onboarding/WizardGraphic";
 import { copyText } from "@/lib/clipboard";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
-import { keys, useConfig, useMembers, useMintIngestToken, usePlatform } from "@/lib/queries";
+import { keys, useConfig, useMembers, useMintIngestToken, usePlatform, useUpdateProject } from "@/lib/queries";
 import { adminPath, settingsPath } from "@/lib/routes";
 import type { PlatformConfig, Project } from "@/lib/types";
 import { Link, NavLink, Navigate, useLocation } from "react-router-dom";
@@ -707,18 +709,25 @@ function RetagRow() {
 
 function ProjectPanel() {
   const { active } = useProjectCtx();
-  const qc = useQueryClient();
+  const update = useUpdateProject();
   const [form, setForm] = React.useState<Partial<Project>>({});
+  const [theme, setTheme] = React.useState<ProjectThemeValue | null>(null);
   const [saved, setSaved] = React.useState(false);
+  const [still] = React.useState(prefersReducedMotion);
   React.useEffect(() => {
-    if (active) setForm({ name: active.name, description: active.description, share_global_memory: active.share_global_memory, auto_extract: active.auto_extract, mcp_enabled: active.mcp_enabled, memory_write_mode: active.memory_write_mode, memory_auto_reject: active.memory_auto_reject, memory_llm_judge: active.memory_llm_judge, agent_adjudication: active.agent_adjudication, allow_self_review: active.allow_self_review });
+    if (active) {
+      setForm({ name: active.name, description: active.description, share_global_memory: active.share_global_memory, auto_extract: active.auto_extract, mcp_enabled: active.mcp_enabled, memory_write_mode: active.memory_write_mode, memory_auto_reject: active.memory_auto_reject, memory_llm_judge: active.memory_llm_judge, agent_adjudication: active.agent_adjudication, allow_self_review: active.allow_self_review });
+      setTheme(themeFromProject(active));
+    }
   }, [active?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!active) return null;
 
   async function save() {
-    await api.updateProject(active!.id, form);
-    qc.invalidateQueries({ queryKey: keys.projects });
+    // Theme fields ride the same PATCH. Only the ones that changed are included:
+    // solid sends accent2 null, and "None" sends pattern "none".
+    const patch = theme ? themePatch(active!, theme) : {};
+    await update.mutateAsync({ id: active!.id, body: { ...form, ...patch } });
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   }
@@ -756,6 +765,12 @@ function ProjectPanel() {
       <div className="mb-3"><CloudTag projectId={active.id} /></div>
       <PublishToOrgPanel />
       <div className="mb-4"><Label>Description</Label><Textarea rows={2} value={form.description ?? ""} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} /></div>
+      {theme && (
+        <div className="mb-4">
+          <Label>Theme</Label>
+          <ProjectThemePicker value={theme} onChange={setTheme} tag={active.tag} still={still} />
+        </div>
+      )}
       <div className="mb-4 space-y-2">
         {flags.map((fl) => (
           <label key={fl.key} className="flex cursor-pointer items-center gap-2.5 text-body text-fg-2">
