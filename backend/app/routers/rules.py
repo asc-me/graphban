@@ -12,13 +12,14 @@ from app.config import settings
 from app.db import get_db
 from app.models import Organization, Project, User
 from app.errors import NotFound, Refused, Validation
-from app.schemas import (ObservationBackfillOut, ObservationsOut,
+from app.schemas import (CustomRuleOut, CustomRuleWrite, ObservationBackfillOut, ObservationsOut,
                          RecommendedRulesOut, RefusalCoverageOut, RuleSuggestionOut,
                          RulesFlowOut, RulesOut, RuleToggleBatchOut, RuleToggleBatchWrite,
                          RuleToggleOut, RuleTogglesOut, RuleToggleWrite, UnmappedRefusalsOut)
 from app.security import authz
 from app.security.deps import get_current_user, get_user_or_agent_key
 from app.services import code_graph
+from app.services import custom_rules
 from app.services import collision
 from app.services import events as events_svc
 from app.services import gitops as gitops_svc
@@ -245,6 +246,29 @@ def set_project_rule_toggles(body: RuleToggleBatchWrite, project_id: str = "core
             project_id=project_id, meta={"fields": changed})
     by_id = {t["rule_id"]: t for t in rule_toggles.effective(db, project_id)}
     return {"toggles": [by_id[w["rule_id"]] for w in writes]}
+
+
+# ---- custom rules (GRPH-1774 / P91 D1) ---------------------------------------------------
+@router.get("/projects/{project_id}/rules/custom", response_model=list[CustomRuleOut])
+def list_custom_rules(project_id: str, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    """The project's custom rules with author, why and state. Another project's are never here."""
+    authz.require_readable(db, user.id, project_id)
+    return custom_rules.list_for_project(db, project_id)
+
+
+@router.post("/projects/{project_id}/rules/custom", response_model=CustomRuleOut,
+             status_code=201)
+def create_custom_rule(project_id: str, body: CustomRuleWrite, db: Session = Depends(get_db),
+                       principal=Depends(get_user_or_agent_key)):
+    """A person authors a custom rule; it takes effect at once (`active`). Either credential
+    reaches here only so an agent key is refused by name (`rules.person_adopts`), not by a
+    bare 401."""
+    try:
+        row = custom_rules.create(db, principal, project_id, **body.model_dump())
+    except Validation as e:
+        raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
+    return custom_rules.view(db, row)
 
 
 # Org rule toggles are served by the console (GBC-P8). `set_org_toggle` / `org_view` stay

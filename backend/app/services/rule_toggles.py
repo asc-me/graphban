@@ -297,6 +297,9 @@ def _resolve(rule: LibraryRule, proj: RuleToggle | None, org: RuleToggle | None,
 
 def resolve(db: Session, rule_id: str, project_id: str | None) -> dict:
     """The effective state and params of one rule for one project, each with its source."""
+    if rule_id.startswith("custom."):  # GRPH-1774: a project's own rule, layer `custom`
+        from app.services import custom_rules
+        return custom_rules.resolve(db, rule_id, project_id)
     rule = _rule(rule_id)
     org_id = _org_of(db, project_id)
     return _resolve(rule, _mode_layer(db, rule, _row(db, rule_id, project_id=project_id),
@@ -448,7 +451,8 @@ def effective(db: Session, project_id: str | None) -> list[dict]:
     for t in out:
         if t["rule_id"] == DONE_PREDICATES_RULE:  # GRPH-1426: the read names each source
             t["effective_predicates"] = done_predicate_list(db, project_id)
-    return out
+    from app.services import custom_rules
+    return out + custom_rules.effective(db, project_id)
 
 
 # ---- writes -------------------------------------------------------------------------------
