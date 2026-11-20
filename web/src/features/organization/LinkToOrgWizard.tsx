@@ -29,16 +29,28 @@ const LOCAL = "";
 const CREATE = "create";
 const SEAT_REMOVED = ["seat_removed", "token_revoked", "key_refused"];
 
-type SyncChoice = { level: "sync" | "digests" | "local"; target: string };
+type SyncLevel = "sync" | "digests" | "local";
+type SyncChoice = { level: SyncLevel; target: string };
 
-/** A stored mapping wins. Otherwise the cloud project whose tag matches, else create-in-org.
- *  The tag is the project's tag, never its name: a name that happens to read like a tag
- *  is not a match. */
-function defaultChoice(p: SyncProjectState, cloud: CloudProject[], tag: string): SyncChoice {
+/** Sync to org: the stored mapping's target, else the cloud project whose tag matches, else
+ *  create-in-org. The tag is the project's tag, never its name: a name that happens to read
+ *  like a tag is not a match. */
+function syncChoice(p: SyncProjectState, cloud: CloudProject[], tag: string): SyncChoice {
   if (p.mapped && p.cloud_project_id) return { level: "sync", target: p.cloud_project_id };
   const want = tag.trim().toUpperCase();
   const hit = want ? cloud.find((c) => (c.tag || "").trim().toUpperCase() === want) : undefined;
   return { level: "sync", target: hit?.id || CREATE };
+}
+
+/** A stored mapping keeps its stored level (`stored`, from `GET /api/sync/projects` `local`):
+ *  digests stays digests and local stays local. Only an unmapped project, or a mapping whose
+ *  level was not reported, gets the first-link default of sync. */
+function defaultChoice(p: SyncProjectState, cloud: CloudProject[], tag: string, stored?: SyncLevel): SyncChoice {
+  if (p.mapped && p.cloud_project_id) {
+    if (stored === "local") return { level: "local", target: LOCAL };
+    if (stored === "digests") return { level: "digests", target: p.cloud_project_id };
+  }
+  return syncChoice(p, cloud, tag);
 }
 
 function storedChoice(projects: SyncProjectState[]): Record<string, SyncChoice> {
@@ -375,7 +387,9 @@ export function LinkToOrgWizard({
     state: "loading" | "ok" | "refused" | "unknown";
     projects: CloudProject[];
     reason?: string;
-  }>({ state: "loading", projects: [] });
+    /** The stored sync level per local project, from the same read. */
+    levels: Record<string, SyncLevel>;
+  }>({ state: "loading", projects: [], levels: {} });
   // Opening at ④ uses the stored mapping: unmapped is local only. Step ③ applies the
   // first-link default (sync, create-in-org unless the tag already matches) once the
   // cloud list and the local tags have both been read.
@@ -392,13 +406,15 @@ export function LinkToOrgWizard({
   const projectsQ = useProjects();
 
   const loadCloud = React.useCallback(async () => {
-    setCloud({ state: "loading", projects: [] });
+    setCloud({ state: "loading", projects: [], levels: {} });
     setApplied(false);
     try {
       const r = await api.syncCloudProjects();
-      setCloud({ state: r.status, projects: r.projects ?? [], reason: r.reason });
+      const levels: Record<string, SyncLevel> = {};
+      for (const l of r.local ?? []) levels[l.project_id] = l.sync_level;
+      setCloud({ state: r.status, projects: r.projects ?? [], reason: r.reason, levels });
     } catch {
-      setCloud({ state: "unknown", projects: [] });
+      setCloud({ state: "unknown", projects: [], levels: {} });
     }
   }, []);
   React.useEffect(() => {
@@ -411,7 +427,7 @@ export function LinkToOrgWizard({
       for (const p of status.projects) {
         if (touched.current[p.project_id]) continue;
         const tag = projectsQ.data?.find((x) => x.id === p.project_id)?.tag ?? "";
-        next[p.project_id] = defaultChoice(p, cloud.projects, tag);
+        next[p.project_id] = defaultChoice(p, cloud.projects, tag, cloud.levels[p.project_id]);
       }
       return next;
     });
@@ -420,6 +436,7 @@ export function LinkToOrgWizard({
 
   const rowOf = (id: string): SyncChoice => rows[id] ?? { level: "local", target: LOCAL };
   const syncedCount = status.projects.filter((p) => rowOf(p.project_id).level === "sync").length;
+  const digestsCount = status.projects.filter((p) => rowOf(p.project_id).level === "digests").length;
   /** The tag for cloud project `id`; `local` is the row whose stored tag is the fallback. */
   const nameOf = (id: string, local?: SyncProjectState) => {
     if (id === CREATE) return "NEW";
@@ -453,7 +470,10 @@ export function LinkToOrgWizard({
     const next: Record<string, SyncChoice> = {};
     for (const p of status.projects) {
       const tag = projectsQ.data?.find((x) => x.id === p.project_id)?.tag ?? "";
-      next[p.project_id] = defaultChoice(p, cloud.projects, tag);
+      // Select all chooses every project; a stored digests project stays digests.
+      next[p.project_id] = cloud.levels[p.project_id] === "digests"
+        ? defaultChoice(p, cloud.projects, tag, "digests")
+        : syncChoice(p, cloud.projects, tag);
       touched.current[p.project_id] = true;
     }
     setRows(next);
@@ -536,7 +556,11 @@ export function LinkToOrgWizard({
   const refused = pushes?.filter((p) => p.status === "refused").length ?? 0;
   const consoleUrl = envUrl || url.trim() || status.cloud_url || CONSOLE_URL;
   const orgLabel = org || status.org || "the org";
-  const local = status.projects.length - syncedCount;
+  const local = status.projects.length - syncedCount - digestsCount;
+  // Digests is reported as digests, never folded into synced or local.
+  const counts = digestsCount
+    ? `${syncedCount} synced · ${digestsCount} digests · ${local} local`
+    : `${syncedCount} synced · ${local} local`;
 
   // Rows at ③ are labelled with the local project's tag, not its long name (which is the
   // label's tooltip). A failed projects read falls back to the name.
@@ -554,9 +578,9 @@ export function LinkToOrgWizard({
   else if (step === 3 && cloud.state === "unknown") line = { text: "CONSOLE · UNREACHABLE", tone: "grey" };
   else if (step === 3)
     line = {
-      text: `PROJECTS · ${syncedCount} SYNCED · ${local} LOCAL`,
-      // Green only once something syncs; nothing chosen yet is muted, not done.
-      tone: syncedCount > 0 ? "ok" : "muted",
+      text: `PROJECTS · ${counts.toUpperCase()}`,
+      // Green only once something syncs (digests included); nothing chosen yet is muted.
+      tone: syncedCount + digestsCount > 0 ? "ok" : "muted",
     };
   else if (nothingToPush) line = { text: "PUSH · NOTHING TO PUSH", tone: "muted" };
   else if (pushing) line = { text: "PUSH · PUSHING", tone: "wait" };
@@ -587,12 +611,12 @@ export function LinkToOrgWizard({
     step < 3
       ? ["pending", "not yet"]
       : step > 3
-        ? ["done", `${syncedCount} synced · ${local} local`]
+        ? ["done", counts]
         : cloud.state === "unknown"
           ? ["unknown", "couldn't reach"]
           : cloud.state === "refused"
             ? ["fail", "refused"]
-            : ["pending", `${syncedCount} synced · ${local} local`],
+            : ["pending", counts],
     step < 4
       ? ["pending", "not yet"]
       : nothingToPush
@@ -891,7 +915,7 @@ export function LinkToOrgWizard({
                                     writeRow(p.project_id, { level: "digests", target });
                                   } else {
                                     const tag = projectsQ.data?.find((x) => x.id === p.project_id)?.tag ?? "";
-                                    writeRow(p.project_id, defaultChoice(p, cloud.projects, tag));
+                                    writeRow(p.project_id, syncChoice(p, cloud.projects, tag));
                                   }
                                 }}
                               />
@@ -934,7 +958,7 @@ export function LinkToOrgWizard({
                   );
                 })}
               </div>
-              {syncedCount === 0 && (
+              {syncedCount + digestsCount === 0 && (
                 <p className="text-small text-faint">
                   Nothing will sync. The box stays linked to {orgLabel}.
                 </p>

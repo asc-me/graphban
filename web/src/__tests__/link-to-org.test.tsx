@@ -475,6 +475,46 @@ describe("LinkToOrgWizard", () => {
     expect(api.syncSaveProjectMap).not.toHaveBeenCalled();
   });
 
+  it("③ keeps a stored digests level: counted as digests and saved as digests, never sync", async () => {
+    const user = userEvent.setup();
+    api.syncCloudProjects.mockResolvedValue({
+      status: "ok", projects: [{ id: CORE_ID, tag: "CORE", name: "Core project" }], mapping: [],
+      local: [
+        { project_id: "core", sync_level: "digests" },
+        { project_id: "north", sync_level: "local" },
+      ],
+    });
+    wizard(
+      { ...signedIn, projects: [proj("core", "Core", { mapped: true, cloud_project_id: CORE_ID, cloud_project_tag: "CORE" })] },
+      { initialStep: 3 },
+    );
+    await screen.findByLabelText("Cloud project for Core");
+    expect(screen.getByRole("radio", { name: "Digests only" })).toBeChecked();
+    expect(screen.getByRole("status")).toHaveTextContent("PROJECTS · 0 SYNCED · 1 DIGESTS · 0 LOCAL");
+    expect(screen.getByRole("status").getAttribute("data-tone")).toBe("ok");
+    expect(screen.queryByText(/Nothing will sync/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Next →" }));
+    await waitFor(() => expect(api.putProjectSync).toHaveBeenCalled());
+    expect(api.putProjectSync).toHaveBeenCalledWith("core", {
+      sync_level: "digests", cloud_project_id: CORE_ID, cloud_project_tag: "CORE",
+    });
+    for (const [, body] of api.putProjectSync.mock.calls) expect(body.sync_level).not.toBe("sync");
+  });
+
+  it("③ keeps a mapped project the server reports as local, local", async () => {
+    api.syncCloudProjects.mockResolvedValue({
+      status: "ok", projects: [{ id: CORE_ID, tag: "CORE", name: "Core project" }], mapping: [],
+      local: [{ project_id: "core", sync_level: "local" }],
+    });
+    wizard(
+      { ...signedIn, projects: [proj("core", "Core", { mapped: true, cloud_project_id: CORE_ID, cloud_project_tag: "CORE" })] },
+      { initialStep: 3 },
+    );
+    await screen.findByLabelText("Cloud project for Core");
+    expect(screen.getByRole("radio", { name: "Local only" })).toBeChecked();
+    expect(screen.getByRole("status")).toHaveTextContent("PROJECTS · 0 SYNCED · 1 LOCAL");
+  });
+
   it("a refused create on a mapped project never drops its mapping first", async () => {
     const user = userEvent.setup();
     const err = new Error(JSON.stringify({ detail: "tag_taken", owner_label: "Bea" }));
