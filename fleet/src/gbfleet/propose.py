@@ -56,6 +56,39 @@ def _gh(repo: Path, *args: str, timeout: float = 60.0) -> subprocess.CompletedPr
                           timeout=timeout)
 
 
+def _gh_text(done: subprocess.CompletedProcess) -> str:
+    return f"{done.stderr or ''}\n{done.stdout or ''}"
+
+
+def _graphql_rate_limited(done: subprocess.CompletedProcess) -> bool:
+    """True when `gh` died on a GraphQL rate-limit line.
+
+    `gh pr create` and the lookups before it speak GraphQL. A secondary limit there leaves
+    the REST quota intact (GRPH-1752). A nonzero exit with that text is not "no such PR":
+    reading it as empty is how a branch that already has a PR gets a sibling, and how a
+    create that only the GraphQL side refused never gets opened.
+    """
+    if done.returncode == 0:
+        return False
+    for line in _gh_text(done).splitlines():
+        low = line.lower()
+        if "graphql" in low and "rate limit" in low:
+            return True
+    return False
+
+
+def _rate_limit_line(done: subprocess.CompletedProcess) -> str:
+    for line in _gh_text(done).splitlines():
+        if "rate limit" in line.lower():
+            return line.strip()[:200]
+    return "GraphQL rate limit"
+
+
+def _limited(branch: str, what: str, line: str) -> Proposed:
+    """A lookup that died on the rate limit. Not ok, and not a reason to open a PR."""
+    return Proposed(branch=branch, reason=f"gh {what} rate limited: {line}")
+
+
 def existing(repo: Path, branch: str) -> str:
     """The URL of a PR already open for this branch, or "".
 
@@ -63,13 +96,24 @@ def existing(repo: Path, branch: str) -> str:
     failure there would read as "could not propose" for work that was proposed perfectly well
     an hour ago — the wave would report a problem that is not one.
     """
+    return _existing(repo, branch)[0]
+
+
+def _existing(repo: Path, branch: str) -> tuple[str, str]:
+    """`(url, rate-limit line)`. The line is set only for a GraphQL rate limit.
+
+    Any other failure is `("", "")` — the "no open PR" `existing` has always returned.
+    `propose` must not treat the rate-limit line as that (GRPH-1752).
+    """
     done = _gh(repo, "pr", "view", branch, "--json", "url")
+    if _graphql_rate_limited(done):
+        return "", _rate_limit_line(done)
     if done.returncode != 0:
-        return ""
+        return "", ""
     try:
-        return str(json.loads(done.stdout or "{}").get("url") or "")
+        return str(json.loads(done.stdout or "{}").get("url") or ""), ""
     except ValueError:
-        return ""
+        return "", ""
 
 
 #: A check-rollup entry that counts as passing. Anything else (pending, failed, cancelled)
@@ -137,19 +181,30 @@ def existing_any(repo: Path, branch: str) -> dict:
     #643 for one item. A closed or merged PR is still this branch's PR: update it, or say
     why not — do not open another.
     """
+    return _existing_any(repo, branch)[0]
+
+
+def _existing_any(repo: Path, branch: str) -> tuple[dict, str]:
+    """`(pr, rate-limit line)`. The line is set only for a GraphQL rate limit (GRPH-1752).
+
+    Any other failure is `({}, "")`, which is what `existing_any` has always returned
+    when `gh` did not exit zero. `propose` must not open a PR on the rate-limit line.
+    """
     done = _gh(repo, "pr", "list", "--head", branch, "--state", "all",
                "--json", "url,state,number", "--limit", "20")
+    if _graphql_rate_limited(done):
+        return {}, _rate_limit_line(done)
     if done.returncode != 0:
-        return {}
+        return {}, ""
     try:
         rows = json.loads(done.stdout or "[]")
     except ValueError:
-        return {}
+        return {}, ""
     if not isinstance(rows, list):
-        return {}
+        return {}, ""
     found = [r for r in rows if isinstance(r, dict) and r.get("url")]
     if not found:
-        return {}
+        return {}, ""
     order = {"OPEN": 0, "CLOSED": 1, "MERGED": 2}
     found.sort(key=lambda r: order.get(str(r.get("state") or "").upper(), 9))
     row = found[0]
@@ -157,19 +212,31 @@ def existing_any(repo: Path, branch: str) -> dict:
         "url": str(row.get("url") or ""),
         "state": str(row.get("state") or "").upper(),
         "number": row.get("number"),
-    }
+    }, ""
 
 
 def _listed(repo: Path, state: str, fields: str) -> list[dict]:
     """`gh pr list --state <state>` rows, or [] when it cannot be read."""
+    return _listed_checked(repo, state, fields)[0]
+
+
+def _listed_checked(repo: Path, state: str, fields: str) -> tuple[list[dict], str]:
+    """`(rows, rate-limit line)`. [] on any other unreadable answer (GRPH-1752).
+
+    A listing that cannot be read still answers [] to callers of `open_prs` /
+    `merged_prs`. The line is how `propose` tells "GitHub said nothing" from "GitHub
+    refused to say", and only the second one stops a create.
+    """
     done = _gh(repo, "pr", "list", "--state", state, "--limit", "200", "--json", fields)
+    if _graphql_rate_limited(done):
+        return [], _rate_limit_line(done)
     if done.returncode != 0:
-        return []
+        return [], ""
     try:
         rows = json.loads(done.stdout or "[]")
     except ValueError:
-        return []
-    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+        return [], ""
+    return ([r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []), ""
 
 
 def open_prs(repo: Path) -> list[dict]:
@@ -244,6 +311,27 @@ def _reopen(repo: Path, number) -> bool:
     return done.returncode == 0
 
 
+def _html_url(done: subprocess.CompletedProcess) -> str:
+    """The `html_url` of a REST pull-request response, or ""."""
+    try:
+        data = json.loads(done.stdout or "")
+    except ValueError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("html_url") or "")
+
+
+def _opened(repo: Path, branch: str, url: str,
+            items: tuple[str, ...] | list[str]) -> Proposed:
+    """A PR exists at `url`. Older drafts of the same item are superseded (GRPH-1396)."""
+    by = f"#{_pr_number(url)}" if _pr_number(url) else url
+    for item in items:
+        close_item_prs(repo, item, url, comment=f"Superseded by {by}",
+                       older_drafts_only=True)
+    return Proposed(branch=branch, url=url, ok=True)
+
+
 def propose(repo: Path, branch: str, base: str, *, title: str, body: str,
             head: str = "", items: tuple[str, ...] | list[str] = ()) -> Proposed:
     """Open a draft PR for `branch` against `base`, or say why not.
@@ -257,6 +345,10 @@ def propose(repo: Path, branch: str, base: str, *, title: str, body: str,
     not. Merged: say so; another PR for the same head is the defect. The merged half is asked
     twice, by branch and then by COMMIT (GRPH-1709): a branch-keyed answer is "" whenever
     `gh` did not exit zero, and which head landed is a fact about a commit, not about a ref.
+
+    A GraphQL rate limit is not "no PR" (GRPH-1752). A lookup that dies on that text
+    returns not-ok and does not create. `gh pr create` dying on it opens the same draft
+    through the REST pulls endpoint. Any other create failure is reported as before.
     """
     if not find():
         return Proposed(branch=branch, skipped=True,
@@ -265,11 +357,15 @@ def propose(repo: Path, branch: str, base: str, *, title: str, body: str,
         return Proposed(branch=branch, skipped=True,
                         reason="no base branch to propose against")
     try:
-        already = existing(repo, branch)
+        already, limited = _existing(repo, branch)
+        if limited:
+            return _limited(branch, "pr view", limited)
         if already:
             return Proposed(branch=branch, url=already, skipped=True,
                             reason="already proposed")
-        prior = existing_any(repo, branch)
+        prior, limited = _existing_any(repo, branch)
+        if limited:
+            return _limited(branch, "pr list", limited)
         if prior:
             state = prior.get("state") or ""
             url = prior.get("url") or ""
@@ -295,7 +391,11 @@ def propose(repo: Path, branch: str, base: str, *, title: str, body: str,
         if head:
             # GRPH-1396: another branch whose open PR already carries this commit (a salvage
             # of a stopped child, a re-reap). A second PR for the same commit is the defect.
-            for pr in open_prs(repo):
+            opened, limited = _listed_checked(
+                repo, "open", "number,url,headRefName,headRefOid,isDraft,title,body")
+            if limited:
+                return _limited(branch, "pr list", limited)
+            for pr in opened:
                 if (pr.get("headRefName") != branch and pr.get("url")
                         and same_commit(str(pr.get("headRefOid") or ""), head)):
                     return Proposed(
@@ -306,7 +406,11 @@ def propose(repo: Path, branch: str, base: str, *, title: str, body: str,
             # the lookups above answer by ref and so can miss. Reaping gb/p86-56 after #1846
             # had landed opened #1847 for one and the same head, and the merge loop went on
             # proposing that duplicate on every later cycle.
-            for pr in merged_prs(repo):
+            landed, limited = _listed_checked(
+                repo, "merged", "number,url,headRefName,headRefOid")
+            if limited:
+                return _limited(branch, "pr list", limited)
+            for pr in landed:
                 if (pr.get("url")
                         and same_commit(str(pr.get("headRefOid") or ""), head)):
                     return Proposed(
@@ -318,6 +422,31 @@ def propose(repo: Path, branch: str, base: str, *, title: str, body: str,
     except (OSError, subprocess.SubprocessError) as exc:
         return Proposed(branch=branch, reason=f"gh could not run: {exc}")
     if done.returncode != 0:
+        if _graphql_rate_limited(done):
+            # GraphQL is spent; REST is a different quota. The draft is the same request
+            # `gh pr create --draft` would have sent (GRPH-1752). `-F` so draft is a
+            # boolean, not the string "true".
+            try:
+                rest = _gh(repo, "api", "-X", "POST", "repos/{owner}/{repo}/pulls",
+                           "-f", f"title={title}",
+                           "-f", f"head={branch}",
+                           "-f", f"base={base.split('/', 1)[-1]}",
+                           "-f", f"body={body}",
+                           "-F", "draft=true")
+            except (OSError, subprocess.SubprocessError) as exc:
+                return Proposed(branch=branch, reason=f"gh could not run: {exc}")
+            if rest.returncode == 0:
+                url = _html_url(rest)
+                if url:
+                    return _opened(repo, branch, url, items)
+                return Proposed(
+                    branch=branch,
+                    reason="gh pr create rate limited; REST create reported success without a URL")
+            tail = (rest.stderr or rest.stdout or "").strip().splitlines()
+            detail = tail[-1][:200] if tail else rest.returncode
+            return Proposed(
+                branch=branch,
+                reason=f"gh pr create rate limited; REST create failed: {detail}")
         tail = (done.stderr or done.stdout or "").strip().splitlines()
         return Proposed(branch=branch,
                         reason=f"gh pr create failed: {tail[-1][:200] if tail else done.returncode}")
@@ -325,12 +454,8 @@ def propose(repo: Path, branch: str, base: str, *, title: str, body: str,
                 if line.strip().startswith("http")), "")
     if url:
         # GRPH-1396: this attempt replaces older drafts of the same item.
-        by = f"#{_pr_number(url)}" if _pr_number(url) else url
-        for item in items:
-            close_item_prs(repo, item, url, comment=f"Superseded by {by}",
-                           older_drafts_only=True)
-    return Proposed(branch=branch, url=url, ok=bool(url),
-                    reason="" if url else "gh reported success without a URL")
+        return _opened(repo, branch, url, items)
+    return Proposed(branch=branch, reason="gh reported success without a URL")
 
 
 def subject(repo: Path, branch: str, base: str) -> str:

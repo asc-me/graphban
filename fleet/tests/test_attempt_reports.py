@@ -54,7 +54,7 @@ def recorded(git_repo: Path, tmp_path: Path, scripts, state: Path):
     fleet = Fleet(repo=git_repo, workspace=workspace,
                   client=_recording_server(workspace, posts),
                   launch_for=lambda name, model="", tuning=None: _factory(
-                      scripts, "works_then_waits", adapter=name),
+                      scripts, "works_until_released", adapter=name),
                   tiers=TierTable.parse(["cheap=fake:qwen-local"]))
     return fleet, posts
 
@@ -113,11 +113,19 @@ def test_a_launch_post_that_cannot_land_does_not_fail_the_spawn(git_repo: Path, 
                   client=Graphban("http://gb.invalid", KEY, allowed=ALLOWED_TOOLS,
                                   transport=httpx.MockTransport(handler)),
                   launch_for=lambda name, model="", tuning=None: _factory(
-                      scripts, "works_then_waits", adapter=name),
+                      scripts, "works_until_released", adapter=name),
                   tiers=TierTable.parse(["cheap=fake:qwen-local"]))
     out = _spawn(fleet, tier="cheap", enrolment_code="WORKER-1")
     assert not out.get("isError"), out
-    assert len(fleet.children) == 1 and fleet.children[0].running
+    try:
+        # The child holds until released, so this is a state it stays in, not a 1.5 s window.
+        assert len(fleet.children) == 1
+        child = fleet.children[0]
+        # Exit code and stderr in the message: on the ubuntu-srv runners this read False
+        # with nothing else to go on (GRPH-1715).
+        assert child.running, (child.process.returncode, child.tail())
+    finally:
+        (scripts["works_until_released"].parent / "release").write_text("", encoding="utf-8")
 
 
 def test_the_requested_turn_budget_is_carried_on_the_child(recorded):

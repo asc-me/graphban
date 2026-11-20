@@ -542,3 +542,69 @@ def test_undo_of_a_self_decision_answer_puts_the_question_back(db):
     assert item.status == "blocked"
     assert "wait:decision" in item.tags
     assert not item.decision.get("answer")
+
+
+# ---- GRPH-1717: the holder of an item that asked its own question hears the answer ----------
+
+
+def test_the_live_holder_of_a_self_decision_hears_the_answer_exactly_once(db):
+    """An item that asks its own question is answered IN PLACE: it stays `in_progress` on the
+    asker's live lease and never reaches `done`. The delivery scan looked only at `done` waits,
+    so the agent that asked was never told and waited out its lease."""
+    item = _self_decision(db)
+    item.claimed_by, item.claimed_at = "GRPH-A1", utcnow()
+    db.commit()
+    waits.answer_wait(db, item.id, choice="postgres")
+    db.refresh(item)
+    assert item.status == "in_progress" and item.done_at is None
+    assert item.decision["notify"] == ["GRPH-A1"] and item.decision["notified"] == []
+    # An agent holding nothing is told nothing.
+    assert fleet_svc.collect_directive(db, "GRPH-A9") is None
+    d = fleet_svc.collect_directive(db, "GRPH-A1")
+    assert d["type"] == "decision_answered" and d["wait"] == item.key
+    assert d["question"] == "Which store?" and d["answer"]["choice"] == "postgres"
+    # It never left the holder, so the directive must not send it claiming work it already owns.
+    assert "claim it again" not in d["next"]
+    assert fleet_svc.collect_directive(db, "GRPH-A1") is None
+
+
+def test_a_self_decision_whose_lease_lapsed_notifies_nobody(db):
+    """The notice is for the LIVE holder. With the lease gone the item returns to `next` for
+    anyone to take, so a stored `notify` would brief an agent that no longer owns the work."""
+    item = _self_decision(db)
+    item.claimed_by, item.claimed_at = "GRPH-A1", utcnow() - timedelta(hours=2)
+    db.commit()
+    waits.answer_wait(db, item.id, choice="postgres")
+    db.refresh(item)
+    assert item.status == "next" and item.claimed_by is None
+    assert item.decision["notify"] == []
+    assert fleet_svc.collect_directive(db, "GRPH-A1") is None
+
+
+def test_a_standalone_wait_still_tells_the_dependents_holder_to_claim_again(db):
+    """The control arm for the `next` text above: a released dependent really is back in `next`
+    with no holder, so its former holder genuinely does have to claim it again."""
+    original, wait = _pair(db, holder="GRPH-A1")
+    waits.answer_wait(db, wait.id, choice="postgres")
+    db.refresh(original)
+    assert original.status == "next" and original.claimed_by is None
+    d = fleet_svc.collect_directive(db, "GRPH-A1")
+    assert d["type"] == "decision_answered" and d["wait"] == wait.key
+    assert "claim it again" in d["next"]
+
+
+def test_two_owed_answers_come_back_newest_answer_first(db):
+    """`pending_answers` orders by `updated_at`, which every row carries. `done_at` is NULL on
+    this shape, and a NULL sorts first under DESC on Postgres but last on SQLite — so ordering
+    by it would hand the two engines a different winner once more answers are owed than the
+    limit. Stamped rather than slept: the order must not depend on how fast the clock moved."""
+    older, newer = _self_decision(db), _self_decision(db)
+    for it in (older, newer):
+        it.claimed_by, it.claimed_at = "GRPH-A1", utcnow()
+    db.commit()
+    waits.answer_wait(db, older.id, choice="redis")
+    waits.answer_wait(db, newer.id, choice="postgres")
+    db.refresh(older)
+    older.updated_at = utcnow() - timedelta(minutes=5)
+    db.commit()
+    assert [w.key for w in waits.pending_answers(db, "GRPH-A1")] == [newer.key, older.key]

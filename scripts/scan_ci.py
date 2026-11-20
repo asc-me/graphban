@@ -26,6 +26,11 @@ are different strings because they ask different people for different things:
 `scans_clean` passes only when every required tool on every touched component is clean. It is
 posted on its OWN receipt (`attest_ci.receipt`), never beside `suite_green`, and with
 `head_commit` on every run, pass or fail, so an older pass stops covering a head that failed.
+A read timeout or a connection reset on that post is retried, then reported as an attestation
+failure. It is not an uncaught traceback, and it is not a scan finding. A timeout whose
+receipt is already on the item — the write committed and the response never arrived — is
+not a failure (GRPH-1784). A timeout when the item has no such receipt still fails, and the
+message says the scans were clean.
 
 The scan rows are also recorded (`record_scan`, explicit `category`) so the Stack overlay can
 show them. The attestation never depends on those rows: a failed post is logged and changes
@@ -45,6 +50,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 from dataclasses import dataclass, field
 
@@ -433,6 +439,110 @@ def _scan_rows(verdict: Verdict, head: str) -> list[dict]:
             for r in verdict.results if r.tool and r.state in (CLEAN, FAILED)]
 
 
+#: A read timeout or a connection reset while the response is being read. urllib wraps
+#: OSError as URLError only around `h.request`; `getresponse` (where `_read_status` calls
+#: `recv_into`) sits outside that handler, so these two are not URLError (GRPH-1731).
+#: Named here, not inherited from OSError: an except that only lists URLError lets a
+#: read-phase TimeoutError kill the job after the scans have already passed.
+ATTEST_TRANSIENT = (TimeoutError, ConnectionResetError)
+
+
+def _retry_backoff(seconds: float) -> None:
+    """Wait before the next attestation write.
+
+    This is the only sleep the retry owns. A test records this call. Replacing
+    ``time.sleep`` would also record the sleeps Postgres takes in the same process.
+    """
+    time.sleep(seconds)
+
+
+def _evidence_has_receipt(item, receipt: dict) -> bool:
+    """True when `item` already carries the attestation this run tried to post.
+
+    Identity is the run reference, the commit, and the predicate we sent — name and
+    `passed`. The server rebuilds the stored row (it adds `detail` and `schema_version`),
+    so equality on the whole dict would miss a write that landed. An empty `run_ref`
+    matches only another empty one: a different run that named its own ref does not.
+    """
+    if not isinstance(item, dict):
+        return False
+    evidence = item.get("evidence")
+    if not isinstance(evidence, list):
+        return False
+    want_ref = str(receipt.get("run_ref") or "")
+    want_commit = str(receipt.get("commit") or "")
+    preds = receipt.get("predicates") or []
+    if not preds or not isinstance(preds[0], dict):
+        return False
+    want_name = preds[0].get("name")
+    want_passed = preds[0].get("passed")
+    if not want_name or not isinstance(want_passed, bool):
+        return False
+    for row in evidence:
+        if not isinstance(row, dict) or row.get("kind") != "attestation":
+            continue
+        if str(row.get("commit") or "") != want_commit:
+            continue
+        if str(row.get("run_ref") or "") != want_ref:
+            continue
+        for pred in row.get("predicates") or []:
+            if (isinstance(pred, dict) and pred.get("name") == want_name
+                    and pred.get("passed") is want_passed):
+                return True
+    return False
+
+
+def _receipt_landed(url: str, key: str, item_key: str, receipt: dict) -> bool:
+    """Whether the ledger already stored this run's receipt.
+
+    A timed-out response is not proof either way: the write can commit and the
+    client still see `TimeoutError`. Reading the item is the confirmation. A read
+    that fails, times out, or returns nothing is not a stored receipt — absence
+    is not success, and the job stays red.
+    """
+    try:
+        item = attest_ci.call_tool(url, key, "get_item_details", {"id": item_key})
+    except Exception:  # noqa: BLE001 — a read we cannot finish is not a stored receipt
+        return False
+    return _evidence_has_receipt(item, receipt)
+
+
+def _write_attestation(url: str, key: str, item_key: str, head: str, receipt: dict) -> None:
+    """Post one item's receipt. Retry a read timeout or reset; re-raise the last one.
+
+    Not `attest_ci.with_retry`: that treats every OSError as transient, and this catch has
+    to name TimeoutError so dropping it from `ATTEST_TRANSIENT` is a visible failure.
+
+    After the retries, a `TimeoutError` whose receipt is already on the item returns.
+    The response was lost; the write was not. A timeout with no such receipt still
+    raises, and so does a connection reset — that one is not this confirmation.
+    """
+    last: BaseException | None = None
+    for n in range(attest_ci.LEDGER_ATTEMPTS):
+        try:
+            attest_ci.call_tool(url, key, "update_item",
+                                {"id": item_key, "head_commit": head, "evidence": [receipt]})
+            return
+        except ATTEST_TRANSIENT as exc:
+            last = exc
+            if n == attest_ci.LEDGER_ATTEMPTS - 1:
+                break
+            _retry_backoff(attest_ci.LEDGER_BACKOFF * (2 ** n))
+    if isinstance(last, TimeoutError) and _receipt_landed(url, key, item_key, receipt):
+        return
+    assert last is not None
+    raise last
+
+
+def _attest_error(item_key: str, exc: BaseException, *, scans_passed: bool) -> str:
+    """What a bounce should read when the write failed and the scanners did not."""
+    what = "timed out" if isinstance(exc, TimeoutError) else "hit a connection reset"
+    clean = "scans were clean; " if scans_passed else ""
+    return (f"{item_key}: {clean}the attestation write to the box {what} after "
+            f"{attest_ci.LEDGER_ATTEMPTS} attempts ({type(exc).__name__}: {exc}). "
+            f"This is not a scan finding.")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--base", default="", help="pull_request.base.sha")
@@ -489,7 +599,9 @@ def main(argv: list[str] | None = None) -> int:
         for row in _scan_rows(verdict, args.head):
             try:
                 attest_ci.call_tool(url, key, "record_scan", row)
-            except (urllib.error.URLError, RuntimeError, ValueError) as e:
+            except ATTEST_TRANSIENT + (urllib.error.URLError, RuntimeError, ValueError) as e:
+                # A failed row post changes nothing. The same read timeout that used to
+                # escape here killed the job before the attestation retry could run.
                 print(f"::warning title=scan row not recorded::{row['scanner_id']} "
                       f"{row['path']}: {e}")
         receipt = attest_ci.receipt(
@@ -507,10 +619,8 @@ def main(argv: list[str] | None = None) -> int:
         for item_key in keys:
             try:
                 # `head_commit` on every run, pass or fail: an older pass must stop covering
-                # a head that has since failed.
-                attest_ci.call_tool(url, key, "update_item",
-                                    {"id": item_key, "head_commit": args.head,
-                                     "evidence": [receipt]})
+                # a head that has since failed. A read timeout is retried; it is not a finding.
+                _write_attestation(url, key, item_key, args.head, receipt)
                 print(f"{item_key}: {PREDICATE} "
                       f"{'passed' if verdict.passed else 'failed'} at {args.head[:12]}")
                 wrote += 1
@@ -518,6 +628,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"::warning title=scans_clean not attested::{e}")
             except attest_ci.OutOfScope as e:
                 refused.append(str(e))
+            except ATTEST_TRANSIENT as e:
+                errors.append(_attest_error(item_key, e, scans_passed=verdict.passed))
             except (urllib.error.URLError, RuntimeError, ValueError) as e:
                 errors.append(f"{item_key}: {e}")
         for message in refused:

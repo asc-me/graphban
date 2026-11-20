@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ProjectProvider } from "@/features/ProjectContext";
 import { PrdListView } from "@/features/prds/PrdListView";
-import type { SyncStorageStatus } from "@/lib/api";
+import type { PublishDestination, SyncStorageStatus } from "@/lib/api";
 import type { PrdSummary } from "@/lib/types";
 
 const now = new Date().toISOString();
@@ -24,11 +24,28 @@ const conflictReport = {
     error: "not valid UTF-8 text (corrupt or binary file)", prd_id: "P-3" }],
 };
 
+function destination(over: Partial<PublishDestination> = {}): PublishDestination {
+  return {
+    state: "unconfigured",
+    source: null,
+    url: "",
+    path: "",
+    branch: "",
+    previous: null,
+    editable: false,
+    publishing: false,
+    pull: { state: null, reason: "" },
+    code_remote_match: { checked: true, projects: [] },
+    ...over,
+  };
+}
+
 function status(over: Partial<SyncStorageStatus> = {}): SyncStorageStatus {
   return {
     folder: { path: "/drive", configured: true, ok: true, writable: true, error: "", project_path: "/drive/core" },
     blob_dir: { path: "/data/sync/blobs", configured: false, ok: true, writable: true, error: "" },
     index: { available: true, reason: "", chunks: 4, mode: "vector" },
+    destination: destination(),
     rows: [
       { prd_id: "P-1", title: "Spec P-1", status: "approved", sync_state: "conflict", file_name: "P-1 — Spec.md", error: "" },
       { prd_id: "P-2", title: "Spec P-2", status: "draft", sync_state: "in_sync", file_name: "P-2 — Spec.md", error: "" },
@@ -42,6 +59,7 @@ function status(over: Partial<SyncStorageStatus> = {}): SyncStorageStatus {
 
 const syncStorage = vi.fn(async () => status());
 const saveSyncStorage = vi.fn(async (_p: string, _b: unknown) => status());
+const saveDestination = vi.fn(async (_b: unknown) => destination());
 const runSyncStorage = vi.fn(async () => status());
 
 vi.mock("@/lib/api", () => ({
@@ -54,6 +72,7 @@ vi.mock("@/lib/api", () => ({
     prds: vi.fn(async () => served),
     syncStorage: (...a: unknown[]) => syncStorage(...(a as [])),
     saveSyncStorage: (...a: unknown[]) => saveSyncStorage(...(a as [string, unknown])),
+    saveDestination: (...a: unknown[]) => saveDestination(...(a as [unknown])),
     runSyncStorage: (...a: unknown[]) => runSyncStorage(...(a as [])),
   },
 }));
@@ -86,6 +105,7 @@ const panel = () => screen.getByRole("region", { name: "Sync storage" });
 beforeEach(() => {
   syncStorage.mockReset().mockImplementation(async () => status());
   saveSyncStorage.mockReset().mockImplementation(async () => status());
+  saveDestination.mockReset().mockImplementation(async () => destination());
   runSyncStorage.mockReset().mockImplementation(async () => status());
   lastState = null;
 });
@@ -198,5 +218,54 @@ describe("Sync storage panel on Specs (GRPH-1320)", () => {
     await userEvent.click(within(panel()).getByRole("button", { name: "Open sync report" }));
     expect(await screen.findByTestId("conflict-page")).toHaveTextContent("/prds/conflict/P-1");
     expect((lastState as { report: { conflicts: string[] } }).report.conflicts).toEqual(["P-1"]);
+  });
+
+  it("a missing destination is not reported, not unconfigured", async () => {
+    syncStorage.mockImplementation(async () => {
+      const body = status();
+      delete body.destination;
+      return body;
+    });
+    renderList();
+    expect(await screen.findByTestId("fact-destination")).toHaveTextContent("not reported");
+    expect(screen.getByTestId("fact-destination")).not.toHaveTextContent("Unconfigured");
+  });
+
+  it("shows the org url and branch and does not offer a save when the caller cannot edit", async () => {
+    syncStorage.mockImplementation(async () => status({
+      destination: destination({
+        state: "configured",
+        source: "org",
+        url: "github.com/acme/app",
+        branch: "policy",
+        editable: false,
+        publishing: false,
+        previous: { path: "/old/repo" },
+        pull: { state: "unknown", reason: "timed out" },
+        code_remote_match: { checked: true, projects: [{ project_id: "core", repo_url: "github.com/acme/app" }] },
+      }),
+    }));
+    renderList();
+    const fact = await screen.findByTestId("fact-destination");
+    expect(fact).toHaveTextContent("github.com/acme/app");
+    expect(fact).toHaveTextContent("policy");
+    expect(fact).toHaveTextContent("Previous path, not used: /old/repo");
+    expect(fact).toHaveTextContent("Publishing is off.");
+    expect(fact).toHaveTextContent("Pull unknown: timed out");
+    expect(fact).toHaveTextContent("Matches the code remote of core.");
+    expect(within(fact).queryByRole("button", { name: "Save destination" })).toBeNull();
+  });
+
+  it("an admin of an unlinked box can save a path and a branch", async () => {
+    syncStorage.mockImplementation(async () => status({
+      destination: destination({ editable: true, source: null, state: "unconfigured" }),
+    }));
+    renderList();
+    const fact = await screen.findByTestId("fact-destination");
+    expect(fact).toHaveTextContent("Unconfigured");
+    await userEvent.type(within(fact).getByRole("textbox", { name: "Destination path" }), "/srv/repo");
+    await userEvent.type(within(fact).getByRole("textbox", { name: "Destination branch" }), "policy");
+    await userEvent.click(within(fact).getByRole("button", { name: "Save destination" }));
+    await waitFor(() => expect(saveDestination).toHaveBeenCalledWith({ path: "/srv/repo", branch: "policy" }));
   });
 });

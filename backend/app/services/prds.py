@@ -3219,19 +3219,106 @@ def _stub_command(command: str, prd: Prd) -> str:
 
 _SECTION_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 
-# High-fidelity signal: work whose answer needs a prototype to see/feel, not words
-# (AL-68). Heuristic over the section title + body; a human can always override.
+# High-fidelity vocabulary (AL-68): work whose answer needs a prototype to see,
+# not words. A human can always override the item afterwards.
+#
+# GRPH-1693. One match marked a section high. Measured on GRPH-P86, the
+# decompose that filed the bug, and on the section the heuristic exists for
+# (prd-20 D5, whose heading "How a held node looks" does not contain the term
+# "look"):
+#
+#   The line (P86)    2 hits / 328 words = 0.61 / 100   "the UI", twice
+#   Problem           1 / 465            = 0.22         "does not look at"
+#   Non-goals         1 / 253            = 0.40         "a wrong design"
+#   prd-20 D5         7 / 428            = 1.64         visual, design, animation
+#   AL-68 high body   3 / 11             = 27           look, feel, layout
+#                     ("interactions" is not the term "interaction")
+#
+# The body is high when it has more than one hit and more than one hit per 100
+# words (`hits * 100 > words`). One per 100 sits under D5 and over The line.
+# A single hit never qualifies: "on screen" in a short sentence is the bug,
+# and `1 * 100 > word_count` would otherwise pass. A term in the heading is
+# high on its own — the heading is the section saying what it is.
 _HIGH_FIDELITY_RE = re.compile(
     r"\b(ui|ux|visual|design|layout|interaction|animation|feel|look|screen|"
     r"mockup|wireframe|prototype|gesture|responsive|styling|aesthetic|onboarding flow)\b",
     re.IGNORECASE,
 )
+_FIDELITY_MIN_HITS = 2
+_FIDELITY_PER_WORDS = 100
+_WORD_RE = re.compile(r"[A-Za-z0-9']+")
 
 
-def classify_fidelity(text: str) -> str:
-    """`high` when the text is about how something looks/feels/behaves (needs a
-    prototype), else `low` (specifiable in words now)."""
-    return "high" if _HIGH_FIDELITY_RE.search(text or "") else "low"
+def _visible_prose(text: str) -> str:
+    """Body text with fenced code removed. A sample that mentions `screen` is not the section."""
+    lines: list[str] = []
+    in_fence = False
+    for line in (text or "").splitlines():
+        if _FENCE_RE.match(line.strip()):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def _fidelity_matches(text: str) -> list[str]:
+    return [match.group(1).lower() for match in _HIGH_FIDELITY_RE.finditer(text or "")]
+
+
+def _unique_terms(matches: list[str]) -> list[str]:
+    terms: list[str] = []
+    for term in matches:
+        if term not in terms:
+            terms.append(term)
+    return terms
+
+
+def fidelity_reading(body: str, *, heading: str = "", named_design: bool = False) -> dict:
+    """`{fidelity, terms}` for one section.
+
+    `terms` is the vocabulary that drove a high classification, in the order it
+    appears, heading first. It is empty when the result is low: nothing drove
+    high, including when named design pages already exist and the prototype is
+    the reference rather than work still to ask for. Empty is that answer, not
+    a section that was not read.
+    """
+    if named_design or _section_names_design(heading, body):
+        return {"fidelity": "low", "terms": []}
+    heading_terms = _unique_terms(_fidelity_matches(heading or ""))
+    prose = _visible_prose(body)
+    matches = _fidelity_matches(prose)
+    words = _WORD_RE.findall(prose)
+    body_dominates = (
+        len(matches) >= _FIDELITY_MIN_HITS
+        and len(matches) * _FIDELITY_PER_WORDS > len(words)
+    )
+    # Body hits join the list only when they cleared the density bar. A heading
+    # term already made the section high; an incidental word in the body did not
+    # drive that, and naming it would say it did.
+    terms = list(heading_terms)
+    if body_dominates:
+        terms = _unique_terms(terms + matches)
+    if terms:
+        return {"fidelity": "high", "terms": terms}
+    return {"fidelity": "low", "terms": []}
+
+
+def _section_names_design(heading: str, body: str) -> bool:
+    """Inline design pages (GRPH-1692). Imported late: design_sets imports this module."""
+    from app.services.design_sets import parse_inline_design
+
+    return parse_inline_design(f"{heading}\n{body or ''}") is not None
+
+
+def classify_fidelity(text: str, *, heading: str = "") -> str:
+    """`high` when the UI signal is in the heading or dominates the body, else `low`.
+
+    `text` is the body. Pass `heading` separately so a term in the title is not
+    diluted by a long behaviour section, and one incidental word in the body is
+    not read as the title.
+    """
+    return fidelity_reading(text, heading=heading)["fidelity"]
 
 
 #: Opens or closes a fenced code block. Three or more backticks/tildes at line start; an
@@ -4023,6 +4110,11 @@ def framing_context(prd: Prd) -> str:
     for title, body in bodies.items():
         if is_implementable_section(title, body):
             continue
+        # Acceptance is carried per item as its own `## Acceptance` list (GRPH-1688), never
+        # as framing: it would spend the budget, and a `### Acceptance criteria` copy of
+        # the whole PRD's list would hand every item every clause.
+        if _section_key(title) in _ACCEPTANCE_SECTION_KEYS:
+            continue
         text = (body or "").strip()
         if not text:
             continue
@@ -4062,7 +4154,716 @@ def dangling_refs(text: str) -> list[str]:
     return seen
 
 
-def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool = False) -> dict:
+#: `_section_key`s of the sections that hold the PRD's acceptance list (GRPH-1688).
+_ACCEPTANCE_SECTION_KEYS = ("acceptancecriteria", "acceptance", "donecriteria")
+_AC_SUBHEADING = re.compile(r"^(?:#{3,6}\s+(.*?)\s*#*|\*\*(.+?)\*\*:?|__(.+?)__:?)\s*$")
+_AC_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.*\S)\s*$")
+
+
+def acceptance_clauses(body: str) -> list[tuple[str, str]]:
+    """`(clause, group)` for every list item in the PRD's acceptance section(s).
+
+    `group` is the sub-heading (`### X` or a bold label) the clause sits under, or "".
+    """
+    out: list[tuple[str, str]] = []
+    for title, text in section_bodies(body).items():
+        if _section_key(title) not in _ACCEPTANCE_SECTION_KEYS:
+            continue
+        group = ""
+        in_fence = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            item = _AC_ITEM.match(line)
+            if item:
+                out.append((item.group(1).strip(), group))
+                continue
+            sub = _AC_SUBHEADING.match(stripped)
+            if sub:
+                group = next(g for g in sub.groups() if g).strip()
+    return out
+
+
+def _clause_section(clause: str, group: str, titles: list[str]) -> str | None:
+    """The section a clause belongs to: its sub-heading names it, else the clause does."""
+    def named(text: str) -> str | None:
+        low = text.lower()
+        key = _section_key(text)
+        hits = [t for t in titles if key and _section_key(t) == key]
+        if not hits:
+            hits = [t for t in titles if t.lower() in low]
+        # Longest title wins, so "Auth tokens" is not claimed by a section called "Auth".
+        return max(hits, key=len) if hits else None
+    return (named(group) if group else None) or named(clause)
+
+
+def assign_acceptance(body: str, titles: list[str]) -> tuple[dict[str, list[str]], list[str]]:
+    """Per-section acceptance clauses, and the clauses that map to no section."""
+    by_section: dict[str, list[str]] = {}
+    unassigned: list[str] = []
+    for clause, group in acceptance_clauses(body):
+        target = _clause_section(clause, group, titles)
+        if target is None:
+            unassigned.append(clause)
+        else:
+            by_section.setdefault(target, []).append(clause)
+    return by_section, unassigned
+
+
+_TP_MIN_SCORE = 0.6
+_TP_MAX = 5
+
+
+def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[dict]:
+    """Code-graph paths a section likely touches, each with the evidence that matched.
+
+    Two signals: a node's path (or its file name) named verbatim in the section text, which
+    is strong; and semantic search over the title and body, kept above a score floor."""
+    from app.services import code_graph
+
+    text = f"{section}\n{body}".lower()
+    found: dict[str, str] = {}
+    for n in code_graph.list_nodes(db, prd.project_id):
+        path = n.path.split("::", 1)[0]
+        base = path.rsplit("/", 1)[-1]
+        if path.lower() in text:
+            found.setdefault(path, f"path `{path}` named in the section")
+        elif len(base) > 3 and base.lower() in text:
+            found.setdefault(path, f"file name `{base}` named in the section")
+    try:
+        hits = code_graph.search_code(db, f"{section}\n{body}"[:2000], prd.project_id, top_k=_TP_MAX)
+    except Exception:  # noqa: BLE001 - semantic search is best effort; lexical hits still stand
+        hits = []
+    for node, score in hits:
+        if score >= _TP_MIN_SCORE:
+            found.setdefault(node.path.split("::", 1)[0],
+                             f"code search matched the section (score {score:.2f})")
+    return [{"path": k, "evidence": v} for k, v in list(found.items())[:_TP_MAX]]
+
+
+# GRPH-1691. One section became one item, including sections that are more than
+# one child run. Measured on GRPH-P86 ("A maintenance line for fixes"), the
+# decompose that filed the bug: body length under the heading, and how the
+# acceptance list landed.
+#
+#   Blocking fixes hold the PRD  1740   one piece
+#   The line                     1747   one piece, and the only section the
+#                                       acceptance list mapped onto (2 of 18
+#                                       clauses; the other 16 matched no section)
+#   Intake and the unscoped report 2173  one piece — the longest that was
+#   The found-bug rule           3383
+#   Draining the line            3404   two bold pieces
+#   Filing a fix                 4616   nine bold pieces
+#
+# A signal is exceeded when its value is greater than the constant. 3000 chars
+# is under both sections the bug names and over Intake, the longest one-child
+# section in that decompose. Two clauses is what "The line" carried and was
+# still one child; three is the next count. A touchpoint area is the first
+# path segment (`backend`, `web`, `fleet`). P86's sections named no paths, so
+# that signal did not flag them — body length did. Two areas is the mixed lane
+# one child already takes; three is a third tree.
+OVERSIZED_BODY_CHARS = 3000
+OVERSIZED_CLAUSES = 2
+OVERSIZED_TOUCHPOINT_AREAS = 2
+
+#: Held only until the split's links are in the same transaction. A drain claims
+#: `backlog` and skips `blocked`, so the row is blocked while the links are added
+#: and moves to backlog only after them. One commit: a crash rolls the half-formed
+#: split back instead of leaving a claimable item with no link.
+_SPLIT_HOLD = "split forming: linked before a drain can claim it"
+
+_SUBHEADING = re.compile(r"^#{3,6}\s+(.*?)\s*#*\s*$")
+# A line that OPENS with a bold label is a piece even when prose follows on the
+# same line. GRPH-P86 writes its pieces that way ("**On the line.** ..."), not as
+# `###` headings. A bold word later in a line is emphasis, not a piece.
+_BOLD_GROUP = re.compile(r"^\*\*(.+?)\*\*\.?:?\s*(.*)$")
+
+
+def touchpoint_area(path: str) -> str:
+    """The tree a touchpoint sits in: the first path segment, or "" when it has none."""
+    path = (path or "").split("::", 1)[0].strip().lstrip("./")
+    if not path:
+        return ""
+    return path.split("/", 1)[0]
+
+
+def section_groups(text: str) -> list[tuple[str, str]]:
+    """`(heading, body)` pieces of one section.
+
+    A piece starts at a `###` sub-heading or a line that opens with a bold label.
+    Text before the first piece has heading `""`. Fewer than two headed pieces
+    means there is nothing to split — the section is one child.
+    """
+    groups: list[tuple[str, list[str]]] = [("", [])]
+    in_fence = False
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            groups[-1][1].append(line)
+            continue
+        if not in_fence:
+            sub = _SUBHEADING.match(stripped)
+            if sub:
+                groups.append((sub.group(1).strip(), []))
+                continue
+            bold = _BOLD_GROUP.match(stripped)
+            if bold:
+                label = bold.group(1).strip().rstrip(".:")
+                rest = (bold.group(2) or "").strip()
+                groups.append((label, [rest] if rest else []))
+                continue
+        groups[-1][1].append(line)
+    out = [(heading, "\n".join(lines).strip()) for heading, lines in groups]
+    if out and out[0][0] == "" and not out[0][1]:
+        out = out[1:]
+    return out
+
+
+def measure_size(body: str, clauses: list[str], touchpoints: list[str]) -> dict:
+    """The three size signals, each with the value that was measured.
+
+    `oversized` is true when any signal exceeds its constant. `oversized_reason`
+    names the first one that did, and its value. An empty reason with
+    `oversized` false means every signal was measured and none exceeded — not
+    that the section was skipped.
+    """
+    areas = {touchpoint_area(p) for p in touchpoints}
+    areas.discard("")
+    signals = [
+        {"signal": "acceptance_clauses", "value": len(clauses),
+         "threshold": OVERSIZED_CLAUSES},
+        {"signal": "touchpoint_areas", "value": len(areas),
+         "threshold": OVERSIZED_TOUCHPOINT_AREAS},
+        {"signal": "body_chars", "value": len(body or ""),
+         "threshold": OVERSIZED_BODY_CHARS},
+    ]
+    for signal in signals:
+        signal["exceeded"] = signal["value"] > signal["threshold"]
+    exceeded = [s for s in signals if s["exceeded"]]
+    reason = ""
+    if exceeded:
+        reason = f"{exceeded[0]['signal']} {exceeded[0]['value']} > {exceeded[0]['threshold']}"
+    return {"oversized": bool(exceeded), "size": signals, "oversized_reason": reason}
+
+
+def claim_subheading_clauses(
+    body: str, titles: list[str], section_texts: dict[str, str],
+) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[tuple[str, str], list[str]], list[str]]:
+    """Section clauses, the ##-level ones, clauses per (section, piece), and the rest.
+
+    `assign_acceptance` maps a clause onto a `##` title. A clause grouped under a
+    piece of a section that has two or more pieces (`### One` / `**One.**`) belongs
+    to that piece. Leaving it unassigned made the section read as having no
+    acceptance, which is the opposite of a section that is too big because of its
+    clauses. The ##-level clauses are also returned on their own so a split can
+    copy them onto every piece — they apply to the whole section.
+    """
+    indexed = list(acceptance_clauses(body))
+    section_level, _unassigned = assign_acceptance(body, titles)
+    assigned: set[int] = set()
+    for i, (clause, group) in enumerate(indexed):
+        if _clause_section(clause, group, titles) is not None:
+            assigned.add(i)
+    per_heading: dict[tuple[str, str], list[str]] = {}
+    groups_of = {title: section_groups(section_texts.get(title, "")) for title in titles}
+    combined: dict[str, list[str]] = {title: list(clauses) for title, clauses in section_level.items()}
+    for i, (clause, group) in enumerate(indexed):
+        if i in assigned or not group:
+            continue
+        gkey = _section_key(group)
+        for title, groups in groups_of.items():
+            real = [heading for heading, _b in groups if heading]
+            if len(real) < 2:
+                continue
+            hit = next((heading for heading in real if _section_key(heading) == gkey), None)
+            if hit is None:
+                continue
+            per_heading.setdefault((title, hit), []).append(clause)
+            combined.setdefault(title, []).append(clause)
+            assigned.add(i)
+            break
+    unassigned = [clause for i, (clause, _group) in enumerate(indexed) if i not in assigned]
+    return combined, section_level, per_heading, unassigned
+
+
+def _compose_task(prd: Prd, body: str, clauses: list[str], context: str, gate_text: str,
+                  design_text: str = "") -> str:
+    """Section (or piece) body, its acceptance list, the framing snapshot, the design handoff.
+
+    A gate's text is the build authority and already carries ## Design. Named pages
+    are copied only when nothing gates the section.
+    """
+    described = body
+    if clauses:
+        described = f"{body}\n\n## Acceptance\n" + "\n".join(f"- {c}" for c in clauses)
+    if context:
+        # The section first, because that is the work. The spec follows it as context
+        # rather than preceding it, so an implementer reads their task before the
+        # material that frames it.
+        described = (
+            f"{described}\n\n---\n\n"
+            f"## Context from {prd.key} — {prd.title}\n\n"
+            f"Carried with the task on purpose: an item that has to fetch its parent "
+            f"to be actionable is the gap this fills. Framing sections only — the "
+            f"other implementable sections are their own items.\n\n"
+            # A SNAPSHOT, and it now says so. Re-decompose skips a section that
+            # already has an item, so this copy is never refreshed — a PRD edited or
+            # rebaselined afterwards leaves every task holding the rules as they
+            # were. `intent_hold` warns that intent MOVED, which an agent can
+            # reasonably read as "scope changed" rather than "the spec in your
+            # description is wrong"; the stamp makes the second reading available.
+            f"*Copied from {prd.key} at {prd.version}. A snapshot: if this item shows "
+            f"an intent hold, or the PRD has moved since, these are the old rules and "
+            f"the PRD is the source.*\n\n{context}"
+        )
+    if gate_text:
+        described = f"{described}\n\n---\n\n{gate_text}"
+    elif design_text:
+        described = f"{described}\n\n---\n\n{design_text}"
+    return described
+
+
+def _piece_blocker(prd_key: str, no_clause: bool, no_touchpoints: bool, gate_blocker: str) -> str:
+    blocker = gate_blocker
+    if no_clause:
+        msg = (f"no acceptance clause in {prd_key} maps to this section; sign-off "
+               "refuses an item with no `## Acceptance` list. Add the clauses.")
+        blocker = f"{blocker}\n{msg}".strip()
+    if no_touchpoints:
+        msg = ("no touchpoints: the code graph proposed none for this section, so the "
+               "planner cannot cluster it and gbfleet cannot open its PR. Set "
+               "`touchpoints` (files it changes) on the item.")
+        blocker = f"{blocker}\n{msg}".strip()
+    return blocker
+
+
+def _accepted_headings(splits: dict | None, section: str, headings: list[str]) -> list[str]:
+    """Headings the caller accepted for `section`, in suggestion order.
+
+    An empty list means "file the section as one item". A name that was not
+    suggested does not invent a piece.
+    """
+    if not isinstance(splits, dict):
+        return []
+    want = _section_key(section)
+    raw = None
+    for key, value in splits.items():
+        if _section_key(str(key)) == want:
+            raw = value
+            break
+    if not isinstance(raw, list):
+        return []
+    accepted = {_section_key(str(h)) for h in raw if isinstance(h, str) and str(h).strip()}
+    return [h for h in headings if _section_key(h) in accepted]
+
+
+def _file_split(db: Session, prd: Prd, section: str, fidelity: str, subs: list[dict]) -> list[str]:
+    """File accepted pieces blocked, link them, then move the ones with nothing else
+    holding them to backlog. One commit, so a drain never sees a backlog row that
+    has not been linked yet."""
+    from app.models import Link
+
+    made: list[tuple[Item, str]] = []
+    for sub in subs:
+        item = items_svc.create_item(
+            db, title=sub["title"], description=sub["description"],
+            project_id=prd.project_id, status="blocked",
+            tags=["prd", "prototype"] if fidelity == "high" else ["prd"],
+            fidelity=fidelity, touchpoints=sub["touchpoints"],
+            kind="feature", prd_id=prd.id, prd_section=section,
+            reporter={"name": "Spec", "handle": "prd", "avatar": "#c9b8ff"},
+            commit=False,
+        )
+        item.blocker = _SPLIT_HOLD
+        item.prd_section_hash = section_fingerprint(prd.body or "", section)
+        made.append((item, sub.get("blocker") or ""))
+    if len(made) >= 2:
+        first = made[0][0]
+        for item, _blocker in made[1:]:
+            db.add(Link(
+                project_id=prd.project_id, a=item.id, b=first.id, type="semantic",
+                reason=f"split of {section}", confidence=1.0,
+            ))
+    for item, blocker in made:
+        if blocker:
+            item.status = "blocked"
+            item.blocker = blocker
+        else:
+            item.status = "backlog"
+            item.blocker = ""
+    db.commit()
+    for item, _blocker in made:
+        db.refresh(item)
+    return [item.id for item, _blocker in made]
+
+
+# ---- dependency proposals between sections (GRPH-1690) --------------------------------
+#
+# `decompose` used to emit one item per section and nothing between them, so a drain could
+# start "Draining the line" before "The line" existed; the ordering had to be added by hand
+# afterwards, which is the step most likely to be skipped or reversed.
+#
+# Both signals below are drawn from the document's own text rather than guessed, which is
+# what makes them worth proposing at all. A wrong link that quotes the sentence it came from
+# is a link a caller can check and drop, and `drop_links` exists for exactly that.
+
+#: A heading shorter than this matches ordinary prose ("A", "In", "One"), and a false
+#: dependency is worse than a missing one — it silently reorders somebody's drain.
+_MIN_HEADING_CHARS = 4
+
+_BACKTICK_TERM = re.compile(r"`([^`\n]{3,60})`")
+#: Loose, so "Non-goals", "Non Goals" and "nongoals" are the same heading.
+_HEADING_JOIN = r"[\s\-_/]*"
+
+#: An identifier more sections than this share is vocabulary, not a handoff. Measured across
+#: this repo's fifteen `docs/prd-*.md` documents: 1456 distinct backticked terms, of which
+#: 1205 appear in one section, 190 in two, and 61 in three or more — and the false edges all
+#: came out of that last group, because `reviewer`, `heartbeat` and `offline` are the language
+#: every section of a fleet PRD speaks rather than something one section hands the next.
+_MAX_TERM_SECTIONS = 2
+
+
+def _heading_matcher(title: str) -> re.Pattern[str] | None:
+    """A pattern for `title` as another section's body would write it, or None if too short.
+
+    The leading number and any parenthetical go first — the same cleaning `_section_key` does,
+    and for the same reason: every PRD in this repo numbers its headings, and a number left in
+    the pattern would stop "7. Non-goals" matching a body that says "non-goals".
+    """
+    cleaned = re.sub(r"\(.*?\)", " ", _SECTION_NUMBER.sub("", title or ""))
+    words = [w for w in re.split(r"[^A-Za-z0-9]+", cleaned) if w]
+    if len("".join(words)) < _MIN_HEADING_CHARS:
+        return None
+    inner = _HEADING_JOIN.join(re.escape(w) for w in words)
+    return re.compile(rf"(?<![A-Za-z0-9]){inner}(?![A-Za-z0-9])", re.IGNORECASE)
+
+
+def _section_label(title: str) -> str | None:
+    """The slice label a heading carries — `S1`, `D8`, `E3`, `AC-18` — if it has exactly one.
+
+    A real heading here reads `## S1 — The state floor`, and later sections cite `S1`, not
+    that sentence. Reuses `_SLICE_LABEL` so this and `unlinked_work` agree on which
+    citations are real.
+    """
+    found = {m.group(1).upper() for m in _SLICE_LABEL.finditer(title or "")}
+    return found.pop() if len(found) == 1 else None
+
+
+def _code_terms(body: str) -> set[str]:
+    """Identifiers `body` carries in backticks — the terms a section can define for others.
+
+    Bold prose is deliberately not a term. Emphasis and a definition look the same in
+    markup, and common bold words linked every section that used that English word.
+    """
+    return {m.group(1).strip() for m in _BACKTICK_TERM.finditer(body or "")
+            if len(m.group(1).strip()) >= 3 and any(c.isalpha() for c in m.group(1))}
+
+
+def _reference(text: str, target: str, matcher, label_rx, term_res) -> tuple[str, str] | None:
+    """`(why, matched)` for the strongest way `text` refers to `target`, else None.
+
+    Naming a section outright beats citing its label, which beats reusing one of its
+    identifiers. The strongest match is the `why` a caller reads.
+    """
+    if matcher:
+        m = matcher.search(text)
+        if m:
+            return f'body names the section heading "{target}"', m.group(0)
+    if label_rx:
+        m = label_rx.search(text)
+        if m:
+            return f'body names "{target}" by its slice label', m.group(0)
+    for term, rx in term_res:
+        m = rx.search(text)
+        if m:
+            return f'body uses "{term}", which "{target}" defines', m.group(0)
+    return None
+
+
+def propose_section_links(
+    order: list[str], bodies: dict[str, str], proposed: set[str],
+) -> tuple[list[dict], list[dict]]:
+    """`(edges, skipped)` — dependency edges between a PRD's implementable sections.
+
+    `order` is those sections in document order. An edge reads **`section` DEPENDS ON
+    `depends_on`**: the section whose body does the naming is the one that builds on the
+    other, so "Draining the line" naming "The line" makes the drain the dependent.
+
+    An edge whose far end is not being created is returned in `skipped` with a reason
+    rather than dropped: a proposal that silently omits a reference it saw is the same
+    quiet absence the rest of this module reports.
+    """
+    terms = {s: _code_terms(bodies.get(s, "")) for s in order}
+    # Who owns a term: the FIRST section in document order that carries it. A dependent
+    # section writes the identifier in backticks too, so "exactly one section" would throw
+    # the signal away. Spread past `_MAX_TERM_SECTIONS` is vocabulary, not a handoff.
+    spread: Counter = Counter()
+    for s in order:
+        for t in terms[s]:
+            spread[t.lower()] += 1
+    owner: dict[str, tuple[str, str]] = {}
+    for s in order:
+        for t in sorted(terms[s]):
+            if spread[t.lower()] <= _MAX_TERM_SECTIONS:
+                owner.setdefault(t.lower(), (t, s))
+    term_res: dict[str, list[tuple[str, re.Pattern[str]]]] = {s: [] for s in order}
+    for t, s in owner.values():
+        term_res[s].append(
+            (t, re.compile(rf"(?<![A-Za-z0-9_]){re.escape(t)}(?![A-Za-z0-9_])")))
+    for s in order:
+        term_res[s].sort(key=lambda pair: pair[0])
+
+    # A label two sections both carry belongs to neither — the rule `_clause_section`
+    # applies to an ambiguous title.
+    label_owner: dict[str, str | None] = {}
+    for s in order:
+        lab = _section_label(s)
+        if lab:
+            label_owner[lab] = None if lab in label_owner else s
+    label_res: dict[str, re.Pattern[str]] = {}
+    for lab, s in label_owner.items():
+        if s is not None:
+            label_res[s] = re.compile(rf"(?<![A-Za-z0-9]){re.escape(lab)}(?![A-Za-z0-9])")
+    matchers = {s: _heading_matcher(s) for s in order}
+
+    edges: list[dict] = []
+    skipped: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for dep in order:
+        text = bodies.get(dep, "")
+        if not text or dep not in proposed:
+            continue
+        for target in order:
+            if target == dep or (dep, target) in seen:
+                continue
+            hit = _reference(text, target, matchers[target], label_res.get(target),
+                             term_res[target])
+            if hit is None:
+                continue
+            seen.add((dep, target))
+            why, matched = hit
+            edge = {"section": dep, "depends_on": target, "why": why, "matched": matched}
+            if target not in proposed:
+                skipped.append({**edge, "reason": (
+                    f'"{target}" already has tracked work, so this decompose creates no item '
+                    "to link to; add the dependency on that item by hand")})
+                continue
+            edges.append({**edge, "inferred": True})
+    return edges, skipped
+
+
+def _find_cycle(edges: list[dict]) -> list[str] | None:
+    """One cycle as a closed path of section names (`[a, b, a]`), or None."""
+    adj: dict[str, list[str]] = {}
+    for e in edges:
+        adj.setdefault(e["section"], []).append(e["depends_on"])
+        adj.setdefault(e["depends_on"], [])
+    state: dict[str, int] = {}
+    stack: list[str] = []
+
+    def walk(node: str) -> list[str] | None:
+        state[node] = 1
+        stack.append(node)
+        for nxt in adj[node]:
+            mark = state.get(nxt, 0)
+            if mark == 1:
+                return stack[stack.index(nxt):] + [nxt]
+            if mark == 0:
+                found = walk(nxt)
+                if found:
+                    return found
+        stack.pop()
+        state[node] = 2
+        return None
+
+    for start in adj:
+        if state.get(start, 0) == 0:
+            found = walk(start)
+            if found:
+                return found
+    return None
+
+
+def break_link_cycles(edges: list[dict], order: list[str]) -> tuple[list[dict], list[dict]]:
+    """`(kept, cycles)` — the edges with every cycle cut, and a report of each cut.
+
+    The edge cut is the one pointing furthest with the document — an earlier section naming
+    a later one — because a PRD is written as a later section naming an earlier one it
+    builds on. A cut is reported: an unreported cycle fix is a dependency the caller
+    cannot see went missing.
+    """
+    kept = list(edges)
+    cycles: list[dict] = []
+    rank = {s: i for i, s in enumerate(order)}
+    while True:
+        path = _find_cycle(kept)
+        if not path:
+            return kept, cycles
+        worst = max(
+            zip(path, path[1:]),
+            key=lambda ab: (rank.get(ab[1], 0) - rank.get(ab[0], 0), rank.get(ab[0], 0), ab),
+        )
+        cut = next(e for e in kept
+                   if e["section"] == worst[0] and e["depends_on"] == worst[1])
+        kept.remove(cut)
+        cycles.append({
+            "cycle": path,
+            "cut": {k: cut[k] for k in ("section", "depends_on", "why", "matched")},
+            "reason": "proposed links must not form a cycle, so the edge pointing forward "
+                      "through the document was cut rather than created",
+        })
+
+
+def _resolve_section(name: str, order: list[str]) -> str | None:
+    """The section in `order` a caller meant, matched the way `_section_key` matches."""
+    key = _section_key(name or "")
+    if key:
+        hit = next((s for s in order if _section_key(s) == key), None)
+        if hit:
+            return hit
+    low = (name or "").strip().lower()
+    return next((s for s in order if s.strip().lower() == low), None) if low else None
+
+
+def apply_link_overrides(
+    edges: list[dict], drop_links: list | None, add_links: list | None,
+    order: list[str], proposed: set[str],
+) -> tuple[list[dict], list[dict]]:
+    """`(edges, ignored)` after a caller's per-section corrections.
+
+    Applied before cycles are cut, so a link the caller adds is held to the same rule as
+    one the document proposed. Every override that changed nothing is reported.
+    """
+    def entries(raw) -> list:
+        return raw if isinstance(raw, list) else []
+
+    def ignore(entry, reason: str) -> None:
+        ignored.append({**(entry if isinstance(entry, dict) else {"entry": entry}),
+                        "reason": reason})
+
+    kept = list(edges)
+    ignored: list[dict] = []
+    for entry in entries(drop_links):
+        if not isinstance(entry, dict):
+            ignore(entry, "not a {section, depends_on} object")
+            continue
+        dep = _resolve_section(str(entry.get("section", "")), order)
+        tgt = _resolve_section(str(entry.get("depends_on", "")), order)
+        before = len(kept)
+        if dep and tgt:
+            kept = [e for e in kept
+                    if not (e["section"] == dep and e["depends_on"] == tgt)]
+        if len(kept) == before:
+            ignore(entry, "no proposed link matched, so nothing was dropped")
+    for entry in entries(add_links):
+        if not isinstance(entry, dict):
+            ignore(entry, "not a {section, depends_on} object")
+            continue
+        dep = _resolve_section(str(entry.get("section", "")), order)
+        tgt = _resolve_section(str(entry.get("depends_on", "")), order)
+        if not dep or not tgt:
+            ignore(entry, "names a section this PRD does not have")
+        elif dep == tgt or any(e["section"] == dep and e["depends_on"] == tgt for e in kept):
+            ignore(entry, "already proposed")
+        elif dep not in proposed or tgt not in proposed:
+            ignore(entry, "both ends must be sections this decompose creates items for")
+        else:
+            kept.append({"section": dep, "depends_on": tgt, "inferred": False, "matched": "",
+                         "why": str(entry.get("why") or "").strip() or "added by the caller"})
+    return kept, ignored
+
+
+#: An inferred dependency is a reading of the document, not a statement by its author.
+_INFERRED_LINK_CONFIDENCE = 0.7
+
+
+def _remainder_piece(prd: Prd, pr: dict, left: list[dict], context: str) -> dict:
+    """One item for the suggested pieces a partial split did not name.
+
+    Coverage counts by ``prd_section``. Filing only the accepted pieces marks the
+    section covered, and a later decompose never offers the rest — their bodies and
+    clauses have to land on an item in this same call, or they are gone.
+    """
+    from app.services.fleet import parse_acceptance
+
+    chunks = []
+    for sub in left:
+        gbody = sub.get("_gbody") or ""
+        chunks.append(f"### {sub['heading']}" + (f"\n{gbody}" if gbody else ""))
+    body = "\n\n".join(
+        part for part in (pr.get("_preamble") or "", "\n\n".join(chunks)) if part)
+    clauses: list[str] = []
+    seen: set[str] = set()
+    for clause in pr.get("_level_clauses") or []:
+        if clause not in seen:
+            seen.add(clause)
+            clauses.append(clause)
+    for sub in left:
+        for clause in sub.get("_own_clauses") or []:
+            if clause not in seen:
+                seen.add(clause)
+                clauses.append(clause)
+    touchpoints: list[str] = []
+    seen_paths: set[str] = set()
+    for sub in left:
+        for path in sub.get("touchpoints") or []:
+            if path not in seen_paths:
+                seen_paths.add(path)
+                touchpoints.append(path)
+    no_clause = not clauses and not parse_acceptance(body)[0]
+    return {
+        "title": f"Implement: {pr['section']} — remainder",
+        "description": _compose_task(
+            prd, body, clauses, context,
+            pr.get("_gate_text") or "", pr.get("_design_text") or ""),
+        "touchpoints": touchpoints,
+        "blocker": _piece_blocker(
+            prd.key, no_clause, not touchpoints, pr.get("_gate_blocker") or ""),
+    }
+
+
+def _strip_split_scratch(proposals: list[dict]) -> None:
+    """Drop the piece text the filing loop needed. It is not part of the proposal."""
+    for pr in proposals:
+        for key in ("_preamble", "_level_clauses", "_gate_text", "_design_text", "_gate_blocker"):
+            pr.pop(key, None)
+        for sub in pr.get("sub_items") or []:
+            sub.pop("_gbody", None)
+            sub.pop("_own_clauses", None)
+
+
+def _is_web_touchpoint(path: str) -> bool:
+    """A touchpoint under `web/`. The UI item takes these; the behaviour item keeps the rest."""
+    norm = (path or "").replace("\\", "/").lstrip("/")
+    return norm == "web" or norm.startswith("web/")
+
+
+_UI_ALREADY_WEB = (
+    "touchpoints are already under web/; this item is the UI work, so no second item was filed"
+)
+
+
+def _ui_description(prd: Prd, body: str, design: dict, context: str) -> str:
+    """The UI item: the section, one acceptance line per named page, and the same ## Design block."""
+    from app.services import design_sets as design_svc
+
+    return _compose_task(
+        prd, (body or "").strip(),
+        [f"{name} matches the design" for name in design["pages"]],
+        context, "", design_svc.design_block(design),
+    )
+
+
+def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool = False,
+              touchpoints: dict[str, list[str]] | None = None,
+              splits: dict[str, list[str]] | None = None,
+              drop_links: list[dict] | None = None,
+              add_links: list[dict] | None = None) -> dict:
     """Propose one tracked task per un-covered section (gap). With create=True, creates them
     as backlog items linked to the PRD + section, so the spec drives the tracker.
 
@@ -4071,70 +4872,274 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
 
     Framing sections (Problem, Goals, Non-goals, Success criteria, …) are skipped — they
     describe the work, they aren't work (AL-96). Pass ``include_prose=True`` when a PRD
-    genuinely uses one of those headings for buildable scope."""
+    genuinely uses one of those headings for buildable scope.
+
+    Each proposal carries ``depends_on``: the other sections this one builds on, each with
+    the text that said so (GRPH-1690). Direction is this section DEPENDS ON the named one.
+    ``create=True`` writes those as dependency links. ``drop_links`` / ``add_links`` are the
+    caller's corrections, per section, as ``[{"section", "depends_on"}]``. A cycle is
+    reported and cut rather than created.
+
+    A section whose acceptance clauses, touchpoint areas, or body length exceed the
+    measured constants is ``oversized``, naming the signal and its value, with suggested
+    sub-items (one per sub-heading or bold piece). ``splits={section: [headings]}`` with
+    create=True files those pieces instead of the one item: blocked, linked, then backlog.
+    A partial list also files one remainder carrying every other suggested piece's body
+    and clauses. Coverage counts by section, so the omitted pieces would otherwise never
+    be offered again. ``split_remainders`` names those headings. ``unfiled_pieces`` lists
+    any suggested piece whose clauses landed on no created item; it is null when
+    ``create`` is false, because nothing was filed and an empty list would read as a
+    clean pass. A section dependency is written onto each filed piece."""
     from app.services import design_sets as design_svc
+    from app.services import links as links_svc
 
     cov = coverage(db, prd)
     bodies = section_bodies(prd.body)
     context = framing_context(prd)
+    from app.services.fleet import parse_acceptance
+
     proposals = []
+    wanted = [
+        p["section"] for p in cov["sections"]
+        if (include_prose or p["implementable"]) and not p["item_count"]
+        and _section_key(p["section"]) not in _ACCEPTANCE_SECTION_KEYS
+    ]
+    combined, section_level, per_heading, unassigned = claim_subheading_clauses(
+        prd.body or "", wanted, bodies)
+    no_acceptance: list[str] = []
+    no_touchpoints: list[str] = []
+    ui_items: list[dict] = []
+    ui_skipped: list[dict] = []
+    overrides = touchpoints or {}
+    # Sections that can carry an edge: the ones becoming items, plus every other
+    # implementable section one of them might name. Document order is the order a cycle
+    # is cut in. The acceptance list is never an item, so there is nothing to link.
+    proposed = set(wanted)
+    universe = [
+        p["section"] for p in cov["sections"]
+        if (p["implementable"] or p["section"] in proposed)
+        and _section_key(p["section"]) not in _ACCEPTANCE_SECTION_KEYS
+    ]
+    edges, links_skipped = propose_section_links(universe, bodies, proposed)
+    # Overrides land before the cycle cut, so a link a caller adds cannot sneak a cycle
+    # past the check.
+    edges, ignored = apply_link_overrides(edges, drop_links, add_links, universe, proposed)
+    edges, link_cycles = break_link_cycles(edges, universe)
+    links_skipped = [*links_skipped, *ignored]
+    depends_by_section: dict[str, list[dict]] = {}
+    for edge in edges:
+        depends_by_section.setdefault(edge["section"], []).append(
+            {"section": edge["depends_on"], "why": edge["why"], "matched": edge["matched"]})
     for p in cov["sections"]:
         if not include_prose and not p["implementable"]:
             continue
         if p["item_count"]:  # already covered by tracked work
             continue
+        if _section_key(p["section"]) in _ACCEPTANCE_SECTION_KEYS:
+            continue  # the acceptance list is split across items, never an item itself
         body = bodies.get(p["section"], "").strip()
-        # A section about how something looks/feels needs a prototype first (AL-68).
-        fidelity = classify_fidelity(f"{p['section']} {body}")
-        described = body
-        if context:
-            # The section first, because that is the work. The spec follows it as context
-            # rather than preceding it, so an implementer reads their task before the
-            # material that frames it.
-            described = (
-                f"{body}\n\n---\n\n"
-                f"## Context from {prd.key} — {prd.title}\n\n"
-                f"Carried with the task on purpose: an item that has to fetch its parent "
-                f"to be actionable is the gap this fills. Framing sections only — the "
-                f"other implementable sections are their own items.\n\n"
-                # A SNAPSHOT, and it now says so. Re-decompose skips a section that
-                # already has an item, so this copy is never refreshed — a PRD edited or
-                # rebaselined afterwards leaves every task holding the rules as they
-                # were. `intent_hold` warns that intent MOVED, which an agent can
-                # reasonably read as "scope changed" rather than "the spec in your
-                # description is wrong"; the stamp makes the second reading available.
-                f"*Copied from {prd.key} at {prd.version}. A snapshot: if this item shows "
-                f"an intent hold, or the PRD has moved since, these are the old rules and "
-                f"the PRD is the source.*\n\n{context}"
-            )
+        clauses = combined.get(p["section"], [])
+        no_clause = False
+        if not clauses and not parse_acceptance(body)[0]:
+            no_clause = True
+            no_acceptance.append(p["section"])
         gate = None
+        gate_text = ""
         gated = design_svc.gating_set(db, prd.id, p["section"])
         if gated is not None:
             gate = design_svc.handoff(db, gated, p["section"])
-            described = f"{described}\n\n---\n\n{gate['text']}"
+            gate_text = gate["text"]
+        # A gate already wrote ## Design, and it is the build authority. Named pages
+        # are the reference for a section that has no gate — inline, or an external
+        # artifact on the set that was not added to the gate list.
+        design = None
+        design_text = ""
+        if gate is None:
+            design = design_svc.named_design(db, prd.id, p["section"], body)
+            if design is not None:
+                design_text = design_svc.design_block(design)
+        described = _compose_task(prd, body, clauses, context, gate_text, design_text)
+        tp_evidence = propose_touchpoints(db, prd, p["section"], body)
+        given = [t for t in (overrides.get(p["section"]) or []) if isinstance(t, str) and t.strip()]
+        tps = given or [e["path"] for e in tp_evidence]
+        if given:
+            tp_evidence = [{"path": t, "evidence": "given by the caller"} for t in given]
+        web_tps = [t for t in tps if _is_web_touchpoint(t)]
+        other_tps = [t for t in tps if not _is_web_touchpoint(t)]
+        # Named pages plus behaviour work: a second item does the UI and depends on this
+        # one. Touchpoints that are already all under web/ ARE that UI item — filing a
+        # twin would depend on nothing. No touchpoints still splits: the section is the
+        # behaviour, and the UI item carries `web/` rather than vanishing.
+        split_ui = design is not None and not (bool(tps) and not other_tps)
+        if split_ui:
+            tps = other_tps
+            tp_evidence = [e for e in tp_evidence if not _is_web_touchpoint(e["path"])]
+        no_tp = not tps
+        if no_tp:
+            no_touchpoints.append(p["section"])
+        blocker = _piece_blocker(prd.key, no_clause, no_tp, gate["blocker"] if gate else "")
+        size = measure_size(body, clauses, tps)
+        groups = section_groups(body)
+        preamble = next((text for heading, text in groups if heading == ""), "")
+        real = [(heading, text) for heading, text in groups if heading]
+        sub_items: list[dict] = []
+        level = section_level.get(p["section"], [])
+        # Suggested only once the section is already too big. A short section with two
+        # headings is still one child; the caller is not offered a split it did not need.
+        if size["oversized"] and len(real) >= 2:
+            for heading, gbody in real:
+                piece = "\n\n".join(part for part in (preamble, gbody) if part)
+                own = list(per_heading.get((p["section"], heading), []))
+                sub_clauses = level + own
+                if given:
+                    sub_tps = list(given)
+                else:
+                    sub_tps = [e["path"] for e in propose_touchpoints(
+                        db, prd, f"{p['section']} {heading}", piece)]
+                if split_ui:
+                    sub_tps = [t for t in sub_tps if not _is_web_touchpoint(t)]
+                sub_no_clause = not sub_clauses and not parse_acceptance(piece)[0]
+                sub_items.append({
+                    "heading": heading,
+                    "title": f"Implement: {p['section']} — {heading}",
+                    "clauses": sub_clauses,
+                    "touchpoints": sub_tps,
+                    "description": _compose_task(
+                        prd, piece, sub_clauses, context, gate_text, design_text),
+                    "blocker": _piece_blocker(
+                        prd.key, sub_no_clause, not sub_tps, gate["blocker"] if gate else ""),
+                    # Piece text the remainder is built from. Stripped before the reply.
+                    "_gbody": gbody,
+                    "_own_clauses": own,
+                })
+        # Named pages (inline or the set's external artifact) mean the prototype
+        # already exists (GRPH-1692). The section is then specifiable against that
+        # reference, so it is low even when the heading is a UI term. The UI item
+        # filed below stays high: it is the work of matching those pages.
+        reading = fidelity_reading(
+            body, heading=p["section"], named_design=design is not None)
         proposals.append({
             "section": p["section"],
             "title": f"Implement: {p['section']}",
             "description": described,
-            "blocked": bool(gate and gate["blocked"]),
-            "blocker": gate["blocker"] if gate else "",
-            "fidelity": fidelity,
+            "touchpoints": tps,
+            "touchpoint_evidence": tp_evidence,
+            "blocked": bool(gate and gate["blocked"]) or no_clause or no_tp,
+            "blocker": blocker,
+            "acceptance": clauses,
+            "fidelity": reading["fidelity"],
+            "fidelity_terms": reading["terms"],
             # Surfaced on the proposal so a dry run shows them before anything is created.
             "dangling_refs": dangling_refs(body),
+            # This section DEPENDS ON each named one (GRPH-1690). Always present: [] means
+            # the body named no other section this decompose is filing.
+            "depends_on": depends_by_section.get(p["section"], []),
+            # Always present. False means every signal was measured and none exceeded.
+            "oversized": size["oversized"],
+            "oversized_reason": size["oversized_reason"],
+            "size": size["size"],
+            "sub_items": sub_items,
+            # Filing scratch, stripped before the reply. The remainder is built at create
+            # time, once `splits` says which pieces were not named.
+            "_preamble": preamble,
+            "_level_clauses": list(level),
+            "_gate_text": gate_text,
+            "_design_text": design_text,
+            "_gate_blocker": gate["blocker"] if gate else "",
         })
+        if split_ui and design is not None:
+            ui_items.append({
+                "section": p["section"],
+                "title": f"Implement: {p['section']} UI",
+                "description": _ui_description(prd, body, design, context),
+                "touchpoints": web_tps or ["web/"],
+                "depends_on": p["section"],
+                "fidelity": "high",
+                "acceptance": [f"{name} matches the design" for name in design["pages"]],
+            })
+        elif design is not None:
+            ui_skipped.append({"section": p["section"], "why": _UI_ALREADY_WEB})
+    filed = {pr["section"] for pr in proposals}
+    for title, text in bodies.items():
+        if title in filed or _section_key(title) in _ACCEPTANCE_SECTION_KEYS:
+            continue
+        if design_svc.named_design(db, prd.id, title, text) is None:
+            continue
+        ui_skipped.append({
+            "section": title,
+            "why": "this section is not filed as build work, so no UI item was hung off it",
+        })
+    ui_without_design: list[str] = []
+    intro = re.split(r"(?m)^##\s+", prd.body or "", maxsplit=1)[0]
+    if design_svc.mentions_ui(intro) and design_svc.parse_inline_design(intro) is None:
+        ui_without_design.append("(intro)")
+    for title, text in bodies.items():
+        if design_svc.mentions_ui(f"{title}\n{text}") and design_svc.named_design(
+                db, prd.id, title, text) is None:
+            ui_without_design.append(title)
     created = []
+    links: list[dict] = []
+    # section -> the items this call filed for it. A split files several; a dependency of
+    # the section is written onto each, because those pieces are the work a drain claims.
+    filed: dict[str, list[tuple[str, str]]] = {}
+    # Empty means this call filed no remainder. Null `unfiled_pieces` means create did
+    # not run, so nobody looked — not "every piece landed".
+    split_remainders: list[dict] = []
+    unfiled_pieces: list[dict] | None = None
     if create:
         if prd.status != "approved":
             raise DecomposeRequiresApproval(
                 f"create=true files tasks; that needs approved, which the grill earns — "
                 f"this PRD is {prd.status}. Dry-run (create=false) still proposes."
             )
+        behaviour_ids: dict[str, list[str]] = {}
+        unfiled_pieces = []
         for pr in proposals:
+            accepted = _accepted_headings(
+                splits, pr["section"], [s["heading"] for s in pr["sub_items"]])
+            if accepted:
+                chosen = [s for s in pr["sub_items"] if s["heading"] in accepted]
+                left = [s for s in pr["sub_items"] if s["heading"] not in accepted]
+                # A partial list used to file only `chosen`. One item on the section is
+                # enough for coverage to skip it next time, so Two and Three were gone
+                # and the reply did not say so.
+                if chosen and left:
+                    chosen = [*chosen, _remainder_piece(prd, pr, left, context)]
+                if chosen:
+                    ids = _file_split(
+                        db, prd, pr["section"], pr["fidelity"], chosen)
+                    created.extend(ids)
+                    behaviour_ids[pr["section"]] = ids
+                    filed[pr["section"]] = [
+                        (row.id, row.key) for iid in ids if (row := db.get(Item, iid))
+                    ]
+                    if left:
+                        split_remainders.append({
+                            "section": pr["section"],
+                            "headings": [s["heading"] for s in left],
+                            "item_id": ids[-1],
+                        })
+                    texts = []
+                    for iid in ids:
+                        filed_item = db.get(Item, iid)
+                        texts.append((filed_item.description or "") if filed_item is not None else "")
+                    blob = "\n".join(texts)
+                    for sub in pr["sub_items"]:
+                        own = sub.get("_own_clauses") or []
+                        gbody = sub.get("_gbody") or ""
+                        gone = [c for c in own if c not in blob]
+                        if gone or (not own and gbody and gbody not in blob):
+                            unfiled_pieces.append({
+                                "section": pr["section"],
+                                "heading": sub["heading"],
+                                "clauses": gone,
+                            })
+                    continue
             item = items_svc.create_item(
                 db, title=pr["title"], description=pr["description"],
                 project_id=prd.project_id, status="backlog",
                 tags=["prd", "prototype"] if pr["fidelity"] == "high" else ["prd"],
-                fidelity=pr["fidelity"],
+                fidelity=pr["fidelity"], touchpoints=pr["touchpoints"],
                 # A PRD task is new capability (GRPH-1358). Said here, not inferred from
                 # `prd_id`: bugs are filed under PRDs too, and those must not read as features.
                 kind="feature",
@@ -4151,8 +5156,64 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             item.prd_section_hash = section_fingerprint(prd.body or "", pr["section"])
             db.commit()
             created.append(item.id)
+            filed[pr["section"]] = [(item.id, item.key)]
+            behaviour_ids[pr["section"]] = [item.id]
+        # Written after every item exists: a dependency points at an item this same call
+        # created. `a` is the dependent. A split's pieces each carry the section's edges.
+        for edge in edges:
+            srcs = filed.get(edge["section"]) or []
+            dsts = filed.get(edge["depends_on"]) or []
+            if not srcs or not dsts:
+                links_skipped.append({
+                    "section": edge["section"], "depends_on": edge["depends_on"],
+                    "why": edge["why"], "matched": edge["matched"],
+                    "reason": "an end of this link was not filed as an item",
+                })
+                continue
+            for src, dst in ((s, d) for s in srcs for d in dsts):
+                links_svc.create_link(
+                    db, a=src[0], b=dst[0], type_="dependency",
+                    reason=(f"decompose_prd: {edge['section']} builds on "
+                            f"{edge['depends_on']} — {edge['why']}"),
+                    confidence=_INFERRED_LINK_CONFIDENCE if edge.get("inferred") else 1.0,
+                    project_id=prd.project_id,
+                )
+                links.append({"a": src[1], "b": dst[1], "section": edge["section"],
+                              "depends_on": edge["depends_on"], "why": edge["why"]})
+        if ui_items:
+            from app.services import links as links_svc
+            for ui in ui_items:
+                parent_ids = behaviour_ids.get(ui["section"], [])
+                item = items_svc.create_item(
+                    db, title=ui["title"], description=ui["description"],
+                    project_id=prd.project_id, status="backlog",
+                    tags=["prd", "prototype"], fidelity="high",
+                    touchpoints=ui["touchpoints"], kind="feature",
+                    prd_id=prd.id, prd_section=ui["section"],
+                    reporter={"name": "Spec", "handle": "prd", "avatar": "#c9b8ff"},
+                )
+                item.prd_section_hash = section_fingerprint(prd.body or "", ui["section"])
+                db.commit()
+                for parent_id in parent_ids:
+                    links_svc.create_link(
+                        db, a=item.id, b=parent_id, type_="dependency",
+                        reason=f"UI for {ui['section']} depends on the behaviour item",
+                        project_id=prd.project_id,
+                    )
+                created.append(item.id)
     # Rendered, as in `coverage` above. NOT the same as the `prd_id=prd.id` written onto each
     # created item further up: that column holds the frozen id deliberately (GRPH-319), because
     # a stored rendering would rot the moment the project is retagged. Displayed keys render;
     # stored ids freeze — and this dict is read, not stored.
-    return {"prd_id": prd.key, "proposals": proposals, "created": created}
+    #
+    # `links`, `link_cycles` and `links_skipped` are returned and not declared on
+    # decompose_prd's outputSchema: the manifest is at its ceiling, and the ratchet checks
+    # that declared keys are emitted, not that emitted keys are declared. An empty list
+    # means looked and found none.
+    _strip_split_scratch(proposals)
+    return {"prd_id": prd.key, "proposals": proposals, "created": created,
+            "unassigned_clauses": unassigned, "no_acceptance": no_acceptance,
+            "no_touchpoints": no_touchpoints, "ui_items": ui_items,
+            "ui_skipped": ui_skipped, "ui_without_design": ui_without_design,
+            "split_remainders": split_remainders, "unfiled_pieces": unfiled_pieces,
+            "links": links, "link_cycles": link_cycles, "links_skipped": links_skipped}

@@ -15,6 +15,8 @@ A wait comes in two shapes, and answering a decision treats them differently (GR
   records the answer, removes `wait:decision`, clears the blocker and returns it to `next`
   (`in_progress` while its lease is live). It never reaches `done`: an answer is not proof the
   work was built, and `done` without an attestation is the "absence reads as clean" class.
+  Its holder is also its asker, so that holder is named in `notify` directly — and because the
+  item never reaches `done`, `pending_answers` reads the stored answer rather than the status.
 
 `carries_own_work` is the one rule that tells them apart.
 
@@ -263,12 +265,34 @@ def set_decision(item: Item, question: str | None, options: list | None) -> None
     item.tags = tags
 
 
+def open_decision_waits(db: Session, project_id: str) -> list[Item]:
+    """Unanswered ``wait:decision`` items in this project.
+
+    ``done`` is closed, and a stored answer is closed. An empty list means
+    this project has none open. It does not mean the question was not asked:
+    the caller named the project.
+    """
+    from sqlalchemy import select
+
+    rows = db.scalars(select(Item).where(
+        Item.project_id == project_id, Item.status != "done")).all()
+    open_rows: list[Item] = []
+    for item in rows:
+        if "wait:decision" not in {str(tag).lower() for tag in item.tags or []}:
+            continue
+        decision = item.decision if isinstance(item.decision, dict) else {}
+        if decision.get("answer"):
+            continue
+        open_rows.append(item)
+    return open_rows
+
+
 def _event(db: Session, action: str, items: dict[str, tuple[Item, dict]], *, actor, surface: str,
-           meta: dict | None = None, primary: Item) -> int:
+           meta: dict | None = None, primary: Item, actor_type: str = "user") -> int:
     from app.models import Event
 
     ev = Event(
-        actor_type="user", actor_id=getattr(actor, "id", "") or "",
+        actor_type=actor_type, actor_id=getattr(actor, "id", "") or "",
         actor_label=getattr(actor, "handle", "") or getattr(actor, "name", "") or "",
         surface=surface, action=f"blocker.{action}", target_type="item",
         target_id=primary.key, project_id=primary.project_id,
@@ -277,6 +301,12 @@ def _event(db: Session, action: str, items: dict[str, tuple[Item, dict]], *, act
     )
     db.add(ev)
     db.flush()
+    # Decision waits write the audit row here, not through events.record (GRPH-1733).
+    from app.services import project_sync_outbox as outbox
+    outbox.note_event(
+        db, project_id=primary.project_id, target_type="item", target_id=primary.key,
+        action=f"blocker.{action}", meta=ev.meta,
+    )
     return ev.id
 
 
@@ -454,7 +484,8 @@ def carries_own_work(db: Session, item: Item) -> bool:
 
 def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: str | None = None,
                 actor=None, surface: str = "rest", agent: str | None = None,
-                source: dict | None = None, needs_person: bool = False) -> dict:
+                source: dict | None = None, needs_person: bool = False,
+                proposal_id: str | None = None) -> dict:
     """Record the answer on a decision wait, mark it done, and release what waited on it.
 
     An item that asks its own question (`carries_own_work`) is not marked done: the answer is
@@ -504,6 +535,14 @@ def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: s
         if dep.claimed_by and _lease_live(dep) and dep.claimed_by not in notify:
             notify.append(dep.claimed_by)
 
+    # An item that asks its own question has no dependent standing in for its asker — the
+    # holder IS the asker, and answering leaves it `in_progress` on that same live lease
+    # rather than `done` (GRPH-1717). Without this the agent that asked hears nothing until
+    # its lease lapses, which is the wait it was told would end.
+    own_work = carries_own_work(db, wait)
+    if own_work and wait.claimed_by and _lease_live(wait) and wait.claimed_by not in notify:
+        notify.append(wait.claimed_by)
+
     user = getattr(actor, "handle", "") or getattr(actor, "name", "") or ""
     if agent:
         answer = {"choice": choice, "text": text, "by": {"agent": agent, "user": user},
@@ -516,7 +555,7 @@ def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: s
     # attestation and releases its dependents (`release_waiters`).
     from app.services import items as items_svc
 
-    if carries_own_work(db, wait):
+    if own_work:
         wait.tags = [t for t in (wait.tags or []) if str(t).lower() != "wait:decision"]
         wait.blocker = ""
         if wait.status == "blocked":
@@ -533,8 +572,13 @@ def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: s
         db.refresh(dep)
     released = [d.key for d, b in touched.values()
                 if d is not wait and b["status"] == "blocked" and d.status != "blocked"]
+    answer_meta = {"released": released}
+    if proposal_id:
+        # The cloud proposal that answered this wait. The actor type is cloud
+        # only for that path; a person answering from the box stays `user`.
+        answer_meta["proposal_id"] = proposal_id
     eid = _event(db, "answer", touched, actor=actor, surface=surface, primary=wait,
-                 meta={"released": released})
+                 meta=answer_meta, actor_type="cloud" if proposal_id else "user")
     alerts_svc.clear_for_item(db, wait.id)
     db.commit()
     db.refresh(wait)
@@ -546,13 +590,24 @@ def answer_wait(db: Session, wait_id: str, *, choice: str | None = None, text: s
 
 
 def pending_answers(db: Session, agent_id: str) -> list[Item]:
-    """Answered decision waits that still owe this agent a directive."""
+    """Answered decisions that still owe this agent a directive, newest answer first.
+
+    Not the `done` ones: an item that asked its own question is answered IN PLACE and stays
+    `in_progress` on its holder's live lease (GRPH-1717), so a `done` filter dropped exactly
+    the agent that asked. What marks an answer owed is the stored `answer` plus a `notify`
+    naming this agent, not the status the item landed on.
+
+    Ordered by `updated_at`, which every row carries. `done_at` is NULL on the self-decision
+    shape, and a NULL sorts first under DESC on Postgres but last on SQLite — ordering by it
+    would pick a different winner per engine once more than `limit` answers were owed.
+    """
     from sqlalchemy import select
 
-    rows = db.scalars(select(Item).where(Item.decision.is_not(None), Item.status == "done")
-                      .order_by(Item.done_at.desc()).limit(100)).all()
+    rows = db.scalars(select(Item).where(Item.decision.is_not(None))
+                      .order_by(Item.updated_at.desc()).limit(100)).all()
     return [w for w in rows
-            if agent_id in (w.decision.get("notify") or [])
+            if (w.decision or {}).get("answer")
+            and agent_id in (w.decision.get("notify") or [])
             and agent_id not in (w.decision.get("notified") or [])]
 
 
@@ -564,12 +619,18 @@ def answer_directive(db: Session, agent_id: str) -> dict | None:
     wait = waits[0]
     wait.decision = {**wait.decision, "notified": [*(wait.decision.get("notified") or []), agent_id]}
     db.commit()
+    # An item that asked its own question is still this agent's, still `in_progress` on the
+    # lease it held when it asked (GRPH-1717). Telling that holder to claim it again sends it
+    # after work it already owns.
+    still_held = wait.status == "in_progress" and wait.claimed_by == agent_id
+    next_step = ("it never left you: continue building it with this answer" if still_held else
+                 "the blocked item is back in `next`: claim it again and continue with this answer")
     return {
         "type": "decision_answered",
         "wait": wait.key,
         "question": wait.decision.get("question", ""),
         "answer": wait.decision["answer"],
-        "next": "the blocked item is back in `next`: claim it again and continue with this answer",
+        "next": next_step,
     }
 
 
@@ -585,6 +646,60 @@ def unblock(db: Session, item_id: str, *, actor=None, surface: str = "rest") -> 
                  primary=item)
     db.commit()
     return {"item": item.key, "status": item.status, "event_id": eid}
+
+
+def release_when_blocking_fix_done(db: Session, fix: Item) -> list[str]:
+    """After `fix` reaches `done`, return items it was the last open blocking fix for.
+
+    The dependency is `item DEPENDS ON fix` with reason ``blocking fix``. Each such
+    item that is blocked only by that filing goes through `unblock`. A typed wait,
+    a manual blocker, or a second blocking fix that is still open is left alone
+    (GRPH-1772).
+    """
+    from sqlalchemy import select
+
+    from app.models import Link
+    from app.services.items import BLOCKING_FIX_BLOCKER_SUFFIX, BLOCKING_FIX_REASON
+
+    if fix.status != "done":
+        return []
+    dependent_ids = db.scalars(select(Link.a).where(
+        Link.type == "dependency", Link.b == fix.id,
+        Link.reason == BLOCKING_FIX_REASON)).all()
+    released: list[str] = []
+    for dep_id in dict.fromkeys(dependent_ids):
+        dependent = db.get(Item, dep_id)
+        if dependent is None or dependent.status != "blocked":
+            continue
+        if not _blocked_only_by_filing(db, dependent, BLOCKING_FIX_BLOCKER_SUFFIX):
+            continue
+        if _open_blocking_fixes(db, dependent, BLOCKING_FIX_REASON):
+            continue
+        unblock(db, dependent.id)
+        released.append(dependent.id)
+    return released
+
+
+def _blocked_only_by_filing(db: Session, item: Item, suffix: str) -> bool:
+    """The block is the text filing writes, not a wait and not a person's note."""
+    if wait_tags_on(item) or unfinished_wait_deps(db, item):
+        return False
+    return (item.blocker or "").endswith(suffix)
+
+
+def _open_blocking_fixes(db: Session, item: Item, reason: str) -> list[Item]:
+    from sqlalchemy import select
+
+    from app.models import Link
+
+    ids = db.scalars(select(Link.b).where(
+        Link.type == "dependency", Link.a == item.id, Link.reason == reason)).all()
+    open_fixes: list[Item] = []
+    for dep_id in dict.fromkeys(ids):
+        dep = db.get(Item, dep_id)
+        if dep is not None and dep.status != "done":
+            open_fixes.append(dep)
+    return open_fixes
 
 
 def release_claim(db: Session, item_id: str, *, actor=None, surface: str = "rest") -> dict:
@@ -679,6 +794,12 @@ def undo(db: Session, item_id: str, *, actor=None, surface: str = "rest") -> dic
         surface=surface, action="blocker.undo", target_type="item", target_id=item.key,
         project_id=item.project_id, meta={"undoes": last.id, "action": last.action})
     db.add(ev)
+    db.flush()
+    from app.services import project_sync_outbox as outbox
+    outbox.note_event(
+        db, project_id=item.project_id, target_type="item", target_id=item.key,
+        action="blocker.undo", meta=ev.meta,
+    )
     db.commit()
     return {"item": item.key, "undone": last.action, "event_id": ev.id}
 

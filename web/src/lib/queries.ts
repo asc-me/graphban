@@ -647,6 +647,18 @@ export function useSaveSyncStorage(projectId: string) {
   });
 }
 
+/** Save the unlinked box's path and branch (GRPH-1761). One pair for the deployment, so every
+ * project's sync-storage read is refreshed. */
+export function useSaveDestination(_projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { path: string; branch: string }) => api.saveDestination(body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sync-storage"] });
+    },
+  });
+}
+
 export function useRunSyncStorage(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -1198,6 +1210,22 @@ export function useItemsFull(projectId?: string, enabled = true) {
     queryKey: [...keys.items, "full", projectId],
     queryFn: () => api.itemsFull(projectId),
     enabled: !!projectId && enabled,
+  });
+}
+
+/**
+ * Put one unscoped fix on the project's line (GRPH-1744). No optimistic patch: a refused move
+ * must leave the row where it was. Success refreshes the items (the Maintenance count) and the
+ * line reads (the unscoped count).
+ */
+export function usePutOnLine(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, lineId }: { id: string; lineId: string }) => api.updateItem(id, { line_id: lineId }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.items });
+      qc.invalidateQueries({ queryKey: ["line", projectId] });
+    },
   });
 }
 

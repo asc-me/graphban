@@ -10,6 +10,7 @@ import * as React from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
+import { useHideDocsTrigger } from "@/features/docs/DocsReader";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
@@ -30,9 +31,12 @@ import {
   OUTLINE_ZOOM,
   PACK_H,
   PACK_W,
+  STAGE_GLOW,
   STAGE_H,
   STAGE_W,
   STAGE_Y,
+  TALLY_COLS,
+  TALLY_ROW_H,
   legendCounts,
   mapLayout,
   packOf,
@@ -97,15 +101,21 @@ export function RulesView() {
   const onDirty = React.useCallback((d: boolean) => {
     dirtyRef.current = d;
   }, []);
-  const [pendingSel, setPendingSel] = React.useState<{ to: string | null } | null>(null);
-  const selectStage = React.useCallback(
-    (to: string | null) => {
-      if (to !== sel && dirtyRef.current) setPendingSel({ to });
-      else setSel(to);
-    },
-    [sel],
-  );
+  const [pendingSel, setPendingSel] = React.useState<{ to: string | null; after?: () => void } | null>(null);
+  // `sel` is read through a ref so selectStage keeps one identity: effects that call it (the
+  // ?rule= focus) must re-run only when their own inputs change, not on every selection.
+  const selRef = React.useRef(sel);
+  selRef.current = sel;
+  const selectStage = React.useCallback((to: string | null, after?: () => void) => {
+    if (to !== selRef.current && dirtyRef.current) setPendingSel({ to, after });
+    else {
+      setSel(to);
+      after?.();
+    }
+  }, []);
   const { pathname } = useLocation();
+  // The docs trigger sits on the dock's pinned Save row; hide it while the dock is open (GRPH-1729).
+  useHideDocsTrigger(!!flow && !!sel);
   // Following a refusal (frames 4a1–4b2): `?rule=` focuses one rule, `?from=` is the event to
   // go back to, `?pulse=unmapped` is "see all rules" for a refusal that names no rule.
   const ruleParam = params.get("rule");
@@ -136,21 +146,21 @@ export function RulesView() {
   const focusedRule = flow && focusRule ? flow.stages.flatMap((s) => s.rules).find((r) => r.id === focusRule) ?? null : null;
   const focusedStage = focusedRule?.stage ?? null;
   React.useEffect(() => {
-    if (focusedStage) setSel(stageKey(focusedStage));
-  }, [focusedStage]);
+    if (focusedStage) selectStage(stageKey(focusedStage));
+  }, [focusedStage, selectStage]);
 
   function openValueSuggestion(s: RuleSuggestion) {
     if (s.rule_id && s.value !== null) setPrefill({ rule: s.rule_id, value: s.value });
     setFocusRule(s.rule_id);
-    if (!s.rule_id) setSel(stageKey(s.stage));
-    setSheet(null);
+    if (!s.rule_id) selectStage(stageKey(s.stage), () => setSheet(null));
+    else setSheet(null);
   }
 
   // A ?stage= that names no stage on this payload selects nothing, rather than an empty inspector.
   React.useEffect(() => {
     if (!flow || !sel || sel === PACK_KEY) return;
-    if (!flow.stages.some((s) => stageKey(s.id) === sel)) setSel(null);
-  }, [flow, sel]);
+    if (!flow.stages.some((s) => stageKey(s.id) === sel)) selectStage(null);
+  }, [flow, sel, selectStage]);
 
   // A null model is also what linked_unset and linked_unreachable look like; only a local
   // project with no model is new.
@@ -162,7 +172,7 @@ export function RulesView() {
   const setWizardDirty = React.useCallback((d: boolean) => { wizardDirty.current = d; }, []);
   const openQuick = (s: QuickScreen) => {
     if (wizard && wizardDirty.current && !window.confirm("Leave setup? Your answers are not saved and will be discarded.")) return;
-    setSel(null); setWizard(false); setQuick(s);
+    selectStage(null, () => { setWizard(false); setQuick(s); });
   };
 
   return (
@@ -177,7 +187,7 @@ export function RulesView() {
               ref={unmappedBtn}
               aria-haspopup="dialog"
               aria-expanded={sheet === "unmapped"}
-              onClick={() => { setPulse(false); setSel(null); setSheet("unmapped"); }}
+              onClick={() => selectStage(null, () => { setPulse(false); setSheet("unmapped"); })}
               onAnimationEnd={() => setPulse(false)}
               data-testid="rules-open-unmapped"
               data-pulse={pulse ? "true" : "false"}
@@ -193,7 +203,7 @@ export function RulesView() {
               ref={recommendedBtn}
               aria-haspopup="dialog"
               aria-expanded={sheet === "recommended"}
-              onClick={() => { setSel(null); setSheet("recommended"); }}
+              onClick={() => selectStage(null, () => setSheet("recommended"))}
               data-testid="rules-open-recommended"
               className="h-7 rounded-[8px] border border-control px-2.5 text-small text-fg-2 hover:text-fg"
             >
@@ -201,7 +211,7 @@ export function RulesView() {
             </button>
             <button
               type="button"
-              onClick={() => { setSel(null); setQuick(null); setWizard(true); }}
+              onClick={() => selectStage(null, () => { setQuick(null); setWizard(true); })}
               data-testid="rules-open-wizard"
               className="h-7 rounded-[8px] border border-control px-2.5 text-small text-fg-2 hover:text-fg"
             >
@@ -267,7 +277,7 @@ export function RulesView() {
           </button>
           <button
             type="button"
-            onClick={() => { setSel(null); setWizard(true); }}
+            onClick={() => selectStage(null, () => setWizard(true))}
             data-testid="rules-fresh-setup"
             className="h-[30px] rounded-[8px] bg-accent px-3 text-body font-semibold text-[#0a0c0e]"
           >
@@ -275,7 +285,7 @@ export function RulesView() {
           </button>
           <button
             type="button"
-            onClick={() => setSel(stageKey("merge"))}
+            onClick={() => selectStage(stageKey("merge"))}
             className="h-[30px] rounded-[8px] border border-control px-3 text-body text-fg-2"
           >
             Set it up in Merge
@@ -333,8 +343,10 @@ export function RulesView() {
                 closing: pendingSel.to === null,
                 onLeave: () => {
                   dirtyRef.current = false;
-                  setSel(pendingSel.to);
+                  const { to, after } = pendingSel;
+                  setSel(to);
                   setPendingSel(null);
+                  after?.();
                 },
                 onStay: () => setPendingSel(null),
               }
@@ -436,10 +448,14 @@ function TallyLine({ rules }: { rules: RuleFlowRule[] }) {
   const t = tally(rules);
   if (!t.length) return <span className={cn(MONO, "text-[10.5px] text-muted")}>nothing registered yet</span>;
   return (
-    <span className={cn(MONO, "flex flex-wrap gap-x-1.5 text-[10.5px]")}>
-      {t.map((x, i) => (
-        <span key={x.level} style={{ color: x.level === "enforced" ? "#8b949e" : LEVELS[x.level].color }}>
-          {i ? "· " : ""}
+    <span
+      className={cn(MONO, "grid gap-x-1.5 text-[10.5px]")}
+      style={{ gridTemplateColumns: `repeat(${TALLY_COLS}, minmax(0, 1fr))`, gridAutoRows: TALLY_ROW_H, lineHeight: `${TALLY_ROW_H}px` }}
+      data-testid="rules-stage-tally"
+      data-rows={Math.ceil(t.length / TALLY_COLS)}
+    >
+      {t.map((x) => (
+        <span key={x.level} className="truncate whitespace-nowrap" style={{ color: x.level === "enforced" ? "#8b949e" : LEVELS[x.level].color }}>
           {tallyText(x)}
         </span>
       ))}
@@ -503,7 +519,8 @@ function RulesCanvas({
   const fit = React.useCallback(() => {
     fits.current += 1;
     if (docked) {
-      const k = Math.max(0.2, Math.min(1, (size.w - 48) / W, (size.h - 16) / STAGE_H));
+      // The selected card's ring and glow stay inside the strip: fit the card plus its glow room.
+      const k = Math.max(0.2, Math.min(1, (size.w - 48) / W, (size.h - 8) / (STAGE_H + 2 * STAGE_GLOW)));
       setViewport({ k, x: (size.w - W * k) / 2, y: (size.h - STAGE_H * k) / 2 - STAGE_Y * k });
       return;
     }
@@ -612,8 +629,21 @@ function RulesCanvas({
             <marker id="rl-ahs" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto">
               <path d="M0,0 L8,4 L0,8 z" fill="#c6f24e" />
             </marker>
+            <pattern id="rules-dots" width="24" height="24" patternUnits="userSpaceOnUse">
+              <circle cx="1.5" cy="1.5" r="1" fill="#1a2026" />
+            </pattern>
           </defs>
           <g transform={view.transform} style={{ transition: view.panning ? undefined : "transform 220ms ease" }}>
+            {/* The canvas dot grid, the code graph's `code-dots` to its numbers (GRPH-1728). */}
+            <rect
+              data-testid="rules-dots"
+              x={-W * 2}
+              y={-H * 2}
+              width={W * 5}
+              height={H * 5}
+              fill="url(#rules-dots)"
+              pointerEvents="none"
+            />
             <Edges flow={flow} layout={layout} sel={sel} hover={hover} outline={outline} />
             {flow.stages.map((s, i) => (
               <StageColumn
@@ -758,7 +788,16 @@ function StageColumn({
   const dim = level === "not_used";
   return (
     <>
-      <foreignObject x={x} y={STAGE_Y} width={STAGE_W} height={STAGE_H}>
+      {/* The foreignObject keeps STAGE_GLOW of room on every side, so the selected card's glow is
+          drawn whole; the room passes pointer events through to the canvas (GRPH-1728). */}
+      <foreignObject
+        x={x - STAGE_GLOW}
+        y={STAGE_Y - STAGE_GLOW}
+        width={STAGE_W + 2 * STAGE_GLOW}
+        height={STAGE_H + 2 * STAGE_GLOW}
+        data-testid={`rules-stage-box-${stage.id}`}
+      >
+        <div className="pointer-events-none h-full w-full" style={{ padding: STAGE_GLOW }}>
         <div
           id={optionId(key)}
           role="option"
@@ -770,7 +809,7 @@ function StageColumn({
           onClick={onPick}
           onMouseEnter={() => onHover(true)}
           onMouseLeave={() => onHover(false)}
-          className="flex h-full w-full cursor-pointer flex-col gap-1.5 overflow-hidden rounded-[12px] px-3 py-2.5 text-fg transition-[box-shadow,transform] duration-200 hover:-translate-y-0.5"
+          className="pointer-events-auto flex h-full w-full cursor-pointer flex-col gap-1.5 overflow-hidden rounded-[12px] px-3 py-2.5 text-fg transition-[box-shadow,transform] duration-200 hover:-translate-y-0.5"
           style={{
             // The opened stage: an accent border and glow, readable at the strip's scale.
             border: selected ? "2px solid #c6f24e" : meta ? meta.stageBorder : "1.5px dashed #626c75",
@@ -796,6 +835,7 @@ function StageColumn({
               <TallyBar rules={rules} />
             </>
           )}
+        </div>
         </div>
       </foreignObject>
       {!outline &&

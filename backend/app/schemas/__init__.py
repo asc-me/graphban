@@ -1875,10 +1875,16 @@ class RuleToggleOut(BaseModel):
     #: GRPH-1631: per field (`on`, `params`), what a Reset (null) lands on: `org` when the org
     #: has a row setting that field, else `platform default`.
     inherits: dict[str, str] | None = None
+    #: GRPH-1727: per field (`on`, `params`), the value a Reset (null) lands on — the org row's
+    #: value when it sets that field, else the library default. A client draws it after Reset.
+    inherited: dict | None = None
     locked: bool
     locked_by: str | None = None
     #: `merge.done_predicates` only (GRPH-1426): each predicate `done` needs, with its source.
     effective_predicates: list[dict] | None = None
+    #: Custom rules only (GRPH-1774): the rule's state, and why it is drawn UNMEASURED.
+    state: str | None = None
+    unmeasured_reason: str | None = None
 
 
 class RuleTogglesOut(BaseModel):
@@ -1888,6 +1894,35 @@ class RuleTogglesOut(BaseModel):
     #: Why the installed pack is not in force (refused at startup), else None.
     library_reason: str | None = None
     toggles: list[RuleToggleOut]
+
+
+class CustomRuleWrite(BaseModel):
+    """A person authoring a custom rule directly; saved `active` (GRPH-1774)."""
+    model_config = {"extra": "forbid"}
+    slug: str
+    primitive: str
+    title: str
+    why: str
+    reason: str = ""
+    params: dict = {}
+    claims: str | None = None
+
+
+class CustomRuleOut(BaseModel):
+    rule_id: str
+    primitive: str
+    stage: str
+    title: str
+    why: str
+    claims: str
+    params: dict
+    state: str
+    author: str | None = None
+    reason: str = ""
+    created_at: datetime
+    on: bool
+    source: str
+    unmeasured_reason: str | None = None
 
 
 class PublishToOrgWrite(BaseModel):

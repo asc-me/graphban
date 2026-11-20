@@ -4340,6 +4340,9 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     item.claimed_at = None
     db.commit()
     db.refresh(item)
+    # GRPH-1772. This path writes `done` itself, so `update_item`'s release does not run.
+    from app.services.waits import release_when_blocking_fix_done
+    release_when_blocking_fix_done(db, item)
     from app.services import observations as observations_svc
     observations_svc.on_sign_off(db, item, fresh)
     observations_svc.on_rules_passed(db, item, SIGN_OFF_RULES)
@@ -5102,9 +5105,30 @@ def hard_collide(a: list[str], b: list[str],
     Reservation checks use this; `areas_collide` still defines clustering, so items that
     overlap stay one cluster for one agent, while two DRAINS no longer block each other on
     files git can merge."""
-    return [x for x in areas_collide(a, b)
-            if is_hard_area(x, hard_areas)
-            or any(is_hard_area(y, hard_areas) and areas_collide([x], [y]) for y in b)]
+    out = [x for x in areas_collide(a, b)
+           if is_hard_area(x, hard_areas)
+           or any(is_hard_area(y, hard_areas) and areas_collide([x], [y]) for y in b)]
+    # GRPH-1742: two DIFFERENT files under one exclusive prefix never overlap, yet that is the
+    # case the rule exists for (two new migrations, two alembic heads). Name the prefix.
+    for prefix in shared_exclusive_prefixes(a, b, hard_areas):
+        if prefix not in out:
+            out.append(prefix)
+    return out
+
+
+def _under_prefix(area: str, prefix: str) -> bool:
+    n = _normalise_area(area)
+    while n.endswith("*") or n.endswith("/"):
+        n = n.rstrip("*").rstrip("/")
+    return bool(n) and (n == prefix or n.startswith(prefix + "/"))
+
+
+def shared_exclusive_prefixes(a: list[str], b: list[str],
+                              hard_areas: tuple[str, ...] | list[str] | None = None) -> list[str]:
+    """The exclusive prefixes that BOTH area sets have an area under (GRPH-1742)."""
+    hards = HARD_AREAS if hard_areas is None else _hard_paths(hard_areas)
+    return [h for h in hards
+            if any(_under_prefix(x, h) for x in a or []) and any(_under_prefix(y, h) for y in b or [])]
 
 
 def reserve_areas(db: Session, *, agent_id: str, item_id: str, areas: list[str],

@@ -345,6 +345,13 @@ class Organization(Base):
     feedback_default_on: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false(), nullable=False
     )
+    # Publish destination the org admin saves (GRPH-1761). The console stores these two
+    # strings and never reaches into a box. Empty is unconfigured — there is no default
+    # remote or branch. A box pulls them; it does not invent `main`.
+    publish_repo_url: Mapped[str] = mapped_column(
+        String(1024), default="", server_default="", nullable=False)
+    publish_branch: Mapped[str] = mapped_column(
+        String(255), default="", server_default="", nullable=False)
 
 
 class SlugRedirect(Base):
@@ -2323,6 +2330,29 @@ class SyncStorageConfig(Base):
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
                                                  onupdate=utcnow)
+    # Publish destination on this box (GRPH-1761). One pair for the deployment, beside the
+    # folder path. `destination_source` is `` (unset) | local | org. `previous_path` is the
+    # path a link replaced; it is shown and never used as the next publish target. Empty
+    # pull state means this box has not pulled, which is not the same as a pull that got
+    # no answer (`unknown`).
+    repo_path: Mapped[str] = mapped_column(String(1024), default="", server_default="",
+                                           nullable=False)
+    repo_branch: Mapped[str] = mapped_column(String(255), default="", server_default="",
+                                             nullable=False)
+    previous_path: Mapped[str] = mapped_column(String(1024), default="", server_default="",
+                                               nullable=False)
+    received_url: Mapped[str] = mapped_column(String(1024), default="", server_default="",
+                                              nullable=False)
+    received_branch: Mapped[str] = mapped_column(String(255), default="", server_default="",
+                                                 nullable=False)
+    destination_source: Mapped[str] = mapped_column(String(16), default="", server_default="",
+                                                    nullable=False)
+    publish_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False)
+    destination_pull_state: Mapped[str] = mapped_column(
+        String(16), default="", server_default="", nullable=False)
+    destination_pull_reason: Mapped[str] = mapped_column(
+        String(400), default="", server_default="", nullable=False)
 
 
 class CodeSyncState(Base):
@@ -2388,9 +2418,110 @@ class SyncProject(Base):
     #: mapped and refreshed on every projects read; "" (or null) until known, shown `☁ ?`.
     cloud_project_tag: Mapped[str | None] = mapped_column(
         String, default="", server_default="", nullable=True)
+    #: `digests` (today's push; the default, including every row that predates GRPH-1733)
+    #: or `sync` (full replica, D2). Local-only is the absence of a row, not a third value.
+    sync_level: Mapped[str] = mapped_column(
+        String, default="digests", server_default="digests", nullable=False)
+    #: What the cloud may propose back: `read_only`, `comments` (default, D4), `proposals`.
+    cloud_permission: Mapped[str] = mapped_column(
+        String, default="comments", server_default="comments", nullable=False)
+    #: Who turned full sync on, and when (D8). Sync keeps running after that person leaves;
+    #: these columns are the audit, not a grant. Null on a row that was never opted in.
+    enabled_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: A purge the console has not confirmed (GRPH-1738). ``digests`` or ``local`` is the
+    #: level waiting on ``DELETE`` 200. Null means no purge is owed — a different fact
+    #: from a purge that succeeded, which clears this and the manifest together.
+    pending_purge: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: Exclusive cursor for `GET /api/sync/proposals`. Empty until the first page.
+    #: A 304 does not clear it: the console sends no cursor on an idle poll.
+    proposal_cursor: Mapped[str] = mapped_column(
+        String, default="", server_default="", nullable=False)
+    #: `ETag` from the last proposal page. Sent back as `If-None-Match`.
+    proposal_etag: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: When this box last attempted a proposal pull. The next poll is this plus
+    #: the interval `poll_interval` computes (60s, or 10s while a decision is open).
+    proposal_polled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    #: Set by `after_push` so the next pass pulls immediately. Cleared when a
+    #: pull is attempted, including one the console did not answer.
+    proposal_pull_now: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False)
     last_push_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_push_result: Mapped[str | None] = mapped_column(String, nullable=True)
     last_push_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=True)
+
+
+class SyncOutbox(Base):
+    """One dirty entity waiting to be pushed (GRPH-1733, P89 D11).
+
+    The primary key is the entity, so a later change updates this row instead of inserting
+    another. That collapse is what keeps the outbox inside its 100 MB cap: the table holds
+    at most one row per entity, however many times the entity changes before the flush.
+
+    `change_class` is the best pending change (`status`, `new`, `edit`, `history`). It is
+    not in the column list the slice named, and it has to be stored anyway: once several
+    changes have collapsed into this row, the class is no longer recoverable from the
+    version and the hash, and `due()` orders by it.
+    """
+
+    __tablename__ = "sync_outbox"
+
+    project_id: Mapped[str] = mapped_column(String, primary_key=True)
+    entity_type: Mapped[str] = mapped_column(String, primary_key=True)
+    entity_id: Mapped[str] = mapped_column(String, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    dirty_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    first_dirty_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    parked_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    parked_contract: Mapped[str | None] = mapped_column(String, nullable=True)
+    change_class: Mapped[str] = mapped_column(
+        String, nullable=False, default="edit", server_default="edit")
+
+
+class SyncManifest(Base):
+    """What the console has confirmed for one entity (GRPH-1733).
+
+    The flush writes this after a batch is accepted. Capture does not. A missing row means
+    the entity has never been confirmed, which is a different fact from an empty hash.
+    """
+
+    __tablename__ = "sync_manifest"
+
+    project_id: Mapped[str] = mapped_column(String, primary_key=True)
+    entity_type: Mapped[str] = mapped_column(String, primary_key=True)
+    entity_id: Mapped[str] = mapped_column(String, primary_key=True)
+    # version_of() is a signed 63-bit hash. INTEGER is int4 on Postgres and
+    # overflows on confirm (GRPH-1768). sync_outbox.version stays a counter.
+    version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SyncProposal(Base):
+    """One cloud proposal this box has already decided (GRPH-1737, P89 D10).
+
+    The id is the console's proposal id. The row is written in the same
+    transaction as the apply, so a re-delivery finds it and does not apply
+    again. `reported` stays false until `POST /api/sync/proposals/outcomes`
+    accepts this status. A failed report is retried from this row; the apply
+    is not.
+    """
+
+    __tablename__ = "sync_proposal"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    # version_of() is a 63-bit hash: int4 overflows on Postgres.
+    current_version: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reported: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=True)
 
@@ -3944,6 +4075,42 @@ class RuleToggle(Base):
     )
 
 
+class CustomRule(Base):
+    """A rule a person wrote from a library primitive (GRPH-1774 / P91 D1).
+
+    Scoped to a project (`project_id`) or, from S7, an org (`org_id`): exactly one. `rule_id` is
+    `custom.<slug>`, unique per scope. `stage` is the primitive's, copied from the contract at
+    write time; `primitive_api` is the primitive API the draft was validated against, so a
+    later major break reads as UNMEASURED rather than half-enforced. `state` is `observing`
+    (measured, not enforced) or `active`.
+    """
+
+    __tablename__ = "custom_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    rule_id: Mapped[str] = mapped_column(String, index=True)
+    org_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id"), nullable=True)
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
+    primitive: Mapped[str] = mapped_column(String)
+    primitive_api: Mapped[str] = mapped_column(String)
+    stage: Mapped[str] = mapped_column(String)
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    title: Mapped[str] = mapped_column(String)
+    why: Mapped[str] = mapped_column(Text)
+    claims: Mapped[str] = mapped_column(String)
+    state: Mapped[str] = mapped_column(String, default="active")
+    author_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        CheckConstraint("(org_id IS NULL) <> (project_id IS NULL)",
+                        name="ck_custom_rules_one_scope"),
+        UniqueConstraint("rule_id", "org_id", name="uq_custom_rules_org"),
+        UniqueConstraint("rule_id", "project_id", name="uq_custom_rules_project"),
+    )
+
+
 class InstalledRulePack(Base):
     """A rule pack a person accepted (GRPH-1329 / PRD-P63 D10, D12). The newest row is the pack
     in force; older rows are the install history. The artifact and its signature are stored
@@ -4184,6 +4351,11 @@ class DesignSet(Base):
         Boolean, default=False, server_default=false(), nullable=False)
     # The PRD section headings the set gates.
     sections: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Pages that live in an external artifact, not a compiled screen (GRPH-1692).
+    # {"url": "https://...", "pages": {"Section": ["Page"]}}. This is a reference,
+    # not a gate: `sections` is what blocks a build, and an unaccepted gate would
+    # block the item this reference exists to inform.
+    external_artifact: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_by: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

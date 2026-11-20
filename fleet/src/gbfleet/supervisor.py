@@ -3423,7 +3423,7 @@ class Merger:
         if not self.enabled or self.disabled_because:
             return False
         # GRPH-880: discover candidates from the attestation, not from observing departures.
-        self._discover_candidates()
+        self._discover_candidates(wave)
         merged_any = False
         release: str | None = None
         for item_id in list(self.watching):
@@ -3454,7 +3454,7 @@ class Merger:
             wt_mod.refresh_ref(self.repo, self.remote, self.base)
         return merged_any
 
-    def _discover_candidates(self) -> None:
+    def _discover_candidates(self, wave: Wave | None = None) -> None:
         """Scan for done items with a fleet.sign_off attestation naming a commit.
 
         GRPH-880: candidacy is a READ of a named fact, not an observation of departure.
@@ -3499,6 +3499,13 @@ class Merger:
             # a restarted process does not look the PR up again.
             if _merge_recorded(row):
                 self._seen.add(item_id)
+                self.watching.pop(item_id, None)
+                # GRPH-1755: the skip is still a verdict the wave report names (GRPH-1709),
+                # read from the row already in hand — no `gh` call, no second receipt.
+                if wave is not None:
+                    got = self._recorded_skip(item_id, row)
+                    wave.merged[item_id] = got
+                    self._say(item_id, got)
                 continue
             # Check for fleet.sign_off attestation naming a commit.
             if not propose_mod.reviewed_commit(row):
@@ -3508,6 +3515,15 @@ class Merger:
                 continue
             self._seen.add(item_id)
             self.watching.setdefault(item_id, str(row.get("branch") or ""))
+
+    def _recorded_skip(self, item_id: str, item: dict,
+                       selector: str = "") -> "propose_mod.Merged":
+        """The final, not-ok skip for an item whose merge is already recorded (GRPH-1709)."""
+        receipt = propose_mod.merge_receipt(item)
+        return propose_mod.Merged(
+            item=item_id, selector=selector or propose_mod.pr_selector(item) or "",
+            skipped=True, checked=("merge-receipt",),
+            reason=f"already merged and recorded ({receipt})")
 
     def _release(self) -> str | None:
         """The project's release ref ("" when unset), or None when it could not be read."""
@@ -3550,8 +3566,7 @@ class Merger:
             self.watching.pop(item_id, None)
             return None
         selector = propose_mod.pr_selector(item) or self.watching.get(item_id, "")
-        receipt = propose_mod.merge_receipt(item)
-        if receipt:
+        if propose_mod.merge_receipt(item):
             # GRPH-1709: this merge landed and was written down, so there is nothing left to
             # ask GitHub — and every call this would make shares one rate limit with every
             # other drain on the account. When `view` misses under that limit the pass reads
@@ -3559,9 +3574,7 @@ class Merger:
             # then logs "proposed #1847; merge is attempted next tick" on every cycle after.
             # Skipped, which is final: the item leaves `watching` and no later tick re-asks.
             self.watching.pop(item_id, None)
-            return propose_mod.Merged(item=item_id, selector=selector, skipped=True,
-                                      checked=("merge-receipt",),
-                                      reason=f"already merged and recorded ({receipt})")
+            return self._recorded_skip(item_id, item, selector)
         got = propose_mod.merge(
             self.repo, item_id, selector,
             reviewed=propose_mod.reviewed_commit(item),

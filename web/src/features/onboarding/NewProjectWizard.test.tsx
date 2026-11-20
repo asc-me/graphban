@@ -1,10 +1,13 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import * as React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { NewProjectWizard, radioArrows } from "@/features/onboarding/NewProjectWizard";
+import { NewProjectWizard, PROJECT_ACCENTS, PROJECT_ACCENT_SWATCHES, radioArrows } from "@/features/onboarding/NewProjectWizard";
 
 function mockReducedMotion(reduce: boolean) {
   Object.defineProperty(window, "matchMedia", {
@@ -32,6 +35,7 @@ const api = vi.hoisted(() => ({
   tagCheck: vi.fn(),
   createProject: vi.fn(),
   updateProject: vi.fn(),
+  createLine: vi.fn(),
   createCredential: vi.fn(),
   setProjectCredential: vi.fn(),
 }));
@@ -56,9 +60,33 @@ function renderWizard(onOpenChange = vi.fn()) {
 
 const next = () => screen.getByRole("button", { name: /next/i });
 
+// TagField debounces the name suggestion and the availability check by 250ms each.
+// Next enables only after that check has answered. A waitFor on the button spends
+// Testing Library's 1s budget on those timers and fails when this file runs beside
+// another (GRPH-1771). Advance the clock instead of waiting out wall time.
+const TAG_DEBOUNCE_MS = 250;
+
+async function answerTagCheck(name: string, tag: string) {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+  try {
+    fireEvent.change(screen.getByLabelText("Project name"), { target: { value: name } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(TAG_DEBOUNCE_MS);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(TAG_DEBOUNCE_MS);
+    });
+    expect(api.tagCheck).toHaveBeenCalledWith(tag);
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 async function toRepo(user: ReturnType<typeof userEvent.setup>) {
-  await user.type(screen.getByLabelText("Project name"), "Core Platform");
-  await waitFor(() => expect(next()).toBeEnabled());
+  await answerTagCheck("Core Platform", "CORE");
+  // The available answer for the typed name is what enables Next.
+  expect(screen.getByText("CORE-12")).toBeInTheDocument();
+  expect(next()).toBeEnabled();
   await user.click(next());
 }
 
@@ -69,26 +97,27 @@ beforeEach(() => {
   api.tagCheck.mockResolvedValue({ tag: "CORE", available: true, reason: "" });
   api.createProject.mockResolvedValue({ id: "core", name: "Core Platform", tag: "CORE" });
   api.updateProject.mockResolvedValue({});
+  api.createLine.mockResolvedValue({ id: "CORE-L1", key: "CORE-L1", title: "Maintenance" });
   confirm.mockResolvedValue({});
 });
 
 describe("New project wizard", () => {
-  it("shows the four-step rail and blocks Next until the identity is valid", async () => {
-    const user = userEvent.setup();
+  it("shows the five-step rail and blocks Next until the identity is valid", async () => {
     renderWizard();
     expect(screen.getByRole("list", { name: "Steps" })).toBeInTheDocument();
-    for (const l of ["Name & tag", "Repository", "Model", "Review"]) expect(screen.getAllByText(l).length).toBeGreaterThan(0);
+    for (const l of ["Name & tag", "Repository", "Maintenance", "Model", "Review"]) expect(screen.getAllByText(l).length).toBeGreaterThan(0);
     expect(next()).toBeDisabled();
-    await user.type(screen.getByLabelText("Project name"), "Core Platform");
-    await waitFor(() => expect(next()).toBeEnabled());
+    await answerTagCheck("Core Platform", "CORE");
+    expect(screen.getByText("CORE-12")).toBeInTheDocument();
+    expect(next()).toBeEnabled();
   });
 
   it("blocks Next when the tag is taken", async () => {
-    const user = userEvent.setup();
     api.tagCheck.mockResolvedValue({ tag: "CORE", available: false, reason: "taken" });
     renderWizard();
-    await user.type(screen.getByLabelText("Project name"), "Core Platform");
-    await waitFor(() => expect(screen.getByText("taken")).toBeInTheDocument());
+    await answerTagCheck("Core Platform", "CORE");
+    expect(screen.getByText("taken")).toBeInTheDocument();
+    expect(screen.queryByText("CORE-12")).not.toBeInTheDocument();
     expect(next()).toBeDisabled();
   });
 
@@ -114,11 +143,10 @@ describe("New project wizard", () => {
   });
 
   it("shows a message when the availability check fails", async () => {
-    const user = userEvent.setup();
     api.tagCheck.mockRejectedValue(new Error("network"));
     renderWizard();
-    await user.type(screen.getByLabelText("Project name"), "Core Platform");
-    await waitFor(() => expect(screen.getByText(/Couldn’t check whether this tag is available/)).toBeInTheDocument());
+    await answerTagCheck("Core Platform", "CORE");
+    expect(screen.getByText(/Couldn’t check whether this tag is available/)).toBeInTheDocument();
     expect(next()).toBeDisabled();
   });
 
@@ -131,19 +159,21 @@ describe("New project wizard", () => {
     expect(screen.getByText(/doesn’t look like a git remote/)).toBeInTheDocument();
     await user.clear(screen.getByLabelText("Git remote"));
     await user.click(screen.getByRole("button", { name: "Skip" }));
-    expect(screen.getByRole("heading", { name: "Pick a model" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Add a maintenance line?" })).toBeInTheDocument();
   });
 
-  it("lists five review rows, Edit goes back, and Create saves name, tag, accent, repo and model", async () => {
+  it("lists six review rows, Edit goes back, and Create saves name, tag, accent, repo and model", async () => {
     const user = userEvent.setup();
     renderWizard();
     await toRepo(user);
     await user.type(screen.getByLabelText("Git remote"), "git@github.com:acme/core.git");
     await user.click(next());
     await user.click(next());
-    for (const k of ["NAME", "TAG", "ACCENT", "REPOSITORY", "MODEL"]) expect(screen.getByText(k)).toBeInTheDocument();
+    await user.click(next());
+    for (const k of ["NAME", "TAG", "ACCENT", "REPOSITORY", "MAINTENANCE LINE", "MODEL"]) expect(screen.getByText(k)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Edit repository" }));
     expect(screen.getByRole("heading", { name: "Point it at a repository" })).toBeInTheDocument();
+    await user.click(next());
     await user.click(next());
     await user.click(next());
     await user.click(screen.getByRole("button", { name: /create project/i }));
@@ -152,6 +182,7 @@ describe("New project wizard", () => {
     );
     expect(api.updateProject).toHaveBeenCalledWith("core", { repo_url: "git@github.com:acme/core.git" });
     expect(confirm).toHaveBeenCalledWith({ projectId: "core", body: { decision: "offline" } });
+    expect(api.createLine).not.toHaveBeenCalled();
     expect(await screen.findByText("Core Platform is ready.")).toBeInTheDocument();
     expect(screen.getByText("gban setup")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Open project" }));
@@ -162,6 +193,7 @@ describe("New project wizard", () => {
     const user = userEvent.setup();
     renderWizard();
     await toRepo(user);
+    await user.click(next());
     await user.click(next());
     await user.click(next());
     await user.click(screen.getByRole("button", { name: /create project/i }));
@@ -175,6 +207,7 @@ describe("New project wizard", () => {
     api.setProjectCredential.mockResolvedValue({});
     renderWizard();
     await toRepo(user);
+    await user.click(next());
     await user.click(next());
     await user.click(screen.getByRole("radio", { name: /Local/ }));
     await user.click(next());
@@ -190,6 +223,7 @@ describe("New project wizard", () => {
     await toRepo(user);
     await user.click(next());
     await user.click(next());
+    await user.click(next());
     await user.click(screen.getByRole("button", { name: /create project/i }));
     expect(await screen.findByText("Could not create the project. Please try again.")).toBeInTheDocument();
     expect(screen.getByText("Core Platform")).toBeInTheDocument();
@@ -203,6 +237,7 @@ describe("New project wizard", () => {
     renderWizard();
     await toRepo(user);
     await user.type(screen.getByLabelText("Git remote"), "git@github.com:acme/core.git");
+    await user.click(next());
     await user.click(next());
     await user.click(next());
     await user.click(screen.getByRole("button", { name: /create project/i }));
@@ -226,6 +261,7 @@ describe("New project wizard", () => {
     await user.type(screen.getByLabelText("Git remote"), "git@github.com:acme/core.git");
     await user.click(next());
     await user.click(next());
+    await user.click(next());
     await user.click(screen.getByRole("button", { name: /create project/i }));
     await screen.findByText(/was created, but a follow-up step failed/);
     expect(caption()).not.toBe("NOT CREATED");
@@ -239,6 +275,7 @@ describe("New project wizard", () => {
     const onOpenChange = renderWizard();
     await toRepo(user);
     await user.type(screen.getByLabelText("Git remote"), "git@github.com:acme/core.git");
+    await user.click(next());
     await user.click(next());
     await user.click(next());
     await user.click(screen.getByRole("button", { name: /create project/i }));
@@ -258,8 +295,10 @@ describe("New project wizard", () => {
     await user.type(screen.getByLabelText("Git remote"), "git@github.com:acme/core.git");
     await user.click(next());
     await user.click(next());
+    await user.click(next());
     await user.click(screen.getByRole("button", { name: /create project/i }));
     await screen.findByText(/was created, but a follow-up step failed/);
+    await user.click(screen.getByRole("button", { name: "Back" }));
     await user.click(screen.getByRole("button", { name: "Back" }));
     await user.click(screen.getByRole("button", { name: "Back" }));
     await user.click(screen.getByRole("button", { name: "Back" }));
@@ -274,6 +313,7 @@ describe("New project wizard", () => {
       const user = userEvent.setup();
       renderWizard();
       await toRepo(user);
+      await user.click(next());
       await user.click(next());
       const offline = screen.getByRole("radio", { name: /Offline/ });
       offline.focus();
@@ -302,31 +342,63 @@ describe("New project wizard", () => {
       expect(checked()).toHaveFocus();
     });
 
+    it("draws the selected accent with a box-shadow ring and leaves outline to focus-visible (GRPH-1745)", async () => {
+      const user = userEvent.setup();
+      renderWizard();
+      const selected = screen.getByRole("radio", { name: "Lime" });
+      const other = screen.getByRole("radio", { name: "Violet" });
+      // An inline outline beats the global :focus-visible rule. Neither swatch may set one.
+      expect(selected.style.outline).toBe("");
+      expect(other.style.outline).toBe("");
+      expect(selected).toHaveStyle({
+        boxShadow: "0 0 0 2px var(--color-surface-3), 0 0 0 4px var(--color-fg)",
+        outlineOffset: "5px",
+      });
+      expect(other.style.boxShadow).toBe("");
+      expect(other).toHaveStyle({ outlineOffset: "5px" });
+      // The focus ring starts outside the 4px selection ring, so the two do not overlap.
+      const offset = Number.parseFloat(selected.style.outlineOffset);
+      expect(offset).toBeGreaterThan(4);
+
+      selected.focus();
+      expect(selected).toHaveFocus();
+      expect(selected.style.outline).toBe("");
+      await user.click(other);
+      expect(other).toHaveAttribute("aria-checked", "true");
+      expect(other.style.outline).toBe("");
+      expect(other).toHaveStyle({
+        boxShadow: "0 0 0 2px var(--color-surface-3), 0 0 0 4px var(--color-fg)",
+        outlineOffset: "5px",
+      });
+      expect(selected.style.outline).toBe("");
+      expect(selected.style.boxShadow).toBe("");
+    });
+
     it("moves the Accent selection with ← and →, wrapping at both ends, and focus follows", async () => {
       const user = userEvent.setup();
       renderWizard();
-      const first = screen.getByRole("radio", { name: "accent #c6f24e" });
+      const first = screen.getByRole("radio", { name: "Lime" });
       expect(first).toHaveAttribute("aria-checked", "true");
       first.focus();
       await user.keyboard("{ArrowLeft}");
-      expect(checked()).toHaveAccessibleName("accent #ff8f8f");
+      expect(checked()).toHaveAccessibleName("Yellow");
       expect(checked()).toHaveFocus();
       await user.keyboard("{ArrowRight}");
-      expect(checked()).toHaveAccessibleName("accent #c6f24e");
+      expect(checked()).toHaveAccessibleName("Lime");
       await user.keyboard("{ArrowRight}");
-      expect(checked()).toHaveAccessibleName("accent #a78bfa");
+      expect(checked()).toHaveAccessibleName("Mint");
       expect(checked()).toHaveFocus();
       // GRPH-1618: ↓ is next and ↑ is previous on this horizontal group too.
       await user.keyboard("{ArrowDown}");
-      expect(checked()).toHaveAccessibleName("accent #7ca2ff");
+      expect(checked()).toHaveAccessibleName("Teal");
       expect(checked()).toHaveFocus();
       await user.keyboard("{ArrowUp}");
-      expect(checked()).toHaveAccessibleName("accent #a78bfa");
+      expect(checked()).toHaveAccessibleName("Mint");
       await user.keyboard("{End}");
-      expect(checked()).toHaveAccessibleName("accent #ff8f8f");
+      expect(checked()).toHaveAccessibleName("Yellow");
       expect(checked()).toHaveFocus();
       await user.keyboard("{Home}");
-      expect(checked()).toHaveAccessibleName("accent #c6f24e");
+      expect(checked()).toHaveAccessibleName("Lime");
       expect(checked()).toHaveFocus();
     });
 
@@ -335,13 +407,14 @@ describe("New project wizard", () => {
       renderWizard();
       expect(tabStops()).toHaveLength(1);
       expect(tabStops()[0]).toHaveAttribute("aria-checked", "true");
-      await user.click(screen.getByRole("radio", { name: "accent #7ca2ff" }));
-      expect(tabStops()).toEqual([screen.getByRole("radio", { name: "accent #7ca2ff" })]);
+      await user.click(screen.getByRole("radio", { name: "Sky" }));
+      expect(tabStops()).toEqual([screen.getByRole("radio", { name: "Sky" })]);
       await user.tab();
       expect(document.activeElement?.getAttribute("role")).not.toBe("radio");
 
       await user.clear(screen.getByLabelText("Project name"));
       await toRepo(user);
+      await user.click(next());
       await user.click(next());
       await user.click(screen.getByRole("radio", { name: /Cloud/ }));
       expect(tabStops()).toEqual([screen.getByRole("radio", { name: /Cloud/ })]);
@@ -358,10 +431,11 @@ describe("New project wizard", () => {
       await user.type(screen.getByLabelText("Git remote"), "git@github.com:acme/core.git");
       await user.click(next());
       await user.click(next());
+      await user.click(next());
       await user.click(screen.getByRole("button", { name: /create project/i }));
       await screen.findByText(/was created, but a follow-up step failed/);
-      for (let i = 0; i < 3; i++) await user.click(screen.getByRole("button", { name: "Back" }));
-      const locked = screen.getByRole("radio", { name: "accent #c6f24e" });
+      for (let i = 0; i < 4; i++) await user.click(screen.getByRole("button", { name: "Back" }));
+      const locked = screen.getByRole("radio", { name: "Lime" });
       expect(locked).toBeDisabled();
       // A disabled radio cannot take focus in a browser; dispatch straight at it so the
       // handler's own lock is what is under test.
@@ -424,6 +498,10 @@ describe("New project wizard", () => {
       await user.type(screen.getByLabelText("Git remote"), "git@github.com:acme/core.git");
       expect(caption()).toBe("REPO → CORE");
       await user.click(next());
+      expect(caption()).toBe("LINE · NONE · FIXES STAY UNSCOPED");
+      await user.click(screen.getByRole("radio", { name: /Create the maintenance line/ }));
+      expect(caption()).toBe("LINE · CORE-L1 · MAINTENANCE");
+      await user.click(next());
       expect(caption()).toBe("MODEL · STUB");
       await user.click(screen.getByRole("radio", { name: /Local/ }));
       expect(caption()).toBe("MODEL · OLLAMA");
@@ -436,7 +514,7 @@ describe("New project wizard", () => {
       renderWizard();
       expect(screen.getByText("Graphban")).toBeInTheDocument();
       expect(screen.getByTestId("pw-accent-square")).toHaveStyle({ background: "#c6f24e" });
-      await user.click(screen.getByRole("radio", { name: "accent #a78bfa" }));
+      await user.click(screen.getByRole("radio", { name: "Violet" }));
       expect(screen.getByTestId("pw-accent-square")).toHaveStyle({ background: "#a78bfa" });
     });
 
@@ -466,6 +544,7 @@ describe("New project wizard", () => {
       renderWizard();
       await toRepo(user);
       await user.click(next());
+      await user.click(next());
       const group = screen.getByRole("radiogroup", { name: "Model" });
       expect(group.className).toContain("flex-col");
       expect(screen.getAllByRole("radio").map((r) => r.getAttribute("aria-checked"))).toEqual(["true", "false", "false"]);
@@ -484,6 +563,7 @@ describe("New project wizard", () => {
       await toRepo(user);
       await user.click(screen.getByRole("button", { name: "Skip" }));
       await user.click(next());
+      await user.click(next());
       expect(screen.getByTestId("pw-summary").className).toMatch(/\bborder\b.*rounded-\[12px\]|rounded-\[12px\].*\bborder\b/);
       expect(screen.getByText("CORE · CORE-12, CORE-R33")).toHaveClass("font-mono");
       expect(screen.getByText("None yet")).toHaveClass("text-faint");
@@ -495,6 +575,7 @@ describe("New project wizard", () => {
       api.createProject.mockRejectedValueOnce(new Error("boom"));
       renderWizard();
       await toRepo(user);
+      await user.click(next());
       await user.click(next());
       await user.click(next());
       await user.click(screen.getByRole("button", { name: /create project/i }));
@@ -514,6 +595,7 @@ describe("New project wizard", () => {
       expect(screen.getByRole("button", { name: "Cancel" }).className).not.toContain("border");
       await user.click(screen.getByRole("button", { name: "Skip" }));
       await user.click(next());
+      await user.click(next());
       await user.click(screen.getByRole("button", { name: /create project/i }));
       await screen.findByText("Core Platform is ready.");
       expect(caption()).toBe("CREATED · CORE");
@@ -521,13 +603,249 @@ describe("New project wizard", () => {
       expect(kids.map((k) => k.textContent)).toEqual(["", "Create another", "Open project"]);
     });
 
-    it("shows Checking… while the tag availability call is in flight", async () => {
+    it("maintenance line: defaults to Not now, lights the line when Create is on, and is one arrow-key tab stop (GRPH-1749)", async () => {
       const user = userEvent.setup();
+      renderWizard();
+      await toRepo(user);
+      await user.click(next());
+      expect(screen.getByRole("heading", { name: "Add a maintenance line?" })).toBeInTheDocument();
+      const off = screen.getByRole("radio", { name: /Not now/ });
+      const on = screen.getByRole("radio", { name: /Create the maintenance line/ });
+      expect(off).toHaveAttribute("aria-checked", "true");
+      expect(on).toHaveAttribute("aria-checked", "false");
+      expect(screen.getByText(/Fixes with no PRD stay unscoped/)).toBeInTheDocument();
+      expect(screen.queryByTestId("pw-line-how")).not.toBeInTheDocument();
+      expect(caption()).toBe("LINE · NONE · FIXES STAY UNSCOPED");
+      expect(screen.getByTestId("pw-hero").querySelector('path[stroke-dasharray="4 6"]')).not.toBeNull();
+
+      const stops = () => screen.getAllByRole("radio").filter((r) => r.tabIndex === 0);
+      expect(screen.getAllByRole("radio")).toHaveLength(2);
+      expect(stops()).toEqual([off]);
+      off.focus();
+      await user.keyboard("{ArrowUp}");
+      expect(on).toHaveAttribute("aria-checked", "true");
+      expect(on).toHaveFocus();
+      expect(stops()).toEqual([on]);
+      expect(on).toHaveTextContent("CORE-L1");
+      expect(screen.getByTestId("pw-line-how")).toHaveTextContent("HOW THE LINE WORKS");
+      expect(screen.getByTestId("pw-line-how")).toHaveTextContent("filed against CORE-L1");
+      expect(screen.getByTestId("pw-line-how")).toHaveTextContent("acceptance clause");
+      expect(screen.getByTestId("pw-line-how")).toHaveTextContent("SECURITY chip");
+      expect(screen.queryByText(/Fixes with no PRD stay unscoped/)).not.toBeInTheDocument();
+      expect(caption()).toBe("LINE · CORE-L1 · MAINTENANCE");
+      expect(screen.getByTestId("pw-hero").querySelector("[data-lit]")).not.toBeNull();
+      expect(screen.getByTestId("pw-hero").querySelector('path[stroke-dasharray="4 6"]')).toBeNull();
+      await user.keyboard("{ArrowDown}");
+      expect(off).toHaveAttribute("aria-checked", "true");
+      await user.keyboard("{Home}");
+      expect(on).toHaveFocus();
+      await user.keyboard("{End}");
+      expect(off).toHaveFocus();
+      await user.tab();
+      expect(document.activeElement?.getAttribute("role")).not.toBe("radio");
+    });
+
+    it("calls createLine once for the new project, and the review row and ready card name the line (GRPH-1749)", async () => {
+      const user = userEvent.setup();
+      renderWizard();
+      await toRepo(user);
+      await user.click(next());
+      await user.click(screen.getByRole("radio", { name: /Create the maintenance line/ }));
+      await user.click(next());
+      await user.click(next());
+      const row = screen.getByText("CORE-L1 · Maintenance");
+      expect(row).toHaveClass("font-mono");
+      expect(row).not.toHaveClass("text-faint");
+      await user.click(screen.getByRole("button", { name: "Edit maintenance line" }));
+      expect(screen.getByRole("heading", { name: "Add a maintenance line?" })).toBeInTheDocument();
+      await user.click(next());
+      await user.click(next());
+      await user.click(screen.getByRole("button", { name: /create project/i }));
+      await screen.findByText("Core Platform is ready.");
+      expect(api.createLine).toHaveBeenCalledTimes(1);
+      expect(api.createLine).toHaveBeenCalledWith("core");
+      expect(screen.getByText(/· line CORE-L1/)).toBeInTheDocument();
+    });
+
+    it("makes no line call on Not now, and mutes that review row (GRPH-1749)", async () => {
+      const user = userEvent.setup();
+      renderWizard();
+      await toRepo(user);
+      await user.click(next());
+      await user.click(next());
+      await user.click(next());
+      const row = screen.getByText("Not now");
+      expect(row).toHaveClass("text-faint");
+      expect(row).not.toHaveClass("font-mono");
+      await user.click(screen.getByRole("button", { name: /create project/i }));
+      await screen.findByText("Core Platform is ready.");
+      expect(api.createLine).not.toHaveBeenCalled();
+      expect(screen.queryByText(/line CORE-L1/)).not.toBeInTheDocument();
+    });
+
+    it("a failed createLine leaves the project created and does not draw NOT CREATED (GRPH-1749)", async () => {
+      const user = userEvent.setup();
+      api.createLine.mockRejectedValueOnce(new Error("boom"));
+      renderWizard();
+      await toRepo(user);
+      await user.click(next());
+      await user.click(screen.getByRole("radio", { name: /Create the maintenance line/ }));
+      await user.click(next());
+      await user.click(next());
+      await user.click(screen.getByRole("button", { name: /create project/i }));
+      expect(await screen.findByText(/the maintenance line wasn’t/)).toBeInTheDocument();
+      expect(screen.getByText(/tracker’s Maintenance filter/)).toBeInTheDocument();
+      expect(screen.queryByText("Core Platform is ready.")).not.toBeInTheDocument();
+      expect(caption()).toBe("REVIEW · CORE");
+      expect(screen.getByTestId("pw-hero").querySelector('path[stroke-dasharray="4 6"]')).toBeNull();
+      expect(api.createProject).toHaveBeenCalledTimes(1);
+      await user.click(screen.getByRole("button", { name: /create project/i }));
+      await screen.findByText("Core Platform is ready.");
+      expect(api.createProject).toHaveBeenCalledTimes(1);
+      expect(api.createLine).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not create the line twice when a later step fails after it exists (GRPH-1749)", async () => {
+      const user = userEvent.setup();
+      confirm.mockRejectedValueOnce(new Error("boom"));
+      renderWizard();
+      await toRepo(user);
+      await user.click(next());
+      await user.click(screen.getByRole("radio", { name: /Create the maintenance line/ }));
+      await user.click(next());
+      await user.click(next());
+      await user.click(screen.getByRole("button", { name: /create project/i }));
+      expect(await screen.findByText(/a follow-up step failed/)).toBeInTheDocument();
+      expect(api.createLine).toHaveBeenCalledTimes(1);
+      await user.click(screen.getByRole("button", { name: /create project/i }));
+      await screen.findByText("Core Platform is ready.");
+      expect(api.createLine).toHaveBeenCalledTimes(1);
+      expect(screen.getByText(/· line CORE-L1/)).toBeInTheDocument();
+    });
+
+    it("draws the maintenance graphic still under prefers-reduced-motion (GRPH-1749)", async () => {
+      mockReducedMotion(true);
+      const user = userEvent.setup();
+      renderWizard();
+      await toRepo(user);
+      await user.click(next());
+      expect(animated()).toEqual([]);
+      expect(screen.getByTestId("pw-body").style.animation).toBe("");
+      expect(screen.getByTestId("pw-hero").querySelector('path[stroke-dasharray="4 6"]')).not.toBeNull();
+      await user.click(screen.getByRole("radio", { name: /Create the maintenance line/ }));
+      expect(animated()).toEqual([]);
+      expect(screen.getByTestId("pw-line-how").style.animation).toBe("");
+      expect(caption()).toBe("LINE · CORE-L1 · MAINTENANCE");
+    });
+
+    it("shows Checking… while the tag availability call is in flight", async () => {
       api.tagCheck.mockReturnValue(new Promise(() => {}));
       renderWizard();
-      await user.type(screen.getByLabelText("Project name"), "Core Platform");
-      expect(await screen.findByText("Checking…")).toBeInTheDocument();
-      expect(screen.getByLabelText("Tag")).toHaveClass("w-[120px]");
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+      try {
+        fireEvent.change(screen.getByLabelText("Project name"), { target: { value: "Core Platform" } });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(TAG_DEBOUNCE_MS);
+        });
+        expect(screen.getByText("Checking…")).toBeInTheDocument();
+        expect(screen.getByLabelText("Tag")).toHaveClass("w-[120px]");
+        expect(next()).toBeDisabled();
+      } finally {
+        vi.useRealTimers();
+      }
     });
+  });
+});
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+/** The twelve hues from the Project Wizard design, in hue order. */
+const PALETTE: [string, string][] = [
+  ["#c6f24e", "Lime"],
+  ["#a6ebc4", "Mint"],
+  ["#4fd1c5", "Teal"],
+  ["#67d4f0", "Cyan"],
+  ["#a3cfff", "Sky"],
+  ["#9d9cff", "Indigo"],
+  ["#a78bfa", "Violet"],
+  ["#d58cf0", "Orchid"],
+  ["#f47fb4", "Pink"],
+  ["#ffb3c1", "Rose"],
+  ["#e6d2a8", "Sand"],
+  ["#efd76a", "Yellow"],
+];
+
+function themeHexTokens(css: string): Record<string, string> {
+  const tokens: Record<string, string> = {};
+  for (const match of css.matchAll(/--(color-[a-z0-9_-]+):\s*(#[0-9a-fA-F]{6})\s*;/g)) {
+    tokens[match[1]!] = match[2]!.toLowerCase();
+  }
+  return tokens;
+}
+
+describe("project accents stay off the status colours (GRPH-1747)", () => {
+  it("holds the twelve named hues, and only brand lime overlaps a status token", () => {
+    expect(PROJECT_ACCENT_SWATCHES.map((swatch) => [swatch.hex, swatch.name])).toEqual(PALETTE);
+    const accents = [...PROJECT_ACCENTS];
+    expect(accents).toEqual(PALETTE.map(([hex]) => hex));
+
+    const tokens = themeHexTokens(readFileSync(join(HERE, "../../index.css"), "utf8"));
+    for (const key of [
+      "color-st-backlog",
+      "color-st-next",
+      "color-st-in_progress",
+      "color-st-review",
+      "color-st-done",
+      "color-st-blocked",
+      "color-op-accent",
+      "color-accent-hi",
+    ]) {
+      expect(tokens[key], key).toMatch(/^#[0-9a-f]{6}$/);
+    }
+    const palette = new Set<string>(accents);
+    // Lime is the brand accent, so it is also --color-st-in_progress. The design
+    // keeps that one and excludes the other five status tokens.
+    const overlaps = Object.entries(tokens).filter(
+      ([key, value]) => key.startsWith("color-st-") && palette.has(value),
+    );
+    expect(overlaps).toEqual([["color-st-in_progress", "#c6f24e"]]);
+    for (const key of ["color-op-accent", "color-accent-hi"]) {
+      expect(palette.has(tokens[key]!)).toBe(false);
+    }
+    expect(palette.has("#ff8a3d")).toBe(false);
+
+    const source = readFileSync(join(HERE, "projectAccents.ts"), "utf8");
+    for (const name of [
+      "operator orange",
+      "--color-st-done",
+      "--color-st-next",
+      "--color-st-review",
+      "--color-st-blocked",
+      "--color-st-backlog",
+    ]) {
+      expect(source).toContain(name);
+    }
+  });
+
+  it("names each swatch and lets the row wrap", () => {
+    renderWizard();
+    const group = screen.getByRole("radiogroup", { name: "Accent" });
+    expect(group.className).toContain("flex-wrap");
+    const radios = screen.getAllByRole("radio");
+    expect(radios).toHaveLength(PALETTE.length);
+    radios.forEach((radio, i) => {
+      const [hex, name] = PALETTE[i]!;
+      expect(radio).toHaveStyle({ backgroundColor: hex });
+      expect(radio).toHaveAccessibleName(name);
+      expect(radio).toHaveAttribute("title", name);
+    });
+  });
+
+  it("seeds the demo projects with palette colours only", () => {
+    const seed = readFileSync(join(HERE, "../../../../backend/app/seed.py"), "utf8");
+    const block = seed.slice(seed.indexOf("PROJECTS = ["), seed.indexOf("\nUSERS"));
+    const accents = [...block.matchAll(/accent="(#[0-9a-fA-F]{6})"/g)].map((match) => match[1]!.toLowerCase());
+    expect(accents).toEqual(["#c6f24e", "#a3cfff", "#e6d2a8"]);
+    for (const accent of accents) expect(PROJECT_ACCENTS).toContain(accent);
   });
 });

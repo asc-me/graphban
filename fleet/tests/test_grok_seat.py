@@ -233,6 +233,46 @@ def test_a_stdio_server_is_refused_rather_than_turned_into_an_http_one(tmp_path:
         seat_mod.write(tmp_path / "config.toml", config, seat_mod.TOML)
 
 
+def test_a_stdio_server_renders_as_command_args_env(tmp_path: Path):
+    """GRPH-1751: `.gbfleet/servers` grants `browser`, a stdio server, and refusing it
+    killed every grok child before it started. grok spells stdio as command/args/env."""
+    config = SEAT.mcp_config()
+    config["mcpServers"]["browser"] = {
+        "type": "stdio", "command": "npx", "args": ["-y", "@playwright/mcp@0.0.79", 'a"b'],
+        "env": {"DEBUG": "1", "ODD KEY": "x\\y"},
+    }
+    path = seat_mod.write(tmp_path / "config.toml", config, seat_mod.TOML)
+    parsed = tomllib.loads(path.read_text(encoding="utf-8"))
+
+    browser = parsed["mcp_servers"]["browser"]
+    assert browser == {"command": "npx", "args": ["-y", "@playwright/mcp@0.0.79", 'a"b'],
+                       "env": {"DEBUG": "1", "ODD KEY": "x\\y"}, "enabled": True}
+    graphban = parsed["mcp_servers"]["graphban"]
+    assert graphban["url"].endswith("/api/mcp") and "X-API-Key" in graphban["headers"]
+    assert "command" not in graphban
+
+
+def test_a_stdio_server_without_a_type_is_still_stdio(tmp_path: Path):
+    config = SEAT.mcp_config()
+    config["mcpServers"]["browser"] = {"command": "npx"}
+    path = seat_mod.write(tmp_path / "config.toml", config, seat_mod.TOML)
+    assert tomllib.loads(path.read_text(encoding="utf-8"))["mcp_servers"]["browser"] == {
+        "command": "npx", "enabled": True}
+
+
+@pytest.mark.parametrize("spec", [
+    {"type": "stdio", "url": "http://x"},
+    {"type": "http", "command": "npx", "url": "http://x"},
+    {"type": "stdio", "command": "npx", "headers": {"a": "b"}},
+    {"type": "sse", "url": "http://x"},
+])
+def test_a_server_whose_fields_disagree_with_its_transport_is_refused(spec, tmp_path: Path):
+    config = SEAT.mcp_config()
+    config["mcpServers"]["odd"] = spec
+    with pytest.raises(UnrenderableSeat, match="odd"):
+        seat_mod.write(tmp_path / "config.toml", config, seat_mod.TOML)
+
+
 def test_a_credential_with_a_quote_in_it_still_parses(tmp_path: Path):
     """The key and url come from the server. An unescaped `"` or backslash emits a file
     grok fails to parse, which from the child's side is indistinguishable from having

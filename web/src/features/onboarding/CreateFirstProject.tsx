@@ -5,17 +5,16 @@ import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
+import { PROJECT_ACCENTS } from "@/features/onboarding/projectAccents";
 import { TagField, useTagField } from "@/features/onboarding/TagField";
 import { api } from "@/lib/api";
 import { keys } from "@/lib/queries";
-
-const ACCENTS = ["#c6f24e", "#a78bfa", "#7ca2ff", "#e0b34a", "#5fd07a", "#ff8f8f"];
 
 export function CreateFirstProject() {
   const qc = useQueryClient();
   const { setActiveId } = useProjectCtx();
   const [name, setName] = React.useState("");
-  const [accent, setAccent] = React.useState(ACCENTS[0]);
+  const [accent, setAccent] = React.useState(PROJECT_ACCENTS[0]);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const tagField = useTagField(name);
@@ -75,18 +74,25 @@ export function CreateFirstProject() {
 
         <p className="mb-2 font-mono text-[10px] uppercase tracking-wide text-faint">Accent</p>
         <div className="mb-6 flex flex-wrap gap-2.5">
-          {ACCENTS.map((c) => (
+          {PROJECT_ACCENTS.map((c) => (
             <button
               key={c}
               type="button"
               onClick={() => setAccent(c)}
               aria-label={`accent ${c}`}
               aria-pressed={accent === c}
-              className="h-7 min-h-6 w-7 min-w-6 rounded-[8px] transition-transform focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus [@media(hover:hover)_and_(pointer:fine)]:hover:scale-110"
+              className="h-7 min-h-6 w-7 min-w-6 rounded-[8px] transition-transform focus-visible:outline-2 focus-visible:outline-focus [@media(hover:hover)_and_(pointer:fine)]:hover:scale-110"
               style={{
                 background: c,
-                outline: accent === c ? "2px solid var(--color-fg)" : "none",
-                outlineOffset: "2px",
+                // Selection is a box-shadow, not outline. An inline outline beats
+                // the global :focus-visible rule, so keyboard focus disappears.
+                // The 4px ring sits inside a 5px focus offset. The 2px inner stop
+                // is the card surface (bg-surface-3).
+                boxShadow:
+                  accent === c
+                    ? "0 0 0 2px var(--color-surface-3), 0 0 0 4px var(--color-fg)"
+                    : undefined,
+                outlineOffset: "5px",
               }}
             />
           ))}

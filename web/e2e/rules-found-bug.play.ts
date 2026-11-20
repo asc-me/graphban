@@ -61,3 +61,32 @@ test("dock: layout C at 1440×900 and 800 wide — the map strip shows the stage
     await page.screenshot({ path: test.info().outputPath(`5-dock-${w}.png`) });
   }
 });
+
+test("strip: at 1512×792 every stage card's content fits and the selected card's glow is whole, at HALF, TALL and FULL", async ({ page }) => {
+  // GRPH-1728: the p74-walk strip, Build carrying the longest real tally. The glow is `0 0 0 3px`
+  // plus `0 0 24px`, drawn at the map's zoom, so its reach on screen is 27 × zoom.
+  await page.setViewportSize({ width: 1512, height: 792 });
+  for (const [label, pct] of [["half", "46"], ["tall", "34"], ["full", "18"]] as const) {
+    await page.goto(`${HARNESS}?state=on&flow=p74`);
+    await page.getByTestId(`rules-dock-height-${label}`).click();
+    await expect(page.getByTestId("rules-map-area")).toHaveAttribute("data-map-pct", pct);
+    await page.waitForTimeout(300); // the camera's 220ms ease
+    const m = await page.evaluate(() => {
+      const area = document.querySelector('[data-testid="rules-map-area"]')!.getBoundingClientRect();
+      const k = Number(document.querySelector('[data-testid="rules-canvas"]')!.getAttribute("data-zoom"));
+      const cards = [...document.querySelectorAll<HTMLElement>('[role="option"][data-testid^="rules-stage-"]')].map((c) => ({
+        id: c.dataset.testid, scroll: c.scrollHeight, client: c.clientHeight, selected: c.dataset.selected === "true",
+        top: c.getBoundingClientRect().top, bottom: c.getBoundingClientRect().bottom,
+      }));
+      return { top: area.top, bottom: area.bottom, k, cards };
+    });
+    for (const c of m.cards) expect(c.scroll, `${label}: ${c.id} content overflows its card`).toBeLessThanOrEqual(c.client);
+    const sel = m.cards.find((c) => c.selected)!;
+    expect(sel.id).toBe("rules-stage-build");
+    const glow = 27 * m.k;
+    expect(sel.top - glow, `${label}: glow cut at the top`).toBeGreaterThanOrEqual(m.top);
+    expect(sel.bottom + glow, `${label}: glow cut at the bottom`).toBeLessThanOrEqual(m.bottom);
+    await expect(page.getByTestId("rules-dots")).toHaveAttribute("fill", "url(#rules-dots)");
+    await page.screenshot({ path: test.info().outputPath(`6-strip-${label}-1512.png`) });
+  }
+});
