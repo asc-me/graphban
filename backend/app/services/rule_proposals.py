@@ -43,7 +43,7 @@ INVARIANTS = {
     "gate.approval_earned_by_grill": "approval is earned by the grill",
     "review.not_your_own_work": "review is a second opinion",
     "review.attest_the_head": "a receipt must name the code that was reviewed",
-    "review.uncompared_is_not_a_pass": "a check that could not run is not a pass",
+    "review.uncompared_is_not_a_pass": "a check that could not run is not a pass",  # nosec B105
     "review.acceptance_covered": "every acceptance clause is tested",
     "merge.covering": "unreviewed files do not merge under a sign-off",
     "review.sabotage_floor": "the sabotage floor at effort 3",
@@ -157,10 +157,6 @@ def _primitive_of(rule_id: str, project_id: str, db: Session) -> str | None:
     return _PRIMITIVE_OF.get(rule_id)
 
 
-def _same(a: dict, b: dict) -> bool:
-    return a == b
-
-
 # ---- the write ---------------------------------------------------------------------------
 
 def propose(db: Session, *, project_id: str, proposer_kind: str, proposer: str, kind: str,
@@ -245,11 +241,15 @@ def propose(db: Session, *, project_id: str, proposer_kind: str, proposer: str, 
                       rule_id=T.PERSON_RULE,
                       hint="a person or an import run may propose a loosening")
 
-    # Fold: same kind, rule, primitive and params as an open proposal.
-    for open_p in db.scalars(select(RuleProposal).where(
-            RuleProposal.project_id == project_id, RuleProposal.status == "open",
-            RuleProposal.primitive == primitive, RuleProposal.rule_id == rule_id)):
-        if open_p.kind == kind and _same(open_p.params, new_params):
+    # Fold: same primitive and params as an open proposal of the same kind. A new rule folds
+    # whatever slug it was given; a change to an existing rule folds only on that rule.
+    q = select(RuleProposal).where(
+        RuleProposal.project_id == project_id, RuleProposal.status == "open",
+        RuleProposal.kind == kind, RuleProposal.primitive == primitive)
+    if kind != "new_rule":
+        q = q.where(RuleProposal.rule_id == rule_id)
+    for open_p in db.scalars(q.order_by(RuleProposal.id)):
+        if open_p.params == new_params:
             have = list(open_p.citations or [])
             open_p.citations = have + [c for c in cites if c not in have]
             db.commit()

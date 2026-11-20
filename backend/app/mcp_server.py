@@ -2362,6 +2362,8 @@ _FLEET_ONLY_ARGS = {
     # headroom. A worker that sends no agent_id is still resolved from the connection's single
     # live agent; the dispatcher reads an agent_id whether or not it was advertised.
     "create_item": {"agent_id": {"type": "string"}},
+    # GRPH-1775. The proposer is stamped from it; same reason as create_item's.
+    "propose_rule": {"agent_id": {"type": "string"}},
     "fleet_status": {"view": {
         "type": "string", "enum": ["lean", "live", "full"],
         "description": "lean (default) drops display-only fields; live drops offline agents "
@@ -3487,7 +3489,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         # P91 D2: any agent on the project may SUGGEST; nothing here adopts (rules.person_adopts).
         draft = args.get("draft") or {}  # {slug, primitive, title, why, params} or {rule_id, params}
         row, folded = rule_proposals_svc.propose(
-            db, project_id=pid, proposer_kind="agent", proposer=f"agent:{key.name or key.id}",
+            db, project_id=pid, proposer_kind="agent",
+            proposer=fleet_svc.caller_identity(args.get("agent_id"), key),
             kind=args.get("kind") or "", citations=args.get("citations"),
             rule_id=draft.get("rule_id"),
             slug=draft.get("slug"), primitive=draft.get("primitive"), title=draft.get("title"),

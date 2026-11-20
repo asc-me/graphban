@@ -54,9 +54,10 @@ def _new_rule(env, **kw):
 
 
 def test_agent_files_new_rule_with_citations(client, env):
-    r = _call(client, env["key"], "propose_rule", _new_rule(env))
+    r = _call(client, env["key"], "propose_rule", {**_new_rule(env), "agent_id": "GRPH-A1"})
     assert not r.get("isError"), r
     out = r["structuredContent"]
+    assert out["proposer"] == "GRPH-A1" and out["proposer_kind"] == "agent"
     assert out["status"] == "open" and out["direction"] == "tighten" and not out["loosens"]
     assert len(out["citations"]) == 3 and out["rule_id"] == "custom.areas"
 
@@ -145,14 +146,9 @@ def test_invariant_refused(client, env):
     assert r["isError"] is True and "invariant" in str(r)
 
 
-def test_sabotage_accepting_loosening_tighten_would_fail(client, env, monkeypatch):
-    """The D3 guard: if direction enforcement is bypassed, the loosening is accepted."""
-    ok = client.post(f"/api/projects/{env['pid']}/rules/custom", headers=env["h"], json={
-        "slug": "live", "primitive": "exclusive_areas", "title": "L", "why": "w",
-        "params": {"paths": ["a", "b"]}, "reason": "r"})
-    assert ok.status_code == 201, ok.text
-    monkeypatch.setattr(RP.rule_pack, "direction", lambda *a, **k: "tighten")
-    r = _call(client, env["key"], "propose_rule", {
-        "kind": "tighten", "draft": {"rule_id": "custom.live", "params": {"paths": ["a"]}},
-        "citations": env["cites"]})
-    assert not r.get("isError")  # sabotaged: accepted — the real test above refuses it
+def test_new_rule_folds_across_slugs(client, env):
+    a = _call(client, env["key"], "propose_rule", _new_rule(env))["structuredContent"]
+    other = _new_rule(env)
+    other["draft"] = {**other["draft"], "slug": "areas2"}
+    b = _call(client, env["key"], "propose_rule", other)["structuredContent"]
+    assert b["id"] == a["id"] and b["folded"] is True

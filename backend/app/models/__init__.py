@@ -4134,7 +4134,7 @@ class RuleProposal(Base):
     proposer: Mapped[str] = mapped_column(String)
     proposer_kind: Mapped[str] = mapped_column(String)
     direction: Mapped[str] = mapped_column(String)
-    loosens: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    loosens: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     status: Mapped[str] = mapped_column(String, default="open", server_default="open")
     decided_by: Mapped[str | None] = mapped_column(String, nullable=True)
     decided_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
