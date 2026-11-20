@@ -254,6 +254,14 @@ class Report:
         # reads the same way, which is how a process that died on the exception
         # used to leave the summary.
         payload["spawn_failed"] = list(self.wave.spawn_failed) if self.wave else []
+        # GRPH-1024. Always present, zero included. `held_in_base` is how many items
+        # this wave refused to rebuild because their work is already in the base;
+        # `in_base` names each one and the signal it believed. Zero means it looked
+        # and held none. A missing key reads as that zero, which is how a queue of
+        # bounced remainders exited idle for weeks.
+        held = self.wave.in_base if self.wave else {}
+        payload["held_in_base"] = len(held)
+        payload["in_base"] = dict(held)
         if self.detail:
             payload["detail"] = self.detail
         return payload
@@ -1353,7 +1361,8 @@ def _loop(
             seed, code, want = _delegate_next(planner, agent_id, wave_name, delegated,
                                               request, prd, repo, base, line=line, held=held,
                                               merger=merger, bound_out=flags,
-                                              live=live, owners=owners, skip=cooled)
+                                              live=live, owners=owners, skip=cooled,
+                                              in_base=wave.in_base)
             for refused_item, why in flags.get("refused", ()):
                 _note_refused(wave, refused_item, why)
             if seed is None and cooled and not flags.get("pinned_until"):
@@ -2433,12 +2442,14 @@ def _merged_pr_of(details: dict, repo: Path) -> str:
 def _in_base_reason(details: dict, repo: Path | None, base: str) -> str:
     """Why this item's work is already in `base`, or "" when it is not.
 
-    The string names the carrier and the sha, so a hold can be read without the
-    source. "" is "not in the base". No repo or no base is also "", and that is
-    not a hold: a clone that cannot look must not read as merged.
+    The string names the signal that matched and what it believed (GRPH-1024), and
+    for a forge match the carrier and the sha (GRPH-1023), so a hold can be read
+    without the source. "" is "not in the base". No repo or no base is also "", and
+    that is not a hold: a clone that cannot look must not read as merged. Empty also
+    covers "this clone cannot tell" (`reaches` is None). `_already_in_base` is this
+    answer as a bool.
 
-    A git-merged item still `next` (waiting on sign-off) is not a new build. `reaches`
-    returns None when this clone cannot tell; that is not "merged".
+    A git-merged item still `next` (waiting on sign-off) is not a new build.
 
     GRPH-930: a squash merge rewrites the SHA, so `reaches` returns False for a commit
     whose work IS in the base via the squash. When the forge says the PR is MERGED, the
@@ -2491,12 +2502,28 @@ def _in_base_reason(details: dict, repo: Path | None, base: str) -> str:
 
     # Ancestry is necessary, not sufficient (1): an empty branch is an ancestor too. A receipt
     # that work existed — a commit recorded for this branch, or this item's PR — is the second
-    # signal, and git cannot supply it.
+    # signal, and git cannot supply it. The sentence names what was believed (GRPH-1024) and,
+    # when this clone can name it, the tip sha (GRPH-1023).
     if branch and wt_reaches(repo, base, branch) is True:
-        if usable or str(details.get("pr") or "").strip():
+        commits: list[str] = []
+        for entry in usable:
+            commit = str(entry.get("commit") or "").strip()
+            if commit and commit not in commits:
+                commits.append(commit)
+        pr = str(details.get("pr") or "").strip()
+        if commits or pr:
+            believed: list[str] = []
+            if commits:
+                shown = ", ".join(commits[:3])
+                if len(commits) > 3:
+                    shown += f" (+{len(commits) - 3} more)"
+                believed.append(f"commit receipt {shown}")
+            if pr:
+                believed.append(f"pr {pr}")
             sha = _tip(repo, branch)
             at = f" at {sha}" if sha else ""
-            return f"branch {branch} (ancestry) is in {base}{at}"
+            return (f"branch {branch} reaches {base}{at}; "
+                    f"believed {' and '.join(believed)} says work existed")
     seen: list[str] = []
     for entry in usable:
         commit = str(entry.get("commit") or "").strip()
@@ -2504,16 +2531,24 @@ def _in_base_reason(details: dict, repo: Path | None, base: str) -> str:
             continue
         seen.append(commit)
         if wt_reaches(repo, base, commit) is True:
-            kind = str(entry.get("kind") or "commit")
-            return f"{kind} receipt {commit} is in {base}"
+            kind = str(entry.get("kind") or "receipt")
+            about = f" about {branch}" if branch else ""
+            return (f"commit {commit} reaches {base}; "
+                    f"believed a {kind} receipt{about}")
     # GRPH-930 / GRPH-1023. SHA ancestry says "not in base", but a squash merge rewrites
     # the SHA. Ask the forge about this item's own PR only — a sibling url, and a merged
-    # PR found by the branch name that does not name this item, are not it.
-    return _merged_pr_of(details, repo)
+    # PR found by the branch name that does not name this item, are not it. The carrier
+    # and the sha come from `_merged_pr_of`; "believed the forge" names the signal
+    # (GRPH-1024) so an operator can tell it from an ancestry hold.
+    merged_line = _merged_pr_of(details, repo)
+    if merged_line:
+        return (f"{merged_line}; believed the forge, "
+                f"because ancestry did not find the work in {base}")
+    return ""
 
 
 def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
-    """True when `_in_base_reason` names a carrier. The reason is the thing a hold shows."""
+    """True when `_in_base_reason` names a signal. The reason names the carrier."""
     return bool(_in_base_reason(details, repo, base))
 
 
@@ -2785,6 +2820,7 @@ def _delegate_next(
     live: list | None = None,
     owners: dict[str, object] | None = None,
     skip: set[str] | None = None,
+    in_base: dict[str, str] | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """Write the delegation for the seed of the next free cluster, before its seat is minted.
 
@@ -2820,6 +2856,11 @@ def _delegate_next(
         # mark it delegated — hiding the merged id would make a colliding sibling the seed on
         # the next tick (SA-467/470).
         #
+        # GRPH-1024: a next/backlog member that carries a bounce is the exception. Its
+        # earlier work being in the base does not mean the item is finished — the bounce
+        # is the remainder — and occupying its files is what made the queue behind it
+        # undelegable. It stays a candidate.
+        #
         # GRPH-951: ITS files, not the whole cluster. A cluster is joined by transitivity, and
         # SA-576 in review idled a wave of screens whose files it never named. A sibling whose
         # touchpoints collide with no occupier's (by the server's rule, mirrored in
@@ -2840,21 +2881,35 @@ def _delegate_next(
             status = str(got.get("status") or "")
             if status == "review":
                 occupiers[item_id] = _touchpoints_of(got)
-            elif status in ("next", "backlog") and (why := _in_base_reason(got, repo, base)):
-                occupiers[item_id] = _touchpoints_of(got)
-                # GRPH-1408: merged but unsigned is unreviewed work in the base. Holding it
-                # forever left GRPH-1359 waiting on a reviewer started by hand. Moved to
-                # `review`, it is a review row, and the drain staffs a reviewer for it.
-                if _offer_merged_for_review(planner, item_id, got, base):
-                    delegated.add(item_id)
-                    continue
-                # GRPH-1023: the carrier and the sha, so the next operator can see which
-                # receipt did it rather than reading this function.
-                observe.emit(
-                    "delegate_held", item=item_id,
-                    detail=f"already in {base} (unsigned, git-merged): {why}; "
-                           + _holds_sentence(item_id, occupiers[item_id]),
-                )
+            elif status in ("next", "backlog"):
+                why = _in_base_reason(got, repo, base)
+                # A bounce is a request for new work. `bounce_reason` is never cleared
+                # (GRPH-378), so "bounced" is readable and "bounce already addressed" is
+                # not. Re-delegating a hand-merged bounce is the cheaper of the two errors.
+                bounced = str(got.get("bounce_reason") or "").strip()
+                if why and bounced:
+                    observe.emit(
+                        "delegate_remainder", item=item_id,
+                        detail=(f"{item_id}: bounce asks for the remainder; "
+                                f"earlier work is in {base} ({why})"),
+                    )
+                elif why:
+                    occupiers[item_id] = _touchpoints_of(got)
+                    if in_base is not None:
+                        in_base[item_id] = why
+                    # GRPH-1408: merged but unsigned is unreviewed work in the base. Holding it
+                    # forever left GRPH-1359 waiting on a reviewer started by hand. Moved to
+                    # `review`, it is a review row, and the drain staffs a reviewer for it.
+                    if _offer_merged_for_review(planner, item_id, got, base):
+                        delegated.add(item_id)
+                        continue
+                    # GRPH-1023: the carrier and the sha, so the next operator can see which
+                    # receipt did it rather than reading this function.
+                    observe.emit(
+                        "delegate_held", item=item_id,
+                        detail=f"already in {base} (unsigned, git-merged): {why}; "
+                               + _holds_sentence(item_id, occupiers[item_id]),
+                    )
         for item_id in occupiers:
             details_for.pop(item_id, None)
         for item_id in list(details_for):
