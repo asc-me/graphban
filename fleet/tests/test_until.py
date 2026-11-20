@@ -85,6 +85,7 @@ def _clients(
     backlog: list | None = None,
     item_rows: list | None = None,
     updates: list | None = None,
+    item_details: dict | None = None,
 ):
     """Planner + supervisor clients sharing one mock Graphban.
 
@@ -177,11 +178,16 @@ def _clients(
                 return _error("not_found", f"prd not found: {asked}", rid)
             return _mcp({"id": prds[asked], "project_id": "core"}, rid)
         if tool == "get_item_details":
-            return _mcp({"id": args.get("id"), "title": "seed", "status": "next", "brief": {
+            item_id = args.get("id")
+            payload = {"id": item_id, "title": "seed", "status": "next", "brief": {
                 "lane": {"value": "backend", "basis": ["backend/app/x.py"]},
                 "tier": brief_tier or {"value": "cheap", "basis": "none"},
                 "text": "Item seed",
-            }}, rid)
+            }}
+            # A caller that names this id's row wins field-by-field. Tests that
+            # never pass `item_details` keep the seed above.
+            payload.update((item_details or {}).get(item_id) or {})
+            return _mcp(payload, rid)
         if tool == "delegate":
             taken.add(str(args.get("id")))
             if delegate_fails:
@@ -2159,6 +2165,73 @@ def test_a_bounced_item_in_base_does_not_block_its_files_siblings(
     assert planner.delegated == ["SIB"]
     assert "MERGED" not in held_map
     assert planner.updates == []
+
+
+def test_the_loop_reports_the_hold_it_recorded(tmp_path: Path, monkeypatch, scripts, state: Path):
+    """GRPH-1024. The wave-end count is what `_loop` recorded, not a map a test handed
+    to `_delegate_next` and not a `wave.in_base` the test assigned.
+
+    GRPH-893 is `next`, unsigned, and its branch is already in the base. The loop
+    holds it, offers it for review, and the report says 1. `run` is the only caller
+    here. It does not pass its own map and it does not write `wave.in_base`.
+
+    Sabotage: delete `in_base=wave.in_base` from the `_loop` call, the only
+    production caller. This fails: `held_in_base` is 0 and the JSON `in_base` is
+    empty, while the review offer still happens.
+    """
+    import io
+
+    from gbfleet import worktree as wt
+    from gbfleet.cli import report
+
+    repo = _repo_with_remote(tmp_path)
+    real = wt.reaches
+
+    def reaches(path, base, ref):
+        if ref == "gb/merged":
+            return True
+        return real(path, base, ref)
+
+    monkeypatch.setattr(wt, "reaches", reaches)
+    why = ("branch gb/merged reaches origin/main; "
+           "believed pr https://github.com/o/r/pull/806 says work existed")
+    updates: list[dict] = []
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(
+        workspace, clusters=1, workers=0, updates=updates,
+        cluster_items=[["GRPH-893"]],
+        item_details={"GRPH-893": {
+            "id": "GRPH-893",
+            "status": "next",
+            "branch": "gb/merged",
+            "pr": "https://github.com/o/r/pull/806",
+            "bounce_reason": "",
+            "evidence": [],
+            "touchpoints": ["backend/app/services/fleet.py"],
+            "brief": {"lane": {"value": "backend"}, "tier": {"value": "cheap"},
+                      "blocked_by": []},
+        }},
+    )
+    result = run(
+        repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+        base_branch="main",
+    )
+    assert result.reason == "idle", result.detail
+    assert result.spawned == 0
+    assert [(u.get("id"), u.get("status")) for u in updates] == [("GRPH-893", "review")]
+    payload = result.as_json()
+    assert payload["held_in_base"] == 1
+    assert payload["in_base"] == {"GRPH-893": why}
+    assert result.wave is not None and result.wave.in_base == {"GRPH-893": why}
+
+    out = io.StringIO()
+    report(result.wave, out=out)
+    text = out.getvalue()
+    assert "HELD IN BASE 1" in text
+    assert f"GRPH-893: {why}" in text
 
 
 def test_in_base_reason_names_each_signal(tmp_path: Path, monkeypatch):
