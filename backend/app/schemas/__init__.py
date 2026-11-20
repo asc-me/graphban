@@ -1885,6 +1885,23 @@ class RuleToggleOut(BaseModel):
     #: Custom rules only (GRPH-1774): the rule's state, and why it is drawn UNMEASURED.
     state: str | None = None
     unmeasured_reason: str | None = None
+    #: GRPH-1777: while `state` is `observing`, what the rule would have held or refused, and
+    #: `decision_due` (14 days or 10 would-have outcomes). Never promotes itself.
+    observation: dict | None = None
+
+
+class RulePromote(BaseModel):
+    reason: str
+
+
+class RuleObservationOut(BaseModel):
+    id: int
+    rule_id: str
+    outcome: str
+    item_id: str | None = None
+    commit: str | None = None
+    detail: dict
+    at: datetime
 
 
 class RuleTogglesOut(BaseModel):

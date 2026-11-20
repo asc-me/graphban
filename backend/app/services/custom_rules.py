@@ -92,8 +92,17 @@ def resolve_row(row: CustomRule) -> dict:
             "state": row.state, "unmeasured_reason": lib.unmeasured_reason or None}
 
 
+def _observe(db: Session, row: CustomRule, out: dict) -> dict:
+    if row.state == "observing":  # GRPH-1777: what it recorded, and whether a decision is due
+        from app.services import rule_observations
+        out["observation"] = rule_observations.summary(db, row.project_id, row.rule_id,
+                                                       row.created_at)
+    return out
+
+
 def resolve(db: Session, rule_id: str, project_id: str | None) -> dict:
-    return resolve_row(get(db, rule_id, project_id))
+    row = get(db, rule_id, project_id)
+    return _observe(db, row, resolve_row(row))
 
 
 def rows_for_project(db: Session, project_id: str | None) -> list[CustomRule]:
@@ -104,7 +113,7 @@ def rows_for_project(db: Session, project_id: str | None) -> list[CustomRule]:
 
 
 def effective(db: Session, project_id: str | None) -> list[dict]:
-    return [dict(resolve_row(r), stage=r.stage.lower(), title=r.title)
+    return [dict(_observe(db, r, resolve_row(r)), stage=r.stage.lower(), title=r.title)
             for r in rows_for_project(db, project_id)]
 
 
