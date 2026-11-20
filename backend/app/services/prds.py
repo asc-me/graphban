@@ -4275,11 +4275,25 @@ _TP_MIN_SCORE = 0.6
 _TP_MAX = 5
 
 
+def _file_name_in_text(base: str, text: str) -> bool:
+    """Whether lowercased `base` is a whole token of already-lowercased `text`.
+
+    `/`, `.`, `_` and `-` are separators, so `graph` is not a token of `Graphban`.
+    A bare directory name has neither an extension nor a path separator and is not
+    this tier: `code` is a whole token of `device-code`, and it matches only when
+    the full path is named.
+    """
+    if len(base) <= 3 or ("." not in base and "/" not in base):
+        return False
+    return re.search(rf"(?<![A-Za-z0-9]){re.escape(base)}(?![A-Za-z0-9])", text) is not None
+
+
 def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[dict]:
     """Code-graph paths a section likely touches, each with the evidence that matched.
 
-    Two signals: a node's path (or its file name) named verbatim in the section text, which
-    is strong; and semantic search over the title and body, kept above a score floor."""
+    Two signals: a node's path named verbatim in the section text, or its file name
+    named as a whole token; and semantic search over the title and body, kept above
+    a score floor. A bare directory name is not a file-name match."""
     from app.services import code_graph
 
     text = f"{section}\n{body}".lower()
@@ -4289,7 +4303,7 @@ def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[
         base = path.rsplit("/", 1)[-1]
         if path.lower() in text:
             found.setdefault(path, f"path `{path}` named in the section")
-        elif len(base) > 3 and base.lower() in text:
+        elif _file_name_in_text(base.lower(), text):
             found.setdefault(path, f"file name `{base}` named in the section")
     try:
         hits = code_graph.search_code(db, f"{section}\n{body}"[:2000], prd.project_id, top_k=_TP_MAX)

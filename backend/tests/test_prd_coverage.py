@@ -225,6 +225,57 @@ def test_decompose_proposes_touchpoints_from_code_graph(client, auth):
     db.close()
 
 
+def test_file_name_touchpoint_is_a_whole_token_not_a_substring(client, auth):
+    """Ordinary words are not directory names, and a file name matches only as a token.
+
+    "Graphban" does not name `web/src/lib/graph`, and "device-code" does not name
+    `web/src/features/code`. `routers/auth.py` still names `auth.py`, `link_device.py`
+    still names that file, and `notauth.py` does not. The full directory path still
+    matches on the path tier.
+    """
+    from app.services import code_graph
+
+    prd = client.post("/api/prds", json={
+        "title": "Sign-in",
+        "body": (
+            "# Sign-in\n\n"
+            "## API\nGraphban uses device-code sign-in. "
+            "It names routers/auth.py and link_device.py.\n\n"
+            "## Decoy\nSee notauth.py before renaming anything.\n\n"
+            "## Package\nThe library lives at web/src/lib/graph.\n\n"
+            "## Acceptance criteria\n"
+            "### API\n- device-code sign-in stays\n"
+            "### Decoy\n- notauth.py is left alone\n"
+            "### Package\n- the graph package stays put\n"
+        ),
+    }, headers=auth).json()
+    db = SessionLocal()
+    pid = db.get(prd_svc.Prd, prd["id"]).project_id
+    code_graph.describe_code(db, project_id=pid, nodes=[
+        {"path": "web/src/lib/graph", "kind": "module", "summary": "graph package"},
+        {"path": "web/src/features/code", "kind": "module", "summary": "code feature"},
+        {"path": "backend/app/routers/auth.py", "kind": "file", "summary": "auth routes"},
+        {"path": "backend/app/services/link_device.py", "kind": "file", "summary": "device link"},
+    ])
+    db.close()
+
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    by = {p["section"]: p for p in dry["proposals"]}
+    api = by["API"]["touchpoints"]
+    assert "web/src/lib/graph" not in api
+    assert "web/src/features/code" not in api
+    assert "backend/app/routers/auth.py" in api
+    assert "backend/app/services/link_device.py" in api
+    evidence = {e["path"]: e["evidence"] for e in by["API"]["touchpoint_evidence"]}
+    assert evidence["backend/app/routers/auth.py"] == "file name `auth.py` named in the section"
+    assert evidence["backend/app/services/link_device.py"] == (
+        "file name `link_device.py` named in the section")
+    assert "backend/app/routers/auth.py" not in by["Decoy"]["touchpoints"]
+    assert by["Package"]["touchpoints"] == ["web/src/lib/graph"]
+    assert by["Package"]["touchpoint_evidence"][0]["evidence"] == (
+        "path `web/src/lib/graph` named in the section")
+
+
 def test_decompose_flags_an_oversized_section_and_splits_three_ways(client, auth):
     """Three sub-headings, a clause under each: flagged, and create files three linked items.
 
