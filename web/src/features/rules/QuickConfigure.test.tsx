@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/lib/api";
 import type { RuleFlowRule, RuleProfiles, RulesFlow } from "@/lib/types";
 
-import { chipText, planFor, weakeningOf, QuickConfigure, QuickConfigureBar, ruleIndex, type QuickScreen } from "./QuickConfigure";
+import { chipText, driftTallies, planFor, weakeningOf, QuickConfigure, QuickConfigureBar, ruleIndex, type QuickScreen } from "./QuickConfigure";
 
 vi.mock("@/lib/api", () => ({
   api: {
@@ -94,6 +94,19 @@ describe("planFor", () => {
     const applied = { profile: "regulated", version: "0.1.0", pack_version: "0.4.0", exceptions: ["a"], skipped: [], by: "u", at: "" };
     expect(chipText(applied, "Regulated", null)).toBe("Level: Regulated v0.1.0 · 1 exception");
     expect(chipText(applied, "Regulated", 2)).toBe("Level: Regulated v0.1.0 · 1 exception · drifted (2)");
+    expect(chipText(applied, "Regulated", null, 1)).toBe("Level: Regulated v0.1.0 · 1 exception · unmeasured (1)");
+    expect(chipText(applied, "Regulated", 1, 1)).toBe("Level: Regulated v0.1.0 · 1 exception · drifted (1) · unmeasured (1)");
+  });
+
+  it("counts only changed and weakening rows as drift", () => {
+    expect(driftTallies([
+      { kind: "unmeasured" },
+      { kind: "changed" },
+      { kind: "weakening" },
+    ])).toEqual({ drifted: 2, unmeasured: 1 });
+    expect(driftTallies([{ kind: "unmeasured" }])).toEqual({ drifted: null, unmeasured: 1 });
+    expect(driftTallies([])).toEqual({ drifted: null, unmeasured: 0 });
+    expect(driftTallies(undefined)).toEqual({ drifted: null, unmeasured: 0 });
   });
 });
 
@@ -196,6 +209,54 @@ describe("QuickConfigure", () => {
     expect(onOpen).toHaveBeenCalledWith({ screen: "compare", profile: "regulated" });
     panel({ screen: "compare", profile: "regulated" });
     expect(await screen.findByTestId("rules-quick-drift-review.cross_vendor")).toHaveTextContent("CHANGED BY HAND · WEAKENING");
+  });
+
+  it("drift: an unmeasured row is not a hand change, not a drifted count, and not off", async () => {
+    // The rule is off in the flow, the way a refused template's default_on reads, and the
+    // server's differs_in counts the unmeasured row. The page must not.
+    vi.mocked(api.ruleProfiles).mockResolvedValue({
+      ...profiles,
+      applied: { profile: "regulated", version: "0.1.0", pack_version: "0.4.0", exceptions: [], skipped: [], by: "u", at: "" },
+    });
+    vi.mocked(api.ruleProfileDrift).mockResolvedValue({
+      project_id: "core", profile: "regulated", state: "drifted", differs_in: 2, summary: "", weakening: 0,
+      drift: [
+        { rule_id: "review.cross_vendor", kind: "unmeasured", detail: "the loaded library cannot enforce this rule" },
+        { rule_id: "review.sabotage", kind: "changed", detail: "pinned params differ" },
+      ],
+    });
+    wrap(<QuickConfigureBar onOpen={vi.fn()} />);
+    const chip = await screen.findByTestId("rules-level-chip");
+    await waitFor(() => expect(chip).toHaveTextContent("Level: Regulated v0.1.0 · drifted (1) · unmeasured (1)"));
+    expect(chip).not.toHaveTextContent("drifted (2)");
+    expect(chip).toHaveAttribute("data-drifted", "true");
+    expect(chip).toHaveAttribute("data-unmeasured", "true");
+
+    panel({ screen: "compare", profile: "regulated" });
+    const mark = await screen.findByTestId("rules-quick-drift-review.cross_vendor");
+    expect(mark).toHaveTextContent("can't enforce on this server");
+    expect(mark).not.toHaveTextContent("CHANGED BY HAND");
+    const now = screen.getByTestId("rules-quick-now-review.cross_vendor");
+    expect(now).toHaveTextContent("not enforced");
+    expect(now).not.toHaveTextContent("off");
+    expect(screen.getByTestId("rules-quick-drift-review.sabotage")).toHaveTextContent("CHANGED BY HAND");
+    expect(screen.getByTestId("rules-quick-drift-review.sabotage")).not.toHaveTextContent("WEAKENING");
+  });
+
+  it("drift: a pinned rule that is only unmeasured is named and not counted", async () => {
+    vi.mocked(api.ruleProfiles).mockResolvedValue({
+      ...profiles,
+      applied: { profile: "regulated", version: "0.3.0", pack_version: "0.4.0", exceptions: ["review.gap_blocks"], skipped: [], by: "u", at: "" },
+    });
+    vi.mocked(api.ruleProfileDrift).mockResolvedValue({
+      project_id: "core", profile: "regulated", state: "drifted", differs_in: 1, summary: "", weakening: 0,
+      drift: [{ rule_id: "review.cross_vendor", kind: "unmeasured", detail: "the loaded library cannot enforce this rule" }],
+    });
+    wrap(<QuickConfigureBar onOpen={vi.fn()} />);
+    const chip = await screen.findByTestId("rules-level-chip");
+    await waitFor(() => expect(chip).toHaveTextContent("Level: Regulated v0.3.0 · 1 exception · unmeasured (1)"));
+    expect(chip).not.toHaveTextContent("drifted");
+    expect(chip).not.toHaveAttribute("data-drifted");
   });
 
   it("pack update: offered on the bar, reviewed on the same sheet, and accepted only on save", async () => {

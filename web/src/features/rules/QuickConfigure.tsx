@@ -154,7 +154,25 @@ function pinText(pin: RuleProfilePin | undefined, names: string[]): string {
   return [pin.state, ...ps].join(" · ");
 }
 
-function currentText(rule: RuleFlowRule | undefined, names: string[]): string {
+/**
+ * A pin the loaded library cannot enforce has no project value. Reading it as "off" disagrees
+ * with the platform default and looks like a hand edit (GRPH-1804).
+ */
+function projectUnmeasured(
+  rule: RuleFlowRule | undefined,
+  drift: RuleProfileDriftRow | undefined,
+  pin: RuleProfilePin | undefined,
+): boolean {
+  return drift?.kind === "unmeasured" || pin?.enforceable === false || rule?.enforcement === "unmeasured" || !!rule?.unmeasured_reason;
+}
+
+function currentText(
+  rule: RuleFlowRule | undefined,
+  names: string[],
+  drift?: RuleProfileDriftRow,
+  pin?: RuleProfilePin,
+): string {
+  if (projectUnmeasured(rule, drift, pin)) return "not enforced";
   if (!rule) return "not in this server's library";
   const now = paramsOf(rule);
   return [isOn(rule) ? "on" : "off", ...names.filter((k) => k in now).map((k) => `${k}: ${showValue(now[k])}`)].join(" · ");
@@ -164,14 +182,35 @@ function levelName(profiles: RuleProfile[], id: string | null | undefined): stri
   return profiles.find((p) => p.id === id)?.title ?? id ?? "";
 }
 
-/** "Regulated v0.1.0 · 1 exception · 1 skipped · drifted (2)". */
-export function chipText(applied: RuleProfileApplied, title: string, drifted: number | null): string {
+/** Hand edits only. `unmeasured` is a rule this server cannot enforce, not drift (GRPH-1804). */
+export function driftTallies(rows: readonly Pick<RuleProfileDriftRow, "kind">[] | null | undefined): {
+  drifted: number | null;
+  unmeasured: number;
+} {
+  if (!rows) return { drifted: null, unmeasured: 0 };
+  let hand = 0;
+  let unmeasured = 0;
+  for (const row of rows) {
+    if (row.kind === "unmeasured") unmeasured += 1;
+    else if (row.kind === "changed" || row.kind === "weakening") hand += 1;
+  }
+  return { drifted: hand > 0 ? hand : null, unmeasured };
+}
+
+/** "Regulated v0.1.0 · 1 exception · 1 skipped · drifted (2) · unmeasured (1)". */
+export function chipText(
+  applied: RuleProfileApplied,
+  title: string,
+  drifted: number | null,
+  unmeasured = 0,
+): string {
   const parts = [`Level: ${title}${applied.version !== null ? ` v${versionText(applied.version)}` : ""}`];
   const ex = applied.exceptions.length;
   if (ex) parts.push(`${ex} exception${ex === 1 ? "" : "s"}`);
   const sk = applied.skipped.length;
   if (sk) parts.push(`${sk} skipped (org-locked)`);
   if (drifted) parts.push(`drifted (${drifted})`);
+  if (unmeasured > 0) parts.push(`unmeasured (${unmeasured})`);
   return parts.join(" · ");
 }
 
@@ -191,7 +230,7 @@ export function QuickConfigureBar({ onOpen, compact = false }: { onOpen: (s: Qui
   if (!profiles.data || !profiles.data.pack_loaded || profiles.data.profiles.length === 0) return null;
   const list = profiles.data.profiles;
   const offer = updates.data?.updates.find((u) => u.profile === applied?.profile) ?? updates.data?.updates[0];
-  const drifted = drift.data?.state === "drifted" ? drift.data.differs_in : null;
+  const { drifted, unmeasured } = driftTallies(drift.data?.drift);
   return (
     <div
       className={cn("mx-5 flex items-center gap-2", compact ? "mt-1 flex-none flex-nowrap overflow-hidden whitespace-nowrap" : "mt-3 flex-wrap")}
@@ -205,11 +244,12 @@ export function QuickConfigureBar({ onOpen, compact = false }: { onOpen: (s: Qui
           onClick={() => onOpen({ screen: "compare", profile: applied.profile! })}
           data-testid="rules-level-chip"
           data-drifted={drifted ? "true" : undefined}
+          data-unmeasured={unmeasured > 0 ? "true" : undefined}
           className="h-7 rounded-[8px] border px-2.5 text-small"
           style={{ borderColor: drifted ? AMBER : "#2a333a", color: drifted ? AMBER : undefined }}
-          title={drifted ? "Open the compare view on the rules changed by hand" : "Open the compare view"}
+          title={drifted ? "Open the compare view on the rules changed by hand" : unmeasured > 0 ? "Open the compare view — a pinned rule can't be enforced on this server" : "Open the compare view"}
         >
-          {chipText(applied, levelName(list, applied.profile), drifted)}
+          {chipText(applied, levelName(list, applied.profile), drifted, unmeasured)}
         </button>
       ) : (
         <span className="text-small text-muted" data-testid="rules-level-none">No level applied</span>
@@ -376,7 +416,7 @@ export function QuickConfigure({
             No rule pack is loaded on this server, so there are no levels to choose from.
           </p>
         ) : screen.screen === "picker" ? (
-          <Picker profiles={profiles} order={order} rules={rules} applied={applied} drifted={drift.data?.state === "drifted" ? drift.data.differs_in : null} narrow={narrow} onChoose={choose} />
+          <Picker profiles={profiles} order={order} rules={rules} applied={applied} drifted={driftTallies(drift.data?.drift).drifted} narrow={narrow} onChoose={choose} />
         ) : selected && plan ? (
           <Compare
             profiles={profiles}
@@ -586,9 +626,17 @@ function Compare({
     }
     const drift = driftRows.get(id);
     if (drift) {
+      // `unmeasured` is the loaded library, not a person. Any other kind is a hand edit.
+      const unmeasured = drift.kind === "unmeasured";
       out.push(
-        <span key="d" className={cn(MONO, "text-meta font-semibold")} style={{ color: AMBER }} data-testid={`rules-quick-drift-${id}`} title={drift.detail}>
-          {drift.kind === "weakening" ? "CHANGED BY HAND · WEAKENING" : "CHANGED BY HAND"}
+        <span
+          key="d"
+          className={cn(MONO, "text-meta font-semibold", unmeasured && "text-muted")}
+          style={unmeasured ? undefined : { color: AMBER }}
+          data-testid={`rules-quick-drift-${id}`}
+          title={drift.detail}
+        >
+          {unmeasured ? "can't enforce on this server" : drift.kind === "weakening" ? "CHANGED BY HAND · WEAKENING" : "CHANGED BY HAND"}
         </span>,
       );
     }
@@ -655,7 +703,7 @@ function Compare({
                   style={{ borderColor: outline(id) ? "#5ad1a0" : "#2a333a" }}
                 >
                   <span className="text-body font-semibold">{rules.get(id)?.title ?? id}</span>
-                  <span className={cn(MONO, "text-small text-fg-2")}>Now: {currentText(rules.get(id), names(id))}</span>
+                  <span className={cn(MONO, "text-small text-fg-2")} data-testid={`rules-quick-now-${id}`}>Now: {currentText(rules.get(id), names(id), driftRows.get(id), pinned.get(id)!.get(selected.id))}</span>
                   {profiles.map((p) => (
                     <span key={p.id} className={cn(MONO, "text-small", p.id === selected.id ? "text-fg" : "text-muted")}>
                       {p.title}: {pinText(pinned.get(id)!.get(p.id), names(id))}
@@ -695,7 +743,7 @@ function Compare({
                       <span className="text-body">{rules.get(id)?.title ?? id}</span>
                       <span className={cn(MONO, "block text-micro text-muted")}>{id}</span>
                     </td>
-                    <td className={cn(MONO, "px-2 align-top text-fg-2")}>{currentText(rules.get(id), names(id))}</td>
+                    <td className={cn(MONO, "px-2 align-top text-fg-2")} data-testid={`rules-quick-now-${id}`}>{currentText(rules.get(id), names(id), driftRows.get(id), pinned.get(id)!.get(selected.id))}</td>
                     {profiles.map((p) => (
                       <td
                         key={p.id}
