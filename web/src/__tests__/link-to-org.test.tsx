@@ -24,6 +24,7 @@ const api = vi.hoisted(() => ({
   syncCloudProjects: vi.fn(),
   syncSaveProjectMap: vi.fn(),
   syncPushAll: vi.fn(),
+  putProjectSync: vi.fn(),
   projects: vi.fn(),
 }));
 vi.mock("@/lib/api", () => ({ api }));
@@ -83,6 +84,7 @@ beforeEach(() => {
   api.syncCloudProjects.mockResolvedValue({
     status: "ok", projects: [{ id: CORE_ID, tag: "CORE", name: "Core project" }], mapping: [],
   });
+  api.putProjectSync.mockResolvedValue({ project: {}, backfill: { total: 0, confirmed: 0, parked: 0, state: "done" } });
 });
 
 describe("LinkToOrgWizard", () => {
@@ -256,7 +258,7 @@ describe("LinkToOrgWizard", () => {
     expect(unreachableText("https://x.dev", "")).toBe("Couldn't reach x.dev.");
   });
 
-  it("approval reads SIGNED IN · <ORG>, then Projects, each defaulting to Local only", async () => {
+  it("approval reads SIGNED IN · <ORG>, then Projects default to the matching cloud project or Create in org", async () => {
     const user = userEvent.setup();
     api.syncLinkPoll.mockResolvedValue({ status: "approved", org: "Acme", email: "ann@acme.dev" });
     wizard(base);
@@ -267,25 +269,19 @@ describe("LinkToOrgWizard", () => {
     expect(document.querySelector('[data-rail-node="1"]')).toHaveTextContent(`①Console✓${CONSOLE_HOST}`);
     expect(document.querySelector('[data-rail-node="2"]')).toHaveTextContent("②Sign in✓Acme · ann@acme.dev");
     await user.click(screen.getByRole("button", { name: "Next →" }));
-    expect(await screen.findByLabelText("Cloud project for Core")).toHaveValue("");
-    expect(screen.getByText("Pick where each local project syncs in Acme. Local only keeps it on this box.")).toBeInTheDocument();
+    // Core's tag matches the cloud project. North's tag matches nothing, so Create in org.
+    expect(await screen.findByLabelText("Cloud project for Core")).toHaveValue(CORE_ID);
+    expect(screen.getByText(/Create in org is the default when no cloud project matches the tag/)).toBeInTheDocument();
     expect(screen.getAllByText("YOUR STEP")).toHaveLength(1);
-    // Rows are labelled with the local project's tag.
     expect(await screen.findByText("CORE", { selector: "label" })).toHaveAttribute("title", "Core");
     expect(screen.getByText("NRTH", { selector: "label" })).toBeInTheDocument();
-    expect(document.querySelector('[data-rail-node="3"]')).toHaveTextContent("③Projects◌0 synced · 2 local");
-    expect(screen.getByLabelText("Cloud project for North")).toHaveValue("");
-    expect(screen.getByText("Nothing will sync. The box stays linked to Acme.")).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("PROJECTS · 0 SYNCED · 2 LOCAL");
-    // Nothing synced yet is muted, not green.
-    expect(screen.getByRole("status").getAttribute("data-tone")).toBe("muted");
-    expect(screen.getByRole("status").className).not.toContain("text-st-done");
-    await user.selectOptions(screen.getByLabelText("Cloud project for Core"), CORE_ID);
+    expect(screen.getByLabelText("Cloud project for North")).toHaveValue("create");
+    expect(screen.getByRole("status")).toHaveTextContent("PROJECTS · 2 SYNCED · 0 LOCAL");
+    expect(screen.getByRole("status").getAttribute("data-tone")).toBe("ok");
+    await user.selectOptions(screen.getByLabelText("Cloud project for North"), "Local only");
     expect(screen.getByText("☁ CORE")).toBeInTheDocument();
     noUuid();
     expect(screen.getByRole("status")).toHaveTextContent("PROJECTS · 1 SYNCED · 1 LOCAL");
-    expect(screen.getByRole("status").getAttribute("data-tone")).toBe("ok");
-    expect(screen.getByRole("status").className).toContain("text-st-done");
     expect(document.querySelector('[data-rail-node="3"]')).toHaveTextContent("1 synced · 1 local");
   });
 
@@ -301,9 +297,11 @@ describe("LinkToOrgWizard", () => {
   it("says no reachable projects, and unknown is grey rather than 'no projects'", async () => {
     api.syncCloudProjects.mockResolvedValue({ status: "ok", projects: [], mapping: [] });
     const { unmount } = wizard(signedIn, { initialStep: 3 });
-    expect(await screen.findByText(/You don't have access to any projects in Acme yet. Ask an org admin./)).toBeInTheDocument();
-    // No reachable projects: no selects at all.
+    expect(await screen.findByText(/Sync to org creates one for each local tag/)).toBeInTheDocument();
+    // No reachable projects: radios, and no cloud-project select.
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("radio", { name: "Sync to org" }).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/don't have access/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Pick where/)).not.toBeInTheDocument();
     unmount();
 
@@ -385,6 +383,7 @@ describe("LinkToOrgWizard", () => {
     const unmapped = { ...signedIn, projects: [proj("core", "Core"), proj("north", "North")] };
     wizard(unmapped, { initialStep: 3 });
     await screen.findByLabelText("Cloud project for Core");
+    for (const box of screen.getAllByRole("combobox")) await user.selectOptions(box, "Local only");
     await user.click(screen.getByRole("button", { name: "Next →" }));
     expect(await screen.findByText("Nothing to push. Every project is local only.")).toBeInTheDocument();
     expect(localStorage.getItem(LINK_FINISHED_KEY)).toBe("1");
@@ -445,6 +444,22 @@ describe("LinkToOrgWizard", () => {
     expect(screen.getByRole("status")).toHaveTextContent("CONSOLE · UNREACHABLE");
     expect(screen.getByRole("status").getAttribute("data-tone")).toBe("grey");
     expect(screen.getByText(/UNKNOWN/)).toHaveTextContent("Couldn't reach c.dev: timed out.");
+  });
+
+  it("a tag already in use names the owner and keeps the row editable", async () => {
+    const user = userEvent.setup();
+    api.syncCloudProjects.mockResolvedValue({ status: "ok", projects: [], mapping: [] });
+    api.syncSaveProjectMap.mockResolvedValue({ mapping: [] });
+    const err = new Error(JSON.stringify({ detail: "tag_taken", owner_label: "Bea" }));
+    (err as Error & { status: number }).status = 409;
+    api.putProjectSync.mockRejectedValue(err);
+    wizard({ ...signedIn, projects: [proj("north", "North")] }, { initialStep: 3 });
+    await screen.findByRole("radio", { name: "Sync to org" });
+    await user.click(screen.getByRole("button", { name: "Next →" }));
+    expect(await screen.findByText("Bea already uses this tag.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Next →" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Push now" })).not.toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Local only" })).toBeEnabled();
   });
 
   it("③ saves the tag from the reachable-projects answer with the mapping (GRPH-1562)", async () => {

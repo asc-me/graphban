@@ -26,7 +26,43 @@ export type WizardStep = 1 | 2 | 3 | 4;
 
 const RAIL = ["Console", "Sign in", "Projects", "First push"] as const;
 const LOCAL = "";
+const CREATE = "create";
 const SEAT_REMOVED = ["seat_removed", "token_revoked", "key_refused"];
+
+type SyncChoice = { level: "sync" | "digests" | "local"; target: string };
+
+/** A stored mapping wins. Otherwise the cloud project whose tag matches, else create-in-org.
+ *  The tag is the project's tag, never its name: a name that happens to read like a tag
+ *  is not a match. */
+function defaultChoice(p: SyncProjectState, cloud: CloudProject[], tag: string): SyncChoice {
+  if (p.mapped && p.cloud_project_id) return { level: "sync", target: p.cloud_project_id };
+  const want = tag.trim().toUpperCase();
+  const hit = want ? cloud.find((c) => (c.tag || "").trim().toUpperCase() === want) : undefined;
+  return { level: "sync", target: hit?.id || CREATE };
+}
+
+function storedChoice(projects: SyncProjectState[]): Record<string, SyncChoice> {
+  const out: Record<string, SyncChoice> = {};
+  for (const p of projects) {
+    out[p.project_id] = p.mapped && p.cloud_project_id
+      ? { level: "sync", target: p.cloud_project_id }
+      : { level: "local", target: LOCAL };
+  }
+  return out;
+}
+
+/** `409 tag_taken` carries the owner. Anything else is a normal save error. */
+function takenOwner(e: unknown): string | null {
+  if (typeof e !== "object" || e === null || (e as { status?: number }).status !== 409) return null;
+  const message = e instanceof Error ? e.message : "";
+  try {
+    const body = JSON.parse(message) as { detail?: string; owner_label?: string };
+    if (body.detail === "tag_taken") return body.owner_label || "another deployment";
+  } catch {
+    return null;
+  }
+  return null;
+}
 
 /** The ☁ tag for a cloud project: its console tag, else the stored one, else `?` — never the
  * id and never the name (GRPH-1562). */
@@ -340,19 +376,24 @@ export function LinkToOrgWizard({
     projects: CloudProject[];
     reason?: string;
   }>({ state: "loading", projects: [] });
-  const [choice, setChoice] = React.useState<Record<string, string>>(() =>
-    Object.fromEntries(
-      status.projects.filter((p) => p.mapped).map((p) => [p.project_id, p.cloud_project_id ?? LOCAL]),
-    ),
-  );
+  // Opening at ④ uses the stored mapping: unmapped is local only. Step ③ applies the
+  // first-link default (sync, create-in-org unless the tag already matches) once the
+  // cloud list and the local tags have both been read.
+  const [rows, setRows] = React.useState<Record<string, SyncChoice>>(() => storedChoice(status.projects));
+  const [applied, setApplied] = React.useState(false);
+  const [owners, setOwners] = React.useState<Record<string, string>>({});
+  const [progress, setProgress] = React.useState<Record<string, { confirmed: number; total: number }>>({});
+  const touched = React.useRef<Record<string, boolean>>({});
   const [pushes, setPushes] = React.useState<ProjectPushResult[] | null>(null);
   const [pushing, setPushing] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   // Push later reveals the command; it never closes the wizard (design L3).
   const [later, setLater] = React.useState(false);
+  const projectsQ = useProjects();
 
   const loadCloud = React.useCallback(async () => {
     setCloud({ state: "loading", projects: [] });
+    setApplied(false);
     try {
       const r = await api.syncCloudProjects();
       setCloud({ state: r.status, projects: r.projects ?? [], reason: r.reason });
@@ -363,30 +404,109 @@ export function LinkToOrgWizard({
   React.useEffect(() => {
     if (step === 3) void loadCloud();
   }, [step, loadCloud]);
+  React.useEffect(() => {
+    if (step !== 3 || cloud.state !== "ok" || !projectsQ.isFetched) return;
+    setRows((prev) => {
+      const next = { ...prev };
+      for (const p of status.projects) {
+        if (touched.current[p.project_id]) continue;
+        const tag = projectsQ.data?.find((x) => x.id === p.project_id)?.tag ?? "";
+        next[p.project_id] = defaultChoice(p, cloud.projects, tag);
+      }
+      return next;
+    });
+    setApplied(true);
+  }, [step, cloud, projectsQ.isFetched, projectsQ.data, status.projects]);
 
-  const synced = Object.values(choice).filter(Boolean);
+  const rowOf = (id: string): SyncChoice => rows[id] ?? { level: "local", target: LOCAL };
+  const syncedCount = status.projects.filter((p) => rowOf(p.project_id).level === "sync").length;
   /** The tag for cloud project `id`; `local` is the row whose stored tag is the fallback. */
-  const nameOf = (id: string, local?: SyncProjectState) =>
-    tagOf(
+  const nameOf = (id: string, local?: SyncProjectState) => {
+    if (id === CREATE) return "NEW";
+    return tagOf(
       cloud.projects.find((p) => p.id === id),
       local && local.cloud_project_id === id ? local.cloud_project_tag : null,
     );
+  };
+
+  function writeRow(id: string, row: SyncChoice) {
+    touched.current[id] = true;
+    setRows((prev) => ({ ...prev, [id]: row }));
+    setOwners((prev) => {
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }
+
+  function onSelect(id: string, value: string) {
+    if (!value) writeRow(id, { level: "local", target: LOCAL });
+    else if (value === CREATE) writeRow(id, { level: "sync", target: CREATE });
+    else {
+      const level = rowOf(id).level === "digests" ? "digests" : "sync";
+      writeRow(id, { level, target: value });
+    }
+  }
+
+  function selectAll() {
+    const next: Record<string, SyncChoice> = {};
+    for (const p of status.projects) {
+      const tag = projectsQ.data?.find((x) => x.id === p.project_id)?.tag ?? "";
+      next[p.project_id] = defaultChoice(p, cloud.projects, tag);
+      touched.current[p.project_id] = true;
+    }
+    setRows(next);
+    setOwners({});
+  }
 
   async function saveAndPush() {
     setSaving(true);
     setErr(null);
+    const entries = status.projects.map((p) => ({ p, row: rowOf(p.project_id) }));
+    const real = (row: SyncChoice) => row.level !== "local" && !!row.target && row.target !== CREATE;
     try {
+      // Local first, while the mapping row still exists, so leaving sync can purge.
+      for (const { p, row } of entries) {
+        if (row.level === "local") await api.putProjectSync(p.project_id, { sync_level: "local" });
+      }
       await api.syncSaveProjectMap(
-        Object.entries(choice)
-          .filter(([, c]) => c)
-          .map(([local_project_id, cloud_project_id]) => ({
-            local_project_id,
-            cloud_project_id,
-            cloud_project_tag: cloud.projects.find((c) => c.id === cloud_project_id)?.tag ?? "",
-          })),
+        entries.filter(({ row }) => real(row)).map(({ p, row }) => ({
+          local_project_id: p.project_id,
+          cloud_project_id: row.target,
+          cloud_project_tag: cloud.projects.find((c) => c.id === row.target)?.tag ?? "",
+        })),
       );
+      const found: Record<string, string> = {};
+      const prog: Record<string, { confirmed: number; total: number }> = {};
+      for (const { p, row } of entries) {
+        if (row.level === "local") continue;
+        const body = row.level === "digests"
+          ? { sync_level: "digests" }
+          : row.target === CREATE
+            ? { sync_level: "sync", create_in_org: true }
+            : { sync_level: "sync" };
+        try {
+          const saved = await api.putProjectSync(p.project_id, body);
+          if (saved?.backfill && typeof saved.backfill.total === "number") {
+            prog[p.project_id] = { confirmed: saved.backfill.confirmed, total: saved.backfill.total };
+          }
+        } catch (e) {
+          const owner = takenOwner(e);
+          if (owner !== null) {
+            found[p.project_id] = owner;
+            continue;
+          }
+          throw e;
+        }
+      }
+      setProgress(prog);
+      if (Object.keys(found).length) {
+        setOwners(found);
+        return;
+      }
       // Choosing nothing at ③ is a finished link: reopening shows Linked, not ③.
-      setLinkFinished(Object.values(choice).every((c) => !c));
+      setLinkFinished(entries.every(({ row }) => row.level === "local"));
       setStep(4);
     } catch (e) {
       setErr(errorDetail(e, "Could not save the project choices."));
@@ -413,16 +533,15 @@ export function LinkToOrgWizard({
   );
   const done = pushes?.filter((p) => p.status === "done").length ?? 0;
   // ④'s rows are the projects chosen at ③ (initialised from the stored mapping).
-  const toPush = status.projects.filter((p) => !!choice[p.project_id]);
+  const toPush = status.projects.filter((p) => rowOf(p.project_id).level !== "local");
   const nothingToPush = toPush.length === 0;
   const refused = pushes?.filter((p) => p.status === "refused").length ?? 0;
   const consoleUrl = envUrl || url.trim() || status.cloud_url || CONSOLE_URL;
   const orgLabel = org || status.org || "the org";
-  const local = status.projects.length - synced.length;
+  const local = status.projects.length - syncedCount;
 
   // Rows at ③ are labelled with the local project's tag, not its long name (which is the
   // label's tooltip). A failed projects read falls back to the name.
-  const projectsQ = useProjects();
   const tagFor = (p: SyncProjectState) => projectsQ.data?.find((x) => x.id === p.project_id)?.tag || p.name;
 
   let line: Line;
@@ -437,9 +556,9 @@ export function LinkToOrgWizard({
   else if (step === 3 && cloud.state === "unknown") line = { text: "CONSOLE · UNREACHABLE", tone: "grey" };
   else if (step === 3)
     line = {
-      text: `PROJECTS · ${synced.length} SYNCED · ${local} LOCAL`,
+      text: `PROJECTS · ${syncedCount} SYNCED · ${local} LOCAL`,
       // Green only once something syncs; nothing chosen yet is muted, not done.
-      tone: synced.length > 0 ? "ok" : "muted",
+      tone: syncedCount > 0 ? "ok" : "muted",
     };
   else if (nothingToPush) line = { text: "PUSH · NOTHING TO PUSH", tone: "muted" };
   else if (pushing) line = { text: "PUSH · PUSHING", tone: "wait" };
@@ -470,12 +589,12 @@ export function LinkToOrgWizard({
     step < 3
       ? ["pending", "not yet"]
       : step > 3
-        ? ["done", `${synced.length} synced · ${local} local`]
+        ? ["done", `${syncedCount} synced · ${local} local`]
         : cloud.state === "unknown"
           ? ["unknown", "couldn't reach"]
           : cloud.state === "refused"
             ? ["fail", "refused"]
-            : ["pending", `${synced.length} synced · ${local} local`],
+            : ["pending", `${syncedCount} synced · ${local} local`],
     step < 4
       ? ["pending", "not yet"]
       : nothingToPush
@@ -733,48 +852,91 @@ export function LinkToOrgWizard({
               )}
             </>
           )}
-          {cloud.state === "ok" && cloud.projects.length === 0 && (
-            <p className="text-body text-muted">
-              ◌ You don't have access to any projects in {orgLabel} yet. Ask an org admin.
-            </p>
-          )}
-          {cloud.state === "ok" && cloud.projects.length > 0 && (
+          {cloud.state === "ok" && !applied && <p className="text-body text-faint">Reading projects…</p>}
+          {cloud.state === "ok" && applied && (
             <>
               <p className="text-body text-muted">
-                Pick where each local project syncs in {orgLabel}. Local only keeps it on this box.
+                {cloud.projects.length === 0
+                  ? `No cloud project is reachable in ${orgLabel}. Sync to org creates one for each local tag.`
+                  : `Sync to org, digests only, or local only. Create in org is the default when no cloud project matches the tag.`}
               </p>
-              <div role="list" aria-label="Local projects" className="space-y-2">
+              <Button size="sm" variant="ghost" onClick={selectAll} disabled={readOnly}>
+                Select all
+              </Button>
+              <div role="list" aria-label="Local projects" className="space-y-3">
                 {status.projects.map((p: SyncProjectState) => {
-                  const value = choice[p.project_id] ?? LOCAL;
+                  const row = rowOf(p.project_id);
                   const id = `link-proj-${p.project_id}`;
+                  const selectValue = row.level === "local" ? LOCAL : row.target === CREATE ? CREATE : row.target;
                   return (
-                    <div key={p.project_id} role="listitem" className="flex items-center gap-3">
-                      <label htmlFor={id} className="min-w-0 flex-1 truncate font-mono text-body" title={p.name}>
-                        {tagFor(p)}
-                      </label>
-                      <select
-                        id={id}
-                        aria-label={`Cloud project for ${p.name}`}
-                        value={value}
-                        disabled={readOnly}
-                        onChange={(e) => setChoice({ ...choice, [p.project_id]: e.target.value })}
-                        className="h-8 rounded-[8px] border border-control bg-surface-2 px-2 text-[12px]"
-                      >
-                        <option value={LOCAL}>Local only</option>
-                        {cloud.projects.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {tagOf(c)}
-                          </option>
-                        ))}
-                      </select>
-                      <span className="w-24 font-mono text-[10px] text-faint">
-                        {value ? `☁ ${nameOf(value, p)}` : "local only"}
-                      </span>
+                    <div key={p.project_id} role="listitem" className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <label htmlFor={id} className="min-w-0 flex-1 truncate font-mono text-body" title={p.name}>
+                          {tagFor(p)}
+                        </label>
+                        <fieldset className="flex flex-wrap gap-2" aria-label={`Sync level for ${p.name}`}>
+                          {([
+                            ["sync", "Sync to org"],
+                            ["digests", "Digests only"],
+                            ["local", "Local only"],
+                          ] as const).map(([level, label]) => (
+                            <label key={level} className="flex items-center gap-1 text-small">
+                              <input
+                                type="radio"
+                                name={`level-${p.project_id}`}
+                                checked={row.level === level}
+                                disabled={readOnly || (level === "digests" && cloud.projects.length === 0)}
+                                onChange={() => {
+                                  if (level === "local") writeRow(p.project_id, { level: "local", target: LOCAL });
+                                  else if (level === "digests") {
+                                    const target = row.target && row.target !== CREATE ? row.target : (cloud.projects[0]?.id ?? LOCAL);
+                                    writeRow(p.project_id, { level: "digests", target });
+                                  } else {
+                                    const tag = projectsQ.data?.find((x) => x.id === p.project_id)?.tag ?? "";
+                                    writeRow(p.project_id, defaultChoice(p, cloud.projects, tag));
+                                  }
+                                }}
+                              />
+                              {label}
+                            </label>
+                          ))}
+                        </fieldset>
+                        {cloud.projects.length > 0 && (
+                          <select
+                            id={id}
+                            aria-label={`Cloud project for ${p.name}`}
+                            value={selectValue}
+                            disabled={readOnly}
+                            onChange={(e) => onSelect(p.project_id, e.target.value)}
+                            className="h-8 rounded-[8px] border border-control bg-surface-2 px-2 text-[12px]"
+                          >
+                            <option value={LOCAL}>Local only</option>
+                            <option value={CREATE}>Create in org</option>
+                            {cloud.projects.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {tagOf(c)}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                        <span className="w-28 font-mono text-[10px] text-faint">
+                          {row.level === "local"
+                            ? "local only"
+                            : row.target === CREATE
+                              ? "create in org"
+                              : `☁ ${nameOf(row.target, p)}`}
+                        </span>
+                      </div>
+                      {owners[p.project_id] && (
+                        <p className="text-small text-st-blocked">
+                          {owners[p.project_id]} already uses this tag.
+                        </p>
+                      )}
                     </div>
                   );
                 })}
               </div>
-              {synced.length === 0 && (
+              {syncedCount === 0 && (
                 <p className="text-small text-faint">
                   Nothing will sync. The box stays linked to {orgLabel}.
                 </p>
@@ -797,7 +959,9 @@ export function LinkToOrgWizard({
           )}
           {toPush.map((p) => {
             const r = pushing ? undefined : pushes?.find((x) => x.project_id === p.project_id);
-            const tag = nameOf(choice[p.project_id] ?? p.cloud_project_id ?? "", p);
+            const chosen = rowOf(p.project_id);
+            const tag = nameOf(chosen.target || p.cloud_project_id || "", p);
+            const back = progress[p.project_id];
             return (
               <div key={p.project_id} data-push-row className="flex items-baseline gap-3 text-body">
                 <span className="w-32 truncate">{p.name}</span>
@@ -817,6 +981,11 @@ export function LinkToOrgWizard({
                 )}
                 {r?.status === "unknown" && (
                   <span className="text-faint">? UNKNOWN — {unreachableText(consoleUrl, r.reason)}</span>
+                )}
+                {back && (
+                  <span className="font-mono text-[10px] text-muted">
+                    backfill {back.confirmed} of {back.total}
+                  </span>
                 )}
               </div>
             );
@@ -861,6 +1030,11 @@ export function LinkToOrgWizard({
           <span id="link-next-why" className="mr-auto text-small text-faint">
             {nextWhy}
           </span>
+        )}
+        {step === 4 && !nothingToPush && (
+          <Button size="sm" variant="ghost" onClick={() => onDone?.()} disabled={saving}>
+            Finish in background
+          </Button>
         )}
         {step === 4 && done > 0 && (
           <Button size="sm" variant="ghost" onClick={() => void push()} disabled={readOnly || pushing}>

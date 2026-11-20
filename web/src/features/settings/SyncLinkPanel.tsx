@@ -18,8 +18,8 @@ import { LinkedPanel } from "@/features/organization/LinkedPanel";
 import { LinkToOrgWizard, useLinkFlow } from "@/features/organization/LinkToOrgWizard";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { useSyncOrg, useSyncStatus } from "@/lib/queries";
-import type { SyncProjectState, SyncProjectStatus } from "@/lib/types";
+import { useSyncBudget, useSyncLocal, useSyncOrg, useSyncStatus } from "@/lib/queries";
+import type { LocalSyncProject, SyncBudget, SyncProjectState, SyncProjectStatus } from "@/lib/types";
 import { useSearchParams } from "react-router-dom";
 
 // A self-hosted instance links to a cloud tenant, then pushes its locally-built code graph up
@@ -180,6 +180,178 @@ function ContributionCard({
   );
 }
 
+const PERMISSIONS: { value: string; label: string }[] = [
+  { value: "read_only", label: "read-only" },
+  { value: "comments", label: "comments only" },
+  { value: "proposals", label: "proposals" },
+];
+
+function pushWord(result: LocalSyncProject["last_push_result"]): string {
+  if (result === "ok") return "ok";
+  if (result === "refused") return "refused";
+  if (result === "unknown") return "unknown";
+  return "not pushed";
+}
+
+/**
+ * Per-project sync level, permission, queue and the box budget (GRPH-1739).
+ * Rendered only once the wizard is closed, so Finish in background lands here.
+ * A missing `local` is "the read did not happen", not an empty project list.
+ */
+function ProjectSyncCard({
+  statusProjects,
+  readOnly,
+}: {
+  statusProjects: SyncProjectState[];
+  readOnly: boolean;
+}) {
+  const qc = useQueryClient();
+  const localQ = useSyncLocal();
+  const budgetQ = useSyncBudget();
+  const names = new Map(statusProjects.map((p) => [p.project_id, p.name]));
+  const [bytes, setBytes] = React.useState("");
+  const [requests, setRequests] = React.useState("");
+  const [budgetErr, setBudgetErr] = React.useState("");
+
+  React.useEffect(() => {
+    if (!budgetQ.data) return;
+    setBytes(String(budgetQ.data.bytes_per_min));
+    setRequests(String(budgetQ.data.requests_per_min));
+  }, [budgetQ.data]);
+
+  async function saveLevel(id: string, sync_level: string) {
+    try {
+      await api.putProjectSync(id, { sync_level });
+      await qc.invalidateQueries({ queryKey: ["sync-local"] });
+    } catch {
+      /* the next read shows the level the server kept */
+    }
+  }
+  async function savePermission(id: string, cloud_permission: string) {
+    await api.putProjectSync(id, { cloud_permission });
+    await qc.invalidateQueries({ queryKey: ["sync-local"] });
+  }
+  async function retry(id: string) {
+    await api.retryParked(id);
+    await qc.invalidateQueries({ queryKey: ["sync-local"] });
+  }
+  async function saveBudget() {
+    setBudgetErr("");
+    const body: SyncBudget = { bytes_per_min: Number(bytes), requests_per_min: Number(requests) };
+    if (!Number.isFinite(body.bytes_per_min) || !Number.isFinite(body.requests_per_min)) {
+      setBudgetErr("Enter both limits.");
+      return;
+    }
+    try {
+      await api.putSyncBudget(body);
+      await qc.invalidateQueries({ queryKey: ["sync-budget"] });
+    } catch (e) {
+      setBudgetErr(e instanceof Error ? e.message : "Could not save the budget.");
+    }
+  }
+
+  const body = localQ.data;
+  const unread = localQ.isError || body == null || body.local == null;
+
+  return (
+    <div className="mt-4 border-t border-line pt-3" data-testid="project-sync">
+      <div className="mb-2 font-mono text-[10px] uppercase tracking-wide text-faint">Project sync</div>
+      {localQ.isLoading && <p className="text-small text-faint">Reading project sync…</p>}
+      {!localQ.isLoading && unread && (
+        <p className="text-small text-faint">Project sync was not read.</p>
+      )}
+      {!localQ.isLoading && body?.local && body.local.length === 0 && (
+        <p className="text-small text-faint">No local projects.</p>
+      )}
+      {body?.local?.map((row) => {
+        const name = names.get(row.project_id) ?? row.project_id;
+        return (
+          <div key={row.project_id} className="mb-3 space-y-1 rounded-[8px] border border-line px-3 py-2">
+            <div className="font-mono text-[12px] text-fg-2">{name}</div>
+            <fieldset className="flex flex-wrap gap-2" aria-label={`Sync level for ${name}`}>
+              {([
+                ["sync", "Sync to org"],
+                ["digests", "Digests only"],
+                ["local", "Local only"],
+              ] as const).map(([level, label]) => (
+                <label key={level} className="flex items-center gap-1 text-small">
+                  <input
+                    type="radio"
+                    name={`settings-level-${row.project_id}`}
+                    checked={row.sync_level === level}
+                    disabled={readOnly}
+                    onChange={() => void saveLevel(row.project_id, level)}
+                  />
+                  {label}
+                </label>
+              ))}
+            </fieldset>
+            <label className="flex items-center gap-2 text-small">
+              <span className="text-faint">Permission</span>
+              <select
+                aria-label={`Cloud permission for ${name}`}
+                value={row.cloud_permission ?? "comments"}
+                disabled={readOnly || row.sync_level === "local"}
+                onChange={(e) => void savePermission(row.project_id, e.target.value)}
+                className="h-8 rounded-[8px] border border-control bg-surface-2 px-2 text-[12px]"
+              >
+                {PERMISSIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </label>
+            <p className="font-mono text-[10px] text-muted">
+              {row.backfill.confirmed} of {row.backfill.total} · queued {row.queued}
+              {" · "}parked {row.parked.count}
+              {row.parked.reasons.length ? ` (${row.parked.reasons.join(", ")})` : ""}
+              {" · "}last push {pushWord(row.last_push_result)}
+              {row.held_by ? ` · held by ${row.held_by}` : ""}
+            </p>
+            <Button size="sm" variant="ghost" disabled={readOnly} onClick={() => void retry(row.project_id)}>
+              Retry now
+            </Button>
+          </div>
+        );
+      })}
+      <div className="mt-2 space-y-1">
+        <div className="font-mono text-[10px] uppercase tracking-wide text-faint">Box budget</div>
+        {budgetQ.isLoading && <p className="text-small text-faint">Reading budget…</p>}
+        {!budgetQ.isLoading && (budgetQ.isError || budgetQ.data == null) && (
+          <p className="text-small text-faint">Budget was not read.</p>
+        )}
+        {budgetQ.data && (
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="text-small">
+              <span className="mb-1 block text-faint">Bytes per minute</span>
+              <input
+                aria-label="Bytes per minute"
+                value={bytes}
+                disabled={readOnly}
+                onChange={(e) => setBytes(e.target.value)}
+                className="h-8 w-28 rounded-[8px] border border-control bg-surface-2 px-2 font-mono text-[12px]"
+              />
+            </label>
+            <label className="text-small">
+              <span className="mb-1 block text-faint">Requests per minute</span>
+              <input
+                aria-label="Requests per minute"
+                value={requests}
+                disabled={readOnly}
+                onChange={(e) => setRequests(e.target.value)}
+                className="h-8 w-20 rounded-[8px] border border-control bg-surface-2 px-2 font-mono text-[12px]"
+              />
+            </label>
+            <Button size="sm" variant="ghost" disabled={readOnly} onClick={() => void saveBudget()}>
+              Save budget
+            </Button>
+          </div>
+        )}
+        {budgetErr && <p className="text-small text-st-blocked">{budgetErr}</p>}
+      </div>
+    </div>
+  );
+}
+
 // ── 1. Cloud link ──────────────────────────────────────────────────────────────────────────
 
 function CloudLinkCard({
@@ -234,6 +406,7 @@ function CloudLinkCard({
             onUnlink={() => void flow.unlink()}
           />
           <ProjectsTable projects={status.projects} scopedId={scopedId} onScope={onScope} />
+          <ProjectSyncCard statusProjects={status.projects} readOnly={flow.readOnly} />
           {status.source === "env" && (
             <p className="mt-4 border-t border-line pt-3 text-small leading-relaxed text-faint">
               This link comes from the <code className="font-mono text-[10.5px]">SYNC_CLOUD_URL</code> env
