@@ -560,24 +560,28 @@ export function NewProjectWizard({
                     const on = line === choice.value;
                     const key = choice.value ? `${T || "TAG"}-L1` : "";
                     return (
-                      <button
+                      <div
                         key={choice.title}
-                        type="button"
-                        role="radio"
-                        aria-checked={on}
-                        tabIndex={on ? 0 : -1}
-                        onClick={() => setLine(choice.value)}
-                        onKeyDown={(e) => radioArrows(e, { values: LINE_VALUES, current: line, set: setLine })}
                         className={cn(
-                          "grid grid-cols-[16px_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-[3px] rounded-[10px] border px-3.5 py-3 text-left text-fg",
+                          "rounded-[10px] border",
                           on ? "border-accent/45 bg-accent/5" : "border-line bg-surface",
                         )}
                       >
-                        <RadioDot on={on} />
-                        <span className="text-[13.5px] font-semibold">{choice.title}</span>
-                        <span className={cn("font-mono text-[11px]", on && key ? "text-accent" : "text-faint")}>{key}</span>
-                        <span className="col-start-2 col-span-2 text-[12px] leading-snug text-muted">{choice.desc}</span>
-                      </button>
+                        <button
+                          type="button"
+                          role="radio"
+                          aria-checked={on}
+                          tabIndex={on ? 0 : -1}
+                          onClick={() => setLine(choice.value)}
+                          onKeyDown={(e) => radioArrows(e, { values: LINE_VALUES, current: line, set: setLine })}
+                          className="grid w-full grid-cols-[16px_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-[3px] px-3.5 py-3 text-left text-fg"
+                        >
+                          <RadioDot on={on} />
+                          <span className="text-[13.5px] font-semibold">{choice.title}</span>
+                          <span className={cn("font-mono text-small", on && key ? "text-accent" : "text-faint")}>{key}</span>
+                          <span className="col-start-2 col-span-2 text-[12px] leading-snug text-muted">{choice.desc}</span>
+                        </button>
+                      </div>
                     );
                   })}
                 </div>
@@ -590,10 +594,10 @@ export function NewProjectWizard({
                     <div className="flex items-baseline gap-2">
                       <span className="font-mono text-[10px] tracking-wide text-faint">HOW THE LINE WORKS</span>
                       <span className="flex-1" />
-                      <span className="font-mono text-[11px] text-accent">{`${T || "TAG"}-L1 · Maintenance`}</span>
+                      <span className="font-mono text-small text-accent">{`${T || "TAG"}-L1 · Maintenance`}</span>
                     </div>
                     {lineHow(T || "TAG").map((text, i) => (
-                      <p key={text} className="grid grid-cols-[18px_minmax(0,1fr)] gap-2 text-[12.5px] leading-relaxed text-fg-2">
+                      <p key={text} className="grid grid-cols-[18px_minmax(0,1fr)] gap-2 text-body leading-relaxed text-fg-2">
                         <span className="font-mono text-[10.5px] text-faint">{i + 1}</span>
                         <span>{text}</span>
                       </p>
