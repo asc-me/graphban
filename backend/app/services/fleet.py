@@ -32,34 +32,54 @@ from app.services.items import DEFAULT_LEASE_SECONDS
 ROLES = ("planner", "worker")
 DEFAULT_ROLE = "worker"
 
-#: One company, one spelling (GRPH-1120). The grok adapter's matrix row and the
-#: seat's `capabilities=` clause say `xai`. A child that copies the adapter name
-#: (`grok`), or the model id (`grok-4.7`), writes `grok`. The predicate used to
-#: compare those strings raw, so grok-4.7 reviewing grok-4.7 read as "different
-#: vendors". `xai` is the spelling measured cells and launch posts are already
-#: keyed by; folding the other way would split every existing `xai` row.
-#: The fleet package holds the same map on `Grok.vendor` /
-#: `adapters.canonical_vendor` and this service cannot import it (PRD-22 D-e).
-#: A third spelling is an entry in both, or the seat and the gate disagree again.
-_XAI = "xai"
+#: One company, one spelling (GRPH-1090; the grok half was GRPH-1120). The matrix
+#: row and the seat's `capabilities=` clause say the company (`xai`, `anthropic`,
+#: `google`, `alibaba`, `deepseek`, `cursor`, `openai`). A child that copies the
+#: adapter name (`grok`, `claude`, `agy`, `qwen-code`, `dsh`, `cursor-agent`,
+#: `codex`) writes the other. Grok's enumerated model ids (`grok-4.7`) are a third
+#: spelling of xAI and the only model-id fold: a string this map has not seen is
+#: not a company. Folding the other way would split every measured cell already
+#: keyed by the company spelling.
+#: The fleet package holds the same map on each adapter's `vendor` and
+#: `adapters.canonical_vendor`. This service cannot import it (PRD-22 D-e).
+#: A new pair is an entry in both, or the seat and the gate disagree again.
+_CANONICAL_VENDOR = {
+    "grok": "xai",
+    "xai": "xai",
+    "claude": "anthropic",
+    "anthropic": "anthropic",
+    "agy": "google",
+    "google": "google",
+    "qwen-code": "alibaba",
+    "alibaba": "alibaba",
+    "dsh": "deepseek",
+    "deepseek": "deepseek",
+    "cursor-agent": "cursor",
+    "cursor": "cursor",
+    "codex": "openai",
+    "openai": "openai",
+    "gbagent": "gbagent",
+}
 
 
 def canonical_vendor(vendor: str) -> str:
     """The company spelling of `vendor`, or `vendor` itself when it is not an alias.
 
-    `grok`, `xai`, and a model id used as a vendor (`grok-4.7`) are xAI. An empty
-    string and `undeclared` stay as they are: two unknowns are not one vendor, and
-    a missing field must not become a company. Any other spelling is returned
-    unchanged — this is not a guess about vendors the ledger has not seen twice.
+    Adapter names fold onto the company the matrix already records (`claude` is
+    `anthropic`, `grok` is `xai`, and the rest of `_CANONICAL_VENDOR`). A grok
+    model id used as a vendor (`grok-4.7`) is xAI too. An empty string and
+    `undeclared` stay as they are: two unknowns are not one vendor, and a missing
+    field must not become a company. Any other spelling is returned unchanged —
+    this is not a guess about vendors the ledger has not seen twice.
     """
     if not isinstance(vendor, str):
         return vendor
     key = vendor.strip().lower()
     if not key or key == "undeclared":
         return vendor
-    if key == "grok" or key == _XAI or key.startswith("grok-"):
-        return _XAI
-    return vendor
+    if key.startswith("grok-"):
+        return "xai"
+    return _CANONICAL_VENDOR.get(key, vendor)
 
 
 def _canonicalize_recorded_capabilities(capabilities: dict | None) -> dict:
@@ -582,10 +602,10 @@ def register_agent(db: Session, *, project_id: str, api_key, label: str = "",
         role = ALL_IN_ONE
     else:
         role = DEFAULT_ROLE if DEFAULT_ROLE in allowed else allowed[0]
-    # Before the row is written (GRPH-1120). A child that says `grok` and a child
-    # that says `xai` are the same adapter; storing both spellings is how the
-    # diversity receipt later calls them different vendors. Old rows are not
-    # rewritten — `review_diversity` folds them on read.
+    # Before the row is written (GRPH-1090). A child that says the adapter name
+    # and a child that says the company are the same vendor; storing both
+    # spellings is how the diversity receipt later calls them different vendors.
+    # Old rows are not rewritten — `review_diversity` folds them on read.
     capabilities = _canonicalize_recorded_capabilities(capabilities)
     now = datetime.now(timezone.utc)
     agent = Agent(
@@ -3415,9 +3435,10 @@ def review_diversity(reviewer: dict, builder: dict, *, built_by: str | None) -> 
     does not gate on it: a default refusal of same-vendor review would leave a single-vendor
     shop unable to review anything, which is how a gate earns being routed around (GRPH-321).
 
-    Compared through `canonical_vendor` (GRPH-1120). The sentence still quotes the spellings
-    that were stored, so an old `grok` row beside a new `xai` row stays legible — and says
-    they are one vendor, which a raw string compare reported as two.
+    Compared through `canonical_vendor` (GRPH-1090). The sentence still quotes the spellings
+    that were stored, so an old `grok` row beside a new `xai` row — or `claude` beside
+    `anthropic` — stays legible and says they are one vendor, which a raw string compare
+    reported as two.
     """
     who = f"{reviewer['vendor']}:{reviewer['model']} (tier {reviewer['tier']})"
     if not built_by:

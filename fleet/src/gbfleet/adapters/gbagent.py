@@ -49,6 +49,7 @@ class MissingTuning(AdapterError):
 
 class GbAgent(Adapter):
     name = "gbagent"
+    vendor = "gbagent"
     binary = "gbagent"
     support = Support(
         exact=parse_version(gbfleet.__version__),

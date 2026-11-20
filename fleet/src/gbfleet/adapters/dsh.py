@@ -76,6 +76,7 @@ PERMISSION_MODE = "danger-full-access"
 
 class Dsh(Adapter):
     name = "dsh"
+    vendor = "deepseek"
     binary = "dsh"
     support = Support(minimum=(0, 2), maximum=(0, 3), verified_against="0.2.0-rc.2")
     notes = (

@@ -182,6 +182,11 @@ class Adapter:
     #: Human-readable, and printed in the support matrix. Says what is odd about this
     #: vendor, because every one of them is odd in a different way.
     notes: ClassVar[str] = ""
+    #: The company a capability row should record, when `name` is the binary rather
+    #: than the company (GRPH-1090). Empty means `name` is already that spelling.
+    #: `canonical_vendor` reads this. The backend holds the same map and cannot
+    #: import this package (PRD-22 D-e).
+    vendor: ClassVar[str] = ""
     #: Which `Tuning` fields this vendor actually has. Anything else is refused, never
     #: ignored — see `TuningUnsupported`.
     tuning: ClassVar[frozenset[str]] = frozenset()
@@ -510,27 +515,51 @@ ADAPTERS: dict[str, Adapter] = {
 }
 
 
+def _company_by_alias() -> dict[str, str]:
+    """Adapter name and company spelling → the company spelling each adapter declares.
+
+    Codex is absent from `ADAPTERS` on purpose (see `adapters/codex.py`) and the
+    matrix still records its company, so a declared `codex` has to fold too.
+    """
+    from .codex import Codex
+
+    aliases: dict[str, str] = {}
+    for adapter in (*ADAPTERS.values(), Codex):
+        company = getattr(adapter, "vendor", None)
+        if not isinstance(company, str) or not company.strip():
+            continue
+        company = company.strip()
+        aliases[str(adapter.name).strip().lower()] = company
+        aliases[company.lower()] = company
+    return aliases
+
+
+_COMPANY_BY_ALIAS = _company_by_alias()
+
+
 def canonical_vendor(name: str) -> str:
-    """One spelling for the grok harness (GRPH-1120).
+    """One spelling per company (GRPH-1090; the grok half was GRPH-1120).
 
-    Two strings are written onto a capability row from this adapter. The matrix
-    row, and therefore the seat's `capabilities=` clause, says `xai`
-    (`Grok.vendor`). A child that copies `Grok.name`, or a model id
-    `known_models` returns (`grok-4.5`, `grok-4.7`), writes `grok`. They are
-    one company. `xai` is kept because that is what the matrix and the launch
-    post already record. Anything else is returned as given — a vendor this
-    function has not seen twice is not a guess.
+    The matrix row says the company (`Adapter.vendor`). A child that copies
+    `Adapter.name`, or a grok model id `known_models` returns (`grok-4.5`,
+    `grok-4.7`), writes the other spelling. They are one company. The company
+    spelling is kept because that is what the matrix and measured cells are
+    already keyed by. Anything else is returned as given — a vendor this
+    function has not seen as an adapter name or its company is not a guess.
+    A model id is not an alias except the grok prefix, which was measured.
 
-    The backend holds the same two inputs in `app.services.fleet.canonical_vendor`
+    The backend holds the same map in `app.services.fleet.canonical_vendor`
     and cannot import this package (PRD-22 D-e).
     """
     if not isinstance(name, str):
         return name
     key = name.strip().lower()
-    company = getattr(ADAPTERS.get("grok"), "vendor", None) or "xai"
-    if key in {"grok", "xai", str(company).strip().lower()} or key.startswith("grok-"):
-        return company
-    return name
+    if not key:
+        return name
+    if key.startswith("grok-"):
+        return _COMPANY_BY_ALIAS.get("grok", "xai")
+    company = _COMPANY_BY_ALIAS.get(key)
+    return company if company is not None else name
 
 
 def checked_tuning(adapter: "str | Adapter | None", tuning: "Tuning") -> "Tuning":
@@ -555,6 +584,6 @@ def checked_tuning(adapter: "str | Adapter | None", tuning: "Tuning") -> "Tuning
 
 __all__ = [
     "ADAPTERS", "Adapter", "AdapterError", "AdapterUnavailable", "Resolved", "Support",
-    "UnknownAdapter", "VersionUnsupported", "checked_tuning", "default_exit_meaning",
-    "explain_exit", "parse_version", "reports_tokens", "resolve",
+    "UnknownAdapter", "VersionUnsupported", "canonical_vendor", "checked_tuning",
+    "default_exit_meaning", "explain_exit", "parse_version", "reports_tokens", "resolve",
 ]

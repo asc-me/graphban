@@ -23,5 +23,6 @@ class Codex:
     """Placeholder. Never registered — see the module docstring."""
 
     name = "codex"
+    vendor = "openai"
     binary = "codex"
     implemented = False
