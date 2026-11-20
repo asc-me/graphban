@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -60,9 +60,33 @@ function renderWizard(onOpenChange = vi.fn()) {
 
 const next = () => screen.getByRole("button", { name: /next/i });
 
+// TagField debounces the name suggestion and the availability check by 250ms each.
+// Next enables only after that check has answered. A waitFor on the button spends
+// Testing Library's 1s budget on those timers and fails when this file runs beside
+// another (GRPH-1771). Advance the clock instead of waiting out wall time.
+const TAG_DEBOUNCE_MS = 250;
+
+async function answerTagCheck(name: string, tag: string) {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+  try {
+    fireEvent.change(screen.getByLabelText("Project name"), { target: { value: name } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(TAG_DEBOUNCE_MS);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(TAG_DEBOUNCE_MS);
+    });
+    expect(api.tagCheck).toHaveBeenCalledWith(tag);
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 async function toRepo(user: ReturnType<typeof userEvent.setup>) {
-  await user.type(screen.getByLabelText("Project name"), "Core Platform");
-  await waitFor(() => expect(next()).toBeEnabled());
+  await answerTagCheck("Core Platform", "CORE");
+  // The available answer for the typed name is what enables Next.
+  expect(screen.getByText("CORE-12")).toBeInTheDocument();
+  expect(next()).toBeEnabled();
   await user.click(next());
 }
 
@@ -79,21 +103,21 @@ beforeEach(() => {
 
 describe("New project wizard", () => {
   it("shows the five-step rail and blocks Next until the identity is valid", async () => {
-    const user = userEvent.setup();
     renderWizard();
     expect(screen.getByRole("list", { name: "Steps" })).toBeInTheDocument();
     for (const l of ["Name & tag", "Repository", "Maintenance", "Model", "Review"]) expect(screen.getAllByText(l).length).toBeGreaterThan(0);
     expect(next()).toBeDisabled();
-    await user.type(screen.getByLabelText("Project name"), "Core Platform");
-    await waitFor(() => expect(next()).toBeEnabled());
+    await answerTagCheck("Core Platform", "CORE");
+    expect(screen.getByText("CORE-12")).toBeInTheDocument();
+    expect(next()).toBeEnabled();
   });
 
   it("blocks Next when the tag is taken", async () => {
-    const user = userEvent.setup();
     api.tagCheck.mockResolvedValue({ tag: "CORE", available: false, reason: "taken" });
     renderWizard();
-    await user.type(screen.getByLabelText("Project name"), "Core Platform");
-    await waitFor(() => expect(screen.getByText("taken")).toBeInTheDocument());
+    await answerTagCheck("Core Platform", "CORE");
+    expect(screen.getByText("taken")).toBeInTheDocument();
+    expect(screen.queryByText("CORE-12")).not.toBeInTheDocument();
     expect(next()).toBeDisabled();
   });
 
@@ -119,11 +143,10 @@ describe("New project wizard", () => {
   });
 
   it("shows a message when the availability check fails", async () => {
-    const user = userEvent.setup();
     api.tagCheck.mockRejectedValue(new Error("network"));
     renderWizard();
-    await user.type(screen.getByLabelText("Project name"), "Core Platform");
-    await waitFor(() => expect(screen.getByText(/Couldn’t check whether this tag is available/)).toBeInTheDocument());
+    await answerTagCheck("Core Platform", "CORE");
+    expect(screen.getByText(/Couldn’t check whether this tag is available/)).toBeInTheDocument();
     expect(next()).toBeDisabled();
   });
 
@@ -716,12 +739,20 @@ describe("New project wizard", () => {
     });
 
     it("shows Checking… while the tag availability call is in flight", async () => {
-      const user = userEvent.setup();
       api.tagCheck.mockReturnValue(new Promise(() => {}));
       renderWizard();
-      await user.type(screen.getByLabelText("Project name"), "Core Platform");
-      expect(await screen.findByText("Checking…")).toBeInTheDocument();
-      expect(screen.getByLabelText("Tag")).toHaveClass("w-[120px]");
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+      try {
+        fireEvent.change(screen.getByLabelText("Project name"), { target: { value: "Core Platform" } });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(TAG_DEBOUNCE_MS);
+        });
+        expect(screen.getByText("Checking…")).toBeInTheDocument();
+        expect(screen.getByLabelText("Tag")).toHaveClass("w-[120px]");
+        expect(next()).toBeDisabled();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });
