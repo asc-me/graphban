@@ -272,13 +272,28 @@ def test_the_agent_records_which_seat_it_consumed(client, key, proj, db):
 
 # ---- E3: independence derives from the session ----------------------------------------------
 
+def _link_pr(item_id: str) -> None:
+    """GRPH-1730 withholds a branch with no PR. The column releases that gate."""
+    from app.db import SessionLocal
+    from app.models import Item
+
+    s = SessionLocal()
+    try:
+        s.get(Item, item_id).github_url = "https://github.com/o/r/pull/1"
+        s.commit()
+    finally:
+        s.close()
+
+
 def _built_by(client, key, agent_id, title="work"):
     """An item in `review`, built by this agent — the state a reviewer acts on."""
     _ok(client, key, "create_item", {"title": title, "status": "next"})
     got = _ok(client, key, "claim_next", {"agent_id": agent_id})
+    item_id = got["item"]["id"]
     _ok(client, key, "update_item",
-        {"id": got["item"]["id"], "status": "review", "agent_id": agent_id})
-    return got["item"]["id"]
+        {"id": item_id, "status": "review", "agent_id": agent_id})
+    _link_pr(item_id)
+    return item_id
 
 
 def test_two_seats_on_one_credential_can_review_each_other(client, key, proj, db):

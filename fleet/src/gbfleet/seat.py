@@ -137,6 +137,11 @@ class Seat:
     #: ledger event to it. Empty is the default and the S1 behaviour: nothing is declared.
     #: Last field, so a seat built positionally anywhere keeps its meaning.
     entitlements: tuple = ()
+    #: Item ids `claim_review` must pass over (GRPH-1730). Review rows whose PR is not
+    #: linked yet. A hint: the server withholds the same rows (`pr_unlinked`), so a child
+    #: that ignores the sentence still cannot take one. Empty on every other seat.
+    #: Last field, so a seat built positionally anywhere keeps its meaning.
+    review_skip: tuple = ()
 
     def mcp_config(self, name: str = "graphban") -> dict:
         """The vendor-neutral core of every adapter's config file.
@@ -438,6 +443,16 @@ def instruction_for(seat: Seat, worktree: Path, branch: str, *,
     clause = subagent_clause(subagents)
     if clause:
         text += "\n\n" + clause
+    if seat.review_skip:
+        # The sentence names the ids. The control is claim_review's pr_unlinked withhold:
+        # a child that does not pass skip is still not handed the row.
+        text += (
+            "\n\nCall claim_review with skip="
+            + json.dumps(list(seat.review_skip))
+            + ". Those rows have no linked PR yet. The server withholds them "
+            "(pr_unlinked) until a PR url is recorded on the item, and it keeps "
+            "retrying the open while you review anything else.\n"
+        )
     return text
 
 

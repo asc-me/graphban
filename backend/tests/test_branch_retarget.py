@@ -80,6 +80,10 @@ def test_a_planner_routes_unheld_work_to_review_on_its_real_branch(client, auth,
     out = _ok(client, pkey, "update_item",
               {"id": item_id, "status": "review", "branch": "gb/finished-pr",
                "agent_id": planner["agent_id"]})
+    # GRPH-1730 withholds a branch with no PR. The column releases that gate.
+    db.expire_all()
+    items_svc.get_item(db, item_id).github_url = "https://github.com/o/r/pull/1"
+    db.commit()
 
     assert out["status"] == "review"
     assert out["branch"] == "gb/finished-pr"

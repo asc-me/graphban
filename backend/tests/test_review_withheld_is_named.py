@@ -37,6 +37,10 @@ def _rebuilt(client, key, proj, db, *, supervised: bool) -> tuple[str, str, str]
                 branch="gb/one", capabilities={"vendor": "cursor"})
     assert _stored(db, item).claimed_by == b1
     _ok(_mcp(client, key, "update_item", {"id": item, "status": "review", "agent_id": b1}))
+    # GRPH-1730 withholds a branch with no PR. The column releases that gate.
+    stored = _stored(db, item)
+    stored.github_url = "https://github.com/o/r/pull/1"
+    db.commit()
 
     r1 = _agent(client, key, "reviewer-1", enrolment_code=_seat(db, proj, planner, review_only=True),
                 capabilities={"vendor": "anthropic"})
@@ -53,6 +57,9 @@ def _rebuilt(client, key, proj, db, *, supervised: bool) -> tuple[str, str, str]
     assert _stored(db, item).claimed_by == b2
     _ok(_mcp(client, key, "update_item", {"id": item, "status": "review", "agent_id": b2,
                                            "evidence": [{"kind": "note", "detail": "rebuilt"}]}))
+    stored = _stored(db, item)
+    stored.github_url = "https://github.com/o/r/pull/1"
+    db.commit()
     if supervised:
         # The re-delegation's launch post; the rebuilder exited before its branch was published.
         db.add(AttemptTelemetry(id=f"at_{item}", item_id=_stored(db, item).id,
