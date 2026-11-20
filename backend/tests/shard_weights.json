@@ -326,6 +326,7 @@
 "tests/test_providers.py": 1.57,
 "tests/test_public_hardening.py": 0.27,
 "tests/test_public_share.py": 0.42,
+"tests/test_publication_tree.py": 2.1,
 "tests/test_push.py": 8.53,
 "tests/test_query_counts.py": 27.23,
 "tests/test_question_recipients.py": 0.24,
