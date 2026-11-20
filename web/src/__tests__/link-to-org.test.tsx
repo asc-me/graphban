@@ -501,6 +501,33 @@ describe("LinkToOrgWizard", () => {
     for (const [, body] of api.putProjectSync.mock.calls) expect(body.sync_level).not.toBe("sync");
   });
 
+  it("③ Next waits until the stored levels are applied, so a digests project is never saved as sync", async () => {
+    const user = userEvent.setup();
+    let releaseProjects: (v: unknown) => void = () => {};
+    api.projects.mockReturnValue(new Promise((r) => { releaseProjects = r; }));
+    api.syncCloudProjects.mockResolvedValue({
+      status: "ok", projects: [{ id: CORE_ID, tag: "CORE", name: "Core project" }], mapping: [],
+      local: [{ project_id: "core", sync_level: "digests" }],
+    });
+    wizard(
+      { ...signedIn, projects: [proj("core", "Core", { mapped: true, cloud_project_id: CORE_ID, cloud_project_tag: "CORE" })] },
+      { initialStep: 3 },
+    );
+    // The cloud read is ok, the local tags are not: the rows are still placeholders.
+    await waitFor(() => expect(api.syncCloudProjects).toHaveBeenCalled());
+    await screen.findByText("Reading projects…", { selector: "p" });
+    const next = screen.getByRole("button", { name: "Next →" });
+    expect(next).toBeDisabled();
+    await user.click(next);
+    expect(api.putProjectSync).not.toHaveBeenCalled();
+    releaseProjects([{ id: "core", tag: "CORE", name: "Core" }]);
+    await screen.findByLabelText("Cloud project for Core");
+    expect(screen.getByRole("button", { name: "Next →" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Next →" }));
+    await waitFor(() => expect(api.putProjectSync).toHaveBeenCalled());
+    for (const [, body] of api.putProjectSync.mock.calls) expect(body.sync_level).toBe("digests");
+  });
+
   it("③ keeps a mapped project the server reports as local, local", async () => {
     api.syncCloudProjects.mockResolvedValue({
       status: "ok", projects: [{ id: CORE_ID, tag: "CORE", name: "Core project" }], mapping: [],

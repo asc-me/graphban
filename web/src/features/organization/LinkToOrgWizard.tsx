@@ -654,8 +654,11 @@ export function LinkToOrgWizard({
       : "";
     onNext = () => setStep(3);
   } else if (step === 3) {
-    nextOff = readOnly || saving || cloud.state !== "ok";
-    nextWhy = cloud.state === "loading"
+    // Next waits for the rows to carry the stored levels: until `applied`, every mapped
+    // row is still the storedChoice placeholder (sync), and saving would rewrite a
+    // stored digests project as sync.
+    nextOff = readOnly || saving || cloud.state !== "ok" || !applied;
+    nextWhy = cloud.state === "loading" || (cloud.state === "ok" && !applied)
         ? "Reading projects…"
         : cloud.state !== "ok"
           ? "Projects couldn't be loaded."
