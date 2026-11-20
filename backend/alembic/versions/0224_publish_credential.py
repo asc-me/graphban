@@ -4,16 +4,16 @@
 git credential for the remote). The path is stored on the box only. Both default to empty,
 so an existing deployment has no credential and publishing stays off.
 
-Revision ID: 0223
-Revises: 0222
+Revision ID: 0224
+Revises: 0223
 """
 from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0223"
-down_revision: Union[str, None] = "0222"
+revision: str = "0224"
+down_revision: Union[str, None] = "0223"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

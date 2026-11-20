@@ -3187,6 +3187,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         wait_link = waits_svc.attach_to_claim(db, item, caller) if is_wait else None
         _idempotent_remember(db, args, "create_item", item.id)
         out = _item_dict(item)
+        if item.id in db.info.get("line_defaulted", ()):
+            # GRPH-1798. Reply-only, like touchpoint_warnings: the manifest has no room
+            # for another property on every item tool, and a later read does not say it.
+            out["line_defaulted"] = True
         if wait_link is not None:
             out["wait_link"] = wait_link
         # GRPH-1393: a touchpoint matching nothing in the code graph is named, with the

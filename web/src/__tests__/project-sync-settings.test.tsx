@@ -47,6 +47,7 @@ const local = {
   queued: 2,
   parked: { count: 1, reasons: ["contract"] },
   backlog_bytes: 80,
+  backlog_full: false as boolean | null,
   held_by: "contract" as const,
   last_push_at: null,
   last_push_result: "unknown" as const,
@@ -108,6 +109,43 @@ describe("Settings → Sync project sync", () => {
     const card = await screen.findByTestId("project-sync");
     await user.click(await within(card).findByRole("button", { name: "Retry now" }));
     await waitFor(() => expect(api.retryParked).toHaveBeenCalledWith("core"));
+  });
+
+  it("shows Backlog full next to the size when the outbox is at the cap", async () => {
+    api.syncStatus.mockResolvedValue(status(true));
+    api.syncCloudProjects.mockResolvedValue({
+      status: "ok", projects: [], mapping: [],
+      local: [{ ...local, backlog_bytes: 104857600, backlog_full: true }],
+    });
+    renderPanel();
+    const card = await screen.findByTestId("project-sync");
+    expect(await within(card).findByText(/104,857,600 B/)).toBeInTheDocument();
+    expect(card).toHaveTextContent("Backlog full");
+  });
+
+  it("does not say Backlog full when the outbox was measured under the cap", async () => {
+    api.syncStatus.mockResolvedValue(status(true));
+    api.syncCloudProjects.mockResolvedValue({
+      status: "ok", projects: [], mapping: [],
+      local: [{ ...local, backlog_full: false }],
+    });
+    renderPanel();
+    const card = await screen.findByTestId("project-sync");
+    expect(await within(card).findByText(/80 B/)).toBeInTheDocument();
+    expect(card).not.toHaveTextContent("Backlog full");
+  });
+
+  it("an unmeasured backlog is not shown as fine", async () => {
+    api.syncStatus.mockResolvedValue(status(true));
+    api.syncCloudProjects.mockResolvedValue({
+      status: "ok", projects: [], mapping: [],
+      local: [{ ...local, backlog_full: null }],
+    });
+    renderPanel();
+    const card = await screen.findByTestId("project-sync");
+    expect(await within(card).findByText(/backlog unknown/)).toBeInTheDocument();
+    expect(card).not.toHaveTextContent("Backlog full");
+    expect(card).not.toHaveTextContent("80 B");
   });
 
   it("a missing local list is not read as no projects", async () => {

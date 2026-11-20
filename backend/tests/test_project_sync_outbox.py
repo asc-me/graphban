@@ -15,6 +15,7 @@ from app.models import Event, SyncOutbox, SyncProject
 from app.services import events
 from app.services import items as items_svc
 from app.services import links as links_svc
+from app.services import project_sync_admin as project_admin
 from app.services import project_sync_outbox as outbox
 from app.services import waits
 
@@ -62,8 +63,9 @@ def test_alembic_head_is_the_proposal_migration():
     cfg.set_main_option("script_location", str(backend / "alembic"))
     cfg.set_main_option("path_separator", "os")
     script = ScriptDirectory.from_config(cfg)
-    assert script.get_heads() == ["0223"]
-    assert script.get_revision("0223").down_revision == "0222"  # GRPH-1762, publish credential
+    assert script.get_heads() == ["0224"]
+    assert script.get_revision("0224").down_revision == "0223"  # GRPH-1762, publish credential
+    assert script.get_revision("0223").down_revision == "0222"  # GRPH-1798, default fix line
     assert script.get_revision("0222").down_revision == "0221"  # GRPH-1787, org-scoped handles
     assert script.get_revision("0221").down_revision == "0220"  # GRPH-1746, project tile fill
     assert script.get_revision("0220").down_revision == "0219"  # GRPH-1777, rule observations
@@ -263,3 +265,89 @@ def test_the_module_does_no_network_io():
     source = pathlib.Path(outbox.__file__).read_text()
     for banned in ("httpx", "requests", "urllib", "socket"):
         assert banned not in source
+
+
+def _capture(db, project_id="core", entity_id="GRPH-1"):
+    row = outbox.capture(
+        db, project_id=project_id, entity_type="item", entity_id=entity_id,
+        change_class=outbox.CHANGE_STATUS, now=T0)
+    assert row is not None
+    db.commit()
+    return row
+
+
+def test_backlog_full_is_null_when_nobody_measured():
+    """A missing measurement is not under the cap. Hard-coding false fails this."""
+    assert outbox.backlog_full(None) is None
+    assert outbox.backlog_full(0) is False
+    assert outbox.backlog_full(outbox.CAP_BYTES - 1) is False
+    assert outbox.backlog_full(outbox.CAP_BYTES) is True
+
+
+def test_an_empty_measured_outbox_is_not_full_and_an_unscanned_id_is_unknown(db):
+    view = project_admin.project_view(db, "core")
+    assert view["backlog_bytes"] == 0
+    assert view["backlog_full"] is False
+    # An empty id does not scan. Reporting false here would say the table was checked.
+    skipped = project_admin.project_view(db, "")
+    assert skipped["backlog_full"] is None
+
+
+def test_status_reports_backlog_full_when_the_table_reaches_the_cap(db, monkeypatch):
+    """One project's own rows can sit under the cap while the table is over it.
+
+    Hard-coding ``backlog_full`` to false in the status read fails the over-cap
+    assertion. Comparing only this project's bytes fails it too.
+    """
+    _mapping(db, project_id="core")
+    _mapping(db, project_id="web")
+    _capture(db, "core", "GRPH-1")
+    _capture(db, "web", "GRPH-9")
+    core_bytes = outbox.project_queue(db, "core")["backlog_bytes"]
+    table = outbox.backlog_bytes(db)
+    assert table > core_bytes
+
+    # Core alone is under the cap. The other project's row puts the table over it.
+    monkeypatch.setattr(outbox, "CAP_BYTES", core_bytes + 1)
+    assert table >= outbox.CAP_BYTES
+    over = project_admin.project_view(db, "core")
+    assert over["backlog_bytes"] == core_bytes
+    assert over["backlog_bytes"] < outbox.CAP_BYTES
+    assert over["backlog_full"] is True
+
+    monkeypatch.setattr(outbox, "CAP_BYTES", table)
+    assert project_admin.project_view(db, "web")["backlog_full"] is True
+
+    monkeypatch.setattr(outbox, "CAP_BYTES", table + 1)
+    assert project_admin.project_view(db, "core")["backlog_full"] is False
+    assert project_admin.project_view(db, "web")["backlog_full"] is False
+
+
+def test_projects_response_carries_backlog_full(client, auth, db, monkeypatch):
+    """The route that already returns ``backlog_bytes`` also returns the flag.
+
+    A mapping this read did not measure stays null, not false.
+    """
+    monkeypatch.setattr(
+        "app.services.code_sync.console_projects",
+        lambda _db: {"status": "ok", "projects": []},
+    )
+    _mapping(db)
+    _capture(db, "core", "GRPH-1")
+    table = outbox.backlog_bytes(db)
+    monkeypatch.setattr(outbox, "CAP_BYTES", table)
+
+    body = client.get("/api/sync/projects", headers=auth).json()
+    row = next(r for r in body["local"] if r["project_id"] == "core")
+    assert row["backlog_full"] is True
+    mapped = next(r for r in body["mapping"] if r["local_project_id"] == "core")
+    assert mapped["backlog_full"] is True
+
+    monkeypatch.setattr(outbox, "CAP_BYTES", table + 1)
+    body = client.get("/api/sync/projects", headers=auth).json()
+    row = next(r for r in body["local"] if r["project_id"] == "core")
+    assert row["backlog_full"] is False
+
+    from app.routers.sync import _mapping_view
+    unread = _mapping_view(db, local=[])
+    assert unread and unread[0]["backlog_full"] is None
