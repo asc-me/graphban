@@ -254,6 +254,14 @@ class Report:
         # reads the same way, which is how a process that died on the exception
         # used to leave the summary.
         payload["spawn_failed"] = list(self.wave.spawn_failed) if self.wave else []
+        # GRPH-1024. Always present, zero included. `held_in_base` is how many items
+        # this wave refused to rebuild because their work is already in the base;
+        # `in_base` names each one and the signal it believed. Zero means it looked
+        # and held none. A missing key reads as that zero, which is how a queue of
+        # bounced remainders exited idle for weeks.
+        held = self.wave.in_base if self.wave else {}
+        payload["held_in_base"] = len(held)
+        payload["in_base"] = dict(held)
         if self.detail:
             payload["detail"] = self.detail
         return payload
@@ -1353,7 +1361,8 @@ def _loop(
             seed, code, want = _delegate_next(planner, agent_id, wave_name, delegated,
                                               request, prd, repo, base, line=line, held=held,
                                               merger=merger, bound_out=flags,
-                                              live=live, owners=owners, skip=cooled)
+                                              live=live, owners=owners, skip=cooled,
+                                              in_base=wave.in_base)
             for refused_item, why in flags.get("refused", ()):
                 _note_refused(wave, refused_item, why)
             if seed is None and cooled and not flags.get("pinned_until"):
