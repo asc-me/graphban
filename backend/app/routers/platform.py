@@ -687,6 +687,61 @@ def run_sync_storage(project_id: str = "core", db: Session = Depends(get_db),
     return _with_destination(db, user, sync_storage_svc.run(db, project_id))
 
 
+PUBLISHING_RULE = "sync.publishing_needs_box_admin"
+
+
+def _refuse_unless_box_admin(db: Session, user: User, action: str) -> None:
+    """Publishing is the box's to turn on (GRPH-1762). An org admin is not a box admin: the
+    org never turns publishing on for a machine."""
+    from app.services import code_sync
+
+    if not code_sync.is_box_admin(db, user):
+        raise errors.Refused(
+            403, f"only an admin of this box can {action}", rule_id=PUBLISHING_RULE,
+            hint="ask the box's operator, or an owner/admin of one of their projects",
+            target=("instance", "publishing"))
+
+
+class PublishingIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+
+
+class CredentialIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    #: A path to a file on this box, or empty for the box's own git credential. Null clears it.
+    path: str | None
+
+
+@router.put("/sync-storage/publishing")
+def put_publishing(body: PublishingIn, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """Turn git publishing on or off for this deployment (GRPH-1762). Box admin only. On is a
+    422 naming the empty field — the switch stays off — while the destination or the
+    credential is missing; once accepted it runs one push of the current earned set and
+    answers that push's outcome as `push`. Never answers the credential path or bytes."""
+    _refuse_unless_box_admin(db, user, "turn publishing on or off")
+    _require_self_hosted_box()
+    try:
+        return sync_storage_svc.set_publishing(db, enabled=body.enabled)
+    except sync_storage_svc.PublishRefused as e:
+        raise HTTPException(422, {"field": e.field, "message": str(e)}) from e
+
+
+@router.put("/sync-storage/credential")
+def put_publish_credential(body: CredentialIn, db: Session = Depends(get_db),
+                           user: User = Depends(get_current_user)):
+    """Set the publish credential (GRPH-1762): a file path on this box, empty for the box's
+    git credential, or null to clear. Box admin only. The answer says only whether a
+    credential is set."""
+    _refuse_unless_box_admin(db, user, "set the publish credential")
+    _require_self_hosted_box()
+    try:
+        return sync_storage_svc.save_credential(db, path=body.path)
+    except errors.Validation as e:
+        raise HTTPException(422, str(e)) from e
+
+
 class PlanGrantIn(BaseModel):
     grant_b64: str
     signature_b64: str
