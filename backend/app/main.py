@@ -281,11 +281,17 @@ async def lifespan(app: FastAPI):
     if is_leader and settings.tls_sync_seconds > 0:
         tls_task = asyncio.create_task(_tls_sync_loop())
 
+    # Cloud proposal pull (GRPH-1737): leader-only, `0` disables. The tick is
+    # not the poll interval; `run_due` decides 60s versus 10s per project.
+    proposal_task = None
+    if is_leader and settings.proposal_poll_seconds > 0:
+        proposal_task = asyncio.create_task(_proposal_poll_loop())
+
     try:
         yield
     finally:
         for task in (retry_task, export_task, judge_task, update_task, grant_task, sweep_task,
-                     tls_task):
+                     tls_task, proposal_task):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -370,6 +376,32 @@ async def _tls_sync_loop() -> None:
             raise
         except Exception:  # noqa: BLE001
             logger.warning("box certificate sync pass failed", exc_info=True)
+
+
+def _proposal_poll_pass() -> None:
+    from datetime import datetime, timezone
+
+    from app.services import project_sync_proposals as proposals
+
+    db = SessionLocal()
+    try:
+        proposals.run_due(db, datetime.now(timezone.utc))
+    finally:
+        db.close()
+
+
+async def _proposal_poll_loop() -> None:
+    """Pull due cloud proposals. Same properties as `_tls_sync_loop`: own session
+    per pass, broad `except` inside, cancel re-raised. Sleeps first so boot
+    does not wait on the console."""
+    while True:
+        await asyncio.sleep(settings.proposal_poll_seconds)
+        try:
+            await asyncio.to_thread(_proposal_poll_pass)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.warning("proposal poll pass failed", exc_info=True)
 
 
 async def _plan_grant_loop() -> None:
