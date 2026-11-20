@@ -103,7 +103,7 @@
       "level": "enforced",
       "on_direction": "tighten",
       "params": [],
-      "stage": "Review"
+      "stage": "Spec"
     },
     {
       "id": "memory_write_mode",

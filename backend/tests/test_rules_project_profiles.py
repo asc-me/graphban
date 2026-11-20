@@ -184,6 +184,30 @@ def test_the_audit_reason_is_written_once(client, org):
     assert reasons and all(x == "applying Standard v1: adopt" for x in reasons)
 
 
+def test_applying_a_profile_that_pins_human_clause_blocks_succeeds(client, org):
+    """Pack 0.6.0 pins accept.human_clause_blocks from a Spec template. Review alone
+    draws it unmeasured and rules_org._plan refuses every level that names it."""
+    from app.services import rule_pack as P
+    from tests.test_rule_pack import FIX, TRUST, build, _person
+
+    rule_id = "accept.human_clause_blocks"
+    db, user = _person()
+    try:
+        P.install(db, user, *build(FIX / "api1"), trusted_keys=TRUST)
+    finally:
+        db.close()
+    P.CURRENT.profiles["regulated"] = {
+        "id": "regulated", "title": "Regulated", "version": "0.3.0",
+        "rules": {rule_id: {"state": "on"}},
+    }
+    project_id = org["ps"][0]
+    r = client.post("/api/rules/profiles/regulated/apply", params={"project_id": project_id},
+                    json={"reason": "adopt the shipped pin"}, headers=org["owner"])
+    assert r.status_code == 200, r.text
+    assert "cannot enforce" not in r.text
+    assert r.json()["applied"] == [rule_id]
+
+
 def _session():
     from app.db import SessionLocal
     return SessionLocal()
