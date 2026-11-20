@@ -417,6 +417,7 @@
 "tests/test_sync_engine.py": 1.34,
 "tests/test_sync_link.py": 1.42,
 "tests/test_sync_link_device.py": 1.74,
+"tests/test_sync_manifest_version.py": 0.5,
 "tests/test_sync_projects_push.py": 2.39,
 "tests/test_sync_status_fields.py": 0.34,
 "tests/test_sync_storage.py": 0.84,
