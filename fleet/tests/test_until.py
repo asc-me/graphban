@@ -4271,3 +4271,173 @@ def test_a_fetch_that_does_not_return_is_logged_and_not_success(tmp_path, monkey
         for line in buf.getvalue().splitlines() if line.startswith("{")
     ]
     assert "git_timeout" in names, names
+
+
+# ---- GRPH-1311: --acknowledge-reach on until and the dry run ---------------------------------
+
+
+def test_until_help_lists_acknowledge_reach(capsys):
+    """`gbfleet until --help` lists the flag. Sabotage: delete the argument."""
+    from gbfleet.cli import main
+
+    with pytest.raises(SystemExit) as raised:
+        main(["until", "--help"])
+    assert raised.value.code == 0
+    text = capsys.readouterr().out
+    assert "--acknowledge-reach" in text
+    assert "ITEM[,ITEM]" in text
+
+
+def test_an_empty_acknowledge_reach_is_refused(monkeypatch, git_repo: Path, capsys):
+    """A flag that names nothing is the same as omitting it, so it is an error instead."""
+    from gbfleet import cli
+
+    def fail_run(*_a, **_k):
+        raise AssertionError("run_until must not be called")
+
+    monkeypatch.setenv("GBFLEET_API_KEY", KEY)
+    monkeypatch.setattr(cli, "run_until", fail_run)
+    code = cli.main([
+        "until", "--repo", str(git_repo), "--server", "http://gb.invalid",
+        "--adapter", "gbagent", "--acknowledge-reach", " , ",
+    ])
+    assert code == 2
+    assert "one or more item ids" in capsys.readouterr().err
+
+
+def test_main_passes_acknowledge_reach_only_when_the_flag_names_items(monkeypatch, git_repo: Path):
+    """THE CALL from the command. parse_args is not it: a flag that never reaches `run`
+    acknowledges nothing. Sabotage: drop `acknowledge_reach=acknowledge` from the
+    `run_until` call in `_until` — this reads None on the flagged invocation."""
+    from gbfleet import cli
+    from gbfleet.until import Report
+
+    seen: dict = {}
+
+    class FakeGB:
+        def __init__(self, base_url, api_key, allowed=None, **_kw):
+            self.allowed = allowed
+
+        def close(self):
+            pass
+
+    def fake_run(*_a, **kw):
+        seen["ack"] = kw.get("acknowledge_reach")
+        return Report(ok=True, reason="idle", exit=0)
+
+    monkeypatch.setenv("GBFLEET_API_KEY", KEY)
+    monkeypatch.setattr(cli, "Graphban", FakeGB)
+    monkeypatch.setattr(cli, "run_until", fake_run)
+    monkeypatch.setattr(cli, "make_adapter_factory", lambda *_a, **_k: object())
+
+    base = ["until", "--repo", str(git_repo), "--server", "http://gb.invalid",
+            "--adapter", "gbagent"]
+    assert cli.main(base) == 0
+    assert seen["ack"] is None
+    assert cli.main(base + ["--acknowledge-reach", "GRPH-X, GRPH-Y"]) == 0
+    assert seen["ack"] == {"GRPH-X", "GRPH-Y"}
+
+
+def test_the_dry_run_lists_the_named_ids_and_still_does_not_delegate():
+    """GRPH-1311. The dry run takes the same flag and prints the operator's list.
+    It does not call delegate. A name no cluster has is still printed: an empty
+    list would read as "nothing to acknowledge" when the operator mistyped the id.
+
+    Sabotage: stop passing `acknowledge_reach` into `plan`. The flagged plan then
+    has no such key, same as a run that never asked.
+    """
+    class Planner:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def call(self, tool, **_kw):
+            self.calls.append(tool)
+            if tool == "collision_clusters":
+                return {"clusters": [{"items": ["GRPH-X"]}, {"items": ["GRPH-Y"]}], "total": 2}
+            if tool == "search_items":
+                return {"results": []}
+            raise AssertionError(tool)
+
+    bare_planner = Planner()
+    bare = until.plan(bare_planner, None, 4)
+    assert "acknowledge_reach" not in bare
+    assert "delegate" not in bare_planner.calls
+
+    named_planner = Planner()
+    named = until.plan(named_planner, None, 4, acknowledge_reach={"GRPH-Z", "GRPH-X"})
+    assert named["acknowledge_reach"] == ["GRPH-X", "GRPH-Z"]
+    assert named["would_delegate"] == ["GRPH-X", "GRPH-Y"]
+    assert "delegate" not in named_planner.calls
+
+
+def test_dry_run_main_forwards_the_flag(monkeypatch, git_repo: Path, capsys):
+    """The dry-run command, not only `plan`. Sabotage: the real `run_until` path
+    forwards the flag and this one does not — the printed plan has no key."""
+    from gbfleet import cli
+    from gbfleet import until as until_mod
+
+    def fake_plan(*_a, **kw):
+        return {
+            "would_delegate": ["GRPH-X"],
+            "clusters_held": 0,
+            "clusters_free": 1,
+            "dependency_holds": [],
+            "capped_by_max_workers": False,
+            "acknowledge_reach": sorted(kw.get("acknowledge_reach") or []),
+        }
+
+    monkeypatch.setenv("GBFLEET_API_KEY", KEY)
+    monkeypatch.setattr(cli, "make_adapter_factory", lambda *_a, **_k: object())
+    monkeypatch.setattr(until_mod, "plan", fake_plan)
+    code = cli.main([
+        "until", "--repo", str(git_repo), "--server", "http://gb.invalid",
+        "--adapter", "gbagent", "--dry-run", "--acknowledge-reach", "GRPH-X",
+    ])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["acknowledge_reach"] == ["GRPH-X"]
+
+
+def _delegations_for(git_repo, tmp_path, scripts, state, *, acknowledge_reach):
+    """One run, two free clusters. The first child exits; the second is then delegated."""
+    workspace = tmp_path / "ws"
+    delegations: list[dict] = []
+    planner, supervisor = _clients(
+        workspace, clusters=2, cluster_items=[["GRPH-X"], ["GRPH-Y"]],
+        delegations=delegations, sticky_clusters=True, drop_delegated=True,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=2,
+        limits=Limits(max_workers=1, max_children=2),
+        acknowledge_reach=acknowledge_reach,
+    )
+    return result, delegations
+
+
+def test_acknowledge_reach_is_sent_for_the_named_item_and_not_the_other(
+        git_repo: Path, tmp_path: Path, scripts, state: Path):
+    """GRPH-1311. One run of `until --acknowledge-reach GRPH-X` delegates two items.
+    GRPH-X's delegate call carries acknowledge_reach=true. GRPH-Y's does not.
+
+    Sabotage: pass the argument on every delegate call, or on none. Either fails.
+    """
+    result, delegations = _delegations_for(
+        git_repo, tmp_path, scripts, state, acknowledge_reach={"GRPH-X"})
+    assert result.reason == "idle", result.detail
+    by_id = {d["id"]: d for d in delegations}
+    assert set(by_id) == {"GRPH-X", "GRPH-Y"}, [d["id"] for d in delegations]
+    assert by_id["GRPH-X"]["acknowledge_reach"] is True
+    assert "acknowledge_reach" not in by_id["GRPH-Y"]
+
+
+def test_a_run_without_the_flag_sends_no_acknowledge_reach(
+        git_repo: Path, tmp_path: Path, scripts, state: Path):
+    """Existing behaviour. Omitting the flag leaves the argument off every delegate
+    call in the run. Sabotage: default the argument to True — this fails."""
+    result, delegations = _delegations_for(
+        git_repo, tmp_path, scripts, state, acknowledge_reach=None)
+    assert result.reason == "idle", result.detail
+    assert delegations, "the run delegated nothing, so the absence is not evidence"
+    assert all("acknowledge_reach" not in d for d in delegations)
