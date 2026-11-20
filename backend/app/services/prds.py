@@ -4158,6 +4158,50 @@ def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[
     return [{"path": k, "evidence": v} for k, v in list(found.items())[:_TP_MAX]]
 
 
+def _is_web_touchpoint(path: str) -> bool:
+    """A touchpoint under `web/`. The UI item takes these; the behaviour item keeps the rest."""
+    norm = (path or "").replace("\\", "/").lstrip("/")
+    return norm == "web" or norm.startswith("web/")
+
+
+_UI_ALREADY_WEB = (
+    "touchpoints are already under web/; this item is the UI work, so no second item was filed"
+)
+
+
+def _context_suffix(prd: Prd, context: str) -> str:
+    """The framing snapshot decompose copies after the section. Empty when there is none."""
+    if not context:
+        return ""
+    return (
+        f"\n\n---\n\n"
+        f"## Context from {prd.key} — {prd.title}\n\n"
+        f"Carried with the task on purpose: an item that has to fetch its parent "
+        f"to be actionable is the gap this fills. Framing sections only — the "
+        f"other implementable sections are their own items.\n\n"
+        # A SNAPSHOT, and it now says so. Re-decompose skips a section that
+        # already has an item, so this copy is never refreshed — a PRD edited or
+        # rebaselined afterwards leaves every task holding the rules as they
+        # were. `intent_hold` warns that intent MOVED, which an agent can
+        # reasonably read as "scope changed" rather than "the spec in your
+        # description is wrong"; the stamp makes the second reading available.
+        f"*Copied from {prd.key} at {prd.version}. A snapshot: if this item shows "
+        f"an intent hold, or the PRD has moved since, these are the old rules and "
+        f"the PRD is the source.*\n\n{context}"
+    )
+
+
+def _ui_description(prd: Prd, body: str, design: dict, context: str) -> str:
+    from app.services import design_sets as design_svc
+
+    clauses = "\n".join(f"- {name} matches the design" for name in design["pages"])
+    described = (
+        f"{(body or '').strip()}\n\n## Acceptance\n{clauses}\n\n---\n\n"
+        f"{design_svc.design_block(design)}"
+    )
+    return described + _context_suffix(prd, context)
+
+
 def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool = False,
               touchpoints: dict[str, list[str]] | None = None) -> dict:
     """Propose one tracked task per un-covered section (gap). With create=True, creates them
@@ -4185,6 +4229,8 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
     ac_by_section, unassigned = assign_acceptance(prd.body or "", wanted)
     no_acceptance: list[str] = []
     no_touchpoints: list[str] = []
+    ui_items: list[dict] = []
+    ui_skipped: list[dict] = []
     overrides = touchpoints or {}
     for p in cov["sections"]:
         if not include_prose and not p["implementable"]:
@@ -4208,27 +4254,20 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             # The section first, because that is the work. The spec follows it as context
             # rather than preceding it, so an implementer reads their task before the
             # material that frames it.
-            described = (
-                f"{described}\n\n---\n\n"
-                f"## Context from {prd.key} — {prd.title}\n\n"
-                f"Carried with the task on purpose: an item that has to fetch its parent "
-                f"to be actionable is the gap this fills. Framing sections only — the "
-                f"other implementable sections are their own items.\n\n"
-                # A SNAPSHOT, and it now says so. Re-decompose skips a section that
-                # already has an item, so this copy is never refreshed — a PRD edited or
-                # rebaselined afterwards leaves every task holding the rules as they
-                # were. `intent_hold` warns that intent MOVED, which an agent can
-                # reasonably read as "scope changed" rather than "the spec in your
-                # description is wrong"; the stamp makes the second reading available.
-                f"*Copied from {prd.key} at {prd.version}. A snapshot: if this item shows "
-                f"an intent hold, or the PRD has moved since, these are the old rules and "
-                f"the PRD is the source.*\n\n{context}"
-            )
+            described = f"{described}{_context_suffix(prd, context)}"
         gate = None
         gated = design_svc.gating_set(db, prd.id, p["section"])
         if gated is not None:
             gate = design_svc.handoff(db, gated, p["section"])
             described = f"{described}\n\n---\n\n{gate['text']}"
+        # A gate already wrote ## Design, and it is the build authority. Named pages
+        # are the reference for a section that has no gate — inline, or an external
+        # artifact on the set that was not added to the gate list.
+        design = None
+        if gate is None:
+            design = design_svc.named_design(db, prd.id, p["section"], body)
+            if design is not None:
+                described = f"{described}\n\n---\n\n{design_svc.design_block(design)}"
         blocker = gate["blocker"] if gate else ""
         if no_clause:
             msg = (f"no acceptance clause in {prd.key} maps to this section; sign-off "
@@ -4239,6 +4278,16 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
         tps = given or [e["path"] for e in tp_evidence]
         if given:
             tp_evidence = [{"path": t, "evidence": "given by the caller"} for t in given]
+        web_tps = [t for t in tps if _is_web_touchpoint(t)]
+        other_tps = [t for t in tps if not _is_web_touchpoint(t)]
+        # Named pages plus behaviour work: a second item does the UI and depends on this
+        # one. Touchpoints that are already all under web/ ARE that UI item — filing a
+        # twin would depend on nothing. No touchpoints still splits: the section is the
+        # behaviour, and the UI item carries `web/` rather than vanishing.
+        split_ui = design is not None and not (bool(tps) and not other_tps)
+        if split_ui:
+            tps = other_tps
+            tp_evidence = [e for e in tp_evidence if not _is_web_touchpoint(e["path"])]
         no_tp = not tps
         if no_tp:
             no_touchpoints.append(p["section"])
@@ -4259,6 +4308,36 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             # Surfaced on the proposal so a dry run shows them before anything is created.
             "dangling_refs": dangling_refs(body),
         })
+        if split_ui and design is not None:
+            ui_items.append({
+                "section": p["section"],
+                "title": f"Implement: {p['section']} UI",
+                "description": _ui_description(prd, body, design, context),
+                "touchpoints": web_tps or ["web/"],
+                "depends_on": p["section"],
+                "fidelity": "high",
+                "acceptance": [f"{name} matches the design" for name in design["pages"]],
+            })
+        elif design is not None:
+            ui_skipped.append({"section": p["section"], "why": _UI_ALREADY_WEB})
+    filed = {pr["section"] for pr in proposals}
+    for title, text in bodies.items():
+        if title in filed or _section_key(title) in _ACCEPTANCE_SECTION_KEYS:
+            continue
+        if design_svc.named_design(db, prd.id, title, text) is None:
+            continue
+        ui_skipped.append({
+            "section": title,
+            "why": "this section is not filed as build work, so no UI item was hung off it",
+        })
+    ui_without_design: list[str] = []
+    intro = re.split(r"(?m)^##\s+", prd.body or "", maxsplit=1)[0]
+    if design_svc.mentions_ui(intro) and design_svc.parse_inline_design(intro) is None:
+        ui_without_design.append("(intro)")
+    for title, text in bodies.items():
+        if design_svc.mentions_ui(f"{title}\n{text}") and design_svc.named_design(
+                db, prd.id, title, text) is None:
+            ui_without_design.append(title)
     created = []
     if create:
         if prd.status != "approved":
@@ -4288,10 +4367,33 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             item.prd_section_hash = section_fingerprint(prd.body or "", pr["section"])
             db.commit()
             created.append(item.id)
+        behaviour_ids = dict(zip((pr["section"] for pr in proposals), created))
+        if ui_items:
+            from app.services import links as links_svc
+            for ui in ui_items:
+                parent_id = behaviour_ids.get(ui["section"])
+                item = items_svc.create_item(
+                    db, title=ui["title"], description=ui["description"],
+                    project_id=prd.project_id, status="backlog",
+                    tags=["prd", "prototype"], fidelity="high",
+                    touchpoints=ui["touchpoints"], kind="feature",
+                    prd_id=prd.id, prd_section=ui["section"],
+                    reporter={"name": "Spec", "handle": "prd", "avatar": "#c9b8ff"},
+                )
+                item.prd_section_hash = section_fingerprint(prd.body or "", ui["section"])
+                db.commit()
+                if parent_id:
+                    links_svc.create_link(
+                        db, a=item.id, b=parent_id, type_="dependency",
+                        reason=f"UI for {ui['section']} depends on the behaviour item",
+                        project_id=prd.project_id,
+                    )
+                created.append(item.id)
     # Rendered, as in `coverage` above. NOT the same as the `prd_id=prd.id` written onto each
     # created item further up: that column holds the frozen id deliberately (GRPH-319), because
     # a stored rendering would rot the moment the project is retagged. Displayed keys render;
     # stored ids freeze — and this dict is read, not stored.
     return {"prd_id": prd.key, "proposals": proposals, "created": created,
             "unassigned_clauses": unassigned, "no_acceptance": no_acceptance,
-            "no_touchpoints": no_touchpoints}
+            "no_touchpoints": no_touchpoints, "ui_items": ui_items,
+            "ui_skipped": ui_skipped, "ui_without_design": ui_without_design}

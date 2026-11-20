@@ -9,6 +9,7 @@ says which hash moved, and its prompt rows stay retrievable with `stale_reason`.
 """
 from __future__ import annotations
 
+import re
 import uuid
 
 from sqlalchemy import select
@@ -320,6 +321,7 @@ def to_dict(db: Session, ds: DesignSet) -> dict:
         "preamble_version": ds.preamble_version, "preamble_hash": ds.preamble_hash,
         "constraints_hash": ds.constraints_hash, "constraints_accepted": ds.constraints_accepted,
         "sections": ds.sections or [], "prd_hash": ds.prd_hash, "prd_baselined": ds.prd_baselined,
+        "external_artifact": ds.external_artifact or None,
         "screens": [screen_dict(s) | _screen_canvas(db, ds, s)
                     | {"findings": _screen_findings(db, ds, s)} for s in ds.screens],
         "acceptance_blockers": acceptance_blockers(ds),
@@ -1238,3 +1240,209 @@ def _unblock_removed(db: Session, ds: DesignSet, removed: set[str]) -> None:
             Item.prd_section.in_(sorted(removed)))):
         if (it.blocker or "").startswith(_BLOCK_PREFIX):
             it.status, it.blocker = "backlog", ""
+
+
+# ---- Named design pages (GRPH-1692) ----------------------------------------------------------
+# A design that lives outside a compiled screen: a link plus page names, written in the
+# section or registered on the set from an external artifact. `gating_set` does not read
+# this. An unaccepted gate blocks the build; a page name must not.
+
+_FENCE_LINE = re.compile(r"^(?:`{3,}|~{3,})")
+_DESIGN_PAGES_LINE = re.compile(
+    r"^design pages\s*\(\s*artifact\s+(https?://\S+?)\s*\)\s*:?\s*(.*)$", re.IGNORECASE)
+_DESIGN_LINE = re.compile(
+    r"^(?:design(?:\s+artifact)?|design\s+pages)\s*:\s*(https?://\S+?)\s*$", re.IGNORECASE)
+_PAGES_LINE = re.compile(r"^pages\s*:\s*(.*)$", re.IGNORECASE)
+_UI_MENTION = re.compile(r"\bUI\b|user interface", re.IGNORECASE)
+_URL = re.compile(r"^https?://\S+$")
+
+
+def mentions_ui(text: str) -> bool:
+    """The body talks about a UI. Broader than a design page: a mention with no page is the gap."""
+    return _UI_MENTION.search(text or "") is not None
+
+
+def _clean_url(raw: str) -> str:
+    return raw.strip().rstrip(").,")
+
+
+def _page_name(raw: str) -> str:
+    name = raw.strip().strip("*_`").strip()
+    name = re.sub(r"^\*\*(.+)\*\*$", r"\1", name).strip()
+    return name.strip(".,;")
+
+
+def _names_on_line(stripped: str) -> list[str]:
+    bolds = re.findall(r"\*\*(.+?)\*\*", stripped)
+    parts = bolds or re.split(r"[,;]", stripped)
+    names: list[str] = []
+    for part in parts:
+        name = _page_name(part)
+        if name and name.lower() not in {"pages", "design", "design pages"} and name not in names:
+            names.append(name)
+    return names
+
+
+def _pages_from_lines(lines: list[str]) -> list[str]:
+    """Page names from a page line and any bullets under it. The next prose line stops it."""
+    pages: list[str] = []
+    started = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if started:
+                break
+            continue
+        if stripped.startswith("#"):
+            break
+        if stripped.startswith(("- ", "* ")):
+            name = _page_name(stripped[2:])
+            if name and name not in pages:
+                pages.append(name)
+            started = True
+            continue
+        if started:
+            break
+        for name in _names_on_line(stripped):
+            if name not in pages:
+                pages.append(name)
+        started = True
+    return pages
+
+
+def _ungfenced(text: str) -> list[str]:
+    lines: list[str] = []
+    in_fence = False
+    for line in (text or "").splitlines():
+        if _FENCE_LINE.match(line.strip()):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            lines.append(line)
+    return lines
+
+
+def parse_inline_design(text: str) -> dict | None:
+    """A link plus page names written in a section, or None when either half is missing.
+
+    Two shapes, both outside fenced code:
+
+        Design: https://example.test/artifact
+        Pages: Fix Dialog, Tracker - File a Fix
+
+        Design pages (artifact https://example.test/artifact):
+        **Fix Dialog**, **Tracker - File a Fix**
+    """
+    lines = _ungfenced(text)
+    for i, line in enumerate(lines):
+        prose = _DESIGN_PAGES_LINE.match(line.strip())
+        if prose:
+            url = _clean_url(prose.group(1))
+            rest = prose.group(2).strip()
+            chunk = ([rest] if rest else []) + lines[i + 1:i + 8]
+            pages = _pages_from_lines(chunk)
+            if url and pages:
+                return {"url": url, "pages": pages}
+            continue
+        named = _DESIGN_LINE.match(line.strip())
+        if not named:
+            continue
+        url = _clean_url(named.group(1))
+        for j in range(i + 1, min(i + 6, len(lines))):
+            if lines[j].strip().startswith("#"):
+                break
+            pages_line = _PAGES_LINE.match(lines[j].strip())
+            if pages_line is None:
+                continue
+            rest = pages_line.group(1).strip()
+            chunk = ([rest] if rest else []) + lines[j + 1:j + 8]
+            pages = _pages_from_lines(chunk)
+            if url and pages:
+                return {"url": url, "pages": pages}
+            break
+    return None
+
+
+def design_block(ref: dict) -> str:
+    """The `## Design` block decompose copies onto an item: the link, then the page names."""
+    lines = ["## Design", "", ref["url"], ""]
+    lines += [f"- {name}" for name in ref["pages"]]
+    return "\n".join(lines)
+
+
+def _live_set(db: Session, prd_id: str) -> DesignSet | None:
+    return db.scalars(select(DesignSet).where(
+        DesignSet.prd_id == prd_id, DesignSet.status != "frozen")
+        .order_by(DesignSet.created_at.desc())).first()
+
+
+def _external_pages(db: Session, prd_id: str, section: str) -> dict | None:
+    ds = _live_set(db, prd_id)
+    art = ds.external_artifact if ds is not None else None
+    if not art:
+        return None
+    url = str(art.get("url") or "").strip()
+    pages = art.get("pages") or {}
+    names = pages.get(section)
+    if names is None:
+        wanted = section.strip()
+        names = next((val for key, val in pages.items() if str(key).strip() == wanted), None)
+    cleaned = [str(n).strip() for n in (names or []) if str(n).strip()]
+    if not url or not cleaned:
+        return None
+    return {"url": url, "pages": cleaned}
+
+
+def named_design(db: Session, prd_id: str, section: str, body: str) -> dict | None:
+    """The design pages for one section: the section's own lines, else the set's artifact.
+
+    Inline wins. A section that names its pages is not overwritten by a set registered
+    for a different reading of the same heading.
+    """
+    inline = parse_inline_design(body or "")
+    if inline is not None:
+        return inline
+    return _external_pages(db, prd_id, section)
+
+
+def register_external_artifact(
+    db: Session, project_id: str, prd_id: str, url: str,
+    pages: dict[str, list[str]], created_by: str = "",
+) -> dict:
+    """Record an external artifact's pages on this PRD's design set.
+
+    Opens the set when the PRD has none. Does not add the sections to the gate list:
+    `gating_set` would then block an unaccepted set, and the pages would never reach
+    the item. `pages` is `{section title: [page name, ...]}`.
+    """
+    url = (url or "").strip()
+    if _URL.match(url) is None:
+        raise errors.Validation(
+            "url must be an http(s) link",
+            hint="the external artifact's URL, plus the page names per section")
+    cleaned: dict[str, list[str]] = {}
+    for section, names in (pages or {}).items():
+        title = str(section).strip()
+        got: list[str] = []
+        for raw in names or []:
+            name = str(raw).strip()
+            if name and name not in got:
+                got.append(name)
+        if title and got:
+            cleaned[title] = got
+    if not cleaned:
+        raise errors.Validation(
+            "no design pages",
+            hint="pass pages as {section title: [page name, ...]} and a link")
+    prd = prd_svc.get_prd(db, prd_id)
+    if prd is None or prd.project_id != project_id:
+        raise errors.NotFound(f"prd not found in this project: {prd_id}")
+    if prd.status == "closed":
+        raise errors.Validation(f"{prd.id} is closed", hint="a closed PRD takes no design set")
+    ds = _live_set(db, prd.id)
+    if ds is None:
+        opened = open_design(db, project_id, prd.id, created_by=created_by)
+        ds = db.get(DesignSet, opened["id"])
+    ds.external_artifact = {"url": url, "pages": cleaned}
+    db.commit()
+    return to_dict(db, ds)
