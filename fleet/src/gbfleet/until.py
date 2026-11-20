@@ -1436,6 +1436,13 @@ def _loop(
         # not paid on a poll where `need` or a live review spawn decides nothing spawns.
         unheld_review = [r for r in rows if not review_held(r)]
         ci_waiting: list[dict] = []
+        pr_waiting: list[dict] = []
+        # GRPH-1730: a pushed review row with no linked PR is opened here, before a
+        # reviewer is spawned. `gh pr create` dying on a rate limit used to be the last
+        # try, and every later reviewer was refused `pr_missing` for the same head.
+        if unheld_review and need <= 0 and not review_busy:
+            unheld_review, pr_waiting = _pr_opened(
+                unheld_review, repo, base, ci_logged, planner=planner)
         if unheld_review and need <= 0 and not review_busy:
             unheld_review, ci_waiting, ci_blocked = _ci_attested(
                 unheld_review, repo, ci_logged, planner=planner, agent_id=agent_id)
@@ -1485,10 +1492,15 @@ def _loop(
             sleep(poll)
             continue
 
-        if ci_waiting:
+        if ci_waiting or pr_waiting:
             # GRPH-1392: CI is still running at these heads. That is a wait, not unsigned
             # work: keep polling until it settles, then the branch above spawns (green) or
             # blocks (red). CI finishes on its own, so this is bounded.
+            # GRPH-1730: a row with no PR is the same shape. The next poll opens it again.
+            for row in pr_waiting:
+                wait_line = f"{row.get('id')}: review waits on its PR being opened"
+                if wait_line not in waits:
+                    waits.append(wait_line)
             for row in ci_waiting:
                 wait_line = f"{row.get('id')}: review waits on CI"
                 if wait_line not in waits:
@@ -3000,6 +3012,134 @@ def ci_stuck_detail(row: dict) -> str:
     detail = _latest_refusal(row).split("): ", 1)[-1]
     return (f"{row.get('id')}: sign_off refused pr_ci_not_green ({detail[:300]}); another "
             "reviewer cannot clear it — needs a CI attestation or an owner close")
+
+
+def _done_refusals(row: dict) -> list[str]:
+    """Every `refused at done` note on the row, oldest first."""
+    found: list[str] = []
+    for ev in row.get("evidence") or []:
+        if not isinstance(ev, dict):
+            continue
+        detail = str(ev.get("detail") or "")
+        if detail.startswith("refused at `done` ("):
+            found.append(detail)
+    return found
+
+
+def _pr_missing_is_the_only_refusal(row: dict) -> bool:
+    """True when nothing but `pr_missing` has refused this row, including no refusal yet.
+
+    A different refusal is a verdict a reviewer can clear, so this gate leaves that row
+    spawnable. No refusal yet is the same gate: the first spawn is the one that used to
+    walk into `pr_missing` on a branch nobody had proposed.
+    """
+    return all(d.startswith("refused at `done` (pr_missing)") for d in _done_refusals(row))
+
+
+def _is_pr_url(url: str) -> bool:
+    low = (url or "").lower()
+    return "/pull/" in low or "/merge_requests/" in low
+
+
+def _linked_pr(row: dict) -> str:
+    """A PR url already on the row, or "".
+
+    `sign_off` refuses `pr_missing` until one is linked. Evidence is what a review
+    listing carries; `github_url` is read when a fuller record has it.
+    """
+    direct = str(row.get("github_url") or "")
+    if _is_pr_url(direct):
+        return direct
+    pr = row.get("pr")
+    if isinstance(pr, dict) and _is_pr_url(str(pr.get("url") or "")):
+        return str(pr["url"])
+    for ev in row.get("evidence") or []:
+        if isinstance(ev, dict) and _is_pr_url(str(ev.get("url") or "")):
+            return str(ev["url"])
+    return ""
+
+
+def _stamp_link(row: dict, branch: str, url: str) -> None:
+    """Remember the link on this poll's copy, so the same pass does not open it twice."""
+    evidence = list(row.get("evidence") or [])
+    evidence.append({
+        "kind": "url",
+        "url": url,
+        "detail": f"draft PR opened by gbfleet for {branch}",
+    })
+    row["evidence"] = evidence
+
+
+def _record_pr(planner, item: str, branch: str, url: str) -> bool:
+    """Link `url` on the item. False when it did not land — `sign_off` would still refuse."""
+    if planner is None or not item or not url:
+        return False
+    try:
+        planner.post_observation(item_id=item, kind="pr_opened", branch=branch, url=url)
+    except Exception:  # noqa: BLE001 — a lost link is a wait, not a spawn
+        return False
+    return True
+
+
+def _note_pr_wait(logged: set, item: str, reason: str) -> None:
+    key = ("review_waits_on_pr", item, (reason or "")[:200])
+    if key in logged:
+        return
+    logged.add(key)
+    observe.emit("review_waits_on_pr", item=item, detail=f"{item}: {reason}")
+
+
+def _pr_opened(rows: list[dict], repo: Path, base: str, logged: set, *,
+               planner=None) -> tuple[list[dict], list[dict]]:
+    """Split unheld review rows into (has a linked PR, waiting for one) (GRPH-1730).
+
+    A reviewer's `sign_off` is refused `pr_missing` for a branch with no linked PR, so a
+    spawn for one is wasted: nine reviewers passed the same head on GRPH-1727 after
+    `gh pr create` hit the GraphQL rate limit once and was never tried again. The PR is
+    opened HERE, each poll, before a reviewer is spawned. A rate limit falls back to the
+    REST pulls endpoint inside `propose` (GRPH-1752); this is the retry of that failure,
+    and of any other transient `gh` error, on the next poll.
+
+    A row whose open failed is held back. A `skipped` answer (no gh, no base) does not
+    hold a row: a repo that cannot propose must not wedge its review queue. A row that
+    already carries some other `done` refusal keeps its reviewer.
+    """
+    from . import propose
+    from .supervisor import _branch_head
+
+    ready: list[dict] = []
+    waiting: list[dict] = []
+    for row in rows:
+        branch = str(row.get("branch") or "")
+        item = str(row.get("id") or "")
+        if not branch or _linked_pr(row) or not _pr_missing_is_the_only_refusal(row):
+            ready.append(row)
+            continue
+        try:
+            subject = propose.title_subject(repo, branch, base)
+            title, body = propose.describe(branch, [item] if item else [], subject)
+            got = propose.propose(
+                repo, branch, base, title=title, body=body,
+                head=_branch_head(repo, branch),
+                items=[item] if item else ())
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            got = propose.Proposed(branch=branch, reason=f"gh could not run: {exc}")
+        if got.url:
+            # An existing PR and a PR this call just opened are the same fact: until the
+            # url is on the item, the next sign_off is still `pr_missing`.
+            if _record_pr(planner, item, branch, got.url):
+                _stamp_link(row, branch, got.url)
+                ready.append(row)
+                continue
+            _note_pr_wait(logged, item, got.reason or "PR opened but not recorded on the item")
+            waiting.append(row)
+            continue
+        if got.skipped:
+            ready.append(row)
+            continue
+        _note_pr_wait(logged, item, got.reason or "no PR")
+        waiting.append(row)
+    return ready, waiting
 
 
 def ci_verdict(repo: Path, branch: str) -> tuple[str, str, str]:
