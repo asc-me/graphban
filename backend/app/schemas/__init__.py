@@ -2006,6 +2006,11 @@ class CustomRuleOut(BaseModel):
     created_at: datetime
     on: bool
     source: str
+    #: GRPH-1779: `project` or `org`; `override` is a project row the org's rule also exists
+    #: behind; `locked` is the org's lock holding it.
+    scope: str = "project"
+    locked: bool = False
+    override: bool = False
     unmeasured_reason: str | None = None
 
 

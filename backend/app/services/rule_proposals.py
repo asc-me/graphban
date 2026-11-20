@@ -342,6 +342,7 @@ def _stage_adoption(db: Session, user, p: RuleProposal, reason: str, batch: bool
                              "this batch already creates", hint="adopt one of them, dismiss the other")
         if custom_rules._row(db, p.rule_id, pid) is not None:
             raise Validation(f"{p.rule_id} already exists in this project")
+        custom_rules.refuse_if_locked(db, p.rule_id, pid)
         claimed_slugs.add(p.rule_id)
         db.add(CustomRule(rule_id=p.rule_id, project_id=pid, primitive=p.primitive,
                           primitive_api=rule_pack.PRIMITIVE_API, stage=d["stage"],
@@ -350,7 +351,14 @@ def _stage_adoption(db: Session, user, p: RuleProposal, reason: str, batch: bool
                           author_id=user.id, reason=reason))
         state = "observing"
     elif custom_rules.is_custom(p.rule_id):
+        custom_rules.refuse_if_locked(db, p.rule_id, pid)
         row = custom_rules.get(db, p.rule_id, pid)
+        if row.org_id:  # GRPH-1779: the org owns it; the project's change is a kept override
+            row = CustomRule(rule_id=row.rule_id, project_id=pid, primitive=row.primitive,
+                             primitive_api=row.primitive_api, stage=row.stage,
+                             params={}, title=row.title, why=row.why, claims=row.claims,
+                             state=row.state, author_id=user.id, reason=reason)
+            db.add(row)
         row.params = copy.deepcopy(p.params or {})
         if p.kind == "turn_on":
             row.state = "observing"
@@ -540,3 +548,73 @@ def gap_counts(db: Session, project_id: str) -> list[dict]:
         PrimitiveGapCount.project_id == project_id)
         .order_by(PrimitiveGapCount.stage, PrimitiveGapCount.label)).all()
     return [{"stage": r.stage, "label": r.label, "count": int(r.count or 0)} for r in rows]
+
+
+# ---- org adoption (GRPH-1779 / P91 D7) ---------------------------------------------------
+# Proposals are still filed on a project only. An org admin adopts one at org scope through the
+# org path (`quotas.require_org_rules`), including one a project dismissed: both acts stay in
+# history, the project's dismissal in its own event and the org's adoption in the org's.
+
+def adopt_org(db: Session, actor: object, org_id: str, proposal_id: int,
+              reason: str) -> RuleProposal:
+    """Adopt a project's proposal at org scope. A `new_rule` becomes the org's one rule,
+    `observing`; a `turn_on` / `tighten` of a library rule is the org's toggle write. A project
+    that already holds the same custom rule keeps it as an override. One audit event names the
+    projects the change reached."""
+    from app.security import authz
+    from app.services import quotas
+    user = T._require_person(db, actor)
+    authz.require_org_admin(db, user.id, org_id)
+    quotas.require_org_rules(db, org_id)
+    why = T._reason(reason)
+    p = db.get(RuleProposal, proposal_id)
+    if p is None or T._org_of(db, p.project_id) != org_id:
+        raise NotFound(f"proposal {proposal_id!r} not found in this org")
+    if p.status not in ("open", "dismissed"):
+        raise Validation(f"proposal {proposal_id} is {p.status}, not open or dismissed")
+    prior = (f"dismissed by {p.decided_by}: {p.decided_reason}"
+             if p.status == "dismissed" else None)
+    effect: dict = {}
+    if p.kind == "new_rule":
+        d = p.draft or {}
+        bad = rule_pack.validate_draft(d)
+        if bad:
+            raise Validation(f"the draft is no longer valid: {bad}")
+        custom_rules.stage_org_row(
+            db, user, org_id, rule_id=p.rule_id, primitive=p.primitive, stage=d["stage"],
+            params=p.params or {}, title=d["title"], why=d["summary"], claims=d["claims"],
+            state="observing", reason=why)
+        state = "observing"
+    elif custom_rules.is_custom(p.rule_id):
+        row = custom_rules.get_org(db, org_id, p.rule_id)
+        row.params = copy.deepcopy(p.params or {})
+        if p.kind == "turn_on":
+            row.state = "observing"
+        state = row.state
+    else:
+        changes: dict = {"params": copy.deepcopy(p.params or {})}
+        if p.kind == "turn_on":
+            changes["on"] = True
+        out = T.set_org_toggle(db, org_id, p.rule_id, changes, actor=user, reason=why)
+        effect = {"projects_changed": out["projects_changed"], "overrides_kept": []}
+        state = "on" if out["on"] else "off"
+    p.status = "adopted"
+    p.decided_by = user.handle or user.name
+    p.decided_reason = why
+    p.decided_at = _now()
+    db.commit()
+    if custom_rules.is_custom(p.rule_id):
+        effect = custom_rules.org_effect(db, org_id, p.rule_id)
+    history = _history(p)
+    if prior:
+        history += f", {prior}, then adopted at org scope by {p.decided_by}"
+    else:
+        history += f", adopted at org scope by {p.decided_by}"
+    events_svc.record_user(
+        db, user, action="adopt_rule_proposal", target_type="rule", target_id=p.rule_id,
+        project_id=p.project_id,
+        meta={"scope": "org", "org_id": org_id, "proposal_id": p.id, "kind": p.kind,
+              "state": state, "reason": why, "history": history, "previously": prior,
+              "proposer": p.proposer, "proposer_kind": p.proposer_kind,
+              "citations": p.citations, "adopted_by": p.decided_by, **effect})
+    return p

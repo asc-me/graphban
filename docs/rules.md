@@ -256,6 +256,18 @@ primitive no longer loads (a major API break, or the primitive is gone) the rule
 UNMEASURED with the reason and resolves off — never half-enforced, the same as a pack template
 that fails to load. Custom rules are a project's own: another project cannot read or write them.
 
+## Org-scope custom rules — premium (GRPH-1779, P91 D7)
+
+An org admin authors or adopts a rule at org scope through the org path (`custom_rules.create_org`, `rule_proposals.adopt_org`, `rule_toggles.set_org_toggle`), gated by `quotas.require_org_rules` (team / enterprise, self-host too). Proposals are still filed on a project only; an org admin may adopt one a project dismissed, with their own reason, and both acts stay in history (the project's `dismiss_rule_proposal` event and the org's `adopt_rule_proposal` event with `scope: org`).
+
+- **One org-owned rule** `custom.<slug>`, unique within the org (a `custom_rules` row with `org_id`). It resolves into each project through project -> org; it is never copied onto a project, and reads say `source: org`.
+- **Project adopted first, then the org adopts:** the org rule is created and the project's row stays as a kept *override* (`override: true`, `source: custom`).
+- **Locking** the org rule (`set_org_toggle(..., {"locked": true})`; the lock is the org's `rule_toggles` row for the id) retires every project override, each with a `retire_rule_override` history event naming `rules.org_lock_holds`. A project write against a locked rule (authoring it, adopting a proposal for it) is refused naming `rules.org_lock_holds`.
+- **Observing applies at org scope:** an org adoption starts `observing`; each project's read carries its own would-have summary. An org admin promotes it (`custom_rules.promote_org`); a project cannot promote an org's rule.
+- **Audit:** an org change is one event naming `projects_changed` (and `overrides_kept` / `retired_overrides`). Nothing is re-evaluated in bulk.
+- No MCP tool does any of this (`rules.person_adopts`).
+
+
 ## Rule proposals — cited suggestions (GRPH-1775, P91 D2, D3)
 
 A proposal suggests a rule change; it never makes one. `propose_rule` (MCP, any agent on the
