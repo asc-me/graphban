@@ -254,6 +254,9 @@ def poll(db: Session) -> dict:
     if was_legacy:
         fill_legacy_projects(db, answer["legacy_project_id"])
     db.commit()
+    # The link itself turns publishing off. The destination is copied on the next pull.
+    from app.services import sync_storage
+    sync_storage.note_link(db)
     return {"status": "approved", "org": answer["org"], "email": answer["email"]}
 
 
@@ -279,6 +282,8 @@ def clear(db: Session) -> None:
         link.linked_email = link.console_url = ""
     db.execute(delete(SyncProject))
     db.commit()
+    from app.services import sync_storage
+    sync_storage.note_unlink(db)
 
 
 def mappings(db: Session) -> dict[str, SyncProject]:

@@ -228,3 +228,15 @@ A project can only *change* a rule once the box's pack carries it.
 | `memory.write_mode` (`mode`) | 0.6.0 | 1.10.0 | 2026.11.35 |
 
 `gitops.merge_method` is a gitops field, not a library rule, and needs no template.
+
+## Primitive stage and direction (P91 S1)
+
+Every primitive in the contract (`docs/rule-primitive-contract.json`, primitive API 1.11.0)
+declares a `stage` (one of the seven) and an `on_direction`: whether switching the rule on
+`tighten`s or `loosen`s what agents may do (`generated_files` loosens; the rest tighten). A param
+may declare a `comparator` (`greater_tightens`, `greater_loosens`, `superset_tightens`,
+`superset_loosens`); a param with none is not proposable as a change. `rule_pack.direction()`
+computes `tighten` | `loosen` | `not_proposable` from the contract alone. `rule_pack.validate_draft()`
+is the one validator for pack templates and custom rules: it refuses an unknown primitive, a
+primitive-API major mismatch, a missing required param, a claim stronger than the primitive, and a
+stage other than the contract's (the refusal names the contract's stage; it is never corrected).

@@ -4304,8 +4304,13 @@ def claim_subheading_clauses(
     return combined, section_level, per_heading, unassigned
 
 
-def _compose_task(prd: Prd, body: str, clauses: list[str], context: str, gate_text: str) -> str:
-    """Section (or piece) body, its acceptance list, the framing snapshot, the design handoff."""
+def _compose_task(prd: Prd, body: str, clauses: list[str], context: str, gate_text: str,
+                  design_text: str = "") -> str:
+    """Section (or piece) body, its acceptance list, the framing snapshot, the design handoff.
+
+    A gate's text is the build authority and already carries ## Design. Named pages
+    are copied only when nothing gates the section.
+    """
     described = body
     if clauses:
         described = f"{body}\n\n## Acceptance\n" + "\n".join(f"- {c}" for c in clauses)
@@ -4331,6 +4336,8 @@ def _compose_task(prd: Prd, body: str, clauses: list[str], context: str, gate_te
         )
     if gate_text:
         described = f"{described}\n\n---\n\n{gate_text}"
+    elif design_text:
+        described = f"{described}\n\n---\n\n{design_text}"
     return described
 
 
@@ -4688,6 +4695,28 @@ def apply_link_overrides(
 _INFERRED_LINK_CONFIDENCE = 0.7
 
 
+def _is_web_touchpoint(path: str) -> bool:
+    """A touchpoint under `web/`. The UI item takes these; the behaviour item keeps the rest."""
+    norm = (path or "").replace("\\", "/").lstrip("/")
+    return norm == "web" or norm.startswith("web/")
+
+
+_UI_ALREADY_WEB = (
+    "touchpoints are already under web/; this item is the UI work, so no second item was filed"
+)
+
+
+def _ui_description(prd: Prd, body: str, design: dict, context: str) -> str:
+    """The UI item: the section, one acceptance line per named page, and the same ## Design block."""
+    from app.services import design_sets as design_svc
+
+    return _compose_task(
+        prd, (body or "").strip(),
+        [f"{name} matches the design" for name in design["pages"]],
+        context, "", design_svc.design_block(design),
+    )
+
+
 def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool = False,
               touchpoints: dict[str, list[str]] | None = None,
               splits: dict[str, list[str]] | None = None,
@@ -4732,6 +4761,8 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
         prd.body or "", wanted, bodies)
     no_acceptance: list[str] = []
     no_touchpoints: list[str] = []
+    ui_items: list[dict] = []
+    ui_skipped: list[dict] = []
     overrides = touchpoints or {}
     # Sections that can carry an edge: the ones becoming items, plus every other
     # implementable section one of them might name. Document order is the order a cycle
@@ -4773,12 +4804,31 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
         if gated is not None:
             gate = design_svc.handoff(db, gated, p["section"])
             gate_text = gate["text"]
-        described = _compose_task(prd, body, clauses, context, gate_text)
+        # A gate already wrote ## Design, and it is the build authority. Named pages
+        # are the reference for a section that has no gate — inline, or an external
+        # artifact on the set that was not added to the gate list.
+        design = None
+        design_text = ""
+        if gate is None:
+            design = design_svc.named_design(db, prd.id, p["section"], body)
+            if design is not None:
+                design_text = design_svc.design_block(design)
+        described = _compose_task(prd, body, clauses, context, gate_text, design_text)
         tp_evidence = propose_touchpoints(db, prd, p["section"], body)
         given = [t for t in (overrides.get(p["section"]) or []) if isinstance(t, str) and t.strip()]
         tps = given or [e["path"] for e in tp_evidence]
         if given:
             tp_evidence = [{"path": t, "evidence": "given by the caller"} for t in given]
+        web_tps = [t for t in tps if _is_web_touchpoint(t)]
+        other_tps = [t for t in tps if not _is_web_touchpoint(t)]
+        # Named pages plus behaviour work: a second item does the UI and depends on this
+        # one. Touchpoints that are already all under web/ ARE that UI item — filing a
+        # twin would depend on nothing. No touchpoints still splits: the section is the
+        # behaviour, and the UI item carries `web/` rather than vanishing.
+        split_ui = design is not None and not (bool(tps) and not other_tps)
+        if split_ui:
+            tps = other_tps
+            tp_evidence = [e for e in tp_evidence if not _is_web_touchpoint(e["path"])]
         no_tp = not tps
         if no_tp:
             no_touchpoints.append(p["section"])
@@ -4800,13 +4850,16 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                 else:
                     sub_tps = [e["path"] for e in propose_touchpoints(
                         db, prd, f"{p['section']} {heading}", piece)]
+                if split_ui:
+                    sub_tps = [t for t in sub_tps if not _is_web_touchpoint(t)]
                 sub_no_clause = not sub_clauses and not parse_acceptance(piece)[0]
                 sub_items.append({
                     "heading": heading,
                     "title": f"Implement: {p['section']} — {heading}",
                     "clauses": sub_clauses,
                     "touchpoints": sub_tps,
-                    "description": _compose_task(prd, piece, sub_clauses, context, gate_text),
+                    "description": _compose_task(
+                        prd, piece, sub_clauses, context, gate_text, design_text),
                     "blocker": _piece_blocker(
                         prd.key, sub_no_clause, not sub_tps, gate["blocker"] if gate else ""),
                 })
@@ -4831,6 +4884,36 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             "size": size["size"],
             "sub_items": sub_items,
         })
+        if split_ui and design is not None:
+            ui_items.append({
+                "section": p["section"],
+                "title": f"Implement: {p['section']} UI",
+                "description": _ui_description(prd, body, design, context),
+                "touchpoints": web_tps or ["web/"],
+                "depends_on": p["section"],
+                "fidelity": "high",
+                "acceptance": [f"{name} matches the design" for name in design["pages"]],
+            })
+        elif design is not None:
+            ui_skipped.append({"section": p["section"], "why": _UI_ALREADY_WEB})
+    filed = {pr["section"] for pr in proposals}
+    for title, text in bodies.items():
+        if title in filed or _section_key(title) in _ACCEPTANCE_SECTION_KEYS:
+            continue
+        if design_svc.named_design(db, prd.id, title, text) is None:
+            continue
+        ui_skipped.append({
+            "section": title,
+            "why": "this section is not filed as build work, so no UI item was hung off it",
+        })
+    ui_without_design: list[str] = []
+    intro = re.split(r"(?m)^##\s+", prd.body or "", maxsplit=1)[0]
+    if design_svc.mentions_ui(intro) and design_svc.parse_inline_design(intro) is None:
+        ui_without_design.append("(intro)")
+    for title, text in bodies.items():
+        if design_svc.mentions_ui(f"{title}\n{text}") and design_svc.named_design(
+                db, prd.id, title, text) is None:
+            ui_without_design.append(title)
     created = []
     links: list[dict] = []
     # section -> the items this call filed for it. A split files several; a dependency of
@@ -4842,6 +4925,7 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                 f"create=true files tasks; that needs approved, which the grill earns — "
                 f"this PRD is {prd.status}. Dry-run (create=false) still proposes."
             )
+        behaviour_ids: dict[str, list[str]] = {}
         for pr in proposals:
             accepted = _accepted_headings(
                 splits, pr["section"], [s["heading"] for s in pr["sub_items"]])
@@ -4853,6 +4937,7 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                         (row.id, row.key) for iid in ids if (row := db.get(Item, iid))
                     ]
                     created.extend(ids)
+                    behaviour_ids[pr["section"]] = ids
                     continue
             item = items_svc.create_item(
                 db, title=pr["title"], description=pr["description"],
@@ -4876,6 +4961,7 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             db.commit()
             created.append(item.id)
             filed[pr["section"]] = [(item.id, item.key)]
+            behaviour_ids[pr["section"]] = [item.id]
         # Written after every item exists: a dependency points at an item this same call
         # created. `a` is the dependent. A split's pieces each carry the section's edges.
         for edge in edges:
@@ -4898,6 +4984,27 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                 )
                 links.append({"a": src[1], "b": dst[1], "section": edge["section"],
                               "depends_on": edge["depends_on"], "why": edge["why"]})
+        # A UI item depends on the behaviour item for the same section (GRPH-1692).
+        # That edge is not a section-to-section proposal, so it is not in `edges`.
+        for ui in ui_items:
+            parent_ids = behaviour_ids.get(ui["section"], [])
+            item = items_svc.create_item(
+                db, title=ui["title"], description=ui["description"],
+                project_id=prd.project_id, status="backlog",
+                tags=["prd", "prototype"], fidelity="high",
+                touchpoints=ui["touchpoints"], kind="feature",
+                prd_id=prd.id, prd_section=ui["section"],
+                reporter={"name": "Spec", "handle": "prd", "avatar": "#c9b8ff"},
+            )
+            item.prd_section_hash = section_fingerprint(prd.body or "", ui["section"])
+            db.commit()
+            for parent_id in parent_ids:
+                links_svc.create_link(
+                    db, a=item.id, b=parent_id, type_="dependency",
+                    reason=f"UI for {ui['section']} depends on the behaviour item",
+                    project_id=prd.project_id,
+                )
+            created.append(item.id)
     # Rendered, as in `coverage` above. NOT the same as the `prd_id=prd.id` written onto each
     # created item further up: that column holds the frozen id deliberately (GRPH-319), because
     # a stored rendering would rot the moment the project is retagged. Displayed keys render;
@@ -4910,4 +5017,6 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
     return {"prd_id": prd.key, "proposals": proposals, "created": created,
             "unassigned_clauses": unassigned, "no_acceptance": no_acceptance,
             "no_touchpoints": no_touchpoints,
-            "links": links, "link_cycles": link_cycles, "links_skipped": links_skipped}
+            "links": links, "link_cycles": link_cycles, "links_skipped": links_skipped,
+            "ui_items": ui_items, "ui_skipped": ui_skipped,
+            "ui_without_design": ui_without_design}

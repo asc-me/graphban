@@ -90,9 +90,15 @@ def get_contract(db: Session, *, transport: httpx.BaseTransport | None = None) -
     if result is not None:
         return result
     data = _object(resp)
-    if data is None or data.get("version") != CONTRACT:
+    version = data.get("version") if isinstance(data, dict) else None
+    if not isinstance(version, str) or not version:
         return SyncResult(status="unknown", reason="the console answered without contract version 1")
-    return SyncResult(status="ok", version=CONTRACT)
+    # A different version is a refusal that still names what the console speaks.
+    # Dropping it made a contract change indistinguishable from a network failure,
+    # and the flusher could not park against the version it was shown.
+    if version != CONTRACT:
+        return SyncResult(status="refused", reason="contract", version=version, field="version")
+    return SyncResult(status="ok", version=version)
 
 
 def register_project(db: Session, *, tag: str, name: str,
@@ -269,15 +275,16 @@ def _terminal(resp: httpx.Response) -> SyncResult | None:
         seconds = int(raw) if raw.isdigit() else None
         return SyncResult(status="unknown", reason="rate_limited", retry_after=seconds)
     if 400 <= code < 500 and code not in (408, 425):
-        reason, field_name, owner = _refusal(resp, code)
-        return SyncResult(status="refused", reason=reason, field=field_name, owner_label=owner)
+        reason, field_name, owner, version = _refusal(resp, code)
+        return SyncResult(status="refused", reason=reason, field=field_name,
+                          owner_label=owner, version=version)
     return SyncResult(status="unknown", reason=f"the console answered {code}")
 
 
-def _refusal(resp: httpx.Response, code: int) -> tuple[str, str | None, str | None]:
+def _refusal(resp: httpx.Response, code: int) -> tuple[str, str | None, str | None, str | None]:
     data = _object(resp)
     if not isinstance(data, dict):
-        return f"http_{code}", None, None
+        return f"http_{code}", None, None, None
     reason = None
     for key in ("detail", "reason", "error"):
         found = data.get(key)
@@ -286,7 +293,8 @@ def _refusal(resp: httpx.Response, code: int) -> tuple[str, str | None, str | No
             break
     field_name = data.get("field") if isinstance(data.get("field"), str) else None
     owner = data.get("owner_label") if isinstance(data.get("owner_label"), str) else None
-    return reason or f"http_{code}", field_name, owner
+    version = data.get("version") if isinstance(data.get("version"), str) and data.get("version") else None
+    return reason or f"http_{code}", field_name, owner, version
 
 
 def _object(resp: httpx.Response) -> dict | None:

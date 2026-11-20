@@ -83,6 +83,10 @@ services:
       # Local -> console code-graph push and link (GRPH-1554). Empty leaves the box unlinked.
       SYNC_CLOUD_URL: ${SYNC_CLOUD_URL:-}
       SYNC_API_KEY: ${SYNC_API_KEY:-}
+      # Project-sync flush budget (GRPH-1735). Defaults are D11; set these to change them.
+      SYNC_FLUSH_SECONDS: ${SYNC_FLUSH_SECONDS:-5}
+      SYNC_FLUSH_BYTES_PER_MIN: ${SYNC_FLUSH_BYTES_PER_MIN:-262144}
+      SYNC_FLUSH_REQUESTS_PER_MIN: ${SYNC_FLUSH_REQUESTS_PER_MIN:-30}
       # Optional token for the update check's GitHub API calls (GRPH-1663). Empty is
       # unauthenticated (60/hour shared per public IP).
       GITHUB_TOKEN: ${GITHUB_TOKEN:-${GRAPHBAN_GITHUB_TOKEN:-}}

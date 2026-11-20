@@ -291,6 +291,14 @@ class Settings(BaseSettings):
     # first pass, so it is off too.
     plan_grant_check_seconds: int = 300
 
+    # Project-sync flush (GRPH-1735, P89 D11). The budget is per box, not per project.
+    # Defaults are the D11 ceilings: 256 KB of compressed body per minute and 30 requests
+    # per minute. `0` on the interval disables the loop — what the test suite runs at,
+    # because the tests drive `flush_once` on a fake clock instead of waiting for a timer.
+    sync_flush_seconds: int = 5
+    sync_flush_bytes_per_min: int = 256 * 1024
+    sync_flush_requests_per_min: int = 30
+
     # Drive sync: base directory the filesystem backend syncs into. Mount this at a
     # Google Drive Desktop folder to reach Drive with no OAuth.
     sync_dir: str = "/data/sync"

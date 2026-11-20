@@ -24,8 +24,8 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
-from app.errors import Refused
-from app.models import ApiKey, Project, SyncLink, User
+from app.errors import Refused, Validation
+from app.models import ApiKey, Organization, Project, SyncLink, User
 from app.schemas import GitopsView, SyncLinkIn, SyncOrgOverviewOut, SyncStatusOut
 from app.security import authz
 from app.security.deps import get_agent_key, get_current_user
@@ -35,6 +35,7 @@ from app.services import events as events_svc
 from app.services import galaxy as galaxy_svc
 from app.services import gitops
 from app.services import link_device
+from app.services import sync_storage as sync_storage_svc
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 
@@ -73,6 +74,7 @@ def sync_status(db: Session = Depends(get_db), user: User = Depends(get_current_
 
 
 LINK_RULE = "sync.link_needs_box_admin"
+DESTINATION_RULE = "sync.destination_owned_by_org"
 
 
 def refuse_unless_box_admin(db: Session, user: User, action: str) -> None:
@@ -218,6 +220,48 @@ def cloud_rule_decisions_applied(body: RuleDecisionApplied, db: Session = Depend
         raise HTTPException(404, "no such organization for this credential")
     row = rules_org.record_box_applied(db, key, org_id, body.version)
     return {"applied_version": row.applied_version, "applied_at": row.applied_at}
+
+
+class BoxDestinationIn(BaseModel):
+    path: str = ""
+    branch: str = ""
+
+
+@router.get("/destination")
+def cloud_destination(db: Session = Depends(get_db), key: ApiKey = Depends(get_agent_key)):
+    """CLOUD: the URL and branch this org is publishing to (GRPH-1761). The box pulls it.
+    The org comes from the sync credential, never the request. 404 when that credential
+    has no org. An unconfigured org still answers, with empty strings — it does not 404,
+    because 404 here means "no org", and an empty pair is a real answer."""
+    org = db.get(Organization, _key_org(db, key))
+    if org is None:
+        raise HTTPException(404, "no organization for this credential")
+    view = sync_storage_svc.org_destination(db, org)
+    return {"url": view["url"], "branch": view["branch"]}
+
+
+@router.put("/destination")
+def put_box_destination(body: BoxDestinationIn, db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    """BOX: save a local path and branch. Box admin, and only while this box is not linked.
+    A linked box is 403 and the stored pair is unchanged: the org admin owns the destination."""
+    refuse_unless_box_admin(db, user, "set the publish destination of")
+    try:
+        return sync_storage_svc.save_local(db, path=body.path, branch=body.branch)
+    except sync_storage_svc.DestinationOwned as e:
+        raise Refused(403, str(e), rule_id=DESTINATION_RULE,
+                      hint="ask an owner or admin of the linked org to change it from the console",
+                      target=("instance", "sync_destination")) from e
+    except Validation as e:
+        raise HTTPException(422, str(e) + (f" — {e.hint}" if getattr(e, "hint", "") else ""))
+
+
+@router.post("/destination/pull")
+def pull_box_destination(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """BOX: pull the org's destination now. Box admin. A pull with no answer leaves the last
+    destination and the publishing flag as they were and records pull unknown."""
+    refuse_unless_box_admin(db, user, "pull the publish destination of")
+    return sync_storage_svc.pull_destination(db)
 
 
 @router.post("/pull-rules")
