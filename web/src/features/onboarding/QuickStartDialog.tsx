@@ -1089,8 +1089,19 @@ function ProjectStep({
                     onClick={() => setAccent(c)}
                     aria-label={`accent ${c}`}
                     aria-pressed={accent === c}
-                    className="h-6 w-6 rounded-[7px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
-                    style={{ background: c, outline: accent === c ? "2px solid var(--color-fg)" : "none", outlineOffset: 2 }}
+                    className="h-6 w-6 rounded-[7px] focus-visible:outline-2 focus-visible:outline-focus"
+                    style={{
+                      background: c,
+                      // Selection is a box-shadow, not outline. An inline outline beats
+                      // the global :focus-visible rule, so keyboard focus disappears.
+                      // The 4px ring sits inside a 5px focus offset. The 2px inner stop
+                      // matches this well (bg-surface-2), not the dialog's surface-3.
+                      boxShadow:
+                        accent === c
+                          ? "0 0 0 2px var(--color-surface-2), 0 0 0 4px var(--color-fg)"
+                          : undefined,
+                      outlineOffset: "5px",
+                    }}
                   />
                 ))}
               </div>
