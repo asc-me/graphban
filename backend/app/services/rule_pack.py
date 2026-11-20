@@ -143,9 +143,11 @@ register_primitive(Primitive(
 register_primitive(Primitive(
     "reopen_on_red", "enforced",
     Enforcer("graphban_source", "app/services/fleet.py"), stage="Merge"))
+# GRPH-1803: pack 0.6.0 ships accept.human_clause_blocks in Spec. Review alone
+# refuses that template, so every profile that pins it is unmeasured.
 register_primitive(Primitive(
     "human_only_clause", "enforced",
-    Enforcer("graphban_source", "app/services/fleet.py"), stage="Review"))
+    Enforcer("graphban_source", "app/services/fleet.py"), stage="Spec"))
 # GRPH-1405. `checked`: nothing refuses on the mode itself; the delegation brief states it and
 # the operating loop / merge gates (GRPH-1403, GRPH-1404) read it. `mode` is one of
 # `rule_toggles.TEST_SCOPE_MODES`, enforced when a person sets the param.
