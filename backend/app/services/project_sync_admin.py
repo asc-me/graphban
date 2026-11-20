@@ -59,12 +59,23 @@ def _push_result(mapping: SyncProject | None) -> str | None:
 
 
 def project_view(db: Session, project_id: str) -> dict:
-    """One local project's sync state. A missing row is local only, not digests."""
+    """One local project's sync state. A missing row is local only, not digests.
+
+    ``backlog_full`` is the whole outbox against ``CAP_BYTES`` (D11), not this
+    project's own rows. An empty ``project_id`` was not scanned, so the flag is
+    null rather than false.
+    """
     mapping = db.get(SyncProject, project_id)
     queue = outbox.project_queue(db, project_id)
     level = mapping.sync_level if mapping is not None else lifecycle.LEVEL_LOCAL
     permission = mapping.cloud_permission if mapping is not None else None
     when = mapping.last_push_at if mapping is not None else None
+    # The cap is the table. This project's `backlog_bytes` can sit under it while
+    # another project's rows put the outbox over. An empty id did not scan.
+    if project_id:
+        full = outbox.backlog_full(outbox.backlog_bytes(db))
+    else:
+        full = None
     return {
         "project_id": project_id,
         "sync_level": level,
@@ -73,6 +84,7 @@ def project_view(db: Session, project_id: str) -> dict:
         "queued": queue["queued"],
         "parked": {"count": queue["parked"], "reasons": queue["reasons"]},
         "backlog_bytes": queue["backlog_bytes"],
+        "backlog_full": full,
         "held_by": _held(project_id, queue["queued"], queue["reasons"]),
         "last_push_at": when,
         "last_push_result": _push_result(mapping),
