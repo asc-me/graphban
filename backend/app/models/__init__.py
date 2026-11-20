@@ -4111,6 +4111,37 @@ class CustomRule(Base):
     )
 
 
+class RuleProposal(Base):
+    """A suggested rule change, cited and direction-checked (GRPH-1775 / P91 D2).
+
+    `kind` is `new_rule` | `turn_on` | `tighten`; turning a rule off is never a proposal. `rule_id`
+    is the rule it targets (`custom.<slug>` for a new one). `direction` and `loosens` are computed
+    by `rule_pack.direction` against the rule's resolved value, never taken from the proposer.
+    `proposer_kind` is `agent` | `person` | `import`. `status` is `open` | `adopted` |
+    `dismissed` | `superseded`; no MCP tool moves it off `open` (`rules.person_adopts`).
+    """
+
+    __tablename__ = "rule_proposals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    kind: Mapped[str] = mapped_column(String)
+    rule_id: Mapped[str] = mapped_column(String)
+    primitive: Mapped[str] = mapped_column(String)
+    draft: Mapped[dict] = mapped_column(JSON, default=dict)
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    citations: Mapped[list] = mapped_column(JSON, default=list)
+    proposer: Mapped[str] = mapped_column(String)
+    proposer_kind: Mapped[str] = mapped_column(String)
+    direction: Mapped[str] = mapped_column(String)
+    loosens: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    status: Mapped[str] = mapped_column(String, default="open", server_default="open")
+    decided_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    decided_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class InstalledRulePack(Base):
     """A rule pack a person accepted (GRPH-1329 / PRD-P63 D10, D12). The newest row is the pack
     in force; older rows are the install history. The artifact and its signature are stored

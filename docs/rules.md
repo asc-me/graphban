@@ -255,3 +255,26 @@ lists it with author, why and state. The primitive API it was written for is sto
 primitive no longer loads (a major API break, or the primitive is gone) the rule is drawn
 UNMEASURED with the reason and resolves off — never half-enforced, the same as a pack template
 that fails to load. Custom rules are a project's own: another project cannot read or write them.
+
+## Rule proposals — cited suggestions (GRPH-1775, P91 D2, D3)
+
+A proposal suggests a rule change; it never makes one. `propose_rule` (MCP, any agent on the
+project) and `POST /api/projects/{id}/rules/proposals` (a person or an import run) file one;
+adopting or dismissing is a person's act (`rules.person_adopts`) and no MCP tool does either.
+
+- **Kinds:** `new_rule` (a draft), `turn_on` (a rule that is off), `tighten` (a param change).
+  Turning a rule off or removing it is refused for every proposer.
+- **Cited:** at least one citation, each resolving: an `item`, `observation` or `lesson` of this
+  project, a `file` (`path`, `lines`, `commit`) that exists at that commit on the project's repo,
+  or a `url`. A forge that cannot be read is "could not verify", which is a refusal, never a pass.
+- **Direction is computed**, by `rule_pack.direction` against the rule's current resolved value,
+  never from the proposer's claim. An agent may only tighten: a loosening (removing a path from
+  `exclusive_areas`, proposing `generated_files`) is refused naming the rule. A person or an
+  import run may propose one; it is stored with `loosens: true`. A param with no comparator is
+  not proposable.
+- **Never an invariant** of `docs/rule-candidates.md` "The line".
+- **Folded:** the same primitive and params as an open proposal appends the citations to it and
+  returns its id.
+- **Refusals name their rule:** an uncited, unresolvable, invalid or direction-less proposal is
+  refused under `rules.proposal_cited`; a loosening from an agent, turning a rule off and an
+  invariant under `rules.person_adopts`.
