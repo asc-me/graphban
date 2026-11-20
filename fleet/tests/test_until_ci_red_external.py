@@ -108,6 +108,34 @@ def _attested(monkeypatch, rollup, **kw):
     return got, seen, planner
 
 
+def test_a_slashed_base_is_percent_encoded_on_the_rules_path(monkeypatch):
+    """The rules call is one path segment. A raw slash splits `release/…` into two.
+
+    This is the call `ci_rollup` makes, not only `_branch_path`. Dropping the
+    encoding and passing the branch through leaves this assertion red.
+    """
+    seen: list[tuple] = []
+
+    def fake(repo, *args, **kw):
+        seen.append(args)
+        if args[:2] == ("pr", "view"):
+            body = json.dumps({
+                "headRefOid": HEAD,
+                "baseRefName": "release/2026.11.30",
+                "statusCheckRollup": [ACTIONS_OK, UNKEY_STATUS],
+            })
+            return subprocess.CompletedProcess(args, 0, body, "")
+        return subprocess.CompletedProcess(args, 0, "[]", "")
+
+    monkeypatch.setattr(propose, "find", lambda: "/usr/bin/gh")
+    monkeypatch.setattr(propose, "_gh", fake)
+    state, head, job = propose.ci_rollup(Path("."), "gb/x")
+    assert (state, head, job) == ("external", HEAD, UNKEY)
+    api = next(a for a in seen if a and a[0] == "api")
+    assert api[-1] == "repos/{owner}/{repo}/rules/branches/release%2F2026.11.30"
+    assert propose._branch_path("a b") == "a%20b"
+
+
 def test_external_status_red_does_not_bounce(monkeypatch):
     for shape in (UNKEY_STATUS, UNKEY_CHECK_RUN):
         got, seen, planner = _attested(monkeypatch, [ACTIONS_OK, shape])

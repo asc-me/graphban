@@ -158,19 +158,37 @@ def _check_name(check: dict) -> str:
     return str(check.get("name") or check.get("context") or "unknown check")
 
 
+def _branch_path(base: str) -> str:
+    """Percent-encode a branch name for one `gh api` path segment.
+
+    Unreserved characters (RFC 3986) stay as themselves. A slash in
+    `release/2026.11.30` becomes `%2F`, which is what the rules route expects.
+    The encoding lives here: this module may not import a network library, and
+    the path parser that would do it sits in one (`test_only_the_named_doors_make_requests`).
+    """
+    out: list[str] = []
+    for byte in base.encode("utf-8"):
+        if (48 <= byte <= 57 or 65 <= byte <= 90 or 97 <= byte <= 122
+                or byte in b"-._~"):
+            out.append(chr(byte))
+        else:
+            out.append(f"%{byte:02X}")
+    return "".join(out)
+
+
 def required_contexts(repo: Path, base: str) -> set[str] | None:
     """Status-check contexts the base branch requires, or None when the read failed.
 
     An empty set means the rules endpoint answered and none are configured. None means
     nobody could look — a 404, a non-JSON body, a missing base — and must not be read as
     "nothing is required". `gh api repos/{owner}/{repo}/rules/branches/{base}` is the
-    aggregated rules view (classic protection and rulesets).
+    aggregated rules view (classic protection and rulesets). `base` is percent-encoded
+    so a slash in the branch name stays one path segment.
     """
     if not base or not find():
         return None
-    from urllib.parse import quote
     try:
-        done = _gh(repo, "api", f"repos/{{owner}}/{{repo}}/rules/branches/{quote(base, safe='')}")
+        done = _gh(repo, "api", f"repos/{{owner}}/{{repo}}/rules/branches/{_branch_path(base)}")
     except (OSError, subprocess.SubprocessError):
         return None
     if done.returncode != 0:
