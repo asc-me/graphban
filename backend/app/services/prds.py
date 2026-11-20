@@ -3219,19 +3219,106 @@ def _stub_command(command: str, prd: Prd) -> str:
 
 _SECTION_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 
-# High-fidelity signal: work whose answer needs a prototype to see/feel, not words
-# (AL-68). Heuristic over the section title + body; a human can always override.
+# High-fidelity vocabulary (AL-68): work whose answer needs a prototype to see,
+# not words. A human can always override the item afterwards.
+#
+# GRPH-1693. One match marked a section high. Measured on GRPH-P86, the
+# decompose that filed the bug, and on the section the heuristic exists for
+# (prd-20 D5, whose heading "How a held node looks" does not contain the term
+# "look"):
+#
+#   The line (P86)    2 hits / 328 words = 0.61 / 100   "the UI", twice
+#   Problem           1 / 465            = 0.22         "does not look at"
+#   Non-goals         1 / 253            = 0.40         "a wrong design"
+#   prd-20 D5         7 / 428            = 1.64         visual, design, animation
+#   AL-68 high body   3 / 11             = 27           look, feel, layout
+#                     ("interactions" is not the term "interaction")
+#
+# The body is high when it has more than one hit and more than one hit per 100
+# words (`hits * 100 > words`). One per 100 sits under D5 and over The line.
+# A single hit never qualifies: "on screen" in a short sentence is the bug,
+# and `1 * 100 > word_count` would otherwise pass. A term in the heading is
+# high on its own — the heading is the section saying what it is.
 _HIGH_FIDELITY_RE = re.compile(
     r"\b(ui|ux|visual|design|layout|interaction|animation|feel|look|screen|"
     r"mockup|wireframe|prototype|gesture|responsive|styling|aesthetic|onboarding flow)\b",
     re.IGNORECASE,
 )
+_FIDELITY_MIN_HITS = 2
+_FIDELITY_PER_WORDS = 100
+_WORD_RE = re.compile(r"[A-Za-z0-9']+")
 
 
-def classify_fidelity(text: str) -> str:
-    """`high` when the text is about how something looks/feels/behaves (needs a
-    prototype), else `low` (specifiable in words now)."""
-    return "high" if _HIGH_FIDELITY_RE.search(text or "") else "low"
+def _visible_prose(text: str) -> str:
+    """Body text with fenced code removed. A sample that mentions `screen` is not the section."""
+    lines: list[str] = []
+    in_fence = False
+    for line in (text or "").splitlines():
+        if _FENCE_RE.match(line.strip()):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def _fidelity_matches(text: str) -> list[str]:
+    return [match.group(1).lower() for match in _HIGH_FIDELITY_RE.finditer(text or "")]
+
+
+def _unique_terms(matches: list[str]) -> list[str]:
+    terms: list[str] = []
+    for term in matches:
+        if term not in terms:
+            terms.append(term)
+    return terms
+
+
+def fidelity_reading(body: str, *, heading: str = "", named_design: bool = False) -> dict:
+    """`{fidelity, terms}` for one section.
+
+    `terms` is the vocabulary that drove a high classification, in the order it
+    appears, heading first. It is empty when the result is low: nothing drove
+    high, including when named design pages already exist and the prototype is
+    the reference rather than work still to ask for. Empty is that answer, not
+    a section that was not read.
+    """
+    if named_design or _section_names_design(heading, body):
+        return {"fidelity": "low", "terms": []}
+    heading_terms = _unique_terms(_fidelity_matches(heading or ""))
+    prose = _visible_prose(body)
+    matches = _fidelity_matches(prose)
+    words = _WORD_RE.findall(prose)
+    body_dominates = (
+        len(matches) >= _FIDELITY_MIN_HITS
+        and len(matches) * _FIDELITY_PER_WORDS > len(words)
+    )
+    # Body hits join the list only when they cleared the density bar. A heading
+    # term already made the section high; an incidental word in the body did not
+    # drive that, and naming it would say it did.
+    terms = list(heading_terms)
+    if body_dominates:
+        terms = _unique_terms(terms + matches)
+    if terms:
+        return {"fidelity": "high", "terms": terms}
+    return {"fidelity": "low", "terms": []}
+
+
+def _section_names_design(heading: str, body: str) -> bool:
+    """Inline design pages (GRPH-1692). Imported late: design_sets imports this module."""
+    from app.services.design_sets import parse_inline_design
+
+    return parse_inline_design(f"{heading}\n{body or ''}") is not None
+
+
+def classify_fidelity(text: str, *, heading: str = "") -> str:
+    """`high` when the UI signal is in the heading or dominates the body, else `low`.
+
+    `text` is the body. Pass `heading` separately so a term in the title is not
+    diluted by a long behaviour section, and one incidental word in the body is
+    not read as the title.
+    """
+    return fidelity_reading(text, heading=heading)["fidelity"]
 
 
 #: Opens or closes a fenced code block. Three or more backticks/tildes at line start; an
@@ -4482,8 +4569,6 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
         if _section_key(p["section"]) in _ACCEPTANCE_SECTION_KEYS:
             continue  # the acceptance list is split across items, never an item itself
         body = bodies.get(p["section"], "").strip()
-        # A section about how something looks/feels needs a prototype first (AL-68).
-        fidelity = classify_fidelity(f"{p['section']} {body}")
         clauses = combined.get(p["section"], [])
         no_clause = False
         if not clauses and not parse_acceptance(body)[0]:
@@ -4554,6 +4639,12 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                     "blocker": _piece_blocker(
                         prd.key, sub_no_clause, not sub_tps, gate["blocker"] if gate else ""),
                 })
+        # Named pages (inline or the set's external artifact) mean the prototype
+        # already exists (GRPH-1692). The section is then specifiable against that
+        # reference, so it is low even when the heading is a UI term. The UI item
+        # filed below stays high: it is the work of matching those pages.
+        reading = fidelity_reading(
+            body, heading=p["section"], named_design=design is not None)
         proposals.append({
             "section": p["section"],
             "title": f"Implement: {p['section']}",
@@ -4563,7 +4654,8 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             "blocked": bool(gate and gate["blocked"]) or no_clause or no_tp,
             "blocker": blocker,
             "acceptance": clauses,
-            "fidelity": fidelity,
+            "fidelity": reading["fidelity"],
+            "fidelity_terms": reading["terms"],
             # Surfaced on the proposal so a dry run shows them before anything is created.
             "dangling_refs": dangling_refs(body),
             # Always present. False means every signal was measured and none exceeded.
