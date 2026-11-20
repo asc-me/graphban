@@ -74,6 +74,7 @@ def sync_status(db: Session = Depends(get_db), user: User = Depends(get_current_
 
 
 LINK_RULE = "sync.link_needs_box_admin"
+DESTINATION_RULE = "sync.destination_owned_by_org"
 
 
 def refuse_unless_box_admin(db: Session, user: User, action: str) -> None:
@@ -248,7 +249,9 @@ def put_box_destination(body: BoxDestinationIn, db: Session = Depends(get_db),
     try:
         return sync_storage_svc.save_local(db, path=body.path, branch=body.branch)
     except sync_storage_svc.DestinationOwned as e:
-        raise HTTPException(403, str(e))
+        raise Refused(403, str(e), rule_id=DESTINATION_RULE,
+                      hint="ask an owner or admin of the linked org to change it from the console",
+                      target=("instance", "sync_destination")) from e
     except Validation as e:
         raise HTTPException(422, str(e) + (f" — {e.hint}" if getattr(e, "hint", "") else ""))
 

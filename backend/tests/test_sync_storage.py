@@ -519,6 +519,7 @@ def test_a_linked_box_cannot_save_a_local_destination(client, auth, tmp_path):
     refused = client.put(DEST, json={"path": "/tmp/elsewhere", "branch": "nope"}, headers=auth)
     assert refused.status_code == 403
     assert "the org admin owns the destination" in refused.text
+    assert refused.json()["rule_id"] == "sync.destination_owned_by_org"
     body = _fact(client, auth)
     assert body["path"] == str(tmp_path) and body["branch"] == "policy"
     assert body["editable"] is False
