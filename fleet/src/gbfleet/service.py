@@ -1003,6 +1003,19 @@ def reset_quiet_cycle(name: str) -> None:
         return
 
 
+def _launchd_gui_domain() -> str | None:
+    """`gui/<numeric uid>` for launchctl, or None where `os.getuid` does not exist.
+
+    Windows has no `os.getuid`. A test that forces `host()` to launchd still
+    runs this branch there, and `hostos.user_tag()` is a name on Windows.
+    launchctl's domain is `gui/<numeric uid>`, so a missing uid is not a name.
+    """
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        return None
+    return f"gui/{getuid()}"
+
+
 def stop_restarting(name: str) -> str:
     """Unload this service so a clean exit is not started again (GRPH-1645).
 
@@ -1012,7 +1025,9 @@ def stop_restarting(name: str) -> str:
     """
     found = host()
     if found.kind == "launchd":
-        domain = f"gui/{os.getuid()}"
+        domain = _launchd_gui_domain()
+        if domain is None:
+            return "launchd domain needs a numeric uid; os.getuid is absent"
         _code, out = _run(["launchctl", "bootout", f"{domain}/{label_for(name)}"])
         return out
     if found.kind == "systemd":

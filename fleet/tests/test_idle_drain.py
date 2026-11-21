@@ -9,6 +9,7 @@ report `total` keeps the old loop — that is what the fixtures in `test_until` 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import httpx
@@ -311,6 +312,24 @@ def test_stop_restarting_boots_the_launchd_job_out(monkeypatch):
     seen: list[list[str]] = []
     monkeypatch.setattr(service, "host", lambda: service.Host("launchd"))
     monkeypatch.setattr(service, "_run", lambda cmd, timeout=20.0: seen.append(list(cmd)) or (0, "ok"))
+    # Windows has no os.getuid. The domain is gui/<numeric uid>, so the stub is a number.
+    if not hasattr(os, "getuid"):
+        monkeypatch.setattr(os, "getuid", lambda: 501, raising=False)
     service.stop_restarting("quiet-prd")
     assert seen[0][:2] == ["launchctl", "bootout"]
-    assert seen[0][2].endswith("dev.graphban.fleet.quiet-prd")
+    domain, _label = seen[0][2].split("/", 1)
+    assert domain == "gui"
+    uid, label = _label.split("/", 1)
+    assert uid.isdigit()
+    assert label == "dev.graphban.fleet.quiet-prd"
+
+
+def test_stop_restarting_does_not_boot_out_without_a_numeric_uid(monkeypatch):
+    """A forced launchd host on Windows must not call os.getuid or use a username."""
+    seen: list[list[str]] = []
+    monkeypatch.setattr(service, "host", lambda: service.Host("launchd"))
+    monkeypatch.setattr(service, "_run", lambda cmd, timeout=20.0: seen.append(list(cmd)) or (0, "ok"))
+    monkeypatch.delattr(os, "getuid", raising=False)
+    result = service.stop_restarting("quiet-prd")
+    assert seen == []
+    assert "os.getuid is absent" in result
