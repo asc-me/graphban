@@ -88,6 +88,9 @@ def _clients(
     updates: list | None = None,
     item_details: dict | None = None,
     roster_assigned: dict | None = None,
+    roster_timeout: str | None = None,
+    roster_status: int | None = None,
+    clusters_timeout: str | None = None,
 ):
     """Planner + supervisor clients sharing one mock Graphban.
 
@@ -216,6 +219,8 @@ def _clients(
                 "eligible_roles": ["planner"],
                 "tools_off_limits": list(off_limits or []),
             }, rid)
+        if tool == "collision_clusters" and clusters_timeout is not None:
+            raise httpx.ReadTimeout(clusters_timeout)
         if tool == "collision_clusters":
             total = clusters if sticky_clusters else (0 if seen_agents["yes"] else clusters)
             rows = [{"items": list(cluster_items[i]) if cluster_items and i < len(cluster_items) else []}
@@ -269,6 +274,10 @@ def _clients(
             return _mcp({"id": args.get("id"), "status": args.get("status") or "next"}, rid)
         if tool == "retire_wave":
             return _mcp({"seats_revoked": 0, "agents": 0}, rid)
+        if tool == "fleet_status" and roster_timeout is not None:
+            raise httpx.ReadTimeout(roster_timeout)
+        if tool == "fleet_status" and roster_status is not None:
+            return httpx.Response(roster_status, text="unavailable")
         trees = sorted(p for p in workspace.glob("*") if p.is_dir() and p.name != "logs")
         if trees:
             seen_agents["yes"] = True
@@ -691,6 +700,93 @@ def test_max_children_is_the_total_for_the_wave(
     assert result.spawned == 2
     assert result.reason == "cap" and result.exit == 1
     assert "max_children 2" in result.detail
+
+
+def _run_until_roster_dead(git_repo, tmp_path, scripts, state, **client_kw):
+    """A free cluster, and `fleet_status` failing on every call. No child starts."""
+    workspace = tmp_path / "ws"
+    sleeps: list[float] = []
+
+    def sleep(_seconds):
+        sleeps.append(1)
+        if len(sleeps) > 3:
+            raise AssertionError("until kept polling an unreadable roster")
+
+    planner, supervisor = _clients(workspace, clusters=1, workers=0, **client_kw)
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=sleep, empty_ticks=3,
+        limits=Limits(max_workers=1, max_children=4),
+    )
+    return result, sleeps
+
+
+def test_a_roster_timeout_in_wanted_workers_is_not_the_spawn_cap(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1813. `fleet_status` raises a timeout on every call while a cluster is
+    free. Nothing is spawned, so the exit is not `cap`. It names the unread roster
+    and carries the timeout text.
+
+    Control: `test_max_children_is_the_total_for_the_wave` still exits `cap` once
+    spawned equals the cap.
+
+    Sabotage: put the `CapError("cap", "server unreachable with no live children")`
+    fallthrough back for a `fleet_status` failure. This assertion on `reason` goes red.
+    """
+    result, sleeps = _run_until_roster_dead(
+        git_repo, tmp_path, scripts, state, roster_timeout="timed out",
+    )
+    assert result.spawned == 0 and result.minted == 0
+    assert result.reason == "roster_unreadable", result.as_json()
+    assert result.reason != "cap"
+    assert result.exit == 1 and result.ok is False
+    assert "timed out" in result.detail
+    assert sleeps == []
+
+
+def test_a_roster_server_error_in_wanted_workers_is_not_the_spawn_cap(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1813. An HTTP 500 from `fleet_status` is the server failing to answer.
+    Same exit as a timeout: the roster was unreadable, and the status is in the detail.
+
+    Sabotage: the same fallthrough as the timeout test. This goes red with it.
+    """
+    result, _sleeps = _run_until_roster_dead(
+        git_repo, tmp_path, scripts, state, roster_status=500,
+    )
+    assert result.spawned == 0
+    assert result.reason == "roster_unreadable", result.as_json()
+    assert result.reason != "cap"
+    assert "500" in result.detail
+
+
+def test_a_clusters_timeout_in_wanted_workers_is_not_the_spawn_cap(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1813. `_wanted_workers` calls `collision_clusters` before `fleet_status`.
+    A timeout there, with nothing spawned, is not the spawn cap. The exit names the
+    call and carries the timeout text.
+
+    Control: `test_max_children_is_the_total_for_the_wave` still exits `cap` once
+    spawned equals the cap.
+
+    Sabotage: restore `CapError("cap", "server unreachable with no live children")`
+    for a `ServerUnreachable` whose tool is not `fleet_status`. This assertion on
+    `reason` goes red.
+    """
+    result, sleeps = _run_until_roster_dead(
+        git_repo, tmp_path, scripts, state, clusters_timeout="timed out",
+    )
+    assert result.spawned == 0 and result.minted == 0
+    assert result.reason == "server_unreachable", result.as_json()
+    assert result.reason != "cap"
+    assert result.exit == 1 and result.ok is False
+    assert "collision_clusters" in result.detail
+    assert "timed out" in result.detail
+    assert sleeps == []
 
 
 def test_a_quota_mint_is_config_not_idle(
