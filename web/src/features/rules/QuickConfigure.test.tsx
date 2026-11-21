@@ -292,6 +292,84 @@ describe("QuickConfigure", () => {
     expect(api.acceptRuleProfileUpdate).toHaveBeenCalledWith("core", "regulated", { reason: "applying Regulated 0.2.0: new pack", version: "0.2.0" });
   });
 
+  it("re-apply of the applied level keeps its recorded exceptions", async () => {
+    const user = userEvent.setup();
+    const onApplied = vi.fn();
+    vi.mocked(api.ruleProfiles).mockResolvedValue({
+      ...profiles,
+      applied: { profile: "regulated", version: "0.3.0", pack_version: "0.4.0", exceptions: ["review.cross_vendor"], skipped: [], by: "u", at: "" },
+    });
+    vi.mocked(api.ruleProfileDrift).mockResolvedValue({
+      project_id: "core", profile: "regulated", state: "drifted", differs_in: 1, summary: "", weakening: 0,
+      drift: [{ rule_id: "review.sabotage", kind: "changed", detail: "pinned params differ" }],
+    });
+    vi.mocked(api.applyRuleProfile).mockResolvedValue({
+      project_id: "core", profile: "regulated", applied: ["review.sabotage"], excepted: ["review.cross_vendor"], skipped_locked: [],
+    });
+    panel({ screen: "compare", profile: "regulated" }, onApplied);
+
+    const summary = await screen.findByTestId("rules-quick-summary");
+    // cross_vendor is the recorded exception, so only the drifted param is a change.
+    // An empty carry would say "2 rules would change" and offer Keep current.
+    expect(summary).toHaveTextContent("1 rule would change");
+    const row = screen.getByTestId("rules-quick-row-review.cross_vendor");
+    expect(row).toHaveTextContent("kept: exception");
+    expect(row).not.toHaveTextContent("Keep current");
+    expect(within(row).getByTestId("rules-quick-keep-review.cross_vendor")).toHaveTextContent("Restore");
+    expect(screen.queryByTestId("rules-quick-cell-change-review.cross_vendor")).toBeNull();
+
+    await user.click(screen.getByTestId("rules-quick-review"));
+    const sheet = screen.getByTestId("rules-review-sheet");
+    expect(within(sheet).queryByTestId("rules-review-rule-review.cross_vendor")).toBeNull();
+    expect(within(sheet).queryByTestId("rules-review-drop-review.cross_vendor")).toBeNull();
+    expect(within(sheet).getByTestId("rules-quick-dropped")).toHaveTextContent("Recorded as Regulated, except: T review.cross_vendor");
+    await user.type(within(sheet).getByLabelText("Reason"), "clear the drift");
+    await user.click(within(sheet).getByTestId("rules-review-save"));
+    await waitFor(() => expect(onApplied).toHaveBeenCalledWith(["review.sabotage"]));
+    expect(api.applyRuleProfile).toHaveBeenCalledWith("core", "regulated", {
+      reason: "applying Regulated 0.1.0: clear the drift", except: ["review.cross_vendor"], skip_locked: true,
+    });
+  });
+
+  it("choosing another level starts with no exceptions, and Restore applies the level's value", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.ruleProfiles).mockResolvedValue({
+      ...profiles,
+      applied: { profile: "regulated", version: "0.3.0", pack_version: "0.4.0", exceptions: ["review.cross_vendor"], skipped: [], by: "u", at: "" },
+    });
+    vi.mocked(api.ruleProfileDrift).mockResolvedValue({
+      project_id: "core", profile: "regulated", state: "clean", differs_in: 0, summary: "", weakening: 0, drift: [],
+    });
+    vi.mocked(api.applyRuleProfile).mockResolvedValue({
+      project_id: "core", profile: "regulated", applied: ["review.sabotage", "review.cross_vendor"], excepted: [], skipped_locked: [],
+    });
+    panel();
+    await user.click(await screen.findByTestId("rules-quick-choose-exploratory"));
+    expect(screen.queryByText("kept: exception")).toBeNull();
+    expect(screen.queryByTestId("rules-quick-dropped")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Regulated" }));
+    expect(screen.getByTestId("rules-quick-summary")).toHaveTextContent("1 rule would change");
+    const row = screen.getByTestId("rules-quick-row-review.cross_vendor");
+    expect(row).toHaveTextContent("kept: exception");
+    expect(within(row).getByTestId("rules-quick-keep-review.cross_vendor")).toHaveTextContent("Restore");
+
+    await user.click(within(row).getByTestId("rules-quick-keep-review.cross_vendor"));
+    const restored = screen.getByTestId("rules-quick-row-review.cross_vendor");
+    expect(restored).not.toHaveTextContent("kept: exception");
+    expect(within(restored).getByTestId("rules-quick-keep-review.cross_vendor")).toHaveTextContent("Keep current (exception)");
+    expect(screen.getByTestId("rules-quick-summary")).toHaveTextContent("2 rules would change");
+    expect(screen.getByTestId("rules-quick-cell-change-review.cross_vendor")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("rules-quick-review"));
+    const sheet = screen.getByTestId("rules-review-sheet");
+    expect(within(sheet).getByTestId("rules-review-drop-review.cross_vendor")).toBeInTheDocument();
+    await user.type(within(sheet).getByLabelText("Reason"), "drop the exception");
+    await user.click(within(sheet).getByTestId("rules-review-save"));
+    await waitFor(() => expect(api.applyRuleProfile).toHaveBeenCalled());
+    expect(vi.mocked(api.applyRuleProfile).mock.calls[0][2]).toMatchObject({ except: [] });
+  });
+
   it("a refusal stays on the sheet with the server's words and applies nothing", async () => {
     const user = userEvent.setup();
     const onApplied = vi.fn();
