@@ -10,6 +10,11 @@ Idle is not "the last child exited." Idle is: no ready non-colliding work, no un
 is not that lease. Typed human waits (D11) are not ready work; a wave that has only
 those left is `idle-with-waits`. A wave that exits 0 with leftover `review` is a failed
 run (`review-unsigned`).
+
+A `--prd` whose server can say the PRD is closed, or that it has no open items, exits
+on that probe. It does not re-walk done items, re-say merges already verified, or
+rewrite a dependency hold. A service drain of a closed PRD, or of one that stays empty
+for several cycles, unloads its own unit so the machine supervisor stops starting it.
 """
 
 from __future__ import annotations
@@ -112,6 +117,9 @@ PLANNER_TOOLS: frozenset[str] = frozenset({
 STAFF_EVERY_ROW = "review.staff_every_row"
 
 EMPTY_TICKS = 3
+#: Statuses that still have work a restart might pick up (GRPH-1645). `done` is
+#: not one of them: counting it is the scan an idle drain must not do.
+_OPEN_STATUSES = ("backlog", "next", "in_progress", "review", "blocked")
 MINT_TRIES = 3
 MINT_BUDGET_S = 30.0
 #: S6 (PRD-39 D-i): consecutive spawns that exited against unheld review rows before
@@ -475,6 +483,9 @@ def run(
                 merge=merge,
                 wave_base=chosen_base,
                 acknowledge_reach=acknowledge_reach,
+                verified_merges=(
+                    Path(state) / "verified-merges.json" if state is not None else None
+                ),
               )
             except ToolFailed as exc:
                 # GRPH-1669. A roster read (`fleet_status`) answered with a tool error.
@@ -961,6 +972,7 @@ def _loop(
     merge: bool = False,
     wave_base: "WaveBase | None" = None,
     acknowledge_reach: set[str] | None = None,
+    verified_merges: Path | None = None,
 ) -> Report:
     from .mcp import _runner_up, read_preferences
     profile, policy, pref_note, measured, cap_measured, tier_map = read_preferences(supervisor)
@@ -1034,12 +1046,16 @@ def _loop(
     # scopes candidates: an item outside this PRD is not merged unless a GRPH-798 hold
     # names it.
     merger = Merger(repo, planner, enabled=bool(merge), remote=remote, base=base,
-                    prd_id=prd or "", line_id=line or "", agent_id=agent_id)
+                    prd_id=prd or "", line_id=line or "", agent_id=agent_id,
+                    verified_path=verified_merges)
     # Items the GRPH-798 check HELD, with the finished dependencies they wait on. A merge
     # changes the answer, so these are lifted out of `delegated` when one lands.
     held: dict[str, list[str]] = {}
     # GRPH-950: holds are blockers on the server, so they outlive the wave that wrote them.
-    _resume_holds(planner, held, delegated, repo, base)
+    _resume_holds(planner, held, delegated, repo, base, prd=prd)
+    quiet = _quiet_prd(planner, prd, merger, wave, _leave)
+    if quiet is not None:
+        return quiet
     rechecked = time.monotonic()
 
     def next_candidate(seed: str, want: str):
@@ -1241,7 +1257,7 @@ def _loop(
         # `update_item` is on the planner. Passing supervisor here opened the PR and
         # then logged "PR opened but not recorded" on every item.
         watch_tick(wave, children, limits, planner, debug=debug, persist=persist,
-                   base_branch=base)
+                   base_branch=base, scope_prd=prd)
         # GRPH-834: checked HERE, right after the tick that reads the exit records, and before
         # anything else this pass can spawn. `_cap_children` guards `--max-children` at the
         # spawn site, and that is the wrong shape for a budget: a wave whose last child has
@@ -2297,7 +2313,7 @@ def plan(planner: Graphban, prd: str | None, max_workers: int,
         # GRPH-950: what the loop would hold on an unmerged dependency — "SA-556 waiting on
         # #397 to merge" — and what an earlier wave already holds. Empty without a repository
         # and a base to measure against, which is the one case the check cannot run.
-        "dependency_holds": _dependency_holds(planner, free, repo, base),
+        "dependency_holds": _dependency_holds(planner, free, repo, base, prd=prd),
         "capped_by_max_workers": len(free) > max_workers,
         # GRPH-1311. Absent when the flag was not passed, so a dry run without it
         # prints the same plan it printed before. Present, it is the operator's list
@@ -2310,11 +2326,11 @@ def plan(planner: Graphban, prd: str | None, max_workers: int,
 
 
 def _dependency_holds(planner: Graphban, free: list[dict], repo: Path | None,
-                      base: str) -> list[dict]:
+                      base: str, *, prd: str | None = None) -> list[dict]:
     """The GRPH-950 holds a wave would write now, and the ones already written. READS ONLY."""
     out: list[dict] = []
     seen: set[str] = set()
-    for item_id, blocker in _held_on_server(planner):
+    for item_id, blocker in _held_on_server(planner, prd=prd):
         seen.add(item_id)
         out.append({"item": item_id, "waiting_on": blocker, "already_held": True})
     if repo is None or not base:
@@ -2845,46 +2861,69 @@ def _release_delegated(delegated: set[str], owners: dict[str, object], finished:
                      detail=f"{item_id}: its child exited; the server decides whether it is offered again")
 
 
-def _adopt_holds(planner: Graphban, held: dict[str, list[str]], delegated: set[str]) -> None:
+def _adopt_holds(planner: Graphban, held: dict[str, list[str]], delegated: set[str],
+                 *, prd: str | None = None) -> None:
     """Holds an earlier wave wrote, taken over so this wave lifts them when their PR merges.
 
     A blocker nobody re-checks strands its item after the merge it waits on — worse than the
     duplicate it prevented, because it looks deliberate.
     """
-    for item_id, _blocker in _held_on_server(planner):
+    for item_id, _blocker in _held_on_server(planner, prd=prd):
         if item_id not in held:
             held[item_id] = []
             delegated.add(item_id)
 
 
 def _resume_holds(planner: Graphban, held: dict[str, list[str]], delegated: set[str],
-                  repo: Path | None, base: str) -> None:
+                  repo: Path | None, base: str, *, prd: str | None = None) -> None:
     """Adopt the holds earlier runs wrote and re-check them NOW, before the first tick.
 
     GRPH-1182: not a recheck period later. Under `gbfleet service` every run is a fresh
     process that may exit idle well inside that period, so a hold whose dependency an
     earlier run merged was lifted by nobody.
     """
-    _adopt_holds(planner, held, delegated)
+    _adopt_holds(planner, held, delegated, prd=prd)
     _recheck_holds(planner, held, delegated, repo, base)
 
 
-def _held_on_server(planner: Graphban) -> list[tuple[str, str]]:
+def _prd_arg_refused(exc: BaseException) -> bool:
+    text = f"{exc} {getattr(exc, 'hint', '')}".lower()
+    return "prd_id" in text or "does not take" in text
+
+
+def _held_on_server(planner: Graphban, *, prd: str | None = None) -> list[tuple[str, str]]:
     """Every GRPH-950 hold the server carries, as (item, blocker). Empty when unreadable.
 
     The search matches on blocker text, but a row that does not carry `blocker` says nothing
     about it (GRPH-1182): `search_items` full rows omitted the field, so every hit read as
     unheld and no later run ever adopted, re-checked or lifted a hold. Such a row is confirmed
     against `get_item_details`, the read that does carry it, never dropped as clean.
+
+    When the wave names a PRD the search is scoped to it (GRPH-1645). An old server
+    that refuses `prd_id` is retried without it and the rows are filtered here.
     """
+    args: dict = {"query": deps.HOLD_MARK, "limit": 200, "fields": "full"}
+    if prd:
+        args["prd_id"] = prd
     try:
-        got = planner.call("search_items", query=deps.HOLD_MARK, limit=200, fields="full") or {}
-    except (ToolFailed, NotPermitted, ServerUnreachable):
+        got = planner.call("search_items", **args) or {}
+    except ToolFailed as exc:
+        if not (prd and _prd_arg_refused(exc)):
+            return []
+        try:
+            got = planner.call(
+                "search_items", query=deps.HOLD_MARK, limit=200, fields="full") or {}
+        except (ToolFailed, NotPermitted, ServerUnreachable):
+            return []
+    except (NotPermitted, ServerUnreachable):
         return []
     out: list[tuple[str, str]] = []
     for row in (got.get("results") if isinstance(got, dict) else None) or []:
         item_id = str(row.get("id") or "") if isinstance(row, dict) else ""
         if not item_id:
+            continue
+        named = row.get("prd_id") if isinstance(row, dict) else None
+        if prd and named is not None and str(named) != prd:
             continue
         if "blocker" in row:
             blocker = str(row["blocker"] or "")
@@ -2897,6 +2936,85 @@ def _held_on_server(planner: Graphban) -> list[tuple[str, str]]:
         if deps.is_hold(blocker):
             out.append((item_id, blocker))
     return out
+
+
+def _prd_status(planner: Graphban, prd: str) -> str | None:
+    """The PRD's status, or None when this read did not say. Missing is not closed."""
+    try:
+        got = planner.call("get_prd", prd_id=prd) or {}
+    except (ToolFailed, NotPermitted, ServerUnreachable):
+        return None
+    if not isinstance(got, dict):
+        return None
+    status = got.get("status")
+    return status if isinstance(status, str) and status else None
+
+
+def _open_in_prd(planner: Graphban, prd: str) -> int | None:
+    """How many items in `prd` are still open, or None when the server did not say.
+
+    Trusts `total` only. A page without an int total, a row that names another
+    PRD, or a server that refuses `prd_id` is unknown — the caller keeps the
+    ordinary loop. Unknown is not zero: zero is what stops a service.
+    """
+    total = 0
+    for status in _OPEN_STATUSES:
+        try:
+            got = planner.call(
+                "search_items", status=status, prd_id=prd, fields="full", limit=1,
+            ) or {}
+        except (ToolFailed, NotPermitted, ServerUnreachable):
+            return None
+        if not isinstance(got, dict) or not isinstance(got.get("total"), int):
+            return None
+        for row in got.get("results") or []:
+            if not isinstance(row, dict):
+                continue
+            named = row.get("prd_id")
+            if named is not None and str(named) != prd:
+                return None
+        total += got["total"]
+    return total
+
+
+def _quiet_prd(planner: Graphban, prd: str | None, merger, wave: Wave,
+               leave: Callable[..., Report]) -> Report | None:
+    """A PRD with nothing open exits without the history scan (GRPH-1645).
+
+    None means the ordinary loop still has to run: the server did not say, the
+    PRD still has an open item, or a merge is still in flight. A closed PRD
+    stops on this cycle. An empty one stops only after `QUIET_CYCLES` service
+    restarts. A one-off `until` reports idle and unloads nothing. A blocked-only
+    PRD has an open count above zero and is not this path.
+    """
+    if not prd:
+        return None
+    status = _prd_status(planner, prd)
+    opened = _open_in_prd(planner, prd)
+    if opened is None:
+        return None
+    from . import service as service_mod
+
+    drain = service_drain(prd)
+    if opened > 0:
+        if drain is not None:
+            service_mod.reset_quiet_cycle(drain["service"])
+        return None
+    if merger.enabled:
+        merger.tick(wave)
+        if _merge_pending(merger, wave):
+            return None
+    if status == "closed":
+        if drain is not None:
+            service_mod.stop_restarting(drain["service"])
+        return leave(service_mod.REASON_PRD_CLOSED, 0, review=[], waits=[])
+    if drain is None:
+        return leave("idle", 0, review=[], waits=[])
+    cycles = service_mod.note_quiet_cycle(drain["service"], prd)
+    if cycles >= service_mod.QUIET_CYCLES:
+        service_mod.stop_restarting(drain["service"])
+        return leave(service_mod.REASON_NO_OPEN, 0, review=[], waits=[])
+    return leave("idle", 0, review=[], waits=[])
 
 
 def _dependencies_not_done(planner: Graphban, item_id: str) -> list[dict]:

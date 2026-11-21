@@ -39,6 +39,14 @@ failure, and the summary says what to install.
 Neither travels on argv. The key comes from the environment and the seats from a file,
 because argv is world-readable.
 
+A service drain whose PRD is closed, or that has had no open items for several cycles,
+says so in `gbfleet service status` (`PRD closed; not restarting`, or `no open items
+for N cycles; not restarting`) and unloads its unit so the machine supervisor does not
+start it again. A PRD that still has blocked items keeps its schedule. A one-off
+`until` reports the same reasons and does not unload anything. An idle cycle asks only
+whether that PRD still has open items; it does not re-check merges it has already
+recorded or rewrite a dependency hold whose text has not changed.
+
 **Seat mode is still the normal way to run a fleet**: paste a prompt into a terminal and the
 agent registers itself. The supervisor is the advanced path — it cuts a worktree per child and
 reaps them when the wave ends, which is worth it once you are running several at once and not
