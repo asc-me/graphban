@@ -62,9 +62,18 @@ export function measureLine(o: RuleObservationSummary | null | undefined): { kin
     const part = allowed > 0 ? `would have let through ${allowed} file${allowed === 1 ? "" : "s"}` : `would have held ${held} item${held === 1 ? "" : "s"}`;
     return { kind: "plain", text: `${part[0].toUpperCase()}${part.slice(1)} · reported by the fleet supervisor` };
   }
-  if (!o.checks) return { kind: "dashed", text: `Would-have not measured yet · no sign-offs checked since ${since}` };
-  const refused = (o.would_refuse ?? 0) + (o.would_hold ?? 0);
-  return { kind: "plain", text: `Would have refused ${refused} · ${o.checks} sign-offs checked since ${since}` };
+  // Server rule. Its would-have: held (a claim) or refused (a call), as the outcomes say.
+  const held = o.would_hold ?? 0;
+  const refusedN = o.would_refuse ?? 0;
+  const verb = held > 0 && refusedN === 0 ? `Would have held ${held}` : held > 0
+    ? `Would have held ${held}, refused ${refusedN}` : `Would have refused ${refusedN}`;
+  const noun = o.checks_noun;
+  // No counted denominator for this rule: the plain count, which names what it held/refused.
+  if (o.checks == null || !noun) return { kind: "plain", text: observingLabel(o) };
+  if (o.checks === 0 && held + refusedN === 0) {
+    return { kind: "dashed", text: `Would-have not measured yet · no ${noun} checked since ${since}` };
+  }
+  return { kind: "plain", text: `${verb} · ${o.checks} ${noun} checked since ${since}` };
 }
 
 function ObservingRow({

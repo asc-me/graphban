@@ -3558,6 +3558,8 @@ export interface RuleObservationSummary {
   measured_by?: "server" | "supervisor" | "brief";
   /** Server rules: checks that ran since adoption (sign-offs checked). */
   checks?: number | null;
+  /** What a check is ("sign-offs"); null when the server does not count this rule's checks. */
+  checks_noun?: string | null;
   /** Supervisor rules: when the fleet supervisor last reported; null = not yet. */
   last_supervisor_report?: string | null;
 }

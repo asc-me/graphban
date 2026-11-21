@@ -32,7 +32,13 @@ def test_server_rule_zero_carries_checks_and_supervisor_rule_reports(client):
         db.commit()
         out = RO.summary(db, pid, "review.distinct_vendor", since)
         assert out["measured_by"] == "server" and out["would_have"] == 0
-        assert out["checks"] == 1
+        assert out["checks"] == 1 and out["checks_noun"] == "sign-offs"
+        # A server rule checked at claim, not at sign-off, does not claim a sign-off denominator.
+        RO.record(db, pid, "merge.exclusive_areas", "would_hold", item_id=it.id)
+        db.commit()
+        ex = RO.summary(db, pid, "merge.exclusive_areas", since)
+        assert ex["measured_by"] == "server" and ex["would_hold"] == 1
+        assert ex["checks"] is None and ex["checks_noun"] is None
         sup = RO.summary(db, pid, "build.generated_files", since)
         assert sup["measured_by"] == "supervisor" and sup["last_supervisor_report"] is None
         RO.record(db, pid, "build.generated_files", "would_allow", item_id=it.id)

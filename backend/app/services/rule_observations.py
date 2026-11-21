@@ -45,6 +45,12 @@ SUPERVISOR_OUTCOMES = {
 #: supervisor, which may not have reported; `brief` rules are applied by the agent's brief and
 #: record nothing.
 BRIEF_ONLY_RULES = ("build.test_scope", "plan.path_classes")
+#: Server rules whose check runs on a sign-off, so done items since adoption are the checks that
+#: ran. A server rule checked elsewhere (`merge.exclusive_areas` at claim, `build.engine_evidence`
+#: at review) carries `checks: None`: its denominator is not counted, so it is not claimed.
+SIGN_OFF_CHECKED_RULES = ("review.distinct_vendor", "review.sabotage_required",
+                          "merge.done_predicates", "review.gap_blocks_sign_off",
+                          "accept.human_clause_blocks")
 DUE_DAYS = 14
 DUE_OUTCOMES = 10
 
@@ -91,13 +97,16 @@ def measured_by(rule_id: str) -> str:
 def _sources(db: Session, project_id: str | None, rule_id: str,
              since: datetime | None) -> dict:
     """The fields that say who measured the would-have: `measured_by`; for a server rule the
-    `checks` that ran since adoption (sign-offs, the call the rules guard); for a supervisor
+    `checks` that ran since adoption (sign-offs, for a rule checked on a sign-off; None for one
+    checked elsewhere) and their `checks_noun`; for a supervisor
     rule the time of its latest report (`last_supervisor_report`, None until one arrives)."""
     by = measured_by(rule_id)
-    out: dict = {"measured_by": by, "checks": None, "last_supervisor_report": None}
+    out: dict = {"measured_by": by, "checks": None, "checks_noun": None,
+                 "last_supervisor_report": None}
     if not project_id or since is None:
         return out
-    if by == "server":
+    if by == "server" and rule_id in SIGN_OFF_CHECKED_RULES:
+        out["checks_noun"] = "sign-offs"
         out["checks"] = db.scalar(select(func.count()).select_from(Item).where(
             Item.project_id == project_id, Item.done_at.is_not(None),
             Item.done_at >= since)) or 0
