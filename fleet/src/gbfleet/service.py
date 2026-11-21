@@ -994,6 +994,14 @@ def _load_schtasks(plan: Plan) -> str:
     return (out + ("\n" + run_out if run_out else "")).strip() or f"registered {tn}"
 
 
+#: Exit-0 reasons that are not a drained queue. ``""`` is "the log was read and named
+#: nothing" (GRPH-1698). ``stalled`` exits non-zero, so it is excluded from idle
+#: defensively and is not unsettled. ``merge-pending`` exits 0 while a signed-off pull
+#: request is still open (GRPH-1818): reading it as idle is how that PR was left behind.
+_NOT_A_DRAINED_EXIT = frozenset({"", "unready", "stalled", "merge-pending"})
+_UNSETTLED_EXIT = frozenset({"", "unready", "merge-pending"})
+
+
 @dataclass(frozen=True)
 class Status:
     """Three answers about a service, never two.
@@ -1039,8 +1047,12 @@ class Status:
 
     @property
     def idle(self) -> bool:
-        """Installed, not running, and last exited cleanly: the normal state between cycles."""
-        return self._exited_clean and self.run_reason not in ("", "unready", "stalled")
+        """Installed, not running, and last exited cleanly: the normal state between cycles.
+
+        A clean exit whose reason is ``merge-pending`` is not this (GRPH-1818). The pull
+        request is still open.
+        """
+        return self._exited_clean and self.run_reason not in _NOT_A_DRAINED_EXIT
 
     @property
     def _exited_clean(self) -> bool:
@@ -1048,12 +1060,14 @@ class Status:
 
     @property
     def unsettled(self) -> bool:
-        """Exited 0 but NOT idle (GRPH-1698): `reason: unready`, or no readable reason.
+        """Exited 0 but NOT idle: `unready`, `merge-pending`, or no readable reason.
 
         Not a crash either — the drain ran and exited cleanly — so install and doctor must not
-        report it as dead; they print `line()` instead.
+        report it as dead; they print `line()` instead. ``merge-pending`` (GRPH-1818) is a
+        signed-off pull request still open, the same shape as ``unready`` (GRPH-1698): exit 0,
+        queue not drained.
         """
-        return self._exited_clean and self.run_reason in ("", "unready")
+        return self._exited_clean and self.run_reason in _UNSETTLED_EXIT
 
     def line(self) -> str:
         where = self.kind
@@ -1083,6 +1097,9 @@ class Status:
             if self.run_reason == "unready":
                 return (f"{self.name}: unready, last exit 0, {self.unready} line item(s) "
                         f"filed but not claimable ({where}, {self.unit_path})")
+            if self.run_reason == "merge-pending":
+                return (f"{self.name}: merge-pending, last exit 0, a signed-off pull "
+                        f"request is still open ({where}, {self.unit_path})")
             return (f"{self.name}: last exit 0, reason unknown ({where}, {self.unit_path})")
         exit_code = "unknown" if self.last_exit is None else str(self.last_exit)
         said = f" — {self.reason}" if self.reason else ""

@@ -733,6 +733,47 @@ def test_exit_zero_empty_queue_is_idle():
     assert s.idle and "idle between runs" in s.line()
 
 
+def test_exit_zero_merge_pending_is_not_idle():
+    """GRPH-1818. ``until`` exits 0 with ``reason: merge-pending`` while a signed-off
+    pull request is still open. That record is not a drained queue.
+
+    Sabotage: drop ``merge-pending`` from ``_NOT_A_DRAINED_EXIT`` and this is idle
+    and says "idle between runs".
+    """
+    pending = _drain(run_reason="merge-pending")
+    assert not pending.idle
+    line = pending.line()
+    assert "merge-pending" in line
+    assert "idle between runs" not in line
+    assert "drained" not in line
+    # The other two exit-0 readings stay where they were.
+    assert not _drain(run_reason="unready", unready=1).idle
+    assert _drain(run_reason="idle").idle
+
+
+def test_status_reads_a_merge_pending_record_as_not_idle(tmp_path: Path, monkeypatch):
+    """The call, not the property: ``service.status`` reads the newest until JSON.
+
+    Sabotage: stop passing ``run_reason`` from ``last_run`` into ``Status`` and
+    this says "idle between runs".
+    """
+    name = "drain-1818"
+    log = tmp_path / "logs" / f"{name}.log"
+    log.parent.mkdir()
+    log.write_text(
+        '{"ok": false, "reason": "merge-pending", "exit": 0, '
+        '"waits": ["GRPH-1: MERGE PENDING"]}\n',
+        encoding="utf-8",
+    )
+    state = _stopped_unit(tmp_path, monkeypatch, name, 0)
+    assert state.run_reason == "merge-pending"
+    assert not state.idle
+    line = state.line()
+    assert "merge-pending" in line
+    assert "idle between runs" not in line
+    assert "drained" not in line
+
+
 def test_exit_zero_without_reason_is_unknown_not_idle():
     s = _drain(run_reason="")
     assert not s.idle and "reason unknown" in s.line()

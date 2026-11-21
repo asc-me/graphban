@@ -199,3 +199,57 @@ def test_an_unsettled_exit_0_does_not_fail_the_install(
     assert code == 0, out.err
     assert says in out.out
     assert "NOT running" not in out.err and "NOT running" not in out.out
+
+
+def test_service_status_names_merge_pending_and_not_a_drained_queue(
+        git_repo: Path, monkeypatch, capsys):
+    """GRPH-1818. ``gbfleet service status`` prints the until record's reason.
+
+    Sabotage: make ``_service_status`` print "idle between runs" whenever
+    ``last_exit == 0``, and this output no longer names merge-pending.
+    """
+    monkeypatch.setattr(service, "host", lambda: service.Host("launchd"))
+    monkeypatch.setattr(service, "installed_names", lambda kind="": ["drain"])
+
+    def fake(name, kind=""):
+        return service.Status(
+            name=name, kind="launchd", installed=True, running=False, last_exit=0,
+            unit_path=service.unit_path_for(name, "launchd"), path_env="/usr/bin",
+            run_reason="merge-pending")
+
+    monkeypatch.setattr(service, "status", fake)
+    code = main(["service", "status", "--name", "drain"])
+    out = capsys.readouterr()
+    assert code == 0, out.err
+    assert "merge-pending" in out.out
+    assert "idle between runs" not in out.out
+    assert "drained" not in out.out
+    assert "no ready work" not in out.out
+
+
+def test_install_of_a_merge_pending_exit_does_not_say_the_queue_drained(
+        git_repo: Path, monkeypatch, quick, capsys):
+    """The install caller uses ``Status.idle``. A merge-pending exit 0 must not
+    take the "no ready work" branch.
+
+    Sabotage: drop the ``unsettled`` branch in ``cli._service`` and this exits 1
+    with "NOT running".
+    """
+    plan = _plan(git_repo, kind="systemd")
+
+    def fake(n, kind=""):
+        return service.Status(
+            name=n, kind="systemd", installed=True, running=False, last_exit=0,
+            unit_path=service.unit_path_for(n, "systemd"), path_env="/usr/bin",
+            run_reason="merge-pending")
+
+    monkeypatch.setenv(service.API_KEY_ENV, KEY)
+    monkeypatch.setattr(service, "make_plan", lambda rest, **kw: plan)
+    monkeypatch.setattr(service, "status", fake)
+    code = main(["service", "install", "--", *_args(git_repo)])
+    out = capsys.readouterr()
+    assert code == 0, out.err
+    assert "merge-pending" in out.out
+    assert "NOT running" not in out.err and "NOT running" not in out.out
+    assert "no ready work" not in out.out
+    assert "drained" not in out.out
