@@ -1404,12 +1404,32 @@ def _loop(
         try:
             need = _wanted_workers(planner, supervisor, live_n=len(live),
                                    max_workers=limits.max_workers, prd=prd, line=line)
-        except ServerUnreachable as exc:
+        except (ServerUnreachable, ToolFailed) as exc:
             # D-i: no new spawns while unreachable. Live children run to their lease.
+            # GRPH-1813: with nobody live this is not the spawn cap. A fleet_status
+            # timeout (or a tool error after the read's retries) used to exit `cap`
+            # with spawned 0, which reads as the operator's own limit. Name the
+            # unread roster and keep the error text. `cap` stays the exit where
+            # spawned reached `--max-children`.
             wd.retry("wanted_workers", exc)
-            if not live:
-                wave.reason = "cap"
-                raise CapError("cap", "server unreachable with no live children")
+            if not live and _roster_read_failed(exc):
+                wave.reason = "roster_unreadable"
+                raise CapError(
+                    "roster_unreadable",
+                    f"fleet_status unreadable in wanted_workers: {exc}",
+                )
+            if not live and isinstance(exc, ServerUnreachable):
+                # collision_clusters runs before fleet_status. Its timeout is the
+                # same lie as the roster one: spawned is still 0, so this is not
+                # `--max-children`. Name the call and keep the error.
+                tool = getattr(exc, "tool", "") or "wanted_workers"
+                wave.reason = "server_unreachable"
+                raise CapError(
+                    "server_unreachable",
+                    f"{tool} unreachable in wanted_workers: {exc}",
+                )
+            if isinstance(exc, ToolFailed):
+                raise
             sleep(poll)
             continue
 
@@ -3635,6 +3655,16 @@ def _children_counted(wave) -> tuple[int, set[str], set[str]]:
         if not child.running:
             exited_for.update(items)
     return counted, seen, exited_for
+
+
+def _roster_read_failed(exc: BaseException) -> bool:
+    """The failure is the `fleet_status` read, not another call worker-sizing makes.
+
+    A timeout and an HTTP 5xx both arrive as `ServerUnreachable` with `tool` set to
+    the call. A tool error arrives as `ToolFailed` the same way. `collision_clusters`
+    failing is not an unread roster.
+    """
+    return getattr(exc, "tool", "") == "fleet_status"
 
 
 def _wanted_workers(
