@@ -169,6 +169,13 @@ describe("the PRD editor's six tabs (PRD-47 S4)", () => {
     expect(grill.textContent).not.toContain("✦");
   });
 
+  it("shows the PRD AI commands in the toolbar (PRD-47 S4)", async () => {
+    await show();
+    expect(screen.getByRole("button", { name: "Expand" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate risks" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Summarize" })).toBeInTheDocument();
+  });
+
   it("mounts the acceptance panel on the acceptance tab", async () => {
     await show();
     await openTab("acceptance");
