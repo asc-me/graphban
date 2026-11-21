@@ -26,11 +26,11 @@ import shlex
 import shutil
 import subprocess
 import sys
-import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from gban import client as _client
 from gban import codemap, config
 
 API_KEY_ENV = "GBFLEET_API_KEY"  # what `gban code map` reads (doctor.SUPERVISOR_KEY_ENV)
@@ -96,7 +96,7 @@ def unit_paths(sid: str, kind: str) -> list[Path]:
 
 def _run(cmd: list[str], timeout: float = 20.0) -> tuple[int, str]:
     try:
-        done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
     except (OSError, subprocess.SubprocessError) as exc:
         return 1, str(exc)
     return done.returncode, (done.stdout + done.stderr).strip()
@@ -387,10 +387,18 @@ def refresh(repo: Path, call, mode: str) -> dict:
         codemap.apply(counted, built, planned)
         rec.update(outcome="ok", nodes=total)
     except codemap.MapError as exc:
-        rec.update(stage="map", reason=str(exc), nodes_done=state["done"], nodes_total=total)
-        if state["done"] > 0:
-            rec["outcome"] = "partial"
+        _failed(rec, "map", str(exc), state["done"], total)
+    except (_client.Unreachable, _client.Refused, _client.NoSession) as exc:
+        # The server is down, refused the key, or there is no session: still one log line,
+        # recorded as failed (or partial), so status never reads the previous run as current.
+        _failed(rec, "server", f"{type(exc).__name__}: {exc}", state["done"], total)
     return rec
+
+
+def _failed(rec: dict, stage: str, reason: str, done: int, total: int) -> None:
+    rec.update(stage=stage, reason=reason, nodes_done=done, nodes_total=total)
+    if done > 0:
+        rec["outcome"] = "partial"
 
 
 def record_run(sid: str, repo: Path, call, nightly: tuple[int, int],

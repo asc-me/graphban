@@ -2,16 +2,16 @@
 from __future__ import annotations
 
 import plistlib
-import subprocess
 from datetime import datetime
-from pathlib import Path
 
 import pytest
-
-from gban import codemap, codemap_service as svc, config
-from gban.cli import main
-from test_codemap import FakeGraph, _git
+from test_codemap import _git
 from test_codemap_since import PinnedGraph, _origin
+
+from gban import codemap, config
+from gban import codemap_service as svc
+from gban.cli import main
+from gban.client import NoSession, Refused, Unreachable
 
 KEY = "gb_sk_supersecretkey123456"
 
@@ -134,7 +134,6 @@ def test_failed_fetch_is_failed_never_current(tmp_path, home):
 
 def test_partial_run_reports_counts(tmp_path, home):
     work = _origin(tmp_path)
-    graph = PinnedGraph()
 
     class Flaky(PinnedGraph):
         def __call__(self, tool, args):
@@ -177,3 +176,22 @@ def test_launchd_install_needs_no_getuid(tmp_path, home, monkeypatch):
     assert ["launchctl", "bootstrap", "gui/0", str(plan.units[0])] in home[1]
     svc.uninstall(plan.sid, "launchd")
     assert not plan.units[0].exists()
+
+
+@pytest.mark.parametrize("exc", [
+    lambda: Unreachable("connection refused"),
+    lambda: Refused(401, "key revoked"),
+    lambda: NoSession("session expired"),
+])
+def test_server_failure_is_recorded_as_failed(tmp_path, home, exc):
+    work = _origin(tmp_path)
+    sid = svc.service_id(work.resolve())
+    svc.record_run(sid, work, PinnedGraph(), (3, 0), datetime(2026, 1, 1, 10, 0))
+
+    def down(tool, args):
+        raise exc()
+
+    rec = svc.record_run(sid, work, down, (3, 0), datetime(2026, 1, 1, 11, 0))
+    assert rec["outcome"] == "failed" and rec["stage"] == "server"
+    assert len(svc.read_log(sid)) == 2
+    assert svc.status_lines(work, "systemd")[0].startswith("last run failed: server: ")
