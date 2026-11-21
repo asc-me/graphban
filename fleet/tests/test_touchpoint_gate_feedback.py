@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 from gbfleet import touchpoints as tp
-from gbfleet.cli import gate_report, main
+from gbfleet.cli import RULE_UNREAD, gate_report, main
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -27,11 +27,19 @@ def test_gate_report_is_empty_when_covered_or_undeclared_or_generated():
 
 
 def test_cli_check_touchpoints_exit_codes(git_repo: Path, capsys):
+    """No seat in the checkout: the built-in list, and the output says the rule was not read.
+
+    `$GBFLEET_API_KEY` alone is not the seat — this process often has one, and treating
+    it as a server would either call the wrong place or read as a clean rule.
+    """
     (git_repo / "new.py").write_text("x = 1\n", encoding="utf-8")
     assert main(["check-touchpoints", "--path", str(git_repo), "--item", "GRPH-9",
                  "--declared", "other.py"]) == 1
-    assert "new.py" in capsys.readouterr().out
+    refused = capsys.readouterr().out
+    assert "new.py" in refused and RULE_UNREAD in refused
     assert main(["check-touchpoints", "--path", str(git_repo), "--declared", "new.py"]) == 0
+    covered = capsys.readouterr().out
+    assert "new.py" not in covered and RULE_UNREAD in covered
 
 
 # ---- GRPH-1591: a refused gate holds the item out of review ------------------------------------
