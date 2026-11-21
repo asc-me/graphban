@@ -755,15 +755,40 @@ def split_by_item(repo: Path, branch: str, base: str,
     return [(b[0], list(b[1])) for b in blocks], ""
 
 
-def replay_onto(repo: Path, base: str, commits: list[str]) -> tuple[str, str]:
-    """Replay `commits` onto `base`. `(sha, "")`, or `("", why)` naming the commit that
-    would not apply (GRPH-1086).
+def _patch_does_not_apply(proc: subprocess.CompletedProcess) -> bool:
+    """Whether git refused because the patch does not apply (GRPH-1093).
+
+    A conflict says CONFLICT, or that the commit could not be applied. A missing
+    committer identity also leaves CHERRY_PICK_HEAD — the patch is applied and the
+    commit is what fails — so that marker is not a conflict. Treating it as one
+    reports every other failure as a dependency.
+    """
+    text = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+    return "CONFLICT" in text or "could not apply" in text
+
+
+def _git_last_line(proc: subprocess.CompletedProcess) -> str:
+    """The last non-empty line git printed, stderr before stdout."""
+    for blob in (proc.stderr, proc.stdout):
+        lines = [ln.strip() for ln in (blob or "").splitlines() if ln.strip()]
+        if lines:
+            return lines[-1][:160]
+    return str(proc.returncode)
+
+
+def replay_onto(repo: Path, base: str, commits: list[str], *,
+                item: str = "") -> tuple[str, str]:
+    """Replay `commits` onto `base`. `(sha, "")`, or `("", why)` (GRPH-1086, GRPH-1093).
 
     Done in a throwaway worktree so the caller's checkout stays where it is. A commit
     whose parent is the current tip fast-forwards, which keeps the original sha for a
     prefix of the branch. Anything else is cherry-picked, so the result contains those
     commits and not the other item's. A patch that needs the other item's tree does not
     apply; that is the refusal, and the branch is left uncut.
+
+    Any other failure — no committer identity, a signing hook, a lock — is git's own
+    last line, `could not cut <item>: …`. Reporting it as a dependency points at the
+    history when the cause is the environment.
     """
     if not commits:
         return "", "there are no commits to cut"
@@ -791,7 +816,10 @@ def replay_onto(repo: Path, base: str, commits: list[str]) -> tuple[str, str]:
             if picked.returncode != 0:
                 subprocess.run(["git", "cherry-pick", "--abort"], cwd=str(wt),
                                capture_output=True, text=True, env=env)
-                return "", f"commit {sha[:12]} depends on an earlier item's commit"
+                if _patch_does_not_apply(picked):
+                    return "", f"commit {sha[:12]} depends on an earlier item's commit"
+                who = item or sha[:12]
+                return "", f"could not cut {who}: {_git_last_line(picked)}"
         tip = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=str(wt), capture_output=True, text=True)
         if tip.returncode != 0 or not (tip.stdout or "").strip():

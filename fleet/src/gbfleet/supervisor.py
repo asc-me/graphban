@@ -3600,7 +3600,7 @@ def _propose_per_item(wave: Wave, repo: Path, branch: str, items: list[str], bas
         return
     cut: list[tuple[str, str, str]] = []
     for item, shas in blocks:
-        sha, err = propose_mod.replay_onto(repo, base, shas)
+        sha, err = propose_mod.replay_onto(repo, base, shas, item=item)
         if err:
             _refuse_mixed(wave, branch, items, err, client=client)
             return
