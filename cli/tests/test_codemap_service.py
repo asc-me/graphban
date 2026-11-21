@@ -195,3 +195,57 @@ def test_server_failure_is_recorded_as_failed(tmp_path, home, exc):
     assert rec["outcome"] == "failed" and rec["stage"] == "server"
     assert len(svc.read_log(sid)) == 2
     assert svc.status_lines(work, "systemd")[0].startswith("last run failed: server: ")
+
+
+# --- the stack map step (GRPH-1826) ---------------------------------------------------------
+
+def _compose(work, name):
+    (work / "compose.yml").write_text(
+        f"services:\n  {name}:\n    build: .\n    image: x\n")
+    (work / "Dockerfile").write_text("FROM python:3.12\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-m", f"compose {name}")
+    _git(work, "push", "origin", "main")
+
+
+def _names(record):
+    return {c.get("id") for c in record.get("components", [])}
+
+
+def test_stack_posts_at_target_not_head_and_current_posts_nothing(tmp_path, home):
+    work = _origin(tmp_path)
+    _compose(work, "alpha")
+    target = codemap.head(work)
+    # local HEAD moves away from the target with a different producer input
+    (work / "compose.yml").write_text("services:\n  beta:\n    build: .\n    image: x\n")
+    _git(work, "commit", "-am", "local only")
+    assert codemap.head(work) != target
+    posted = []
+    graph = PinnedGraph()
+    sid = svc.service_id(work.resolve())
+    rec = svc.record_run(sid, work, graph, (3, 0), datetime(2026, 1, 1, 10, 0),
+                         stack_post=posted.append, project="p1")
+    assert rec["outcome"] == "ok" and rec["stack"] == "ok" and rec["sha"] == target
+    assert len(posted) == 1 and posted[0]["mapped_sha"] == target
+    names = _names(posted[0])
+    assert "alpha" in names and "beta" not in names  # sabotage: build from HEAD fails this
+    assert f"stack map: ok at {target[:12]}" in svc.status_lines(work, "systemd")
+    # a current run posts nothing
+    rec = svc.record_run(sid, work, graph, (3, 0), datetime(2026, 1, 1, 11, 0),
+                         stack_post=posted.append, project="p1")
+    assert rec["note"] == "current" and "stack" not in rec and len(posted) == 1
+
+
+def test_refused_stack_post_is_its_own_failure(tmp_path, home):
+    work = _origin(tmp_path)
+    _compose(work, "alpha")
+
+    def refuse(record):
+        raise Refused(422, "bad")
+
+    sid = svc.service_id(work.resolve())
+    rec = svc.record_run(sid, work, PinnedGraph(), (3, 0), datetime(2026, 1, 1, 10, 0),
+                         stack_post=refuse, project="p1")
+    assert rec["outcome"] == "ok" and rec["stack"] == "failed"
+    assert rec["stack_reason"]
+    assert any(ln.startswith("stack map: failed: ") for ln in svc.status_lines(work, "systemd"))
