@@ -38,6 +38,7 @@ from app.schemas import (
     InviteCreate,
     InviteOut,
     InvitePreviewOut,
+    MyInviteOut,
     OrgCreate,
     GrantRevokedOut,
     MemberRemovedOut,
@@ -500,6 +501,40 @@ def revoke_invite(
     orgs_svc.revoke_invite(db, invite)
     events_svc.record_user(db, user, action="revoke_org_invite", target_type="org_invite",
                            target_id=invite.id, meta={"org_id": org_id})
+
+
+@router.get("/me/invites", response_model=list[MyInviteOut])
+def my_invites(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Pending, unexpired invitations addressed to the caller's email."""
+    out = []
+    for i in orgs_svc.my_pending_invites(db, user):
+        org = db.get(Organization, i.org_id)
+        if org is None:
+            continue
+        inviter = db.get(User, i.invited_by)
+        out.append(MyInviteOut(
+            id=i.id, token=i.token, org_id=org.id, org_name=org.name, role=i.role,
+            invited_by=(inviter.name or inviter.handle) if inviter else "",
+            created_at=i.created_at, expires_at=i.expires_at))
+    return out
+
+
+@router.post("/me/invites/{invite_id}/decline", status_code=204)
+def decline_my_invite(invite_id: str, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    invite = orgs_svc.decline_invite(db, invite_id, user)
+    events_svc.record_user(db, user, action="decline_org_invite", target_type="org_invite",
+                           target_id=invite.id, meta={"org_id": invite.org_id})
+
+
+@router.delete("/orgs/{org_id}/me", response_model=MemberRemovedOut)
+def leave_org(org_id: str, db: Session = Depends(get_db),
+              user: User = Depends(get_current_user)):
+    """Leave an org. The only owner is refused (409) with a reason to show inline."""
+    result = orgs_svc.leave_org(db, org_id, user)
+    events_svc.record_user(db, user, action="leave_org", target_type="org_membership",
+                           target_id=f"{org_id}:{user.id}", meta=result)
+    return MemberRemovedOut(**result)
 
 
 @router.get("/invites/{token}/preview", response_model=InvitePreviewOut)
