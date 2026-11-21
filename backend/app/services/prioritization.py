@@ -112,12 +112,22 @@ def prioritized(
     project_id: str | None,
     statuses: tuple[str, ...] = ("backlog", "next"),
     include_blocked: bool = True,
+    line_id: str | None = None,
 ) -> list[dict]:
-    """Backlog/next items with priority metadata, ready-first then by score."""
+    """Backlog/next items with priority metadata, ready-first then by score.
+
+    `line_id`, when set, is the line's frozen id. Rows on any other line, and rows
+    on no line, are left out — an omitted filter is the whole project, and a filter
+    that did not match must not look like that (GRPH-1799). The caller resolves a
+    key to the frozen id; this compares the column, so a rendering passed through
+    cannot match by accident and report an empty line that is not empty.
+    """
     ctx = context(db, project_id)
     out = []
     for it in ctx.items:
         if it.status not in statuses:
+            continue
+        if line_id is not None and it.line_id != line_id:
             continue
         blk = blocked_by(ctx, it)
         is_ready = not it.blocker and not blk
