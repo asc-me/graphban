@@ -303,3 +303,124 @@ def test_presence_is_pinned_to_its_project(db, decoy):
     assert not (seen & set(decoy["areas"])), f"presence leaked another project's areas: {seen}"
     assert decoy["agent_id"] not in holders, "presence leaked another project's agent"
     assert out["total"] == 1, f"total counts rows outside the project: {out['total']}"
+
+
+# ── GRPH-1069: a long tool call keeps the claim; a dead child does not ────────
+
+#: The report's tool call. Longer than the 150s presence TTL, shorter than the lease.
+_TOOL_CALL_SECONDS = 300
+
+
+def _open_attempt(db, label: str):
+    """An in-progress item, its worker, and a linked attempt that has not ended."""
+    from app.models import Agent, Delegation
+    from app.services import items as items_svc
+
+    worker = _agent(db, label=f"{label}-child")
+    delegator = _agent(db, label=f"{label}-planner")
+    item = items_svc.create_item(
+        db, title=label, project_id="core", status="in_progress", kind="chore")
+    now = datetime.now(timezone.utc)
+    item.claimed_by = worker
+    item.built_by = worker
+    item.claimed_at = now
+    item.assignee = worker
+    item.branch = "gb/obs"
+    agent = db.get(Agent, worker)
+    assert agent is not None
+    agent.last_seen_at = now
+    agent.state = "working"
+    attempt = Delegation(
+        id=f"d-{item.id}", project_id="core", item_id=item.id,
+        delegated_by=delegator, agent_id=worker, linked_by="seat",
+        lane="backend", requested_tier="cheap", claimed_at=now, lease_seconds=600,
+    )
+    db.add(attempt)
+    db.commit()
+    db.refresh(item)
+    return item, agent, attempt
+
+
+def test_a_five_minute_tool_call_keeps_the_claim_and_writes_no_released(db):
+    """Six beats, each arriving after presence has already lapsed, cover more than
+    five minutes. The supervisor posts the lease before `fleet_status` requeues, so
+    the item stays `in_progress` and the attempt stays open.
+
+    Sabotage: delete `agent.last_seen_at = now` in `_record_lease`. The first requeue
+    after the aged stamp releases the item, and `item.id not in released` fails.
+    """
+    item, agent, attempt = _open_attempt(db, "five-minute-call")
+    ttl = fleet_svc.presence_ttl_seconds()
+    beats = 6
+    assert beats * (ttl + 1) >= _TOOL_CALL_SECONDS
+    who = agent.id
+
+    for _ in range(beats):
+        agent.last_seen_at = datetime.now(timezone.utc) - timedelta(seconds=ttl + 1)
+        db.flush()
+        reply = fleet_svc._record_lease(
+            db, item, branch="gb/obs", agent_id=who, commit=None)
+        assert reply["extended"] is True
+        db.flush()
+        released = fleet_svc.requeue_offline_items(db, project_id="core")
+        assert item.id not in released
+        db.refresh(item)
+        assert item.status == "in_progress"
+        assert item.claimed_by == who
+        db.refresh(attempt)
+        assert attempt.outcome is None
+
+
+def test_a_dead_child_requeues_within_one_presence_ttl(db):
+    """Posts have stopped. Exactly one TTL is still present (`>` , not `>=`). One
+    second inside that bound, `requeue_offline_items` leaves the item; two seconds
+    past it, the item is `next` and the attempt is `released`. `claimed_at` is still
+    well inside the item lease, so this is the presence clock.
+
+    Sabotage: stop the proxy posts — do not call `_record_lease` again after the
+    stamp ages past the TTL. This test is that stop. Raising the TTL would keep the
+    aged stamp inside the window and the release assertion would fail.
+    """
+    from app.services.items import DEFAULT_LEASE_SECONDS
+
+    item, agent, attempt = _open_attempt(db, "dead-child")
+    who = agent.id
+    ttl = fleet_svc.presence_ttl_seconds()
+    reply = fleet_svc._record_lease(
+        db, item, branch="gb/obs", agent_id=who, commit=None)
+    assert reply["extended"] is True
+    db.flush()
+    db.refresh(item)
+
+    seen = datetime.now(timezone.utc) - timedelta(seconds=ttl)
+    agent.last_seen_at = seen
+    # Equal to the TTL is not offline. A microsecond past it is.
+    assert fleet_svc.presence_state(agent, now=seen + timedelta(seconds=ttl)) != "offline"
+    assert fleet_svc.presence_state(
+        agent, now=seen + timedelta(seconds=ttl, microseconds=1)) == "offline"
+
+    agent.last_seen_at = datetime.now(timezone.utc) - timedelta(seconds=ttl - 1)
+    db.flush()
+    db.refresh(item)
+    lease_age = (datetime.now(timezone.utc) - fleet_svc._aware(item.claimed_at)).total_seconds()
+    assert lease_age < DEFAULT_LEASE_SECONDS
+    held = fleet_svc.requeue_offline_items(db, project_id="core")
+    assert item.id not in held
+    db.refresh(item)
+    db.refresh(attempt)
+    assert item.status == "in_progress" and item.claimed_by == who
+    assert attempt.outcome is None
+
+    agent.last_seen_at = datetime.now(timezone.utc) - timedelta(seconds=ttl + 2)
+    db.flush()
+    db.refresh(item)
+    lease_age = (datetime.now(timezone.utc) - fleet_svc._aware(item.claimed_at)).total_seconds()
+    assert lease_age < 30
+    assert lease_age < DEFAULT_LEASE_SECONDS
+    released = fleet_svc.requeue_offline_items(db, project_id="core")
+    assert item.id in released
+    db.refresh(item)
+    db.refresh(attempt)
+    assert item.status == "next"
+    assert item.claimed_by is None
+    assert attempt.outcome == "released"
