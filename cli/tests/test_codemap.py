@@ -28,13 +28,16 @@ def _repo(tmp_path: Path) -> Path:
         "README.md": "# Hello\n",
         "uv.lock": "lock\n",
         "dist-release/x.py": "x = 1\n",
-        "logo.png": "\x89PNG\0\0",
     }
+    blobs = {"logo.png": b"\x89PNG\0\0"}
     for name, body in files.items():
         f = tmp_path / name
         f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(body)
+        f.write_bytes(body.encode("utf-8"))  # bytes: no CRLF or cp1252 on Windows
+    for name, data in blobs.items():
+        (tmp_path / name).write_bytes(data)
     _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "config", "core.autocrlf", "false")
     _git(tmp_path, "add", "-A")
     _git(tmp_path, "commit", "-m", "init")
     return tmp_path
