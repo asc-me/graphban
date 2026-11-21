@@ -1,9 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import * as React from "react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { PasswordCard } from "@/features/profile/PasswordCard";
 import { SettingsView } from "@/features/settings/SettingsView";
 
 const api = vi.hoisted(() => ({
@@ -27,34 +29,45 @@ vi.mock("@/lib/queries", () => ({
   useApiKeys: () => ({ data: [] }),
   useMembers: () => ({ data: [] }),
   usePlatform: () => ({ data: null }),
-  // The settings view now also renders the deployment credentials panel (PRD-25 S5), so a
-  // whole-module mock has to answer for its hooks too.
   useCredentials: () => ({ data: { credentials: [] }, isLoading: false }),
   useReindexStatus: () => ({ data: { running: false, tables: [] } }),
-  // The panel's model-load reading. Undefined data renders nothing, which is what a
-  // test about credentials wants — the reading has its own tests.
   useModelLoads: (_projectId: string) => ({ data: undefined }),
-  // The credentials panel colours each project tag with that project's accent (PRD-25 S5).
   useProjects: () => ({ data: [] }),
 }));
 
-function renderSettings() {
+function wrap(ui: React.ReactNode, path = "/") {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter>
-        <SettingsView />
-      </MemoryRouter>
+      <MemoryRouter initialEntries={[path]}>{ui}</MemoryRouter>
     </QueryClientProvider>,
   );
 }
 
-async function openAccountTab() {
+// Password moved from Settings → Account to the profile page (GRPH-1792).
+async function openPasswordCard() {
   const user = userEvent.setup();
-  renderSettings();
-  await user.click(screen.getByRole("link", { name: "Account" }));
+  wrap(<PasswordCard />);
   return user;
 }
+
+describe("Settings → Account is gone", () => {
+  it("has no Account entry in the settings nav", () => {
+    wrap(<SettingsView />, "/settings/project/members");
+    expect(screen.queryByRole("link", { name: "Account" })).not.toBeInTheDocument();
+  });
+
+  it("sends the old Account route to the profile page", () => {
+    wrap(
+      <Routes>
+        <Route path="/settings/*" element={<SettingsView />} />
+        <Route path="/profile" element={<div>profile page</div>} />
+      </Routes>,
+      "/settings/account",
+    );
+    expect(screen.getByText("profile page")).toBeInTheDocument();
+  });
+});
 
 /**
  * There was no password UI at all before GRPH-219 — and no endpoint behind the missing
@@ -62,14 +75,14 @@ async function openAccountTab() {
  * which makes this the first thing they need and the one credential most likely to have
  * been pasted somewhere it shouldn't live.
  */
-describe("Account → password", () => {
+describe("Profile → password", () => {
   beforeEach(() => {
     api.changePassword.mockReset();
     api.changePassword.mockResolvedValue(undefined);
   });
 
   it("sends the change and confirms it", async () => {
-    const user = await openAccountTab();
+    const user = await openPasswordCard();
 
     await user.type(screen.getByPlaceholderText("Current password"), "old-password");
     await user.type(screen.getByPlaceholderText("New password"), "a-new-password");
@@ -83,7 +96,7 @@ describe("Account → password", () => {
   });
 
   it("will not submit when the confirmation does not match", async () => {
-    const user = await openAccountTab();
+    const user = await openPasswordCard();
 
     await user.type(screen.getByPlaceholderText("Current password"), "old-password");
     await user.type(screen.getByPlaceholderText("New password"), "a-new-password");
@@ -95,7 +108,7 @@ describe("Account → password", () => {
   });
 
   it("will not submit a password shorter than the signup floor", async () => {
-    const user = await openAccountTab();
+    const user = await openPasswordCard();
 
     await user.type(screen.getByPlaceholderText("Current password"), "old-password");
     await user.type(screen.getByPlaceholderText("New password"), "short");
@@ -111,7 +124,7 @@ describe("Account → password", () => {
     api.changePassword.mockRejectedValue(
       new Error(JSON.stringify({ detail: "current password is incorrect" })),
     );
-    const user = await openAccountTab();
+    const user = await openPasswordCard();
 
     await user.type(screen.getByPlaceholderText("Current password"), "wrong");
     await user.type(screen.getByPlaceholderText("New password"), "a-new-password");

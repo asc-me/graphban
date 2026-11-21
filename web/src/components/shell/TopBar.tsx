@@ -1,4 +1,4 @@
-import { ChevronDown, LogOut, Megaphone, Search, Settings, UserRound } from "lucide-react";
+import { Building2, ChevronDown, LogOut, Megaphone, Search, UserRound } from "lucide-react";
 import * as React from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -122,13 +122,13 @@ export function TopBar({
               aria-label={user.name}
               className="flex h-9 items-center gap-2 rounded-full border border-control bg-surface py-0.5 pl-0.5 pr-2 transition-colors hover:border-control-hover"
             >
-              <Avatar initials={user.initials} color={user.avatar} size={28} />
+              <Avatar initials={user.initials} color={user.avatar} color2={user.avatar2} pattern={user.avatar_pattern} size={28} />
               <ChevronDown size={12} className="text-faint" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-[250px]">
             <div className="flex items-center gap-3 px-2 pb-3 pt-2">
-              <Avatar initials={user.initials} color={user.avatar} size={38} />
+              <Avatar initials={user.initials} color={user.avatar} color2={user.avatar2} pattern={user.avatar_pattern} size={38} />
               <div className="min-w-0">
                 <div className="truncate text-[13px] font-semibold">{user.name}</div>
                 <div className="truncate font-mono text-small text-muted">@{user.handle}</div>
@@ -139,9 +139,9 @@ export function TopBar({
               <UserRound size={14} className="text-muted" />
               Profile
             </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => navigate("/settings")}>
-              <Settings size={14} className="text-muted" />
-              Settings
+            <DropdownMenuItem onSelect={() => navigate("/profile#organizations")}>
+              <Building2 size={14} className="text-muted" />
+              Organizations
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={() => setReportOpen(true)}>
