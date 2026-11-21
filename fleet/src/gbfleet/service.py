@@ -106,8 +106,12 @@ QUIET_CYCLES = 3
 REASON_PRD_CLOSED = "prd-closed"
 REASON_NO_OPEN = "no-open-items"
 #: Clean exits that are NOT "idle between runs". `prd-closed` and `no-open-items`
-#: would otherwise print as a healthy idle, and launchd would keep starting them.
-_NOT_BETWEEN_RUNS = ("", "unready", "stalled", REASON_PRD_CLOSED, REASON_NO_OPEN)
+#: would otherwise print as a healthy idle, and launchd would keep starting them
+#: (GRPH-1645). ``merge-pending`` is an exit 0 while a signed-off pull request is
+#: still open (GRPH-1818).
+_NOT_BETWEEN_RUNS = (
+    "", "unready", "stalled", "merge-pending", REASON_PRD_CLOSED, REASON_NO_OPEN,
+)
 
 #: How long `install` waits before asking whether the job survived. Not tuning: `until`
 #: reaches the repo lock, the server and its first refusal in well under a second, so an
@@ -1078,6 +1082,15 @@ def _load_schtasks(plan: Plan) -> str:
     return (out + ("\n" + run_out if run_out else "")).strip() or f"registered {tn}"
 
 
+#: ``idle`` consults this set: ``_NOT_BETWEEN_RUNS``. ``""`` is "the log was read and
+#: named nothing" (GRPH-1698). ``stalled`` exits non-zero, so it is excluded from idle
+#: defensively and is not unsettled. ``merge-pending`` exits 0 while a signed-off pull
+#: request is still open (GRPH-1818): reading it as idle is how that PR was left behind.
+#: ``prd-closed`` and ``no-open-items`` are the same exclusion (GRPH-1645).
+_NOT_A_DRAINED_EXIT = frozenset(_NOT_BETWEEN_RUNS)
+_UNSETTLED_EXIT = frozenset({"", "unready", "merge-pending"})
+
+
 @dataclass(frozen=True)
 class Status:
     """Three answers about a service, never two.
@@ -1127,9 +1140,10 @@ class Status:
 
         A closed PRD and a PRD with nothing open for several cycles are clean exits
         that must not read as "idle between runs" — that reading is what kept
-        launchd restarting them (GRPH-1645).
+        launchd restarting them (GRPH-1645). A clean exit whose reason is
+        ``merge-pending`` is not this either (GRPH-1818): the pull request is still open.
         """
-        return self._exited_clean and self.run_reason not in _NOT_BETWEEN_RUNS
+        return self._exited_clean and self.run_reason not in _NOT_A_DRAINED_EXIT
 
     @property
     def _exited_clean(self) -> bool:
@@ -1137,12 +1151,14 @@ class Status:
 
     @property
     def unsettled(self) -> bool:
-        """Exited 0 but NOT idle (GRPH-1698): `reason: unready`, or no readable reason.
+        """Exited 0 but NOT idle: `unready`, `merge-pending`, or no readable reason.
 
         Not a crash either — the drain ran and exited cleanly — so install and doctor must not
-        report it as dead; they print `line()` instead.
+        report it as dead; they print `line()` instead. ``merge-pending`` (GRPH-1818) is a
+        signed-off pull request still open, the same shape as ``unready`` (GRPH-1698): exit 0,
+        queue not drained.
         """
-        return self._exited_clean and self.run_reason in ("", "unready")
+        return self._exited_clean and self.run_reason in _UNSETTLED_EXIT
 
     def line(self) -> str:
         where = self.kind
@@ -1178,6 +1194,9 @@ class Status:
             if self.run_reason == "unready":
                 return (f"{self.name}: unready, last exit 0, {self.unready} line item(s) "
                         f"filed but not claimable ({where}, {self.unit_path})")
+            if self.run_reason == "merge-pending":
+                return (f"{self.name}: merge-pending, last exit 0, a signed-off pull "
+                        f"request is still open ({where}, {self.unit_path})")
             return (f"{self.name}: last exit 0, reason unknown ({where}, {self.unit_path})")
         exit_code = "unknown" if self.last_exit is None else str(self.last_exit)
         said = f" — {self.reason}" if self.reason else ""
