@@ -452,6 +452,12 @@ class Wave:
     #: `review` rows held up because a live child is running: one line per row, naming the
     #: child's item (GRPH-1349).
     review_waits: list[str] = field(default_factory=list)
+    #: GRPH-1024. Items this wave did not re-delegate because their work is already in
+    #: the base: item id -> the signal that matched and what it believed. Present and
+    #: empty by default. A missing map would read as "nothing was held", which is how a
+    #: bounced remainder exited the wave as idle. A bounce is not an entry — it is
+    #: delegated, because the remainder is the work.
+    in_base: dict[str, str] = field(default_factory=dict)
     #: Branches pushed but NOT proposed as a PR, with why (GRPH-949): a change outside every
     #: declared touchpoint, or a base the trunk has moved past in a way that matters — a
     #: shared file, a merge conflict, or a behind-check that could not be asked (GRPH-1087).
@@ -1718,11 +1724,12 @@ def watch_tick(
     PRD-22 four (wall-clock, never-registered, seat-gone, lease-lapsed), plus the
     planner's `stop`.
 
-    The keep-alive is first, before `_roster` (GRPH-1116). `fleet_status` requeues an
-    agent whose presence has lapsed, and a child blocked in a test suite does not
-    heartbeat itself. Posting `kind=lease` while the pid is alive is what keeps that
-    requeue from firing. Once the process has exited, nothing here posts, and the
-    server clock lapses the lease as before.
+    The keep-alive is first, before `_roster` (GRPH-1116, which is the fix GRPH-1069
+    asked for). `fleet_status` requeues an agent whose presence has lapsed, and a
+    child blocked in one tool call does not heartbeat itself. Posting `kind=lease`
+    while the pid is alive keeps that requeue from firing across a call longer than
+    the presence TTL, and it does not write a `released` attempt. Once the process
+    has exited, nothing here posts, and the server clock requeues within one TTL.
     """
     keep_leases(wave, children, client)
     roster = _roster(client, wave.partition)

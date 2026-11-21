@@ -225,6 +225,57 @@ def test_decompose_proposes_touchpoints_from_code_graph(client, auth):
     db.close()
 
 
+def test_file_name_touchpoint_is_a_whole_token_not_a_substring(client, auth):
+    """Ordinary words are not directory names, and a file name matches only as a token.
+
+    "Graphban" does not name `web/src/lib/graph`, and "device-code" does not name
+    `web/src/features/code`. `routers/auth.py` still names `auth.py`, `link_device.py`
+    still names that file, and `notauth.py` does not. The full directory path still
+    matches on the path tier.
+    """
+    from app.services import code_graph
+
+    prd = client.post("/api/prds", json={
+        "title": "Sign-in",
+        "body": (
+            "# Sign-in\n\n"
+            "## API\nGraphban uses device-code sign-in. "
+            "It names routers/auth.py and link_device.py.\n\n"
+            "## Decoy\nSee notauth.py before renaming anything.\n\n"
+            "## Package\nThe library lives at web/src/lib/graph.\n\n"
+            "## Acceptance criteria\n"
+            "### API\n- device-code sign-in stays\n"
+            "### Decoy\n- notauth.py is left alone\n"
+            "### Package\n- the graph package stays put\n"
+        ),
+    }, headers=auth).json()
+    db = SessionLocal()
+    pid = db.get(prd_svc.Prd, prd["id"]).project_id
+    code_graph.describe_code(db, project_id=pid, nodes=[
+        {"path": "web/src/lib/graph", "kind": "module", "summary": "graph package"},
+        {"path": "web/src/features/code", "kind": "module", "summary": "code feature"},
+        {"path": "backend/app/routers/auth.py", "kind": "file", "summary": "auth routes"},
+        {"path": "backend/app/services/link_device.py", "kind": "file", "summary": "device link"},
+    ])
+    db.close()
+
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    by = {p["section"]: p for p in dry["proposals"]}
+    api = by["API"]["touchpoints"]
+    assert "web/src/lib/graph" not in api
+    assert "web/src/features/code" not in api
+    assert "backend/app/routers/auth.py" in api
+    assert "backend/app/services/link_device.py" in api
+    evidence = {e["path"]: e["evidence"] for e in by["API"]["touchpoint_evidence"]}
+    assert evidence["backend/app/routers/auth.py"] == "file name `auth.py` named in the section"
+    assert evidence["backend/app/services/link_device.py"] == (
+        "file name `link_device.py` named in the section")
+    assert "backend/app/routers/auth.py" not in by["Decoy"]["touchpoints"]
+    assert by["Package"]["touchpoints"] == ["web/src/lib/graph"]
+    assert by["Package"]["touchpoint_evidence"][0]["evidence"] == (
+        "path `web/src/lib/graph` named in the section")
+
+
 def test_decompose_flags_an_oversized_section_and_splits_three_ways(client, auth):
     """Three sub-headings, a clause under each: flagged, and create files three linked items.
 
@@ -809,3 +860,72 @@ def test_flat_clause_maps_to_a_numbered_heading_by_name(client, auth):
     assert "5. API" not in dry["no_acceptance"]
     assert "Auth" in dry["no_acceptance"]
     assert "Tokens" in dry["no_acceptance"]
+
+
+def test_goals_and_non_goals_is_framing_not_a_proposal(client, auth):
+    """Joined framing keys are framing. The concatenated key is not listed.
+
+    GRPH-1796: "2. Goals and non-goals" normalised to `goalsandnongoals` and
+    decompose proposed it as Implement: work. "Goals & Non-goals" drops the
+    ampersand and misses the same way. A part that is not a framing key
+    ("data model", and plain "Decisions") keeps the heading buildable, and
+    `<!-- buildable -->` still wins over the join.
+    """
+    joined = {
+        "2. Goals and non-goals": "framing headings joined by and or &: goals, nongoals",
+        "Goals & Non-goals": "framing headings joined by and or &: goals, nongoals",
+        "Problem and goals": "framing headings joined by and or &: problem, goals",
+        "Background and context": "framing headings joined by and or &: background, context",
+        "Overview and summary": "framing headings joined by and or &: overview, summary",
+        "Problem and goals and context": "framing headings joined by and or &: problem, goals, context",
+    }
+    for title, basis in joined.items():
+        assert prd_svc.classify_section(title, "prose") == (False, basis)
+    assert prd_svc.classify_section("Decisions and data model", "the schema") == (
+        True, "no framing marker and not a conventional framing heading")
+    assert prd_svc.classify_section("Problem and goals and data model", "rows") == (
+        True, "no framing marker and not a conventional framing heading")
+    assert prd_svc.classify_section(
+        "Goals and non-goals", "<!-- buildable -->\nreal work") == (
+        True, "marked <!-- buildable -->")
+
+    body = (
+        "# Spec\n\n"
+        "## 2. Goals and non-goals\nShip less, on purpose.\n\n"
+        "## Goals & Non-goals\nThe same idea with an ampersand.\n\n"
+        "## Problem and goals\nWhy this exists.\n\n"
+        "## Background and context\nWhere it sits.\n\n"
+        "## Overview and summary\nThe short version.\n\n"
+        "## Problem and goals and context\nThree framing keys.\n\n"
+        "## Decisions and data model\nThe schema is the work.\n\n"
+        "## Problem and goals and data model\nOne part is the work.\n\n"
+        "## Goals and non-goals\n<!-- buildable -->\nThese goals are the work.\n"
+    )
+    prd = client.post("/api/prds", json={"title": "Joined headings", "body": body}, headers=auth).json()
+    cov = client.get(f"/api/prds/{prd['id']}/coverage", headers=auth).json()
+    by = {s["section"]: s for s in cov["sections"]}
+    for title, basis in joined.items():
+        assert by[title]["implementable"] is False
+        assert by[title]["implementable_basis"] == basis
+        assert by[title]["gap"] is False
+    for title in ("Decisions and data model", "Problem and goals and data model"):
+        assert by[title]["implementable"] is True
+        assert by[title]["gap"] is True
+        assert "not a conventional" in by[title]["implementable_basis"]
+    marked = by["Goals and non-goals"]
+    assert marked["implementable"] is True
+    assert marked["implementable_basis"] == "marked <!-- buildable -->"
+    assert marked["gap"] is True
+    assert set(cov["gaps"]) == {
+        "Decisions and data model",
+        "Problem and goals and data model",
+        "Goals and non-goals",
+    }
+
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    assert [p["section"] for p in dry["proposals"]] == [
+        "Decisions and data model",
+        "Problem and goals and data model",
+        "Goals and non-goals",
+    ]
+    assert not any(p["title"] == "Implement: 2. Goals and non-goals" for p in dry["proposals"])

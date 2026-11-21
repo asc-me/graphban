@@ -39,6 +39,43 @@ export function observingLabel(o: RuleObservationSummary | null | undefined): st
   return `${since}: would have held ${o.would_hold} item${o.would_hold === 1 ? "" : "s"}${refused}`;
 }
 
+const BRIEF_SENTENCE = "This rule is applied by the agent's brief, which records nothing.";
+
+function shortDay(iso: string | null | undefined): string {
+  if (!iso) return "adoption";
+  return new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+}
+
+/** GRPH-1809: name who measured the would-have. "dashed" = not reported yet, "brief" = records
+ * nothing; neither ever draws a count. Without `measured_by` (an older server) the plain label. */
+export function measureLine(o: RuleObservationSummary | null | undefined): { kind: "plain" | "dashed" | "brief"; text: string } {
+  const by = o?.measured_by;
+  if (!o || !by) return { kind: "plain", text: observingLabel(o) };
+  const since = shortDay(o.since);
+  if (by === "brief") return { kind: "brief", text: BRIEF_SENTENCE };
+  if (by === "supervisor") {
+    const allowed = o.would_allow ?? 0;
+    const held = o.would_hold ?? 0;
+    if (!o.last_supervisor_report || (allowed + held === 0 && o.would_have == null)) {
+      return { kind: "dashed", text: `Would-have not reported yet · no fleet supervisor has run since ${since}` };
+    }
+    const part = allowed > 0 ? `would have let through ${allowed} file${allowed === 1 ? "" : "s"}` : `would have held ${held} item${held === 1 ? "" : "s"}`;
+    return { kind: "plain", text: `${part[0].toUpperCase()}${part.slice(1)} · reported by the fleet supervisor` };
+  }
+  // Server rule. Its would-have: held (a claim) or refused (a call), as the outcomes say.
+  const held = o.would_hold ?? 0;
+  const refusedN = o.would_refuse ?? 0;
+  const verb = held > 0 && refusedN === 0 ? `Would have held ${held}` : held > 0
+    ? `Would have held ${held}, refused ${refusedN}` : `Would have refused ${refusedN}`;
+  const noun = o.checks_noun;
+  // No counted denominator for this rule: the plain count, which names what it held/refused.
+  if (o.checks == null || !noun) return { kind: "plain", text: observingLabel(o) };
+  if (o.checks === 0 && held + refusedN === 0) {
+    return { kind: "dashed", text: `Would-have not measured yet · no ${noun} checked since ${since}` };
+  }
+  return { kind: "plain", text: `${verb} · ${o.checks} ${noun} checked since ${since}` };
+}
+
 function ObservingRow({
   ruleId,
   title,
@@ -58,6 +95,7 @@ function ObservingRow({
   const { data: adopted } = useAdoptedProposals(projectId);
   const origin = (adopted ?? []).find((p) => p.rule_id === ruleId);
   const why = reason.trim();
+  const line = measureLine(observation);
   return (
     <li className="border-b border-line py-2" data-testid={`observing-${ruleId}`}>
       <div className="flex flex-wrap items-center gap-2">
@@ -66,8 +104,17 @@ function ObservingRow({
         </span>
         <span className="text-body font-semibold text-fg">{title}</span>
       </div>
-      <p className="text-small text-fg-2" data-testid="observing-label">
-        {observingLabel(observation)}
+      <p
+        className={cn(
+          "text-small text-fg-2",
+          line.kind === "dashed" && "rounded-[6px] border border-dashed border-control px-2 py-1",
+          line.kind === "brief" && "rounded-[6px] border border-dotted border-danger px-2 py-1 text-danger",
+        )}
+        data-testid="observing-label"
+        data-measure={line.kind}
+      >
+        {line.kind === "brief" && <span aria-hidden="true">— </span>}
+        {line.text}
       </p>
       {origin && (
         <p className="text-small text-muted" data-testid="observing-origin">

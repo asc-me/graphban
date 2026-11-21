@@ -3,8 +3,8 @@ import * as React from "react";
 
 import { api } from "./api";
 import { httpsAddress, probeTrust } from "@/lib/https";
-import type { OnboardingMark, SetupConfirm } from "./types";
-import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, RoutingReplayProposal, Item, ItemCreateBody, ItemDetail, LessonFilters, LogExportPatch, RequestItem, RuleProfileApplyWrite, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
+import type { OnboardingMark, ProposalDecision, SetupConfirm } from "./types";
+import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, RoutingReplayProposal, Item, ItemCreateBody, ItemDetail, LessonFilters, LogExportPatch, Project, RequestItem, RuleProfileApplyWrite, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
 
 export const keys = {
   me: ["me"] as const,
@@ -785,6 +785,38 @@ export function useAdoptedProposals(projectId: string) {
   });
 }
 
+export function useDismissedProposals(projectId: string) {
+  return useQuery({
+    queryKey: ["rule-proposals", projectId, "dismissed"],
+    queryFn: () => api.ruleProposals(projectId, "dismissed"),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+/** Who decided a proposal, when, and why — read from the audit ledger, keyed by proposal id.
+ * The proposals list does not carry `decided_by` / `decided_at` / `decided_reason`; the
+ * `adopt_rule_proposal` / `dismiss_rule_proposal` events do (actor, ts, meta.reason). */
+export function useProposalDecisions(projectId: string, decision: "adopt" | "dismiss") {
+  const q: EventsQuery = { projectId, action: `${decision}_rule_proposal`, limit: 500 };
+  return useQuery({
+    queryKey: ["rule-proposals", projectId, "decisions", decision],
+    queryFn: async () => {
+      const out = new Map<number, ProposalDecision>();
+      for (const e of (await api.events(q)).results) {
+        const id = Number(e.meta?.proposal_id);
+        if (!Number.isFinite(id) || out.has(id)) continue; // most-recent-first: keep the newest
+        const by = typeof e.meta?.adopted_by === "string" ? e.meta.adopted_by : e.actor_label || e.actor_id;
+        const reason = typeof e.meta?.reason === "string" ? e.meta.reason : null;
+        out.set(id, { by, at: e.ts, reason });
+      }
+      return out;
+    },
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
 export function useRuleObservations(projectId: string, ruleId: string, enabled = true) {
   return useQuery({
     queryKey: ["rule-observations", projectId, ruleId],
@@ -1207,6 +1239,15 @@ export function useMe() {
 
 export function useProjects() {
   return useQuery({ queryKey: keys.projects, queryFn: () => api.projects() });
+}
+
+/** PATCH a project and refresh every surface that paints its tile or accent. */
+export function useUpdateProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: Partial<Project> }) => api.updateProject(id, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.projects }),
+  });
 }
 
 /** Switcher rows for every readable project (GRPH-1131). One aggregate read, not N collections. */

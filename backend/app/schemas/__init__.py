@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+from pydantic import (
+    BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator, model_serializer,
+)
 
 # Imports nothing from `app`, so this cannot cycle back through schemas.
 from app.services import tool_tiers as tool_tiers_svc
@@ -782,6 +784,17 @@ class ItemWritten(ItemOut):
     read and list shapes stay exactly as they were."""
 
     touchpoint_warnings: list[dict] = []
+    #: GRPH-1798. True only on the create that stored the project's maintenance line because
+    #: the caller sent neither `prd_id` nor `line_id`. Omitted when false, so an update and
+    #: a create that named its scope keep the previous shape.
+    line_defaulted: bool = False
+
+    @model_serializer(mode="wrap")
+    def _omit_line_defaulted_when_false(self, handler):
+        data = handler(self)
+        if not data.get("line_defaulted"):
+            data.pop("line_defaulted", None)
+        return data
 
 
 #: What the project list leaves out by default (GRPH-1228): the per-item fields that are large
@@ -2065,6 +2078,12 @@ class RuleProposalOut(BaseModel):
     status: str
     folded: bool = False
     created_at: datetime
+    decided_by: str | None = None
+    decided_reason: str | None = None
+    decided_at: datetime | None = None
+    org_dismissed_by: str | None = None
+    org_dismissed_reason: str | None = None
+    org_dismissed_at: datetime | None = None
 
 
 class RuleProposalAdopt(BaseModel):
@@ -2080,8 +2099,22 @@ class RuleProposalDismiss(BaseModel):
 
 
 class RuleProposalDecisionOut(RuleProposalOut):
-    decided_by: str | None = None
-    decided_reason: str | None = None
+    pass
+
+
+class OrgRuleProposalAdopt(BaseModel):
+    """Adopt proposals at org scope, for every project in the org (GRPH-1808)."""
+    model_config = {"extra": "forbid"}
+    ids: list[int]
+    reason: str
+    dry_run: bool = False
+
+
+class OrgRuleProposalOut(RuleProposalDecisionOut):
+    project_name: str | None = None
+    overrides: list[dict] = []
+    state: str | None = None
+    projects_changed: list[str] | None = None
 
 
 class RuleGuidanceOut(BaseModel):

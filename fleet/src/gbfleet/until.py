@@ -254,6 +254,14 @@ class Report:
         # reads the same way, which is how a process that died on the exception
         # used to leave the summary.
         payload["spawn_failed"] = list(self.wave.spawn_failed) if self.wave else []
+        # GRPH-1024. Always present, zero included. `held_in_base` is how many items
+        # this wave refused to rebuild because their work is already in the base;
+        # `in_base` names each one and the signal it believed. Zero means it looked
+        # and held none. A missing key reads as that zero, which is how a queue of
+        # bounced remainders exited idle for weeks.
+        held = self.wave.in_base if self.wave else {}
+        payload["held_in_base"] = len(held)
+        payload["in_base"] = dict(held)
         if self.detail:
             payload["detail"] = self.detail
         return payload
@@ -293,6 +301,7 @@ def run(
     records: "list[ent_mod.Entitlement] | None" = None,
     stall_after: float = watchdog_mod.STALL_AFTER_S,
     clock: Callable[[], float] = time.monotonic,
+    acknowledge_reach: set[str] | None = None,
 ) -> Report:
     """Hold the repo lock and run until idle, a cap, or a config refusal.
 
@@ -328,6 +337,10 @@ def run(
     # watchdog turns a silent stall into a logged one and a non-zero exit (KeepAlive restarts).
     watchdog_mod.install_stack_dump()
     watchdog_mod.current = watchdog_mod.Watchdog(stall_after, clock)
+    # GRPH-1786. This thread keeps running when the loop is blocked inside a call, and it
+    # still fires when a child is live. `poll` is the interval the loop actually sleeps.
+    silence = watchdog_mod.SilenceWatch(poll=poll)
+    silence.start()
 
     try:
         if budget:
@@ -456,6 +469,7 @@ def run(
                 adapter=adapter,
                 merge=merge,
                 wave_base=chosen_base,
+                acknowledge_reach=acknowledge_reach,
               )
             except ToolFailed as exc:
                 # GRPH-1669. A roster read (`fleet_status`) answered with a tool error.
@@ -519,6 +533,8 @@ def run(
         wave.reason = "stall"
         return Report(ok=False, reason="stall", exit=1, detail=str(exc), wave=wave,
                       minted=minted, spawned=len(wave.spawned))
+    finally:
+        silence.stop()
 
 
 def _drain_live(wave, children, persist, planner, supervisor, limits, poll, sleep, debug,
@@ -905,6 +921,7 @@ def _loop(
     adapter: str = "",
     merge: bool = False,
     wave_base: "WaveBase | None" = None,
+    acknowledge_reach: set[str] | None = None,
 ) -> Report:
     from .mcp import _runner_up, read_preferences
     profile, policy, pref_note, measured, cap_measured, tier_map = read_preferences(supervisor)
@@ -1153,6 +1170,9 @@ def _loop(
                          detail=f"{prev} exhausted; continuing on {chosen[0]}")
 
     while True:
+        # GRPH-1786. A pass that is still running is not a silence, even when it has
+        # nothing new to log. A pass blocked inside the next call never reaches here.
+        observe.touch_loop()
         # GRPH-1056. This loop IS the supervisor working. An `mcp` that merely stays
         # up does not touch, and past the idle threshold the next `hold` stops it.
         # Touching here is what keeps a long drain from being read as that.
@@ -1344,7 +1364,9 @@ def _loop(
             seed, code, want = _delegate_next(planner, agent_id, wave_name, delegated,
                                               request, prd, repo, base, line=line, held=held,
                                               merger=merger, bound_out=flags,
-                                              live=live, owners=owners, skip=cooled)
+                                              live=live, owners=owners, skip=cooled,
+                                              in_base=wave.in_base,
+                                              acknowledge_reach=acknowledge_reach)
             for refused_item, why in flags.get("refused", ()):
                 _note_refused(wave, refused_item, why)
             if seed is None and cooled and not flags.get("pinned_until"):
@@ -2060,7 +2082,8 @@ def _joined(cluster: dict) -> list[str]:
 
 
 def plan(planner: Graphban, prd: str | None, max_workers: int,
-         repo: Path | None = None, base: str = "", line: str | None = None) -> dict:
+         repo: Path | None = None, base: str = "", line: str | None = None,
+         acknowledge_reach: set[str] | None = None) -> dict:
     """What this wave WOULD delegate, without delegating it (GRPH-819).
 
     Reported after a real wave: "you cannot ask what a wave would delegate before it does —
@@ -2115,6 +2138,13 @@ def plan(planner: Graphban, prd: str | None, max_workers: int,
         # and a base to measure against, which is the one case the check cannot run.
         "dependency_holds": _dependency_holds(planner, free, repo, base),
         "capped_by_max_workers": len(free) > max_workers,
+        # GRPH-1311. Absent when the flag was not passed, so a dry run without it
+        # prints the same plan it printed before. Present, it is the operator's list
+        # — including a name no cluster has — so a typo is not an empty acknowledgement.
+        **({} if acknowledge_reach is None else {
+            "acknowledge_reach": sorted(
+                {str(i).strip() for i in acknowledge_reach if str(i).strip()}),
+        }),
     }
 
 
@@ -2279,11 +2309,159 @@ def _attested_here(entry: dict, branch: str) -> bool:
     return not named or named == branch
 
 
-def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
-    """True when this item's branch or an attested commit is already in `base`.
+def _tip(repo: Path, ref: str) -> str:
+    """The commit `ref` names in this clone, or "" when git cannot say."""
+    if not ref:
+        return ""
+    try:
+        done = subprocess.run(
+            ["git", "rev-parse", "--verify", ref],
+            cwd=str(repo), capture_output=True, text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout.strip() if done.returncode == 0 else ""
 
-    A git-merged item still `next` (waiting on sign-off) is not a new build. `reaches`
-    returns None when this clone cannot tell; that is not "merged".
+
+def _names_token(text: str, token: str) -> bool:
+    """True when `token` appears as its own token, not as a prefix of a longer key."""
+    if not token:
+        return False
+    return re.search(rf"(?<![\w/.-]){re.escape(token)}(?![\w/.-])", text) is not None
+
+
+def _url_text_names_item(entry: dict, details: dict, propose_mod) -> bool:
+    """Does this url receipt's own text say it is about this item?
+
+    The supervisor writes "draft PR opened by gbfleet for <branch>". A receipt that
+    names another item's key — "opened PR #803 for GRPH-891" on GRPH-890 — does not.
+    """
+    detail = str(entry.get("detail") or "")
+    branch = str(details.get("branch") or "").strip()
+    key = str(details.get("id") or "").strip()
+    if branch and propose_mod._receipt_branch(detail) == branch:
+        return True
+    return _names_token(detail, key) or _names_token(detail, branch)
+
+
+def _pr_text_names_item(pr: dict, item_id: str) -> bool:
+    """Does the forge's title or body name this item, as its own token?
+
+    A branch lookup returns the PR whose head is that branch. On a shared branch
+    that PR is another item's merge: GRPH-890's branch `gb/p45-followups` resolves
+    to PR #920, which names GRPH-990/995/996 and not GRPH-890. The head equalling
+    the branch is how the forge found the PR, not proof it is this item's. An
+    empty title and body names nothing, and that is not a match.
+    """
+    text = f"{pr.get('title') or ''}\n{pr.get('body') or ''}"
+    return _names_token(text, item_id)
+
+
+def _pr_label(pr: dict, selector: str) -> str:
+    number = pr.get("number")
+    if isinstance(number, int) or (isinstance(number, str) and str(number).isdigit()):
+        return f"#{int(number)}"
+    found = re.search(r"/pull/(\d+)", selector or str(pr.get("url") or ""))
+    return f"#{found.group(1)}" if found else (selector or "PR")
+
+
+def _merge_sha(pr: dict) -> str:
+    got = pr.get("mergeCommit")
+    if isinstance(got, dict) and str(got.get("oid") or "").strip():
+        return str(got["oid"]).strip()
+    return str(pr.get("headRefOid") or "").strip()
+
+
+def _merged_line(pr: dict, selector: str, carrier: str) -> str:
+    """"PR #900 (a url receipt) is MERGED at c0ffee000000" — carrier and sha, named."""
+    sha = _merge_sha(pr)
+    at = f" at {sha}" if sha else ""
+    return f"PR {_pr_label(pr, selector)} ({carrier}) is MERGED{at}"
+
+
+def _merged_pr_of(details: dict, repo: Path) -> str:
+    """Why this item's own PR is MERGED, or "".
+
+    Candidates, in order: the item's `pr` field (its own, by declaration), every
+    `/pull/` url receipt, then the item's branch. A url receipt is believed only
+    when its text names this item's key or its branch, or the forge reports
+    `headRefName` equal to that branch. A PR found by the branch name is believed
+    only when its title or body names this item — the head match is the lookup.
+    A MERGED PR that fails its check gets `in_base_ignored` and is skipped, so a
+    sibling receipt, or a sibling PR that shares the branch, cannot hide this
+    item's own PR and cannot hold the item.
+
+    The receipt stays. Evidence only appends, so an item already poisoned this way
+    (GRPH-890, and any sibling of it) becomes delegable by not believing the
+    receipt — there is nothing to retract.
+
+    A declared `pr` is the only candidate when it is set. That is the PR the item
+    named, and a url beside it is not a second opinion, the same rule `pr_selector`
+    already uses. Only a definitive MERGED counts; an open PR or an unreachable
+    forge is "".
+    """
+    from . import propose as propose_mod
+
+    branch = str(details.get("branch") or "").strip()
+    declared = str(details.get("pr") or "").strip()
+    candidates: list[tuple[str, str, dict | None]] = []
+    if declared:
+        candidates.append((declared, "the item's pr", None))
+    else:
+        for entry in details.get("evidence") or []:
+            if not isinstance(entry, dict) or entry.get("kind") != "url":
+                continue
+            url = str(entry.get("url") or "").strip()
+            if "/pull/" not in url:
+                continue
+            candidates.append((url, "a url receipt", entry))
+        if branch:
+            candidates.append((branch, "the item's branch", None))
+
+    item_id = str(details.get("id") or "")
+    for selector, carrier, entry in candidates:
+        pr, _err = propose_mod.view(repo, selector)
+        if not isinstance(pr, dict):
+            continue
+        merged = str(pr.get("state") or "").upper() == "MERGED"
+        if entry is not None:
+            ours = _url_text_names_item(entry, details, propose_mod)
+            head = str(pr.get("headRefName") or "").strip()
+            # About this item only. `if False` here believes every url receipt.
+            if not ours and not (branch and head == branch):
+                if merged:
+                    observe.emit(
+                        "in_base_ignored", item=item_id,
+                        detail=_merged_line(pr, selector, carrier),
+                    )
+                continue
+        # About this item only. `if False` here believes every PR the branch names.
+        # The head equalling the branch is how the forge found the PR, not proof.
+        if carrier == "the item's branch" and not _pr_text_names_item(pr, item_id):
+            if merged:
+                observe.emit(
+                    "in_base_ignored", item=item_id,
+                    detail=_merged_line(pr, selector, carrier),
+                )
+            continue
+        if merged:
+            return _merged_line(pr, selector, carrier)
+        if entry is None and carrier == "the item's pr":
+            return ""
+    return ""
+
+
+def _in_base_reason(details: dict, repo: Path | None, base: str) -> str:
+    """Why this item's work is already in `base`, or "" when it is not.
+
+    The string names the signal that matched and what it believed (GRPH-1024), and
+    for a forge match the carrier and the sha (GRPH-1023), so a hold can be read
+    without the source. "" is "not in the base". No repo or no base is also "", and
+    that is not a hold: a clone that cannot look must not read as merged. Empty also
+    covers "this clone cannot tell" (`reaches` is None). `_already_in_base` is this
+    answer as a bool.
+
+    A git-merged item still `next` (waiting on sign-off) is not a new build.
 
     GRPH-930: a squash merge rewrites the SHA, so `reaches` returns False for a commit
     whose work IS in the base via the squash. When the forge says the PR is MERGED, the
@@ -2309,9 +2487,19 @@ def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
        as GRPH-981 and the item's bounce history was lost. An attestation that NAMES a branch
        is therefore only believed about that branch. One with no branch recorded is still
        believed, because refusing it would drop the receipts written before that was recorded.
+
+    3. **A sibling PR's url, and a sibling PR that shares the branch (GRPH-1023).**
+       GRPH-983 hardened the attestation. The url carrier was the same hole, and so is
+       the branch lookup behind it: `gh pr view <branch>` returns whichever PR has that
+       head. GRPH-890 carried one url whose text says it belongs to GRPH-891 (PR #803,
+       head `fix/release-notes-squash`). Ignoring that url still left the branch
+       `gb/p45-followups`, whose merged PR #920 names GRPH-990/995/996 and not GRPH-890.
+       Believing it held the item and the wave exited idle. `_merged_pr_of` believes a
+       url about this item only, and a branch-found PR only when its title or body names
+       this item. The poisoned receipt stays and is not believed.
     """
     if not base or repo is None:
-        return False
+        return ""
     from .worktree import reaches as wt_reaches
 
     branch = str(details.get("branch") or "").strip()
@@ -2326,10 +2514,28 @@ def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
 
     # Ancestry is necessary, not sufficient (1): an empty branch is an ancestor too. A receipt
     # that work existed — a commit recorded for this branch, or this item's PR — is the second
-    # signal, and git cannot supply it.
+    # signal, and git cannot supply it. The sentence names what was believed (GRPH-1024) and,
+    # when this clone can name it, the tip sha (GRPH-1023).
     if branch and wt_reaches(repo, base, branch) is True:
-        if usable or str(details.get("pr") or "").strip():
-            return True
+        commits: list[str] = []
+        for entry in usable:
+            commit = str(entry.get("commit") or "").strip()
+            if commit and commit not in commits:
+                commits.append(commit)
+        pr = str(details.get("pr") or "").strip()
+        if commits or pr:
+            believed: list[str] = []
+            if commits:
+                shown = ", ".join(commits[:3])
+                if len(commits) > 3:
+                    shown += f" (+{len(commits) - 3} more)"
+                believed.append(f"commit receipt {shown}")
+            if pr:
+                believed.append(f"pr {pr}")
+            sha = _tip(repo, branch)
+            at = f" at {sha}" if sha else ""
+            return (f"branch {branch} reaches {base}{at}; "
+                    f"believed {' and '.join(believed)} says work existed")
     seen: list[str] = []
     for entry in usable:
         commit = str(entry.get("commit") or "").strip()
@@ -2337,12 +2543,25 @@ def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
             continue
         seen.append(commit)
         if wt_reaches(repo, base, commit) is True:
-            return True
-    # GRPH-930: SHA ancestry says "not in base", but a squash merge rewrites the SHA.
-    # Ask the forge whether this item's PR is MERGED — that fact survives the rewrite.
-    # Only a definitive MERGED counts; an open PR or an unreachable forge leaves the
-    # answer as False (the original git-only verdict), not True.
-    return deps._pr_is_merged(repo, details) is True
+            kind = str(entry.get("kind") or "receipt")
+            about = f" about {branch}" if branch else ""
+            return (f"commit {commit} reaches {base}; "
+                    f"believed a {kind} receipt{about}")
+    # GRPH-930 / GRPH-1023. SHA ancestry says "not in base", but a squash merge rewrites
+    # the SHA. Ask the forge about this item's own PR only — a sibling url, and a merged
+    # PR found by the branch name that does not name this item, are not it. The carrier
+    # and the sha come from `_merged_pr_of`; "believed the forge" names the signal
+    # (GRPH-1024) so an operator can tell it from an ancestry hold.
+    merged_line = _merged_pr_of(details, repo)
+    if merged_line:
+        return (f"{merged_line}; believed the forge, "
+                f"because ancestry did not find the work in {base}")
+    return ""
+
+
+def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
+    """True when `_in_base_reason` names a signal. The reason names the carrier."""
+    return bool(_in_base_reason(details, repo, base))
 
 
 def _hold(planner: Graphban, item_id: str, details: dict, absent: list[dict], base: str) -> bool:
@@ -2613,6 +2832,8 @@ def _delegate_next(
     live: list | None = None,
     owners: dict[str, object] | None = None,
     skip: set[str] | None = None,
+    in_base: dict[str, str] | None = None,
+    acknowledge_reach: set[str] | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """Write the delegation for the seed of the next free cluster, before its seat is minted.
 
@@ -2648,6 +2869,11 @@ def _delegate_next(
         # mark it delegated — hiding the merged id would make a colliding sibling the seed on
         # the next tick (SA-467/470).
         #
+        # GRPH-1024: a next/backlog member that carries a bounce is the exception. Its
+        # earlier work being in the base does not mean the item is finished — the bounce
+        # is the remainder — and occupying its files is what made the queue behind it
+        # undelegable. It stays a candidate.
+        #
         # GRPH-951: ITS files, not the whole cluster. A cluster is joined by transitivity, and
         # SA-576 in review idled a wave of screens whose files it never named. A sibling whose
         # touchpoints collide with no occupier's (by the server's rule, mirrored in
@@ -2668,19 +2894,35 @@ def _delegate_next(
             status = str(got.get("status") or "")
             if status == "review":
                 occupiers[item_id] = _touchpoints_of(got)
-            elif status in ("next", "backlog") and _already_in_base(got, repo, base):
-                occupiers[item_id] = _touchpoints_of(got)
-                # GRPH-1408: merged but unsigned is unreviewed work in the base. Holding it
-                # forever left GRPH-1359 waiting on a reviewer started by hand. Moved to
-                # `review`, it is a review row, and the drain staffs a reviewer for it.
-                if _offer_merged_for_review(planner, item_id, got, base):
-                    delegated.add(item_id)
-                    continue
-                observe.emit(
-                    "delegate_held", item=item_id,
-                    detail=f"already in {base} (unsigned, git-merged); "
-                           + _holds_sentence(item_id, occupiers[item_id]),
-                )
+            elif status in ("next", "backlog"):
+                why = _in_base_reason(got, repo, base)
+                # A bounce is a request for new work. `bounce_reason` is never cleared
+                # (GRPH-378), so "bounced" is readable and "bounce already addressed" is
+                # not. Re-delegating a hand-merged bounce is the cheaper of the two errors.
+                bounced = str(got.get("bounce_reason") or "").strip()
+                if why and bounced:
+                    observe.emit(
+                        "delegate_remainder", item=item_id,
+                        detail=(f"{item_id}: bounce asks for the remainder; "
+                                f"earlier work is in {base} ({why})"),
+                    )
+                elif why:
+                    occupiers[item_id] = _touchpoints_of(got)
+                    if in_base is not None:
+                        in_base[item_id] = why
+                    # GRPH-1408: merged but unsigned is unreviewed work in the base. Holding it
+                    # forever left GRPH-1359 waiting on a reviewer started by hand. Moved to
+                    # `review`, it is a review row, and the drain staffs a reviewer for it.
+                    if _offer_merged_for_review(planner, item_id, got, base):
+                        delegated.add(item_id)
+                        continue
+                    # GRPH-1023: the carrier and the sha, so the next operator can see which
+                    # receipt did it rather than reading this function.
+                    observe.emit(
+                        "delegate_held", item=item_id,
+                        detail=f"already in {base} (unsigned, git-merged): {why}; "
+                               + _holds_sentence(item_id, occupiers[item_id]),
+                    )
         for item_id in occupiers:
             details_for.pop(item_id, None)
         for item_id in list(details_for):
@@ -2749,15 +2991,23 @@ def _delegate_next(
                 want = str(suggested["value"])
             note = f"gbfleet until, wave {wave_name}"
             code: str | None = None
+            # GRPH-1311. `acknowledge_reach=true` is recorded on the delegation the same
+            # way the MCP argument is. Only the items named on `--acknowledge-reach` get
+            # it; every other call stays the call it was, with the argument absent.
+            delegate_args: dict = dict(
+                id=candidate, lane=lane, tier=want, agent_id=agent_id,
+                note=note, seat=True, wave=wave_name,
+                **_delegate_scope(prd, line),
+            )
+            if acknowledge_reach and candidate in acknowledge_reach:
+                delegate_args["acknowledge_reach"] = True
             try:
                 # PRD-36 D9: a BOUND seat. The server refuses one when the seed's areas are held
                 # by someone else (D13). GRPH-885: do not fall back to an unbound delegate.
                 # GRPH-1089: do not pass bound_only. A wave's finished bound workers review
                 # each other; the flag is opt-in for a caller that wants the child to exit.
                 # A `--line` wave is that caller (GRPH-1697, `_delegate_scope`).
-                reply = planner.call("delegate", id=candidate, lane=lane, tier=want, agent_id=agent_id,
-                                     note=note, seat=True, wave=wave_name,
-                                     **_delegate_scope(prd, line))
+                reply = planner.call("delegate", **delegate_args)
                 if bound_out is not None and isinstance(reply, dict):
                     bound_out["bound_only"] = bool(reply.get("bound_only"))
                 got_code = reply.get("enrolment_code") if isinstance(reply, dict) else None

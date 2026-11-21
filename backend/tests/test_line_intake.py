@@ -1,4 +1,8 @@
 """Intake and the unscoped report (GRPH-1686)."""
+import importlib.util
+
+from sqlalchemy import create_engine, text
+
 from app.db import SessionLocal
 from app.models import Item, Request
 from app.services import items as items_svc
@@ -111,3 +115,67 @@ def test_accepted_bug_is_unready_until_clause_and_touchpoint_then_claimable(clie
         assert got is not None and got.key == bug_key
         feat = req_svc.accept_request(db, _request(db, proj, "feature", "f").id)[1]
         assert items_svc.unready_reasons(feat) == []
+
+
+def _backfill():
+    path = importlib.util.spec_from_file_location(
+        "migration_0223",
+        __import__("pathlib").Path(__file__).parents[1] / "alembic" / "versions"
+        / "0223_default_fix_line.py",
+    )
+    # spec_from_file_location returns a spec; load it.
+    spec = path
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_backfill_puts_open_unscoped_fixes_on_the_line_and_leaves_the_rest():
+    """GRPH-1798. Seeds the rows, runs the migration function, asserts line_id and kind."""
+    engine = create_engine("sqlite://")
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE lines (id VARCHAR PRIMARY KEY, project_id VARCHAR)"))
+        conn.execute(text(
+            "CREATE TABLE items (id VARCHAR PRIMARY KEY, project_id VARCHAR, kind VARCHAR, "
+            "tags VARCHAR, status VARCHAR, prd_id VARCHAR, line_id VARCHAR)"))
+        conn.execute(text("INSERT INTO lines VALUES ('L-with', 'with'), ('L-other', 'other')"))
+        conn.execute(text(
+            "INSERT INTO items (id, project_id, kind, tags, status, prd_id, line_id) VALUES "
+            "('open-fix', 'with', 'fix', '[]', 'next', NULL, NULL), "
+            "('no-line', 'bare', 'fix', '[]', 'backlog', NULL, NULL), "
+            "('done-fix', 'with', 'fix', '[]', 'done', NULL, NULL), "
+            "('has-prd', 'with', 'fix', '[]', 'next', 'P1', NULL), "
+            "('has-line', 'with', 'fix', '[]', 'next', NULL, 'already'), "
+            "('bug-tag', 'with', '', '[\"bug\"]', 'review', NULL, NULL), "
+            "('bug-bare', 'bare', '', '[\"Bug\"]', 'blocked', NULL, NULL), "
+            "('feature-tag', 'with', '', '[\"feature\"]', 'next', NULL, NULL), "
+            "('kind-feature', 'with', 'feature', '[\"bug\"]', 'next', NULL, NULL), "
+            "('fix-and-feature', 'with', 'fix', '[\"feature\"]', 'next', NULL, NULL), "
+            "('chore', 'with', 'chore', '[\"bug\"]', 'next', NULL, NULL)"))
+
+    mod = _backfill()
+    with engine.begin() as conn:
+        assert mod.backfill(conn) == 3  # open-fix, bug-tag, bug-bare
+
+    def rows():
+        with engine.connect() as conn:
+            return {r.id: (r.kind, r.line_id, r.prd_id) for r in conn.execute(text(
+                "SELECT id, kind, line_id, prd_id FROM items"))}
+
+    got = rows()
+    assert got["open-fix"] == ("fix", "L-with", None)
+    assert got["no-line"] == ("fix", None, None)          # no maintenance line: stays unscoped
+    assert got["done-fix"] == ("fix", None, None)
+    assert got["has-prd"] == ("fix", None, "P1")
+    assert got["has-line"] == ("fix", "already", None)
+    assert got["bug-tag"] == ("fix", "L-with", None)      # empty kind + bug tag
+    assert got["bug-bare"] == ("fix", None, None)         # kind set, still unscoped
+    assert got["feature-tag"] == ("", None, None)
+    assert got["kind-feature"] == ("feature", None, None)
+    assert got["fix-and-feature"] == ("fix", None, None)  # tagged feature: untouched
+    assert got["chore"] == ("chore", None, None)
+
+    with engine.begin() as conn:
+        assert mod.backfill(conn) == 0
+    assert rows() == got

@@ -369,11 +369,13 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_backlog",
         "description": (
-            "Prioritized backlog/next items, ready-first then by composite score. Each row carries "
-            "`ready`, `blocked_by` (unfinished deps), `unblocks`, `votes`, `score`. Rows are lean "
-            "(id/title/status) by default; `fields=full` for all item fields."
+            "Prioritized backlog/next, ready-first. Lean rows; fields=full for every field. "
+            "line_id returns only that line; total counts only those."
         ),
-        "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer"}}},
+        "inputSchema": {"type": "object", "properties": {
+            "limit": {"type": "integer"},
+            "line_id": {"type": "string"},
+        }},
     },
     {
         "name": "get_item_details",
@@ -2537,16 +2539,75 @@ _JSON_TYPES: dict[str, tuple[type | tuple[type, ...], str]] = {
 }
 
 
+# Arguments the dispatcher reads on any call. They name the caller, not the
+# result, and are accepted whether or not the tool's schema advertises them
+# (presence on a read, PRD-34). A filter is not one of these.
+_CALLER_ARGS = frozenset({"agent_id"})
+
+# Reads whose arguments narrow a collection, pick a slice of a report, or return
+# a list a caller would try to filter. An argument none of the schemas declare
+# is refused: dropping it hands back the wider set, and the caller reads that as
+# "the filter matched" (GRPH-1799). `get_backlog`'s `line_id` is the case that
+# shipped; the rest of this set is the same mistake waiting on the next name.
+#
+# Exempt, named in docs/mcp.md: identity reads (`get_item_details`, `get_prd`,
+# `grill_prd`, `related_work`, `code_neighbors`, `get_document`, `get_design_set`)
+# answer one subject named by a required id, so a dropped extra cannot widen a
+# page. Every other tool is a write. An unknown field there is not a filter of a
+# page the caller then reads as matched, and fleet-only / gate-only fields are
+# accepted on purpose when the manifest cannot carry them. `set_entitlement`
+# still refuses an unknown field in the service, because a dropped credential
+# would store the wrong thing.
+_FILTER_READS = frozenset({
+    "get_context", "list_projects", "setup_project", "search_items", "search_memory",
+    "get_lessons", "get_backlog", "suggest_next", "generate_digest", "prd_coverage",
+    "unscoped_fixes", "get_rule_toggles", "list_entitlements", "propose_allocation",
+    "collision_clusters",
+    "fleet_status", "get_code_map", "graph_query", "search_code", "scan_status",
+    "scans_due", "prd_acceptance", "learning_loop", "search_docs",
+})
+
+
+def _known_args(name: str, props: dict) -> set[str]:
+    """Arguments this tool may be sent without that being 'unknown'.
+
+    The base schema, plus fleet-only and gate-only fields the dispatcher reads
+    whether or not the manifest advertised them, plus `agent_id`.
+    """
+    known = set(props) | set(_FLEET_ONLY_ARGS.get(name, {})) | set(_CALLER_ARGS)
+    if name == "update_item":
+        known |= set(_GATE_ONLY_ARGS)
+    return known
+
+
 def _validate_args(name: str, args: dict[str, Any]) -> None:
     """Check args against the tool's declared inputSchema BEFORE dispatch, so a
     bad call becomes an actionable `validation` error instead of a KeyError or a
     silently-accepted junk value (AL-47). Required fields, enums, and primitive
-    types only — deliberately lightweight, no external validator dependency."""
+    types only — deliberately lightweight, no external validator dependency.
+
+    On a filtering read, an argument the schema does not declare is refused by
+    name (GRPH-1799). Everywhere else, unknown extras stay ignored: a write that
+    drops a field does not widen a page the caller is reading as filtered, and
+    fleet-only arguments are accepted on purpose when the ceiling cannot carry
+    them. `None` still means absent.
+    """
     schema = _SCHEMA_BY_NAME.get(name)
     if schema is None:
         return  # unknown tool handled by the dispatcher
     props: dict = schema.get("properties", {})
     required: list = schema.get("required", [])
+
+    if name in _FILTER_READS:
+        unknown = sorted(
+            k for k, v in args.items() if v is not None and k not in _known_args(name, props))
+        if unknown:
+            listed = ", ".join(unknown)
+            raise errors.Validation(
+                f"{name} does not take {listed}",
+                hint="that argument was not applied. "
+                     f"accepted: {', '.join(sorted(_known_args(name, props)))}",
+            )
 
     missing = [f for f in required if args.get(f) in (None, "")]
     if missing:
@@ -2559,7 +2620,7 @@ def _validate_args(name: str, args: dict[str, Any]) -> None:
     for field, value in args.items():
         spec = props.get(field)
         if not spec or value is None:
-            continue  # unknown extras are ignored; None means "absent"
+            continue  # unknown extras on a non-filtering tool are ignored; None means "absent"
         enum = spec.get("enum")
         if enum is not None and value not in enum:
             raise errors.Validation(
@@ -2723,6 +2784,27 @@ def _prd_dict(prd) -> dict:
         "linked": prd.linked_keys,
         "body": prd.body,
     }
+
+
+def _backlog_line(db: Session, project_id: str | None, asked: Any) -> str | None:
+    """The frozen line id `get_backlog`'s `line_id` means, or None when it was omitted.
+
+    Empty is not "no filter": the caller sent a filter and a blank one would return
+    the whole project, which is the misread this argument exists to stop.
+    """
+    if asked is None:
+        return None
+    if not isinstance(asked, str) or not asked.strip():
+        raise errors.Validation(
+            "line_id must name a line",
+            hint="pass the line key from get_context.maintenance_line, or omit line_id",
+        )
+    if not project_id:
+        raise errors.Validation(
+            "line_id needs a project in scope",
+            hint="pass project_id, or use a key that has a default project",
+        )
+    return lines_svc.resolve_for_item(db, asked.strip(), project_id)
 
 
 def _paginate(rows: list, args: dict, *, fields: tuple[str, ...] | None = None) -> dict:
@@ -3187,6 +3269,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         wait_link = waits_svc.attach_to_claim(db, item, caller) if is_wait else None
         _idempotent_remember(db, args, "create_item", item.id)
         out = _item_dict(item)
+        if item.id in db.info.get("line_defaulted", ()):
+            # GRPH-1798. Reply-only, like touchpoint_warnings: the manifest has no room
+            # for another property on every item tool, and a later read does not say it.
+            out["line_defaulted"] = True
         if wait_link is not None:
             out["wait_link"] = wait_link
         # GRPH-1393: a touchpoint matching nothing in the code graph is named, with the
@@ -3396,7 +3482,11 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             )
         return json.loads(json.dumps(payload, default=str))
     if name == "get_backlog":
-        ranked = prio_svc.prioritized(db, pid, statuses=("backlog", "next"), include_blocked=True)
+        # Resolved here, compared in the service: a key the project does not have is an
+        # error, not an empty page, and an empty page is only "this line has no open items".
+        ranked = prio_svc.prioritized(
+            db, pid, statuses=("backlog", "next"), include_blocked=True,
+            line_id=_backlog_line(db, pid, args.get("line_id")))
         # The ranking signal (ready/blocked_by/unblocks/votes/score) is the reason to
         # call get_backlog, so it stays; only the fat item fields are opt-in (AL-78).
         lean = not _full(args)

@@ -23,6 +23,7 @@ import json
 import logging
 import logging.handlers
 import sys
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,26 @@ BACKUPS = 3
 #: an absent field reads as "nothing to report" and a zero reads as "instant", and the
 #: one thing this field exists to say is that neither happened.
 NEVER_REGISTERED = "never_registered"
+
+#: The silence watchdog's own event. It must not count as the loop having written,
+#: or a drain that has already gone quiet looks freshly alive to the next check
+#: and to `gbfleet service status` (GRPH-1786).
+LOOP_SILENT = "loop_silent"
+
+#: Monotonic time of the last loop write that was not `loop_silent`. 0 means the
+#: loop has not reported in this process — not "it just wrote".
+_last_loop_write = 0.0
+
+
+def touch_loop(when: float | None = None) -> None:
+    """The until loop, or a call it is still inside, is alive at `when`."""
+    global _last_loop_write
+    _last_loop_write = time.monotonic() if when is None else when
+
+
+def loop_last_write() -> float:
+    """Monotonic time of the last real loop write, or 0 if there has not been one."""
+    return _last_loop_write
 
 
 @dataclass
@@ -115,10 +136,13 @@ def configure(state: Path | None = None, stream=None) -> logging.Logger:
     )
     rotating.setFormatter(formatter)
     logger.addHandler(rotating)
+    touch_loop()
     return logger
 
 
 def emit(event: str, **fields: Any) -> None:
+    if event != LOOP_SILENT:
+        touch_loop()
     logging.getLogger(LOGGER).info(event, extra={"gbfleet": fields})
 
 

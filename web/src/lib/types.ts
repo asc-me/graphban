@@ -1481,6 +1481,11 @@ export interface LocalSyncProject {
   queued: number;
   parked: { count: number; reasons: string[] };
   backlog_bytes: number;
+  /**
+   * The outbox table is at its 100 MB cap. `false` means that table was measured
+   * and is under the cap. `null` means this read did not measure it — not "fine".
+   */
+  backlog_full: boolean | null;
   /** Why the queue is not moving. Null means it is not held. */
   held_by: "budget" | "retry_after" | "contract" | null;
   last_push_at: string | null;
@@ -3545,9 +3550,18 @@ export interface RuleObservationSummary {
   since: string | null;
   would_hold: number | null;
   would_refuse: number | null;
+  would_allow?: number | null;
   would_have: number | null;
   decision_due: boolean;
   decision_due_reason: string | null;
+  /** Who measures the would-have (GRPH-1809). Absent from an older server: read as "server". */
+  measured_by?: "server" | "supervisor" | "brief";
+  /** Server rules: checks that ran since adoption (sign-offs checked). */
+  checks?: number | null;
+  /** What a check is ("sign-offs"); null when the server does not count this rule's checks. */
+  checks_noun?: string | null;
+  /** Supervisor rules: when the fleet supervisor last reported; null = not yet. */
+  last_supervisor_report?: string | null;
 }
 
 /** One would-have outcome row; the rule's own history, kept across promotion. */
@@ -3961,6 +3975,13 @@ export interface RuleProposal {
   created_at: string;
   decided_by?: string | null;
   decided_reason?: string | null;
+}
+
+/** Who decided a proposal, when and why, read from its audit event (GRPH-1807). */
+export interface ProposalDecision {
+  by: string;
+  at: string | null;
+  reason: string | null;
 }
 
 /** A custom rule with its author and why (GRPH-1774 / P91 D1). */

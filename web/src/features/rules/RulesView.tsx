@@ -19,6 +19,7 @@ import { useGraphViewport, zoomAbout } from "@/lib/graph/useGraphViewport";
 import { useGitops, useRulePack, useRulePackAvailable, useRulesFlow, useUnmappedRefusals } from "@/lib/queries";
 import { projectPath, settingsPath, tagFromPath } from "@/lib/routes";
 import { ObservingRules } from "./ObservingRules";
+import { ProposalsStrip } from "./ProposalsStrip";
 import { StageProposals } from "./StageProposals";
 import type { RuleFlowRule, RuleStage, RuleSuggestion, RulesFlow } from "@/lib/types";
 
@@ -97,6 +98,7 @@ export function RulesView() {
   const narrow = useNarrow();
   const [params] = useSearchParams();
   const linked = params.get("stage");
+  const [proposalStage, setProposalStage] = React.useState<string | null>(null);
   const [sel, setSel] = React.useState<string | null>(linked ? stageKey(linked) : null);
   // A dirty draft in the dock holds a stage switch (or a close) behind an in-page confirm.
   const dirtyRef = React.useRef(false);
@@ -316,6 +318,7 @@ export function RulesView() {
             onSetup={() => { setQuick(null); setWizard(true); }}
           />
         )}
+        <ProposalsStrip stageFilter={proposalStage} onClearFilter={() => setProposalStage(null)} />
         {q.isError && !flow ? (
           <LoadError detail={errorDetail(q.error, "request failed")} onRetry={() => void q.refetch()} />
         ) : !flow ? (
@@ -340,6 +343,7 @@ export function RulesView() {
             containerRef={bodyRef}
             onClose={() => selectStage(null)}
             onDirty={onDirty}
+            onReviewProposals={setProposalStage}
             leave={
               pendingSel && {
                 closing: pendingSel.to === null,
@@ -1149,6 +1153,7 @@ function StageDock({
   containerRef,
   onClose,
   onDirty,
+  onReviewProposals,
   leave,
 }: {
   flow: RulesFlow;
@@ -1160,6 +1165,7 @@ function StageDock({
   containerRef: React.RefObject<HTMLDivElement | null>;
   onClose: () => void;
   onDirty: (dirty: boolean) => void;
+  onReviewProposals: (stageId: string) => void;
   /** A stage switch or close is waiting on a dirty draft: ask before throwing it away. */
   leave: { closing: boolean; onLeave: () => void; onStay: () => void } | null;
 }) {
@@ -1290,7 +1296,7 @@ function StageDock({
         </div>
       ) : (
         <>
-        <StageProposals stageId={stage!.id} ruleIds={stage!.rules.map((r) => r.id)} />
+        <StageProposals stageId={stage!.id} ruleIds={stage!.rules.map((r) => r.id)} onReview={onReviewProposals} />
         <ObservingRules stageId={stage!.id} ruleIds={stage!.rules.map((r) => r.id)} />
         <DockEditor
           key={stage!.id}

@@ -238,7 +238,9 @@ CEILING = 18160
 # shortening the tool description. CEILING stays 18048. Headroom 12.
 # 18036 -> 18150 (GRPH-1775, P91 S3): `propose_rule` in the misc tier, +114, and CEILING
 # 18048 -> 18160 with it. Headroom 10. One-line description; args folded into `draft`.
-MEASURED_TOKENS = 18158  # P75 S1: +170 for answer_wait (ceiling 17775). GRPH-1650's
+# 18158 -> 18141 (GRPH-1799). `get_backlog` gains `line_id` and its description is shorter.
+# CEILING stays 18160. Headroom 19.
+MEASURED_TOKENS = 18141  # P75 S1: +170 for answer_wait (ceiling 17775). GRPH-1650's
 # create_item `agent_id` is fleet-only (_FLEET_ONLY_ARGS), so it costs this manifest nothing.
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming

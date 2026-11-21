@@ -443,6 +443,8 @@ def _mapping_view(db: Session, local: list[dict] | None = None) -> list[dict]:
             "queued": extra.get("queued", 0),
             "parked": extra.get("parked", {"count": 0, "reasons": []}),
             "backlog_bytes": extra.get("backlog_bytes", 0),
+            # No default of false: a mapping this read did not measure is null.
+            "backlog_full": extra.get("backlog_full"),
             "held_by": extra.get("held_by"),
         })
     return out
@@ -454,7 +456,9 @@ def list_cloud_projects(db: Session = Depends(get_db), user: User = Depends(get_
     admin): `ok {projects}` (possibly empty), `refused {reason}` or `unknown {reason}`, never
     an empty list for an unreachable console. `mapping` is the stored local → cloud map.
     `local` is every local project: sync level, permission, backfill, queue, and hold.
-    A project with no mapping is `local`, not digests. `unknown` stays `unknown`."""
+    A project with no mapping is `local`, not digests. `unknown` stays `unknown`.
+    `backlog_full` is true when the outbox table is at its 100 MB cap, false when
+    that table was measured under it, and null when this read did not measure it."""
     refuse_unless_box_admin(db, user, "map projects of")
     local = project_admin.local_projects(db)
     return {**_linked(code_sync.console_projects, db), "mapping": _mapping_view(db, local), "local": local}

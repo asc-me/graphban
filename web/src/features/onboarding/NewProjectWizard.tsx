@@ -6,10 +6,15 @@
  * Nothing is created until Review → Create project. When Maintenance is on, the line is
  * created after the project exists (GRPH-1749). The model choice is applied right after
  * that, through the same writer the Quick Start model step uses.
+ *
+ * The identity accent is a solid colour or an ombre, plus a tile pattern (GRPH-1750).
+ * The second colour, the pattern and the live tile all paint through `projectFill`.
  */
 import { useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
+import { ProjectThemePicker, accentSummary, radioArrows, shiftAccent, type ProjectThemeValue } from "@/components/ProjectThemePicker";
+import { ProjectTile } from "@/components/ProjectTile";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -21,9 +26,11 @@ import { TagField, useTagField } from "@/features/onboarding/TagField";
 import { type GraphicSpec, HeroDrawing, LogoMark, prefersReducedMotion, WizardKeyframes } from "@/features/onboarding/WizardGraphic";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { projectFill } from "@/lib/projectFill";
 import { keys, useConfirmSetup } from "@/lib/queries";
+import type { ProjectPattern } from "@/lib/types";
 
-export { PROJECT_ACCENTS, PROJECT_ACCENT_SWATCHES };
+export { PROJECT_ACCENTS, PROJECT_ACCENT_SWATCHES, radioArrows };
 
 type Step = "identity" | "repo" | "line" | "model" | "review";
 const STEPS: Step[] = ["identity", "repo", "line", "model", "review"];
@@ -86,47 +93,6 @@ function repoSlug(repo: string): string {
   return repo.trim().replace(/^.*[:/]([^/]+\/[^/]+?)(\.git)?$/, "$1");
 }
 
-/** The WAI-ARIA radio group keyboard model (GRPH-1613, GRPH-1618). ArrowRight/ArrowDown select
- *  the next option and ArrowLeft/ArrowUp the previous, wrapping at the ends, on either axis as
- *  the pattern says; Home and End go to the first and last. Disabled options are skipped, and
- *  focus follows the checked option. A locked group ignores the keys. */
-export function radioArrows<T>(
-  e: React.KeyboardEvent<HTMLElement>,
-  o: {
-    values: readonly T[];
-    current: T;
-    set: (v: T) => void;
-    locked?: boolean;
-    disabled?: (v: T) => boolean;
-  },
-) {
-  if (o.locked) return;
-  const n = o.values.length;
-  const usable = (i: number) => !o.disabled?.(o.values[i]);
-  const from = o.values.indexOf(o.current);
-  let i = -1;
-  if (e.key === "Home" || e.key === "End") {
-    const order = [...Array(n).keys()];
-    if (e.key === "End") order.reverse();
-    i = order.find(usable) ?? -1;
-  } else {
-    const step =
-      e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
-    if (!step) return;
-    for (let k = 1; k <= n; k++) {
-      const j = (((from + step * k) % n) + n) % n;
-      if (usable(j)) {
-        i = j;
-        break;
-      }
-    }
-  }
-  e.preventDefault();
-  if (i < 0 || i === from) return;
-  o.set(o.values[i]);
-  e.currentTarget.closest('[role="radiogroup"]')?.querySelectorAll<HTMLElement>('[role="radio"]')[i]?.focus();
-}
-
 const LABEL = "mb-1.5 block font-mono text-[10px] uppercase tracking-wide text-faint";
 
 /** The spec and caption the left panel draws for where the wizard is (GRPH-1587). */
@@ -170,7 +136,7 @@ export function graphicFor(o: {
   return { spec: { kind: "single", from: "YOU", to: T }, caption: o.busy ? `CREATING · ${T}` : `REVIEW · ${T}` };
 }
 
-function Graphic({ spec, caption, accent, still }: { spec: GraphicSpec; caption: string; accent: string; still: boolean }) {
+function Graphic({ spec, caption, fill, still }: { spec: GraphicSpec; caption: string; fill: string; still: boolean }) {
   return (
     <div aria-hidden="true" className="relative hidden w-[380px] shrink-0 overflow-hidden border-r border-line-2 bg-bg md:block">
       <div className="absolute inset-0">
@@ -182,7 +148,11 @@ function Graphic({ spec, caption, accent, still }: { spec: GraphicSpec; caption:
         <span className="font-mono text-[10px] tracking-wide text-faint">LOCAL</span>
       </div>
       <div className="absolute bottom-5 left-[22px] right-[22px] flex items-center gap-2">
-        <span data-testid="pw-accent-square" className="h-2 w-2 rounded-[2px]" style={{ background: accent }} />
+        <span
+          data-testid="pw-accent-square"
+          className="h-2 w-2 rounded-[2px]"
+          style={{ background: fill, "--tile-fill": fill } as React.CSSProperties}
+        />
         <span data-testid="pw-caption" className="font-mono text-[10.5px] tracking-wide text-faint-2">
           {caption}
         </span>
@@ -223,7 +193,11 @@ export function NewProjectWizard({
   const confirm = useConfirmSetup();
   const [step, setStep] = React.useState<Step>("identity");
   const [name, setName] = React.useState("");
-  const [accent, setAccent] = React.useState(PROJECT_ACCENTS[0]);
+  const [accent, setAccent] = React.useState<string>(PROJECT_ACCENTS[0]);
+  // The design seeds the second colour four steps along, so the first ombre is already a pair.
+  const [accent2, setAccent2] = React.useState<string>(shiftAccent(PROJECT_ACCENTS[0]));
+  const [ombre, setOmbre] = React.useState(false);
+  const [pattern, setPattern] = React.useState<ProjectPattern>("none");
   const [repo, setRepo] = React.useState("");
   const [line, setLine] = React.useState(false);
   const [lineMade, setLineMade] = React.useState(false);
@@ -245,6 +219,9 @@ export function NewProjectWizard({
     setStep("identity");
     setName("");
     setAccent(PROJECT_ACCENTS[0]);
+    setAccent2(shiftAccent(PROJECT_ACCENTS[0]));
+    setOmbre(false);
+    setPattern("none");
     setRepo("");
     setLine(false);
     setLineMade(false);
@@ -291,7 +268,13 @@ export function NewProjectWizard({
     let failedAt: "project" | "line" | "followup" = "project";
     try {
       if (!id) {
-        const p = await api.createProject({ name: name.trim(), tag: tagField.tag || undefined, accent });
+        const p = await api.createProject({
+          name: name.trim(),
+          tag: tagField.tag || undefined,
+          accent,
+          accent2: ombre ? accent2 : null,
+          pattern,
+        });
         id = p.id;
         setCreatedId(id);
       }
@@ -369,12 +352,21 @@ export function NewProjectWizard({
   const summary: [string, string, Step, boolean][] = [
     ["NAME", name, "identity", false],
     ["TAG", `${T} · ${T}-12, ${T}-R33`, "identity", true],
-    ["ACCENT", accent, "identity", true],
+    ["ACCENT", accentSummary(ombre, accent, accent2, pattern), "identity", false],
     ["REPOSITORY", repo.trim() || "None yet", "repo", true],
     ["MAINTENANCE LINE", line ? `${T}-L1 · Maintenance` : "Not now", "line", line],
     ["MODEL", MODEL_LABEL[model], "model", false],
   ];
+  const sentAccent2 = ombre ? accent2 : null;
+  const fill = projectFill({ accent, accent2: sentAccent2, pattern });
   const graphic = graphicFor({ step, name, tag: T, repo, repoOk, line, model, busy, created: ready, failed: !!error && !createdId });
+
+  function applyTheme(next: ProjectThemeValue) {
+    setAccent(next.accent);
+    setAccent2(next.accent2);
+    setOmbre(next.ombre);
+    setPattern(next.pattern);
+  }
 
   return (
     <Dialog open={open} onOpenChange={close}>
@@ -392,7 +384,7 @@ export function NewProjectWizard({
           Create a project in five steps.
         </DialogDescription>
         <WizardKeyframes />
-        <Graphic spec={graphic.spec} caption={graphic.caption} accent={accent} still={still} />
+        <Graphic spec={graphic.spec} caption={graphic.caption} fill={fill} still={still} />
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className="flex items-center gap-2 py-3.5 pl-6 pr-12">
             <span className="font-mono text-[10px] tracking-wide text-faint">NEW PROJECT</span>
@@ -460,47 +452,13 @@ export function NewProjectWizard({
                 ) : (
                   <TagField tag={tagField.tag} setTag={tagField.setTag} status={tagField.status} compact />
                 )}
-                <div>
-                  <span id="pw-accent" className={cn(LABEL, "mb-2")}>
-                    Accent
-                  </span>
-                  <div role="radiogroup" aria-labelledby="pw-accent" className="flex flex-wrap gap-2">
-                    {PROJECT_ACCENT_SWATCHES.map((swatch) => (
-                      <button
-                        key={swatch.hex}
-                        type="button"
-                        role="radio"
-                        aria-checked={accent === swatch.hex}
-                        tabIndex={accent === swatch.hex ? 0 : -1}
-                        disabled={!!createdId}
-                        onClick={() => setAccent(swatch.hex)}
-                        onKeyDown={(e) =>
-                          radioArrows(e, {
-                            values: PROJECT_ACCENTS,
-                            current: accent,
-                            set: setAccent,
-                            locked: !!createdId,
-                          })
-                        }
-                        aria-label={swatch.name}
-                        title={swatch.name}
-                        className="h-7 w-7 rounded-[8px] transition-transform hover:scale-110"
-                        style={{
-                          background: swatch.hex,
-                          // Selection is a box-shadow, not outline. An inline outline beats
-                          // the global :focus-visible rule, so keyboard focus disappears.
-                          // The 4px ring sits inside a 5px focus offset (design RING_ON).
-                          // The 2px inner stop is the dialog surface (bg-surface-3).
-                          boxShadow:
-                            accent === swatch.hex
-                              ? "0 0 0 2px var(--color-surface-3), 0 0 0 4px var(--color-fg)"
-                              : undefined,
-                          outlineOffset: "5px",
-                        }}
-                      />
-                    ))}
-                  </div>
-                </div>
+                <ProjectThemePicker
+                  value={{ accent, accent2, ombre, pattern }}
+                  onChange={applyTheme}
+                  disabled={!!createdId}
+                  tag={T}
+                  still={still}
+                />
               </>
             )}
 
@@ -675,7 +633,14 @@ export function NewProjectWizard({
                     >
                       <dt className="font-mono text-[10px] tracking-wide text-faint">{k}</dt>
                       <dd className="m-0 flex min-w-0 items-center gap-2">
-                        {k === "ACCENT" && <span className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: accent }} />}
+                        {k === "ACCENT" && (
+                          <span
+                            data-testid="pw-review-swatch"
+                            aria-hidden="true"
+                            className="h-3.5 w-3.5 shrink-0 rounded-[4px]"
+                            style={{ background: fill, "--tile-fill": fill } as React.CSSProperties}
+                          />
+                        )}
                         <span className={cn("truncate text-body", mono && "font-mono", v === "None yet" || v === "Not now" ? "text-faint" : "text-fg")}>{v}</span>
                       </dd>
                       {createdId && st === "identity" ? (
@@ -706,12 +671,7 @@ export function NewProjectWizard({
             {ready && (
               <>
                 <div className="flex items-center gap-3 rounded-[12px] border border-line bg-surface px-4 py-3.5">
-                  <span
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] font-mono text-small font-semibold text-bg"
-                    style={{ background: accent }}
-                  >
-                    {tagField.tag}
-                  </span>
+                  <ProjectTile project={{ tag: tagField.tag, accent, accent2: sentAccent2, pattern }} size={32} />
                   <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                     <p className="truncate text-lead font-semibold">{name}</p>
                     <p className="font-mono text-small text-muted">

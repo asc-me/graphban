@@ -201,6 +201,18 @@ function pushWord(result: LocalSyncProject["last_push_result"]): string {
   return "not pushed";
 }
 
+/** The project's own byte estimate, plus the table's cap. An unmeasured flag is
+ *  not shown as a size: a number with no warning would read as under the cap. */
+function backlogText(row: LocalSyncProject): string {
+  if (row.backlog_full === true) {
+    return `${row.backlog_bytes.toLocaleString("en-US")} B · Backlog full`;
+  }
+  if (row.backlog_full === false) {
+    return `${row.backlog_bytes.toLocaleString("en-US")} B`;
+  }
+  return "backlog unknown";
+}
+
 const CREATE = "create";
 
 /** The first choice for a project with no mapping: the cloud project whose tag matches,
@@ -341,6 +353,7 @@ function ProjectSyncRow({
         {row.parked.reasons.length ? ` (${row.parked.reasons.join(", ")})` : ""}
         {" · "}last push {pushWord(row.last_push_result)}
         {row.held_by ? ` · held by ${row.held_by}` : ""}
+        {" · "}{backlogText(row)}
       </p>
       <Button size="sm" variant="ghost" disabled={readOnly || busy} onClick={() => void retry()}>
         Retry now

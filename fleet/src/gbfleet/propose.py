@@ -396,15 +396,85 @@ def _pr_number(url: str) -> int:
     return int(tail) if tail.isdigit() else 0
 
 
+def _ownership_lines(body: str) -> list[str]:
+    """`Items:` / `Attests:` lines. Empty when the body does not declare ownership."""
+    return [line for line in str(body or "").splitlines()
+            if line.startswith(("Items:", "Attests:"))]
+
+
 def _carries_item(pr: dict, item: str) -> bool:
-    """Whether the PR is `item`'s: named in its title, or in an `Items:`/`Attests:` line of
-    its body. A passing mention elsewhere in a body is not ownership."""
-    if _names(str(pr.get("title") or ""), item):
-        return True
-    for line in str(pr.get("body") or "").splitlines():
-        if line.startswith(("Items:", "Attests:")) and _names(line, item):
-            return True
-    return False
+    """Whether the PR is `item`'s.
+
+    An `Items:` or `Attests:` line is the declared ownership, and it outranks the title
+    (GRPH-1452). A merge title "Merge origin/main (A) into B" names A without being A's
+    PR; closing it when A merges drops B's only open PR. The title counts only when the
+    body has no such line. A passing mention elsewhere in the body is not ownership.
+    """
+    lines = _ownership_lines(str(pr.get("body") or ""))
+    if lines:
+        return any(_names(line, item) for line in lines)
+    return _names(str(pr.get("title") or ""), item)
+
+
+def _oid(value: str) -> str:
+    """A hex commit id, or "". Anything else must not be interpolated into a compare URL."""
+    text = str(value or "").strip().lower()
+    if len(text) < COMMIT_MIN or len(text) > 40:
+        return ""
+    if not all(c in "0123456789abcdef" for c in text):
+        return ""
+    return text
+
+
+def _keeper_head(repo: Path, number: int) -> str:
+    """The keeper PR's head commit, or "" when it cannot be read.
+
+    Unreadable is not "this other branch is contained". Callers treat "" as "could not
+    look", and only a compared `ahead_by` above zero refuses the close.
+    """
+    if not number:
+        return ""
+    try:
+        done = _gh(repo, "pr", "view", str(number), "--json", "headRefOid")
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if done.returncode != 0:
+        return ""
+    try:
+        data = json.loads(done.stdout or "{}")
+    except ValueError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    return _oid(str(data.get("headRefOid") or ""))
+
+
+def _commits_outside_keeper(repo: Path, other_oid: str, keeper_oid: str) -> bool:
+    """True only when `other_oid` has commits `keeper_oid` does not (GRPH-1452).
+
+    False when the other head is the keeper, when it is contained (`ahead_by` 0), or
+    when the compare could not be read. The last of those is "nobody looked", so it does
+    not by itself spare the PR — an older draft whose `Items:` line names the merged
+    item is still closed, which is the case the compare could not decide.
+    """
+    other, keeper = _oid(other_oid), _oid(keeper_oid)
+    if not other or not keeper or same_commit(other, keeper):
+        return False
+    try:
+        done = _gh(repo, "api",
+                   f"repos/{{owner}}/{{repo}}/compare/{keeper}...{other}")
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if done.returncode != 0:
+        return False
+    try:
+        data = json.loads(done.stdout or "{}")
+    except ValueError:
+        return False
+    if not isinstance(data, dict):
+        return False
+    ahead = data.get("ahead_by")
+    return isinstance(ahead, int) and not isinstance(ahead, bool) and ahead > 0
 
 
 def close_item_prs(repo: Path, item: str, keeper_url: str, *, comment: str,
@@ -414,9 +484,16 @@ def close_item_prs(repo: Path, item: str, keeper_url: str, *, comment: str,
     `older_drafts_only` is the newer-attempt case: only drafts opened before the keeper are
     superseded. After a merge every other open PR of the item is, whatever its age. Best
     effort: a PR that cannot be closed stays open and nothing raises.
+
+    A PR whose declared items do not include `item` stays open (GRPH-1452): the title is
+    not ownership once the body has an `Items:` or `Attests:` line. So does one whose
+    branch has commits the keeper does not — closing that throws away work the merge
+    never carried. A compare that cannot be read does not invent that fact.
     """
     keeper = _pr_number(keeper_url)
     closed: list[str] = []
+    keeper_head = ""
+    looked = False
     try:
         rows = open_prs(repo)
         for pr in rows:
@@ -428,6 +505,12 @@ def close_item_prs(repo: Path, item: str, keeper_url: str, *, comment: str,
             number = pr.get("number") or _pr_number(url)
             if older_drafts_only and not (pr.get("isDraft") and keeper
                                           and int(number or 0) < keeper):
+                continue
+            if not looked:
+                looked = True
+                keeper_head = _keeper_head(repo, keeper)
+            other = str(pr.get("headRefOid") or "")
+            if keeper_head and _commits_outside_keeper(repo, other, keeper_head):
                 continue
             done = _gh(repo, "pr", "close", str(number), "--comment", comment)
             if done.returncode == 0:
@@ -510,6 +593,9 @@ def propose(repo: Path, branch: str, base: str, *, title: str, body: str,
                     reason=f"head already merged as PR #{number}; not opening a sibling",
                 )
             if state == "CLOSED":
+                # GRPH-1452: a PR closed as superseded, whose branch has since moved,
+                # is reopened here. Leaving it closed is "already has closed PR; not
+                # opening a sibling", and the item then sits in review with no PR.
                 if _reopen(repo, number):
                     return Proposed(
                         branch=branch, url=url, ok=True,
@@ -784,8 +870,11 @@ CI_PREDICATE = "suite_green"
 #: D2). Required only on a merge into the release ref, and only against the ACTUAL head.
 SCANS_PREDICATE = "scans_clean"
 #: What `gh pr view --json` is asked for. `mergeCommit` is null until the PR is merged.
-_PR_FIELDS = ("number,url,state,isDraft,mergeable,mergeStateStatus,headRefOid,headRefName,"
-              "baseRefName,isCrossRepository,mergeCommit")
+#: `title` and `body` tell a branch lookup apart from this item's PR: `gh pr view
+#: <branch>` returns whichever PR has that head, and on a shared branch that is
+#: another item's merge (GRPH-1023). The head name is the lookup, not proof.
+_PR_FIELDS = ("number,url,title,body,state,isDraft,mergeable,mergeStateStatus,"
+              "headRefOid,headRefName,baseRefName,isCrossRepository,mergeCommit")
 
 
 @dataclass(frozen=True)
