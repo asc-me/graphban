@@ -380,6 +380,20 @@ class InviteOut(ORMModel):
     accept_url: str = ""  # convenience: the link emailed to the invitee (copy-able by admins)
 
 
+class MyInviteOut(BaseModel):
+    """A pending invitation addressed to the caller. Accept goes through
+    /invites/accept with `token`; decline through /me/invites/{id}/decline."""
+
+    id: str
+    token: str
+    org_id: str
+    org_name: str
+    role: str
+    invited_by: str
+    created_at: datetime
+    expires_at: datetime | None = None
+
+
 class PlatformInviteCreate(BaseModel):
     email: EmailStr
     plan: str | None = None  # optional preset, e.g. seed a design partner onto `team`

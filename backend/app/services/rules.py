@@ -228,6 +228,10 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
          "A project has at most one maintenance line; a second create_line is refused and "
          "names the existing line.",
          "enforced", _src("app/services/lines.py", "Refused"), "code"),
+    Rule("org.only_owner_cannot_leave", "build", "The only owner cannot leave",
+         "A member may leave an organization, but its only owner is refused until somebody "
+         "else is made an owner.",
+         "enforced", _src("app/services/orgs.py", "leave_org"), "code", scope="org"),
     Rule("agents.operating_loop", "build", "Operating loop",
          "Agents follow the operating loop and invariants in AGENTS.md.",
          "advisory", Enforcer("doc", "AGENTS.md"), "repo_file", channel="doc"),

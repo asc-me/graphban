@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 393 of the 393. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 396 of the 396. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -821,6 +821,9 @@ plan entitlement or an approved one-time request.
 | GET | `/api/invites/{token}/preview` | none | What a token invites, for the accept page before login. Used, expired, and unknown tokens 404 the same way |
 | POST | `/api/invites/accept` | JWT | Spend the token and take the seat. Body `{token, handle?}`. If the invitee's account handle is taken or held in the inviting org (only that org is read), `409` `handle_taken` with `{org_id, org_name, suggested}`; retry with a free `handle` to set the org-only `OrgMembership.handle`. A clash never blocks the join itself |
 | PATCH | `/api/orgs/{org_id}/me/handle` | JWT (org member) | Change your own org-only handle `{handle}`. Same rules and `409` `handle_taken` as accepting; the old handle is held in that org for 30 days (cloud). `404` for an org you are not in. `GET /api/orgs` returns `handle` where it differs from the account handle |
+| GET | `/api/me/invites` | JWT | Your pending, unexpired invitations (addressed to your account email): `[{id, token, org_id, org_name, role, invited_by, created_at, expires_at}]`. Accepted, revoked, declined and expired invites are not listed. Accept with `POST /api/invites/accept` and the `token` |
+| POST | `/api/me/invites/{invite_id}/decline` | JWT (invitee) | Decline an invitation addressed to you → `204`. A declined invite can no longer be accepted. `404` for an invite that is not yours or not pending |
+| DELETE | `/api/orgs/{org_id}/me` | JWT (org member) | Leave the org. The only owner is refused `409` (`rule_id` `org.only_owner_cannot_leave`) with a reason the UI shows inline; `404` for an org you are not in |
 
 ## Linear
 
