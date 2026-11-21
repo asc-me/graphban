@@ -5,6 +5,8 @@ import { useNavigate, useParams } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { OrgHandleField } from "@/features/profile/OrgHandleField";
+import { handleClash, type HandleClash } from "@/features/profile/orgHandle";
 import { useAuth } from "@/features/auth/AuthContext";
 import { api } from "@/lib/api";
 import { keys } from "@/lib/queries";
@@ -132,24 +134,45 @@ function AcceptButton({ token }: { token: string }) {
   const qc = useQueryClient();
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
+  const [clash, setClash] = React.useState<HandleClash | null>(null);
 
-  async function accept() {
+  async function accept(handle?: string) {
     setBusy(true);
     setError("");
     try {
-      await api.acceptInvite(token);
+      await api.acceptInvite(token, handle);
       await qc.invalidateQueries({ queryKey: keys.orgs });
       navigate("/", { replace: true });
-    } catch {
-      setError("Could not accept the invitation. It may have expired.");
+    } catch (err) {
+      const c = handleClash(err);
+      if (c && !handle) setClash(c);
+      else if (c) throw err; // the field shows the next suggestion
+      else setError("Could not accept the invitation. It may have expired.");
       setBusy(false);
     }
+  }
+
+  if (clash) {
+    return (
+      <>
+        <p className="mb-4 rounded-[10px] border border-line-2 bg-surface-2 p-3 text-[12px] text-muted">
+          Your handle is already taken in <strong>{clash.orgName}</strong>. Pick the handle you'll
+          use there — it stays your own everywhere else.
+        </p>
+        <OrgHandleField
+          orgName={clash.orgName}
+          initial={clash.suggested}
+          submitLabel="Accept with this handle"
+          onSubmit={(h) => accept(h)}
+        />
+      </>
+    );
   }
 
   return (
     <>
       {error && <p className="mb-4 text-[12px] text-st-blocked">{error}</p>}
-      <Button className="w-full" disabled={busy} onClick={accept}>
+      <Button className="w-full" disabled={busy} onClick={() => accept()}>
         {busy ? "Joining…" : "Accept invitation"}
       </Button>
     </>
