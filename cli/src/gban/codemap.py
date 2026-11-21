@@ -217,7 +217,8 @@ def build(repo: Path) -> dict:
         else:
             continue
         edges.extend({"src": path, "dst": d, "type": kind} for d in sorted(dsts))
-    return {"revision": rev, "tracked": len(rows), "texts": texts, "edges": edges}
+    return {"revision": rev, "tracked": len(rows), "paths": [p for p, _ in rows],
+            "texts": texts, "edges": edges}
 
 
 def node_for(path: str, text: str, keep_summary: bool) -> dict:
@@ -234,6 +235,19 @@ def existing_map(call) -> dict[str, dict]:
     return {n["path"]: n for n in result.get("nodes", [])}
 
 
+def present_paths(tracked_paths: list[str]) -> set[str]:
+    """Every path HEAD still has: each tracked file (skipped and binary ones included) and
+    every directory above one. A graph path in neither is gone."""
+    out: set[str] = set()
+    for p in tracked_paths:
+        out.add(p)
+        d = posixpath.dirname(p)
+        while d and d not in out:
+            out.add(d)
+            d = posixpath.dirname(d)
+    return out
+
+
 def plan(built: dict, existing: dict[str, dict]) -> dict:
     texts = built["texts"]
     nodes, kept, new = [], 0, 0
@@ -245,8 +259,9 @@ def plan(built: dict, existing: dict[str, dict]) -> dict:
         else:
             new += 1
         nodes.append(node_for(path, texts[path], keep_summary=has_summary))
+    alive = present_paths(built["paths"])
     gone = sorted(p for p, n in existing.items()
-                  if p not in texts and "::" not in p and n.get("fresh", True))
+                  if "::" not in p and n.get("fresh", True) and p.rstrip("/") not in alive)
     return {"nodes": nodes, "existing": len(existing), "new": new, "kept": kept, "gone": gone, "edges": built["edges"]}
 
 

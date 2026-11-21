@@ -133,3 +133,17 @@ def test_dry_run_writes_nothing_and_prints_counts(tmp_path, monkeypatch, capsys)
     assert "10 tracked" in out and "7 to describe" in out and "0 existing" in out
     assert "7 new" in out and "0 gone" in out and "4 edges" in out
     assert [t for t, _ in graph.calls] == ["get_code_map"]
+
+
+def test_directory_and_skipped_nodes_are_not_gone(tmp_path):
+    repo = _repo(tmp_path)
+    graph = FakeGraph()
+    for path, kind in (("pkg/src/mypkg", "module"), ("pkg/src/", "module"),
+                       ("uv.lock", "config"), ("logo.png", "file"),
+                       ("dist-release/x.py", "file"), ("pkg/old", "module")):
+        graph.nodes[path] = {"path": path, "kind": kind, "summary": "hand", "fresh": True}
+    planned = _run(repo, graph)
+    assert planned["gone"] == ["pkg/old"]
+    for path in ("pkg/src/mypkg", "pkg/src/", "uv.lock", "logo.png", "dist-release/x.py"):
+        assert graph.nodes[path]["fresh"] is True, path
+    assert graph.nodes["pkg/old"]["fresh"] is False
