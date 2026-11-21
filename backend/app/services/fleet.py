@@ -32,16 +32,20 @@ from app.services.items import DEFAULT_LEASE_SECONDS
 ROLES = ("planner", "worker")
 DEFAULT_ROLE = "worker"
 
-#: One company, one spelling (GRPH-1090; the grok half was GRPH-1120). The matrix
-#: row and the seat's `capabilities=` clause say the company (`xai`, `anthropic`,
-#: `google`, `alibaba`, `deepseek`, `cursor`, `openai`). A child that copies the
-#: adapter name (`grok`, `claude`, `agy`, `qwen-code`, `dsh`, `cursor-agent`,
-#: `codex`) writes the other. Grok's enumerated model ids (`grok-4.7`) are a third
+#: One company, one spelling, for COMPARISON (GRPH-1090; the grok half was
+#: GRPH-1120). The matrix row says the company (`xai`, `anthropic`, `google`,
+#: `alibaba`, `deepseek`, `cursor`, `openai`). A child that copies the adapter
+#: name (`grok`, `claude`, `agy`, `qwen-code`, `dsh`, `cursor-agent`, `codex`)
+#: writes the other. Grok's enumerated model ids (`grok-4.7`) are a third
 #: spelling of xAI and the only model-id fold: a string this map has not seen is
-#: not a company. Folding the other way would split every measured cell already
-#: keyed by the company spelling.
-#: The fleet package holds the same map on each adapter's `vendor` and
-#: `adapters.canonical_vendor`. This service cannot import it (PRD-22 D-e).
+#: not a company.
+#: Registration does NOT store this fold for any name but grok. Harness
+#: recommendation rows are keyed by the raw adapter string the caller declared
+#: (`claude`, `qwen-code`). Rewriting those onto the company spelling makes the
+#: cell miss the resolution's harness and the cards come back empty. `grok` is
+#: stored as `xai` because measured cells are already keyed by `xai`.
+#: The fleet package holds the same comparison map on each adapter's `vendor`
+#: and `adapters.canonical_vendor`. This service cannot import it (PRD-22 D-e).
 #: A new pair is an entry in both, or the seat and the gate disagree again.
 _CANONICAL_VENDOR = {
     "grok": "xai",
@@ -82,12 +86,34 @@ def canonical_vendor(vendor: str) -> str:
     return _CANONICAL_VENDOR.get(key, vendor)
 
 
+def recorded_vendor(vendor: str) -> str:
+    """The vendor a registration stores. Not the comparison spelling.
+
+    `grok`, `xai`, and a grok model id become `xai` (GRPH-1120). Measured cells
+    and the matrix are already keyed by `xai`; storing the adapter name would
+    split those rows.
+
+    Every other spelling is stored as given. `canonical_vendor` still treats
+    `claude` and `anthropic` as one company when a predicate compares them, but
+    writing that fold onto the row changes the key harness cards join on
+    (`qwen-code:`, `claude:sonnet`) and those cards come back empty (GRPH-1090).
+    """
+    if not isinstance(vendor, str):
+        return vendor
+    key = vendor.strip().lower()
+    if not key or key == "undeclared":
+        return vendor
+    if key == "grok" or key == "xai" or key.startswith("grok-"):
+        return "xai"
+    return vendor
+
+
 def _canonicalize_recorded_capabilities(capabilities: dict | None) -> dict:
-    """The capabilities a registration stores. Vendor aliases collapse; nothing else moves."""
+    """The capabilities a registration stores. Only the grok spelling collapses."""
     caps = dict(capabilities or {})
     vendor = caps.get("vendor")
     if isinstance(vendor, str) and vendor.strip():
-        caps["vendor"] = canonical_vendor(vendor)
+        caps["vendor"] = recorded_vendor(vendor)
     return caps
 
 
@@ -602,10 +628,11 @@ def register_agent(db: Session, *, project_id: str, api_key, label: str = "",
         role = ALL_IN_ONE
     else:
         role = DEFAULT_ROLE if DEFAULT_ROLE in allowed else allowed[0]
-    # Before the row is written (GRPH-1090). A child that says the adapter name
-    # and a child that says the company are the same vendor; storing both
-    # spellings is how the diversity receipt later calls them different vendors.
-    # Old rows are not rewritten — `review_diversity` folds them on read.
+    # Before the row is written. `grok` is stored as `xai` (GRPH-1120) because
+    # measured cells are keyed by `xai`. Other adapter names stay as declared
+    # (GRPH-1090): recommendation cards join on that raw string, and folding
+    # `claude` onto `anthropic` here empties them. `review_diversity` folds
+    # those names on read, so the receipt still calls them one vendor.
     capabilities = _canonicalize_recorded_capabilities(capabilities)
     now = datetime.now(timezone.utc)
     agent = Agent(

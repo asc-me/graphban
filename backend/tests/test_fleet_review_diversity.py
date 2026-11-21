@@ -98,9 +98,10 @@ def test_the_same_vendor_and_model_is_named_as_such(client, key):
     assert "SAME vendor" in pred["detail"]
     assert "same model" in pred["detail"]
     # Both sides legible without a second lookup — the whole point of the ticket.
-    # Registration stores the company spelling (GRPH-1090), so the receipt names
-    # `alibaba`, not the adapter the caller typed.
-    assert pred["detail"].count("alibaba:qwen3") == 2
+    # The receipt quotes the stored spelling. Registration keeps `qwen-code`
+    # (GRPH-1090): that string is the harness row key, and folding it to
+    # `alibaba` here empties the recommendation cards.
+    assert pred["detail"].count("qwen-code:qwen3") == 2
     assert "tier cheap" in pred["detail"]
 
 
@@ -113,7 +114,7 @@ def test_different_vendors_are_named_as_such(client, key):
 
     assert pred["passed"] is True
     assert "different vendors" in pred["detail"]
-    assert "anthropic:opus" in pred["detail"] and "alibaba:qwen3" in pred["detail"]
+    assert "claude:opus" in pred["detail"] and "qwen-code:qwen3" in pred["detail"]
 
 
 def test_same_vendor_different_model_is_not_the_same_model(client, key):
@@ -250,6 +251,25 @@ def test_an_adapter_name_and_its_company_are_one_vendor_and_model(adapter, compa
     assert "different vendors" not in detail
 
 
+def test_a_registered_claude_and_a_registered_anthropic_are_one_vendor(client, key):
+    """GRPH-1090, through registration. The two spellings are stored as declared
+    — that string is the harness row key — and the receipt still says they are
+    the same vendor and the same model. grok is stored as xai; claude is not
+    stored as anthropic."""
+    pred = _signed(
+        client, key,
+        builder_caps={"instance": "w", "vendor": "claude", "model": "opus", "tier": "frontier"},
+        reviewer_caps={"instance": "r", "vendor": "anthropic", "model": "opus", "tier": "frontier"},
+    )
+
+    assert pred["passed"] is True
+    assert "SAME vendor" in pred["detail"]
+    assert "same model" in pred["detail"]
+    assert "different vendors" not in pred["detail"]
+    assert "claude:opus" in pred["detail"] and "anthropic:opus" in pred["detail"]
+    assert "anthropic and claude are one vendor" in pred["detail"]
+
+
 def test_the_same_company_on_a_different_model_is_not_the_same_model():
     builder = {"vendor": "claude", "model": "haiku", "tier": "cheap"}
     reviewer = {"vendor": "anthropic", "model": "opus", "tier": "frontier"}
@@ -280,7 +300,7 @@ def test_an_unknown_vendor_string_is_not_mapped(client, key):
     )
     assert "different vendors" in pred["detail"]
     assert "acme-labs:one" in pred["detail"]
-    assert "anthropic:opus" in pred["detail"]
+    assert "claude:opus" in pred["detail"]
 
 
 def test_claude_reviewing_grok_is_still_different_vendors(client, key):
@@ -293,7 +313,7 @@ def test_claude_reviewing_grok_is_still_different_vendors(client, key):
     )
     assert "different vendors" in pred["detail"]
     assert "SAME vendor" not in pred["detail"]
-    assert "xai:grok-4.7" in pred["detail"] and "anthropic:opus" in pred["detail"]
+    assert "xai:grok-4.7" in pred["detail"] and "claude:opus" in pred["detail"]
 
 
 def test_anthropic_and_xai_are_still_different_vendors(client, key):

@@ -549,7 +549,9 @@ def canonical_vendor(name: str) -> str:
     A model id is not an alias except the grok prefix, which was measured.
 
     The backend holds the same map in `app.services.fleet.canonical_vendor`
-    and cannot import this package (PRD-22 D-e).
+    and cannot import this package (PRD-22 D-e). Registration there stores
+    only the grok fold (`recorded_vendor`): other adapter names are the key
+    harness cards join on, and writing this fold onto those rows empties them.
     """
     if not isinstance(name, str):
         return name

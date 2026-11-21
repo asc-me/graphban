@@ -134,25 +134,28 @@ def test_a_grok_registration_is_stored_as_xai(db, proj, key):
     assert from_name.capabilities["model"] == "grok-4.7"
 
 
-@pytest.mark.parametrize("declared, stored", [
-    ("claude", "anthropic"),
-    ("agy", "google"),
-    ("qwen-code", "alibaba"),
-    ("dsh", "deepseek"),
-    ("cursor-agent", "cursor"),
-    ("codex", "openai"),
-    ("gbagent", "gbagent"),
-    ("Anthropic", "anthropic"),
-    (" acme-labs ", " acme-labs "),
+@pytest.mark.parametrize("declared", [
+    "claude",
+    "agy",
+    "qwen-code",
+    "dsh",
+    "cursor-agent",
+    "codex",
+    "gbagent",
+    "Anthropic",
+    " acme-labs ",
 ])
-def test_registration_stores_the_company_spelling(db, proj, key, declared, stored):
-    """GRPH-1090. The roster and the predicate read one spelling. An unknown
-    string is stored unchanged — it is not mapped onto a company."""
+def test_registration_keeps_the_adapter_name_cards_are_keyed_by(db, proj, key, declared):
+    """GRPH-1090. Comparison folds `claude` onto `anthropic`. Storing that fold
+    rewrites the harness row key, and R1/R3 come back with no cards: the
+    resolution names `qwen-code:` and `claude:sonnet`, and the cell is whatever
+    vendor registration stored. grok is the exception, covered above — measured
+    cells are already keyed by `xai`. An unknown string is not a company either."""
     a = fleet.register_agent(
         db, project_id=proj, api_key=key,
         capabilities={"vendor": declared, "model": "m", "tier": "cheap"})
 
-    assert a.capabilities["vendor"] == stored
+    assert a.capabilities["vendor"] == declared
     assert a.capabilities["model"] == "m"
 
 
