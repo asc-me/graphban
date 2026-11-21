@@ -135,6 +135,9 @@ def _parser() -> argparse.ArgumentParser:
                      "graph and prints the counts, and writes nothing."))
     code_map.add_argument("--dry-run", action="store_true",
                           help="print HEAD and the counts; write nothing")
+    code_map.add_argument("--since", action="store_true",
+                          help="incremental: diff the map's pinned revision against origin's default "
+                               "branch (after a fetch) and describe only what changed")
     code_map.add_argument("--repo", default=None,
                           help="repository to map (default: the git checkout of the current directory)")
 
@@ -516,6 +519,8 @@ def cmd_code(args) -> int:
         print(f"{PROG}: no project-write API key. Set ${doctor_mod.SUPERVISOR_KEY_ENV} or "
               f"${config.API_KEY_ENV}, or run `{PROG} setup`.", file=sys.stderr)
         return EXIT_REFUSED
+    if args.since:
+        return _code_map_since(args, start, url, key, project)
     try:
         built = codemap.build(start)
         call = codemap.mcp_caller(Client(url, api_key=key), project)
@@ -534,6 +539,47 @@ def cmd_code(args) -> int:
         return EXIT_REFUSED
     print(f"{PROG}: described {done['nodes']} nodes and {done['edges']} edges at "
           f"{built['revision'][:12]}; marked {done['marked_stale']} stale")
+    return 0
+
+
+def _code_map_since(args, start: Path, url: str, key: str, project: str) -> int:
+    """`code map --since`: refresh from the pinned revision to origin's default branch (GRPH-1820)."""
+    try:
+        ref, target = codemap.default_target(start)
+        call = codemap.mcp_caller(Client(url, api_key=key), project)
+        current = call("get_code_map", {"limit": 0})
+        existing = {n["path"]: n for n in current.get("nodes", [])}
+        pinned, why = codemap.pinned_revision(current)
+        if pinned == target:
+            print(f"{PROG}: current at {target}")
+            return 0
+        reason = codemap.fallback_reason(start, pinned, why, target)
+        if reason:
+            print(f"{PROG}: {reason}; falling back to a full scan of {ref} {target}")
+            built = codemap.build(start, target)
+            planned = codemap.plan(built, existing)
+            print(f"{PROG}: target {target}: {built['tracked']} tracked, {len(planned['nodes'])} to describe, "
+                  f"{len(planned['gone'])} gone, {len(planned['edges'])} edges")
+            if args.dry_run:
+                print(f"{PROG}: dry run, nothing written")
+                return 0
+            done = codemap.apply(call, built, planned)
+        else:
+            planned = codemap.plan_since(start, pinned, target, existing)
+            c = planned["counts"]
+            print(f"{PROG}: target {target} (since {pinned[:12]}): {c['added']} added, "
+                  f"{c['modified']} modified, {c['renamed']} renamed, {c['deleted']} deleted, "
+                  f"{planned['skipped']} skipped (binary), {planned['restamped']} re-stamped, "
+                  f"{len(planned['gone'])} gone, {len(planned['edges'])} edges")
+            if args.dry_run:
+                print(f"{PROG}: dry run, nothing written")
+                return 0
+            done = codemap.apply(call, {"revision": target}, planned)
+    except codemap.MapError as exc:
+        print(f"{PROG}: code map --since failed: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+    print(f"{PROG}: described {done['nodes']} nodes and {done['edges']} edges at "
+          f"{target[:12]}; marked {done['marked_stale']} stale")
     return 0
 
 
