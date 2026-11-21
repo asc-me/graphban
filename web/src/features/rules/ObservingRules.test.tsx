@@ -71,6 +71,24 @@ describe("ObservingRules", () => {
     expect(screen.getByTestId("observing-merge.y")).toHaveTextContent("would have held 0 items");
   });
 
+  it("names who measured: server checked count, supervisor report, not-reported dashed, brief-only", async () => {
+    const base = { since: "2026-11-12T00:00:00Z", would_hold: 0, would_refuse: 0, would_allow: 0, would_have: 0, decision_due: false, decision_due_reason: null };
+    toggles([
+      toggle({ rule_id: "a.server", title: "A", observation: obs({ ...base, measured_by: "server", checks: 38 }) }),
+      toggle({ rule_id: "b.sup", title: "B", observation: obs({ ...base, measured_by: "supervisor", would_allow: 2, would_have: 2, last_supervisor_report: "2026-11-15T00:00:00Z" }) }),
+      toggle({ rule_id: "c.none", title: "C", observation: obs({ ...base, measured_by: "supervisor", would_have: null, would_hold: null, last_supervisor_report: null }) }),
+      toggle({ rule_id: "d.brief", title: "D", observation: obs({ ...base, measured_by: "brief", would_have: null, would_hold: null }) }),
+    ]);
+    view();
+    expect(await screen.findByTestId("observing-a.server")).toHaveTextContent("Would have refused 0 · 38 sign-offs checked since 12 Nov");
+    expect(screen.getByTestId("observing-b.sup")).toHaveTextContent("Would have let through 2 files · reported by the fleet supervisor");
+    const none = screen.getByTestId("observing-c.none").querySelector("[data-testid=observing-label]")!;
+    expect(none).toHaveTextContent("Would-have not reported yet · no fleet supervisor has run since 12 Nov");
+    expect(none.textContent).not.toMatch(/\b0\b/);
+    expect(none.getAttribute("data-measure")).toBe("dashed");
+    expect(screen.getByTestId("observing-d.brief")).toHaveTextContent("This rule is applied by the agent's brief, which records nothing.");
+  });
+
   it("promote needs a reason and sends it", async () => {
     toggles([toggle({ observation: obs() })]);
     vi.mocked(api.promoteRule).mockResolvedValue(toggle({ state: "active" }));

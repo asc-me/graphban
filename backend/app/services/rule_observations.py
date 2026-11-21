@@ -23,7 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.errors import Validation
-from app.models import CustomRule, RuleObservation, RuleToggle, utcnow
+from app.models import CustomRule, Item, RuleObservation, RuleToggle, utcnow
 from app.services import events as events_svc
 from app.services import rule_toggles as T
 
@@ -40,6 +40,11 @@ SUPERVISOR_OUTCOMES = {
     "build.generated_files": ("would_allow",),
     "build.undeclared_files": ("would_hold",),
 }
+#: GRPH-1809: who measures a rule's would-have. `server` rules are checked where the call lands
+#: (their `checks` count sits beside a zero); `supervisor` rules are applied by the fleet
+#: supervisor, which may not have reported; `brief` rules are applied by the agent's brief and
+#: record nothing.
+BRIEF_ONLY_RULES = ("build.test_scope", "plan.path_classes")
 DUE_DAYS = 14
 DUE_OUTCOMES = 10
 
@@ -75,6 +80,34 @@ def record(db: Session, project_id: str | None, rule_id: str, outcome: str, *,
     return row
 
 
+def measured_by(rule_id: str) -> str:
+    if rule_id in BRIEF_ONLY_RULES:
+        return "brief"
+    if rule_id in SUPERVISOR_OUTCOMES or rule_id in UNMEASURED_RULES:
+        return "supervisor"
+    return "server"
+
+
+def _sources(db: Session, project_id: str | None, rule_id: str,
+             since: datetime | None) -> dict:
+    """The fields that say who measured the would-have: `measured_by`; for a server rule the
+    `checks` that ran since adoption (sign-offs, the call the rules guard); for a supervisor
+    rule the time of its latest report (`last_supervisor_report`, None until one arrives)."""
+    by = measured_by(rule_id)
+    out: dict = {"measured_by": by, "checks": None, "last_supervisor_report": None}
+    if not project_id or since is None:
+        return out
+    if by == "server":
+        out["checks"] = db.scalar(select(func.count()).select_from(Item).where(
+            Item.project_id == project_id, Item.done_at.is_not(None),
+            Item.done_at >= since)) or 0
+    elif by == "supervisor":
+        out["last_supervisor_report"] = db.scalar(select(func.max(RuleObservation.at)).where(
+            RuleObservation.project_id == project_id, RuleObservation.rule_id == rule_id,
+            RuleObservation.at >= since))
+    return out
+
+
 def summary(db: Session, project_id: str | None, rule_id: str,
             since: datetime | None) -> dict:
     """What an observing rule reports: its would-have counts since it began observing, and
@@ -82,7 +115,8 @@ def summary(db: Session, project_id: str | None, rule_id: str,
     if rule_id in UNMEASURED_RULES:
         out = {"since": since, "would_hold": None, "would_refuse": None, "would_allow": None,
                "would_have": None, "unmeasured": True,
-               "decision_due": False, "decision_due_reason": None}
+               "decision_due": False, "decision_due_reason": None,
+               **_sources(db, project_id, rule_id, since)}
         if since is not None and utcnow() - _aware(since) >= timedelta(days=DUE_DAYS):
             out["decision_due"], out["decision_due_reason"] = True, f"observing for {DUE_DAYS} days"
         return out
@@ -103,7 +137,8 @@ def summary(db: Session, project_id: str | None, rule_id: str,
     return {"since": since, "would_hold": counts["would_hold"],
             "would_refuse": counts["would_refuse"], "would_allow": counts["would_allow"],
             "would_have": total,
-            "decision_due": due, "decision_due_reason": why}
+            "decision_due": due, "decision_due_reason": why,
+            **_sources(db, project_id, rule_id, since)}
 
 
 def history(db: Session, project_id: str, rule_id: str) -> list[RuleObservation]:

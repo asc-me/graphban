@@ -3550,9 +3550,16 @@ export interface RuleObservationSummary {
   since: string | null;
   would_hold: number | null;
   would_refuse: number | null;
+  would_allow?: number | null;
   would_have: number | null;
   decision_due: boolean;
   decision_due_reason: string | null;
+  /** Who measures the would-have (GRPH-1809). Absent from an older server: read as "server". */
+  measured_by?: "server" | "supervisor" | "brief";
+  /** Server rules: checks that ran since adoption (sign-offs checked). */
+  checks?: number | null;
+  /** Supervisor rules: when the fleet supervisor last reported; null = not yet. */
+  last_supervisor_report?: string | null;
 }
 
 /** One would-have outcome row; the rule's own history, kept across promotion. */
