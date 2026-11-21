@@ -12,7 +12,7 @@ from app.config import settings
 from app.db import get_db
 from app.models import Organization, Project, User
 from app.errors import AppError, NotFound, Refused, Validation
-from app.schemas import (RuleGuidanceOut, RuleObservationOut, RulePromote, CustomRuleOut, CustomRuleWrite, RuleProposalAdopt, RuleProposalDecisionOut, RuleProposalDismiss, RuleProposalOut, RuleProposalWrite, ObservationBackfillOut, ObservationsOut,
+from app.schemas import (RuleGuidanceOut, RuleObservationOut, RulePromote, CustomRuleOut, CustomRuleWrite, RuleProposalAdopt, OrgRuleProposalAdopt, OrgRuleProposalOut, RuleProposalDecisionOut, RuleProposalDismiss, RuleProposalOut, RuleProposalWrite, ObservationBackfillOut, ObservationsOut,
                          RecommendedRulesOut, RefusalCoverageOut, RuleSuggestionOut,
                          RulesFlowOut, RulesOut, RuleToggleBatchOut, RuleToggleBatchWrite,
                          RuleToggleOut, RuleTogglesOut, RuleToggleWrite, UnmappedRefusalsOut)
@@ -318,9 +318,9 @@ def create_rule_proposal(project_id: str, body: RuleProposalWrite, db: Session =
     return rule_proposals.view(row, folded=folded)
 
 
-def _adoption(fn, *args):
+def _adoption(fn, *args, **kw):
     try:
-        return fn(*args)
+        return fn(*args, **kw)
     except NotFound as e:
         raise HTTPException(404, str(e)) from e
     except Validation as e:
@@ -346,6 +346,52 @@ def dismiss_rule_proposal(project_id: str, proposal_id: int, body: RuleProposalD
                           principal=Depends(get_user_or_agent_key)):
     r = _adoption(rule_proposals.dismiss, db, principal, project_id, proposal_id, body.reason)
     return dict(rule_proposals.view(r), decided_by=r.decided_by, decided_reason=r.decided_reason)
+
+
+# ---- org proposals (GRPH-1808 / P91 D7) --------------------------------------------------
+# Org admin only, premium (`require_org_rules`), person only (`rules.person_adopts`: an agent
+# key reaches these routes only to be refused by name).
+@router.get("/orgs/{org_id}/rules/proposals", response_model=list[OrgRuleProposalOut])
+def list_org_rule_proposals(org_id: str, status: str | None = None,
+                            db: Session = Depends(get_db),
+                            principal=Depends(get_user_or_agent_key)):
+    """Open proposals from every project in the org, each with its project. `status=dismissed`
+    is the org's Dismissed list."""
+    return _adoption(rule_proposals.list_for_org, db, principal, org_id, status)
+
+
+@router.post("/orgs/{org_id}/rules/proposals/adopt", response_model=list[OrgRuleProposalOut])
+def adopt_org_rule_proposals(org_id: str, body: OrgRuleProposalAdopt,
+                             db: Session = Depends(get_db),
+                             principal=Depends(get_user_or_agent_key)):
+    """Adopt for every project in the org: one reason, all-or-nothing, loosenings refused from
+    a batch. Each result lists the projects that already override the rule. `dry_run` reads
+    that without adopting."""
+    return _adoption(rule_proposals.adopt_org_batch, db, principal, org_id, body.ids,
+                     body.reason, dry_run=body.dry_run)
+
+
+@router.post("/orgs/{org_id}/rules/proposals/{proposal_id}/dismiss",
+             response_model=OrgRuleProposalOut)
+def dismiss_org_rule_proposal(org_id: str, proposal_id: int, body: RuleProposalDismiss,
+                              db: Session = Depends(get_db),
+                              principal=Depends(get_user_or_agent_key)):
+    """Dismiss for the org only; the proposal stays open in its project."""
+    return _adoption(rule_proposals.dismiss_org, db, principal, org_id, proposal_id, body.reason)
+
+
+@router.get("/orgs/{org_id}/rules/custom", response_model=list[CustomRuleOut])
+def list_org_custom_rules(org_id: str, db: Session = Depends(get_db),
+                          principal=Depends(get_user_or_agent_key)):
+    custom_rules._org_admin(db, principal, org_id)
+    return custom_rules.list_for_org(db, org_id)
+
+
+@router.post("/orgs/{org_id}/rules/custom", response_model=CustomRuleOut, status_code=201)
+def create_org_custom_rule(org_id: str, body: CustomRuleWrite, db: Session = Depends(get_db),
+                           principal=Depends(get_user_or_agent_key)):
+    row = _adoption(lambda: custom_rules.create_org(db, principal, org_id, **body.model_dump()))
+    return custom_rules.view(db, row)
 
 
 @router.get("/projects/{project_id}/rules/guidance", response_model=list[RuleGuidanceOut])
