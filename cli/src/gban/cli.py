@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from gban import codemap, config, doctor as doctor_mod, machine as machine_mod, playbooks, setup as setup_mod, stackmap, swamp as swamp_mod
+from gban import codemap, codemap_service, config, doctor as doctor_mod, machine as machine_mod, playbooks, setup as setup_mod, stackmap, swamp as swamp_mod
 from gban.client import (EXIT_NO_SESSION, EXIT_NO_SUPERVISOR, EXIT_REFUSED, EXIT_UNREACHABLE,
                        Client, NoSession,
                        Refused, Unreachable, authenticated, login, pair_poll,
@@ -140,6 +140,25 @@ def _parser() -> argparse.ArgumentParser:
                                "branch (after a fetch) and describe only what changed")
     code_map.add_argument("--repo", default=None,
                           help="repository to map (default: the git checkout of the current directory)")
+
+    map_sub = code_map.add_subparsers(dest="map_sub")
+    svc = map_sub.add_parser(
+        "service", help="keep the graph current: hourly refresh + nightly reconcile",
+        description=("One user-level unit per repo (launchd on macOS, a systemd user timer on "
+                     "Linux). Hourly: `code map --since`. Nightly: a full reconcile. The API "
+                     "key goes in an owner-only file the unit references."))
+    svc_do = svc.add_subparsers(dest="svc_act", required=True)
+    for name, text in (("install", "write and load the unit"),
+                       ("status", "last run, outcome, sha mapped, how far behind origin"),
+                       ("uninstall", "remove the unit and the key file"),
+                       ("run", "one scheduled run (what the unit executes)")):
+        sp = svc_do.add_parser(name, help=text)
+        sp.add_argument("--repo", default=None, help="repository (default: the current checkout)")
+        if name in ("install", "run"):
+            sp.add_argument("--hourly-at", default=None, metavar=":MM",
+                            help=f"minute of each hour for the incremental refresh (default :{codemap_service.DEFAULT_HOURLY_MINUTE:02d})")
+            sp.add_argument("--nightly-at", default=None, metavar="HH:MM",
+                            help="local time of the full reconcile (default 03:00)")
 
     fleet = sub.add_parser(
         "fleet", help="hand off to gbfleet (the supervisor)",
@@ -508,6 +527,8 @@ def cmd_code(args) -> int:
     start = Path(args.repo).expanduser() if args.repo else Path.cwd()
     project = (config.resolve(args.project, config.PROJECT_ENV, "project") or "").strip()
     url = config.resolve(args.server, config.URL_ENV, "url")
+    if getattr(args, "map_sub", None) == "service":
+        return _code_map_service(args, start, url, project)
     if not url:
         print(f"{PROG}: no server. Pass --server, set ${config.URL_ENV}, or run `{PROG} login "
               f"--server …` once.", file=sys.stderr)
@@ -540,6 +561,50 @@ def cmd_code(args) -> int:
     print(f"{PROG}: described {done['nodes']} nodes and {done['edges']} edges at "
           f"{built['revision'][:12]}; marked {done['marked_stale']} stale")
     return 0
+
+
+def _code_map_service(args, start: Path, url: str, project: str) -> int:
+    """`code map service install|status|uninstall|run` (GRPH-1821)."""
+    svc = codemap_service
+    try:
+        if args.svc_act == "status":
+            print("\n".join(svc.status_lines(start)))
+            return 0
+        if args.svc_act == "uninstall":
+            top = svc.repo_toplevel(start)
+            removed = svc.uninstall(svc.service_id(top))
+            print(f"{PROG}: removed {', '.join(removed) if removed else 'nothing (not installed)'}")
+            return 0
+        key = (os.environ.get(doctor_mod.SUPERVISOR_KEY_ENV) or "").strip()
+        if not key:
+            key = doctor_mod.resolve_supervisor_key(project, start)
+        if args.svc_act == "install":
+            kind = svc.host_kind()
+            top = svc.repo_toplevel(start)
+            if svc.installed(svc.service_id(top), kind):
+                print(f"{PROG}: already installed for this repo; not adding another unit")
+                print("\n".join(svc.status_lines(start, kind)))
+                return 0
+            plan = svc.make_plan(start, url=url, project=project, hourly=args.hourly_at,
+                                 nightly=args.nightly_at, kind=kind)
+            for warning in svc.install(plan, key):
+                print(f"{PROG}: warning: {warning}", file=sys.stderr)
+            print(f"{PROG}: installed {plan.units[0]} (hourly at :{plan.hourly:02d}, nightly at "
+                  f"{plan.nightly[0]:02d}:{plan.nightly[1]:02d}); key in {plan.env_file}")
+            return 0
+        # run: what the unit executes. A failed run is a recorded outcome and exit 1.
+        if not (url and key):
+            print(f"{PROG}: code map service run: no server or API key", file=sys.stderr)
+            return EXIT_REFUSED
+        top = svc.repo_toplevel(start)
+        nightly = svc.parse_nightly(args.nightly_at)
+        call = codemap.mcp_caller(Client(url, api_key=key), project)
+        rec = svc.record_run(svc.service_id(top), top, call, nightly)
+        print(json.dumps(rec, sort_keys=True))
+        return 0 if rec["outcome"] == "ok" else 1
+    except svc.Refused as exc:
+        print(f"{PROG}: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
 
 
 def _code_map_since(args, start: Path, url: str, key: str, project: str) -> int:
