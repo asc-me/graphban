@@ -13,9 +13,15 @@ import { Input } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
-import { useAdoptRuleProposals, useDismissedProposals, useDismissRuleProposal, useRuleProposals } from "@/lib/queries";
+import {
+  useAdoptRuleProposals,
+  useDismissedProposals,
+  useDismissRuleProposal,
+  useProposalDecisions,
+  useRuleProposals,
+} from "@/lib/queries";
 import { relTime } from "@/lib/relTime";
-import type { RuleProposal } from "@/lib/types";
+import type { ProposalDecision, RuleProposal } from "@/lib/types";
 
 import { useCanWriteRules } from "./LibraryRuleControls";
 import { Citation } from "./StageProposals";
@@ -35,6 +41,13 @@ export function proposalTitle(p: RuleProposal): string {
   if (title) return title;
   const params = Object.keys(p.params ?? {}).length ? JSON.stringify(p.params) : "";
   return params ? `${p.rule_id} → ${params}` : p.rule_id;
+}
+
+/** "dismissed by Alex · 2d ago — “dup of R-4”"; while the ledger is unread, no name is guessed. */
+export function dismissedLine(d: ProposalDecision | undefined): string {
+  if (!d) return "dismissed";
+  const when = d.at ? relTime(d.at) : null;
+  return `dismissed by ${d.by}${when ? ` · ${when}` : ""}${d.reason ? ` — “${d.reason}”` : ""}`;
 }
 
 function Card({
@@ -102,27 +115,23 @@ function Card({
       </ul>
       {canAct && (
         <div className="mt-1 flex flex-wrap items-center gap-2">
-          {p.loosens && (
-            <>
-              <Input
-                aria-label={`Reason for proposal ${p.id}`}
-                placeholder="Reason"
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                className="h-7 max-w-xs"
-              />
-              <Button
-                size="sm"
-                disabled={!why || adopt.isPending}
-                onClick={() => {
-                  setError(null);
-                  adopt.mutate({ ids: [p.id], reason: why }, { onError: (e) => setError(errorDetail(e, "Adopt refused")) });
-                }}
-              >
-                Adopt
-              </Button>
-            </>
-          )}
+          <Input
+            aria-label={`Reason for proposal ${p.id}`}
+            placeholder="Reason"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            className="h-7 max-w-xs"
+          />
+          <Button
+            size="sm"
+            disabled={!why || adopt.isPending}
+            onClick={() => {
+              setError(null);
+              adopt.mutate({ ids: [p.id], reason: why }, { onError: (e) => setError(errorDetail(e, "Adopt refused")) });
+            }}
+          >
+            Adopt
+          </Button>
           <Button size="sm" variant="ghost" onClick={onDismiss}>
             Dismiss
           </Button>
@@ -182,6 +191,7 @@ export function ProposalsStrip({ stageFilter, onClearFilter }: { stageFilter: st
   const canAct = canWrite === true;
   const { data: proposals } = useRuleProposals(activeId);
   const { data: dismissed } = useDismissedProposals(activeId);
+  const { data: dismissals } = useProposalDecisions(activeId, "dismiss");
   const adopt = useAdoptRuleProposals(activeId);
   const [open, setOpen] = React.useState(true);
   const [picked, setPicked] = React.useState<Set<number>>(new Set());
@@ -200,7 +210,8 @@ export function ProposalsStrip({ stageFilter, onClearFilter }: { stageFilter: st
   const gone = dismissed ?? [];
   if (!allOpen.length && !gone.length) return null;
 
-  const ids = shown.filter((p) => !p.loosens && picked.has(p.id)).map((p) => p.id);
+  // Ticks survive a stage filter: a batch adopts every ticked card, shown or not.
+  const ids = allOpen.filter((p) => !p.loosens && picked.has(p.id)).map((p) => p.id);
   const why = reason.trim();
   return (
     <section aria-label="Proposals" className="flex-none border-b border-line px-4 py-2" data-testid="proposals-strip">
@@ -257,9 +268,7 @@ export function ProposalsStrip({ stageFilter, onClearFilter }: { stageFilter: st
                 <ul className="list-none" data-testid="dismissed-list">
                   {gone.map((p) => (
                     <li key={p.id} className="py-1 text-small text-fg-2" data-testid={`dismissed-${p.id}`}>
-                      {proposalTitle(p)} — dismissed by {p.decided_by ?? "unknown"}
-                      {p.decided_at ? ` ${relTime(p.decided_at) ?? ""}` : ""}
-                      {p.decided_reason ? ` — “${p.decided_reason}”` : ""}
+                      {proposalTitle(p)} — {dismissedLine(dismissals?.get(p.id))}
                     </li>
                   ))}
                 </ul>

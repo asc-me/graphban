@@ -1,18 +1,18 @@
 /** The proposals strip (GRPH-1807). */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "@/lib/api";
-import type { RuleProposal } from "@/lib/types";
+import type { Event, RuleProposal } from "@/lib/types";
 
 import { adoptedLine } from "./RuleHistory";
 import { ProposalsStrip } from "./ProposalsStrip";
 
 vi.mock("@/lib/api", () => ({
   api: {
-    ruleProposals: vi.fn(), adoptRuleProposals: vi.fn(), dismissRuleProposal: vi.fn(), me: vi.fn(), members: vi.fn(),
+    ruleProposals: vi.fn(), adoptRuleProposals: vi.fn(), dismissRuleProposal: vi.fn(), events: vi.fn(), me: vi.fn(), members: vi.fn(),
   },
 }));
 vi.mock("@/features/ProjectContext", () => ({
@@ -30,6 +30,14 @@ function prop(over: Partial<RuleProposal> & { id: number }): RuleProposal {
   };
 }
 
+/** An audit event as GET /events returns it: the decision's who/when/why live here, not on the proposal. */
+function decided(action: string, proposalId: number, actor: string, reason: string, ts: string): Event {
+  return {
+    id: proposalId, ts, actor_type: "user", actor_id: `u-${actor}`, actor_label: actor, surface: "rest", action,
+    target_type: "rule", target_id: `custom.r${proposalId}`, project_id: "core", meta: { proposal_id: proposalId, reason },
+  };
+}
+
 function view(stageFilter: string | null = null) {
   return render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -43,9 +51,16 @@ beforeEach(() => {
   canWrite.value = true;
   vi.mocked(api.ruleProposals).mockImplementation(async (_p, status) =>
     status === "dismissed"
-      ? [prop({ id: 8, status: "dismissed", decided_by: "Sam", decided_reason: "noise", decided_at: "2026-01-02T00:00:00Z" })]
+      ? [prop({ id: 8, status: "dismissed" })] // the list route sends no decided_by / decided_at / decided_reason
       : [prop({ id: 1 }), prop({ id: 2 }), prop({ id: 3, loosens: true }), prop({ id: 4, draft: { stage: "Merge", title: "Rule 4" } })],
   );
+  vi.mocked(api.events).mockImplementation(async (q) => ({
+    results:
+      q?.action === "dismiss_rule_proposal"
+        ? [decided("dismiss_rule_proposal", 8, "Sam", "noise", new Date(Date.now() - 2 * 86400_000).toISOString())]
+        : [],
+    total: 1,
+  }) as never);
 });
 
 describe("ProposalsStrip", () => {
@@ -110,7 +125,7 @@ describe("ProposalsStrip", () => {
     vi.mocked(api.dismissRuleProposal).mockResolvedValue(prop({ id: 1 }));
     view();
     await screen.findByTestId("proposal-1");
-    await userEvent.click(screen.getByTestId("proposal-1").querySelector("button") as HTMLButtonElement);
+    await userEvent.click(within(screen.getByTestId("proposal-1")).getByRole("button", { name: "Dismiss" }));
     expect(await screen.findByTestId("dismiss-sheet")).toHaveTextContent("the proposer is not notified");
     await userEvent.click(screen.getByRole("button", { name: "Dismiss proposal" }));
     expect(await screen.findByTestId("dismiss-error")).toBeInTheDocument();
@@ -123,8 +138,43 @@ describe("ProposalsStrip", () => {
   it("lists dismissed proposals with who and why", async () => {
     view();
     await userEvent.click(await screen.findByTestId("dismissed-toggle"));
-    expect(screen.getByTestId("dismissed-8")).toHaveTextContent("dismissed by Sam");
+    await waitFor(() => expect(screen.getByTestId("dismissed-8")).toHaveTextContent("dismissed by Sam"));
+    expect(screen.getByTestId("dismissed-8")).toHaveTextContent("2d ago");
     expect(screen.getByTestId("dismissed-8")).toHaveTextContent("noise");
+    expect(api.events).toHaveBeenCalledWith(expect.objectContaining({ projectId: "core", action: "dismiss_rule_proposal" }));
+  });
+
+  it("every card has its own Adopt, which needs a reason", async () => {
+    vi.mocked(api.adoptRuleProposals).mockResolvedValue([]);
+    view();
+    const card = within(await screen.findByTestId("proposal-1"));
+    const adopt = card.getByRole("button", { name: "Adopt" });
+    expect(adopt).toBeDisabled();
+    await userEvent.type(card.getByLabelText("Reason for proposal 1"), "fine");
+    await userEvent.click(adopt);
+    await waitFor(() => expect(api.adoptRuleProposals).toHaveBeenCalledWith("core", [1], "fine"));
+  });
+
+  it("a batch keeps ticks hidden by the stage filter", async () => {
+    vi.mocked(api.adoptRuleProposals).mockResolvedValue([]);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { rerender } = render(
+      <QueryClientProvider client={qc}>
+        <ProposalsStrip stageFilter={null} onClearFilter={() => {}} />
+      </QueryClientProvider>,
+    );
+    await screen.findByTestId("proposal-1");
+    await userEvent.click(screen.getByLabelText("Select proposal 1"));
+    await userEvent.click(screen.getByLabelText("Select proposal 4"));
+    rerender(
+      <QueryClientProvider client={qc}>
+        <ProposalsStrip stageFilter="merge" onClearFilter={() => {}} />
+      </QueryClientProvider>,
+    );
+    expect(screen.queryByTestId("proposal-1")).toBeNull();
+    await userEvent.type(screen.getByLabelText("Batch reason"), "ok");
+    await userEvent.click(screen.getByRole("button", { name: "Adopt 2 proposals" }));
+    await waitFor(() => expect(api.adoptRuleProposals).toHaveBeenCalledWith("core", [1, 4], "ok"));
   });
 
   it("a member sees no checkbox, Adopt or Dismiss", async () => {
@@ -136,8 +186,9 @@ describe("ProposalsStrip", () => {
   });
 
   it("history names the agent as proposer and the person as adopter", () => {
-    const line = adoptedLine(prop({ id: 1, status: "adopted", decided_by: "Alex" }));
-    expect(line).toContain("adopted by Alex");
+    const at = new Date(Date.now() - 3 * 3600_000).toISOString();
+    const line = adoptedLine(prop({ id: 1, status: "adopted" }), { by: "Alex", at, reason: "ok" });
+    expect(line).toContain("adopted by Alex · 3h ago");
     expect(line).toContain("proposed by Agent agent-7 (cited item GRPH-5 +1)");
   });
 });

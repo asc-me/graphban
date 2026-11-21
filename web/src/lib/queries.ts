@@ -3,7 +3,7 @@ import * as React from "react";
 
 import { api } from "./api";
 import { httpsAddress, probeTrust } from "@/lib/https";
-import type { OnboardingMark, SetupConfirm } from "./types";
+import type { OnboardingMark, ProposalDecision, SetupConfirm } from "./types";
 import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, RoutingReplayProposal, Item, ItemCreateBody, ItemDetail, LessonFilters, LogExportPatch, Project, RequestItem, RuleProfileApplyWrite, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
 
 export const keys = {
@@ -789,6 +789,29 @@ export function useDismissedProposals(projectId: string) {
   return useQuery({
     queryKey: ["rule-proposals", projectId, "dismissed"],
     queryFn: () => api.ruleProposals(projectId, "dismissed"),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+/** Who decided a proposal, when, and why — read from the audit ledger, keyed by proposal id.
+ * The proposals list does not carry `decided_by` / `decided_at` / `decided_reason`; the
+ * `adopt_rule_proposal` / `dismiss_rule_proposal` events do (actor, ts, meta.reason). */
+export function useProposalDecisions(projectId: string, decision: "adopt" | "dismiss") {
+  const q: EventsQuery = { projectId, action: `${decision}_rule_proposal`, limit: 500 };
+  return useQuery({
+    queryKey: ["rule-proposals", projectId, "decisions", decision],
+    queryFn: async () => {
+      const out = new Map<number, ProposalDecision>();
+      for (const e of (await api.events(q)).results) {
+        const id = Number(e.meta?.proposal_id);
+        if (!Number.isFinite(id) || out.has(id)) continue; // most-recent-first: keep the newest
+        const by = typeof e.meta?.adopted_by === "string" ? e.meta.adopted_by : e.actor_label || e.actor_id;
+        const reason = typeof e.meta?.reason === "string" ? e.meta.reason : null;
+        out.set(id, { by, at: e.ts, reason });
+      }
+      return out;
+    },
     enabled: !!projectId,
     retry: false,
   });
