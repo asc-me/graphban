@@ -602,6 +602,8 @@ export interface Org {
   name: string;
   plan: string;
   role: OrgRole;
+  /** Your org-only handle, present only where it differs from your account handle. */
+  handle?: string | null;
 }
 
 export interface OrgProjectAccess {

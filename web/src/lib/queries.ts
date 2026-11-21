@@ -153,6 +153,15 @@ export function useOrgs(enabled = true) {
   return useQuery({ queryKey: keys.orgs, queryFn: () => api.orgs(), enabled });
 }
 
+/** Change your org-only handle in one org; refreshes the org list. */
+export function useSetOrgHandle() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { orgId: string; handle: string }) => api.setOrgHandle(v.orgId, v.handle),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.orgs }),
+  });
+}
+
 export function useOrgMembers(orgId?: string) {
   return useQuery({
     queryKey: keys.orgMembers(orgId ?? ""),
