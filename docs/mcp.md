@@ -341,7 +341,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `reject_memory` | `shard_id`, `reason` | Discard your own candidate. No judge needed — it removes nothing from the trusted pool (AL-282) |
 | `search_memory` | `query`, `top_k`, `include_candidates`, `project_id` | Semantic search over **published** shards (set `include_candidates` for unreviewed ones); returns `status`, `item_id`, `source` |
 | `get_lessons` | `shard_id`, `trend`, `caught_state`, `eligibility`, `lesson_class`, `limit`, `offset`, `project_id` | The published lesson catalog with computed effectiveness, caught-issues, and org-eligibility. `score` is null when unmeasured — not a high score. `eligibility` is unverifiable until users/projects are attributed and the published cluster is scanned. Pass `shard_id` for provenance, outcomes, and history |
-| `get_backlog` | `limit`, `fields`, `project_id` | Prioritized backlog (lean rows + ranking fields by default, `fields="full"` for all) |
+| `get_backlog` | `limit`, `offset`, `fields`, `project_id`, `line_id` | Prioritized backlog (lean rows + ranking fields by default, `fields="full"` for all). `line_id` (a line key) returns only that line's open items, and `total` counts only those. An unknown line is an error, not an empty page |
 | `get_item_details` | `id` | Every field the item reads share (`project_id`, `touchpoints`, `prd_id`, `prd_section`, authorship, bounce, hold — GRPH-821: built on the one renderer) + `description`, `blocker`, `pr`, `branch` + **`links`** (every edge touching the item, both directions, endpoints rendered) + linked shards + linked requests + **`brief`** (PRD-35): the delegation packet — summary, touchpoints, blockers, task class, lessons, a `lane` and `tier` **suggestion with its `basis`**, `previous` / `attempts` history, `text` to paste into a spawn (which carries no suggestion), the same **`profile`** / **`policy`** pair `fleet_status` carries (PRD-37 D9) — never in `text` — plus **`test_scope`** (GRPH-1405: the project's `build.test_scope` mode, also stated on a `Test scope:` line of `text`), **`spend`** and **`mix`** (`n` / `by_harness` / `unreported` over the last 20 launches in the project; n=0 is unmeasured, not everyone at 0%) |
 | `suggest_next` | `project_id` | Best next item from state + memory |
 | `link_items` | `a`, `b`, `type`, `reason` | Create a typed relationship. May join two projects of one org when the caller can read both and write `a`; a blocker in another project still blocks, and shows as `(an item in a project you cannot see)` to a reader without access. Cross-org is always refused, with the same error as a missing id (GRPH-1063) |
@@ -578,6 +578,48 @@ e.g. a control-plane item waiting on a box-side change. It blocks exactly like a
 its project; there it renders as `(an item in a project you cannot see)` with no title or
 status, never dropped. Cross-org links are refused, and item-to-PRD references stay in one
 project (GRPH-457).
+
+`get_backlog` takes `line_id` (GRPH-1799): the line key from `get_context.maintenance_line`.
+The page is only that line's open items, and `total` counts only those. Omit it for the
+whole project. A blank `line_id`, or a line this project does not have, is a validation
+error — not the unfiltered page, and not an empty one.
+
+**An unknown argument on a read that filters is refused, and the error names it.** Dropping
+it used to return the wider set, which a caller reads as "the filter matched". The same
+refusal applies to every read whose arguments narrow a collection, pick a report slice, or
+return a list someone would try to filter: `get_backlog`, `search_items`, `search_memory`,
+`get_lessons`, `get_code_map`, `search_code`, `graph_query`, `scan_status`, `scans_due`,
+`fleet_status`, `search_docs`, `collision_clusters`, `learning_loop`, `prd_acceptance`,
+`prd_coverage`, `unscoped_fixes`, `list_entitlements`, `list_projects`, `get_context`,
+`setup_project`, `suggest_next`, `generate_digest`, `get_rule_toggles`, `propose_allocation`.
+`agent_id` is not
+one of these: it names the caller and is accepted on every tool whether or not the schema
+lists it. Fleet-only arguments (`collision_clusters`'s `prd_id` and `holds`,
+`fleet_status`'s `view`, and the rest of `_FLEET_ONLY_ARGS`) are accepted for the same
+reason — the dispatcher reads them whether or not the base manifest advertises them.
+
+Exempt, and why:
+
+- **Identity reads** — `get_item_details`, `get_prd`, `grill_prd`, `related_work`,
+  `code_neighbors`, `get_document`, `get_design_set`. Each takes a required id that names
+  one subject, and the reply is that subject. There is no optional argument that narrows a
+  collection, so a dropped extra cannot turn "these rows matched" into the whole set.
+- **Writes** — `add_memory`, `answer_grill`, `answer_wait`, `assign_role`, `bounce`,
+  `claim_cluster`, `claim_next`, `claim_review`, `close_prd`, `compile_prompts`,
+  `confirm_tier`, `create_item`, `create_line`, `create_prd`, `create_project`,
+  `decompose_prd`, `delegate`, `describe_code`, `extract_lessons`, `file_finding`,
+  `heartbeat`, `link_code`, `link_items`, `mint_enrolment`, `next_cluster`, `open_design`,
+  `propose_rule`, `publish_memory`, `put_canvas`, `put_document`, `put_preamble`,
+  `put_set_constraints`, `record_scan`, `register_agent`, `reject_memory`, `release_item`,
+  `report_entitlement_event`, `report_graphban_issue`, `report_utilization`,
+  `request_rebaseline`, `resolve_finding`, `retire_wave`, `review_recommendation`,
+  `set_entitlement`, `sign_off`, `submit_verdict`, `unlink_code`, `unlink_items`,
+  `update_item`, `update_prd`. An unknown field is not a filter of a page the caller then
+  reads as matched. Fleet-only and gate-only fields (`update_item`'s `branch`,
+  `touchpoints_remove`, `resolution`, `head_commit`, and the fields in `_FLEET_ONLY_ARGS`)
+  are accepted on purpose when the manifest ceiling cannot carry them. `set_entitlement`
+  still refuses an unknown field in the service, because a dropped credential would store
+  the wrong thing.
 
 ### Code-locality clustering (pick up related work at once)
 
