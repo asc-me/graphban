@@ -310,7 +310,10 @@ export function QuickConfigure({
   const accept = useAcceptRuleProfileUpdate(activeId);
   const [screen, setScreen] = React.useState<QuickScreen>(start);
   const [reviewing, setReviewing] = React.useState(start.screen === "update");
-  const [dropped, setDropped] = React.useState<ReadonlySet<string>>(new Set());
+  // null until the person picks a level or toggles a row. Compare opened on the applied
+  // level (the chip) then inherits that apply's exceptions. choose() used to clear them,
+  // so a re-apply sent except: [] and the next event dropped the exception (GRPH-1806).
+  const [chosen, setChosen] = React.useState<ReadonlySet<string> | null>(null);
   const [reason, setReason] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   const rules = React.useMemo(() => ruleIndex(flow), [flow]);
@@ -321,11 +324,14 @@ export function QuickConfigure({
   const selected = profiles.find((p) => p.id === selectedId) ?? null;
   const isUpdate = screen.screen === "update";
   const offer = isUpdate ? updates.data?.updates.find((u) => u.profile === selectedId) ?? null : null;
-  // An update carries the last apply's exceptions (the server does it); the person can't drop more.
+  // An update carries the last apply's exceptions (the server records them on accept); the person can't drop more.
   const carried = React.useMemo<ReadonlySet<string>>(
     () => new Set(isUpdate && applied?.profile === selectedId ? applied.exceptions : []),
     [isUpdate, applied, selectedId],
   );
+  const reapply =
+    !isUpdate && applied?.profile != null && selectedId === applied.profile ? applied.exceptions : [];
+  const dropped = chosen ?? new Set(reapply);
   const leaveOut = isUpdate ? carried : dropped;
   const plan = selected ? planFor(selected, rules, leaveOut) : null;
   const driftRows = new Map<string, RuleProfileDriftRow>(
@@ -333,7 +339,7 @@ export function QuickConfigure({
   );
 
   function choose(id: string) {
-    setDropped(new Set());
+    setChosen(new Set(applied?.profile === id ? applied.exceptions : []));
     setReason("");
     setError(null);
     setScreen({ screen: "compare", profile: id });
@@ -375,7 +381,7 @@ export function QuickConfigure({
           <button
             key={id}
             type="button"
-            onClick={() => setDropped((d) => new Set([...d].filter((x) => x !== id)))}
+            onClick={() => setChosen(new Set([...dropped].filter((x) => x !== id)))}
             className="h-6 rounded-[6px] border border-control px-2 text-small text-fg-2"
           >
             Restore {rules.get(id)?.title ?? id}
@@ -434,7 +440,12 @@ export function QuickConfigure({
             onKeep={
               isUpdate
                 ? undefined
-                : (id) => setDropped((d) => (d.has(id) ? new Set([...d].filter((x) => x !== id)) : new Set([...d, id])))
+                : (id) =>
+                    setChosen(
+                      dropped.has(id)
+                        ? new Set([...dropped].filter((x) => x !== id))
+                        : new Set([...dropped, id]),
+                    )
             }
             isUpdate={isUpdate}
           />
@@ -453,7 +464,7 @@ export function QuickConfigure({
           onSave={() => void save()}
           onBack={() => setReviewing(false)}
           reasonPrefix={prefix}
-          onDrop={isUpdate ? undefined : (id) => setDropped((d) => new Set([...d, id]))}
+          onDrop={isUpdate ? undefined : (id) => setChosen(new Set([...dropped, id]))}
           footer={
             <>
               {isUpdate && (
