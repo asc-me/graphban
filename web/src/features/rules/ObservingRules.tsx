@@ -16,6 +16,7 @@ import {
   useAdoptedProposals,
   useCustomRules,
   usePromoteRule,
+  useProposalDecisions,
   useRuleGuidance,
   useRuleObservations,
   useRuleToggles,
@@ -93,7 +94,10 @@ function ObservingRow({
   const promote = usePromoteRule(projectId);
   const { data: rows } = useRuleObservations(projectId, ruleId, true);
   const { data: adopted } = useAdoptedProposals(projectId);
+  // The proposals list omits decided_by / decided_reason. The adopt event carries them (GRPH-1811).
+  const { data: adoptions } = useProposalDecisions(projectId, "adopt");
   const origin = (adopted ?? []).find((p) => p.rule_id === ruleId);
+  const decision = origin ? adoptions?.get(origin.id) : undefined;
   const why = reason.trim();
   const line = measureLine(observation);
   return (
@@ -119,8 +123,8 @@ function ObservingRow({
       {origin && (
         <p className="text-small text-muted" data-testid="observing-origin">
           Proposed by {origin.proposer}
-          {origin.decided_by ? `, adopted by ${origin.decided_by}` : ""}
-          {origin.decided_reason ? ` — “${origin.decided_reason}”` : ""}
+          {decision?.by ? `, adopted by ${decision.by}` : ""}
+          {decision?.reason ? ` — “${decision.reason}”` : ""}
         </p>
       )}
       {observation?.decision_due && (

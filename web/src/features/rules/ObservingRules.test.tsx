@@ -5,14 +5,14 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "@/lib/api";
-import type { RuleGuidance, RuleToggle } from "@/lib/types";
+import type { RuleGuidance, RuleProposal, RuleToggle } from "@/lib/types";
 
 import { ObservingRules } from "./ObservingRules";
 
 vi.mock("@/lib/api", () => ({
   api: {
     ruleToggles: vi.fn(), customRules: vi.fn(), ruleGuidance: vi.fn(), ruleObservations: vi.fn(),
-    ruleProposals: vi.fn(), promoteRule: vi.fn(),
+    ruleProposals: vi.fn(), promoteRule: vi.fn(), events: vi.fn(),
   },
 }));
 vi.mock("@/features/ProjectContext", () => ({
@@ -46,12 +46,22 @@ function toggles(t: RuleToggle[]) {
   vi.mocked(api.ruleToggles).mockResolvedValue({ library_loaded: true, toggles: t });
 }
 
+/** As the list route returns it: no decided_by, decided_reason, or decided_at. */
+function adopted(over: Partial<RuleProposal> = {}): RuleProposal {
+  return {
+    id: 9, project_id: "core", kind: "new_rule", rule_id: "merge.x", primitive: "p", draft: {}, params: {},
+    citations: [], proposer: "agent-7", proposer_kind: "agent", direction: "tighten", loosens: false,
+    status: "adopted", folded: false, created_at: "2026-01-01T00:00:00Z", ...over,
+  };
+}
+
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(api.customRules).mockResolvedValue([]);
   vi.mocked(api.ruleGuidance).mockResolvedValue([]);
   vi.mocked(api.ruleObservations).mockResolvedValue([]);
   vi.mocked(api.ruleProposals).mockResolvedValue([]);
+  vi.mocked(api.events).mockResolvedValue({ results: [], total: 0 } as never);
 });
 
 describe("ObservingRules", () => {
@@ -130,6 +140,30 @@ describe("ObservingRules", () => {
     expect(await screen.findByTestId("decision-due")).toHaveTextContent("promote this rule or remove it");
     await userEvent.click(await screen.findByRole("button", { name: /Would-have record \(1\)/ }));
     expect(screen.getByTestId("would-have-merge.x")).toHaveTextContent("Would have held GRPH-9");
+  });
+
+  it("names the adopter and reason from the adopt event, not fields the list omits", async () => {
+    // Reading origin.decided_by draws neither: the fixture sends no decided_* fields.
+    toggles([toggle({ observation: obs() })]);
+    vi.mocked(api.ruleProposals).mockImplementation(async (_p, status) =>
+      status === "adopted" ? [adopted()] : [],
+    );
+    vi.mocked(api.events).mockImplementation(async (q) => ({
+      results: q?.action === "adopt_rule_proposal"
+        ? [{
+            id: 1, ts: "2026-01-02T00:00:00Z", actor_type: "user", actor_id: "u1", actor_label: "Alex",
+            surface: "rest", action: "adopt_rule_proposal", target_type: "rule", target_id: "merge.x",
+            project_id: "core", meta: { proposal_id: 9, reason: "held three, all right", adopted_by: "Alex" },
+          }]
+        : [],
+      total: 1,
+    }) as never);
+    view();
+    const line = await screen.findByTestId("observing-origin");
+    await vi.waitFor(() => expect(line).toHaveTextContent("adopted by Alex"));
+    expect(line).toHaveTextContent("Proposed by agent-7");
+    expect(line).toHaveTextContent("held three, all right");
+    expect(api.events).toHaveBeenCalledWith(expect.objectContaining({ action: "adopt_rule_proposal", projectId: "core" }));
   });
 
   it("renders adopted guidance as ADVISORY with its citation", async () => {
