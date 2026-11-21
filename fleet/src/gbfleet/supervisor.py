@@ -3678,14 +3678,18 @@ def _merge_recorded(row: dict) -> bool:
 
 
 #: Reasons a finished merge attempt must take the item back out of `done` (GRPH-1348).
-#: A transient hold — CI not attested, auto-merge armed, "proposed; next tick" — is absent
-#: on purpose. Matching one of those would flap a good PR back to `next` every cycle.
+#: A transient hold — CI not attested, auto-merge armed, "proposed; next tick", and
+#: "not mergeable yet" while the forge is still computing mergeability — is absent on
+#: purpose. Matching one of those would flap a good PR back to `next` every cycle.
+#: "not mergeable" is a substring of that hold (`not mergeable yet: mergeable=UNKNOWN`),
+#: so it is not a marker. A terminal miss still matches: no PR, a draft that cannot be
+#: marked ready, branch protection, a closed PR, a failed `gh pr merge`, a merge commit
+#: that is not an ancestor of the default branch.
 _LEAVE_DONE_MARKERS = (
     "no PR for",
     "names no PR",
     "done without a PR",
     "gh pr ready failed",
-    "not mergeable",
     "branch protection blocks",
     "not an ancestor of",
     ", not open",
@@ -3732,7 +3736,14 @@ def commit_on_default(repo: Path, commit: str, base: str) -> bool | None:
 
 
 def _should_leave_done(got: "propose_mod.Merged") -> bool:
-    """A terminal miss that must not remain `done` (GRPH-1348)."""
+    """A terminal miss that must not remain `done` (GRPH-1348).
+
+    `not mergeable yet` is the forge's momentary answer after a push (UNKNOWN or
+    UNSTABLE). It is not skipped, so the next tick can merge. It stays `done` because
+    no marker matches that phrase — "not mergeable" would, and is not a marker for
+    that reason. A terminal refusal (branch protection, a closed PR, a failed merge)
+    still matches and leaves `done`.
+    """
     if got.ok or got.pending or got.conflicts or got.rereview:
         return False
     reason = got.reason or ""
@@ -3766,15 +3777,15 @@ class Merger:
 
     WHAT IT NEVER DOES. Decide that an unreviewed head may land. A head that moved after
     sign-off, or a rebase conflict, is bounced back to its author. A merge that did not
-    land — no PR, a draft that cannot be marked ready, a PR that is not mergeable, branch
-    protection, a closed PR, a failed `gh pr merge`, or a merge commit that is not an
-    ancestor of the default branch — does not stay `done` (GRPH-1348). It is bounced to
-    `next` when this fleet opened the PR, and blocked with the reason when the server
-    refuses that bounce. The drain log names the item and the reason. A commit is recorded
-    as merged only after it is an ancestor of the default branch, or when this clone has
-    no such ref to ask. CI that has not attested, an armed auto-merge, and a PR this tick
-    just proposed stay watched. Branch protection is the backstop and this does not go
-    around it.
+    land — no PR, a draft that cannot be marked ready, branch protection, a closed PR,
+    a failed `gh pr merge`, or a merge commit that is not an ancestor of the default
+    branch — does not stay `done` (GRPH-1348). It is bounced to `next` when this fleet
+    opened the PR, and blocked with the reason when the server refuses that bounce. The
+    drain log names the item and the reason. A commit is recorded as merged only after
+    it is an ancestor of the default branch, or when this clone has no such ref to ask.
+    CI that has not attested, an armed auto-merge, a PR this tick just proposed, and a
+    PR the forge has not scored yet ("not mergeable yet") stay watched. Branch protection
+    is the backstop and this does not go around it.
     """
 
     repo: Path

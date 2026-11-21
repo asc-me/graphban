@@ -252,9 +252,45 @@ def test_a_draft_that_cannot_be_marked_ready_leaves_done(monkeypatch):
     assert left and "gh pr ready failed" in left[0]["detail"] and "SA-417" in left[0]["detail"]
 
 
-def test_a_pr_that_is_not_mergeable_leaves_done(monkeypatch):
-    """UNKNOWN is "not mergeable yet", not a conflict. A conflict bounces on its own path."""
-    _forge(monkeypatch, _Forge(draft=False, mergeable="UNKNOWN", status="UNSTABLE"))
+def test_a_pr_that_is_not_mergeable_yet_stays_watched(monkeypatch):
+    """UNKNOWN/UNSTABLE is the forge's answer for a moment after a push. `_merge` reports
+    it as "not mergeable yet" and does not skip, so the next tick can merge
+    (test_not_clean_is_reported_with_the_status_named). It stays `done` and watched.
+
+    Sabotage: put "not mergeable" back into `_LEAVE_DONE_MARKERS`. It is a substring
+    of "not mergeable yet", so this bounces to `next` and drops the item, and a green
+    PR GitHub has not scored yet is never retried.
+    """
+    gh = _forge(monkeypatch, _Forge(draft=False, mergeable="UNKNOWN", status="UNSTABLE"))
+    events = []
+    real = observe.emit
+    observe.emit = lambda event, **kw: events.append((event, kw))
+    try:
+        ledger = _Strict({"SA-417": _with_pr("SA-417")})
+        merger = Merger(REPO, ledger, enabled=True, agent_id="GRPH-PLANNER")
+        wave = Wave()
+        clock = {"t": 1000.0}
+        merger.tick(wave, now=lambda: clock["t"])
+        got = wave.merged["SA-417"]
+        assert not got.ok and not got.skipped and not got.final
+        assert got.reason.startswith("not mergeable yet:")
+        assert "UNKNOWN" in got.reason and "UNSTABLE" in got.reason
+        clock["t"] += 61
+        merger.tick(wave, now=lambda: clock["t"])
+    finally:
+        observe.emit = real
+
+    item = ledger.items["SA-417"]
+    assert item["status"] == "done", item["status"]
+    assert "SA-417" in merger.watching
+    assert ledger.wrote("bounce") == []
+    assert not any(kind == "merge_left_done" for kind, _kw in events)
+    assert gh.verbs().count("pr view") >= 2
+
+
+def test_branch_protection_leaves_done(monkeypatch):
+    """A computed refusal, not the "not mergeable yet" hold. The item leaves `done`."""
+    _forge(monkeypatch, _Forge(draft=False, status="BLOCKED"))
     events = []
     real = observe.emit
     observe.emit = lambda event, **kw: events.append((event, kw))
@@ -266,9 +302,10 @@ def test_a_pr_that_is_not_mergeable_leaves_done(monkeypatch):
         observe.emit = real
 
     item = ledger.items["SA-417"]
-    assert item["status"] == "next", item
+    assert item["status"] == "next", item["status"]
+    assert "SA-417" not in merger.watching
     left = [kw for kind, kw in events if kind == "merge_left_done"]
-    assert left and "not mergeable" in left[0]["detail"] and "SA-417" in left[0]["detail"]
+    assert left and "branch protection" in left[0]["detail"] and "SA-417" in left[0]["detail"]
 
 
 def test_observations_role_warning_names_the_route_and_is_silent_on_404():
