@@ -377,6 +377,11 @@ def _occupy_review_globs(clusters: list[dict], pool: list[Item],
         for r in review_ids:
             mine = areas.get(r, [])
             key = by_id[r].key
+            # Who is actually reviewing, and when that claim lapses (GRPH-1290). `held_by`
+            # is the word "review" and this occupation has no reservation clock, so a drain
+            # logged "no expiry reported" for a hold that had already ended. The read is
+            # `review_hold_read`, the same one `item_dict` uses.
+            hold = fleet_svc.review_hold_read(by_id[r])
             held_because.append({
                 "area": "",
                 "reserved": "review",
@@ -391,6 +396,9 @@ def _occupy_review_globs(clusters: list[dict], pool: list[Item],
                                    areas.get(i, []), mine, hards))),
                 "rule": (f"{key} is in review and holds {', '.join(mine)}" if mine else
                          f"{key} is in review and declares no areas, so it holds its cluster"),
+                "live_holder": hold["holder"],
+                "lapse": hold["lapse"],
+                "lapses_in": hold["lapses_in"],
             })
         occupied["held_because"] = held_because
         out.append(occupied)

@@ -893,6 +893,36 @@ def test_until_spawns_for_a_review_row_whose_holder_has_lapsed(
     assert result.reason == "review-unsigned"
 
 
+def test_until_does_not_idle_on_a_prd_review_row_nobody_holds(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1290. The server now sends a lapsed hold as unheld (`review_claimed_by` empty)
+    plus `review_claim_lapse`. A `--prd` drain starts a reviewer for that row. Exiting
+    `idle` with the row still listed is the defect.
+
+    Sabotage: make `review_held` return True whenever `review_claim_lapse` is set and
+    this run exits idle with nothing spawned."""
+    workspace = tmp_path / "ws"
+    roles: list[str] = []
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-1287", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": None, "review_claim_lapse": "age",
+                 "prd_id": "GRPH-P63"}],
+        minted_roles=roles,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        prd="GRPH-P63",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert roles, "an unheld PRD review row must get a reviewer"
+    assert result.reason != "idle", result.as_json()
+    assert result.review == ["GRPH-1287"]
+
+
 def test_review_held_reads_the_servers_lapse_and_tolerates_an_older_server():
     """The three cases `review_held` must tell apart, including a server too old to send the
     field, which must read exactly as it did before this change."""

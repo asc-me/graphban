@@ -4767,6 +4767,29 @@ def review_claim_holder(item: Item, *, now: datetime | None = None,
     return item.review_claimed_by
 
 
+def review_hold_read(item: Item, *, now: datetime | None = None,
+                     lease_seconds: int = DEFAULT_LEASE_SECONDS) -> dict:
+    """The review hold a reader is allowed to see (GRPH-1290).
+
+    `holder` is `review_claim_holder`: None once the claim has lapsed, and None when
+    nobody took it. `lapse` is why, present only when a claim existed and is not live.
+    `lapses_in` is seconds until the age clock, and only while the hold is live — a
+    contention line that says "no expiry" about a review row is how a drain waited
+    out a claim that had already ended.
+
+    One read. `review_claim_holder` and `review_claim_lapse` stay the definitions;
+    this only packages them so item reads and cluster holds cannot disagree.
+    """
+    lapse = review_claim_lapse(item, now=now, lease_seconds=lease_seconds)
+    holder = None if lapse is not None else item.review_claimed_by
+    lapses_in = None
+    if holder and item.review_claimed_at is not None:
+        now = now or datetime.now(timezone.utc)
+        elapsed = int((now - _aware(item.review_claimed_at)).total_seconds())
+        lapses_in = max(0, lease_seconds - elapsed)
+    return {"holder": holder, "lapse": lapse, "lapses_in": lapses_in}
+
+
 def bounce_pin_holder(item: Item, *, now: datetime | None = None) -> str | None:
     """Who this item is currently reserved for, or None once the pin has lapsed.
 
