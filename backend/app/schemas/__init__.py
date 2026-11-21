@@ -2072,6 +2072,9 @@ class RuleProposalOut(BaseModel):
     status: str
     folded: bool = False
     created_at: datetime
+    decided_by: str | None = None
+    decided_reason: str | None = None
+    decided_at: datetime | None = None
     org_dismissed_by: str | None = None
     org_dismissed_reason: str | None = None
     org_dismissed_at: datetime | None = None
@@ -2090,8 +2093,7 @@ class RuleProposalDismiss(BaseModel):
 
 
 class RuleProposalDecisionOut(RuleProposalOut):
-    decided_by: str | None = None
-    decided_reason: str | None = None
+    pass
 
 
 class OrgRuleProposalAdopt(BaseModel):

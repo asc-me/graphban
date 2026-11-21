@@ -293,6 +293,8 @@ def view(row: RuleProposal, *, folded: bool = False) -> dict:
             "proposer_kind": row.proposer_kind, "direction": row.direction,
             "loosens": row.loosens, "status": row.status, "folded": folded,
             "created_at": row.created_at.isoformat() if row.created_at else None,
+            "decided_by": row.decided_by, "decided_reason": row.decided_reason,
+            "decided_at": row.decided_at.isoformat() if row.decided_at else None,
             "org_dismissed_by": row.org_dismissed_by,
             "org_dismissed_reason": row.org_dismissed_reason,
             "org_dismissed_at": (row.org_dismissed_at.isoformat()

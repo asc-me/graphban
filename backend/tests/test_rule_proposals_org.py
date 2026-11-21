@@ -172,3 +172,13 @@ def test_locking_an_observing_org_rule_is_refused_until_promoted(client, org):
         assert out["locked"] is True
     finally:
         db.close()
+
+
+def test_project_list_carries_who_decided(client, org):
+    """The Rules page names the adopter and shows who dismissed, from the list route."""
+    pid = _propose(client, org, org["pid"], "one")
+    client.post(f"/api/projects/{org['pid']}/rules/proposals/{pid}/dismiss", headers=org["h"],
+                json={"reason": "later"})
+    got = client.get(f"/api/projects/{org['pid']}/rules/proposals?status=dismissed",
+                     headers=org["h"]).json()[0]
+    assert got["decided_by"] and got["decided_reason"] == "later" and got["decided_at"]
