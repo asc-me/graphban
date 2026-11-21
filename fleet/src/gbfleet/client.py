@@ -243,7 +243,7 @@ class Graphban:
         """
         return self._post(SURFACE_PATH, payload, timeout=10.0)
 
-    def post_observation(self, **payload: Any) -> dict:
+    def post_observation(self, *, timeout: float = 10.0, **payload: Any) -> dict:
         """One fact about a tree this supervisor cut (GRPH-975).
 
         Raises on a refusal. `post_attempt` returns None because a lost measurement must
@@ -255,7 +255,7 @@ class Graphban:
         Goes through `_post` (strict). A second method that called `.post` itself would
         be a third door, which `test_client.py` pins shut.
         """
-        got = self._post(OBSERVATIONS_PATH, payload, timeout=10.0, strict=True)
+        got = self._post(OBSERVATIONS_PATH, payload, timeout=timeout, strict=True)
         if not isinstance(got, dict):
             raise ObservationRefused(f"{OBSERVATIONS_PATH}: empty reply")
         return got

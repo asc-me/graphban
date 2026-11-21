@@ -848,6 +848,10 @@ def _until(args) -> int:
         # wave runs is exactly who needs to ask.
         from . import until as until_mod
 
+        # GRPH-1348. A real run refuses this key in `_preflight_observations`. A dry run
+        # used to say nothing, so `service install` stored a key that cannot record a cut.
+        # The warning does not change the exit: the plan is still the answer.
+        _print_observations_warning(until_mod.observations_role_warning(supervisor))
         try:
             # GRPH-950: the base the loop would measure dependencies against, resolved the way
             # the loop resolves it but without the fetch — a dry run changes nothing, refs too.
@@ -1185,6 +1189,7 @@ def _service(args) -> int:
         return 2
 
     if args.dry_run:
+        _print_observations_warning(_observations_warning_for_plan(plan))
         print(f"# would write {plan.unit_path}")
         print(f"# and {plan.env_path} (owner-only, ${service_mod.API_KEY_ENV})")
         print(service_mod.render(plan).decode("utf-8", "replace"))
@@ -1195,6 +1200,9 @@ def _service(args) -> int:
     except service_mod.Refused as exc:
         print(f"gbfleet service: {exc}", file=sys.stderr)
         return 2
+    role = _observations_warning_for_plan(plan)
+    if role:
+        done.warnings.append(role)
 
     print(f"runs  {plan.binary} until {' '.join(plan.until_args)}")
     print(f"every {plan.every}s (one planner registration per cycle)")
@@ -1233,6 +1241,29 @@ def _service(args) -> int:
     print(f"{plan.name}: NOT running, last exit {code} — {why}", file=sys.stderr)
     print(f"        {plan.err_path} is where it said why", file=sys.stderr)
     return 1
+
+
+def _print_observations_warning(text: str) -> None:
+    if text:
+        print(f"WARNING {text}", file=sys.stderr)
+
+
+def _observations_warning_for_plan(plan) -> str:
+    """Warn when the key this unit would store cannot record observations (GRPH-1348).
+
+    No server or no key is "", not a warning: the probe cannot be asked, and a warning
+    for a flag the operator did not pass would be a guess. The probe stays out of
+    `service.install` so a unit test that writes a plan does not dial the network.
+    """
+    from .until import observations_role_warning
+
+    server = service_mod._value_of(plan.until_args, "--server")
+    key = os.environ.get(API_KEY_ENV, "")
+    if not server or not key:
+        return ""
+    project = service_mod._value_of(plan.until_args, "--project")
+    client = Graphban(base_url=server, api_key=key, project_id=project or "")
+    return observations_role_warning(client)
 
 
 def _service_status(state) -> None:

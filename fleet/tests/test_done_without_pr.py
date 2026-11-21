@@ -74,7 +74,12 @@ def test_when_it_cannot_be_proposed_a_wait_names_the_item_never_a_silent_skip(mo
     waits = [kw for kind, kw in events if kind == "wait"]
     assert any(w.get("item") == "GRPH-1440" and "no PR" in w["detail"] for w in waits), events
     assert not any(kind == "merge" and kw.get("skipped") for kind, kw in events), events
-    assert "GRPH-1440" in merger.watching and not wave.merged["GRPH-1440"].final
+    # GRPH-1348: giving up is not a hold. The item leaves watching, and the drain log
+    # names it. Staying `done` is the defect this test used to accept.
+    assert "GRPH-1440" not in merger.watching
+    assert not wave.merged["GRPH-1440"].final
+    left = [kw for kind, kw in events if kind == "merge_left_done"]
+    assert left and left[0]["item"] == "GRPH-1440" and "done without a PR" in left[0]["detail"]
 
 
 def test_a_branch_with_nothing_beyond_the_base_waits_rather_than_proposing(monkeypatch):
