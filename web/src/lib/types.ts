@@ -3984,7 +3984,7 @@ export interface ProposalDecision {
   reason: string | null;
 }
 
-/** A custom rule with its author and why (GRPH-1774 / P91 D1). */
+/** The rule-primitive contract as served by the API (GRPH-1773 / GRPH-1810). */
 export interface RulePrimitiveParam {
   name: string;
   type: string;
@@ -4013,6 +4013,7 @@ export interface CustomRuleWrite {
   params: Record<string, unknown>;
 }
 
+/** A custom rule with its author and why (GRPH-1774 / P91 D1). */
 export interface CustomRule {
   rule_id: string;
   primitive: string;
