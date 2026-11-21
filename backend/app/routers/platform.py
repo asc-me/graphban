@@ -460,7 +460,8 @@ def stack_health(project_id: str = "core", db: Session = Depends(get_db),
     from app.services import scans as scans_svc
 
     authz.require_readable(db, user.id, project_id)
-    return scans_svc.component_health(db, project_id)
+    head = stack_svc.project_head_sha(db, project_id) or ""
+    return scans_svc.component_health(db, project_id, head_sha=head)
 
 
 class StackScanIn(BaseModel):
