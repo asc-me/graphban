@@ -10,7 +10,7 @@ import { handleClash, type HandleClash } from "@/features/profile/orgHandle";
 import { useAuth } from "@/features/auth/AuthContext";
 import { api } from "@/lib/api";
 import { keys } from "@/lib/queries";
-import type { InvitePreview } from "@/lib/types";
+import type { InvitePreview, Org } from "@/lib/types";
 
 /**
  * Landing page for an emailed org invite link (`/invite/:token`), AL-74b. Mounted
@@ -140,15 +140,20 @@ function AcceptButton({ token }: { token: string }) {
     setBusy(true);
     setError("");
     try {
-      await api.acceptInvite(token, handle);
+      const joined = await api.acceptInvite(token, handle);
+      // The accepted org (with its org-only handle) is in the list before the refetch lands.
+      qc.setQueryData<Org[]>(keys.orgs, (prev) =>
+        prev ? [...prev.filter((o) => o.id !== joined.id), joined] : prev,
+      );
       await qc.invalidateQueries({ queryKey: keys.orgs });
       navigate("/", { replace: true });
     } catch (err) {
-      const c = handleClash(err);
-      if (c && !handle) setClash(c);
-      else if (c) throw err; // the field shows the next suggestion
-      else setError("Could not accept the invitation. It may have expired.");
       setBusy(false);
+      // On the retry, OrgHandleField shows the error: the next suggestion, or why it failed.
+      if (handle) throw err;
+      const c = handleClash(err);
+      if (c) setClash(c);
+      else setError("Could not accept the invitation. It may have expired.");
     }
   }
 
