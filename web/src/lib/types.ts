@@ -602,6 +602,20 @@ export interface Org {
   name: string;
   plan: string;
   role: OrgRole;
+  /** Your org-only handle, present only where it differs from your account handle. */
+  handle?: string | null;
+}
+
+/** A pending invitation addressed to the caller (`GET /me/invites`). */
+export interface MyInvite {
+  id: string;
+  token: string;
+  org_id: string;
+  org_name: string;
+  role: OrgRole;
+  invited_by: string;
+  created_at: string;
+  expires_at?: string | null;
 }
 
 export interface OrgProjectAccess {

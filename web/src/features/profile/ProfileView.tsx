@@ -6,6 +6,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/features/auth/AuthContext";
+import { OrganizationsSection } from "@/features/profile/OrganizationsSection";
 import { PasswordCard } from "@/features/profile/PasswordCard";
 import {
   changedLabels,
@@ -310,8 +311,7 @@ function ProfileForm({ user }: { user: User }) {
               </div>
             </Card>
 
-            {/* The Organizations section is GRPH-1793 (S7); the anchor is here so the menu entry lands. */}
-            <div id="organizations" />
+            <OrganizationsSection user={user} />
           </div>
 
           <div className="min-w-0 min-[900px]:sticky min-[900px]:top-0 min-[900px]:self-start">{preview}</div>

@@ -5,10 +5,12 @@ import { useNavigate, useParams } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { OrgHandleField } from "@/features/profile/OrgHandleField";
+import { handleClash, type HandleClash } from "@/features/profile/orgHandle";
 import { useAuth } from "@/features/auth/AuthContext";
 import { api } from "@/lib/api";
 import { keys } from "@/lib/queries";
-import type { InvitePreview } from "@/lib/types";
+import type { InvitePreview, Org } from "@/lib/types";
 
 /**
  * Landing page for an emailed org invite link (`/invite/:token`), AL-74b. Mounted
@@ -132,24 +134,50 @@ function AcceptButton({ token }: { token: string }) {
   const qc = useQueryClient();
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
+  const [clash, setClash] = React.useState<HandleClash | null>(null);
 
-  async function accept() {
+  async function accept(handle?: string) {
     setBusy(true);
     setError("");
     try {
-      await api.acceptInvite(token);
+      const joined = await api.acceptInvite(token, handle);
+      // The accepted org (with its org-only handle) is in the list before the refetch lands.
+      qc.setQueryData<Org[]>(keys.orgs, (prev) =>
+        prev ? [...prev.filter((o) => o.id !== joined.id), joined] : prev,
+      );
       await qc.invalidateQueries({ queryKey: keys.orgs });
       navigate("/", { replace: true });
-    } catch {
-      setError("Could not accept the invitation. It may have expired.");
+    } catch (err) {
       setBusy(false);
+      // On the retry, OrgHandleField shows the error: the next suggestion, or why it failed.
+      if (handle) throw err;
+      const c = handleClash(err);
+      if (c) setClash(c);
+      else setError("Could not accept the invitation. It may have expired.");
     }
+  }
+
+  if (clash) {
+    return (
+      <>
+        <p className="mb-4 rounded-[10px] border border-line-2 bg-surface-2 p-3 text-[12px] text-muted">
+          Your handle is already taken in <strong>{clash.orgName}</strong>. Pick the handle you'll
+          use there — it stays your own everywhere else.
+        </p>
+        <OrgHandleField
+          orgName={clash.orgName}
+          initial={clash.suggested}
+          submitLabel="Accept with this handle"
+          onSubmit={(h) => accept(h)}
+        />
+      </>
+    );
   }
 
   return (
     <>
       {error && <p className="mb-4 text-[12px] text-st-blocked">{error}</p>}
-      <Button className="w-full" disabled={busy} onClick={accept}>
+      <Button className="w-full" disabled={busy} onClick={() => accept()}>
         {busy ? "Joining…" : "Accept invitation"}
       </Button>
     </>

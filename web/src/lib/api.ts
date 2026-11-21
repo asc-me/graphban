@@ -73,6 +73,7 @@ import type {
   IntentDiff,
   McpToolInfo,
   Org,
+  MyInvite,
   OrgMember,
   ShardCluster,
   Member,
@@ -592,8 +593,19 @@ export const api = {
   revokeInvite: (orgId: string, inviteId: string) =>
     request<void>(`/orgs/${orgId}/invites/${inviteId}`, { method: "DELETE" }),
   previewInvite: (token: string) => request<InvitePreview>(`/invites/${token}/preview`),
-  acceptInvite: (token: string) =>
-    request<Org>("/invites/accept", { method: "POST", body: JSON.stringify({ token }) }),
+  /** `handle` is the org-only handle, sent on a retry after a `handle_taken` 409. */
+  acceptInvite: (token: string, handle?: string) =>
+    request<Org>("/invites/accept", { method: "POST", body: JSON.stringify({ token, handle: handle ?? null }) }),
+  /** Pending invitations addressed to you (accept with `acceptInvite(token)`). */
+  myInvites: () => request<MyInvite[]>("/me/invites"),
+  declineMyInvite: (inviteId: string) =>
+    request<void>(`/me/invites/${inviteId}/decline`, { method: "POST" }),
+  /** Leave an org. The only owner is refused (409) with a reason to show inline. */
+  leaveOrg: (orgId: string) =>
+    request<{ removed_role: string; projects_revoked: string[] }>(`/orgs/${orgId}/me`, { method: "DELETE" }),
+  /** Change your own org-only handle (409 `handle_taken` carries a suggestion). */
+  setOrgHandle: (orgId: string, handle: string) =>
+    request<Org>(`/orgs/${orgId}/me/handle`, { method: "PATCH", body: JSON.stringify({ handle }) }),
   deployments: (orgId: string) => request<Deployment[]>(`/orgs/${orgId}/deployments`),
   orgOverview: (orgId: string) => request<OrgOverview>(`/orgs/${orgId}/overview`),
   orgGitops: (orgId: string) => request<GitopsView>(`/orgs/${orgId}/gitops`),
