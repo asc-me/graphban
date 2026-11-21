@@ -2852,15 +2852,20 @@ def search_items(
     limit: int = 25,
     project_id: str | None = None,
     tags: list[str] | None = None,
+    prd_id: str | None = None,
 ) -> list[Item]:
-    # Status/project are simple column filters (SQL); the free-text query and tag
+    # Status/project/PRD are simple column filters (SQL); the free-text query and tag
     # matching run in Python so `query` can match a tag too and stay dialect-agnostic
-    # (tags is a JSON column). The result set here is small.
+    # (tags is a JSON column). `prd_id` is the stored id (`_prd_ref` resolved the
+    # caller's key). Filtering it in Python would still load every item in the
+    # project, which is the idle-drain scan GRPH-1645 removes.
     stmt = select(Item)
     if project_id:
         stmt = stmt.where(Item.project_id == project_id)
     if status:
         stmt = stmt.where(Item.status == status)
+    if prd_id:
+        stmt = stmt.where(Item.prd_id == prd_id)
     rows = list(db.scalars(stmt.order_by(Item.sort_order.asc())).all())
 
     q = query.lower().strip()

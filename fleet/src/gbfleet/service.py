@@ -98,6 +98,17 @@ CONFIG_DIR = Path.home() / ".config" / "gbfleet"
 #: ready work). Five minutes trades pickup latency for that, and `--every` moves it.
 RESTART_SEC = 300
 
+#: Consecutive cycles with nothing open before a service drain stops restarting
+#: (GRPH-1645). A closed PRD stops on the first cycle; this count is only the
+#: "still approved, but empty" case. Three matches `until`'s empty-tick patience
+#: without being a setting.
+QUIET_CYCLES = 3
+REASON_PRD_CLOSED = "prd-closed"
+REASON_NO_OPEN = "no-open-items"
+#: Clean exits that are NOT "idle between runs". `prd-closed` and `no-open-items`
+#: would otherwise print as a healthy idle, and launchd would keep starting them.
+_NOT_BETWEEN_RUNS = ("", "unready", "stalled", REASON_PRD_CLOSED, REASON_NO_OPEN)
+
 #: How long `install` waits before asking whether the job survived. Not tuning: `until`
 #: reaches the repo lock, the server and its first refusal in well under a second, so an
 #: immediate read reports "running" for a service that is already gone.
@@ -957,6 +968,64 @@ def install(plan: Plan, api_key: str) -> Installed:
                      state=state)
 
 
+def quiet_state_path(name: str) -> Path:
+    """Where a service drain remembers how many empty cycles it has already seen."""
+    return CONFIG_DIR / "quiet" / f"{name}.json"
+
+
+def note_quiet_cycle(name: str, prd: str) -> int:
+    """Count one more cycle in which `prd` had nothing open. A different PRD starts at 1.
+
+    Each launchd start is a fresh process, so the count has to live on disk. A
+    read that fails is cycle 1, not a silent zero that never reaches the stop.
+    """
+    path = quiet_state_path(name)
+    data: dict = {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            data = loaded
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    if data.get("prd") != prd:
+        data = {"prd": prd, "cycles": 0}
+    data["cycles"] = int(data.get("cycles") or 0) + 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return int(data["cycles"])
+
+
+def reset_quiet_cycle(name: str) -> None:
+    """The PRD has open items again. The empty-cycle count does not carry over."""
+    try:
+        quiet_state_path(name).unlink()
+    except OSError:
+        return
+
+
+def stop_restarting(name: str) -> str:
+    """Unload this service so a clean exit is not started again (GRPH-1645).
+
+    The unit file keeps `KeepAlive` / `Restart=always`. An already-installed job
+    stops because this process boots it out, not because anybody re-renders the
+    plist. A one-off `until` does not call this. An unknown host is a no-op.
+    """
+    found = host()
+    if found.kind == "launchd":
+        domain = f"gui/{os.getuid()}"
+        _code, out = _run(["launchctl", "bootout", f"{domain}/{label_for(name)}"])
+        return out
+    if found.kind == "systemd":
+        _code, out = _run(["systemctl", "--user", "disable", "--now", unit_name(name)])
+        return out
+    if found.kind == "schtasks":
+        tn = task_name(name)
+        _run(["schtasks", "/End", "/TN", tn])
+        _code, out = _run(["schtasks", "/Change", "/TN", tn, "/DISABLE"])
+        return out
+    return found.why
+
+
 def _load_launchd(plan: Plan) -> str:
     domain = f"gui/{os.getuid()}"
     # Idempotent: a re-install replaces a running job rather than failing against it. The
@@ -1039,8 +1108,13 @@ class Status:
 
     @property
     def idle(self) -> bool:
-        """Installed, not running, and last exited cleanly: the normal state between cycles."""
-        return self._exited_clean and self.run_reason not in ("", "unready", "stalled")
+        """Installed, not running, and last exited cleanly: the normal state between cycles.
+
+        A closed PRD and a PRD with nothing open for several cycles are clean exits
+        that must not read as "idle between runs" — that reading is what kept
+        launchd restarting them (GRPH-1645).
+        """
+        return self._exited_clean and self.run_reason not in _NOT_BETWEEN_RUNS
 
     @property
     def _exited_clean(self) -> bool:
@@ -1076,6 +1150,12 @@ class Status:
         if self.run_reason == "stalled":
             phrase = self.stall or "a ready item stayed refused"
             return f"{self.name}: stalled: {phrase} ({where}, {self.unit_path})"
+        if self.run_reason == REASON_PRD_CLOSED:
+            return (f"{self.name}: PRD closed; not restarting "
+                    f"({where}, {self.unit_path})")
+        if self.run_reason == REASON_NO_OPEN:
+            return (f"{self.name}: no open items for {QUIET_CYCLES} cycles; not restarting "
+                    f"({where}, {self.unit_path})")
         if self.idle:
             return (f"{self.name}: idle between runs, last exit 0 ({where}, "
                     f"{self.unit_path})")
