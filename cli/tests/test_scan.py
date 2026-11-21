@@ -166,3 +166,61 @@ def test_cli_summary_line(tmp_path, monkeypatch, capsys):
     assert main(["--project", "p", "scan", "--sha", codemap.head(repo), "--repo", str(repo)]) == 0
     assert "4 tool_missing, 0 incomplete at " in capsys.readouterr().out
     assert os.environ["GBFLEET_API_KEY"] == "k"
+
+
+def _pip_audit():
+    return next(s for s in scan.SCANNERS if s.id == "pip-audit")
+
+
+def test_pip_audit_argv_audits_the_component_not_gbans_env(tmp_path, monkeypatch):
+    _installed(monkeypatch, {"pip-audit", "uv"})
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "pyproject.toml").write_text("[project]\nname='p'\n")
+    argv = scan.resolve_argv(_pip_audit(), plain)
+    assert argv[0] == "pip-audit" and argv[-1] == "."  # local-project mode, never bare
+
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "pyproject.toml").write_text("[project]\nname='p'\n")
+    (locked / "uv.lock").write_text("version = 1\n")
+    argv = scan.resolve_argv(_pip_audit(), locked)
+    assert argv[-4:-1] == ["--disable-pip", "--no-deps", "-r"] and "." not in argv
+
+    _installed(monkeypatch, {"pip-audit"})  # uv.lock but no uv: cannot audit the lockfile
+    assert scan.resolve_argv(_pip_audit(), locked) is None
+
+
+def test_pip_audit_uv_lock_runs_export_then_audits_it(tmp_path, monkeypatch):
+    _installed(monkeypatch, {"pip-audit", "uv"})
+    comp = tmp_path / "c"
+    comp.mkdir()
+    (comp / "uv.lock").write_text("version = 1\n")
+    calls = []
+
+    def run(argv, cwd, timeout):
+        calls.append(argv)
+        if argv[0] == "uv":
+            Path(argv[argv.index("-o") + 1]).write_text("requests==2.0\n")
+            return 0, "", ""
+        reqs = argv[argv.index("-r") + 1]
+        assert Path(reqs).read_text() == "requests==2.0\n"
+        return 0, json.dumps({"dependencies": []}), ""
+
+    status, out = scan.execute(_pip_audit(), comp, run, 5)
+    assert status == "complete" and out.findings == []
+    assert calls[0][:3] == ["uv", "export", "--frozen"] and "--no-emit-project" in calls[0]
+    assert calls[1][0] == "pip-audit"
+
+
+def test_pip_audit_failed_export_is_incomplete_not_clean(tmp_path, monkeypatch):
+    _installed(monkeypatch, {"pip-audit", "uv"})
+    comp = tmp_path / "c"
+    comp.mkdir()
+    (comp / "uv.lock").write_text("version = 1\n")
+    status, out = scan.execute(_pip_audit(), comp, _runner({"uv": (2, "", "lock stale")}), 5)
+    assert status == "incomplete" and "uv export failed" in out.note
+
+
+def test_pnpm_audit_uses_ci_scanner_id():
+    assert any(s.id == "npm-audit" and s.category == "security" for s in scan.SCANNERS)

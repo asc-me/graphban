@@ -170,7 +170,8 @@ SCANNERS = (
             "pip-audit", (0, 1), parse_pip_audit),
     Scanner("bandit", "security", "python", ("bandit", "-r", ".", "-f", "json", "-q"),
             "bandit", (0, 1), parse_bandit),
-    Scanner("pnpm-audit", "security", "pnpm", ("pnpm", "audit", "--json"), "pnpm", (0, 1), parse_pnpm_audit),
+    # Same id as scripts/scan_ci.py records for pnpm audit, so CI and nightly rows share a history.
+    Scanner("npm-audit", "security", "pnpm", ("pnpm", "audit", "--json"), "pnpm", (0, 1), parse_pnpm_audit),
     Scanner("vulture", "deadcode", "python", ("vulture", ".", "--min-confidence", "80"),
             "vulture", (0, 3), parse_vulture),
     Scanner("knip", "deadcode", "js", ("knip", "--reporter", "json"), "knip", (0, 1), parse_knip),
@@ -205,9 +206,28 @@ def resolve_argv(scanner: Scanner, comp: Path) -> list[str] | None:
     if shutil.which(scanner.binary) is None:
         return None
     argv = list(scanner.argv)
-    if scanner.id == "pip-audit" and (comp / "requirements.txt").exists():
-        argv += ["-r", "requirements.txt"]
+    if scanner.id == "pip-audit":
+        # A bare `pip-audit` audits the environment it is installed in (gban's own venv), not the
+        # component: a clean row from it would describe the wrong thing. Mirror scripts/scan_ci.py.
+        if uses_uv_lock(comp):
+            if shutil.which("uv") is None:
+                return None  # cannot export the lockfile -> tool_missing, never a bare audit
+            argv += ["--disable-pip", "--no-deps", "-r", UV_EXPORT_PLACEHOLDER]
+        else:
+            argv.append(".")  # local-project mode reads the component's manifest
     return argv
+
+
+UV_EXPORT_PLACEHOLDER = "<uv.lock export>"
+
+
+def uses_uv_lock(comp: Path) -> bool:
+    return (comp / "uv.lock").is_file()
+
+
+def uv_export_argv(out: Path) -> list[str]:
+    return ["uv", "export", "--frozen", "--no-hashes", "--no-emit-project",
+            "--format", "requirements-txt", "-o", str(out)]
 
 
 def plan(root: Path, components: list[dict]) -> list[dict]:
@@ -228,6 +248,26 @@ def execute(sc: Scanner, comp: Path, run: Runner, timeout: int) -> tuple[str, Ou
     argv = resolve_argv(sc, comp)
     if argv is None:
         return "tool_missing", None
+    if UV_EXPORT_PLACEHOLDER in argv:
+        with tempfile.TemporaryDirectory(prefix="gban-scan-reqs-") as tmp:
+            reqs = Path(tmp) / "requirements.txt"
+            try:
+                rc, out, err = run(uv_export_argv(reqs), comp, timeout)
+            except subprocess.TimeoutExpired:
+                return "incomplete", Outcome("incomplete", note=f"uv export timed out after {timeout}s")
+            except FileNotFoundError:
+                return "tool_missing", None
+            except OSError as exc:
+                return "incomplete", Outcome("incomplete", note=f"uv export could not run: {exc}")
+            if rc != 0 or not reqs.is_file():
+                return "incomplete", Outcome(
+                    "incomplete", note=f"uv export failed ({rc}): {(err or out).strip()[:200]}")
+            argv = [str(reqs) if a == UV_EXPORT_PLACEHOLDER else a for a in argv]
+            return _finish(sc, argv, comp, run, timeout)
+    return _finish(sc, argv, comp, run, timeout)
+
+
+def _finish(sc: Scanner, argv: list[str], comp: Path, run: Runner, timeout: int) -> tuple[str, Outcome | None]:
     try:
         rc, out, err = run(argv, comp, timeout)
     except subprocess.TimeoutExpired:
