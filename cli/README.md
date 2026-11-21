@@ -219,6 +219,23 @@ A real post needs a git commit (there is nothing to send for a repo with no HEAD
 
 `gban code map service` also keeps the stack map current: after a run that mapped something (not a `current` no-op) it builds the record from the run's target sha in a detached worktree (never local HEAD) and posts it to the same endpoint. The result is its own `stack` field in the run record and a `stack map:` line in `service status`; a stack failure never changes the code map outcome.
 
+## `gban scan`
+
+```bash
+gban scan --dry-run
+gban scan [--sha <sha>] [--repo DIR]
+```
+
+Runs the installed deterministic scanners at a commit and records each result with `record_scan`, so the Stack page's security, dead-code and refactor cells stop reading `never_scanned`. Stdlib only; a project-write API key, like `gban code map`.
+
+- Target: `--sha`, default origin's default branch after a fetch. Scans run in a temporary `git worktree add --detach`, removed afterwards (also on failure). No clone and no install.
+- Components: the paths the server keys its cells on (read from `scans_due`).
+- Per component, installed scanners only: `pip-audit` and `bandit` (security) and `vulture` (dead code) and `radon cc` (refactor) for Python; `pnpm audit` (security, reads the lockfile) for a pnpm component; `knip` (dead code) for TS/JS from `node_modules/.bin`, so it is `tool_missing` without node_modules. knip unused exports and types are one rollup finding each, with `kind` and `count`.
+- A tool that is not installed is recorded `tool_missing`. A crash, unreadable output or a timeout (`--timeout`, default 600s per scanner) is `incomplete`. Only a scanner that finished is `complete`, and only a finished one with no findings is clean.
+- Each row is independent: no rollback when a later scanner fails.
+- `--dry-run` prints component, scanner and whether it is installed, and records nothing.
+- Prints `scans: N recorded, M tool_missing, K incomplete at <sha>`. Exit is non-zero only when the step itself fails (fetch, worktree, server).
+
 ## `gban login` wants a real terminal
 
 It refuses without one, rather than prompting. `getpass` falls back to a plain **echoing**

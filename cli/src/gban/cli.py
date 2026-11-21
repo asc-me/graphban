@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from gban import codemap, codemap_service, config, doctor as doctor_mod, machine as machine_mod, playbooks, setup as setup_mod, stackmap, swamp as swamp_mod
+from gban import codemap, codemap_service, config, doctor as doctor_mod, machine as machine_mod, playbooks, scan as scan_mod, setup as setup_mod, stackmap, swamp as swamp_mod
 from gban.client import (EXIT_NO_SESSION, EXIT_NO_SUPERVISOR, EXIT_REFUSED, EXIT_UNREACHABLE,
                        Client, NoSession,
                        Refused, Unreachable, authenticated, login, pair_poll,
@@ -159,6 +159,20 @@ def _parser() -> argparse.ArgumentParser:
                             help=f"minute of each hour for the incremental refresh (default :{codemap_service.DEFAULT_HOURLY_MINUTE:02d})")
             sp.add_argument("--nightly-at", default=None, metavar="HH:MM",
                             help="local time of the full reconcile (default 03:00)")
+
+    scan_cmd = sub.add_parser(
+        "scan", help="run the installed code-health scanners at a sha and record them",
+        description=("Runs pip-audit, bandit, pnpm audit, vulture, knip and radon in a temporary "
+                     "worktree at --sha (default: origin's default branch after a fetch), per Stack "
+                     "component, and records each result. A missing tool is recorded tool_missing, a "
+                     "crash or timeout incomplete; neither is ever clean."))
+    scan_cmd.add_argument("--sha", default=None, help="commit to scan (default: origin's default branch)")
+    scan_cmd.add_argument("--repo", default=None,
+                          help="repository to scan (default: the git checkout of the current directory)")
+    scan_cmd.add_argument("--dry-run", action="store_true",
+                          help="print the plan (component, scanner, installed?) and record nothing")
+    scan_cmd.add_argument("--timeout", type=int, default=scan_mod.DEFAULT_TIMEOUT,
+                          help="seconds per scanner (default 600)")
 
     fleet = sub.add_parser(
         "fleet", help="hand off to gbfleet (the supervisor)",
@@ -650,6 +664,36 @@ def _code_map_since(args, start: Path, url: str, key: str, project: str) -> int:
     return 0
 
 
+def cmd_scan(args) -> int:
+    """Run the installed scanners at a sha and record them (GRPH-1827)."""
+    start = Path(args.repo).expanduser() if args.repo else Path.cwd()
+    project = (config.resolve(args.project, config.PROJECT_ENV, "project") or "").strip()
+    url = config.resolve(args.server, config.URL_ENV, "url")
+    if not url:
+        print(f"{PROG}: no server. Pass --server, set ${config.URL_ENV}, or run `{PROG} login "
+              f"--server …` once.", file=sys.stderr)
+        return EXIT_REFUSED
+    key = (os.environ.get(doctor_mod.SUPERVISOR_KEY_ENV) or "").strip()
+    if not key:
+        key = doctor_mod.resolve_supervisor_key(project, start)
+    if not key:
+        print(f"{PROG}: no project-write API key. Set ${doctor_mod.SUPERVISOR_KEY_ENV} or "
+              f"${config.API_KEY_ENV}, or run `{PROG} setup`.", file=sys.stderr)
+        return EXIT_REFUSED
+    try:
+        call = codemap.mcp_caller(Client(url, api_key=key), project)
+        counts = scan_mod.run_scan(start, args.sha, call, dry_run=args.dry_run, timeout=args.timeout)
+    except codemap.MapError as exc:
+        print(f"{PROG}: scan failed: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+    if counts.get("dry_run"):
+        print(f"{PROG}: dry run, nothing recorded at {counts['sha']}")
+        return 0
+    print(f"scans: {counts['recorded']} recorded, {counts['tool_missing']} tool_missing, "
+          f"{counts['incomplete']} incomplete at {counts['sha']}")
+    return 0
+
+
 def cmd_stack(args) -> int:
     """Build the app-topology record and, unless --dry-run, post it (GRPH-P55 §3)."""
     if args.act != "map":
@@ -942,7 +986,7 @@ def cmd_update(args) -> int:
 
 COMMANDS = {"update": cmd_update, "login": cmd_login, "logout": cmd_logout, "whoami": cmd_whoami,
             "doctor": cmd_doctor, "setup": cmd_setup, "fleet": cmd_fleet, "seats": cmd_seats,
-            "agents": cmd_agents, "keys": cmd_keys, "swamp": cmd_swamp, "stack": cmd_stack, "code": cmd_code}
+            "agents": cmd_agents, "keys": cmd_keys, "swamp": cmd_swamp, "stack": cmd_stack, "code": cmd_code, "scan": cmd_scan}
 
 
 def _poll(args) -> None:
