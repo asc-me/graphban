@@ -19,8 +19,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
-    Event, Item, Prd, Project, Request, RequestComment, User,
+    Event, Item, Prd, Project, Request, RequestComment, SyncManifest, SyncOutbox, User,
 )
+from app.services.project_sync_outbox import version_in_range, wire_version
 from app.services import items as items_svc
 from app.services import prds as prds_svc
 from app.services import waits as waits_svc
@@ -70,16 +71,31 @@ def content_hash(body: dict) -> str:
     return "sha256:" + digest
 
 
-def version_of(body: dict) -> int:
-    """A positive int that moves exactly when the body does.
+def _project_id(db: Session, type: str, row) -> str:
+    if type == "comment":
+        request = db.get(Request, row.request_id)
+        return request.project_id if request is not None else ""
+    return row.project_id or ""
 
-    The console keeps the first body it stored for ``(type, id, version)``.
-    A version that stayed put while the body changed would leave the replica
-    on the old text. There is no version column on these rows, so the version
-    is the body's own hash, narrowed to a signed 63-bit int.
+
+def _assigned_version(db: Session, project_id: str, type: str, entity_id: str,
+                      body_hash: str) -> int:
+    """A version in ``0..2^53-1`` that climbs when the body changes.
+
+    The hash of the body stays in ``hash`` and is the no-op skip. The version
+    is not that hash: a 63-bit hash is above the console's safe integer, and
+    an unordered hash would let a newer edit sort below the stored one.
     """
-    digest = hashlib.sha256(canonical(body).encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "big") & 0x7FFFFFFFFFFFFFFF
+    if not project_id:
+        return wire_version(0, 1)
+    manifest = db.get(SyncManifest, (project_id, type, entity_id))
+    if (manifest is not None and manifest.hash == body_hash
+            and version_in_range(manifest.version)):
+        return int(manifest.version)
+    confirmed = int(manifest.version) if manifest is not None else 0
+    pending = db.get(SyncOutbox, (project_id, type, entity_id))
+    captures = int(pending.version) if pending is not None and pending.version else 1
+    return wire_version(confirmed, captures)
 
 
 def entity(db: Session, type: str, id: str) -> dict | None:
@@ -147,11 +163,13 @@ def allow(source: dict, type: str) -> dict:
 
 def _record(db: Session, type: str, row) -> dict:
     body = _body(db, type, row)
+    digest = content_hash(body)
+    entity_id = _public_id(type, row)
     return {
         "type": type,
-        "id": _public_id(type, row),
-        "version": version_of(body),
-        "hash": content_hash(body),
+        "id": entity_id,
+        "version": _assigned_version(db, _project_id(db, type, row), type, entity_id, digest),
+        "hash": digest,
         "body": body,
     }
 

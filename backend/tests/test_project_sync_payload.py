@@ -7,6 +7,7 @@ and the seat id there.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -20,6 +21,7 @@ from app.models import (
 )
 from app.services import items as items_svc
 from app.services import prds as prds_svc
+from app.services import project_sync_outbox as outbox
 from app.services import project_sync_payload as payload
 from app.services import projects as projects_svc
 from app.services import requests as requests_svc
@@ -218,15 +220,62 @@ def test_same_content_hashes_the_same_and_one_field_change_does_not(db):
     assert first["hash"] == payload.content_hash(first["body"])
     assert first["hash"].startswith("sha256:")
     assert first["version"] == second["version"]
-    assert isinstance(first["version"], int)
+    assert isinstance(first["version"], int) and not isinstance(first["version"], bool)
+    assert 0 <= first["version"] <= outbox.MAX_SAFE_VERSION
 
     item.description = item.description + "\nOne more sentence.\n"
     db.commit()
     third = payload.entity(db, "item", item.key)
     assert third is not None
     assert third["hash"] != first["hash"]
-    assert third["version"] != first["version"]
+    # The version does not follow the body hash. Nothing has captured this edit,
+    # so it is still the same safe integer. Restoring the 63-bit hash makes this
+    # differ and puts it above 2^53-1.
+    assert third["version"] == first["version"]
     assert "One more sentence." in third["body"]["description"]
+
+
+def _legacy_hash_version(body: dict) -> int:
+    """The pre-GRPH-1815 wire version: 63 bits of the body's sha256."""
+    digest = hashlib.sha256(payload.canonical(body).encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") & 0x7FFFFFFFFFFFFFFF
+
+
+def test_a_large_body_and_a_hash_past_2_to_the_53_still_emit_a_safe_version(db):
+    """Every version the payload builder emits is in 0..2^53-1.
+
+    The first body is large. The loop keeps editing until the old hash version
+    would have been above 2^53-1, which is what the console refuses as invalid.
+    """
+    world = _world(db)
+    item = world["item"]
+    item.description = "x" * 100_000
+    db.commit()
+    large = payload.entity(db, "item", item.key)
+    assert large is not None and len(large["body"]["description"]) == 100_000
+    assert 0 <= large["version"] <= outbox.MAX_SAFE_VERSION
+
+    exceeded = False
+    for n in range(64):
+        item.description = f"hash-probe-{n}-" + ("y" * 32)
+        db.commit()
+        record = payload.entity(db, "item", item.key)
+        assert record is not None
+        assert isinstance(record["version"], int) and not isinstance(record["version"], bool)
+        assert 0 <= record["version"] <= outbox.MAX_SAFE_VERSION
+        if _legacy_hash_version(record["body"]) > outbox.MAX_SAFE_VERSION:
+            exceeded = True
+            break
+    assert exceeded
+
+
+def test_every_backfill_version_is_inside_the_safe_integer_range(db):
+    world = _world(db)
+    rows = payload.backfill(db, world["project"].id)
+    assert rows
+    for row in rows:
+        assert isinstance(row["version"], int) and not isinstance(row["version"], bool)
+        assert 0 <= row["version"] <= outbox.MAX_SAFE_VERSION
 
 
 def test_canonical_hash_ignores_key_order(db):

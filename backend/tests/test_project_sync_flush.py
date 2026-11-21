@@ -550,3 +550,111 @@ def test_a_parked_oversized_entity_sends_once_the_budget_can_carry_it(db, monkey
     assert flush.retry_parked(db, "core") == 1
     assert box.at(DUE + WINDOW) == 1
     assert _row(db, big) is None and _manifest(db, big) is not None
+
+
+def _stored(box, item):
+    rows = [row for row in box.fake.entities(box.cloud_id) if row["id"] == item.key]
+    assert len(rows) == 1
+    return rows[0]
+
+
+def test_three_edits_send_three_increasing_versions_and_the_latest_body(db):
+    """Each push climbs, and the replica's body is the edit just sent.
+
+    Restoring the body hash as the wire version fails the ordering: the hash
+    is not strictly increasing, and it is above 2^53-1.
+    """
+    box = _Box(db, FakeConsole())
+    item = _item(db, "edit-0")
+    versions = []
+    when = T0
+    for n in range(1, 4):
+        item.title = f"edit-{n}"
+        db.commit()
+        _dirty(db, item, when)
+        assert box.at(when + WINDOW) == 1
+        manifest = _manifest(db, item)
+        assert manifest is not None
+        versions.append(manifest.version)
+        stored = _stored(box, item)
+        assert stored["body"]["title"] == f"edit-{n}"
+        assert stored["version"] == manifest.version
+        assert 0 <= manifest.version <= outbox.MAX_SAFE_VERSION
+        when = when + WINDOW
+    assert versions[0] < versions[1] < versions[2]
+
+
+def test_an_edit_after_restart_sends_a_version_above_the_confirmed_one(db):
+    """Manifest kept, outbox empty. The next edit must not reuse version 1."""
+    box = _Box(db, FakeConsole())
+    item = _item(db, "before")
+    _dirty(db, item, T0)
+    assert box.at(DUE) == 1
+    confirmed = _manifest(db, item).version
+    assert _row(db, item) is None
+    item.title = "after restart"
+    db.commit()
+    _dirty(db, item, DUE)
+    assert box.at(DUE + WINDOW) == 1
+    again = _manifest(db, item)
+    assert again.version > confirmed
+    assert 0 <= again.version <= outbox.MAX_SAFE_VERSION
+    assert _stored(box, item)["body"]["title"] == "after restart"
+    assert _stored(box, item)["version"] == again.version
+
+
+class _RefuseInvalid(FakeConsole):
+    """Refuse one entity as ``invalid``, then accept it."""
+
+    def __init__(self, ident: str):
+        super().__init__()
+        self.ident = ident
+        self.left = 1
+
+    def _one_entity(self, replica, entity):
+        if self.left and isinstance(entity, dict) and entity.get("id") == self.ident:
+            self.left -= 1
+            version = entity.get("version")
+            return {
+                "type": entity.get("type") if isinstance(entity.get("type"), str) else "",
+                "id": self.ident,
+                "version": version if isinstance(version, int) and not isinstance(version, bool) else 0,
+            }, "invalid"
+        return super()._one_entity(replica, entity)
+
+
+def test_parked_invalid_rows_from_the_old_version_resend(db):
+    """An ``invalid`` park with no contract is the hash-version upgrade.
+
+    D6 does not unpark it: there is no ``parked_contract`` to compare. The next
+    flush sends it, and the replica takes the safe version.
+    """
+    box = _Box(db, FakeConsole())
+    item = _item(db, "parked invalid")
+    _dirty(db, item, T0)
+    row = _row(db, item)
+    row.parked_reason = "invalid"
+    row.parked_contract = None
+    db.commit()
+    assert box.at(DUE) == 1
+    assert _row(db, item) is None
+    manifest = _manifest(db, item)
+    assert manifest is not None
+    assert 0 <= manifest.version <= outbox.MAX_SAFE_VERSION
+    assert _stored(box, item)["body"]["title"] == "parked invalid"
+
+
+def test_a_fresh_invalid_refusal_stays_parked_until_the_backstop(db):
+    """Stamping the contract is what stops the upgrade requeue from looping."""
+    item = _item(db, "still invalid")
+    box = _Box(db, _RefuseInvalid(item.key))
+    _dirty(db, item, T0)
+    assert box.at(DUE) == 1
+    row = _row(db, item)
+    assert row is not None and row.parked_reason == "invalid"
+    assert row.parked_contract == CONTRACT
+    assert _manifest(db, item) is None
+    assert len(_pushes(box.wire.events)) == 1
+    assert box.at(DUE + timedelta(minutes=5)) == 0
+    assert len(_pushes(box.wire.events)) == 1
+    assert _row(db, item).parked_reason == "invalid"

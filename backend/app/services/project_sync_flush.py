@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import SyncManifest, SyncOutbox, SyncProject
 from app.services.project_sync_client import CONTRACT, DEFAULT_MAX_DELAY, get_contract, push_entities
-from app.services.project_sync_outbox import SYNC_LEVEL_SYNC, due
+from app.services.project_sync_outbox import SYNC_LEVEL_SYNC, due, version_in_range
 from app.services.project_sync_payload import entity as payload_entity
 
 logger = logging.getLogger("graphban.project_sync_flush")
@@ -213,16 +213,28 @@ def _delete_if_unchanged(db: Session, row: SyncOutbox, seen: int) -> bool:
     return bool(gone)
 
 
+def _old_invalid(row: SyncOutbox) -> bool:
+    """A row the old hash version parked as ``invalid``.
+
+    D6 unparks a contract park when the advertised contract moves. An ``invalid``
+    refusal stored no contract, so those rows would sit until the 4h backstop
+    and the replica would stay empty after this upgrade. A refusal parked by
+    this build stamps the contract, so this does not put it straight back.
+    """
+    return (row.parked_reason or "").strip() == "invalid" and not (row.parked_contract or "").strip()
+
+
 def _requeue(db: Session, advertised: str, now: datetime) -> None:
-    """Clear parks whose contract is no longer the one the console advertises, and
-    parks that have sat for the 4h backstop. A plain entity refusal has no
-    ``parked_contract`` and waits for the backstop or ``retry_parked``.
+    """Clear parks whose contract is no longer the one the console advertises,
+    parks that have sat for the 4h backstop, and ``invalid`` parks left by the
+    hash version. A plain entity refusal from this build has a contract (or
+    waits for the backstop / ``retry_parked``).
     """
     horizon = now - _BACKSTOP
     for row in _parked(db):
         parked_at = _aware(row.first_dirty_at)  # the park time; see _park
         version_moved = bool(row.parked_contract) and row.parked_contract != advertised
-        if version_moved or parked_at <= horizon:
+        if version_moved or parked_at <= horizon or _old_invalid(row):
             row.parked_reason = None
             row.parked_contract = None
 
@@ -368,7 +380,11 @@ def flush_once(db: Session, *, now: datetime, transport=None, state: FlushState 
             if record is None:
                 continue
             manifest = db.get(SyncManifest, (row.project_id, row.entity_type, row.entity_id))
-            if manifest is not None and manifest.hash == record["hash"]:
+            # A hash match on an out-of-range version is not a replica. The console
+            # refused that version, so skipping the send would leave the entity parked
+            # in the manifest and absent from the console.
+            if (manifest is not None and manifest.hash == record["hash"]
+                    and version_in_range(manifest.version)):
                 # The console already has this body. Sending it would be a no-op.
                 # A version that moved while we looked is a newer edit, so the row stays.
                 _delete_if_unchanged(db, row, seen)
@@ -422,7 +438,14 @@ def flush_once(db: Session, *, now: datetime, transport=None, state: FlushState 
             for outbox_row, seen, record in fitted:
                 key = (record["type"], record["id"])
                 if key in refused and key not in stored:
-                    _park([outbox_row], reason=refused[key], contract=None, now=now)
+                    reason = refused[key]
+                    # Stamp the contract on ``invalid`` so the upgrade requeue does not
+                    # send the same refusal on the next pass. A contract change still
+                    # unparks it, and so does the 4h backstop.
+                    _park(
+                        [outbox_row], reason=reason,
+                        contract=advertised if reason == "invalid" else None, now=now,
+                    )
                     continue
                 if key not in stored:
                     continue

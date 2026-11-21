@@ -205,8 +205,9 @@ def test_a_stale_base_version_conflicts_and_leaves_the_item_unchanged(db, fake, 
 
 
 def test_current_version_column_holds_a_63_bit_version():
-    """version_of() is a 63-bit hash. Postgres int4 refused it (CI shard 1/3);
-    SQLite does not check width, so the column type is asserted here."""
+    """The column stays BIGINT. It once stored a 63-bit hash, and Postgres int4
+    refused that (CI shard 1/3). SQLite does not check width, so the column
+    type is asserted here. New wire versions fit in 2^53-1."""
     from sqlalchemy import BigInteger
     assert isinstance(SyncProposal.__table__.c.current_version.type, BigInteger)
     source = pathlib.Path(__file__).resolve().parents[1].joinpath(

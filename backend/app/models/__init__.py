@@ -2553,8 +2553,10 @@ class SyncManifest(Base):
     project_id: Mapped[str] = mapped_column(String, primary_key=True)
     entity_type: Mapped[str] = mapped_column(String, primary_key=True)
     entity_id: Mapped[str] = mapped_column(String, primary_key=True)
-    # version_of() is a signed 63-bit hash. INTEGER is int4 on Postgres and
-    # overflows on confirm (GRPH-1768). sync_outbox.version stays a counter.
+    # The wire version confirmed by the console: a counter in 0..2^53-1
+    # (GRPH-1815). BIGINT because this column once held the 63-bit hash
+    # version_of() returned, and INTEGER overflowed on confirm (GRPH-1768).
+    # sync_outbox.version stays the capture counter, not this value.
     version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -2576,7 +2578,8 @@ class SyncProposal(Base):
     project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     status: Mapped[str] = mapped_column(String, nullable=False)
     reason: Mapped[str | None] = mapped_column(String, nullable=True)
-    # version_of() is a 63-bit hash: int4 overflows on Postgres.
+    # The item's wire version when the proposal conflicted. BIGINT so a row
+    # written while versions were 63-bit hashes still loads (GRPH-1768).
     current_version: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     reported: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false(), nullable=False)
