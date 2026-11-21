@@ -12,6 +12,7 @@ token: preview is intentionally unauthenticated (so the accept page can render "
 email matches the invitation.
 """
 from fastapi import APIRouter, Body, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -37,6 +38,7 @@ from app.schemas import (
     InviteCreate,
     InviteOut,
     InvitePreviewOut,
+    MyInviteOut,
     OrgCreate,
     GrantRevokedOut,
     MemberRemovedOut,
@@ -48,6 +50,7 @@ from app.schemas import (
     TeamGrantIn,
     TeamGrantOut,
     TeamOut,
+    OrgHandleIn,
     OrgOut,
     OrgRequestCreate,
     OrgRequestOut,
@@ -59,8 +62,10 @@ from app.services import entitlements as entitlements_svc
 from app.services import events as events_svc
 from app.services import galaxy as galaxy_svc
 from app.services import gitops
+from app.services import handles as handles_svc
 from app.services import orgs as orgs_svc
 from app.services import platform as platform_svc
+from app.services import sync_storage as sync_storage_svc
 from app.services import quotas
 from app.services import teams as teams_svc
 
@@ -90,7 +95,8 @@ def list_orgs(db: Session = Depends(get_db), user: User = Depends(get_current_us
     for seat in seats:
         org = db.get(Organization, seat.org_id)
         if org is not None:
-            out.append(OrgOut(id=org.id, name=org.name, plan=org.plan, role=seat.role))
+            out.append(OrgOut(id=org.id, name=org.name, plan=org.plan, role=seat.role,
+                              handle=seat.handle if seat.handle and seat.handle != user.handle else None))
     return out
 
 
@@ -186,6 +192,46 @@ def patch_org_gitops(org_id: str, body: GitopsPatch, db: Session = Depends(get_d
     )
     view = gitops.resolve_org(db, org_id)
     return gitops.fill_writable(view, db, user.id)
+
+
+class DestinationIn(BaseModel):
+    """Both fields optional on the wire so a patch can set one. Empty is unconfigured."""
+    url: str | None = None
+    branch: str | None = None
+
+
+@router.get("/orgs/{org_id}/destination")
+def get_org_destination(org_id: str, db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    """The URL and branch an org admin saved (GRPH-1761). Any seat can read, including a
+    role this server does not rank (a seat named viewer). The console stores the pair; it
+    does not reach into a box."""
+    authz.require_org_member(db, user.id, org_id)
+    org = db.get(Organization, org_id)
+    if org is None:
+        raise HTTPException(404, "organization not found")
+    return sync_storage_svc.org_destination(db, org)
+
+
+@router.patch("/orgs/{org_id}/destination")
+def patch_org_destination(org_id: str, body: DestinationIn, db: Session = Depends(get_db),
+                          user: User = Depends(get_current_user)):
+    """Owner or admin only. A member, and a role named viewer, are refused and the stored
+    pair is left as it was."""
+    authz.require_org_admin(db, user.id, org_id)
+    org = db.get(Organization, org_id)
+    if org is None:
+        raise HTTPException(404, "organization not found")
+    try:
+        out = sync_storage_svc.save_org(
+            db, org, url=body.url if "url" in body.model_fields_set else None,
+            branch=body.branch if "branch" in body.model_fields_set else None)
+    except Validation as e:
+        raise HTTPException(422, str(e)) from e
+    events_svc.record_user(
+        db, user, action="update_destination", target_type="org", target_id=org_id,
+        meta={"url": out["url"], "branch": out["branch"], "state": out["state"]})
+    return out
 
 
 @router.get("/orgs/{org_id}/overview")
@@ -458,13 +504,47 @@ def revoke_invite(
                            target_id=invite.id, meta={"org_id": org_id})
 
 
+@router.get("/me/invites", response_model=list[MyInviteOut])
+def my_invites(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Pending, unexpired invitations addressed to the caller's email."""
+    out = []
+    for i in orgs_svc.my_pending_invites(db, user):
+        org = db.get(Organization, i.org_id)
+        if org is None:
+            continue
+        inviter = db.get(User, i.invited_by)
+        out.append(MyInviteOut(
+            id=i.id, token=i.token, org_id=org.id, org_name=org.name, role=i.role,
+            invited_by=(inviter.name or handles_svc.org_handle(db, inviter, org.id)) if inviter else "",
+            created_at=i.created_at, expires_at=i.expires_at))
+    return out
+
+
+@router.post("/me/invites/{invite_id}/decline", status_code=204)
+def decline_my_invite(invite_id: str, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    invite = orgs_svc.decline_invite(db, invite_id, user)
+    events_svc.record_user(db, user, action="decline_org_invite", target_type="org_invite",
+                           target_id=invite.id, meta={"org_id": invite.org_id})
+
+
+@router.delete("/orgs/{org_id}/me", response_model=MemberRemovedOut)
+def leave_org(org_id: str, db: Session = Depends(get_db),
+              user: User = Depends(get_current_user)):
+    """Leave an org. The only owner is refused (409) with a reason to show inline."""
+    result = orgs_svc.leave_org(db, org_id, user)
+    events_svc.record_user(db, user, action="leave_org", target_type="org_membership",
+                           target_id=f"{org_id}:{user.id}", meta=result)
+    return MemberRemovedOut(**result)
+
+
 @router.get("/invites/{token}/preview", response_model=InvitePreviewOut)
 def preview_invite(token: str, db: Session = Depends(get_db)):
     """Unauthenticated: what org/email a token invites. Used by the accept page before
     the invitee has logged in. A used/expired/unknown token 404s identically."""
     invite = orgs_svc._validate_pending(orgs_svc.invite_by_token(db, token))
     inviter = db.get(User, invite.invited_by)
-    invited_by = (inviter.name or inviter.handle) if inviter else ""
+    invited_by = (inviter.name or handles_svc.org_handle(db, inviter, invite.org_id)) if inviter else ""
     if invite.kind == "platform":
         # No org yet — the accept page renders the "create your account, then found
         # your organization" flow instead of a join-this-org prompt (AL-91).
@@ -490,11 +570,33 @@ def accept_invite(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    org = orgs_svc.accept_invite(db, body.token, user)
+    org = orgs_svc.accept_invite(db, body.token, user, body.handle)
     role = authz.org_role(db, user.id, org.id) or "member"
     events_svc.record_user(db, user, action="accept_org_invite", target_type="org",
                            target_id=org.id, meta={"role": role})
-    return OrgOut(id=org.id, name=org.name, plan=org.plan, role=role)
+    seat = db.scalar(select(OrgMembership).where(
+        OrgMembership.org_id == org.id, OrgMembership.user_id == user.id))
+    handle = seat.handle if seat and seat.handle != user.handle else None
+    return OrgOut(id=org.id, name=org.name, plan=org.plan, role=role, handle=handle)
+
+
+@router.patch("/orgs/{org_id}/me/handle", response_model=OrgOut)
+def set_my_org_handle(
+    org_id: str,
+    body: OrgHandleIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Change your own org-only handle. Same rules as accepting an invite; the old handle is
+    held in this org for 30 days. A non-member gets the same 404 as an unknown org."""
+    org = db.get(Organization, org_id)
+    if org is None or authz.org_role(db, user.id, org_id) is None:
+        raise HTTPException(404, "organization not found")
+    seat = orgs_svc.set_org_handle(db, org, user, body.handle)
+    events_svc.record_user(db, user, action="set_org_handle", target_type="org", target_id=org_id,
+                           meta={})
+    return OrgOut(id=org.id, name=org.name, plan=org.plan, role=seat.role,
+                  handle=seat.handle if seat.handle != user.handle else None)
 
 
 # ---- PRD-43 D4: org-wide feedback enable-all -------------------------------

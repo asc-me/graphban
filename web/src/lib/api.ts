@@ -27,6 +27,7 @@ import type {
   AuditCoverage,
   ChatResponse,
   CloseReport,
+  PrdCompleteness,
   EvidenceRollup,
   OrgRequest,
   PrototypeEmitOut,
@@ -59,6 +60,9 @@ import type {
   InvitePreview,
   Item,
   ItemDetail,
+  ItemCreateBody,
+  MaintenanceLine,
+  UnscopedFixes,
   EventPage,
   EventsQuery,
   GrillMessage,
@@ -69,6 +73,7 @@ import type {
   IntentDiff,
   McpToolInfo,
   Org,
+  MyInvite,
   OrgMember,
   ShardCluster,
   Member,
@@ -86,6 +91,7 @@ import type {
   PathCounts,
   RuleToggle,
   SerialisationPreview,
+  RuleEffect,
   RuleToggles,
   RuleToggleBatchOut,
   RuleToggleBatchWrite,
@@ -101,6 +107,7 @@ import type {
   PrdSummary,
   PrdVersion,
   Project,
+  ProjectPattern,
   ProjectSummary,
   RequestComment,
   RequestItem,
@@ -123,10 +130,14 @@ import type {
   LinkPollResult,
   LinkStartResult,
   ProjectPushResult,
+  ProjectSyncResult,
+  SyncBudget,
   SyncBundle,
   SyncOrgOverview,
   SyncStatus,
   User,
+  ProfilePatch,
+  HandleCheck,
 } from "./types";
 
 const REFRESH_KEY = "al_refresh";
@@ -183,6 +194,23 @@ export function setAccessToken(t: string | null) {
 }
 export function hasSession(): boolean {
   return !!accessToken || !!getRefreshToken();
+}
+
+/** GET /me/push. `subscription_origins` (the origins this user has push subscriptions at) is read when present. */
+export type PushStatusWithOrigins = PushStatus & { subscription_origins?: string[] };
+export interface HttpsName { name: string; source: string; origin: string }
+export interface HttpsCustom {
+  kind: "upload" | "letsencrypt"; state: "active" | "expiring-soon" | "expired" | "pending" | "failed";
+  box_address: string; subject: string; not_after: string | null; warnings: string[];
+  reason: string; redirect_on: boolean;
+}
+export interface HttpsRefusal { code: string; message: string }
+export interface HttpsStatus {
+  custom?: HttpsCustom | null;
+  tier: string; ready: boolean; names: HttpsName[]; outside_constraints: string[];
+  max_names: number; covered_names: string[]; leaf_not_after: string | null;
+  ca_not_after: string | null; ca_certificate_path: string;
+  https_port?: number; https_url?: string | null;
 }
 
 class ApiError extends Error {
@@ -472,7 +500,7 @@ export const api = {
   me: () => request<User>("/auth/me"),
   /** The signed-in user's open alerts and unread count (GRPH-1527). */
   myAlerts: () => request<AlertsFeed>("/me/alerts"),
-  pushStatus: () => request<PushStatus>("/me/push"),
+  pushStatus: () => request<PushStatusWithOrigins>("/me/push"),
   pushSubscribe: (sub: { endpoint: string; keys: { p256dh: string; auth: string } }) =>
     request<PushStatus>("/me/push/subscribe", { method: "POST", body: JSON.stringify(sub) }),
   pushUnsubscribe: (endpoint: string) =>
@@ -496,6 +524,11 @@ export const api = {
   /** Request an org (GRPH-1364): relayed to the operator, then `org_requested_at` is stored. */
   requestOrg: (body: { name: string; email: string; note?: string }) =>
     request<{ onboarding: Onboarding }>("/auth/me/org-request", { method: "POST", body: JSON.stringify(body) }),
+  /** Edit the caller's profile, all or nothing (GRPH-1788). */
+  updateMe: (patch: ProfilePatch) =>
+    request<User>("/auth/me", { method: "PATCH", body: JSON.stringify(patch) }),
+  handleCheck: (handle: string) =>
+    request<HandleCheck>(`/auth/me/handle-check?handle=${encodeURIComponent(handle)}`),
   myMemberships: () =>
     request<{ project_id: string; project_name: string; accent: string; role: string; access: string }[]>(
       "/auth/me/memberships",
@@ -511,6 +544,10 @@ export const api = {
     /** Omit to let the server derive one from `name`. */
     tag?: string;
     accent?: string;
+    /** Ombre second colour, `#rrggbb`. Equal to `accent` is stored as null. */
+    accent2?: string | null;
+    /** Tile pattern. Only shapes the tile fill. */
+    pattern?: ProjectPattern;
     description?: string;
     org_id?: string;
   }) => request<Project>("/projects", { method: "POST", body: JSON.stringify(body) }),
@@ -556,8 +593,19 @@ export const api = {
   revokeInvite: (orgId: string, inviteId: string) =>
     request<void>(`/orgs/${orgId}/invites/${inviteId}`, { method: "DELETE" }),
   previewInvite: (token: string) => request<InvitePreview>(`/invites/${token}/preview`),
-  acceptInvite: (token: string) =>
-    request<Org>("/invites/accept", { method: "POST", body: JSON.stringify({ token }) }),
+  /** `handle` is the org-only handle, sent on a retry after a `handle_taken` 409. */
+  acceptInvite: (token: string, handle?: string) =>
+    request<Org>("/invites/accept", { method: "POST", body: JSON.stringify({ token, handle: handle ?? null }) }),
+  /** Pending invitations addressed to you (accept with `acceptInvite(token)`). */
+  myInvites: () => request<MyInvite[]>("/me/invites"),
+  declineMyInvite: (inviteId: string) =>
+    request<void>(`/me/invites/${inviteId}/decline`, { method: "POST" }),
+  /** Leave an org. The only owner is refused (409) with a reason to show inline. */
+  leaveOrg: (orgId: string) =>
+    request<{ removed_role: string; projects_revoked: string[] }>(`/orgs/${orgId}/me`, { method: "DELETE" }),
+  /** Change your own org-only handle (409 `handle_taken` carries a suggestion). */
+  setOrgHandle: (orgId: string, handle: string) =>
+    request<Org>(`/orgs/${orgId}/me/handle`, { method: "PATCH", body: JSON.stringify({ handle }) }),
   deployments: (orgId: string) => request<Deployment[]>(`/orgs/${orgId}/deployments`),
   orgOverview: (orgId: string) => request<OrgOverview>(`/orgs/${orgId}/overview`),
   orgGitops: (orgId: string) => request<GitopsView>(`/orgs/${orgId}/gitops`),
@@ -566,6 +614,21 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+  // P83 tier 1: the box's own certificate authority. Public material only; no key route exists.
+  httpsStatus: () => request<HttpsStatus>("/https"),
+  httpsAddName: (name: string) =>
+    request<HttpsStatus>("/https/names", { method: "POST", body: JSON.stringify({ name }) }),
+  httpsUpload: (certificate: string, key: string, box_address: string) =>
+    request<HttpsStatus>("/https/certificate", {
+      method: "POST", body: JSON.stringify({ certificate, key, box_address }),
+    }),
+  httpsLetsEncrypt: (domain: string) =>
+    request<HttpsStatus>("/https/letsencrypt", { method: "POST", body: JSON.stringify({ domain }) }),
+  httpsStopUsing: () => request<HttpsStatus>("/https/certificate", { method: "DELETE" }),
+  httpsRedirect: (enabled: boolean) =>
+    request<HttpsStatus>("/https/redirect", { method: "PUT", body: JSON.stringify({ enabled }) }),
+  httpsRemoveName: (name: string) =>
+    request<HttpsStatus>(`/https/names/${encodeURIComponent(name)}`, { method: "DELETE" }),
   // `refresh` bypasses the server's one-minute cache (the Check button).
   updateCheck: (refresh = false) =>
     request<UpdateCheck>(`/platform/update-check${refresh ? "?refresh=true" : ""}`),
@@ -734,7 +797,14 @@ export const api = {
   // The shell's badge numbers. It used to fetch four whole collections to call `.length` on
   // them — 2.1 MB on every route to draw three badges and a stat (GRPH-431).
   counts: (projectId: string) => request<ShellCounts>(`/projects/${projectId}/counts`),
-  createItem: (projectId: string, body: Partial<ItemDetail>) =>
+  line: (projectId: string) => request<MaintenanceLine | null>(`/projects/${encodeURIComponent(projectId)}/line`),
+  unscopedFixes: (projectId: string) =>
+    request<UnscopedFixes>(`/projects/${encodeURIComponent(projectId)}/line/unscoped_fixes`),
+  itemsFull: (projectId?: string) =>
+    request<ItemDetail[]>(`/items?fields=full${projectId ? `&project_id=${projectId}` : ""}`),
+  createLine: (projectId: string) =>
+    request<MaintenanceLine>(`/projects/${encodeURIComponent(projectId)}/line`, { method: "POST", body: "{}" }),
+  createItem: (projectId: string, body: ItemCreateBody) =>
     request<Item>("/items", {
       method: "POST",
       body: JSON.stringify(withProject(projectId, body)),
@@ -743,6 +813,8 @@ export const api = {
     request<Item>(`/items/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   ownerClose: (id: string, body: { commit: string; pr_url?: string }) =>
     request<Item>(`/items/${id}/owner-close`, { method: "POST", body: JSON.stringify(body) }),
+  resolveItem: (id: string, body: { kind: "duplicate" | "superseded"; of: string; reason?: string }) =>
+    request<Item>(`/items/${id}/resolve`, { method: "POST", body: JSON.stringify(body) }),
   reorderItems: (orderedIds: string[]) =>
     request<Item[]>("/items/reorder", {
       method: "PATCH",
@@ -828,6 +900,22 @@ export const api = {
   harnessCapacity: (projectId: string) =>
     request<import("@/lib/types").HarnessCapacity>(
       `/harness/capacity?project_id=${encodeURIComponent(projectId)}`),
+  harnessReplay: (projectId: string, proposal: import("@/lib/types").RoutingReplayProposal = {}) => {
+    const q = new URLSearchParams({ project_id: projectId });
+    if (proposal.tie_break) q.set("tie_break", proposal.tie_break);
+    if (proposal.when_exhausted) q.set("when_exhausted", proposal.when_exhausted);
+    if (proposal.ladder?.length) q.set("ladder", proposal.ladder.join(","));
+    if (proposal.routing_mode) q.set("routing_mode", proposal.routing_mode);
+    if (proposal.subscription_order?.length) q.set("subscription_order", proposal.subscription_order.join(","));
+    for (const [rung, ids] of Object.entries(proposal.rung_order ?? {})) {
+      if (ids?.length) q.set(`${rung}_order`, ids.join(","));
+    }
+    for (const [rung, tie] of Object.entries(proposal.rung_tie_break ?? {})) {
+      if (tie) q.set(`${rung}_tie_break`, tie);
+    }
+    if (proposal.days) q.set("days", String(proposal.days));
+    return request<import("@/lib/types").RoutingReplay>(`/harness/capacity/replay?${q.toString()}`);
+  },
   harnessLadder: (projectId: string) =>
     request<import("@/lib/types").HarnessLadder>(
       `/harness/ladder?project_id=${encodeURIComponent(projectId)}`),
@@ -1099,6 +1187,7 @@ export const api = {
   // why it is the spine of the reviewer view: a section a rebaseline removed does not
   // exist in the governing one, so no other surface can show it was cut.
   closeReport: (id: string) => request<CloseReport>(`/prds/${id}/close-report`),
+  prdCompleteness: (id: string) => request<PrdCompleteness>(`/prds/${id}/completeness`),
   prdEvidence: (id: string) => request<EvidenceRollup>(`/prds/${id}/evidence`),
   auditCoverage: (id: string) => request<AuditCoverage>(`/prds/${id}/audit-coverage`),
 
@@ -1239,6 +1328,47 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
+  /** Open rule proposals (GRPH-1775). */
+  ruleProposals: (projectId: string, status = "open") =>
+    request<import("@/lib/types").RuleProposal[]>(
+      `/projects/${encodeURIComponent(projectId)}/rules/proposals?status=${encodeURIComponent(status)}`,
+    ),
+  /** A person adopts one or several proposals under one reason; a loosening is refused in a batch. */
+  adoptRuleProposals: (projectId: string, proposalIds: number[], reason: string) =>
+    request<import("@/lib/types").RuleProposal[]>(`/projects/${encodeURIComponent(projectId)}/rules/proposals/adopt`, {
+      method: "POST",
+      body: JSON.stringify({ proposal_ids: proposalIds, reason }),
+    }),
+  dismissRuleProposal: (projectId: string, proposalId: number, reason: string) =>
+    request<import("@/lib/types").RuleProposal>(
+      `/projects/${encodeURIComponent(projectId)}/rules/proposals/${proposalId}/dismiss`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
+  /** A person promotes an observing rule to active, with a reason (GRPH-1777). */
+  promoteRule: (projectId: string, ruleId: string, reason: string) =>
+    request<RuleToggle>(
+      `/projects/${encodeURIComponent(projectId)}/rules/${encodeURIComponent(ruleId)}/promote`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
+  /** The would-have rows of one rule. */
+  ruleObservations: (projectId: string, ruleId: string) =>
+    request<import("@/lib/types").RuleObservation[]>(
+      `/projects/${encodeURIComponent(projectId)}/rules/${encodeURIComponent(ruleId)}/observations`,
+    ),
+  ruleGuidance: (projectId: string, status = "adopted") =>
+    request<import("@/lib/types").RuleGuidance[]>(
+      `/projects/${encodeURIComponent(projectId)}/rules/guidance?status=${encodeURIComponent(status)}`,
+    ),
+  customRules: (projectId: string) =>
+    request<import("@/lib/types").CustomRule[]>(`/projects/${encodeURIComponent(projectId)}/rules/custom`),
+  /** The rule primitive contract (GRPH-1773): the primitives, their stage and params. */
+  rulePrimitiveContract: () => request<import("@/lib/types").RulePrimitiveContract>(`/rules/contract`),
+  /** A project admin writes a custom rule; it holds at once (GRPH-1774). Refusals are the server's words. */
+  createCustomRule: (projectId: string, body: import("@/lib/types").CustomRuleWrite) =>
+    request<import("@/lib/types").CustomRule>(`/projects/${encodeURIComponent(projectId)}/rules/custom`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   /** Several of a project's own values under one reason, all-or-nothing (GRPH-1594). A refusal
    *  names the rule it refused (`<rule_id>: ...`) and nothing was saved. */
   setRuleToggles: (projectId: string, body: RuleToggleBatchWrite) =>
@@ -1246,6 +1376,9 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
+  /** Measured effect of one library rule (caught, escapes before/after, cost). Reads only. */
+  ruleEffect: (projectId: string, ruleId: string) =>
+    request<RuleEffect>(`/rules/effect${projectQuery(projectId)}&rule_id=${encodeURIComponent(ruleId)}`),
   /** The pack's profiles and this project's applied level (GRPH-1609). Reads only. */
   ruleProfiles: (projectId: string) => request<RuleProfiles>(`/rules/profiles${projectQuery(projectId)}`),
   /** How the project differs from one profile; turning a pinned-on rule off is `weakening`. */
@@ -1379,6 +1512,10 @@ export const api = {
     }),
   runSyncStorage: (projectId: string) =>
     request<SyncStorageStatus>(`/platform/sync-storage/run${projectQuery(projectId)}`, { method: "POST" }),
+  // The box's publish destination (GRPH-1761). One pair for the deployment. The org admin
+  // owns it while the box is linked; this save is the unlinked local path and branch.
+  saveDestination: (body: { path: string; branch: string }) =>
+    request<PublishDestination>("/sync/destination", { method: "PUT", body: JSON.stringify(body) }),
 
   // Local↔cloud sync link (AL-141). Status/link/unlink are instance-wide; push/purge/
   // export/import are per-project (the credential is resolved server-side).
@@ -1396,6 +1533,26 @@ export const api = {
     request<LinkStartResult>("/sync/link/start", { method: "POST", body: JSON.stringify({ console_url }) }),
   syncLinkPoll: () => request<LinkPollResult>("/sync/link/poll"),
   syncCloudProjects: () => request<CloudProjectsResult>("/sync/projects"),
+  putProjectSync: (
+    id: string,
+    body: {
+      sync_level?: string;
+      cloud_permission?: string;
+      create_in_org?: boolean;
+      purge?: boolean;
+      cloud_project_id?: string;
+      cloud_project_tag?: string;
+    },
+  ) => request<ProjectSyncResult>(`/sync/projects/${encodeURIComponent(id)}`, {
+    method: "PUT", body: JSON.stringify(body),
+  }),
+  retryParked: (id: string) =>
+    request<{ retried: number }>(`/sync/projects/${encodeURIComponent(id)}/retry-parked`, {
+      method: "POST", body: "{}",
+    }),
+  syncBudget: () => request<SyncBudget>("/sync/budget"),
+  putSyncBudget: (body: SyncBudget) =>
+    request<SyncBudget>("/sync/budget", { method: "PUT", body: JSON.stringify(body) }),
   syncSaveProjectMap: (
     mappings: { local_project_id: string; cloud_project_id: string; cloud_project_tag?: string }[],
   ) =>
@@ -1418,6 +1575,8 @@ export const api = {
 
   updateProject: (id: string, body: Partial<Project>) =>
     request<Project>(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  setPublishToOrg: (id: string, body: { specs?: boolean; item_digests?: boolean }) =>
+    request<Project>(`/projects/${id}/publish-to-org`, { method: "PUT", body: JSON.stringify(body) }),
   members: (id: string) => request<Member[]>(`/projects/${id}/members`),
 
   chat: (message: string, projectId?: string) =>
@@ -1680,6 +1839,17 @@ export interface SpecLibrary {
   preamble: SpecLibraryPreamble | null;
   documents: SpecLibraryDocument[];
   conflict_ids: string[];
+  /** Specs whose home is another deployment (GRPH-1677): read-only here. Absent on an older box. */
+  remote_prds?: SpecLibraryRemotePrd[];
+}
+
+/** A spec owned by another deployment. `home` names it; `version` is the published hash. */
+export interface SpecLibraryRemotePrd {
+  id: string;
+  title: string;
+  home: string;
+  version: string;
+  read_only: true;
 }
 
 /** What one Drive sync run reports. The conflict record page reads it from router state. */
@@ -1737,6 +1907,23 @@ export interface SyncStorageRow {
   error: string;
 }
 
+/** The box's publish destination (GRPH-1761). Absent on a payload means it was not reported,
+ * which is not the same as unconfigured. */
+export interface PublishDestination {
+  state: "configured" | "unconfigured";
+  source: "org" | "local" | null;
+  url: string;
+  path: string;
+  branch: string;
+  /** Null: there is no previous path. A path here is shown and is not the next publish target. */
+  previous: { path: string } | null;
+  editable: boolean;
+  publishing: boolean;
+  /** `state` null: this box has not pulled. That is not `unknown`. */
+  pull: { state: "ok" | "unknown" | "refused" | null; reason: string };
+  code_remote_match: { checked: boolean; projects: { project_id: string; repo_url: string }[] };
+}
+
 export interface SyncStorageStatus {
   folder: SyncPathFact;
   blob_dir: SyncPathFact;
@@ -1747,6 +1934,8 @@ export interface SyncStorageStatus {
   last_run: { at: string | null; export_status: "ok" | "failed" | "not_run" | null; error: string };
   /** Present on the run response only: the report of the sync that just ran (null if it could not run). */
   run?: SyncReport | null;
+  /** Omitted when this response did not carry a destination. That is "not reported", not unconfigured. */
+  destination?: PublishDestination;
 }
 
 /** One hash conflict from a sync report: facts only, neither body. */

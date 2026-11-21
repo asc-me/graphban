@@ -37,13 +37,31 @@ def _item(client, auth, title, touchpoints):
     return r.json()["id"]
 
 
+def _number(agent_id: str) -> int:
+    """`CORE-A6` -> 6. Distinct ids give distinct numbers, in every process."""
+    return int(agent_id.rsplit("-A", 1)[1])
+
+
+def test_two_agents_never_share_a_number():
+    """GRPH-1294, the collision named. Every id this module seeds maps to its own number,
+    whatever PYTHONHASHSEED the run drew. Sabotage: put the `hash() % 9000` back and the
+    numbers stop being the ids' suffixes."""
+    ids = [f"CORE-A{n}" for n in range(1, 50)]
+    assert [_number(i) for i in ids] == list(range(1, 50))
+
+
 def _agent(db, agent_id: str, *, seen_seconds_ago: float):
     from app.models import Agent
 
     now = items_svc.utcnow()
     row = db.get(Agent, agent_id)
     if row is None:
-        row = Agent(id=agent_id, project_id="core", number=abs(hash(agent_id)) % 9000,
+        # GRPH-1294. The number is the id's own suffix (`CORE-A6` -> 6), the way a registered
+        # agent's id is minted from its number. It was `abs(hash(agent_id)) % 9000`, and
+        # `str.__hash__` is salted per process: in roughly one run in nine thousand
+        # `CORE-A6` and `CORE-A7` landed on one number and the insert broke
+        # `uq_agent_project_number` (Postgres CI, run 41371958940).
+        row = Agent(id=agent_id, project_id="core", number=_number(agent_id),
                     label=agent_id, active_role="worker")
         db.add(row)
     row.last_seen_at = now - timedelta(seconds=seen_seconds_ago)

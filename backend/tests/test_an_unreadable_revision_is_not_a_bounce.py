@@ -90,6 +90,10 @@ def _in_review(client, key, db, planner, title="work"):
                    capabilities={"instance": title, **BUILDER})
     assert items_svc.claim_item(db, item, child) is not None
     _ok(_mcp(client, key, "update_item", {"id": item, "status": "review", "agent_id": child}))
+    # GRPH-1730 withholds a branch with no PR. The column releases that gate.
+    db.expire_all()
+    db.get(Item, item).github_url = "https://github.com/o/r/pull/1"
+    db.commit()
     return item, did, child
 
 

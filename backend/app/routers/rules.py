@@ -11,20 +11,23 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.models import Organization, Project, User
-from app.errors import NotFound, Refused, Validation
-from app.schemas import (ObservationBackfillOut, ObservationsOut,
+from app.errors import AppError, NotFound, Refused, Validation
+from app.schemas import (RuleGuidanceOut, RuleObservationOut, RulePromote, CustomRuleOut, CustomRuleWrite, RuleProposalAdopt, OrgRuleProposalAdopt, OrgRuleProposalOut, RuleProposalDecisionOut, RuleProposalDismiss, RuleProposalOut, RuleProposalWrite, ObservationBackfillOut, ObservationsOut,
                          RecommendedRulesOut, RefusalCoverageOut, RuleSuggestionOut,
                          RulesFlowOut, RulesOut, RuleToggleBatchOut, RuleToggleBatchWrite,
                          RuleToggleOut, RuleTogglesOut, RuleToggleWrite, UnmappedRefusalsOut)
 from app.security import authz
 from app.security.deps import get_current_user, get_user_or_agent_key
 from app.services import code_graph
+from app.services import custom_rules
 from app.services import collision
 from app.services import events as events_svc
 from app.services import gitops as gitops_svc
 from app.services import observations as observations_svc
 from app.services import quotas
+from app.services import rule_observations
 from app.services import rule_pack
+from app.services import rule_proposals
 from app.services import rules as rules_svc
 from app.services import rule_measure
 from app.services import rules_org
@@ -245,6 +248,199 @@ def set_project_rule_toggles(body: RuleToggleBatchWrite, project_id: str = "core
             project_id=project_id, meta={"fields": changed})
     by_id = {t["rule_id"]: t for t in rule_toggles.effective(db, project_id)}
     return {"toggles": [by_id[w["rule_id"]] for w in writes]}
+
+
+# ---- custom rules (GRPH-1774 / P91 D1) ---------------------------------------------------
+@router.get("/projects/{project_id}/rules/custom", response_model=list[CustomRuleOut])
+def list_custom_rules(project_id: str, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    """The project's custom rules with author, why and state. Another project's are never here."""
+    authz.require_readable(db, user.id, project_id)
+    return custom_rules.list_for_project(db, project_id)
+
+
+@router.post("/projects/{project_id}/rules/custom", response_model=CustomRuleOut,
+             status_code=201)
+def create_custom_rule(project_id: str, body: CustomRuleWrite, db: Session = Depends(get_db),
+                       principal=Depends(get_user_or_agent_key)):
+    """A person authors a custom rule; it takes effect at once (`active`). Either credential
+    reaches here only so an agent key is refused by name (`rules.person_adopts`), not by a
+    bare 401."""
+    try:
+        row = custom_rules.create(db, principal, project_id, **body.model_dump())
+    except Validation as e:
+        raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
+    return custom_rules.view(db, row)
+
+
+# ---- rule proposals (GRPH-1775 / P91 D2) -------------------------------------------------
+@router.get("/projects/{project_id}/rules/proposals", response_model=list[RuleProposalOut])
+def list_rule_proposals(project_id: str, status: str | None = None,
+                        db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    authz.require_readable(db, user.id, project_id)
+    return rule_proposals.list_for_project(db, project_id, status)
+
+
+@router.post("/projects/{project_id}/rules/proposals",
+             response_model=RuleProposalOut | RuleGuidanceOut, status_code=201)
+def create_rule_proposal(project_id: str, body: RuleProposalWrite, db: Session = Depends(get_db),
+                         principal=Depends(get_user_or_agent_key)):
+    """A person or the import CLI proposes a rule change. Direction is computed by the server; a
+    person or an import run may propose a loosening (flagged `loosens`), an agent key may not."""
+    data = body.model_dump(exclude={"import_run", "stage", "label", "text"})
+    if isinstance(principal, User):
+        authz.require_writable(db, principal.id, project_id)
+        kind, who = ("import", f"import:{body.import_run}") if body.import_run else (
+            "person", principal.handle or principal.name)
+    else:
+        # An API key is an agent however it labels itself: `import_run` is a person's claim.
+        kind, who = "agent", f"agent:{getattr(principal, 'name', None) or getattr(principal, 'id', '')}"
+        allowed = authz.key_writable_ids(db, principal)
+        if project_id not in allowed:
+            raise HTTPException(404, "no such project")
+    try:
+        if body.kind == rule_proposals.GUIDANCE_KIND:
+            g = rule_proposals.file_guidance(
+                db, project_id=project_id, proposer_kind=kind, proposer=who, stage=body.stage,
+                label=body.label, text=body.text, citations=body.citations)
+            return rule_proposals.guidance_view(g)
+        row, folded = rule_proposals.propose(db, project_id=project_id, proposer_kind=kind,
+                                             proposer=who, **data)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except AppError as e:
+        raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
+    if isinstance(principal, User):
+        events_svc.record_user(db, principal, action="propose_rule", target_type="rule",
+                               target_id=row.rule_id, project_id=project_id,
+                               meta={"kind": row.kind, "direction": row.direction,
+                                     "folded": folded})
+    return rule_proposals.view(row, folded=folded)
+
+
+def _adoption(fn, *args, **kw):
+    try:
+        return fn(*args, **kw)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except Validation as e:
+        raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
+
+
+@router.post("/projects/{project_id}/rules/proposals/adopt",
+             response_model=list[RuleProposalDecisionOut])
+def adopt_rule_proposals(project_id: str, body: RuleProposalAdopt, db: Session = Depends(get_db),
+                         principal=Depends(get_user_or_agent_key)):
+    """A person adopts one proposal or a batch under one reason. Refused for an agent key naming
+    `rules.person_adopts`; a `loosens` proposal is refused in a batch."""
+    rows = _adoption(rule_proposals.adopt, db, principal, project_id, body.proposal_ids,
+                     body.reason)
+    return [dict(rule_proposals.view(r), decided_by=r.decided_by,
+                 decided_reason=r.decided_reason) for r in rows]
+
+
+@router.post("/projects/{project_id}/rules/proposals/{proposal_id}/dismiss",
+             response_model=RuleProposalDecisionOut)
+def dismiss_rule_proposal(project_id: str, proposal_id: int, body: RuleProposalDismiss,
+                          db: Session = Depends(get_db),
+                          principal=Depends(get_user_or_agent_key)):
+    r = _adoption(rule_proposals.dismiss, db, principal, project_id, proposal_id, body.reason)
+    return dict(rule_proposals.view(r), decided_by=r.decided_by, decided_reason=r.decided_reason)
+
+
+# ---- org proposals (GRPH-1808 / P91 D7) --------------------------------------------------
+# Org admin only, premium (`require_org_rules`), person only (`rules.person_adopts`: an agent
+# key reaches these routes only to be refused by name).
+@router.get("/orgs/{org_id}/rules/proposals", response_model=list[OrgRuleProposalOut])
+def list_org_rule_proposals(org_id: str, status: str | None = None,
+                            db: Session = Depends(get_db),
+                            principal=Depends(get_user_or_agent_key)):
+    """Open proposals from every project in the org, each with its project. `status=dismissed`
+    is the org's Dismissed list."""
+    return _adoption(rule_proposals.list_for_org, db, principal, org_id, status)
+
+
+@router.post("/orgs/{org_id}/rules/proposals/adopt", response_model=list[OrgRuleProposalOut])
+def adopt_org_rule_proposals(org_id: str, body: OrgRuleProposalAdopt,
+                             db: Session = Depends(get_db),
+                             principal=Depends(get_user_or_agent_key)):
+    """Adopt for every project in the org: one reason, all-or-nothing, loosenings refused from
+    a batch. Each result lists the projects that already override the rule. `dry_run` reads
+    that without adopting."""
+    return _adoption(rule_proposals.adopt_org_batch, db, principal, org_id, body.ids,
+                     body.reason, dry_run=body.dry_run)
+
+
+@router.post("/orgs/{org_id}/rules/proposals/{proposal_id}/dismiss",
+             response_model=OrgRuleProposalOut)
+def dismiss_org_rule_proposal(org_id: str, proposal_id: int, body: RuleProposalDismiss,
+                              db: Session = Depends(get_db),
+                              principal=Depends(get_user_or_agent_key)):
+    """Dismiss for the org only; the proposal stays open in its project."""
+    return _adoption(rule_proposals.dismiss_org, db, principal, org_id, proposal_id, body.reason)
+
+
+@router.get("/orgs/{org_id}/rules/custom", response_model=list[CustomRuleOut])
+def list_org_custom_rules(org_id: str, db: Session = Depends(get_db),
+                          principal=Depends(get_user_or_agent_key)):
+    custom_rules._org_admin(db, principal, org_id)
+    return custom_rules.list_for_org(db, org_id)
+
+
+@router.post("/orgs/{org_id}/rules/custom", response_model=CustomRuleOut, status_code=201)
+def create_org_custom_rule(org_id: str, body: CustomRuleWrite, db: Session = Depends(get_db),
+                           principal=Depends(get_user_or_agent_key)):
+    row = _adoption(lambda: custom_rules.create_org(db, principal, org_id, **body.model_dump()))
+    return custom_rules.view(db, row)
+
+
+@router.get("/projects/{project_id}/rules/guidance", response_model=list[RuleGuidanceOut])
+def list_rule_guidance(project_id: str, status: str | None = None,
+                       db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    authz.require_readable(db, user.id, project_id)
+    return rule_proposals.list_guidance(db, project_id, status)
+
+
+@router.post("/projects/{project_id}/rules/guidance/{guidance_id}/{decision}",
+             response_model=RuleGuidanceOut)
+def decide_rule_guidance(project_id: str, guidance_id: str, decision: str,
+                         db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """A person adopts or dismisses guidance (`rules.person_adopts`). `get_current_user` is a
+    person's token; an agent key does not reach this route. The project check runs before the
+    id and decision are read, so another org's caller is refused on the project alone."""
+    authz.require_writable(db, user.id, project_id)
+    if decision not in ("adopt", "dismiss") or not guidance_id.isdigit():
+        raise HTTPException(404, "no such guidance decision")
+    try:
+        row = rule_proposals.decide_guidance(db, user, project_id, int(guidance_id),
+                                             adopt=decision == "adopt")
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except AppError as e:
+        raise HTTPException(422, str(e)) from e
+    events_svc.record_user(db, user, action=f"{decision}_rule_guidance", target_type="rule",
+                           target_id=str(row.id), project_id=project_id,
+                           meta={"stage": row.stage, "label": row.label})
+    return rule_proposals.guidance_view(row)
+
+
+@router.post("/projects/{project_id}/rules/{rule_id}/promote", response_model=RuleToggleOut)
+def promote_rule(project_id: str, rule_id: str, body: RulePromote, db: Session = Depends(get_db),
+                 principal=Depends(get_user_or_agent_key)):
+    """A person promotes an observing rule to `active`. Refused for an agent key naming
+    `rules.person_adopts`; would-have history is kept (GRPH-1777)."""
+    out = _adoption(rule_observations.promote, db, principal, project_id, rule_id, body.reason)
+    meta = next((t for t in rule_toggles.effective(db, project_id)
+                 if t["rule_id"] == rule_id), {})
+    return dict(out, stage=meta.get("stage", ""), title=meta.get("title", ""))
+
+
+@router.get("/projects/{project_id}/rules/{rule_id}/observations",
+            response_model=list[RuleObservationOut])
+def rule_observation_history(project_id: str, rule_id: str, db: Session = Depends(get_db),
+                             user: User = Depends(get_current_user)):
+    authz.require_readable(db, user.id, project_id)
+    return rule_observations.history(db, project_id, rule_id)
 
 
 # Org rule toggles are served by the console (GBC-P8). `set_org_toggle` / `org_view` stay

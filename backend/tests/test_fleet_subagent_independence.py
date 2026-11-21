@@ -74,9 +74,19 @@ def _built_by(client, key, agent):
     _ok(client, key, "create_item", {"title": "the parent's work", "status": "next"})
     c = _ok(client, key, "claim_next", {"agent_id": agent["agent_id"]})
     assert c["claimed"]
+    item_id = c["item"]["id"]
     _ok(client, key, "update_item",
-        {"id": c["item"]["id"], "status": "review", "agent_id": agent["agent_id"]})
-    return c["item"]["id"]
+        {"id": item_id, "status": "review", "agent_id": agent["agent_id"]})
+    # GRPH-1730 withholds a branch with no PR. The column releases that gate.
+    from app.db import SessionLocal
+    from app.models import Item
+    s = SessionLocal()
+    try:
+        s.get(Item, item_id).github_url = "https://github.com/o/r/pull/1"
+        s.commit()
+    finally:
+        s.close()
+    return item_id
 
 
 # ---- the reproduction ---------------------------------------------------------------------

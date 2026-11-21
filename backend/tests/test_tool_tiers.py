@@ -354,7 +354,7 @@ def test_a_worker_credential_runs_on_core(client, auth):
 #: fail. This one disagrees the moment core moves, which forces whoever moved it to re-run
 #: the arithmetic — and moving core is the thing worth noticing, since core is what every
 #: key pays.
-CORE_TOKENS = 9091  # P75 S1: +answer_wait (+170); was 8921, GRPH-1358: GRPH-1358: +kind on the item writes, -6 net (see test_mcp_footprint)
+CORE_TOKENS = 9161  # GRPH-1799: -17, get_backlog description trimmed to pay for line_id; was 9178. GRPH-1695: +26, distinct_from/found_during on create_item; was 9152. GRPH-1683: +41, fix-filing fields on create_item/update_item; was 9111. GRPH-1652: +20, claim_review `withheld`; was 9091. P75 S1: +answer_wait (+170); was 8921, GRPH-1358: GRPH-1358: +kind on the item writes, -6 net (see test_mcp_footprint)
 # 8920 -> 8927 (GRPH-1271): update_item evidence carries the `test` run fields
 # build.engine_evidence reads, net of shorter update_item descriptions.
 # 8919 -> 8918 (GRPH-893): create_item/update_item `description` carries the ## Acceptance
@@ -410,7 +410,18 @@ CORE_TOKENS = 9091  # P75 S1: +answer_wait (+170); was 8921, GRPH-1358: GRPH-135
 # prd 4140 -> 3731 (GRPH-1368): the three accept tools are removed.
 # fleet 1559 -> 1733 (GRPH-1480): report_utilization in the fleet tier.
 # prd 3731 -> 3750 (GRPH-1495): reference documents on put_document and search_docs.
-TIER_TOKENS = {"prd": 3750, "codegraph": 1795, "fleet": 1733, "misc": 1346}
+# prd 3848 -> 3864 (GRPH-1691): `decompose_prd` gains `splits` (+16). The whole bill is
+# this tier; CORE_TOKENS does not move. Same delta as MEASURED_TOKENS 18021 -> 18037.
+# prd 3864 -> 3863 (GRPH-1690): `depends_on`, `drop_links` and `add_links`, paid by
+# dropping the touchpoints and splits property descriptions. CORE_TOKENS does not move.
+# misc 1586 -> 1585 (GRPH-1746): `create_project` gains `accent2` and `pattern`, paid by
+# shorter `create_project` and `publish_memory` descriptions. This tier's //4 drops one.
+# CORE_TOKENS and MEASURED_TOKENS do not move.
+# codegraph 1795 -> 1808 (GRPH-1819): describe_code gains `stale` and the omitted-summary rule.
+# Same +13 as MEASURED_TOKENS 18141 -> 18154; CORE_TOKENS does not move.
+TIER_TOKENS = {"prd": 3863, "codegraph": 1808, "fleet": 1733, "misc": 1585}
+# misc 1577 -> 1586 (GRPH-1780, P91 S8): `propose_rule` names the guidance draft.
+# misc 1463 -> 1577 (GRPH-1775, P91 S3): `propose_rule`. The whole bill is this tier.
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.
 # codegraph 1786 -> 1789 (GRPH-1060): record_scan's category enum gains "deadcode".
 # codegraph -> 1791 with both: measured when GRPH-1060 and GRPH-1061 met on main.

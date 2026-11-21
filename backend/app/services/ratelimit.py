@@ -59,3 +59,12 @@ def allow(key: str, limit: int, window: int = 60) -> bool:
         except Exception:  # noqa: BLE001 — never let a limiter outage block traffic
             logger.exception("redis rate-limit check failed; falling back to in-process")
     return spam.check_rate(key, limit)
+
+
+#: Handle availability lookups allowed per signed-in user per minute (GRPH-1788). A probe
+#: for who holds what is an enumeration tool, so it is capped per user, not per IP.
+HANDLE_CHECK_PER_MIN = 30
+
+
+def allow_handle_check(user_id: str) -> bool:
+    return allow(f"handle-check:{user_id}", HANDLE_CHECK_PER_MIN)

@@ -2,8 +2,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { api } from "./api";
-import type { OnboardingMark, SetupConfirm } from "./types";
-import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, Item, ItemDetail, LessonFilters, LogExportPatch, RequestItem, RuleProfileApplyWrite, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
+import { httpsAddress, probeTrust } from "@/lib/https";
+import type { MyInvite, OnboardingMark, ProposalDecision, SetupConfirm } from "./types";
+import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, RoutingReplayProposal, Item, ItemCreateBody, ItemDetail, LessonFilters, LogExportPatch, Project, RequestItem, RuleProfileApplyWrite, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
 
 export const keys = {
   me: ["me"] as const,
@@ -13,6 +14,7 @@ export const keys = {
   projects: ["projects"] as const,
   projectSummaries: ["projects", "summaries"] as const,
   orgs: ["orgs"] as const,
+  myInvites: ["my-invites"] as const,
   orgMembers: (id: string) => ["org-members", id] as const,
   invites: (id: string) => ["org-invites", id] as const,
   items: ["items"] as const,
@@ -44,6 +46,7 @@ export const keys = {
   prdRequests: (id: string) => ["prd-requests", id] as const,
   prdSuggestions: (id: string) => ["prd-request-suggestions", id] as const,
   closeReport: (id: string) => ["close-report", id] as const,
+  prdCompleteness: (id: string) => ["prd-completeness", id] as const,
   prdEvidence: (id: string) => ["prd-evidence", id] as const,
   auditCoverage: (id: string) => ["audit-coverage", id] as const,
   gitops: (projectId: string) => ["gitops", projectId] as const,
@@ -51,6 +54,7 @@ export const keys = {
    *  per-deployment choice: the same committed catalog resolves differently in two projects. */
   fleetTierMap: (projectId?: string) => ["fleet-tier-map", projectId] as const,
   updateCheck: ["update-check"] as const,
+  https: ["https"] as const,
   autoUpdate: ["auto-update"] as const,
   rulePack: ["rule-pack"] as const,
   rulePackAvailable: ["rule-pack-available"] as const,
@@ -148,6 +152,41 @@ export function useConfirmSetup() {
 
 export function useOrgs(enabled = true) {
   return useQuery({ queryKey: keys.orgs, queryFn: () => api.orgs(), enabled });
+}
+
+/** Change your org-only handle in one org; refreshes the org list. */
+export function useSetOrgHandle() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { orgId: string; handle: string }) => api.setOrgHandle(v.orgId, v.handle),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.orgs }),
+  });
+}
+
+/** Invitations addressed to you that are still pending. */
+export function useMyInvites(enabled = true) {
+  return useQuery({ queryKey: keys.myInvites, queryFn: () => api.myInvites(), enabled });
+}
+
+/** Turn an invitation down; drops it from your list. */
+export function useDeclineInvite() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (inviteId: string) => api.declineMyInvite(inviteId),
+    onSuccess: (_r, inviteId) => {
+      qc.setQueryData<MyInvite[]>(keys.myInvites, (prev) => prev?.filter((i) => i.id !== inviteId));
+      return qc.invalidateQueries({ queryKey: keys.myInvites });
+    },
+  });
+}
+
+/** Leave an org; refreshes the org list. */
+export function useLeaveOrg() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (orgId: string) => api.leaveOrg(orgId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.orgs }),
+  });
 }
 
 export function useOrgMembers(orgId?: string) {
@@ -409,6 +448,10 @@ export function useCloseReport(id: string) {
   return useQuery({ queryKey: keys.closeReport(id), queryFn: () => api.closeReport(id), enabled: !!id });
 }
 
+export function usePrdCompleteness(id: string) {
+  return useQuery({ queryKey: keys.prdCompleteness(id), queryFn: () => api.prdCompleteness(id), enabled: !!id });
+}
+
 export function usePrdEvidence(id: string) {
   return useQuery({ queryKey: keys.prdEvidence(id), queryFn: () => api.prdEvidence(id), enabled: !!id });
 }
@@ -640,6 +683,18 @@ export function useSaveSyncStorage(projectId: string) {
   });
 }
 
+/** Save the unlinked box's path and branch (GRPH-1761). One pair for the deployment, so every
+ * project's sync-storage read is refreshed. */
+export function useSaveDestination(_projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { path: string; branch: string }) => api.saveDestination(body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sync-storage"] });
+    },
+  });
+}
+
 export function useRunSyncStorage(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -677,6 +732,16 @@ export function useRuleToggles(projectId: string) {
     queryKey: ["rule-toggles", projectId],
     queryFn: () => api.ruleToggles(projectId),
     enabled: !!projectId,
+  });
+}
+
+/** Measured effect of one rule; an error or a missing endpoint reads as unavailable, never zero. */
+export function useRuleEffect(projectId: string, ruleId: string | null) {
+  return useQuery({
+    queryKey: ["rule-effect", projectId, ruleId],
+    queryFn: () => api.ruleEffect(projectId, ruleId as string),
+    enabled: !!projectId && !!ruleId,
+    retry: false,
   });
 }
 
@@ -723,6 +788,7 @@ function invalidateRuleToggles(qc: ReturnType<typeof useQueryClient>) {
   // The map draws the toggle (used / NOT USED) from the flow; the row's "changed by" from events.
   qc.invalidateQueries({ queryKey: ["rules-flow"] });
   qc.invalidateQueries({ queryKey: ["rule-toggles"] });
+  qc.invalidateQueries({ queryKey: ["rule-effect"] });
   qc.invalidateQueries({ queryKey: ["events"] });
   // A hand change can drift the project from its applied level (GRPH-1600).
   qc.invalidateQueries({ queryKey: ["rule-profile-drift"] });
@@ -734,6 +800,136 @@ export function useSetRuleToggle(projectId: string) {
     mutationFn: ({ ruleId, body }: { ruleId: string; body: RuleToggleWrite }) =>
       api.setRuleToggle(projectId, ruleId, body),
     onSuccess: () => invalidateRuleToggles(qc),
+  });
+}
+
+export function useRuleProposals(projectId: string) {
+  return useQuery({
+    queryKey: ["rule-proposals", projectId],
+    queryFn: () => api.ruleProposals(projectId),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+export function useAdoptedProposals(projectId: string) {
+  return useQuery({
+    queryKey: ["rule-proposals", projectId, "adopted"],
+    queryFn: () => api.ruleProposals(projectId, "adopted"),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+export function useDismissedProposals(projectId: string) {
+  return useQuery({
+    queryKey: ["rule-proposals", projectId, "dismissed"],
+    queryFn: () => api.ruleProposals(projectId, "dismissed"),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+/** Who decided a proposal, when, and why — read from the audit ledger, keyed by proposal id.
+ * The proposals list does not carry `decided_by` / `decided_at` / `decided_reason`; the
+ * `adopt_rule_proposal` / `dismiss_rule_proposal` events do (actor, ts, meta.reason). */
+export function useProposalDecisions(projectId: string, decision: "adopt" | "dismiss") {
+  const q: EventsQuery = { projectId, action: `${decision}_rule_proposal`, limit: 500 };
+  return useQuery({
+    queryKey: ["rule-proposals", projectId, "decisions", decision],
+    queryFn: async () => {
+      const out = new Map<number, ProposalDecision>();
+      for (const e of (await api.events(q)).results) {
+        const id = Number(e.meta?.proposal_id);
+        if (!Number.isFinite(id) || out.has(id)) continue; // most-recent-first: keep the newest
+        const by = typeof e.meta?.adopted_by === "string" ? e.meta.adopted_by : e.actor_label || e.actor_id;
+        const reason = typeof e.meta?.reason === "string" ? e.meta.reason : null;
+        out.set(id, { by, at: e.ts, reason });
+      }
+      return out;
+    },
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+export function useRuleObservations(projectId: string, ruleId: string, enabled = true) {
+  return useQuery({
+    queryKey: ["rule-observations", projectId, ruleId],
+    queryFn: () => api.ruleObservations(projectId, ruleId),
+    enabled: !!projectId && enabled,
+    retry: false,
+  });
+}
+
+export function useRuleGuidance(projectId: string) {
+  return useQuery({
+    queryKey: ["rule-guidance", projectId],
+    queryFn: () => api.ruleGuidance(projectId),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+export function usePromoteRule(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { ruleId: string; reason: string }) => api.promoteRule(projectId, v.ruleId, v.reason),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["rule-observations"] });
+      invalidateProposals(qc);
+    },
+  });
+}
+
+export function useCustomRules(projectId: string) {
+  return useQuery({
+    queryKey: ["custom-rules", projectId],
+    queryFn: () => api.customRules(projectId),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+export function useRulePrimitiveContract() {
+  return useQuery({
+    queryKey: ["rule-primitive-contract"],
+    queryFn: () => api.rulePrimitiveContract(),
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
+export function useCreateCustomRule(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: import("@/lib/types").CustomRuleWrite) => api.createCustomRule(projectId, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["custom-rules"] });
+      invalidateRuleToggles(qc);
+    },
+  });
+}
+
+function invalidateProposals(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ["rule-proposals"] });
+  qc.invalidateQueries({ queryKey: ["custom-rules"] });
+  invalidateRuleToggles(qc);
+}
+
+export function useAdoptRuleProposals(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { ids: number[]; reason: string }) => api.adoptRuleProposals(projectId, v.ids, v.reason),
+    onSuccess: () => invalidateProposals(qc),
+  });
+}
+
+export function useDismissRuleProposal(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: number; reason: string }) => api.dismissRuleProposal(projectId, v.id, v.reason),
+    onSuccess: () => invalidateProposals(qc),
   });
 }
 
@@ -937,6 +1133,17 @@ export function useSyncOrg(enabled: boolean) {
   return useQuery({ queryKey: ["sync-org"], queryFn: () => api.syncOrg(), enabled, retry: false });
 }
 
+/** Box project-sync read (`GET /api/sync/projects`). Instance-wide, like the link.
+ *  A missing `local` is "this body was not that read", not "there are no projects". */
+export function useSyncLocal() {
+  return useQuery({ queryKey: ["sync-local"], queryFn: () => api.syncCloudProjects(), retry: false });
+}
+
+/** Live flush budget. Instance-wide. An error is not a budget of zero. */
+export function useSyncBudget(enabled = true) {
+  return useQuery({ queryKey: ["sync-budget"], queryFn: () => api.syncBudget(), enabled, retry: false });
+}
+
 /** `DELETE /api/sync/link` from the Organization window. The link is instance-wide, so the
  *  gitops views drop with it rather than first-painting a pre-unlink contract. */
 export function useSyncUnlink() {
@@ -1070,6 +1277,14 @@ export function useUpdateGitops(projectId: string) {
   });
 }
 
+export function useSetPublishToOrg(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { specs?: boolean; item_digests?: boolean }) => api.setPublishToOrg(projectId, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.projects }),
+  });
+}
+
 export function useMembers(projectId: string) {
   return useQuery({ queryKey: ["members", projectId], queryFn: () => api.members(projectId), enabled: !!projectId });
 }
@@ -1080,6 +1295,15 @@ export function useMe() {
 
 export function useProjects() {
   return useQuery({ queryKey: keys.projects, queryFn: () => api.projects() });
+}
+
+/** PATCH a project and refresh every surface that paints its tile or accent. */
+export function useUpdateProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: Partial<Project> }) => api.updateProject(id, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.projects }),
+  });
 }
 
 /** Switcher rows for every readable project (GRPH-1131). One aggregate read, not N collections. */
@@ -1125,11 +1349,77 @@ export function useOwnerClose() {
   });
 }
 
+/** Close as a duplicate or superseded, as the project owner (GRPH-1671). */
+export function useResolveItem() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      kind,
+      of,
+      reason,
+    }: {
+      id: string;
+      kind: "duplicate" | "superseded";
+      of: string;
+      reason?: string;
+    }) => api.resolveItem(id, { kind, of, reason }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.items }),
+  });
+}
+
 export function useCreateItem(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: Partial<ItemDetail>) => api.createItem(projectId, body),
+    mutationFn: (body: ItemCreateBody) => api.createItem(projectId, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.items }),
+  });
+}
+
+/** The project's maintenance line, or null when it has none (GRPH-1681). */
+export function useMaintenanceLine(projectId?: string) {
+  return useQuery({ queryKey: ["line", projectId], queryFn: () => api.line(projectId!), enabled: !!projectId });
+}
+
+/** Fixes with no PRD and no line (GRPH-1686). An error stays an error: it is never read as 0. */
+export function useUnscopedFixes(projectId?: string) {
+  return useQuery({
+    queryKey: ["line", projectId, "unscoped"],
+    queryFn: () => api.unscopedFixes(projectId!),
+    enabled: !!projectId,
+  });
+}
+
+/** The full item list (descriptions included), fetched only while `enabled`. */
+export function useItemsFull(projectId?: string, enabled = true) {
+  return useQuery({
+    queryKey: [...keys.items, "full", projectId],
+    queryFn: () => api.itemsFull(projectId),
+    enabled: !!projectId && enabled,
+  });
+}
+
+/**
+ * Put one unscoped fix on the project's line (GRPH-1744). No optimistic patch: a refused move
+ * must leave the row where it was. Success refreshes the items (the Maintenance count) and the
+ * line reads (the unscoped count).
+ */
+export function usePutOnLine(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, lineId }: { id: string; lineId: string }) => api.updateItem(id, { line_id: lineId }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.items });
+      qc.invalidateQueries({ queryKey: ["line", projectId] });
+    },
+  });
+}
+
+export function useCreateLine(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.createLine(projectId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["line", projectId] }),
   });
 }
 
@@ -1381,6 +1671,16 @@ export function useHarnessLadder(projectId?: string) {
   return useQuery({
     queryKey: keys.harnessLadder(projectId ?? ""),
     queryFn: () => api.harnessLadder(projectId!),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+/** GRPH-1712: the routing replay for a draft policy, keyed on project and the draft itself. */
+export function useHarnessReplay(projectId: string | undefined, proposal: RoutingReplayProposal) {
+  return useQuery({
+    queryKey: ["harness-replay", projectId ?? "", proposal] as const,
+    queryFn: () => api.harnessReplay(projectId!, proposal),
     enabled: !!projectId,
     retry: false,
   });
@@ -1779,7 +2079,13 @@ export function useApiKeys() {
 
 /** The bell's feed. Polled so a hand-off shows up without a reload; a failure stays an error. */
 export function useMyAlerts() {
-  return useQuery({ queryKey: ["my-alerts"], queryFn: () => api.myAlerts(), refetchInterval: 30_000 });
+  return useQuery({
+    queryKey: ["my-alerts"],
+    queryFn: () => api.myAlerts(),
+    refetchInterval: 30_000,
+    // A backgrounded tab pauses the interval; refetch on return (this query only, GRPH-1654).
+    refetchOnWindowFocus: true,
+  });
 }
 
 export function usePushStatus() {
@@ -1796,4 +2102,54 @@ export function useReadAlert() {
     mutationFn: (id: string) => api.readAlert(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["my-alerts"] }),
   });
+}
+
+/** The box's HTTPS status. No cache: a stale names list after a reissue is the lie to avoid. */
+export function useHttpsStatus() {
+  return useQuery({ queryKey: keys.https, queryFn: () => api.httpsStatus(), staleTime: 0, retry: false });
+}
+
+export function useHttpsNames() {
+  const qc = useQueryClient();
+  const done = () => qc.invalidateQueries({ queryKey: keys.https });
+  return {
+    add: useMutation({ mutationFn: (n: string) => api.httpsAddName(n), onSuccess: done }),
+    remove: useMutation({ mutationFn: (n: string) => api.httpsRemoveName(n), onSuccess: done }),
+  };
+}
+
+/** Tier 2/3: upload, Let's Encrypt, stop using, and the redirect switch. Each returns the new status. */
+export function useHttpsCertificate() {
+  const qc = useQueryClient();
+  const done = () => qc.invalidateQueries({ queryKey: keys.https });
+  return {
+    upload: useMutation({
+      mutationFn: (v: { certificate: string; key: string; address: string }) =>
+        api.httpsUpload(v.certificate, v.key, v.address),
+      onSuccess: done,
+    }),
+    letsEncrypt: useMutation({ mutationFn: (d: string) => api.httpsLetsEncrypt(d), onSuccess: done }),
+    stop: useMutation({ mutationFn: () => api.httpsStopUsing(), onSuccess: done }),
+    redirect: useMutation({ mutationFn: (on: boolean) => api.httpsRedirect(on), onSuccess: done }),
+  };
+}
+
+/**
+ * Where the secure address of this box is, seen from this page (P83 D6). `onHttp`: the page is
+ * open over plain http. `address`: the https:// address, only when the box says HTTPS is ready
+ * (never guessed from a failed read). `trusted` is "unknown" until a probe from this browser succeeds.
+ */
+export function useSecureAddress(probe = false) {
+  const status = useHttpsStatus();
+  const onHttp = typeof window !== "undefined" && window.location.protocol === "http:";
+  const available = !!status.data?.ready && status.data.names.length > 0;
+  const address = available ? httpsAddress(window.location) : null;
+  const trust = useQuery({
+    queryKey: ["https-trust", address],
+    queryFn: () => probeTrust(address as string),
+    enabled: probe && onHttp && !!address,
+    staleTime: 0,
+    retry: false,
+  });
+  return { onHttp, address, trusted: trust.data === "trusted", trustKnown: trust.data !== undefined };
 }

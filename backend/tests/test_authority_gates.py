@@ -104,6 +104,11 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         # project can only be conjured where it cannot reach anyone else's tenant.
         "create_project",
         "update_item", "search_items", "add_memory", "search_memory",
+        # GRPH-1681. Quality, not authority: opens the project's one maintenance line, and
+        # is planner-only by `fleet.TOOL_ROLES` (a person has the same act through REST).
+        "create_line",
+        # GRPH-1686. A read: fixes with neither a PRD nor a line.
+        "unscoped_fixes",
         # A read of whether a published lesson is still worth following. Not a write and
         # not an authority gate — promote-to-org is REST/JWT only.
         "get_lessons",
@@ -132,6 +137,9 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         # PRD-P63 S2a (GRPH-1262). A read. Setting a toggle is deliberately NOT here: D10
         # keeps that a person's REST request, so no agent can switch off a rule reviewing it.
         "get_rule_toggles",
+        # P91 S3 (GRPH-1775). QUALITY: files a cited suggestion; nothing adopts it
+        # (rules.person_adopts), and the server refuses an agent's loosening.
+        "propose_rule",
         # P75 S1. QUALITY: records an answer on a decision wait. Refused for the filing agent,
         # and an agent answer must cite a source that resolves.
         "answer_wait",

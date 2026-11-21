@@ -32,42 +32,88 @@ from app.services.items import DEFAULT_LEASE_SECONDS
 ROLES = ("planner", "worker")
 DEFAULT_ROLE = "worker"
 
-#: One company, one spelling (GRPH-1120). The grok adapter's matrix row and the
-#: seat's `capabilities=` clause say `xai`. A child that copies the adapter name
-#: (`grok`), or the model id (`grok-4.7`), writes `grok`. The predicate used to
-#: compare those strings raw, so grok-4.7 reviewing grok-4.7 read as "different
-#: vendors". `xai` is the spelling measured cells and launch posts are already
-#: keyed by; folding the other way would split every existing `xai` row.
-#: The fleet package holds the same map on `Grok.vendor` /
-#: `adapters.canonical_vendor` and this service cannot import it (PRD-22 D-e).
-#: A third spelling is an entry in both, or the seat and the gate disagree again.
-_XAI = "xai"
+#: One company, one spelling, for COMPARISON (GRPH-1090; the grok half was
+#: GRPH-1120). The matrix row says the company (`xai`, `anthropic`, `google`,
+#: `alibaba`, `deepseek`, `cursor`, `openai`). A child that copies the adapter
+#: name (`grok`, `claude`, `agy`, `qwen-code`, `dsh`, `cursor-agent`, `codex`)
+#: writes the other. Grok's enumerated model ids (`grok-4.7`) are a third
+#: spelling of xAI and the only model-id fold: a string this map has not seen is
+#: not a company.
+#: Registration does NOT store this fold for any name but grok. Harness
+#: recommendation rows are keyed by the raw adapter string the caller declared
+#: (`claude`, `qwen-code`). Rewriting those onto the company spelling makes the
+#: cell miss the resolution's harness and the cards come back empty. `grok` is
+#: stored as `xai` because measured cells are already keyed by `xai`.
+#: The fleet package holds the same comparison map on each adapter's `vendor`
+#: and `adapters.canonical_vendor`. This service cannot import it (PRD-22 D-e).
+#: A new pair is an entry in both, or the seat and the gate disagree again.
+_CANONICAL_VENDOR = {
+    "grok": "xai",
+    "xai": "xai",
+    "claude": "anthropic",
+    "anthropic": "anthropic",
+    "agy": "google",
+    "google": "google",
+    "qwen-code": "alibaba",
+    "alibaba": "alibaba",
+    "dsh": "deepseek",
+    "deepseek": "deepseek",
+    "cursor-agent": "cursor",
+    "cursor": "cursor",
+    "codex": "openai",
+    "openai": "openai",
+    "gbagent": "gbagent",
+}
 
 
 def canonical_vendor(vendor: str) -> str:
     """The company spelling of `vendor`, or `vendor` itself when it is not an alias.
 
-    `grok`, `xai`, and a model id used as a vendor (`grok-4.7`) are xAI. An empty
-    string and `undeclared` stay as they are: two unknowns are not one vendor, and
-    a missing field must not become a company. Any other spelling is returned
-    unchanged — this is not a guess about vendors the ledger has not seen twice.
+    Adapter names fold onto the company the matrix already records (`claude` is
+    `anthropic`, `grok` is `xai`, and the rest of `_CANONICAL_VENDOR`). A grok
+    model id used as a vendor (`grok-4.7`) is xAI too. An empty string and
+    `undeclared` stay as they are: two unknowns are not one vendor, and a missing
+    field must not become a company. Any other spelling is returned unchanged —
+    this is not a guess about vendors the ledger has not seen twice.
     """
     if not isinstance(vendor, str):
         return vendor
     key = vendor.strip().lower()
     if not key or key == "undeclared":
         return vendor
-    if key == "grok" or key == _XAI or key.startswith("grok-"):
-        return _XAI
+    if key.startswith("grok-"):
+        return "xai"
+    return _CANONICAL_VENDOR.get(key, vendor)
+
+
+def recorded_vendor(vendor: str) -> str:
+    """The vendor a registration stores. Not the comparison spelling.
+
+    `grok`, `xai`, and a grok model id become `xai` (GRPH-1120). Measured cells
+    and the matrix are already keyed by `xai`; storing the adapter name would
+    split those rows.
+
+    Every other spelling is stored as given. `canonical_vendor` still treats
+    `claude` and `anthropic` as one company when a predicate compares them, but
+    writing that fold onto the row changes the key harness cards join on
+    (`qwen-code:`, `claude:sonnet`) and those cards come back empty (GRPH-1090).
+    """
+    if not isinstance(vendor, str):
+        return vendor
+    key = vendor.strip().lower()
+    if not key or key == "undeclared":
+        return vendor
+    if key == "grok" or key == "xai" or key.startswith("grok-"):
+        return "xai"
     return vendor
 
 
 def _canonicalize_recorded_capabilities(capabilities: dict | None) -> dict:
-    """The capabilities a registration stores. Vendor aliases collapse; nothing else moves."""
+    """The capabilities a registration stores. Only the grok spelling collapses."""
     caps = dict(capabilities or {})
     vendor = caps.get("vendor")
     if isinstance(vendor, str) and vendor.strip():
-        caps["vendor"] = canonical_vendor(vendor)
+        caps["vendor"] = recorded_vendor(vendor)
     return caps
 
 
@@ -582,10 +628,11 @@ def register_agent(db: Session, *, project_id: str, api_key, label: str = "",
         role = ALL_IN_ONE
     else:
         role = DEFAULT_ROLE if DEFAULT_ROLE in allowed else allowed[0]
-    # Before the row is written (GRPH-1120). A child that says `grok` and a child
-    # that says `xai` are the same adapter; storing both spellings is how the
-    # diversity receipt later calls them different vendors. Old rows are not
-    # rewritten — `review_diversity` folds them on read.
+    # Before the row is written. `grok` is stored as `xai` (GRPH-1120) because
+    # measured cells are keyed by `xai`. Other adapter names stay as declared
+    # (GRPH-1090): recommendation cards join on that raw string, and folding
+    # `claude` onto `anthropic` here empties them. `review_diversity` folds
+    # those names on read, so the receipt still calls them one vendor.
     capabilities = _canonicalize_recorded_capabilities(capabilities)
     now = datetime.now(timezone.utc)
     agent = Agent(
@@ -613,6 +660,52 @@ def register_agent(db: Session, *, project_id: str, api_key, label: str = "",
     return agent
 
 
+def bound_claim_refusal(
+    db: Session, agent: Agent, item: Item, seat: "Enrolment | None", *,
+    lease_seconds: int = DEFAULT_LEASE_SECONDS, now: datetime | None = None,
+) -> tuple[str, str | None] | None:
+    """Why `agent` must not be handed `item`, or None when `claim_item` may try.
+
+    None means the claim write may run. Returning `held` for an item that is still
+    claimable would stop registration from ever claiming it. Scope, reach,
+    review-only and a tier below `needs_tier` are named here too, so the roster
+    says the same refusal the registration reply already returns (GRPH-1292): the
+    supervisor reads the roster,
+    not that reply. A bound seat is a spawned child, so `reach=deploy` is refused
+    whenever the seat row is in hand.
+    """
+    now = now or datetime.now(timezone.utc)
+    if item.blocker:
+        return "blocked", item.claimed_by or None
+    if not items_svc.claimable(item, lease_seconds=lease_seconds, now=now):
+        holder = item.claimed_by or None
+        if holder:
+            holder_agent = db.get(Agent, holder)
+            if (holder_agent is None or presence_state(
+                    holder_agent, lease_seconds=lease_seconds, now=now) == "offline"):
+                return "ghost", holder
+            return "held", holder
+        return f"status:{item.status}", None
+    pin = bounce_pin_holder(item, now=now)
+    if pin is not None and pin != agent.id:
+        return "pinned", pin
+    if seat is not None and seat.review_only:
+        return "review-only", None
+    if seat is not None and (item.reach or "repo") == "deploy":
+        return "reaches-outside-the-repo", None
+    scope = ((seat.prd_id or seat.line_id or "") if seat is not None
+             else items_svc.seat_scope(db, agent.id))
+    if not items_svc.in_scope(item, scope):
+        return "out-of-scope", None
+    # GRPH-1647. claim_item raises this after the pre-checks; the registration reply
+    # stores the sentence. The roster has to name it too, or until reads `held` and
+    # mints another seat on the next tick.
+    block = items_svc.tier_block(db, item, agent.id)
+    if block is not None:
+        return str(block), None
+    return None
+
+
 def _claim_bound_seat(db: Session, agent: Agent, seat: "Enrolment | None", *,
                       lease_seconds: int = DEFAULT_LEASE_SECONDS) -> dict:
     """Claim a bound seat's item for the agent that just registered on it (PRD-36 D3).
@@ -635,29 +728,14 @@ def _claim_bound_seat(db: Session, agent: Agent, seat: "Enrolment | None", *,
         return {"item": seat.item_id, "state": "taken", "reason": "missing", "held_by": None}
     out = {"item": item.key, "state": "taken", "reason": None, "held_by": None}
     now = datetime.now(timezone.utc)
-    if item.blocker:
-        out["reason"] = "blocked"
-        return out
-    if not items_svc.claimable(item, lease_seconds=lease_seconds, now=now):
-        holder = item.claimed_by if item.claimed_by else None
-        if holder:
-            # GRPH-931: a holder that exists in the row but is offline (no heartbeat within
-            # presence TTL) is a ghost lease. Name it so the child can say "ghost lease, no
-            # live holder" instead of exiting silently. The holder id stays set so fleet_status
-            # and release_item can point at it.
-            holder_agent = db.get(Agent, holder)
-            if holder_agent is None or presence_state(holder_agent, lease_seconds=lease_seconds, now=now) == "offline":
-                out["reason"] = "ghost"
-            else:
-                out["reason"] = "held"
-        else:
-            out["reason"] = f"status:{item.status}"
-        out["held_by"] = holder
-        return out
-    pin = bounce_pin_holder(item, now=now)
-    if pin is not None and pin != agent.id:
-        out["reason"] = "pinned"
-        out["held_by"] = pin
+    # GRPH-931: a holder that exists in the row but is offline (no heartbeat within
+    # presence TTL) is a ghost lease. `bound_claim_refusal` names it so the child can
+    # say "ghost lease, no live holder" instead of exiting silently. The holder id
+    # stays set so fleet_status and release_item can point at it.
+    refused = bound_claim_refusal(
+        db, agent, item, seat, lease_seconds=lease_seconds, now=now)
+    if refused is not None:
+        out["reason"], out["held_by"] = refused
         return out
     try:
         claimed = items_svc.claim_item(db, item.id, agent.id, lease_seconds=lease_seconds)
@@ -673,6 +751,12 @@ def _claim_bound_seat(db: Session, agent: Agent, seat: "Enrolment | None", *,
         # `deploy` item, so a bound seat can only reach here if the item was declared AFTER
         # the delegation was written. The child says so and stops.
         out["reason"] = "reaches-outside-the-repo"
+        return out
+    except items_svc.TierBelowNeeds as e:
+        # GRPH-1647. Registration has already committed, so this is a reason on `assigned`
+        # rather than a 500. The sentence names `needs_tier`. An undeclared tier does not
+        # raise, and claiming it is the decision the mismatch rule leaves open.
+        out["reason"] = str(e)
         return out
     if claimed is None:
         db.refresh(item)
@@ -759,6 +843,18 @@ def status_state(agent: Agent, *, ttl_seconds: int | None = None,
     return "stale" if (now - at).total_seconds() > ttl else "reported"
 
 
+#: Most ids bound in one IN list. SQLite allows 32,766 parameters per statement and Postgres
+#: 65,535; a roster query that binds an id per agent (or two) must stay under both however
+#: many agents a project has accumulated (GRPH-1668).
+ROSTER_BATCH = 10_000
+
+
+def _batches(ids: Sequence[str]) -> list[Sequence[str]]:
+    """`ids` in slices of at most ROSTER_BATCH, so an IN list never outgrows the driver."""
+    ids = list(ids)
+    return [ids[i:i + ROSTER_BATCH] for i in range(0, len(ids), ROSTER_BATCH)]
+
+
 def list_agents(db: Session, project_id: str | None = None, *,
                 lease_seconds: int = DEFAULT_LEASE_SECONDS,
                 now: datetime | None = None, where=None, limit: int | None = None,
@@ -807,9 +903,14 @@ def list_agents(db: Session, project_id: str | None = None, *,
     if agents:
         ids = [a.id for a in agents]
         mine = set(ids)
-        rows = db.scalars(select(Item).where(
-            or_(Item.claimed_by.in_(ids), Item.review_claimed_by.in_(ids)))).all()
-        for it in rows:
+        # In batches: two parameters per agent overflowed Postgres's 65,535-parameter limit
+        # once the project passed 32,767 agents, and every propose_allocation 500ed (GRPH-1668).
+        rows: dict[str, Item] = {}
+        for batch in _batches(ids):
+            for it in db.scalars(select(Item).where(
+                    or_(Item.claimed_by.in_(batch), Item.review_claimed_by.in_(batch)))).all():
+                rows[it.id] = it
+        for it in rows.values():
             if it.claimed_by in mine:
                 held.setdefault(it.claimed_by, []).append((it, "build"))
             if it.review_claimed_by in mine:
@@ -1019,18 +1120,25 @@ def roster_view(payload: dict, view: str) -> dict:
 
 
 def _assigned_for(db: Session, agents: list[Agent]) -> dict[str, dict]:
-    """`{agent_id: {item, state, held_by}}` for every agent on a bound seat. Two queries
-    whatever the roster size. `claimed` when the agent holds the seat's item; `taken` with
-    the holder otherwise — the same word the registration reply used."""
+    """`{agent_id: {item, state, reason, held_by}}` for every agent on a bound seat.
+
+    Two queries per `_batches` slice of the roster (GRPH-1668), plus one holder lookup
+    when a taken row still names a claimant (ghost versus a live hold). `claimed` when
+    the agent holds the seat's item. `taken` otherwise, with the same `reason` the
+    registration reply uses — the supervisor reads this roster, not that reply
+    (GRPH-1292). A claimable item this agent does not hold is `held`: the claim was
+    refused after the pre-checks (a lost reservation) or has not landed.
+    """
     seat_ids = [a.enrolment_id for a in agents if a.enrolment_id]
     if not seat_ids:
         return {}
-    seats = {s.id: s for s in db.scalars(select(Enrolment).where(
-        Enrolment.id.in_(seat_ids), Enrolment.item_id.isnot(None))).all()}
+    seats = {s.id: s for batch in _batches(seat_ids) for s in db.scalars(select(Enrolment).where(
+        Enrolment.id.in_(batch), Enrolment.item_id.isnot(None))).all()}
     if not seats:
         return {}
-    items = {i.id: i for i in db.scalars(select(Item).where(
-        Item.id.in_({s.item_id for s in seats.values()}))).all()}
+    items = {i.id: i for batch in _batches(sorted({s.item_id for s in seats.values()}))
+             for i in db.scalars(select(Item).where(Item.id.in_(batch))).all()}
+    now = datetime.now(timezone.utc)
     out: dict[str, dict] = {}
     for a in agents:
         seat = seats.get(a.enrolment_id) if a.enrolment_id else None
@@ -1038,11 +1146,18 @@ def _assigned_for(db: Session, agents: list[Agent]) -> dict[str, dict]:
             continue
         item = items.get(seat.item_id)
         if item is None:
-            out[a.id] = {"item": seat.item_id, "state": "taken", "held_by": None}
+            out[a.id] = {"item": seat.item_id, "state": "taken", "reason": "missing",
+                         "held_by": None}
         elif item.claimed_by == a.id:
-            out[a.id] = {"item": item.key, "state": "claimed", "held_by": None}
+            out[a.id] = {"item": item.key, "state": "claimed", "reason": None, "held_by": None}
         else:
-            out[a.id] = {"item": item.key, "state": "taken", "held_by": item.claimed_by}
+            refused = bound_claim_refusal(db, a, item, seat, now=now)
+            if refused is None:
+                reason, held_by = "held", item.claimed_by
+            else:
+                reason, held_by = refused
+            out[a.id] = {"item": item.key, "state": "taken", "reason": reason,
+                         "held_by": held_by}
     return out
 
 
@@ -1389,6 +1504,9 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     # gains a second role, that argument evaporates silently; a test asserts it does not.
     "mint_enrolment": ("planner",),
     "create_prd": ("planner",),
+    # GRPH-1681. Opening the project's one maintenance line is planner work over MCP; a
+    # person does it through REST with the permission that accepts a request.
+    "create_line": ("planner",),
     # GRPH-1275. The preamble is written by a person; the planner seat is the only agent role
     # near spec authorship, and `put_document` itself refuses an agent identity.
     "put_document": ("planner",),
@@ -1474,7 +1592,7 @@ OPEN_TOOLS: dict[str, str] = {
         # PRD-62 S2: the entitlement registry read; the write is planner-gated above.
         "list_entitlements",
         # PRD-P63 S2a: the toggles read; there is no MCP write (D10).
-        "get_rule_toggles",
+        "get_rule_toggles", "unscoped_fixes",
         # P75 S1: any role may answer a peer's decision wait; the filer is refused in-service.
         "answer_wait",
         # GRPH-1275: document reads — governing specs, project-scoped, nothing written.
@@ -1508,6 +1626,8 @@ OPEN_TOOLS: dict[str, str] = {
                 "the manifest tier — not a role — is what keeps it off a lone agent's list",
 
     # ---- shared context: memory and the code graph ---------------------------------------
+    "propose_rule": "a suggestion, never an adoption (rules.person_adopts); the server refuses "
+                    "a loosening, so no role gate adds to it",
     "add_memory": "memory is shared context; a role that could not contribute would make "
                   "every other role's context worse",
     "publish_memory": "promotes a shard already written; the authority question is the "
@@ -2224,7 +2344,189 @@ def review_block_reason(db: Session, *, agent_id: str, project_id: str | None = 
         return (f"every item awaiting review is already being reviewed — by "
                 f"{', '.join(sorted(set(taken)))}; a claim lapses "
                 f"{DEFAULT_LEASE_SECONDS // 60} minutes after it is taken, held or not")
+    # GRPH-1652. Every other rule `claim_review` filters by. "Nothing awaiting" with an item
+    # in review is the sentence that kept GBC-136 unreviewed: three reviewers were told the
+    # queue was empty while a rule they could not see withheld the one item in it.
+    # Your own work is left out of the sentence: for a lone agent "nothing awaiting a second
+    # pair of eyes" is the correct answer (it is still listed in `withheld`).
+    withheld = [w for w in review_withheld(db, agent_id=agent_id, project_id=project_id)
+                if w["rule"] != WITHHELD_OWN_WORK]
+    if withheld:
+        return ("nothing you may take: " + "; ".join(
+            f"{w['item']} withheld ({w['rule']}): {w['reason']}" for w in withheld))
     return "no item awaiting a second pair of eyes"
+
+
+# Rule names `review_withheld` reports (GRPH-1652). Stable strings: a reviewer or an operator
+# reads them to decide whether to wait, mint a seat, or go and find a supervisor.
+WITHHELD_OWN_WORK = "own_work"
+WITHHELD_YOUR_DELEGATION = "delegated_by_you"
+WITHHELD_HELD = "held_by_reviewer"
+WITHHELD_NOT_INDEPENDENT = "not_independent"
+WITHHELD_PUBLISH_PENDING = "publish_pending"
+WITHHELD_NOTHING_TO_READ = "nothing_to_read"
+WITHHELD_OUT_OF_SCOPE = "outside_seat_scope"
+WITHHELD_CAPABILITY = "missing_capability"
+WITHHELD_PR_UNLINKED = "pr_unlinked"
+WITHHELD_DEPENDENCY = "dependencies_open"
+
+
+def unfinished_dependencies(db: Session, item: Item) -> list[str]:
+    """Keys of `dependency` targets that are not done (GRPH-1292).
+
+    The same read as `prioritization.blocked_by`: a target that is not an item is
+    omitted, so a dangling link does not refuse a sign-off that `claim_cluster` would
+    still hand out. A link from the item to itself is omitted.
+    """
+    from app.services import prioritization as prio
+
+    ctx = prio.context(db, item.project_id)
+    names: list[str] = []
+    for dep_id in prio.blocked_by(ctx, item):
+        dep = ctx.item(dep_id)
+        if dep is None or dep.id == item.id:
+            continue
+        label = dep.key or dep.id
+        if label not in names:
+            names.append(label)
+    return names
+
+
+def _review_pr_unlinked(it: Item) -> bool:
+    """A review row `sign_off` would refuse `pr_missing`, and nothing else has refused it.
+
+    A branch (or a reported head) with no linked PR. Every `done` refusal so far is
+    `pr_missing`, including none yet — the first reviewer is the one that used to walk
+    into that refusal. A different refusal still gets a reviewer. An owner close is the
+    outcome the no-PR gate does not apply to, so it is not held back here either.
+    """
+    if items_svc.recorded_pr_url(it):
+        return False
+    evidence = [e for e in (it.evidence or []) if isinstance(e, dict)]
+    if any(items_svc.is_pr_url(str(e.get("url") or "")) for e in evidence):
+        return False
+    if not (it.branch or "").strip() and not (getattr(it, "head_commit", "") or "").strip():
+        return False
+    if any(a.get("adapter") == items_svc.OWNER_CLOSE_ADAPTER
+           for a in items_svc.valid_attestations(evidence)):
+        return False
+    refusals = [str(e.get("detail") or "") for e in evidence
+                if str(e.get("detail") or "").startswith("refused at `done` (")]
+    return all(d.startswith("refused at `done` (pr_missing)") for d in refusals)
+
+
+def review_withholding(db: Session, it: Item, *, agent_id: str, me: Agent | None,
+                       scope: str, lease_seconds: int = DEFAULT_LEASE_SECONDS
+                       ) -> tuple[str, str] | None:
+    """Why `claim_review` will not hand `it` to this caller, as (rule, reason) — None if it will.
+
+    **THE ONE DEFINITION** `claim_review` filters by and `review_withheld` reports from
+    (GRPH-1652). They used to be two: the filter lived inline in `claim_review` and the
+    explanation was a hand-kept subset in `review_block_reason`, which knew about authorship,
+    holds, independence and capabilities but not `publish_pending`, the handoff, or the seat's
+    scope. GBC-136 sat in `review` with `review_claimed_by: null` while three reviewers were
+    told "no item awaiting a second pair of eyes"; the rule that withheld it was one the
+    explanation did not know existed. Rules are checked in the order the filter applied them.
+    """
+    # The ban, keyed on AUTHORSHIP rather than on role. The obvious attack on a dynamic role
+    # system is to promote a worker to reviewer while it holds its own item; it does not work,
+    # because an agent's id does not change when its role does.
+    if it.built_by == agent_id:
+        return WITHHELD_OWN_WORK, "you built it"
+    # PRD-36 D19: never hand a delegator its own delegation to review.
+    if delegated_by(db, it, agent_id):
+        return WITHHELD_YOUR_DELEGATION, f"you delegated it to its builder {it.built_by}"
+    # Already being reviewed by somebody else — while their claim is still LIVE. A reviewer
+    # that went silent releases it, the same way a worker's lease releases.
+    holder = review_claim_holder(it, lease_seconds=lease_seconds)
+    if holder is not None and holder != agent_id:
+        return WITHHELD_HELD, (f"{holder} holds its review; the claim lapses "
+                               f"{lease_seconds // 60} minutes after it was taken")
+    # And separate enough for the review to mean anything (GRPH-361) — including from a
+    # credential that sent the item without claiming it (GRPH-848). Same rule `sign_off`
+    # applies, so a reviewer is never leased an item it will then be refused.
+    if me is not None and not independent_of_built_by(db, me, it.built_by):
+        return WITHHELD_NOT_INDEPENDENT, (
+            f"you are not independent of its builder {it.built_by or '(unrecorded)'}: "
+            "same credential and session, or one call tree")
+    # GRPH-754: and its branch is actually READABLE. An item goes to `review` when the child
+    # says so, but the branch is published when its supervisor reaps it a few seconds later —
+    # and a reviewer handed the item inside that window fetches a 404 and bounces work that is
+    # fine. Withheld only while a supervisor is known to be coming; an unsupervised item is
+    # never withheld, because nothing would ever arrive to release it.
+    if harness_svc.publish_pending(db, it):
+        return WITHHELD_PUBLISH_PENDING, (
+            f"a supervisor launched its latest attempt and has not reported branch "
+            f"{(it.branch or '').strip() or '(none)'} published. Released when the supervisor "
+            "reports the push, when CI attests a passed suite_green on that branch, or when "
+            "the item leaves review")
+    # GRPH-946: and there is something to read at all. An item with no branch and no PR url
+    # cannot be reviewed, only bounced for being unreadable — which is how SA-575's real
+    # defects went unreviewed. Rows that predate the `update_item` gate land here.
+    if not items_svc.reviewable_handoff(it):
+        return WITHHELD_NOTHING_TO_READ, "it has no branch and no PR url to read"
+    # GRPH-1730. A pushed branch with no linked PR is readable and still not reviewable:
+    # sign_off refuses `pr_missing`, and a reviewer who takes the row holds it for the
+    # lease. `review_held` then hides it from the supervisor, so the PR open is never
+    # retried. Withheld until a PR url is recorded. A second ready row is what gets
+    # handed out instead — sort order used to hand this one out first.
+    if _review_pr_unlinked(it):
+        return WITHHELD_PR_UNLINKED, (
+            "its branch has no linked PR, so sign_off would be refused pr_missing. "
+            "Released when a PR url is recorded on the item")
+    # GRPH-827: and inside the scope this seat was minted for. Review is scoped for the same
+    # reason building is — and the reviewer is the half that can also SIGN OFF.
+    if not items_svc.in_scope(it, scope):
+        return WITHHELD_OUT_OF_SCOPE, (
+            f"your seat is scoped to {scope}; it belongs to {it.prd_id or 'no PRD'}")
+    # GRPH-1055: and this reviewer declared every capability a clause asked for. A fleet child
+    # is refused `gh` (`shim.py` DEFAULT_DENY) and used to be handed the clause anyway; five of
+    # them left SA-667 without resolving it.
+    missing = missing_clause_capabilities(me.capabilities if me is not None else None,
+                                          it.description or "")
+    if missing:
+        return WITHHELD_CAPABILITY, (
+            "an acceptance clause needs " + ", ".join(f"`{n}`" for n in sorted(missing))
+            + ", which you did not declare")
+    # GRPH-1292. claim_cluster already withholds an item whose dependency is not done.
+    # claim_review did not, so a reviewer was handed a walk whose brief still listed the
+    # blocker, and sign_off then marked it done. Withheld here — the one filter
+    # claim_review uses. An unclaimed row can still be signed off, which is how a
+    # planner records waive={"dependencies_done": "<why>"}.
+    open_deps = unfinished_dependencies(db, it)
+    if open_deps:
+        return WITHHELD_DEPENDENCY, (
+            "still depends on work that is not done: " + ", ".join(open_deps)
+            + ". sign_off refuses until those are done, or a planner waives it on the "
+            'record with waive={"dependencies_done": "<why>"}')
+    return None
+
+
+def review_withheld(db: Session, *, agent_id: str, project_id: str | None = None,
+                    lease_seconds: int = DEFAULT_LEASE_SECONDS,
+                    skip: list[str] | None = None) -> list[dict]:
+    """Every in-review item `claim_review` would not hand this caller, each with the rule.
+
+    `[{item, title, rule, reason}]`, in queue order. Items the caller passed in `skip` are left
+    out: it declined them itself. An empty list beside an empty claim means the queue really is
+    empty for everybody, which is the only case "nothing awaiting review" may be said.
+    """
+    me = db.get(Agent, agent_id)
+    scope = items_svc.seat_scope(db, agent_id)
+    stmt = select(Item).where(Item.status == "review")
+    if project_id:
+        stmt = stmt.where(Item.project_id == project_id)
+    declined = set(skip or [])
+    out: list[dict] = []
+    for it in db.scalars(stmt.order_by(Item.sort_order, Item.number)).all():
+        if it.id in declined or it.key in declined:
+            continue
+        why = review_withholding(db, it, agent_id=agent_id, me=me, scope=scope,
+                                 lease_seconds=lease_seconds)
+        if why is not None:
+            out.append({"item": it.key or it.id, "title": it.title or "",
+                        "rule": why[0], "reason": why[1]})
+    return out
 
 
 def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
@@ -2262,42 +2564,8 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
         # Declined this round — see `claim_next`. A reviewer that must refuse the top item
         # (its own work) otherwise gets it back on every call and never sees the rest.
         if it.id not in declined and it.key not in declined
-        # The ban, keyed on AUTHORSHIP rather than on role. The obvious attack on a dynamic
-        # role system is to promote a worker to reviewer while it holds its own item; it does
-        # not work, because an agent's id does not change when its role does.
-        if it.built_by != agent_id
-        # PRD-36 D19: never hand a delegator its own delegation to review.
-        and not delegated_by(db, it, agent_id)
-        # Already being reviewed by somebody else — while their claim is still LIVE. A
-        # reviewer that went silent releases it, the same way a worker's lease releases.
-        and (review_claim_holder(it, lease_seconds=lease_seconds) or agent_id) == agent_id
-        # And separate enough for the review to mean anything (GRPH-361) — including from a
-        # credential that sent the item without claiming it (GRPH-848). Same rule `sign_off`
-        # applies, so a reviewer is never leased an item it will then be refused.
-        and (me is None or independent_of_built_by(db, me, it.built_by))
-        # GRPH-754: and its branch is actually READABLE. An item goes to `review` when the
-        # child says so, but the branch is published when its supervisor reaps it a few
-        # seconds later — and a reviewer handed the item inside that window fetches a 404 and
-        # bounces work that is fine. Measured on the deployed instance, twice. Withheld only
-        # while a supervisor is known to be coming and only for a grace period; an unsupervised
-        # item is never withheld, because nothing would ever arrive to release it.
-        and not harness_svc.publish_pending(db, it)
-        # GRPH-946: and there is something to read at all. An item with no branch and no PR
-        # url cannot be reviewed, only bounced for being unreadable — which is how SA-575's
-        # real defects went unreviewed. Rows that predate the `update_item` gate land here.
-        and items_svc.reviewable_handoff(it)
-        # GRPH-827: and inside the scope this seat was minted for. Review is scoped for the
-        # same reason building is — a wave provisioned for one PRD reviewing another PRD's
-        # work is the same escape wearing the reviewer's hat, and the reviewer is the half
-        # that can also SIGN OFF. Unscoped seats are unaffected.
-        and items_svc.in_scope(it, scope)
-        # GRPH-1055: and this reviewer declared every capability a clause asked for. A fleet
-        # child is refused `gh` (`shim.py` DEFAULT_DENY) and used to be handed the clause
-        # anyway; five of them left SA-667 without resolving it. Skipping it here is what
-        # stops the idle-review loop. The queue marks an item no live reviewer can check as
-        # needing a human, which is the other half — an absence of claimants must not read
-        # as an empty queue.
-        and reviewer_can_check(me, it)
+        and review_withholding(db, it, agent_id=agent_id, me=me, scope=scope,
+                               lease_seconds=lease_seconds) is None
     ]
     if not candidates:
         return None
@@ -2500,8 +2768,16 @@ class ClauseCapability(Exception):
     """
 
 
+class DependenciesOpen(Exception):
+    """sign_off refused: a dependency link still points at work that is not done (GRPH-1292)."""
+
+
 class MissingAcceptanceCoverage(Exception):
     """Work signed off while an acceptance clause has no named test (GRPH-884)."""
+
+
+class FiledFixShape(MissingAcceptanceCoverage):
+    """A line item or blocking fix lost its acceptance clauses or touchpoints (GRPH-1683)."""
 
 
 class UnreadableAcceptance(MissingAcceptanceCoverage):
@@ -2795,13 +3071,130 @@ def denial_in(clause: str, line: str) -> str:
     # "and not the key" is not contradicted by every receipt that quotes it (GRPH-1029 /
     # REPU-579). Residue is what the reviewer wrote around the quote.
     residue = _SKIP_COUNT.sub(" ", _ZERO_FAILED.sub(" ", scope.replace(clause.lower(), " ")))
-    m = _NEGATIVE_EVIDENCE.search(residue)
-    if not m:
-        return ""
-    word = m.group(1)
-    if word == "failed" and expected_failure_clause(clause):
-        return ""
-    return word
+    # GRPH-1019: a receipt that says the clause IS delivered and discloses an UNCOMMITTED
+    # verification artefact is not denying the deliverable when its denial word is about
+    # that artefact. Computed once for the line, not the scope: the disclosure is the
+    # receipt's, whichever sentence it sits in.
+    tool_caveat = _discloses_uncommitted_tool(low, clause.lower())
+    for m in _NEGATIVE_EVIDENCE.finditer(residue):
+        word = m.group(1)
+        if word == "failed" and expected_failure_clause(clause):
+            continue
+        # Only `cannot` — the GRPH-1005 shape, a limit of the tool. `failed` and `skipped`
+        # with the tool as subject report the verification's own outcome on the
+        # deliverable: negative evidence about the clause, not a caveat (review bounce on
+        # 77a6b5cc).
+        if word == "cannot" and tool_caveat and _about_the_tool(residue, m.start(), m.end()):
+            continue
+        return word
+    return ""
+
+
+#: A receipt saying its clause was delivered: `delivered`, `is implemented`, `ships` —
+#: never `not delivered`, which `_NEGATIVE_EVIDENCE` reads as the denial it is (GRPH-1019).
+_AFFIRMS_DELIVERY = re.compile(
+    r"(?<!not )(?<!n't )\b(?:delivered|implemented|shipped|merged)\b")
+#: A receipt disclosing that something it used is not part of the change.
+_UNCOMMITTED = re.compile(
+    r"\b(?:uncommitted|not committed|isn't committed|not checked in|not in the diff|"
+    r"outside (?:this item's |the item's |the )?touchpoints)\b")
+#: What a verification artefact is called: the tool, not the deliverable.
+_TOOL_NOUN = re.compile(
+    r"\b(?:checker|check script|script|verifier|tool|harness|helper|test file|"
+    r"artefact|artifact|probe|scratch test)s?\b")
+#: Where the phrase holding a denial word stops: a sentence end, `;`, `,`, a bracket, a dash.
+_PHRASE_BREAK = re.compile(r"[.!?;,()—–]|\s-\s")
+#: Between a subject and the denial word, a sign that the denial has a subject of its own
+#: (GRPH-1019 bounce on 872a95b9): a determiner opening another noun phrase ("the checker
+#: passed but THE TABLE cannot …"), a clause-opening conjunction or complementiser not
+#: directly followed by the denial word ("the checker passed BUT tables cannot …" — while
+#: "is not committed and cannot resolve" keeps one subject), or a reporting verb whose
+#: object is a new clause ("the checker SHOWS tables cannot …").
+_OTHER_SUBJECT = (
+    r"\b(?:a|an|the|this|these|those|our|my|their)\s+\S"
+    r"|\b(?:and|but|or|so|yet|though|although|while|whereas|because|that|which|who|"
+    r"where|when|if)\b(?!\s+(?:also\s+|still\s+|so\s+)?{denial})"
+    r"|\b(?:shows?|showed|says?|said|reports?|reported|finds?|found|confirms?|confirmed|"
+    r"proves?|proved|means?|meant|tells?|told|indicates?|indicated)\b")
+
+#: A word that may sit directly after the tool noun without becoming a subject of its own:
+#: an auxiliary or adverb continuing the tool's own predicate ("the checker IS not
+#: committed and cannot …", "the script STILL cannot …").
+_SUBJECT_CONTINUES = re.compile(
+    r"is|isn't|was|wasn't|are|aren't|were|weren't|has|hasn't|have|haven't|had|hadn't|"
+    r"does|doesn't|did|didn't|do|don't|will|won't|would|can|could|should|may|might|must|"
+    r"still|also|itself|themselves|alone|just|simply|currently|therefore|then|here|not")
+
+#: A pronoun standing for the tool: `it`/`its`, directly before the denial word.
+_PRONOUN = re.compile(r"\bits?\b")
+
+
+def _nearest_subject_is(between: str, denial: str) -> bool:
+    """Whether nothing in `between` — the text from a subject to the denial word — gives
+    the denial a subject of its own. A relative `that`/`which` directly after the subject
+    ("the checker that verified it …") is the subject's own clause, not a new one."""
+    head = re.match(r"\s*(?:that|which)\b", between)
+    body = between[head.end():] if head else between
+    # A bare word directly after the tool noun that is not an auxiliary or adverb makes the
+    # tool noun a modifier: in "the checker TABLES cannot …" the head noun is the subject
+    # (review bounce on 77a6b5cc).
+    first = re.match(r"\s*([a-z'’]+)", between)
+    if not head and first and not _SUBJECT_CONTINUES.fullmatch(first.group(1)):
+        return False
+    # The denial word is appended so a conjunction directly before it ("… and cannot")
+    # can be told from one that opens a clause with a subject of its own.
+    return not re.search(_OTHER_SUBJECT.replace("{denial}", re.escape(denial)), body + denial)
+
+
+def _discloses_uncommitted_tool(low: str, clause: str) -> bool:
+    """Whether a receipt asserts its clause is delivered AND discloses that a verification
+    artefact behind it is not committed (GRPH-1019).
+
+    GRPH-1005's builder wrote "delivered, verified by a doc-driven claim checker … It is not
+    committed (a new test file is outside this item's touchpoints); the four literals it
+    cannot resolve from a checkout are allowlisted". Two reviewers could not sign the merged,
+    green item: `cannot` read as the clause being undelivered. A builder who omitted the
+    sentence would have passed — the gate rewarded silence.
+    """
+    residue = low.replace(clause, " ")
+    return bool(_AFFIRMS_DELIVERY.search(residue) and _UNCOMMITTED.search(residue)
+                and _TOOL_NOUN.search(residue))
+
+
+def _about_the_tool(residue: str, start: int, end: int) -> bool:
+    """Whether the denial word at `[start, end)` is about a verification artefact rather
+    than the deliverable (GRPH-1019). Who the denial is about decides, not how far away it
+    sits — and who it is about is its NEAREST SUBJECT.
+
+    The denial is the tool's when, inside its phrase, the last tool noun before it is its
+    nearest subject: no other noun phrase, clause-opening conjunction or reporting verb in
+    between (`the checker cannot resolve X`, `the checker that verified it is not committed
+    and cannot resolve X`). A tool noun elsewhere in the phrase is not enough: in "the
+    uncommitted checker passed but the table cannot be published" the denial is the
+    table's (review bounce on 872a95b9).
+
+    A bare `it` is the weakest attribution, so it counts only directly before the denial
+    word and only in a sentence wholly about the tool: one that names the tool or discloses
+    it is not committed, and makes no delivery claim of its own (the GRPH-1005 shape, "It is
+    not committed …; the literals it cannot resolve are allowlisted"). In the sentence that
+    claims delivery `it` could be the deliverable, and an ambiguous denial still refuses
+    (review bounce on 502bdf96).
+    """
+    breaks_before = [m.end() for m in _PHRASE_BREAK.finditer(residue, 0, start)]
+    lo = breaks_before[-1] if breaks_before else 0
+    denial = residue[start:end]
+    tools = list(_TOOL_NOUN.finditer(residue, lo, start))
+    if tools and _nearest_subject_is(residue[tools[-1].end():start], denial):
+        return True
+    pronouns = list(_PRONOUN.finditer(residue, lo, start))
+    if not pronouns or residue[pronouns[-1].end():start].strip():
+        return False
+    ends_before = [m.end() for m in _SENTENCE_END.finditer(residue, 0, start)]
+    s_lo = ends_before[-1] if ends_before else 0
+    s_after = _SENTENCE_END.search(residue, end)
+    sentence = residue[s_lo:s_after.end() if s_after else len(residue)]
+    return bool((_TOOL_NOUN.search(sentence) or _UNCOMMITTED.search(sentence))
+                and not _AFFIRMS_DELIVERY.search(sentence))
 
 
 #: Why a receipt was read as denying its clause, stated at the point of refusal rather than
@@ -2822,7 +3215,12 @@ DENIAL_RULE = (
     "repeat the clause and names no other one (`the pin lapses after timeout` / "
     "`NOT DELIVERED, no clock`, or `clause — 12 passed` / `NOT DELIVERED`). If the "
     "clause IS delivered, say so in a new `{kind: test}` receipt, in the sentence that "
-    "names it, and keep the caveat in a sentence of its own"
+    "names it, and keep the caveat in a sentence of its own. If the caveat is about a "
+    "verification tool rather than the deliverable — a checker or script that is not "
+    "committed — write that the clause is delivered and that the tool is not committed, "
+    "naming the tool (`the checker cannot resolve X`), and the denial word is read as "
+    "the tool's (GRPH-1019); better still, put the tool's caveat in a `{kind: note}` and "
+    "keep the clause receipt to what is committed"
 )
 
 
@@ -2954,6 +3352,100 @@ def acceptance_covered(clauses: list[str], evidence: list[dict]
     return not uncovered and not contradicted, uncovered, contradicted
 
 
+#: What `near_match` means, said in the refusal so it is not a mystery threshold (GRPH-1020).
+NEAR_MATCH_RULE = (
+    "a receipt that carries the clause's words in the same order once case, quotes, "
+    "backticks, dashes and other punctuation are ignored — or carries every word of the "
+    "clause up to its first dash")
+
+#: Where a clause's tail starts: an em/en dash, or a spaced ASCII dash.
+_CLAUSE_TAIL = re.compile(r"\s*(?:[—–]|\s-{1,2}\s)")
+
+
+def _words(text: str) -> tuple[str, list[int]]:
+    """`text` as lowercase alphanumeric words joined by single spaces, and for each
+    character of that string the index in `text` it came from (a joining space maps to
+    the start of the next word)."""
+    out: list[str] = []
+    where: list[int] = []
+    gap = False
+    for i, ch in enumerate(text):
+        if ch.isalnum():
+            if gap and out:
+                out.append(" ")
+                where.append(i)
+            out.append(ch.lower())
+            where.append(i)
+            gap = False
+        else:
+            gap = True
+    return "".join(out), where
+
+
+def near_match(clause: str, details: list[str]) -> str | None:
+    """The span of a receipt that names `clause` approximately, or None (GRPH-1020).
+
+    Coverage is an exact case-insensitive substring, and the usual reason a clause reads
+    as unnamed is that the receipt paraphrased it: `'no override'` for `"no override"`,
+    backticks dropped from `` `PYTHONPATH=src` ``, an em-dash tail left off. Those are
+    two different states — "no test names this" and "a test names it, not verbatim" —
+    and reporting both as the first sends a reviewer to write a test that already exists.
+
+    The span is cut from the receipt as written, so the refusal can show the difference.
+    Only a whole-word match counts: `scope` does not near-match inside `telescope`.
+    """
+    full, _ = _words(clause)
+    candidates = [full] if full else []
+    head = _CLAUSE_TAIL.split(clause, maxsplit=1)[0]
+    head_words, _ = _words(head)
+    if head != clause and len(head_words.split()) >= 3 and head_words not in candidates:
+        candidates.append(head_words)
+    for detail in details:
+        words, where = _words(detail or "")
+        padded = f" {words} "
+        for cand in candidates:
+            at = padded.find(f" {cand} ")
+            if at < 0:
+                continue
+            start, end = where[at], where[at + len(cand) - 1] + 1
+            return detail[start:end]
+    return None
+
+
+def clause_differences(clause: str, span: str) -> str:
+    """What separates a receipt's `span` from the clause, in a few words (GRPH-1020)."""
+    import difflib
+
+    diffs: list[str] = []
+    sm = difflib.SequenceMatcher(None, clause.lower(), span.lower(), autojunk=False)
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op == "equal":
+            continue
+        want, got = clause[i1:i2], span[j1:j2]
+        if op == "delete":
+            diffs.append(f"missing {want!r}")
+        elif op == "insert":
+            diffs.append(f"extra {got!r}")
+        else:
+            diffs.append(f"{got!r} where the clause has {want!r}")
+    if len(diffs) > 6:
+        diffs = diffs[:6] + [f"and {len(diffs) - 6} more"]
+    return ", ".join(diffs) or "differs only in case"
+
+
+def describe_near_misses(clauses: list[str], evidence: list[dict]) -> dict[str, str]:
+    """For each clause a `{kind: test}` receipt names approximately, the sentence saying
+    how it differs. A clause no receipt mentions at all is absent here (GRPH-1020)."""
+    details = [str(e.get("detail") or "") for e in (evidence or [])
+               if isinstance(e, dict) and e.get("kind") == "test" and e.get("detail")]
+    out: dict[str, str] = {}
+    for c in clauses:
+        span = near_match(c, details)
+        if span is not None:
+            out[c] = f'"{c}" — the receipt reads "{span}" ({clause_differences(c, span)})'
+    return out
+
+
 def needs_reviewer_visual(clause: str) -> bool:
     """A clause about a screenshot is about something a reviewer has to LOOK at (GRPH-945)."""
     return "screenshot" in clause.lower()
@@ -3058,9 +3550,10 @@ def review_diversity(reviewer: dict, builder: dict, *, built_by: str | None) -> 
     does not gate on it: a default refusal of same-vendor review would leave a single-vendor
     shop unable to review anything, which is how a gate earns being routed around (GRPH-321).
 
-    Compared through `canonical_vendor` (GRPH-1120). The sentence still quotes the spellings
-    that were stored, so an old `grok` row beside a new `xai` row stays legible — and says
-    they are one vendor, which a raw string compare reported as two.
+    Compared through `canonical_vendor` (GRPH-1090). The sentence still quotes the spellings
+    that were stored, so an old `grok` row beside a new `xai` row — or `claude` beside
+    `anthropic` — stays legible and says they are one vendor, which a raw string compare
+    reported as two.
     """
     who = f"{reviewer['vendor']}:{reviewer['model']} (tier {reviewer['tier']})"
     if not built_by:
@@ -3137,6 +3630,13 @@ def require_reviewer_sabotage(db: Session, item: Item, fresh: list) -> None:
     need = max(1, int(params.get("min_tests_failed", 1)))
     best = max((e.get("tests_failed") or 0 for e in items_svc.sabotage_receipts(fresh)),
                default=0)
+    if best < need and state.get("state") == "observing":
+        # GRPH-1777: observing records what it would have refused, and lets the sign-off through.
+        from app.services import rule_observations
+        rule_observations.record(db, item.project_id, SABOTAGE_REQUIRED_RULE, "would_refuse",
+                                 item_id=item.id, commit=item.head_commit,
+                                 detail={"need": need, "best": best})
+        return
     if best < need:
         raise SabotageRequired(
             f"{item.key} cannot be signed off while {SABOTAGE_REQUIRED_RULE} is on without a "
@@ -3710,6 +4210,13 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # description — signed off with `acceptance_coverage: passed` and "not checked", so the
     # receipt vouched for a check that had read nothing.
     clauses, unreadable = parse_acceptance(item.description or "")
+    # A line item or blocking fix is filed WITH clauses and touchpoints (GRPH-1683). A
+    # historical fix with neither a line nor a PRD keeps today's pass on no clauses.
+    if items_svc.is_filed_fix(db, item) and (not clauses or not item.touchpoints):
+        gone = ("acceptance clauses" if not clauses else "touchpoints")
+        raise FiledFixShape(
+            f"{item.key} is a filed fix and has no {gone} left: a line item or blocking fix "
+            "signs off only against `## Acceptance` clauses and declared touchpoints")
     if unreadable:
         raise UnreadableAcceptance(
             f"{item.key} states acceptance the gate cannot read: " + "; ".join(unreadable)
@@ -3752,10 +4259,23 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
                     f'"{denial_in(c, line)}"'
                     for c, line in contradicted.items())
                 + ". " + DENIAL_RULE)
-        if uncovered:
+        # GRPH-1020: a clause a receipt named NOT verbatim is a different state from one
+        # nothing names, and saying "no named test" for it sends the reviewer to write a
+        # test that exists. The near-miss is reported apart, with what differs.
+        near = describe_near_misses(uncovered, merged)
+        own_near = describe_near_misses(builder_only, fresh)
+        absent = [c for c in uncovered if c not in near]
+        if absent:
             problems.append(
-                f"{len(uncovered)} acceptance clause(s) with no named test: "
-                + "; ".join(f'"{c}"' for c in uncovered))
+                f"{len(absent)} acceptance clause(s) with no named test: "
+                + "; ".join(f'"{c}"' for c in absent))
+        if near or own_near:
+            both = {**near, **own_near}
+            problems.append(
+                f"{len(both)} acceptance clause(s) named only approximately — coverage needs "
+                "the clause text verbatim (case-insensitive), and a near-match is "
+                f"{NEAR_MATCH_RULE}. Copy each clause exactly: " + "; ".join(both.values()))
+        builder_only = [c for c in builder_only if c not in own_near]
         if builder_only:
             problems.append(
                 f"{len(builder_only)} acceptance clause(s) named only by evidence the reviewer "
@@ -3808,7 +4328,31 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # A waiver is only ever honoured on a predicate whose check COULD NOT RUN — never on one
     # that ran and failed. Waiving a real failure would launder it, which is the opposite of
     # what the override exists for (GRPH-1007).
+    #
+    # `dependencies_done` is the exception that acceptance names (GRPH-1292). The check DID
+    # run, the dependency is still open, and the planner records why that is accepted. The
+    # predicate is stored passed, with the reason, so the waiver is on the receipt rather
+    # than a bypass of a failed comparison. A blank reason is not a waiver.
     waived = _waiver(waive)
+    open_deps = unfinished_dependencies(db, item)
+    dep_why = str(waived.get("dependencies_done") or "").strip()
+    if open_deps and not dep_why:
+        raise DependenciesOpen(
+            f"{item.key} still depends on work that is not done: {', '.join(open_deps)}. "
+            "Finish those items, or waive the check on the record with "
+            'waive={"dependencies_done": "<why>"}.'
+        )
+    if open_deps:
+        # The note is the record when this sign-off names no commit: the attestation
+        # below exists only when one was passed, and a waiver that lives only there
+        # would vanish on the path most sign-offs take.
+        note = items_svc.normalize_evidence([{
+            "kind": "note",
+            "detail": (
+                f"dependencies_done waived ({dep_why}). Still open: {', '.join(open_deps)}"
+            ),
+        }])
+        fresh, merged = fresh + note, merged + note
 
     reviewer = declared_capabilities(db, agent_id)
     builder = declared_capabilities(db, item.built_by)
@@ -3904,6 +4448,16 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
                             else "description states no acceptance clauses; nothing to check")},
             ],
         }])
+        if open_deps:
+            attestation[0]["predicates"].append({
+                "name": "dependencies_done",
+                "passed": True,
+                "waived": dep_why,
+                "detail": (
+                    f"still open: {', '.join(open_deps)}; accepted on the record "
+                    f"because {dep_why}"
+                ),
+            })
         fresh, merged = fresh + attestation, merged + attestation
     if external_ci:
         # GRPH-1619: the deliverable is in a repo whose CI does not report to Graphban, so the
@@ -3998,6 +4552,11 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     item.claimed_at = None
     db.commit()
     db.refresh(item)
+    # GRPH-1772. This path writes `done` itself, so `update_item`'s release does not run.
+    from app.services.waits import release_when_blocking_fix_done
+    release_when_blocking_fix_done(db, item)
+    # GRPH-1530. Same reason: a named dependency blocker clears on this writer too.
+    items_svc.release_when_named_blockers_done(db, item)
     from app.services import observations as observations_svc
     observations_svc.on_sign_off(db, item, fresh)
     observations_svc.on_rules_passed(db, item, SIGN_OFF_RULES)
@@ -4083,6 +4642,42 @@ def bounce_needs_tier(item: Item) -> str | None:
         return None
     tier = reason[len(NEEDS_TIER_PREFIX):].split(":", 1)[0].strip()
     return tier or None
+
+
+def agent_declared_tier(db: Session, agent_id: str | None) -> str | None:
+    """The tier this agent declared, or None when it declared none (GRPH-1647).
+
+    None is the mismatch rule's `undeclared` (PRD-35 D8): a missing agent, a missing
+    field, a blank, or the literal `undeclared`. It is not a tier, so it is not below
+    one. Refusing it would decide an unknown, and an empty claim would do that silently.
+    """
+    if not agent_id:
+        return None
+    agent = db.get(Agent, agent_id)
+    if agent is None:
+        return None
+    tier = (agent.capabilities or {}).get("tier")
+    if not isinstance(tier, str):
+        return None
+    tier = tier.strip()
+    if not tier or tier == UNDECLARED:
+        return None
+    return tier
+
+
+def tier_is_below(declared: str | None, needs: str | None) -> bool:
+    """Whether `declared` is strictly below the tier a bounce named.
+
+    No named tier, or no declared tier: not below. A spelling outside the tier order is
+    not ordered either, so it is not below — the same decision `undeclared` gets.
+    """
+    if not needs or declared is None:
+        return False
+    from app.services.delegation import TIERS
+    try:
+        return TIERS.index(declared) < TIERS.index(needs)
+    except ValueError:
+        return False
 
 
 def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
@@ -4330,6 +4925,38 @@ def review_claim_holder(item: Item, *, now: datetime | None = None,
     if review_claim_lapse(item, now=now, lease_seconds=lease_seconds) is not None:
         return None
     return item.review_claimed_by
+
+
+def review_hold_read(item: Item, *, now: datetime | None = None,
+                     lease_seconds: int = DEFAULT_LEASE_SECONDS) -> dict:
+    """The review hold a reader is allowed to see (GRPH-1290).
+
+    `holder` is `review_claim_holder`: None once the claim has lapsed, and None when
+    nobody took it. `lapse` is why, present only when a claim existed and is not live.
+    `lapses_in` is seconds until the age clock, and only while the hold is live — a
+    contention line that says "no expiry" about a review row is how a drain waited
+    out a claim that had already ended.
+
+    One read. `review_claim_holder` and `review_claim_lapse` stay the definitions;
+    this only packages them so item reads and cluster holds cannot disagree.
+
+    A collision stand-in can sit in `review` without the claim columns. The exclusive-prefix
+    pool is one (`test_review_hold_keeps_the_prefix_and_frees_the_unrelated`): `_occupy_review_globs`
+    asks this read for every review member, and `review_claim_lapse` then touches
+    `review_claimed_by` as a row attribute. That raised AttributeError on both engines.
+    A member that does not carry the column has no claim — the same answer as a null column,
+    not a live holder and not a crash.
+    """
+    if not hasattr(item, "review_claimed_by"):
+        return {"holder": None, "lapse": None, "lapses_in": None}
+    lapse = review_claim_lapse(item, now=now, lease_seconds=lease_seconds)
+    holder = None if lapse is not None else item.review_claimed_by
+    lapses_in = None
+    if holder and item.review_claimed_at is not None:
+        now = now or datetime.now(timezone.utc)
+        elapsed = int((now - _aware(item.review_claimed_at)).total_seconds())
+        lapses_in = max(0, lease_seconds - elapsed)
+    return {"holder": holder, "lapse": lapse, "lapses_in": lapses_in}
 
 
 def bounce_pin_holder(item: Item, *, now: datetime | None = None) -> str | None:
@@ -4750,6 +5377,9 @@ def project_hard_areas(db: Session, project_id: str | None) -> tuple[str, ...]:
     from app.services import rule_toggles
     if rule_toggles.EXCLUSIVE_AREAS_RULE not in rule_toggles.LIBRARY:
         return HARD_AREAS
+    # GRPH-1777: an observing rule holds nothing; `claim_cluster` records what it would have.
+    if rule_toggles.observing_since(db, rule_toggles.EXCLUSIVE_AREAS_RULE, project_id):
+        return ()
     return rule_toggles.exclusive_paths(db, project_id)
 
 
@@ -4760,9 +5390,30 @@ def hard_collide(a: list[str], b: list[str],
     Reservation checks use this; `areas_collide` still defines clustering, so items that
     overlap stay one cluster for one agent, while two DRAINS no longer block each other on
     files git can merge."""
-    return [x for x in areas_collide(a, b)
-            if is_hard_area(x, hard_areas)
-            or any(is_hard_area(y, hard_areas) and areas_collide([x], [y]) for y in b)]
+    out = [x for x in areas_collide(a, b)
+           if is_hard_area(x, hard_areas)
+           or any(is_hard_area(y, hard_areas) and areas_collide([x], [y]) for y in b)]
+    # GRPH-1742: two DIFFERENT files under one exclusive prefix never overlap, yet that is the
+    # case the rule exists for (two new migrations, two alembic heads). Name the prefix.
+    for prefix in shared_exclusive_prefixes(a, b, hard_areas):
+        if prefix not in out:
+            out.append(prefix)
+    return out
+
+
+def _under_prefix(area: str, prefix: str) -> bool:
+    n = _normalise_area(area)
+    while n.endswith("*") or n.endswith("/"):
+        n = n.rstrip("*").rstrip("/")
+    return bool(n) and (n == prefix or n.startswith(prefix + "/"))
+
+
+def shared_exclusive_prefixes(a: list[str], b: list[str],
+                              hard_areas: tuple[str, ...] | list[str] | None = None) -> list[str]:
+    """The exclusive prefixes that BOTH area sets have an area under (GRPH-1742)."""
+    hards = HARD_AREAS if hard_areas is None else _hard_paths(hard_areas)
+    return [h for h in hards
+            if any(_under_prefix(x, h) for x in a or []) and any(_under_prefix(y, h) for y in b or [])]
 
 
 def reserve_areas(db: Session, *, agent_id: str, item_id: str, areas: list[str],
@@ -4893,29 +5544,63 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     # Scoping here rather than skipping out-of-scope members below is also what keeps
     # `claim_item`'s refusal unreachable from this path: the two agree by construction.
     scope = items_svc.seat_scope(db, agent_id)
+    scope_line = items_svc.seat_line(db, agent_id)
+    scope_prd = "" if scope_line else scope
     #: (mine, theirs) for the first collision of each refused cluster — the refusal names both.
     collided: list[tuple[str, str]] = []
+    #: Items skipped because the caller's declared tier is below the bounce (GRPH-1647).
+    tier_blocks: list[dict] = []
     hards = project_hard_areas(db, project_id)
+    # GRPH-1777: the paths an OBSERVING `plan.exclusive_areas` would hold, else none.
+    from app.services import rule_toggles as rule_toggles_mod
+    observed = (rule_toggles_mod.exclusive_paths(db, project_id)
+                if not hards and rule_toggles_mod.observing_since(
+                    db, rule_toggles_mod.EXCLUSIVE_AREAS_RULE, project_id) else ())
 
     for cluster in collision_svc.clusters_for_project(db, project_id,
                                                        lease_seconds=lease_seconds,
-                                                       prd_id=scope or None):
+                                                       prd_id=scope_prd or None,
+                                                       line_id=scope_line or None):
         members = set(cluster.get("items") or [])
         free = set().union(*[o for o in overrides if members <= o]) if overrides else set()
         blocked = [r.area for r in taken if r.agent_id != agent_id and r.item_id not in free]
         overlap = hard_collide(cluster.get("areas") or [], blocked, hards)
+        if not overlap and observed:
+            would = hard_collide(cluster.get("areas") or [], blocked, observed)
+            if would:
+                from app.services import rule_observations
+                for r in taken:
+                    if r.agent_id != agent_id and r.item_id not in free and hard_collide(
+                            cluster.get("areas") or [], [r.area], observed):
+                        rule_observations.record(
+                            db, project_id, rule_toggles_mod.EXCLUSIVE_AREAS_RULE, "would_hold",
+                            item_id=(cluster.get("items") or [None])[0],
+                            detail={"areas": would, "held_by": r.agent_id,
+                                    "held_item": r.item_id})
+                        break
         if overlap:
             if len(collided) < 3:
                 collided.extend(colliding_pairs(cluster.get("areas") or [], blocked, hard=True,
                                                 hard_areas=hards)[:1])
             continue
         ids = (cluster.get("items") or [])[:_capped(db, project_id, cluster, max_items)]
-        claimed = [it for it in (items_svc.claim_item(db, i, agent_id, lease_seconds=lease_seconds)
-                                 for i in ids) if it is not None]
+        claimed = []
+        for i in ids:
+            try:
+                it = items_svc.claim_item(db, i, agent_id, lease_seconds=lease_seconds)
+            except items_svc.TierBelowNeeds as e:
+                # A member the caller's tier cannot take. Skipped, not fatal: the rest of
+                # the cluster may still be claimable, and a raise here is a 500 out of the
+                # loop. The empty reply names `needs_tier` rather than "nothing ready".
+                tier_blocks.append({"id": e.item_key, "needs_tier": e.needs_tier,
+                                    "declared_tier": e.declared_tier})
+                continue
+            if it is not None:
+                claimed.append(it)
         if not claimed:
-            # Lost the race for every item in this cluster — the optimistic guard in
-            # `_try_claim` resolved it against us. Try the next cluster rather than failing:
-            # a loser that gives up entirely turns a race into an idle agent.
+            # Lost the race, or every member was below this agent's tier. Try the next
+            # cluster. A tier skip stays on `tier_blocks` so the empty reply names
+            # `needs_tier` instead of "nothing ready".
             continue
         reserve_areas(db, agent_id=agent_id, item_id=claimed[0].id,
                       areas=cluster.get("areas") or [],
@@ -4935,12 +5620,30 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     # from having nothing to do.
     held = sorted({r.agent_id for r in taken if r.agent_id != agent_id})
     soonest = min((r.expires_at for r in taken if r.agent_id != agent_id), default=None)
-    if held:
+    # GRPH-1711: a line seat whose pool is only unready items gets NO clusters, so nothing
+    # collided — saying "collide" there points the caller at a reservation that is not the
+    # cause. A real collision still wins; otherwise the unready items are the answer. Gated on
+    # `scope_line` because `unready_line_items` is the line pool only for a line seat.
+    unready = (items_svc.unready_line_items(db, project_id)
+               if scope_line and not collided else [])
+    if unready:
+        named = "; ".join(f"{u['id']} (missing {' and '.join(u['missing'])})" for u in unready)
+        reason = (f"nothing is claimable inside {scope}: the line's open items are unready — "
+                  f"{named}. Writing an `## Acceptance` clause and touchpoints on an item "
+                  f"puts it in the claim pool")
+    elif held:
         free_in = max(0, int((_aware(soonest) - now).total_seconds())) if soonest else None
         reason = ("all ready clusters collide with areas held by "
                   + ", ".join(held)
                   + (f" ({describe_pairs(collided)})" if collided else "")
                   + (f" — the earliest frees in {free_in}s" if free_in is not None else ""))
+    elif tier_blocks and not held and not collided:
+        # The board is not empty. Every ready item this sweep could see asked for a tier
+        # above the one this agent declared. Saying "nothing ready" would send the worker
+        # home (GRPH-1647).
+        shown = ", ".join(f"needs_tier={t}" for t in sorted({b["needs_tier"] for b in tier_blocks}))
+        reason = (f"{shown}: this agent's declared tier is below the tier the last bounce "
+                  "named, so those items were skipped")
     else:
         # Two states, and the difference decides what the caller does next: an unscoped agent
         # with nothing to claim is done, a scoped one may be done only INSIDE its wave. Saying
@@ -4948,8 +5651,15 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
         reason = ("nothing ready to claim" if not scope else
                   f"nothing ready to claim inside {scope}, which is the scope this seat was "
                   f"minted for — the project may have other work, and this seat may not take it")
-    return {"claimed": False, "items": [], "areas": [], "predicted": False,
-            "held_by": held, "reason": reason, "scope": scope}
+        if tier_blocks:
+            shown = ", ".join(
+                f"needs_tier={t}" for t in sorted({b["needs_tier"] for b in tier_blocks}))
+            reason = f"{reason}; {shown}"
+    out = {"claimed": False, "items": [], "areas": [], "predicted": False,
+           "held_by": held, "reason": reason, "scope": scope}
+    if tier_blocks:
+        out["needs_tier"] = tier_blocks
+    return out
 
 
 def holds_reservation(db: Session, *, agent_id: str, item_id: str) -> bool:
@@ -5108,6 +5818,7 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
                     reissued_from: str | None = None, item_id: str | None = None,
                     delegation_id: str | None = None,
                     prd_id: str | None = None,
+                    line_id: str | None = None,
                     review_only: bool = False,
                     bound_only: bool = False) -> tuple[Enrolment, str]:
     """Mint one SEAT and return (row, plaintext). The code is shown once.
@@ -5122,6 +5833,10 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
     if role not in ROLES + (ALL_IN_ONE,):
         raise ValueError(
             f"unknown role: {role!r}; valid roles are {', '.join(ROLES)}")
+    if prd_id and line_id:
+        # GRPH-1685. A seat has one scope. Both would be a seat that claims nothing, or one
+        # whose scope depends on which column a reader checked first.
+        raise ValueError("a seat cannot be scoped to both a PRD and a line")
     if item_id and role != "worker":
         # PRD-36 D1: a bound seat is worker-only — a worker takes review through claim_review
         # and must not be steered to one item by whoever minted its seat.
@@ -5155,6 +5870,7 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
         # outlives whatever typed it, and a key that gets retagged would silently widen the
         # scope to everything.
         prd_id=prd_id or None,
+        line_id=line_id or None,
         # GRPH-988. Stored, not inferred: a seat that may review but not build is a fact
         # about the wave that minted it, and nothing downstream can reconstruct it.
         review_only=bool(review_only),
@@ -5173,6 +5889,7 @@ def mint_enrolment_as(db: Session, *, minter_id: str, project_id: str, role: str
                       api_key, wave: str | None = None, item_id: str | None = None,
                       delegation_id: str | None = None,
                       prd_id: str | None = None,
+                      line_id: str | None = None,
                       review_only: bool = False,
                       bound_only: bool = False) -> tuple[Enrolment, str]:
     """A planner mints a seat for an agent it is about to spawn (PRD-19 E7 / D-g).
@@ -5203,6 +5920,7 @@ def mint_enrolment_as(db: Session, *, minter_id: str, project_id: str, role: str
             hint="mint a credential for that role in the Fleet view first")
     return issue_enrolment(db, project_id=project_id, role=role, wave=wave, minted_by=minter_id,
                            item_id=item_id, delegation_id=delegation_id, prd_id=prd_id,
+                           line_id=line_id,
                            review_only=review_only, bound_only=bound_only)
 
 
@@ -6071,7 +6789,8 @@ def park(db: Session, attempt, *, agent_id: str | None = None,
 #: GRPH-1591 adds `undeclared_held`: the touchpoint gate refused the PR, so a `review` item
 #: goes back to `in_progress` for its builder, with a directive naming the files.
 OBSERVATION_KINDS = ("cut_from", "pr_opened", "salvage", "withheld", "merged_trunk",
-                     "behind_conflict", "undeclared_warned", "undeclared_held")
+                     "behind_conflict", "undeclared_warned", "undeclared_held",
+                     "rule_would_have")
 OBSERVATION_LATER = ("pushed_head",)
 
 _CUT_BASE = re.compile(r"^[0-9a-f]{7,40}$")
@@ -6498,11 +7217,35 @@ def _record_lease(db: Session, item: Item, *, branch: str, agent_id: str | None,
     return {"item_id": item.key, "kind": "lease", "recorded": True, "extended": True}
 
 
+def _record_rule_would_have(db: Session, item: Item, *, rule_id: str | None,
+                            outcome: str | None, commit: str | None, branch: str,
+                            reason: str | None) -> dict:
+    """GRPH-1778 (P91 S6): the supervisor reports what an OBSERVING supervisor-enforced rule
+    would have done. Only the rules and outcomes in `SUPERVISOR_OUTCOMES`; a rule that is not
+    observing records nothing (the supervisor read a stale toggle)."""
+    from app.services import rule_observations as ro
+    from app.services import rule_toggles
+    allowed = ro.SUPERVISOR_OUTCOMES.get((rule_id or "").strip())
+    if allowed is None:
+        raise ObservationError(
+            422, f"rule_would_have names one of {', '.join(sorted(ro.SUPERVISOR_OUTCOMES))}")
+    if outcome not in allowed:
+        raise ObservationError(422, f"{rule_id} records {', '.join(allowed)}, not {outcome!r}")
+    if not rule_toggles.observing_since(db, rule_id, item.project_id):
+        return {"item_id": item.key, "kind": "rule_would_have", "recorded": False,
+                "reason": f"{rule_id} is not observing"}
+    detail = {k: v for k, v in (("branch", branch), ("reason", (reason or "").strip())) if v}
+    ro.record(db, item.project_id, rule_id, outcome, item_id=item.id,
+              commit=(commit or None), detail=detail)
+    return {"item_id": item.key, "kind": "rule_would_have", "recorded": True}
+
+
 def record_observation(db: Session, api_key, *, item_key: str, kind: str,
                        branch: str = "", base: str | None = None,
                        url: str | None = None, commit: str | None = None,
                        reason: str | None = None, agent_id: str | None = None,
-                       seats: Sequence[str] | None = None) -> dict:
+                       seats: Sequence[str] | None = None, rule_id: str | None = None,
+                       outcome: str | None = None) -> dict:
     """Record one supervisor fact on an item this credential's wave cut.
 
     `kind="seats"` writes nothing: it is the start-up check (`check_seats`, GRPH-1648),
@@ -6535,6 +7278,9 @@ def record_observation(db: Session, api_key, *, item_key: str, kind: str,
     if not _wave_cut_item(db, api_key, item):
         raise ObservationError(404, "no such item")
     cleaned = (branch or "").strip()
+    if kind == "rule_would_have":
+        return _record_rule_would_have(db, item, rule_id=rule_id, outcome=outcome,
+                                       commit=commit, branch=cleaned, reason=reason)
     if kind == "lease":
         return _record_lease(
             db, item, branch=cleaned, agent_id=agent_id, commit=commit)

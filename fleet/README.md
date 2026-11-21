@@ -568,6 +568,16 @@ again on the next tick, without a restart. The summary prints one line per outco
 `MERGED`, `MERGE PENDING` (auto-merge armed, the forge merges when its requirements are met),
 `MERGE SKIPPED`, `MERGE HELD` — because those are different facts a person acts on differently.
 
+A closed PR is not a merge target (GRPH-1577). When the item still names an older PR — the
+first URL in its evidence, or a `pr` field left on a superseded branch — the merge uses the
+open PR whose head is the signed-off commit. A closed PR for the old branch is skipped and
+the next candidate is tried. A miss that can still clear (CI has not attested `suite_green`,
+a cooldown, auto-merge armed) keeps the item in the drain: `until` waits and asks again, and
+does not exit `idle` while that signed-off item is unmerged. If the process has to stop
+first, the reason is `merge-pending` and the summary names the item. A conflict, or a head
+that moved after sign-off, reopens the item to `next` and records a note naming the files or
+the commits.
+
 Under `up --merge` the supervisor's client gains three tools it does not otherwise hold —
 `get_item_details`, `related_work` and one write, `update_item` for the receipt. That is the
 widening PRD-22 §4 warns about, taken only under the flag that asks for it by name; a plain
@@ -610,7 +620,7 @@ divvy no longer decides what its children claim. The outcome comes back through 
 `src/gbfleet/matrix.toml`, a committed table of harness × model × lane × tier rows
 with a status (`verified`, `unverified`, `failed`, `unregistered`) and the item that proved
 it — facts only, reviewed like code. Resolution runs in a fixed order: the rows for the
-tier → the project's policy (`local_only`, `allowed_harnesses`) → the user's profile (an ordered allowlist of harnesses, weights
+tier → the project's policy (`local_only`, `allowed_harnesses`) → the user's profile (an ordered allowlist of harnesses or `harness:model` keys, weights
 over `cost`/`quality`/`latency`/`locality`, excludes) → `failed` rows out → what this
 machine has installed → score → ties (verified first, then the user's own order, then the
 row's `order`). Profile and policy come from the server: `gbfleet mcp` and `gbfleet until`

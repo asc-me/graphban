@@ -3,8 +3,8 @@ import { useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { RowSyncState, SyncPathFact, SyncReport, SyncStorageStatus } from "@/lib/api";
-import { useRunSyncStorage, useSaveSyncStorage } from "@/lib/queries";
+import type { PublishDestination, RowSyncState, SyncPathFact, SyncReport, SyncStorageStatus } from "@/lib/api";
+import { useRunSyncStorage, useSaveDestination, useSaveSyncStorage } from "@/lib/queries";
 
 import type { ConflictRecordState } from "./ConflictRecordView";
 
@@ -38,6 +38,7 @@ interface Props {
 export function SyncStoragePanel({ projectId, data, isLoading, isError, onRetry }: Props) {
   const navigate = useNavigate();
   const save = useSaveSyncStorage(projectId);
+  const saveDestination = useSaveDestination(projectId);
   const run = useRunSyncStorage(projectId);
   // The report of a sync this panel just ran; otherwise the read-only preview.
   const [ranReport, setRanReport] = React.useState<SyncReport | null>(null);
@@ -101,6 +102,11 @@ export function SyncStoragePanel({ projectId, data, isLoading, isError, onRetry 
               saving={save.isPending}
               onSave={(v) => save.mutateAsync({ folder_path: v })}
             />
+            <DestinationFact
+              destination={data.destination}
+              saving={saveDestination.isPending}
+              onSave={(path, branch) => saveDestination.mutateAsync({ path, branch })}
+            />
             <PathFact
               testId="fact-blobs"
               label="Blob directory"
@@ -128,6 +134,11 @@ export function SyncStoragePanel({ projectId, data, isLoading, isError, onRetry 
           {save.isError && (
             <p className="mt-2 text-small text-danger" role="alert">
               Not saved: {(save.error as Error).message}
+            </p>
+          )}
+          {saveDestination.isError && (
+            <p className="mt-2 text-small text-danger" role="alert">
+              Destination not saved: {(saveDestination.error as Error).message}
             </p>
           )}
           {run.isError && (
@@ -191,6 +202,86 @@ function LastRun({ data }: { data: SyncStorageStatus }) {
       <span className="text-faint">Last sync {when}: </span>
       {what}
     </p>
+  );
+}
+
+function DestinationFact({
+  destination,
+  saving,
+  onSave,
+}: {
+  destination: PublishDestination | undefined;
+  saving: boolean;
+  onSave: (path: string, branch: string) => Promise<unknown>;
+}) {
+  const [path, setPath] = React.useState(destination?.path ?? "");
+  const [branch, setBranch] = React.useState(destination?.branch ?? "");
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    try {
+      await onSave(path.trim(), branch.trim());
+    } catch {
+      // The panel shows the refusal; keep what was typed.
+    }
+  }
+
+  return (
+    <div data-testid="fact-destination">
+      <dt className="text-small font-medium text-fg-2">Destination</dt>
+      <dd className="mt-0.5 text-small">
+        {destination == null ? (
+          <span className="text-faint">Destination was not reported.</span>
+        ) : (
+          <>
+            {destination.state === "unconfigured" ? (
+              <span className="text-fg-2">Unconfigured. No commit is attempted until both a destination and a branch are set.</span>
+            ) : destination.source === "org" ? (
+              <span className="font-mono text-meta text-fg-2">
+                {destination.url} · {destination.branch}
+              </span>
+            ) : (
+              <span className="font-mono text-meta text-fg-2">
+                {destination.path} · {destination.branch}
+              </span>
+            )}
+            {destination.source === "org" && (
+              <span className="block text-faint">From the org. The org admin owns this destination.</span>
+            )}
+            {destination.previous && (
+              <span className="block text-faint">Previous path, not used: {destination.previous.path}</span>
+            )}
+            <span className="block text-muted">
+              {destination.publishing ? "Publishing is on." : "Publishing is off."}
+            </span>
+            {destination.pull.state === "unknown" && (
+              <span className="block text-danger" role="status">
+                Pull unknown: {destination.pull.reason}
+              </span>
+            )}
+            {destination.pull.state === "refused" && (
+              <span className="block text-danger" role="status">
+                Pull refused: {destination.pull.reason}
+              </span>
+            )}
+            {destination.code_remote_match.checked && destination.code_remote_match.projects.length > 0 && (
+              <span className="block text-muted">
+                Matches the code remote of {destination.code_remote_match.projects.map((p) => p.project_id).join(", ")}.
+              </span>
+            )}
+            {destination.editable ? (
+              <form onSubmit={submit} className="mt-2 flex flex-wrap gap-2">
+                <Input aria-label="Destination path" value={path} placeholder="Absolute path on this box" onChange={(e) => setPath(e.target.value)} />
+                <Input aria-label="Destination branch" value={branch} placeholder="Branch" onChange={(e) => setBranch(e.target.value)} />
+                <Button type="submit" size="sm" disabled={saving}>
+                  Save destination
+                </Button>
+              </form>
+            ) : null}
+          </>
+        )}
+      </dd>
+    </div>
   );
 }
 

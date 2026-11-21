@@ -11,6 +11,7 @@ fully offline with `docker compose up`.
 - **[Design philosophy](design-philosophy.md)** — the harness-engineering principles the codebase is built to, and how they're enforced
 - **[Getting started](getting-started.md)** — install, run, first login, a guided tour
 - **[Native install](native-install.md)** — launchd / systemd team server, no Docker
+- **[HTTPS](https.md)** — the three tiers, trusting the box per device, the redirect rule and the HTTPS port
 - **[Release](release.md)** — stamp a CalVer, publish the tarball, Install from Settings
 - **[Architecture](ARCHITECTURE.md)** — how the system fits together and why
 
@@ -48,7 +49,7 @@ One guide per area of the left nav that the guides above do not already cover.
 
 | Doc | What it covers |
 | --- | --- |
-| [MCP tools](mcp.md) | The 78 MCP tools, JSON-RPC endpoint, API-key auth, error taxonomy, call metering |
+| [MCP tools](mcp.md) | The 81 MCP tools, JSON-RPC endpoint, API-key auth, error taxonomy, call metering |
 | [Grok Build](grok-build.md) | Connect Grok Build (xAI's coding CLI) to Graphban's MCP + prime it on the loop |
 | [Fleet on another machine](fleet-remote.md) | Standing a drain up on a Linux box — the vendor logins that cannot be scripted, `gbfleet service`, linger |
 | [Vendor adapters](fleet-adapters.md) | The fleet vendor-adapter support matrix |

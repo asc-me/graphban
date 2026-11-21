@@ -14,22 +14,34 @@ import { Collapsible } from "@/components/planner/Collapsible";
 import { hiddenSummary, scopeRows, statusMatches, useCondensed, useViews } from "@/components/planner/viewScope";
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Dot } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { RefusalRuleLink } from "@/features/activity/RefusalRuleLink";
 import { errorDetail, errorRuleId, isRefusal } from "@/lib/errors";
 import { BOARD_COLUMNS, STATUS_META, STATUS_ORDER } from "@/lib/meta";
 import { PALETTE_ITEM_PARAM } from "@/lib/palette-nav";
-import { useItems, useReorderItems, useUpdateItem } from "@/lib/queries";
+import {
+  useCreateLine,
+  useItems,
+  useItemsFull,
+  useLinks,
+  useMaintenanceLine,
+  useReorderItems,
+  useUnscopedFixes,
+  useUpdateItem,
+} from "@/lib/queries";
 import type { Item, Status } from "@/lib/types";
 
 import { ItemDetailPanel } from "./ItemDetailPanel";
 import { ItemRow } from "./ItemRow";
+import { fixBlockMaps, lineNeeds, type LineInfo } from "./LineBadges";
 import { NewItemDialog } from "./NewItemDialog";
 import { OwnerCloseDialog } from "./OwnerCloseDialog";
 import { useColumnPrefs } from "./columnPrefs";
 import { ColumnsPopover } from "./ColumnsPopover";
 import { TrackerBoard } from "./TrackerBoard";
+import { UnscopedFixes } from "./UnscopedFixes";
 
 /** Typed waits can PATCH `done` without an attestation — a human emptied them. */
 const WAIT_TAGS = new Set(["wait:merge", "wait:decision", "wait:secret", "wait:access", "wait:deploy"]);
@@ -50,8 +62,14 @@ function canPatchDone(item: Item): boolean {
 /** Planner-facing statuses: live work, not backlog/next/done. */
 /** The Response Needed filter: the server's `question_state`, not a second derivation. */
 const RESPONSE_NEEDED = "response_needed";
-const matches = (it: Item, filter: string) =>
-  filter === RESPONSE_NEEDED ? it.question_state === "response_needed" : statusMatches(it.status, filter, ACTIVE_STATUSES);
+/** The Maintenance filter: exclusive with the status chips, it lives in the same filter slot (GRPH-1701). */
+const MAINTENANCE = "maintenance";
+const matches = (it: Item, filter: string, lineId?: string | null) =>
+  filter === MAINTENANCE
+    ? !!lineId && it.line_id === lineId
+    : filter === RESPONSE_NEEDED
+      ? it.question_state === "response_needed"
+      : statusMatches(it.status, filter, ACTIVE_STATUSES);
 
 const ACTIVE_STATUSES: Status[] = ["in_progress", "review", "blocked"];
 
@@ -75,6 +93,10 @@ export function TrackerView() {
   const { activeId } = useProjectCtx();
   const { data: items = [], isLoading, isError, refetch } = useItems(activeId);
   const update = useUpdateItem();
+  const lineQ = useMaintenanceLine(activeId);
+  const unscopedQ = useUnscopedFixes(activeId);
+  const createLine = useCreateLine(activeId ?? "");
+  const linksQ = useLinks(activeId);
   const reorder = useReorderItems();
 
   const views = useViews("tracker");
@@ -119,7 +141,22 @@ export function TrackerView() {
       { activity: (it) => it.updated_at || it.created_at, finishedAt: (it) => (it.status === "done" ? it.done_at : null) },
     );
   const scoped = scopeOf(views.state);
-  const visible = scoped.shown.filter((it) => matches(it, filter));
+  const lineId = lineQ.data?.id ?? null;
+  const visible = scoped.shown.filter((it) => matches(it, filter, lineId));
+  const maintenanceOn = filter === MAINTENANCE;
+  // The list is lean (no description); the full read is fetched only to say what a line item still needs.
+  const fullQ = useItemsFull(activeId, maintenanceOn);
+  const descriptions = React.useMemo(
+    () => new Map((fullQ.data ?? []).map((i) => [i.id, i.description] as const)),
+    [fullQ.data],
+  );
+  const blockMaps = React.useMemo(() => fixBlockMaps(items, linksQ.data ?? []), [items, linksQ.data]);
+  const lineInfoOf = (it: Item): LineInfo => ({
+    needs: lineNeeds(it, descriptions.get(it.id)),
+    blockedBy: blockMaps.blockedBy.get(it.id) ?? [],
+    blocks: blockMaps.blocks.get(it.id) ?? [],
+  });
+  const lineCount = lineId ? scoped.shown.filter((it) => it.line_id === lineId).length : 0;
 
   // Chip counts follow the scope, so a chip's number is the rows it would show.
   const counts = React.useMemo(() => {
@@ -211,12 +248,27 @@ export function TrackerView() {
     />
   );
 
+  // Two different empty states: no line at all, or a line with nothing on it.
+  const maintenanceEmpty = lineQ.isError ? (
+    <PlannerError title="Maintenance line unavailable" onRetry={() => lineQ.refetch()} />
+  ) : lineQ.isLoading ? null : !lineId ? (
+    <div className="flex flex-col items-center gap-3 px-8 py-12 text-center">
+      <p className="text-[13px] text-muted">This project has no maintenance line.</p>
+      <Button type="button" variant="outline" size="sm" disabled={createLine.isPending} onClick={() => createLine.mutate()}>
+        Create the maintenance line
+      </Button>
+      {createLine.isError && <p role="alert" className="text-small text-st-blocked">Could not create the line.</p>}
+    </div>
+  ) : (
+    <PlannerFilteredEmpty message="The maintenance line has no items." onClear={clearFilter} />
+  );
+
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       <PlaceHeader
         viewName="Tracker"
         purpose="One linear stream. Priority + recency. Drag to reorder, click a status to advance it."
-        action={<NewItemDialog />}
+        action={<NewItemDialog openFromQuery />}
         condensed={condensed}
       />
 
@@ -227,7 +279,7 @@ export function TrackerView() {
         views={views}
         doneWord="done"
         countFor={(v) =>
-          scopeOf(v).shown.filter((it) => matches(it, v.status)).length
+          scopeOf(v).shown.filter((it) => matches(it, v.status, lineId)).length
         }
         leading={
           <>
@@ -259,6 +311,22 @@ export function TrackerView() {
             label="Response Needed"
             count={responseNeededCount}
           />
+          {/* After Response Needed (GRPH-1744). No line: no count, not a zero, and a dashed border. */}
+          <FilterChip
+            active={maintenanceOn}
+            onClick={() => setFilter(MAINTENANCE)}
+            label="Maintenance"
+            count={lineQ.data ? lineCount : undefined}
+            dashed={!lineQ.isLoading && !lineQ.isError && !lineId}
+            ariaLabel={
+              lineQ.isLoading || lineQ.isError
+                ? "Maintenance filter"
+                : lineId
+                  ? `Maintenance filter, ${lineCount} item${lineCount === 1 ? "" : "s"} on the line`
+                  : "Maintenance filter, this project has no line"
+            }
+          />
+          <UnscopedFixes projectId={activeId ?? ""} query={unscopedQ} items={items} lineId={lineId} />
         </div>
         </Collapsible>
       )}
@@ -290,10 +358,14 @@ export function TrackerView() {
         ) : isEmpty ? (
           emptyState
         ) : isFilteredEmpty ? (
-          <PlannerFilteredEmpty
-            message={`No items in this view${hidden ? ` — ${hidden}` : filterLabel(filter)}.`}
-            onClear={clearFilter}
-          />
+          maintenanceOn ? (
+            maintenanceEmpty
+          ) : (
+            <PlannerFilteredEmpty
+              message={`No items in this view${hidden ? ` — ${hidden}` : filterLabel(filter)}.`}
+              onClear={clearFilter}
+            />
+          )
         ) : (
           <TrackerBoard
             items={visible}
@@ -304,7 +376,9 @@ export function TrackerView() {
             onSelect={setSelectedId}
             onStatus={setStatus}
             columns={columns}
-            statuses={BOARD_COLUMNS.filter((st) => filter === RESPONSE_NEEDED || statusMatches(st, filter, ACTIVE_STATUSES))}
+            lineInfoOf={lineInfoOf}
+            emptyText={maintenanceOn ? "None on the line here" : undefined}
+            statuses={BOARD_COLUMNS.filter((st) => filter === RESPONSE_NEEDED || maintenanceOn || statusMatches(st, filter, ACTIVE_STATUSES))}
           />
         )
       ) : (
@@ -316,10 +390,14 @@ export function TrackerView() {
           ) : isEmpty ? (
             emptyState
           ) : isFilteredEmpty ? (
-            <PlannerFilteredEmpty
-              message={`No items in this view${hidden ? ` — ${hidden}` : filterLabel(filter)}.`}
-              onClear={clearFilter}
-            />
+            maintenanceOn ? (
+              maintenanceEmpty
+            ) : (
+              <PlannerFilteredEmpty
+                message={`No items in this view${hidden ? ` — ${hidden}` : filterLabel(filter)}.`}
+                onClear={clearFilter}
+              />
+            )
           ) : (
             visible.map((item) => {
               const globalIndex = ordered.findIndex((i) => i.id === item.id);
@@ -334,6 +412,7 @@ export function TrackerView() {
                   onMoveDown={() => moveItem(item.id, 1)}
                   canMoveUp={globalIndex > 0}
                   canMoveDown={globalIndex >= 0 && globalIndex < ordered.length - 1}
+                  lineInfo={lineInfoOf(item)}
                   dragging={dragId === item.id}
                   dragOver={overId === item.id && dragId !== item.id}
                   dragHandlers={{
@@ -370,6 +449,7 @@ export function TrackerView() {
 function filterLabel(filter: TrackerFilter): string {
   if (filter === "all") return "";
   if (filter === "active") return " (Active)";
+  if (filter === MAINTENANCE) return " (Maintenance)";
   if (filter === RESPONSE_NEEDED) return " (Response Needed)";
   return ` (${STATUS_META[filter as Status]?.label ?? filter})`;
 }
@@ -408,26 +488,36 @@ function FilterChip({
   label,
   count,
   color,
+  dashed = false,
+  ariaLabel,
 }: {
   active: boolean;
   onClick: () => void;
   label: string;
-  count: number;
+  /** Undefined draws no count at all — not a zero. */
+  count?: number;
   color?: string;
+  dashed?: boolean;
+  ariaLabel?: string;
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
+      aria-pressed={active}
+      aria-label={ariaLabel}
       className={cn(
         "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[12px] transition-colors",
         active
           ? "border-control-hover bg-surface-3 text-fg"
           : "border-control bg-surface-2 text-muted hover:border-control-hover hover:text-fg-2",
+        dashed && "border-dashed",
+        dashed && !active && "bg-transparent",
       )}
     >
       {color && <Dot color={color} />}
       {label}
-      <span className="font-mono text-[10px] text-faint">{count}</span>
+      {count !== undefined && <span className="font-mono text-[10px] text-faint">{count}</span>}
     </button>
   );
 }

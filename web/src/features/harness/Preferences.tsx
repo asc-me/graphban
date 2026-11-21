@@ -139,11 +139,19 @@ export function Preferences({ projectId, scope, profile, policy, onSaved }: {
         }
         caps.period = period;
       }
-      const out = await api.saveFleetPolicy({
+      // PUT /api/fleet/policy is a FULL replace: a key left out is cleared. So the policy this
+      // form does not show — routing mode, subscription order, tie-break, hold-until-reset,
+      // ladder, cluster ceiling — goes back as it was read. Building the body from these boxes
+      // alone reset every one of them to its default (GRPH-1716).
+      const body: { project_id: string } & FleetPolicy = {
+        ...(policy ?? {}),
         project_id: projectId, local_only: localOnly, reviewer_cross_vendor: crossVendor,
         allowed_harnesses: names(allowed),
-        ...(Object.keys(caps).length ? { caps } : {}),
-      });
+      };
+      // Caps are this form's alone: sending back a stored cap the boxes no longer show would
+      // make clearing one impossible.
+      if (Object.keys(caps).length) body.caps = caps; else delete body.caps;
+      const out = await api.saveFleetPolicy(body);
       setNote(out.policy ? `Policy saved for ${scope}.` : `Policy cleared for ${scope}: no constraint.`);
       onSaved();
     } catch (e) {
@@ -173,9 +181,9 @@ export function Preferences({ projectId, scope, profile, policy, onSaved }: {
             </span>
           </div>
           <label className="block text-[11.5px] text-muted">
-            Harnesses to consider, in order (empty = all)
+            Harnesses or harness:model to consider, in order (empty = all)
             <input className={field} aria-label="Default harnesses" value={defaults}
-                   onChange={(e) => setDefaults(e.target.value)} placeholder="gbagent, claude" />
+                   onChange={(e) => setDefaults(e.target.value)} placeholder="claude:opus, gbagent, claude" />
           </label>
           <label className="mt-2 block text-[11.5px] text-muted">
             Never use
@@ -220,7 +228,9 @@ export function Preferences({ projectId, scope, profile, policy, onSaved }: {
             axes (quality, latency) count only once five attempts exist. A budget target scores
             rows at or under it 1.0 on cost and does not remove them. A mix is a share of the
             last 20 launches in this project, not a cap, and does not apply until three
-            matrix-resolved launches exist.
+            matrix-resolved launches exist. A harness:model entry admits that model only and
+            ranks ahead of a later bare harness, so <code>claude:opus, claude</code> means opus
+            first, then any other claude model; a mix stays per harness.
           </p>
           <label className="mt-2 flex items-center gap-2 text-[12px]">
             <input type="checkbox" checked={overrideHere} onChange={(e) => setOverrideHere(e.target.checked)} />

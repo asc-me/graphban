@@ -8,7 +8,9 @@
 Self-host Settings groups instance-wide items under **This box** (do not rename that
 group). AI providers is which model the box runs on (GRPH-625); Cloud / Sync is
 instance-wide; unlinked Gitops is this project's process; Updates is whether this box is
-on the published stable cut; Log export is where the box's telemetry goes (GRPH-966).
+on the published stable cut; HTTPS (`/settings/deployment/https`, self-host only) is the
+box's own certificate: status, trusting it on a device, the names it covers (max 32), and the
+current CA download — never a private key (GRPH-1636); Log export is where the box's telemetry goes (GRPH-966).
 
 ### Updates
 
@@ -21,6 +23,15 @@ Native apply fetches the GitHub Release tarball and starts
 `graphban_host.py upgrade` when `/opt/graphban/current` exists. No helper and
 no native tree means `apply` is false, not a green Install. Hosted has Check
 and no Install.
+
+GitHub's REST budget (GRPH-1663): a definite answer is cached 10 minutes; requests
+send the stored ETag and a 304 reuses it (304s are not counted); on a 403/429 that
+says the budget is spent (`X-RateLimit-Remaining: 0`) no call is made before
+`X-RateLimit-Reset`, and the check reports “GitHub rate limit: retry after HH:MM
+(box clock)” — **Check for updates** does not bypass that. Install reuses the release
+the last successful check advertised, so it makes no GitHub API call. Set
+`GITHUB_TOKEN` ([configuration.md](configuration.md)) to lift the 60/hour
+unauthenticated limit.
 
 Three states: **current** (the page says this box is on the latest release),
 **available**, **unknown**. Unknown is not current: a failed feed fetch, or a
@@ -224,6 +235,22 @@ Edit the active project's **name**, **description**, and flags:
 - **Expose MCP tools for this project**
 
 Saved via `PATCH /api/projects/{id}`.
+
+### Publish to org
+
+Two switches for what a **linked** box publishes to your org's console for this project
+(GRPH-1674). Both are **on by default** — for new projects, and for existing projects on the
+upgrade that introduces them (migration 0204). An unlinked box publishes nothing, whatever
+they say.
+
+- **Specs** — spec title, body and status.
+- **Item digests** — item title, kind, status and touchpoints. Item bodies are never sent.
+
+Only a project **owner or admin** can change them (`PUT /api/projects/{id}/publish-to-org`
+with `{"specs": bool, "item_digests": bool}`, either or both; anyone else gets 403). Each
+change is an activity event, `publish_to_org`, naming who changed which flag. Turning one off
+removes what was published; turning it back on republishes on the next sync. To opt out after
+upgrading, untick it here.
 
 ## Members tab
 

@@ -2,9 +2,20 @@
 
 Driven through `_note_touchpoints`, the reap-time hold itself: a test that called
 `is_generated` alone would stay green with the rule unwired from the hold.
+
+GRPH-1823: `check-touchpoints` applies that same list. A test that only called
+`_generated_rule` would stay green if the command still passed the built-in list.
 """
+import json
+from pathlib import Path
+
+import pytest
+
 from gbfleet import observe, supervisor as sup
+from gbfleet.cli import RULE_UNREAD, main
+from gbfleet.client import ALLOWED_TOOLS
 from gbfleet.supervisor import Wave, _note_touchpoints
+from gbfleet import touchpoints as tp_mod
 
 DECLARED = ["backend/app/services"]
 
@@ -88,3 +99,183 @@ def test_up_client_may_read_the_rule(monkeypatch):
     client.allowed = frozenset({"get_item_details"})
     assert sup.generated_paths(client) == sup.DEFAULT_GENERATED
     assert "may not call" in seen[-1][1]["detail"]
+
+
+# ---- GRPH-1823: check-touchpoints applies the same list the supervisor would ---------------
+
+GEN = "client/generated/admin.py"
+STRAY = "notes/stray.py"
+KEPT = "src/kept.py"
+_DECLARED = [KEPT]
+
+
+def _paths():
+    return list(sup.DEFAULT_GENERATED) + ["client/generated/"]
+
+
+def _plant(repo: Path, *rels: str) -> None:
+    for rel in rels:
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x\n", encoding="utf-8")
+
+
+def _seat_toml(repo: Path) -> None:
+    _plant(repo, ".grok/config.toml")
+    (repo / ".grok" / "config.toml").write_text(
+        '[mcp_servers.graphban]\n'
+        'url = "http://ledger.test/api/mcp"\n'
+        "enabled = true\n"
+        "\n"
+        "[mcp_servers.graphban.headers]\n"
+        'X-API-Key = "gb_sk_test"\n',
+        encoding="utf-8",
+    )
+
+
+def _seat_json(repo: Path) -> None:
+    path = repo / ".cursor" / "mcp.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "mcpServers": {
+            "graphban": {
+                "type": "http",
+                "url": "http://ledger.test/api/mcp",
+                "headers": {"X-API-Key": "gb_sk_test"},
+            }
+        }
+    }), encoding="utf-8")
+
+
+def _seat_agy(repo: Path) -> None:
+    """The Antigravity seat, as `Agy.seat_config` writes it: `serverUrl`, never `url`.
+
+    A helper that only reads `url` / `httpUrl` finds no pair in this file. check-touchpoints
+    then uses the built-in list and holds `client/generated/admin.py` while the supervisor,
+    which already has the client, lets it through.
+    """
+    from gbfleet.adapters.agy import Agy
+    from gbfleet.seat import Seat
+
+    config = Agy().seat_config(
+        Seat(code="WORKER-AGY1", server_url="http://ledger.test", api_key="gb_sk_test")
+    )
+    stanza = config["mcpServers"]["graphban"]
+    assert stanza.get("serverUrl") == "http://ledger.test/api/mcp"
+    assert "url" not in stanza and "httpUrl" not in stanza
+    path = repo / ".agents" / "mcp_config.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(config), encoding="utf-8")
+
+
+def _held_names(out: str) -> list[str]:
+    marker = "this branch: "
+    if marker not in out:
+        return []
+    return [p.strip() for p in out.split(marker, 1)[1].splitlines()[0].split(", ") if p.strip()]
+
+
+class _ToggleClient:
+    """What both sides read: the item's touchpoints, and `build.generated_files`."""
+
+    def __init__(self, toggles, exc=None):
+        self.toggles, self.exc = toggles, exc
+        self.allowed = frozenset({"get_rule_toggles", "get_item_details"})
+        self.calls: list[str] = []
+
+    def call(self, tool, **kw):
+        self.calls.append(tool)
+        if self.exc and tool == "get_rule_toggles":
+            raise self.exc
+        if tool == "get_item_details":
+            return {"id": kw["id"], "touchpoints": list(_DECLARED)}
+        if tool == "get_rule_toggles":
+            return {"toggles": self.toggles}
+        raise AssertionError(tool)
+
+    def post_observation(self, **payload):
+        return {"recorded": True}
+
+
+class _Graphban(_ToggleClient):
+    """The client `check-touchpoints` constructs from the seat file."""
+
+    def __init__(self, base_url, api_key, toggles, exc=None, **kw):
+        super().__init__(toggles, exc)
+        self.base_url, self.api_key = base_url, api_key
+        # Match Graphban: omit `allowed` and the read is refused, not silently made.
+        self.allowed = kw.get("allowed", ALLOWED_TOOLS)
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+def _supervisor_held(changed: list[str], client) -> list[str]:
+    wave = Wave()
+    wave.touched["gb/w-1"] = list(changed)
+    _note_touchpoints(wave, _Child("gb/w-1", ["GRPH-1"]), client)
+    return list(wave.undeclared.get("gb/w-1") or [])
+
+
+def _run_both(git_repo, monkeypatch, capsys, toggles, seat, exc=None):
+    monkeypatch.setattr(observe, "emit", lambda *a, **k: None)
+    built = []
+
+    def factory(*a, **k):
+        client = _Graphban(*a, toggles=toggles, exc=exc, **k)
+        built.append(client)
+        return client
+
+    monkeypatch.setattr("gbfleet.cli.Graphban", factory)
+    seat(git_repo)
+    _plant(git_repo, GEN, STRAY, KEPT)
+    code = main(["check-touchpoints", "--path", str(git_repo), "--item", "GRPH-1",
+                 "--declared", KEPT])
+    out = capsys.readouterr().out
+    measured = tp_mod.measure_checkout(str(git_repo))
+    sup_held = _supervisor_held(measured, _ToggleClient(toggles, exc))
+    return code, out, _held_names(out), sup_held, built
+
+
+@pytest.mark.parametrize("seat", [_seat_toml, _seat_json, _seat_agy])
+def test_check_touchpoints_agrees_with_the_supervisor_when_the_rule_adds_a_prefix(
+        git_repo, monkeypatch, capsys, seat):
+    """An adopted `client/generated/` lets admin.py through on both sides, and still holds
+    a file the rule does not name.
+
+    `_seat_agy` is the file the command lists and used to skip: `serverUrl` only.
+    Dropping that field from `_pair_from_spec` leaves the toml and cursor seats green
+    and turns this case red — admin.py is named, and the two sides disagree.
+
+    Sabotage: make check-touchpoints pass `ignore=is_generated` with no paths — the
+    built-in list only. admin.py is named, the two sides disagree, and this goes red.
+    """
+    code, out, cli_held, sup_held, built = _run_both(
+        git_repo, monkeypatch, capsys, _rule(_paths()), seat)
+    assert cli_held == sup_held == [STRAY]
+    assert code == 1 and GEN not in out
+    assert built and built[0].base_url == "http://ledger.test"
+    assert built[0].api_key == "gb_sk_test" and built[0].closed
+    assert "get_rule_toggles" in built[0].calls
+    assert RULE_UNREAD not in out
+
+
+def test_an_observing_generated_files_rule_still_holds_the_file_on_both_sides(
+        git_repo, monkeypatch, capsys):
+    toggles = [{"rule_id": sup.GENERATED_RULE, "state": "observing",
+                "params": {"value": {"paths": _paths()}}}]
+    code, out, cli_held, sup_held, built = _run_both(
+        git_repo, monkeypatch, capsys, toggles, _seat_toml)
+    assert cli_held == sup_held == [GEN, STRAY]
+    assert code == 1 and GEN in out and RULE_UNREAD not in out
+    assert built[0].calls == ["get_rule_toggles"]
+
+
+def test_an_unreadable_rule_uses_the_built_in_list_on_both_sides_and_says_so(
+        git_repo, monkeypatch, capsys):
+    code, out, cli_held, sup_held, _built = _run_both(
+        git_repo, monkeypatch, capsys, _rule(_paths()), _seat_toml,
+        exc=RuntimeError("down"))
+    assert cli_held == sup_held == [GEN, STRAY]
+    assert code == 1 and RULE_UNREAD in out and "down" in out

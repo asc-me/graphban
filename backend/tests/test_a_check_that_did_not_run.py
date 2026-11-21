@@ -688,3 +688,118 @@ def test_coverage_keeps_a_denial_whose_verdict_is_on_the_next_line():
     assert "_lines_about(" in src, (
         "acceptance_contradicted no longer folds a denial that did not repeat the "
         "clause — the next line is skipped again")
+
+
+# ── GRPH-1020: a paraphrased clause is not an unnamed one ──────────────────────────────
+
+_PARAPHRASED = 'no override: `PYTHONPATH=src` is read "as is"'
+_ABSENT = "both DB engines green"
+_TAILED = "the index is written to `docs/prd-index.json` — the ledger row and the repo copy must agree"
+
+
+def _refusal(client, auth, clauses, receipt):
+    """The real `sign_off` refusal for `clauses` against one reviewer receipt."""
+    from app.db import SessionLocal
+    from app.services import fleet as fleet_svc
+    from app.services import items as items_svc
+
+    proj = client.post("/api/projects", json={"name": "NearMatch"}, headers=auth).json()["id"]
+    key = client.post("/api/api-keys", json={"name": "nm", "project_id": proj},
+                      headers=auth).json()["plaintext"]
+    db = SessionLocal()
+    try:
+        body = "\n".join(f"- {c}" for c in clauses)
+        it = items_svc.create_item(db, project_id=proj, title="a slice", effort=1,
+                                   description=f"## Acceptance\n\n{body}\n")
+        items_svc.update_item(db, item_id=it.id, status="review",
+                              evidence=[{"kind": "test", "detail": receipt}])
+        with pytest.raises(fleet_svc.MissingAcceptanceCoverage) as caught:
+            fleet_svc.sign_off(db, item_id=it.id, agent_id="GRPH-AX", api_key=key,
+                               evidence=[{"kind": "test", "detail": receipt}])
+    finally:
+        db.close()
+    return str(caught.value)
+
+
+def test_the_refusal_for_a_paraphrased_clause_differs_from_one_for_an_absent_clause(
+        client, auth):
+    """THE criterion. One receipt names the first clause with its quotes normalised and its
+    backticks dropped, and never mentions the second. The two are reported apart: the
+    paraphrase as a near-match with what differs, the absence as no named test.
+
+    Sabotage: report every uncovered clause as "no named test" again and this goes red.
+    """
+    receipt = ("Clause 'no override: PYTHONPATH=src is read 'as is'': "
+               "test_override_is_refused. 12 passed.")
+    msg = _refusal(client, auth, [_PARAPHRASED, _ABSENT], receipt)
+
+    absent_part = msg.split("with no named test:", 1)[1].split("|", 1)[0]
+    assert _ABSENT in absent_part, msg
+    assert _PARAPHRASED not in absent_part, (
+        f"a clause the receipt named, not verbatim, is reported as unnamed: {msg}")
+    assert "named only approximately" in msg, msg
+    # The span as the receipt wrote it, and what separates it from the clause.
+    assert "the receipt reads \"no override: PYTHONPATH=src is read 'as is\"" in msg, msg
+    assert "missing '`'" in msg, msg
+    # The definition is stated, not a mystery threshold.
+    assert "same order" in msg and "punctuation" in msg and "first dash" in msg, msg
+
+
+def test_a_dropped_dash_tail_is_a_near_match():
+    from app.services.fleet import describe_near_misses
+
+    receipt = [{"kind": "test",
+                "detail": "Clause 'the index is written to `docs/prd-index.json`': "
+                          "test_index. 3 passed."}]
+    near = describe_near_misses([_TAILED], receipt)
+    assert _TAILED in near, near
+    assert "the ledger row and the repo copy must agree" in near[_TAILED], near
+
+
+def test_a_clause_no_receipt_mentions_is_still_reported_as_unnamed(client, auth):
+    """The control: the hint must not fire on everything."""
+    from app.services.fleet import describe_near_misses
+
+    receipt = "test_unrelated covers the sync path. 4 passed."
+    assert describe_near_misses([_ABSENT, _PARAPHRASED], [{"kind": "test",
+                                                           "detail": receipt}]) == {}
+    msg = _refusal(client, auth, [_ABSENT], receipt)
+    assert f'with no named test: "{_ABSENT}"' in msg, msg
+    assert "approximately" not in msg, msg
+
+
+def test_a_near_match_is_whole_words_and_in_order():
+    from app.services.fleet import near_match
+
+    assert near_match("the scope is project", ["telescope is project"]) is None
+    assert near_match("the scope is project", ["project is the scope"]) is None
+    assert near_match("the scope is project", ["x: The `scope` is — project!"]) == (
+        "The `scope` is — project")
+
+
+def test_a_reviewer_who_paraphrased_a_builder_named_clause_is_told_so(client, auth):
+    """The second refusal in the gate: the builder named the clause verbatim, the reviewer
+    paraphrased it. Telling the reviewer to "pass your own {kind: test}" sends them to
+    post one they already posted."""
+    from app.db import SessionLocal
+    from app.services import fleet as fleet_svc
+    from app.services import items as items_svc
+
+    proj = client.post("/api/projects", json={"name": "NearOwn"}, headers=auth).json()["id"]
+    key = client.post("/api/api-keys", json={"name": "no", "project_id": proj},
+                      headers=auth).json()["plaintext"]
+    db = SessionLocal()
+    try:
+        it = items_svc.create_item(db, project_id=proj, title="a slice", effort=1,
+                                   description=f"## Acceptance\n\n- {_PARAPHRASED}\n")
+        items_svc.update_item(db, item_id=it.id, status="review",
+                              evidence=[{"kind": "test", "detail": f"{_PARAPHRASED}: ok"}])
+        with pytest.raises(fleet_svc.MissingAcceptanceCoverage) as caught:
+            fleet_svc.sign_off(db, item_id=it.id, agent_id="GRPH-AX", api_key=key,
+                               evidence=[{"kind": "test", "detail":
+                                          "no override - PYTHONPATH=src is read as is: ok"}])
+    finally:
+        db.close()
+    msg = str(caught.value)
+    assert "named only approximately" in msg, msg
+    assert "did not post" not in msg, msg

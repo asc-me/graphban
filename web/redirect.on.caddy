@@ -1,0 +1,7 @@
+# /api and /health are never redirected: agent and CLI configs that point at http:// keep
+# working (the API's redirect-check exempts them too).
+@redirectable not path /api /api/* /health
+forward_auth @redirectable {$API_SCHEME}://{$API_UPSTREAM} {
+	uri {$REDIRECT_CHECK_URI}
+	header_up Host {$API_UPSTREAM}
+}

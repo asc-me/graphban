@@ -35,6 +35,7 @@ from typing import Any, Iterator
 import httpx
 
 from . import __version__
+from . import observe
 
 #: Every Graphban tool the supervisor is permitted to call. Pinned exactly by
 #: `test_client.py`, so an addition fails a test rather than passing review.
@@ -242,7 +243,7 @@ class Graphban:
         """
         return self._post(SURFACE_PATH, payload, timeout=10.0)
 
-    def post_observation(self, **payload: Any) -> dict:
+    def post_observation(self, *, timeout: float = 10.0, **payload: Any) -> dict:
         """One fact about a tree this supervisor cut (GRPH-975).
 
         Raises on a refusal. `post_attempt` returns None because a lost measurement must
@@ -254,7 +255,7 @@ class Graphban:
         Goes through `_post` (strict). A second method that called `.post` itself would
         be a third door, which `test_client.py` pins shut.
         """
-        got = self._post(OBSERVATIONS_PATH, payload, timeout=10.0, strict=True)
+        got = self._post(OBSERVATIONS_PATH, payload, timeout=timeout, strict=True)
         if not isinstance(got, dict):
             raise ObservationRefused(f"{OBSERVATIONS_PATH}: empty reply")
         return got
@@ -270,7 +271,17 @@ class Graphban:
         url = self.base_url.rstrip("/") + path
         body = {k: v for k, v in payload.items() if v is not None}
         try:
-            reply = self._client().post(url, json=body, timeout=timeout)
+            # The same bound as MCP. `.post` on this thread is a recv the caller
+            # cannot leave; a server that accepts and never answers held the drain
+            # there with no log line (GRPH-1786).
+            reply = _post_within(self._client(), url, body, timeout)
+        except _Abandoned as exc:
+            self._http = None
+            if strict:
+                raise ObservationRefused(
+                    f"{path}: no complete reply within {timeout:g}s"
+                ) from exc
+            return None
         except httpx.HTTPError as exc:
             if strict:
                 raise ObservationRefused(f"{path}: {exc}") from exc
@@ -384,6 +395,71 @@ class _Abandoned(httpx.ReadTimeout):
     """The deadline passed with the exchange still running: `client` is being closed behind it."""
 
 
+def _wait_bounded(done: threading.Event, deadline: float) -> bool:
+    """Whether `done` was set before `deadline` seconds.
+
+    `Event.wait` takes the condition lock. On 2026-11-20 the drain's main thread
+    sat in that acquire for 50 minutes while its worker stayed in `poll` (GRPH-1786).
+    `is_set` reads the flag without that lock, and `time.sleep` returns whether or
+    not the condition does, so this wait ends when the clock says it ends.
+    """
+    if deadline < 0:
+        deadline = 0.0
+    end = time.monotonic() + deadline
+    while True:
+        if done.is_set():
+            return True
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.05, remaining))
+
+
+def _shutdown_pooled_sockets(client: httpx.Client) -> None:
+    """`SHUT_RDWR` on every pooled socket so a blocked `poll` returns.
+
+    `close()` from another thread does not interrupt `recv` on macOS (GRPH-1244).
+    Shutdown does, once the connection exists. Best effort: a connect that has not
+    reached a socket yet is left to the caller's deadline, which does not wait on it.
+    """
+    import socket
+
+    transport = getattr(client, "_transport", None)
+    pool = getattr(transport, "_pool", None)
+    if pool is None:
+        return
+    found: list[Any] = []
+    for attr in ("_connections", "_requests"):
+        bag = getattr(pool, attr, None)
+        if not bag:
+            continue
+        try:
+            items = list(bag)
+        except TypeError:
+            continue
+        for item in items:
+            found.append(item)
+            inner = getattr(item, "_connection", None)
+            if inner is not None:
+                found.append(inner)
+    for obj in found:
+        stream = getattr(obj, "_network_stream", None)
+        sock = None
+        if stream is not None and hasattr(stream, "get_extra_info"):
+            try:
+                sock = stream.get_extra_info("socket")
+            except Exception:  # noqa: BLE001 - a socket we cannot see is skipped
+                sock = None
+        if sock is None and stream is not None:
+            sock = getattr(stream, "_sock", None)
+        if sock is None:
+            continue
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+
 def _post_within(client: httpx.Client, url: str, body: dict, deadline: float) -> httpx.Response:
     """POST `body`, giving up after `deadline` seconds in TOTAL (GRPH-1179).
 
@@ -392,18 +468,21 @@ def _post_within(client: httpx.Client, url: str, body: dict, deadline: float) ->
     chunks. Raises `httpx.ReadTimeout`, so callers treat it as any other transport failure.
     """
     start = time.monotonic()
+    # A call that is still inside its own deadline is the loop working, not a silence.
+    observe.touch_loop()
     # GRPH-1235: waiting for the HEADERS happens inside `stream().__enter__`, where the chunk
     # check below cannot reach. Cap every httpx phase at the deadline so that wait is bounded
-    # too (the client's own 30s per-read timeout is the looser bound it replaces).
+    # too (the client's own 30s per-read timeout is the looser bound it replaces). No phase is
+    # left at None: httpcore treats a missing read timeout as a blocking recv, which is the
+    # `poll` the 2026-11-20 sample was stuck in.
     limit = min(deadline, getattr(client.timeout, "read", None) or deadline)
     # GRPH-1244: a peer that vanished without FIN/RST (half-open, e.g. over Tailscale) leaves the
     # request blocked in recv(), and `client.close()` from another thread does not interrupt that
-    # on macOS. So the exchange runs in a worker thread and the caller stops WAITING at the
-    # deadline instead of trying to unblock the read: nothing about the socket has to cooperate.
-    # (Shutting the socket down would need the connection, which does not exist yet while the
-    # headers are awaited inside `stream().__enter__`.) The abandoned daemon thread ends when its
-    # own read does; `client.close()` is attempted so it ends sooner where close() does work.
-    timeout = httpx.Timeout(limit)
+    # on macOS. The exchange runs on a worker. The caller sleeps on the monotonic clock and
+    # returns at the deadline even if that worker never sets `done` — `done.set` lives in
+    # `finally`, which does not run while `poll` is still inside the `with`. Shutdown is attempted
+    # so the worker can leave; the caller does not join it.
+    timeout = httpx.Timeout(connect=limit, read=limit, write=limit, pool=limit)
     outcome: dict[str, Any] = {}
     done = threading.Event()
 
@@ -427,9 +506,12 @@ def _post_within(client: httpx.Client, url: str, body: dict, deadline: float) ->
             done.set()
 
     threading.Thread(target=_exchange, name="gbfleet-post", daemon=True).start()
-    if not done.wait(deadline):
+    if not _wait_bounded(done, deadline):
+        _shutdown_pooled_sockets(client)
         # Closing can itself block on the stuck connection; never let it hold the caller.
         threading.Thread(target=_close_quietly, args=(client,), daemon=True).start()
+        observe.emit("call_timeout", url=url, deadline=deadline,
+                     waited=round(time.monotonic() - start, 1))
         raise _Abandoned(f"no complete reply within {deadline:g}s")
     if "error" in outcome:
         raise outcome["error"]

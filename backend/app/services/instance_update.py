@@ -41,7 +41,9 @@ _FETCH_TIMEOUT = 3.0
 # httpx timeouts are per phase and do not cover name resolution, so the whole check
 # also runs under one wall-clock deadline (CHECK_DEADLINE).
 CHECK_DEADLINE = 5.0
-CACHE_TTL = 60.0
+# A definite answer is kept 10 minutes (GRPH-1663): at 60 s an open Settings page could
+# spend GitHub's whole unauthenticated 60/hour on its own. The Check button refreshes.
+CACHE_TTL = 600.0
 _TAG_PREFIX = re.compile(r"^v", re.I)
 _GH_HEADERS = {"Accept": "application/vnd.github+json", "User-Agent": "graphban-api"}
 NOTES_STATES = ("present", "empty", "unknown")
@@ -131,7 +133,7 @@ CONTRACT_URL = ("https://raw.githubusercontent.com/asc-me/graphban/{tag}/"
                 "docs/rule-primitive-contract.json")
 #: A miss (unreachable, 404, malformed) is remembered this long so every update-check
 #: does not pay another outbound fetch; a definite answer is kept (a tag does not change).
-CONTRACT_MISS_TTL = CACHE_TTL
+CONTRACT_MISS_TTL = 60.0
 _contract_cache: dict[str, str] = {}
 _contract_miss: dict[str, float] = {}
 
@@ -187,19 +189,121 @@ def _note_reason(reason: str) -> None:
         holder["reason"] = reason
 
 
+# --- GitHub REST budget (GRPH-1663) ---------------------------------------------------
+# Unauthenticated REST calls share 60/hour per public IP. Three things keep the box inside
+# it: an optional token, conditional requests (a 304 does not count), and a backoff that
+# makes no call at all until GitHub's announced reset once it has said the budget is gone.
+_API_HOST = "https://api.github.com/"
+_lock = threading.Lock()
+#: url -> (etag, raw JSON body) of the last 200, so a 304 can reuse the body.
+_etags: dict[str, tuple[str, dict]] = {}
+#: tag -> parsed release from any successful fetch. Apply reads the advertised tag here
+#: instead of calling the API again.
+_by_tag: dict[str, dict] = {}
+#: The latest tag the feed last advertised ("" = none yet).
+_advertised: dict[str, str] = {"tag": ""}
+#: Wall-clock epoch seconds before which no api.github.com call is made (0 = none).
+_backoff: dict[str, float] = {"until": 0.0}
+
+
+def reset_github_state() -> None:
+    """Forget ETags, cached releases and the backoff. Tests and a fresh process only."""
+    with _lock:
+        _etags.clear()
+        _by_tag.clear()
+        _advertised["tag"] = ""
+        _backoff["until"] = 0.0
+
+
+def _gh_headers(url: str, etag: str = "") -> dict:
+    """Headers for one GitHub GET. The token goes to api.github.com only."""
+    h = dict(_GH_HEADERS)
+    token = (settings.github_token or "").strip()
+    if token and url.startswith(_API_HOST):
+        h["Authorization"] = f"Bearer {token}"
+    if etag:
+        h["If-None-Match"] = etag
+    return h
+
+
+def _retry_note(until: float) -> str:
+    return ("GitHub rate limit: retry after "
+            f"{time.strftime('%H:%M', time.localtime(until))} (box clock)")
+
+
+def backoff_until() -> float:
+    """Epoch seconds the rate-limit backoff lasts until, or 0.0 when there is none."""
+    until = _backoff["until"]
+    return until if until > time.time() else 0.0
+
+
+def _record_rate_limit(resp) -> float:
+    """On a 403/429 that says the budget is spent, remember the reset. Returns it, or 0."""
+    headers = getattr(resp, "headers", None) or {}
+    remaining = str(headers.get("x-ratelimit-remaining") or "").strip()
+    until = 0.0
+    if remaining == "0":
+        try:
+            until = float(headers.get("x-ratelimit-reset") or 0)
+        except (TypeError, ValueError):
+            until = 0.0
+    if not until:
+        try:  # secondary limits name a Retry-After in seconds instead
+            retry = float(headers.get("retry-after") or 0)
+        except (TypeError, ValueError):
+            retry = 0.0
+        if retry > 0:
+            until = time.time() + retry
+    if until > time.time():
+        with _lock:
+            _backoff["until"] = max(_backoff["until"], until)
+        return until
+    return 0.0
+
+
+def _remember(url: str, resp, body: dict, rel: dict | None) -> None:
+    headers = getattr(resp, "headers", None) or {}
+    etag = str(headers.get("etag") or "").strip()
+    with _lock:
+        if etag:
+            _etags[url] = (etag, body)
+        if rel and rel.get("tag"):
+            _by_tag[rel["tag"]] = rel
+            if url == FEED_URL:
+                _advertised["tag"] = rel["tag"]
+
+
 def _get_release(url: str, label: str) -> dict | None:
-    """One GitHub Release GET. Records why it failed for the calling job. Never raises."""
+    """One GitHub Release GET. Records why it failed for the calling job. Never raises.
+
+    Inside a rate-limit backoff it makes no call. A stored ETag is sent as
+    If-None-Match; a 304 reuses the stored body.
+    """
+    until = backoff_until()
+    if until:
+        _note_reason(_retry_note(until))
+        return None
+    stored = _etags.get(url)
     try:
-        resp = httpx.get(url, headers=_GH_HEADERS, timeout=_FETCH_TIMEOUT)
+        resp = httpx.get(url, headers=_gh_headers(url, stored[0] if stored else ""),
+                         timeout=_FETCH_TIMEOUT)
+        if resp.status_code == 304 and stored:
+            rel = _parse_release(stored[1])
+            _remember(url, resp, stored[1], rel)
+            return rel
         if resp.status_code != 200:
             logger.warning("%s status=%s", label, resp.status_code)
             if resp.status_code in (403, 429):
-                _note_reason(
-                    f"GitHub returned {resp.status_code} — rate limited or throttled")
+                limited = _record_rate_limit(resp)
+                _note_reason(_retry_note(limited) if limited else
+                             f"GitHub returned {resp.status_code} — rate limited or throttled")
             else:
                 _note_reason(f"GitHub returned {resp.status_code}")
             return None
-        return _parse_release(resp.json())
+        body = resp.json()
+        rel = _parse_release(body)
+        _remember(url, resp, body, rel)
+        return rel
     except (httpx.TimeoutException, httpx.HTTPError, OSError, ValueError, TypeError,
             KeyError) as e:
         logger.warning("%s failed: %s", label, type(e).__name__)
@@ -217,7 +321,33 @@ def fetch_tag(tag: str) -> dict | None:
     tag = _TAG_PREFIX.sub("", (tag or "").strip())
     if not tag or tag in PLACEHOLDER_VERSIONS:
         return None
+    hit = _by_tag.get(tag)
+    if hit is not None:  # a published release's record is already in hand
+        return hit
     return _get_release(TAG_URL.format(tag=tag), f"update tag feed tag={tag}")
+
+
+def cached_release(tag: str) -> dict | None:
+    """The release record a successful fetch already returned for `tag`. No HTTP."""
+    return _by_tag.get(_TAG_PREFIX.sub("", (tag or "").strip()))
+
+
+def _check_for_apply(*, hosted: bool | None = None, tag: str = "") -> dict:
+    """`check()` for apply: when THIS process's feed last advertised the requested tag,
+    reuse that record and make no api.github.com call, so Install works whenever Check
+    already succeeded here.
+
+    The cache is per process, and the API runs several workers (GRPH-1673). Check can land
+    on one worker and Install on another whose last advertised tag is older — often the
+    version now running, which reads as `current` and refused the install with "no
+    advertised cut". So a cached record is reused only when it IS the tag being installed;
+    otherwise ask the feed again and decide on that answer."""
+    advertised = _advertised["tag"]
+    rel = _by_tag.get(advertised) if advertised else None
+    want = _TAG_PREFIX.sub("", (tag or "").strip())
+    if rel is None or (want and rel.get("tag") != want):
+        return check(hosted=hosted)
+    return check(fetch=lambda: rel, fetch_running=cached_release, hosted=hosted)
 
 
 def _run_concurrently(jobs: dict, deadline: float) -> tuple[dict, dict]:
@@ -254,7 +384,8 @@ _cache: dict = {"at": 0.0, "payload": None}
 
 
 def check_cached(*, refresh: bool = False) -> dict:
-    """`check()` with a short cache. `refresh` bypasses it (the Check button).
+    """`check()` with a 10-minute cache. `refresh` bypasses it (the Check button) but
+    not the rate-limit backoff: inside one, check() makes no GitHub call.
     Only a definite answer is cached; `unknown` is retried on the next call.
     """
     now = time.monotonic()
@@ -346,12 +477,18 @@ def apply(tag: str, *, check_fn=None, send=None, native_start=None,
     Compose: host helper runs deploy.sh. Native: fetch tarball, start upgrade.
     Waiting for either to finish is wrong: both stop this process.
     """
-    payload = (check_fn or check)(hosted=hosted)
+    payload = (check_fn(hosted=hosted) if check_fn is not None
+               else _check_for_apply(hosted=hosted, tag=tag))
     if payload["hosted"]:
         return {"ok": False, "status": 403, "error": "hosted instances are updated by the operator"}
     if not payload.get("apply"):
         return {"ok": False, "status": 503,
                 "error": "no apply path — compose helper is not running, and this is not a native install"}
+    if payload["state"] == "unknown" and payload.get("feed_error"):
+        # Not "nothing to install": the feed could not be asked (rate-limit backoff, no
+        # network). Say that, so a retry later reads as the fix (GRPH-1673).
+        return {"ok": False, "status": 503,
+                "error": f"could not confirm the cut to install: {payload['feed_error']}"}
     if payload["state"] != "available":
         return {"ok": False, "status": 409, "error": "no advertised cut to install"}
     latest = (payload.get("latest") or {}).get("tag") or ""

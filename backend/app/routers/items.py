@@ -9,13 +9,14 @@ from app import errors
 from app.db import get_db
 from app.models import User
 from app.schemas import (
-    ItemCreate, ItemOut, ItemUpdate, ItemWritten, OwnerCloseIn, ReorderIn, SnoozeIn, WaitAnswerIn,
+    ItemCreate, ItemOut, ItemUpdate, ItemWritten, OwnerCloseIn, ReorderIn, ResolveIn, SnoozeIn, WaitAnswerIn,
     item_list_row,
 )
 from app.security import authz
 from app.security.deps import get_current_user
 from app.services import collision as collision_svc
 from app.services import items as items_svc
+from app.services import handles
 from app.services import touchpoint_check
 from app.services import waits as waits_svc
 
@@ -55,7 +56,7 @@ def create_item(
     writable = authz.writable_project_ids(db, user.id)
     pid = body.project_id or (writable[0] if writable else None)
     authz.require_writable(db, user.id, pid)
-    reporter = {"name": user.name, "handle": user.handle, "avatar": user.avatar}
+    reporter = {"name": user.name, "handle": handles.project_handle(db, user, pid), "avatar": user.avatar}
     try:
         created = items_svc.create_item(
             db,
@@ -72,8 +73,14 @@ def create_item(
             question=body.question,
             options=body.options,
             kind=body.kind,
+            line_id=body.line_id,
+            severity=body.severity,
+            blocks=body.blocks,
         )
-        return _with_warnings(db, created, body.touchpoints)
+        written = _with_warnings(db, created, body.touchpoints)
+        if created.id in db.info.get("line_defaulted", ()):
+            written.line_defaulted = True
+        return written
     except items_svc.MissingAttestation as e:
         raise HTTPException(409, str(e))
     except ValueError as e:
@@ -254,7 +261,7 @@ def owner_close(
     if existing is None:
         raise HTTPException(404, "item not found")
     authz.require_project_owner(db, user.id, existing.project_id)
-    closer = {"id": user.id, "handle": user.handle, "name": user.name}
+    closer = {"id": user.id, "handle": handles.project_handle(db, user, existing.project_id), "name": user.name}
     try:
         item = items_svc.owner_close(
             db, item_id, closer=closer, commit=body.commit, pr_url=body.pr_url,
@@ -266,6 +273,33 @@ def owner_close(
         raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(422, str(e))
+    if item is None:
+        raise HTTPException(404, "item not found")
+    return item
+
+
+@router.post("/{item_id}/resolve", response_model=ItemOut)
+def resolve_item(
+    item_id: str,
+    body: ResolveIn,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Close an item as a duplicate or superseded, as the project owner (GRPH-1671). JWT only:
+    it skips the completion gate, so it has its own route and owner check, as owner-close
+    does, rather than riding on PATCH."""
+    existing = items_svc.get_item(db, item_id)
+    if existing is None:
+        raise HTTPException(404, "item not found")
+    authz.require_project_owner(db, user.id, existing.project_id)
+    try:
+        item = items_svc.resolve_item(
+            db, item_id, kind=body.kind, of=body.of, reason=body.reason,
+            actor=str(handles.project_handle(db, user, existing.project_id) or user.name or user.id), defer=background.add_task)
+    except items_svc.ResolutionRefused as e:
+        raise errors.Refused(409, str(e), rule_id=items_svc.RESOLUTION_RULE,
+                             meta={"reason": e.reason}, target=("item", existing.id))
     if item is None:
         raise HTTPException(404, "item not found")
     return item

@@ -134,6 +134,31 @@ def test_a_grok_registration_is_stored_as_xai(db, proj, key):
     assert from_name.capabilities["model"] == "grok-4.7"
 
 
+@pytest.mark.parametrize("declared", [
+    "claude",
+    "agy",
+    "qwen-code",
+    "dsh",
+    "cursor-agent",
+    "codex",
+    "gbagent",
+    "Anthropic",
+    " acme-labs ",
+])
+def test_registration_keeps_the_adapter_name_cards_are_keyed_by(db, proj, key, declared):
+    """GRPH-1090. Comparison folds `claude` onto `anthropic`. Storing that fold
+    rewrites the harness row key, and R1/R3 come back with no cards: the
+    resolution names `qwen-code:` and `claude:sonnet`, and the cell is whatever
+    vendor registration stored. grok is the exception, covered above — measured
+    cells are already keyed by `xai`. An unknown string is not a company either."""
+    a = fleet.register_agent(
+        db, project_id=proj, api_key=key,
+        capabilities={"vendor": declared, "model": "m", "tier": "cheap"})
+
+    assert a.capabilities["vendor"] == declared
+    assert a.capabilities["model"] == "m"
+
+
 def test_a_missing_vendor_is_not_filled_in_from_the_model_id(db, proj, key):
     """A model id of `grok-4.7` with no vendor is an absence, not xAI. Inferring one
     would make two silent agents the same vendor."""

@@ -1,6 +1,6 @@
 /** GRPH-1405: the test-scope rule shows its three modes as one choice and writes the pick. */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -65,25 +65,19 @@ beforeEach(() => {
 });
 
 describe("test-scope rule", () => {
-  it("shows three modes with a line each and the stored one selected", async () => {
+  it("the rule's row reads as the stored mode's label", async () => {
     const ins = await open("agent_targeted");
-    const group = within(ins).getByRole("radiogroup", { name: "Where the test suites run" });
-    expect(within(group).getAllByRole("radio")).toHaveLength(3);
-    expect(within(group).getByRole("radio", { name: "The agent runs partial CI, only what changed" })).toBeChecked();
-    expect(within(group).getByRole("radio", { name: "The agent runs CI" })).not.toBeChecked();
-    expect(group).toHaveTextContent("the PR's CI runs the full suites");
+    expect(within(ins).getByTestId(`rules-row-${RULE}`)).toBeInTheDocument();
+    // The stored mode is the checked card in the params table: the value is shown once (GRPH-1725).
+    expect(within(ins).getByRole("radio", { name: "The agent runs partial CI, only what changed" })).toBeChecked();
   });
 
-  it("choosing a mode writes it with a reason", async () => {
+  it("choosing a mode in the stage editor lists the three modes and stages the change", async () => {
     const user = userEvent.setup();
-    vi.mocked(api.setRuleToggle).mockResolvedValue({} as never);
     const ins = await open("agent_and_pr");
-    await user.click(within(ins).getByRole("radio", { name: "The agent runs CI" }));
-    await user.click(within(ins).getByRole("button", { name: "Change params" }));
-    await user.type(within(ins).getByLabelText("Reason"), "solo project");
-    await user.click(within(ins).getByRole("button", { name: "Change params" }));
-    await waitFor(() =>
-      expect(api.setRuleToggle).toHaveBeenCalledWith("core", RULE, { params: { mode: "agent_full" }, reason: "solo project" }),
-    );
+    const group = await within(ins).findByRole("radiogroup", { name: "Where the test suites run" });
+    expect(within(group).getAllByRole("radio")).toHaveLength(3);
+    await user.click(within(group).getByRole("radio", { name: "The agent runs CI" }));
+    expect(within(ins).getByTestId("rules-dock-diff").querySelectorAll("li")).toHaveLength(1);
   });
 });

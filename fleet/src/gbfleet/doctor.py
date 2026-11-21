@@ -701,6 +701,20 @@ def _one_service(report: Report, state) -> None:
         report.add(label, PASS,
                    f"idle between runs, last exit 0 ({state.kind}, {state.unit_path})")
         return
+    if state.unsettled:
+        # Exited 0, so not dead, and not a drained queue either. UNKNOWN, never the
+        # crash-loop FAIL. ``unready`` is line work that is filed but not claimable
+        # (GRPH-1698). ``merge-pending`` is a signed-off pull request still open
+        # (GRPH-1818). No reason in the log is the third, and it is not either of those.
+        if state.run_reason == "merge-pending":
+            remedy = ("a signed-off pull request is still open; the next cycle asks again")
+        else:
+            remedy = (
+                "unready: fixes are filed but not claimable — `gbfleet until --line` names "
+                "them; reason unknown: read the drain's log in "
+                f"{service_mod.CONFIG_DIR / 'logs'}")
+        report.add(label, UNKNOWN, state.line(), remedy)
+        return
     if not state.running:
         # `state.detail` already carries the exit code on both platforms; naming it twice
         # read as "last exit 3 — last exit 3".

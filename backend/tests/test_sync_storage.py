@@ -195,3 +195,550 @@ def test_hosted_refusal_after_authz(client, auth, tmp_path, monkeypatch):
                         lambda: (_ for _ in ()).throw(platform_router.HTTPException(400, "self-hosted")))
     r = client.put(f"{URL}?project_id=sync", json={"folder_path": str(tmp_path)}, headers=auth)
     assert r.status_code == 400 and "self-hosted" in r.text
+
+
+# ---- publish destination (GRPH-1761) -------------------------------------------------------
+
+DEST = "/api/sync/destination"
+
+
+class _Resp:
+    def __init__(self, status=200, body=None):
+        self.status_code = status
+        self._body = {} if body is None else body
+
+    def json(self):
+        return self._body
+
+
+def _login(client, email):
+    r = client.post("/api/auth/login", json={"email": email, "password": "graphban"})
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+def _org(client, auth, monkeypatch):
+    monkeypatch.setattr(settings, "hosted_mode", True)
+    org = client.post("/api/orgs", json={"name": "Acme"}, headers=auth).json()
+    return org
+
+
+def _seat(org_id, user_id, role):
+    from app.models import OrgMembership
+
+    db = SessionLocal()
+    db.add(OrgMembership(org_id=org_id, user_id=user_id, role=role))
+    db.commit()
+    db.close()
+
+
+def _fact(client, auth, project_id="core"):
+    r = client.get(f"{URL}?project_id={project_id}", headers=auth)
+    assert r.status_code == 200, r.text
+    return r.json()["destination"]
+
+
+def test_org_admin_saves_url_and_branch_and_a_linked_box_shows_them(client, auth, monkeypatch):
+    org = _org(client, auth, monkeypatch)
+    r = client.patch(f"/api/orgs/{org['id']}/destination",
+                     json={"url": "github.com/acme/app", "branch": "policy"}, headers=auth)
+    assert r.status_code == 200, r.text
+    assert r.json()["state"] == "configured"
+    assert r.json()["url"] == "github.com/acme/app" and r.json()["branch"] == "policy"
+
+    monkeypatch.setattr(settings, "hosted_mode", False)
+    assert client.post("/api/sync/link",
+                       json={"cloud_url": "https://cloud.example", "api_key": "gb_sk_x"},
+                       headers=auth).status_code == 200
+
+    def fetch(url, key):
+        assert key == "gb_sk_x" and url.startswith("https://cloud.example")
+        return _Resp(200, {"url": "github.com/acme/app", "branch": "policy"})
+
+    monkeypatch.setattr("app.services.sync_storage.fetch_org_destination", fetch)
+    pulled = client.post(f"{DEST}/pull", headers=auth)
+    assert pulled.status_code == 200, pulled.text
+    body = pulled.json()
+    assert body["url"] == "github.com/acme/app" and body["branch"] == "policy"
+    assert body["source"] == "org" and body["state"] == "configured"
+    shown = _fact(client, auth)
+    assert shown["url"] == "github.com/acme/app" and shown["branch"] == "policy"
+
+
+def test_member_and_viewer_can_read_and_cannot_save(client, auth, monkeypatch):
+    org = _org(client, auth, monkeypatch)
+    client.patch(f"/api/orgs/{org['id']}/destination",
+                 json={"url": "github.com/acme/app", "branch": "policy"}, headers=auth)
+    _seat(org["id"], "u2", "member")
+    _seat(org["id"], "u4", "viewer")
+    dana = _login(client, "dana@ascme-labs.com")
+    kate = _login(client, "kate@ascme-labs.com")
+    for headers in (dana, kate):
+        seen = client.get(f"/api/orgs/{org['id']}/destination", headers=headers)
+        assert seen.status_code == 200, seen.text
+        assert seen.json()["url"] == "github.com/acme/app"
+        refused = client.patch(f"/api/orgs/{org['id']}/destination",
+                               json={"url": "github.com/other/app", "branch": "elsewhere"},
+                               headers=headers)
+        assert refused.status_code == 403, refused.text
+    stored = client.get(f"/api/orgs/{org['id']}/destination", headers=auth).json()
+    assert stored["url"] == "github.com/acme/app" and stored["branch"] == "policy"
+
+
+def test_unlinked_admin_saves_a_path_and_a_second_project_reads_it(client, auth, tmp_path):
+    other = client.post("/api/projects", json={"name": "Other Box"}, headers=auth).json()["id"]
+    r = client.put(DEST, json={"path": str(tmp_path), "branch": "policy"}, headers=auth)
+    assert r.status_code == 200, r.text
+    assert r.json()["state"] == "configured" and r.json()["source"] == "local"
+    assert r.json()["path"] == str(tmp_path) and r.json()["branch"] == "policy"
+    first = _fact(client, auth, "core")
+    second = _fact(client, auth, other)
+    assert first["path"] == second["path"] == str(tmp_path)
+    assert first["branch"] == second["branch"] == "policy"
+
+
+def test_empty_field_is_unconfigured_and_no_commit_is_attempted(client, auth, tmp_path, monkeypatch):
+    import subprocess
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a))
+    r = client.put(DEST, json={"path": str(tmp_path), "branch": ""}, headers=auth)
+    assert r.status_code == 200, r.text
+    assert r.json()["state"] == "unconfigured"
+    from app.services import sync_storage
+    db = SessionLocal()
+    assert sync_storage.publish_target(db) is None
+    db.close()
+    assert calls == []
+
+
+def test_linking_keeps_the_old_path_as_previous_and_publishes_the_remote(client, auth, tmp_path,
+                                                                        monkeypatch):
+    client.put(DEST, json={"path": str(tmp_path), "branch": "local"}, headers=auth)
+    client.post("/api/sync/link",
+                json={"cloud_url": "https://cloud.example", "api_key": "gb_sk_x"}, headers=auth)
+    # The link itself turned publishing off, before any pull.
+    assert _fact(client, auth)["publishing"] is False
+
+    def fetch(url, key):
+        return _Resp(200, {"url": "github.com/acme/app", "branch": "policy"})
+
+    monkeypatch.setattr("app.services.sync_storage.fetch_org_destination", fetch)
+    body = client.post(f"{DEST}/pull", headers=auth).json()
+    assert body["previous"]["path"] == str(tmp_path)
+    assert body["path"] == "" and body["url"] == "github.com/acme/app"
+    assert body["publishing"] is False
+    from app.services import sync_storage
+    db = SessionLocal()
+    target = sync_storage.publish_target(db)
+    db.close()
+    assert target == {"kind": "remote", "url": "github.com/acme/app", "branch": "policy"}
+    assert str(tmp_path) not in target.values()
+
+
+def test_unlinking_clears_the_org_pair_and_does_not_restore_the_path(client, auth, tmp_path,
+                                                                    monkeypatch):
+    client.put(DEST, json={"path": str(tmp_path), "branch": "local"}, headers=auth)
+    client.post("/api/sync/link",
+                json={"cloud_url": "https://cloud.example", "api_key": "gb_sk_x"}, headers=auth)
+    monkeypatch.setattr("app.services.sync_storage.fetch_org_destination",
+                        lambda url, key: _Resp(200, {"url": "github.com/acme/app", "branch": "policy"}))
+    client.post(f"{DEST}/pull", headers=auth)
+    assert client.delete("/api/sync/link", headers=auth).status_code == 200
+    body = _fact(client, auth)
+    assert body["url"] == "" and body["branch"] == ""
+    assert body["state"] == "unconfigured"
+    assert body["path"] == ""  # the previous path is not put back
+    assert body["previous"]["path"] == str(tmp_path)
+    assert body["publishing"] is False
+    from app.services import sync_storage
+    db = SessionLocal()
+    assert sync_storage.publish_target(db) is None
+    db.close()
+
+
+def test_a_url_equal_to_a_project_code_remote_is_allowed_and_reported(client, auth, monkeypatch):
+    from app.models import Project
+
+    org = _org(client, auth, monkeypatch)
+    db = SessionLocal()
+    db.get(Project, "core").repo_url = "github.com/acme/app"
+    db.get(Project, "core").org_id = org["id"]
+    db.commit()
+    db.close()
+    saved = client.patch(f"/api/orgs/{org['id']}/destination",
+                         json={"url": "github.com/acme/app", "branch": "policy"}, headers=auth)
+    assert saved.status_code == 200, saved.text
+    match = saved.json()["code_remote_match"]
+    assert match["checked"] is True
+    assert {"project_id": "core", "repo_url": "github.com/acme/app"} in match["projects"]
+
+    monkeypatch.setattr(settings, "hosted_mode", False)
+    client.post("/api/sync/link",
+                json={"cloud_url": "https://cloud.example", "api_key": "gb_sk_x"}, headers=auth)
+    monkeypatch.setattr("app.services.sync_storage.fetch_org_destination",
+                        lambda url, key: _Resp(200, {"url": "github.com/acme/app", "branch": "policy"}))
+    body = client.post(f"{DEST}/pull", headers=auth).json()
+    assert body["code_remote_match"]["checked"] is True
+    assert {"project_id": "core", "repo_url": "github.com/acme/app"} in body["code_remote_match"]["projects"]
+
+
+def test_org_branch_change_turns_publishing_off_and_does_not_touch_git(client, auth, monkeypatch):
+    import subprocess
+
+    from app.models import SyncStorageConfig
+    from app.services.sync_storage import SINGLETON_ID
+
+    org = _org(client, auth, monkeypatch)
+    client.patch(f"/api/orgs/{org['id']}/destination",
+                 json={"url": "github.com/acme/app", "branch": "policy"}, headers=auth)
+    monkeypatch.setattr(settings, "hosted_mode", False)
+    client.post("/api/sync/link",
+                json={"cloud_url": "https://cloud.example", "api_key": "gb_sk_x"}, headers=auth)
+    db = SessionLocal()
+    row = db.get(SyncStorageConfig, SINGLETON_ID)
+    row.destination_source = "org"
+    row.received_url = "github.com/acme/app"
+    row.received_branch = "policy"
+    row.publish_enabled = True
+    db.commit()
+    db.close()
+    monkeypatch.setattr(settings, "hosted_mode", True)
+    changed = client.patch(f"/api/orgs/{org['id']}/destination",
+                           json={"branch": "policy-2026"}, headers=auth)
+    assert changed.status_code == 200 and changed.json()["branch"] == "policy-2026"
+    monkeypatch.setattr(settings, "hosted_mode", False)
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a))
+
+    def fetch(url, key):
+        from app.models import Organization
+        s = SessionLocal()
+        try:
+            saved = s.get(Organization, org["id"])
+            return _Resp(200, {"url": saved.publish_repo_url, "branch": saved.publish_branch})
+        finally:
+            s.close()
+
+    monkeypatch.setattr("app.services.sync_storage.fetch_org_destination", fetch)
+    body = client.post(f"{DEST}/pull", headers=auth).json()
+    assert body["branch"] == "policy-2026" and body["url"] == "github.com/acme/app"
+    assert body["publishing"] is False
+    assert calls == []
+
+
+def test_a_pull_with_no_answer_leaves_the_destination_and_publishing(client, auth, monkeypatch):
+    import httpx
+
+    from app.models import SyncStorageConfig
+    from app.services.sync_storage import SINGLETON_ID
+
+    client.post("/api/sync/link",
+                json={"cloud_url": "https://cloud.example", "api_key": "gb_sk_x"}, headers=auth)
+    db = SessionLocal()
+    row = db.get(SyncStorageConfig, SINGLETON_ID)
+    row.destination_source = "org"
+    row.received_url = "github.com/acme/app"
+    row.received_branch = "policy"
+    row.publish_enabled = True
+    db.commit()
+    db.close()
+
+    def fetch(url, key):
+        raise httpx.ConnectError("timed out")
+
+    monkeypatch.setattr("app.services.sync_storage.fetch_org_destination", fetch)
+    body = client.post(f"{DEST}/pull", headers=auth).json()
+    assert body["url"] == "github.com/acme/app" and body["branch"] == "policy"
+    assert body["publishing"] is True
+    assert body["pull"]["state"] == "unknown" and "timed out" in body["pull"]["reason"]
+
+
+def test_a_refused_pull_does_not_clear_the_destination(client, auth, monkeypatch):
+    from app.models import SyncStorageConfig
+    from app.services.sync_storage import SINGLETON_ID
+
+    client.post("/api/sync/link",
+                json={"cloud_url": "https://cloud.example", "api_key": "gb_sk_x"}, headers=auth)
+    db = SessionLocal()
+    row = db.get(SyncStorageConfig, SINGLETON_ID)
+    row.destination_source = "org"
+    row.received_url = "github.com/acme/app"
+    row.received_branch = "policy"
+    row.publish_enabled = True
+    db.commit()
+    db.close()
+    monkeypatch.setattr("app.services.sync_storage.fetch_org_destination",
+                        lambda url, key: _Resp(404, {"detail": "missing"}))
+    body = client.post(f"{DEST}/pull", headers=auth).json()
+    assert body["url"] == "github.com/acme/app" and body["branch"] == "policy"
+    assert body["publishing"] is True
+    assert body["pull"]["state"] == "refused"
+
+
+def test_the_same_pair_pulled_again_does_not_turn_publishing_off(client, auth, monkeypatch):
+    from app.models import SyncStorageConfig
+    from app.services.sync_storage import SINGLETON_ID
+
+    client.post("/api/sync/link",
+                json={"cloud_url": "https://cloud.example", "api_key": "gb_sk_x"}, headers=auth)
+    db = SessionLocal()
+    row = db.get(SyncStorageConfig, SINGLETON_ID)
+    row.destination_source = "org"
+    row.received_url = "github.com/acme/app"
+    row.received_branch = "policy"
+    row.publish_enabled = True
+    db.commit()
+    db.close()
+    monkeypatch.setattr("app.services.sync_storage.fetch_org_destination",
+                        lambda url, key: _Resp(200, {"url": "github.com/acme/app", "branch": "policy"}))
+    body = client.post(f"{DEST}/pull", headers=auth).json()
+    assert body["publishing"] is True
+    assert body["pull"]["state"] == "ok"
+
+
+def test_a_non_admin_sees_the_destination_and_cannot_save(client, auth, tmp_path):
+    # Kate is a project member, not a box admin (Dana is: the operator made her admin of core).
+    client.put(DEST, json={"path": str(tmp_path), "branch": "policy"}, headers=auth)
+    kate = _login(client, "kate@ascme-labs.com")
+    seen = client.get(f"{URL}?project_id=core", headers=kate)
+    assert seen.status_code == 200, seen.text
+    assert seen.json()["destination"]["path"] == str(tmp_path)
+    assert seen.json()["destination"]["editable"] is False
+    refused = client.put(DEST, json={"path": "/tmp/elsewhere", "branch": "nope"}, headers=kate)
+    assert refused.status_code == 403
+    assert _fact(client, auth)["path"] == str(tmp_path)
+    assert _fact(client, auth)["branch"] == "policy"
+
+
+def test_a_linked_box_cannot_save_a_local_destination(client, auth, tmp_path):
+    client.put(DEST, json={"path": str(tmp_path), "branch": "policy"}, headers=auth)
+    client.post("/api/sync/link",
+                json={"cloud_url": "https://cloud.example", "api_key": "gb_sk_x"}, headers=auth)
+    refused = client.put(DEST, json={"path": "/tmp/elsewhere", "branch": "nope"}, headers=auth)
+    assert refused.status_code == 403
+    assert "the org admin owns the destination" in refused.text
+    assert refused.json()["rule_id"] == "sync.destination_owned_by_org"
+    body = _fact(client, auth)
+    assert body["path"] == str(tmp_path) and body["branch"] == "policy"
+    assert body["editable"] is False
+
+
+def test_cloud_destination_is_the_org_pair_for_a_sync_key(client, auth, monkeypatch):
+    from app.models import Project
+
+    org = _org(client, auth, monkeypatch)
+    client.patch(f"/api/orgs/{org['id']}/destination",
+                 json={"url": "github.com/acme/app", "branch": "policy"}, headers=auth)
+    db = SessionLocal()
+    db.get(Project, "core").org_id = org["id"]
+    db.commit()
+    db.close()
+    monkeypatch.setattr(settings, "hosted_mode", False)
+    key = client.post("/api/api-keys",
+                      json={"name": "box", "scopes": ["sync"], "project_id": "core"},
+                      headers=auth).json()["plaintext"]
+    got = client.get(DEST, headers={"X-API-Key": key})
+    assert got.status_code == 200, got.text
+    assert got.json() == {"url": "github.com/acme/app", "branch": "policy"}
+
+
+def test_a_server_error_is_unknown_and_leaves_the_pair(client, auth, monkeypatch):
+    from app.models import SyncStorageConfig
+    from app.services.sync_storage import SINGLETON_ID
+
+    client.post("/api/sync/link",
+                json={"cloud_url": "https://cloud.example", "api_key": "gb_sk_x"}, headers=auth)
+    db = SessionLocal()
+    row = db.get(SyncStorageConfig, SINGLETON_ID)
+    row.destination_source = "org"
+    row.received_url = "github.com/acme/app"
+    row.received_branch = "policy"
+    row.publish_enabled = True
+    db.commit()
+    db.close()
+    monkeypatch.setattr("app.services.sync_storage.fetch_org_destination",
+                        lambda url, key: _Resp(503, {}))
+    body = client.post(f"{DEST}/pull", headers=auth).json()
+    assert body["url"] == "github.com/acme/app" and body["publishing"] is True
+    assert body["pull"]["state"] == "unknown" and body["pull"]["reason"]
+
+
+# ---- opt in (GRPH-1762) ---------------------------------------------------------------------
+
+PUB = f"{URL}/publishing"
+CRED = f"{URL}/credential"
+SECRET = "ghp_s3cr3t-token-bytes-0123456789"
+
+
+def _pushes(monkeypatch, outcome=None):
+    calls = []
+
+    def push(db):
+        calls.append(1)
+        return outcome if outcome is not None else {"result": "published", "reason": ""}
+
+    monkeypatch.setattr("app.services.sync_storage._push_now", push)
+    return calls
+
+
+def _credential_file(tmp_path):
+    f = tmp_path / "deploy-key"
+    f.write_text(SECRET + "\n")
+    return f
+
+
+def _ready(client, auth, tmp_path, *, branch="policy"):
+    """A local destination and a credential file, both saved by the box admin."""
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    r = client.put(DEST, json={"path": str(repo), "branch": branch}, headers=auth)
+    assert r.status_code == 200, r.text
+    cred = _credential_file(tmp_path)
+    r = client.put(CRED, json={"path": str(cred)}, headers=auth)
+    assert r.status_code == 200, r.text
+    return cred
+
+
+def _row():
+    from app.models import SyncStorageConfig
+    from app.services.sync_storage import SINGLETON_ID
+
+    db = SessionLocal()
+    row = db.get(SyncStorageConfig, SINGLETON_ID)
+    out = {"publish_enabled": row.publish_enabled, "credential_mode": row.credential_mode,
+           "credential_path": row.credential_path}
+    db.close()
+    return out
+
+
+def test_a_new_deployment_has_publishing_off_and_no_commit_runs(client, auth, monkeypatch):
+    import subprocess
+
+    runs = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: runs.append(a))
+    calls = _pushes(monkeypatch)
+    fact = _fact(client, auth)
+    assert fact["publishing"] is False
+    assert fact["credential"] == {"set": False}
+    assert calls == [] and runs == []
+
+
+def test_box_admin_turns_it_on_and_one_push_of_the_earned_set_runs(client, auth, tmp_path,
+                                                                    monkeypatch):
+    cred = _ready(client, auth, tmp_path)
+    calls = _pushes(monkeypatch)
+    r = client.put(PUB, json={"enabled": True}, headers=auth)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["publishing"] is True and body["credential"] == {"set": True}
+    assert body["push"] == {"result": "published", "reason": ""}
+    assert calls == [1]
+    # Already on: turning it on again pushes nothing more.
+    again = client.put(PUB, json={"enabled": True}, headers=auth)
+    assert again.status_code == 200 and again.json()["push"] is None
+    assert calls == [1]
+    # The console and the specs screen see only whether a credential is set.
+    shown = client.get(f"{URL}?project_id=core", headers=auth).text
+    assert str(cred) not in shown and SECRET not in shown
+
+
+def test_the_git_credential_counts_as_set(client, auth, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    client.put(DEST, json={"path": str(repo), "branch": "policy"}, headers=auth)
+    r = client.put(CRED, json={"path": ""}, headers=auth)
+    assert r.status_code == 200 and r.json()["credential"] == {"set": True}
+    calls = _pushes(monkeypatch)
+    assert client.put(PUB, json={"enabled": True}, headers=auth).status_code == 200
+    assert calls == [1]
+    cleared = client.put(CRED, json={"path": None}, headers=auth)
+    assert cleared.json()["credential"] == {"set": False}
+
+
+def test_an_org_admin_cannot_turn_it_on(client, auth, tmp_path, monkeypatch):
+    org = _org(client, auth, monkeypatch)
+    monkeypatch.setattr(settings, "hosted_mode", False)
+    _ready(client, auth, tmp_path)
+    _seat(org["id"], "u4", "admin")  # Kate: an org admin, not an admin of this box
+    kate = _login(client, "kate@ascme-labs.com")
+    calls = _pushes(monkeypatch)
+    seen = client.get(f"{URL}?project_id=core", headers=kate)
+    assert seen.status_code == 200 and seen.json()["destination"]["publishing"] is False
+    refused = client.put(PUB, json={"enabled": True}, headers=kate)
+    assert refused.status_code == 403, refused.text
+    assert refused.json()["rule_id"] == "sync.publishing_needs_box_admin"
+    assert client.put(CRED, json={"path": ""}, headers=kate).status_code == 403
+    assert _row()["publish_enabled"] is False and calls == []
+
+
+def test_a_blank_branch_is_refused_and_named(client, auth, tmp_path, monkeypatch):
+    _ready(client, auth, tmp_path, branch="")
+    calls = _pushes(monkeypatch)
+    r = client.put(PUB, json={"enabled": True}, headers=auth)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["field"] == "branch" and "branch" in r.json()["detail"]["message"]
+    assert _row()["publish_enabled"] is False and calls == []
+
+
+def test_no_credential_is_refused_and_named(client, auth, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    client.put(DEST, json={"path": str(repo), "branch": "policy"}, headers=auth)
+    calls = _pushes(monkeypatch)
+    r = client.put(PUB, json={"enabled": True}, headers=auth)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["field"] == "credential"
+    assert "credential" in r.json()["detail"]["message"]
+    assert _row()["publish_enabled"] is False and calls == []
+
+
+def test_a_publish_error_omits_the_credential_path_and_bytes(client, auth, tmp_path, monkeypatch):
+    cred = _ready(client, auth, tmp_path)
+    leak = f"fatal: could not read {cred}: key {SECRET} rejected by remote"
+    _pushes(monkeypatch, {"result": "rejected", "reason": leak})
+    body = client.put(PUB, json={"enabled": True}, headers=auth).json()
+    assert body["push"]["result"] == "rejected"
+    assert str(cred) not in body["push"]["reason"] and SECRET not in body["push"]["reason"]
+    assert "rejected by remote" in body["push"]["reason"]
+
+    def boom(db):
+        raise RuntimeError(f"git push failed using {cred} ({SECRET})")
+
+    client.put(PUB, json={"enabled": False}, headers=auth)
+    monkeypatch.setattr("app.services.sync_storage._push_now", boom)
+    raised = client.put(PUB, json={"enabled": True}, headers=auth)
+    assert raised.status_code == 200, raised.text
+    text = raised.text
+    assert str(cred) not in text and SECRET not in text
+    assert raised.json()["push"]["result"] == "failed"
+
+
+def test_the_push_is_not_run_until_this_deployment_has_one(client, auth, tmp_path):
+    _ready(client, auth, tmp_path)
+    body = client.put(PUB, json={"enabled": True}, headers=auth).json()
+    # GRPH-1764 is The push. Until it is on this deployment the answer is an absence.
+    assert body["push"]["result"] == "not_run" and body["push"]["reason"]
+
+
+def test_an_org_branch_change_turns_it_off_and_keeps_the_credential(client, auth, tmp_path,
+                                                                     monkeypatch):
+    client.post("/api/sync/link",
+                json={"cloud_url": "https://cloud.example", "api_key": "gb_sk_x"}, headers=auth)
+    pair = {"url": "github.com/acme/app", "branch": "policy"}
+    monkeypatch.setattr("app.services.sync_storage.fetch_org_destination",
+                        lambda url, key: _Resp(200, dict(pair)))
+    assert client.post(f"{DEST}/pull", headers=auth).json()["state"] == "configured"
+    cred = _credential_file(tmp_path)
+    client.put(CRED, json={"path": str(cred)}, headers=auth)
+    _pushes(monkeypatch)
+    assert client.put(PUB, json={"enabled": True}, headers=auth).json()["publishing"] is True
+
+    pair["branch"] = "policy-2026"
+    body = client.post(f"{DEST}/pull", headers=auth).json()
+    assert body["branch"] == "policy-2026" and body["publishing"] is False
+    assert body["credential"] == {"set": True}
+    row = _row()
+    assert row["publish_enabled"] is False
+    assert row["credential_mode"] == "file" and row["credential_path"] == str(cred)

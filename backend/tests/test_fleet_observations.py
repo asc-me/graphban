@@ -129,7 +129,8 @@ def _setup_key(client, auth, proj) -> tuple[str, str]:
     minted = client.post(
         "/api/api-keys",
         json={"name": f"{proj} delegation", "project_id": proj,
-              "expires_in_days": None, "tool_tiers": ["fleet", "prd"]},
+              "expires_in_days": None, "tool_tiers": ["fleet", "prd"],
+              "origin": "gban_setup"},
         headers=auth,
     )
     assert minted.status_code == 201, minted.text
@@ -1073,3 +1074,35 @@ def test_the_real_gbfleet_seat_check_reaches_the_route_and_reads_its_answer(clie
     assert len(refused) == 1 and minter["agent_id"] in refused[0], refused
     assert seat["enrolment_code"] not in refused[0]
     assert paths == ["/api/fleet/observations"] * 2
+
+
+# ---- what get_context says about the key (GRPH-1317) -----------------------------------------
+
+
+def test_get_context_reports_the_roles_the_observations_route_decides_on(client, auth, db):
+    """`gban doctor` and `gban setup` read `eligible_roles` and `key_project_id` from
+    get_context to say whether the stored key can supervise. They must agree with the route:
+    the setup key reads planner and its project, and its observations probe passes the
+    credential gate (404 for an item nobody has); a worker-only key reads no planner, and the
+    route refuses it (403)."""
+    proj, _hand, _planner = _project(client, auth)
+    setup, key_id = _setup_key(client, auth, proj)
+    _assert_setup_shape(db, key_id)
+    ctx = _ok(client, setup, "get_context", {"project_id": proj})
+    assert ctx["key_project_id"] == proj
+    assert "planner" in ctx["eligible_roles"]
+    probe = _post(client, setup, item_id="__gbfleet_probe_no_such_item__", kind="cut_from")
+    assert probe.status_code == 404, probe.text
+
+    created = client.post(
+        "/api/api-keys", json={"name": "worker-only", "project_id": proj}, headers=auth,
+    ).json()
+    row = db.get(ApiKey, created["id"])
+    assert row is not None
+    row.roles = ["worker"]
+    db.commit()
+    worker_ctx = _ok(client, created["plaintext"], "get_context", {"project_id": proj})
+    assert worker_ctx["eligible_roles"] == ["worker"]
+    refused = _post(client, created["plaintext"],
+                    item_id="__gbfleet_probe_no_such_item__", kind="cut_from")
+    assert refused.status_code == 403, refused.text

@@ -1,0 +1,11 @@
+# The box's HTTPS listener (GRPH-1635). `box.crt`/`box.key` are written by the API's box
+# certificate authority (GRPH-1634) into the shared TLS directory; Caddy re-reads them when
+# the entrypoint's watcher sees them change and calls `caddy reload` through the admin API
+# (localhost:2019 inside the container, never published). An unknown name is refused by the
+# `ask` endpoint before any certificate is considered.
+https://:{$HTTPS_PORT} {
+	tls /etc/graphban/tls/box.crt /etc/graphban/tls/box.key {
+		on_demand
+	}
+	import front
+}

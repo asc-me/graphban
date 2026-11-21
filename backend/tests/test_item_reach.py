@@ -522,6 +522,11 @@ MUST_NOT_FIRE = {
     # A possessive is not an invocation. The matcher wants whitespace after
     # the platform name, and `'` is not whitespace.
     "a possessive, not an invocation": "Railway's dashboard shows the stack",
+    # GRPH-1814. `render` plus an adjective that ends the clause is a UI
+    # sentence, not Render's CLI. The predicative span is what keeps it
+    # quiet. Delete that scrub and this fires. `render deploy` stays must-fire.
+    "a tile that renders solid": (
+        "Missing `avatar2` or `avatar_pattern` render solid."),
 }
 
 
@@ -550,6 +555,33 @@ def test_a_platform_name_used_as_english_is_not_a_command():
     assert reach_svc.signals("render deploy"), "a real subcommand must still fire"
 
 
+def test_render_as_a_ui_verb_in_prose_is_not_a_command():
+    """GRPH-1336. GRPH-1335, a pure web/ item, was refused every delegate because
+    "render could-not-check as current" read as the Render CLI plus a subcommand. A modal
+    opening a hyphenated compound is grammar; `render the card` is an article; `renders
+    each state` is not the bare platform name at all. Each one alone, so one regression
+    is one red line.
+
+    Sabotage: drop the modal verbs from `_NOT_SUBCOMMANDS` and the first phrase fires.
+    """
+    for prose in ("the badge should render could-not-check as current",
+                  "render could-not-check as current",
+                  "render the card",
+                  "the view renders each state"):
+        assert not reach_svc.signals(prose), prose
+
+
+@pytest.mark.parametrize("text", [
+    "Run `render deploys create` to ship it",
+    "```sh\nrender deploys create\n```",
+])
+def test_render_deploys_create_in_a_code_span_or_fenced_block_still_fires(text):
+    """GRPH-1336. The narrowing is grammar only: the real Render command, in a code span or
+    a fenced shell block, is still a platform command."""
+    found = reach_svc.signals(text)
+    assert [s["rule"] for s in found] == ["platform-command"], found
+
+
 def test_a_ui_assertion_that_says_render_nothing_is_not_a_command():
     """GRPH-1644. GBC-125's acceptance line drew platform-command, and `delegate` refused the
     bound seat for hours. The trigger was not "rail", "docked" or "remount" (the matcher wants
@@ -570,6 +602,29 @@ def test_a_ui_assertion_that_says_render_nothing_is_not_a_command():
     fired = reach_svc.signals("Run `railway up` to redeploy")
     assert [s["rule"] for s in fired] == ["platform-command"]
     assert reach_svc.signals("render deploy"), "a real subcommand must still fire"
+
+
+def test_a_clause_final_complement_after_render_is_ui_prose():
+    """GRPH-1814. GRPH-1792 was refused on `delegate` because "render solid"
+    read as the Render CLI plus a subcommand. `solid` ends the clause, the
+    same pair as `blank`, `empty` and `twice`. The exemption is
+    `_PREDICATIVE_SPAN`, not another line of `_NOT_SUBCOMMANDS` and not a verb
+    allowlist: `render dashed` is an adjective the set does not name, and it
+    fires. So does `render deploy`.
+
+    Sabotage: drop `_PREDICATIVE_SPAN` from the platform-command scrub and the
+    quoted line fires.
+    """
+    quoted = "Missing `avatar2` or `avatar_pattern` render solid."
+    assert reach_svc.signals(quoted) == []
+    for phrase in ("render blank", "render empty", "render twice",
+                   "the swatch should render solid"):
+        assert not reach_svc.signals(phrase), phrase
+
+    for command in ("render deploy", "render services create",
+                    "render deploys create", "render dashed", "render dashed."):
+        found = reach_svc.signals(command)
+        assert found and any(s["rule"] == "platform-command" for s in found), command
 
 
 def test_a_capitalised_word_after_a_platform_name_is_not_a_subcommand():
@@ -993,6 +1048,7 @@ _DESCRIPTIVE = (
     "a migration that adds a column",
     "migrate, said as prose",
     "a possessive, not an invocation",
+    "a tile that renders solid",
 )
 _COMMANDS = (
     "railway up with a flag",

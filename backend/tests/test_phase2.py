@@ -108,9 +108,18 @@ def test_public_rate_limit(client):
 
 
 # ---- PRD-21 screen 14: the triage queue ----------------------------------------
+def _core_line(client, auth):
+    """GRPH-1686: a bug accept lands on the project's maintenance line and is refused
+    without one, so the accept tests below that file a `bug` give `core` its line first."""
+    if client.get("/api/projects/core/line", headers=auth).json() is None:
+        r = client.post("/api/projects/core/line", headers=auth)
+        assert r.status_code == 201, r.text
+
+
 def test_triage_queue_is_only_what_is_undispositioned(client, auth):
     """A linked request has been triaged and belongs to the tracker, not the queue. If
     it stayed, the queue would never empty and would stop meaning anything."""
+    _core_line(client, auth)
     r = client.post("/api/requests", json={
         "type": "bug", "title": "Sidebar collapses on resize", "project_id": "core",
     }, headers=auth)
@@ -143,6 +152,7 @@ def test_triage_row_carries_a_duplicate_hint_or_an_explicit_none(client, auth):
 
 
 def test_accept_creates_the_item_and_links_it_together(client, auth):
+    _core_line(client, auth)
     r = client.post("/api/requests", json={
         "type": "bug", "title": "Crash on empty project", "detail": "steps here",
         "project_id": "core",
@@ -161,6 +171,7 @@ def test_accept_creates_the_item_and_links_it_together(client, auth):
 
 def test_accepting_twice_does_not_fork_one_report_into_two_items(client, auth):
     """A double-click must not mint a second item. Idempotent on the existing link."""
+    _core_line(client, auth)
     r = client.post("/api/requests", json={
         "type": "bug", "title": "Double click me", "project_id": "core",
     }, headers=auth)
@@ -201,6 +212,7 @@ def test_accept_creates_the_item_inside_the_link_transaction(client, auth, monke
 
     monkeypatch.setattr(req_svc.items_svc, "create_item", spy)
 
+    _core_line(client, auth)
     r = client.post("/api/requests", json={
         "type": "bug", "title": "One transaction", "project_id": "core",
     }, headers=auth)

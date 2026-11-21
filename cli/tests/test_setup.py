@@ -17,6 +17,7 @@ These tests exist because the failure they describe is invisible when it happens
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tomllib
 from pathlib import Path
@@ -59,9 +60,12 @@ class Server:
     """Mints, and answers `get_context` as the deployed one does."""
 
     def __init__(self, *, writable=("core",), missing=(), refuse=None, issued=(),
-                 missing_for=None):
+                 missing_for=None, scope_for=None, unscoped=()):
+        self.scope_for = dict(scope_for or {})
         self.writable, self.missing, self.refuse = list(writable), list(missing), refuse
         self.missing_for = dict(missing_for or {})
+        #: Keys minted with no project — `key_project_id: None`, as a global key answers.
+        self.unscoped = set(unscoped)
         self.minted = []
         #: Every key this deployment knows. Anything else 401s, as a real one does.
         self.issued = set(issued)
@@ -92,6 +96,8 @@ def _context(server):
             raise Refused(401, "invalid api key", "")
         missing = server.missing_for.get(self.api_key, server.missing)
         ctx = {"project_id": "core", "writable_projects": server.writable,
+               "key_project_id": None if self.api_key in server.unscoped
+                                 else server.scope_for.get(self.api_key, "core"),
                "missing_tiers": [{"tier": t} for t in missing]}
         return {"result": {"content": [{"text": json.dumps(ctx)}]}}
     return call
@@ -289,6 +295,138 @@ def test_reuse_still_writes_a_missing_gbfleet_entry(tmp_path, wired):
     servers = json.loads(home.read_text())["projects"][str(repo.resolve())]["mcpServers"]
     assert "gbfleet" in servers
     assert doctor_mod.SUPERVISOR_KEY_ENV in servers["gbfleet"]["env"]
+
+
+# ---- what Claude Code actually loads (GRPH-1653) -----------------------------------------------
+
+def _ledger_entry(key):
+    return {"type": "http", "url": URL + "/api/mcp", "headers": {"X-API-Key": key}}
+
+
+def _fleet_entry(key):
+    return {"command": "gbfleet", "args": ["mcp"], "env": {doctor_mod.SUPERVISOR_KEY_ENV: key}}
+
+
+def _by_name(lines):
+    return {l["name"]: l for l in lines}
+
+
+def test_an_older_user_scope_graphban_shadowing_the_project_key_fails_then_repairs(tmp_path, wired):
+    """THE MAC THIS WAS FOUND ON. The local entry holds only gbfleet with the project key, so
+    Claude Code loads graphban from the user-scope top level — an older, unscoped key. Each
+    file is fine on its own; the pair is not, and setup said PASS."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    home.write_text(json.dumps({
+        "mcpServers": {"graphban": _ledger_entry("gb_sk_globalOLD")},
+        "projects": {str(repo.resolve()): {"mcpServers": {"gbfleet": _fleet_entry("gb_sk_projKEY")}}},
+    }))
+    server = wired(Server(issued={"gb_sk_globalOLD", "gb_sk_projKEY"}, unscoped={"gb_sk_globalOLD"}))
+
+    before = _by_name(setup_mod.effective_lines(URL, "core", repo, home))
+    assert before["effective keys"]["status"] == "FAIL"
+    detail = before["effective keys"]["detail"]
+    assert "user-scope" in detail and "local project entry" in detail
+    assert "gb_sk_globalOLD" not in detail and "gb_sk_projKEY" not in detail, "a key, printed"
+    assert setup_mod.fingerprint("gb_sk_globalOLD") in detail
+    assert before["effective scope"]["status"] == "FAIL"
+    assert "spans several projects" in before["effective scope"]["detail"]
+
+    lines, code, made = setup_mod.run(server, URL, "core", repo, scope="user", install=False,
+                                      home=home)
+
+    assert code == 0, lines
+    assert made.get("reused") is True and server.minted == [], "the project key works; reuse it"
+    after = _by_name(l for l in lines if l["side"] == "claude")
+    assert all(l["status"] == "PASS" for l in after.values()), after
+    assert "effective keys" not in after
+    blob = json.loads(home.read_text())
+    local = blob["projects"][str(repo.resolve())]["mcpServers"]
+    assert local["graphban"]["headers"]["X-API-Key"] == "gb_sk_projKEY"
+    assert blob["mcpServers"]["graphban"]["headers"]["X-API-Key"] == "gb_sk_globalOLD", (
+        "the user-scope entry belongs to other projects too; shadow it, never delete it"
+    )
+
+
+def test_mcp_json_outranks_the_user_scope_entry(tmp_path):
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    home.write_text(json.dumps({"mcpServers": {"graphban": _ledger_entry("gb_sk_user"),
+                                               "gbfleet": _fleet_entry("gb_sk_user")}}))
+    (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {"graphban": _ledger_entry("gb_sk_repo")}}))
+
+    eff = setup_mod.claude_effective(repo, home)
+
+    assert (eff["graphban"].key, eff["graphban"].scope) == ("gb_sk_repo", "project")
+    assert (eff["gbfleet"].key, eff["gbfleet"].scope) == ("gb_sk_user", "user")
+
+
+def test_the_local_project_entry_outranks_mcp_json(tmp_path):
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    home.write_text(json.dumps({"projects": {str(repo.resolve()): {
+        "mcpServers": {"graphban": _ledger_entry("gb_sk_local")}}}}))
+    (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {"graphban": _ledger_entry("gb_sk_repo")}}))
+
+    assert setup_mod.claude_effective(repo, home)["graphban"].scope == "local"
+
+
+def test_a_matching_scoped_pair_passes(tmp_path, wired):
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    home.write_text(json.dumps({"projects": {str(repo.resolve()): {"mcpServers": {
+        "graphban": _ledger_entry("gb_sk_same"), "gbfleet": _fleet_entry("gb_sk_same")}}}}))
+    wired(Server(issued={"gb_sk_same"}))
+
+    lines = setup_mod.effective_lines(URL, "core", repo, home)
+
+    assert [l["status"] for l in lines] == ["PASS"] * 3, lines
+    assert set(_by_name(lines)) == {"effective graphban", "effective gbfleet", "effective scope"}
+
+
+def test_a_matching_pair_on_an_unscoped_key_still_fails(tmp_path, wired):
+    """Matching is not enough: an unscoped key cannot supervise the seats it mints."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    home.write_text(json.dumps({"mcpServers": {
+        "graphban": _ledger_entry("gb_sk_global"), "gbfleet": _fleet_entry("gb_sk_global")}}))
+    wired(Server(issued={"gb_sk_global"}, unscoped={"gb_sk_global"}))
+
+    lines = _by_name(setup_mod.effective_lines(URL, "core", repo, home))
+
+    assert "effective keys" not in lines
+    assert lines["effective scope"]["status"] == "FAIL"
+
+
+def test_an_unscoped_configured_key_is_replaced_not_reused(tmp_path, wired):
+    """Reusing it would write the defect back into the local entry on every run."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    home.write_text(json.dumps({"projects": {str(repo.resolve()): {"mcpServers": {
+        "graphban": _ledger_entry("gb_sk_global"), "gbfleet": _fleet_entry("gb_sk_global")}}}}))
+    server = Server(issued={"gb_sk_global"}, unscoped={"gb_sk_global"})
+
+    lines, code, _ = _run(server, repo, home, wired=wired)
+
+    assert code == 0, lines
+    assert len(server.minted) == 1
+    local = json.loads(home.read_text())["projects"][str(repo.resolve())]["mcpServers"]
+    assert local["graphban"]["headers"]["X-API-Key"] != "gb_sk_global"
+
+
+def test_a_local_gbfleet_only_entry_redirects_a_project_scope_write(tmp_path, wired):
+    """`.mcp.json` would hand graphban a key while the local entry keeps gbfleet on its own."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    home.write_text(json.dumps({"projects": {str(repo.resolve()): {
+        "mcpServers": {"gbfleet": _fleet_entry("gb_sk_stale")}}}}))
+
+    lines, code, _ = _run(Server(), repo, home, scope="project", wired=wired)
+
+    assert code == 0, lines
+    assert not (repo / ".mcp.json").exists()
+    eff = setup_mod.claude_effective(repo, home)
+    assert eff["graphban"].key == eff["gbfleet"].key != "gb_sk_stale"
 
 
 def test_a_configured_key_that_cannot_delegate_is_replaced_and_the_old_one_named(tmp_path, wired):
@@ -1493,3 +1631,188 @@ def test_the_image_manifest_lists_the_shipped_skills():
     manifest = json.loads((root / "backend/scripts/gban_skills.json").read_text())
     shipped = {p.name for p in (root / "cli/src/gban/skills").iterdir() if p.is_dir()}
     assert set(manifest["skills"]) == shipped
+
+
+def test_unscoped_configured_key_is_replaced_by_a_project_scoped_mint(tmp_path, wired):
+    """GRPH-1658: `until` refuses an unscoped key, so setup must not reuse one."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    server = Server(issued={"gb_sk_old"}, scope_for={"gb_sk_old": None})
+    home.write_text(json.dumps({"projects": {str(repo.resolve()): {"mcpServers": {
+        "graphban": {"type": "http", "url": URL, "headers": {"X-API-Key": "gb_sk_old"}}}}}}))
+    lines, code, made = _run(server, repo, home, wired=wired)
+    assert code == 0, lines
+    assert len(server.minted) == 1 and server.minted[0]["project_id"] == "core"
+    assert config.stored_supervisor_key("core") == "gb_sk_new1"
+
+
+def test_project_scoped_configured_key_is_still_reused(tmp_path, wired):
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    server = Server(issued={"gb_sk_old"})
+    home.write_text(json.dumps({"projects": {str(repo.resolve()): {"mcpServers": {
+        "graphban": {"type": "http", "url": URL, "headers": {"X-API-Key": "gb_sk_old"}}}}}}))
+    lines, code, made = _run(server, repo, home, wired=wired)
+    assert code == 0, lines
+    assert server.minted == [] and made.get("reused")
+
+
+# ---- scope boundaries (GRPH-1661) ------------------------------------------------------------
+
+def _grok_pointing_at(path: Path, repo: str, project: str, key: str = "gb_sk_main") -> str:
+    # TOML-escaped: a Windows path is all backslashes, and `"C:\Users\..."` raw in a basic
+    # string is a parse error, so the fixture would plant a file no reader can see an entry in.
+    q = setup_mod._toml_string
+    text = (
+        '[ui]\nmax_thoughts_width = 120\n\n'
+        '[mcp_servers.graphban]\nurl = "http://gb.invalid/api/mcp"\nenabled = true\n\n'
+        f'[mcp_servers.graphban.headers]\nX-API-Key = {q(key)}\n\n'
+        '[mcp_servers.gbfleet]\ncommand = "gbfleet"\n'
+        f'args = ["mcp", "--repo", {q(repo)}, "--server", "http://gb.invalid", '
+        f'"--project", {q(project)}]\nenabled = true\n'
+    )
+    path.write_text(text)
+    return text
+
+
+def test_project_scope_leaves_the_user_grok_and_claude_configs_alone(
+        tmp_path, wired, no_grok_config):
+    """`--scope project` in a scratch repo repointed the operator's user-level Grok entry at
+    the scratch repo, its key and a workspace later deleted (GRPH-1661)."""
+    main, repo, home = tmp_path / "main", tmp_path / "scratch", tmp_path / ".claude.json"
+    main.mkdir()
+    repo.mkdir()
+    before_grok = _grok_pointing_at(no_grok_config, str(main), "agentledger")
+    home.write_text(json.dumps({"projects": {str(main.resolve()): {"mcpServers": {
+        "graphban": {"headers": {"X-API-Key": "gb_sk_main"}}}}}}))
+    before_claude = home.read_text()
+
+    lines, code, _ = _run(Server(), repo, home, scope="project", wired=wired)
+
+    assert code == 0, lines
+    assert no_grok_config.read_text() == before_grok, "the user-level Grok config was rewritten"
+    assert home.read_text() == before_claude, "the user-level Claude config was rewritten"
+    assert not list(no_grok_config.parent.glob("config.toml.bak-*"))
+    assert (repo / ".mcp.json").exists()
+    proj = tomllib.loads((repo / ".grok" / "config.toml").read_text())
+    assert str(repo) in proj["mcp_servers"]["gbfleet"]["args"]
+    said = [l for l in lines if l["name"] == "user config"]
+    assert said and str(no_grok_config) in said[0]["detail"] and str(home) in said[0]["detail"]
+    assert "left alone" in said[0]["detail"]
+    assert not any(str(no_grok_config) in l["detail"] for l in lines if l["name"] == "written")
+
+
+def test_user_scope_backs_up_an_entry_pointing_elsewhere_and_names_both(
+        tmp_path, wired, no_grok_config):
+    main, repo, home = tmp_path / "main", tmp_path / "other", tmp_path / ".claude.json"
+    main.mkdir()
+    repo.mkdir()
+    before = _grok_pointing_at(no_grok_config, str(main), "agentledger")
+
+    lines, code, _ = _run(Server(), repo, home, scope="user", wired=wired)
+
+    assert code == 0, lines
+    [saved] = list(no_grok_config.parent.glob("config.toml.bak-*"))
+    assert saved.read_text() == before, "the backup is not the file that was replaced"
+    assert config.is_private(saved), "the backup holds a key; owner-only"
+    now = tomllib.loads(no_grok_config.read_text())
+    assert str(repo) in now["mcp_servers"]["gbfleet"]["args"]
+    [named] = [l for l in lines if l["name"] == "replaced"]
+    for part in (str(main), "agentledger", str(repo), "core", str(saved)):
+        assert part in named["detail"], (part, named["detail"])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a backslash is a separator there, not a name")
+def test_user_scope_backs_up_an_entry_whose_repo_path_has_a_backslash(
+        tmp_path, wired, no_grok_config):
+    """The Windows CI failure, on any OS: a backslash in the old repo path (every Windows path
+    has them) must still be read back as an entry pointing elsewhere, and saved (GRPH-1661)."""
+    main, repo, home = tmp_path / "ma\\in", tmp_path / "other", tmp_path / ".claude.json"
+    main.mkdir()
+    repo.mkdir()
+    before = _grok_pointing_at(no_grok_config, str(main), "agentledger")
+    assert tomllib.loads(before)["mcp_servers"]["gbfleet"]["args"][2] == str(main)
+
+    lines, code, _ = _run(Server(), repo, home, scope="user", wired=wired)
+
+    assert code == 0, lines
+    [saved] = list(no_grok_config.parent.glob("config.toml.bak-*"))
+    assert saved.read_text() == before
+    [named] = [l for l in lines if l["name"] == "replaced"]
+    assert str(main) in named["detail"], named["detail"]
+
+
+def test_user_scope_rewriting_the_same_target_makes_no_backup(
+        tmp_path, wired, no_grok_config):
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    _grok_pointing_at(no_grok_config, str(repo), "core")
+
+    lines, code, _ = _run(Server(), repo, home, scope="user", wired=wired)
+
+    assert code == 0, lines
+    assert not list(no_grok_config.parent.glob("config.toml.bak-*"))
+    assert not [l for l in lines if l["name"] == "replaced"]
+
+
+def test_user_scope_backs_up_a_claude_entry_for_another_project(tmp_path, wired):
+    """Claude's user file keys entries by repository, so the replacement it can make is the
+    PROJECT this repository's supervisor points at."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    home.write_text(json.dumps({"projects": {str(repo.resolve()): {"mcpServers": {
+        "gbfleet": {"command": "gbfleet",
+                    "args": ["mcp", "--repo", str(repo), "--project", "graphban-rules"]}}}}}))
+    before = home.read_text()
+
+    lines, code, _ = _run(Server(), repo, home, scope="user", wired=wired)
+
+    assert code == 0, lines
+    [saved] = list(home.parent.glob(".claude.json.bak-*"))
+    assert saved.read_text() == before
+    [named] = [l for l in lines if l["name"] == "replaced"]
+    assert "graphban-rules" in named["detail"] and "core" in named["detail"]
+
+
+def test_backup_restricts_with_the_platform_aware_helper(tmp_path, monkeypatch):
+    """`chmod 0600` is a no-op on NTFS, so the backup must go through the ACL-aware helper."""
+    src = tmp_path / "config.toml"
+    src.write_text("[mcp_servers.graphban]\n")
+    seen = []
+    real = config._make_private
+    monkeypatch.setattr(config, "_make_private", lambda p: (seen.append(Path(p)), real(p)))
+
+    copy = setup_mod.backup(src)
+
+    assert seen == [copy], "the backup was not restricted with config._make_private"
+    assert config.is_private(copy)
+
+# ---- planner, for the supervisor (GRPH-1317) --------------------------------------------------
+
+def test_a_configured_key_without_planner_is_replaced_not_stored(tmp_path, wired, monkeypatch):
+    """A key in the harness file that writes the project, is scoped to it and sees `fleet`
+    passed verify, was stored as the supervisor key, and `gbfleet until` then had every
+    observations write refused: it lacked planner."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    home.write_text(json.dumps({"projects": {str(repo.resolve()): {"mcpServers": {
+        "graphban": {"headers": {"X-API-Key": "gb_sk_workeronly"}}}}}}))
+    server = Server(issued={"gb_sk_workeronly"})
+    roles = {"gb_sk_workeronly": ["worker"]}
+    inner = _context(server)
+
+    def call(self, method, path, body=None):
+        got = inner(self, method, path, body)
+        ctx = json.loads(got["result"]["content"][0]["text"])
+        ctx["eligible_roles"] = roles.get(self.api_key, ["planner", "worker"])
+        return {"result": {"content": [{"text": json.dumps(ctx)}]}}
+
+    monkeypatch.setattr(setup_mod.Client, "call", call)
+    lines, code, made = setup_mod.run(server, URL, "core", repo, scope="user", install=False,
+                                      home=home)
+
+    assert code == 0, lines
+    assert made.get("minted"), "a key without planner was reused"
+    assert len(server.minted) == 1
+    stored = config.stored_supervisor_key("core")
+    assert stored and stored != "gb_sk_workeronly"

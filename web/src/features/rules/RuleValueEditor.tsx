@@ -100,6 +100,16 @@ export interface EditorProps {
   onError: (message: string | null) => void;
   /** `merge.done_predicates` only: the toggles read's `effective_predicates`, the source of the floor. */
   effectivePredicates?: EffectivePredicate[];
+  /** The caller already prints the param's name (the dock's NAME column): the editor shows it only to assistive tech. */
+  hideLabel?: boolean;
+  /** A number is a narrow stepper that fits a table cell rather than a full-width input. */
+  compact?: boolean;
+}
+
+/** True when the param's editor fits a table cell (a number, a switch, a short text); false for lists, maps and choice cards. */
+export function isScalarParam(ruleId: string, name: string, value: RuleParamValue): boolean {
+  if (typeof value === "string") return !enumFor(ruleId, name);
+  return typeof value === "number" || typeof value === "boolean";
 }
 
 const isMap = (v: RuleParamValue): v is Record<string, string[]> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -119,8 +129,22 @@ export function RuleValueEditor(props: EditorProps) {
   if (isMap(value)) return <MapTable {...props} value={value} />;
   return (
     <label className={cn(MONO, "flex items-center gap-2 text-[12px] text-fg-2")}>
-      <span className="w-28 flex-none break-all">{name}</span>
+      {!props.hideLabel && <span className="w-28 flex-none break-all">{name}</span>}
       <Input aria-label={name} value={String(value)} onChange={(e) => props.onChange(e.target.value)} />
+    </label>
+  );
+}
+
+/** One bordered option card with a radio; shared by every choice in the rules editor. */
+function RadioCard({ name, value, label, explain, risky, checked, onChange }: { name: string; value: string; label: string; explain: string; risky?: boolean; checked: boolean; onChange: () => void }) {
+  return (
+    <label className={cn("flex items-start gap-2 rounded-[6px] border px-2 py-1.5 text-[12px] text-fg-2", checked ? "border-accent" : "border-[#2a333a]")}>
+      <input type="radio" name={name} value={value} aria-label={label} checked={checked} onChange={onChange} className="accent-accent mt-0.5" />
+      <span>
+        <span className="text-fg">{label}</span>
+        {risky && <span className={cn(MONO, "ml-2 text-[10px] text-[#ffb454]")}>RISKY</span>}
+        <span className="block text-muted-2">{explain}</span>
+      </span>
     </label>
   );
 }
@@ -129,26 +153,22 @@ function EnumCards({ ruleId, name, value, onChange, options }: EditorProps & { v
   return (
     <div role="radiogroup" aria-label={GROUP_LABELS[`${ruleId}:${name}`] ?? name} className="flex flex-col gap-1.5" data-testid={`rules-enum-${name}`}>
       {options.map((m) => (
-        <label
+        <RadioCard
           key={m.value}
-          className={cn(
-            "flex items-start gap-2 rounded-[6px] border px-2 py-1.5 text-[12px] text-fg-2",
-            value === m.value ? "border-accent" : "border-[#2a333a]",
-          )}
-        >
-          <input type="radio" name={`${ruleId}-${name}`} value={m.value} aria-label={m.label} checked={value === m.value} onChange={() => onChange(m.value)} />
-          <span>
-            <span className="text-fg">{m.label}</span>
-            {m.risky && <span className={cn(MONO, "ml-2 text-[10px] text-[#ffb454]")}>RISKY</span>}
-            <span className="block text-muted-2">{m.explain}</span>
-          </span>
-        </label>
+          name={`${ruleId}-${name}`}
+          value={m.value}
+          label={m.label}
+          explain={m.explain}
+          risky={m.risky}
+          checked={value === m.value}
+          onChange={() => onChange(m.value)}
+        />
       ))}
     </div>
   );
 }
 
-function BoolSwitch({ name, value, onChange }: EditorProps & { value: boolean }) {
+function BoolSwitch({ name, value, onChange, hideLabel }: EditorProps & { value: boolean }) {
   return (
     <label className={cn(MONO, "flex items-center gap-2 text-[12px] text-fg-2")}>
       <button
@@ -164,12 +184,12 @@ function BoolSwitch({ name, value, onChange }: EditorProps & { value: boolean })
       >
         <span className={cn("h-3 w-3 rounded-full", value ? "bg-accent" : "bg-muted")} />
       </button>
-      {name}
+      {!hideLabel && name}
     </label>
   );
 }
 
-function NumberStepper({ name, value, onChange, onError }: EditorProps & { value: number }) {
+function NumberStepper({ name, value, onChange, onError, hideLabel, compact }: EditorProps & { value: number }) {
   const whole = Number.isInteger(value);
   const spec = numberSpecFor(name);
   const [text, setText] = React.useState(String(value));
@@ -202,13 +222,14 @@ function NumberStepper({ name, value, onChange, onError }: EditorProps & { value
   return (
     <div className="flex flex-col gap-1">
       <div className={cn(MONO, "flex items-center gap-2 text-[12px] text-fg-2")}>
-        <span className="w-28 flex-none break-all">{name}</span>
+        {!hideLabel && <span className="w-28 flex-none break-all">{name}</span>}
         <Button type="button" size="sm" variant="outline" aria-label={`Decrease ${name}`} disabled={atMin} onClick={() => step(-1)}>
           −
         </Button>
         <Input
           aria-label={name}
           inputMode="numeric"
+          className={compact ? "h-8 w-14 flex-none text-center" : undefined}
           value={text}
           min={spec?.min}
           max={spec?.max}
@@ -217,7 +238,7 @@ function NumberStepper({ name, value, onChange, onError }: EditorProps & { value
         <Button type="button" size="sm" variant="outline" aria-label={`Increase ${name}`} disabled={atMax} onClick={() => step(1)}>
           +
         </Button>
-        {spec && <span className="flex-none text-muted-2">{spec.unit}</span>}
+        {spec && !compact && <span className="flex-none text-muted-2">{spec.unit}</span>}
       </div>
       <span className={note} data-testid={`rules-number-range-${name}`}>
         {spec ? `Range: ${rangeText(spec)} ${spec.unit}.` : "The rule pack declares no unit or range for this number."}
@@ -231,14 +252,14 @@ function NumberStepper({ name, value, onChange, onError }: EditorProps & { value
   );
 }
 
-function ListRows({ ruleId, name, value, onChange, counted }: EditorProps & { value: string[]; counted?: boolean }) {
+function ListRows({ ruleId, name, value, onChange, counted, hideLabel }: EditorProps & { value: string[]; counted?: boolean }) {
   const { activeId } = useProjectCtx();
   const rows = value;
   const set = (next: string[]) => onChange(next);
   const entries = rows.map((r) => r.trim()).filter(Boolean);
   return (
     <div className="flex flex-col gap-1.5" role="group" aria-label={name} data-testid={`rules-list-${name}`}>
-      <span className={cn(MONO, "text-[10px] text-muted-2")}>{name}</span>
+      {!hideLabel && <span className={cn(MONO, "text-[10px] text-muted-2")}>{name}</span>}
       {rows.map((r, i) => (
         <div key={i} data-testid="rules-list-row" className="flex min-w-0 flex-col gap-1">
           <div className="flex min-w-0 items-center gap-2">
@@ -281,7 +302,7 @@ function PathCountBadge({ projectId, path }: { projectId: string; path: string }
   return (
     <span data-testid="rules-path-count" className={cn(MONO, "block min-w-0 max-w-full truncate text-small", warn ? "text-[#ffb454]" : "text-muted-2")}>
       {warn && "⚠ "}
-      {row?.normalised && row.normalised !== trimmed ? `saved as ${row.normalised} · ` : ""}
+      {row?.normalised && row.normalised !== trimmed ? `counted as ${row.normalised} · ` : ""}
       {text}
     </span>
   );
@@ -320,31 +341,32 @@ function GeneratedFiles(props: EditorProps & { value: string[] }) {
   const emit = (m: "add" | "replace", list: string[]) => onChange(m === "add" ? [...defaults, ...list] : list);
   return (
     <div className="flex flex-col gap-1.5" data-testid="rules-generated-files">
-      <div role="radiogroup" aria-label="Generated files" className="flex flex-col gap-1">
+      <div role="radiogroup" aria-label="Generated files" className="flex flex-col gap-1.5">
         {(
           [
             ["add", "Add to defaults", "Keep the built-in generated files and add yours."],
             ["replace", "Replace defaults", "Only the files listed here are ignored."],
           ] as const
         ).map(([v, label, explain]) => (
-          <label key={v} className="flex items-start gap-2 text-[12px] text-fg-2">
-            <input
-              type="radio"
-              name="generated-files-mode"
-              aria-label={label}
-              checked={mode === v}
-              onChange={() => {
-                setMode(v);
-                emit(v, extras);
-              }}
-            />
-            <span>
-              <span className="text-fg">{label}</span>
-              <span className="block text-muted-2">{explain}</span>
-            </span>
-          </label>
+          <RadioCard
+            key={v}
+            name="generated-files-mode"
+            value={v}
+            label={label}
+            explain={explain}
+            checked={mode === v}
+            onChange={() => {
+              setMode(v);
+              emit(v, extras);
+            }}
+          />
         ))}
       </div>
+      {mode === "add" && (
+        <p className={cn(MONO, "break-all text-small text-muted-2")} data-testid="rules-generated-defaults">
+          Built in: {defaults.join(", ")}
+        </p>
+      )}
       <ListRows {...props} value={extras} onChange={(l) => emit(mode, l as string[])} counted />
     </div>
   );
@@ -358,14 +380,14 @@ function PredicateList(props: EditorProps & { value: string[] }) {
   const emit = (list: string[]) => onChange([...floor, ...list]);
   return (
     <div className="flex flex-col gap-1.5" data-testid="rules-predicates">
-      <span className={cn(MONO, "text-[10px] text-muted-2")}>predicates</span>
+      {!props.hideLabel && <span className={cn(MONO, "text-[10px] text-muted-2")}>predicates</span>}
       {floor.map((p) => (
         <span key={p} className={cn(MONO, "text-[12px] text-fg-2")} data-testid="rules-predicate-floor">
           {p} · required
         </span>
       ))}
       <span className={note}>The deployment's own required predicates also apply and cannot be dropped.</span>
-      <ListRows {...props} name="additions" value={extras} onChange={(l) => emit(l as string[])} />
+      <ListRows {...props} hideLabel={false} name="additions" value={extras} onChange={(l) => emit(l as string[])} />
       {!extras.includes("scans_clean") && (
         <Button type="button" size="sm" variant="outline" className="self-start" onClick={() => emit([...extras, "scans_clean"])}>
           Suggested: add scans_clean
@@ -375,12 +397,12 @@ function PredicateList(props: EditorProps & { value: string[] }) {
   );
 }
 
-function MapTable({ name, value, onChange }: EditorProps & { value: Record<string, string[]> }) {
+function MapTable({ name, value, onChange, hideLabel }: EditorProps & { value: Record<string, string[]> }) {
   const rows = Object.entries(value);
   const write = (next: [string, string[]][]) => onChange(Object.fromEntries(next));
   return (
     <div className="flex flex-col gap-1.5" role="group" aria-label={name} data-testid={`rules-map-${name}`}>
-      <span className={cn(MONO, "text-[10px] text-muted-2")}>{name}</span>
+      {!hideLabel && <span className={cn(MONO, "text-[10px] text-muted-2")}>{name}</span>}
       {rows.map(([k, list], i) => (
         <div key={i} data-testid="rules-map-row" className="flex min-w-0 items-center gap-2">
           <Input className="min-w-0 flex-1" aria-label={`${name} key ${i + 1}`} value={k} onChange={(e) => write(rows.map((r, j) => (j === i ? [e.target.value, r[1]] : r)))} />

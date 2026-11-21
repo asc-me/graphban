@@ -10,6 +10,11 @@ Idle is not "the last child exited." Idle is: no ready non-colliding work, no un
 is not that lease. Typed human waits (D11) are not ready work; a wave that has only
 those left is `idle-with-waits`. A wave that exits 0 with leftover `review` is a failed
 run (`review-unsigned`).
+
+A `--prd` whose server can say the PRD is closed, or that it has no open items, exits
+on that probe. It does not re-walk done items, re-say merges already verified, or
+rewrite a dependency hold. A service drain of a closed PRD, or of one that stays empty
+for several cycles, unloads its own unit so the machine supervisor stops starting it.
 """
 
 from __future__ import annotations
@@ -45,9 +50,10 @@ from .adapters import AdapterError
 from .headroom import Headroom
 from .supervisor import (
     _declared_into,
-    DEFAULT_MAX_WORKERS, LaunchFactory, Limits, Merger, Wave, WaveBase,
+    DEFAULT_MAX_WORKERS, LaunchFactory, Limits, Merger, ResumeBlocked, Wave, WaveBase,
     _reap_all, _rooted, _report_exits, _start, item_status, publish_salvaged,
-    resolve_wave_base, seats_refusal, seats_unrecordable, watch_tick,
+    record_server_error, resolve_wave_base, seats_refusal, seats_unrecordable,
+    server_failed, watch_tick,
 )
 
 #: Planner-held tools. `register_agent` is how this process gets an `agent_id` to mint
@@ -111,6 +117,9 @@ PLANNER_TOOLS: frozenset[str] = frozenset({
 STAFF_EVERY_ROW = "review.staff_every_row"
 
 EMPTY_TICKS = 3
+#: Statuses that still have work a restart might pick up (GRPH-1645). `done` is
+#: not one of them: counting it is the scan an idle drain must not do.
+_OPEN_STATUSES = ("backlog", "next", "in_progress", "review", "blocked")
 MINT_TRIES = 3
 MINT_BUDGET_S = 30.0
 #: S6 (PRD-39 D-i): consecutive spawns that exited against unheld review rows before
@@ -155,6 +164,7 @@ class Report:
     waits: list[str] = field(default_factory=list)
     review: list[str] = field(default_factory=list)
     review_outside_prd: list[str] = field(default_factory=list)
+    unready: list[dict] | None = None
     detail: str = ""
     wave: Wave | None = None
 
@@ -180,6 +190,9 @@ class Report:
             # the PRD-scoped seat it would mint cannot claim them. Listed so a person sees
             # they are waiting. Always empty without `--prd`.
             "review_outside_prd": list(self.review_outside_prd),
+            # GRPH-1697. A `--line` run only: `[{id, missing}]`; empty means it looked and
+            # found none. Absent on a `--prd` run, which has no such notion.
+            **({"unready": list(self.unready)} if self.unready is not None else {}),
             # GRPH-834. Always present, including when nothing was measured: an absent key
             # reads as "this build has no spend reporting", and a zeroed block with
             # `reported: 0` reads as "nobody told us", which is the true statement.
@@ -189,6 +202,11 @@ class Report:
             # number. Null means the host could not be asked and the gate never bound, which
             # is the reading that would otherwise pass for a roomy machine.
             "gated": list(self.wave.gated) if self.wave else [],
+            # GRPH-1643. Always present. Empty means no ready item's delegation was
+            # refused. A missing key reads the same way, which is how a drain exited
+            # `idle` for hours with the refusal only in the observe log.
+            "refused": [dict(row) for row in (
+                self.wave.delegate_refused if self.wave else [])],
             "headroom_bytes": self.wave.headroom_at_start if self.wave else None,
             # PRD-41 D21 / criterion 24: every stage of every resolution. Always present;
             # empty means this run resolved nothing, not that the record was not kept.
@@ -245,6 +263,18 @@ class Report:
         payload["vendors_launched"] = launched
         payload["vendors_not_launched"] = [
             v for v in (self.wave.vendors_tried if self.wave else []) if v not in launched]
+        # GRPH-1753. Always present. Empty means no spawn raised. A missing key
+        # reads the same way, which is how a process that died on the exception
+        # used to leave the summary.
+        payload["spawn_failed"] = list(self.wave.spawn_failed) if self.wave else []
+        # GRPH-1024. Always present, zero included. `held_in_base` is how many items
+        # this wave refused to rebuild because their work is already in the base;
+        # `in_base` names each one and the signal it believed. Zero means it looked
+        # and held none. A missing key reads as that zero, which is how a queue of
+        # bounced remainders exited idle for weeks.
+        held = self.wave.in_base if self.wave else {}
+        payload["held_in_base"] = len(held)
+        payload["in_base"] = dict(held)
         if self.detail:
             payload["detail"] = self.detail
         return payload
@@ -272,6 +302,7 @@ def run(
     mint_budget: float = MINT_BUDGET_S,
     request: str | None = None,
     prd: str | None = None,
+    line: str | None = None,
     budget: int | None = None,
     shared: dict | None = None,
     tiers: TierTable | None = None,
@@ -283,6 +314,7 @@ def run(
     records: "list[ent_mod.Entitlement] | None" = None,
     stall_after: float = watchdog_mod.STALL_AFTER_S,
     clock: Callable[[], float] = time.monotonic,
+    acknowledge_reach: set[str] | None = None,
 ) -> Report:
     """Hold the repo lock and run until idle, a cap, or a config refusal.
 
@@ -318,10 +350,19 @@ def run(
     # watchdog turns a silent stall into a logged one and a non-zero exit (KeepAlive restarts).
     watchdog_mod.install_stack_dump()
     watchdog_mod.current = watchdog_mod.Watchdog(stall_after, clock)
+    # GRPH-1786. This thread keeps running when the loop is blocked inside a call, and it
+    # still fires when a child is live. `poll` is the interval the loop actually sleeps.
+    silence = watchdog_mod.SilenceWatch(poll=poll)
+    silence.start()
 
     try:
         if budget:
             check_budget_can_be_enforced(adapter, budget)
+        if prd and line is not None:
+            raise ConfigError("--prd and --line cannot be combined: one run drains one scope")
+        if line is not None and pool:
+            raise ConfigError("--line cannot be combined with pre-minted seats: a seat from "
+                              "--seats carries no line, so those children could claim past it")
         if prd and pool:
             # GRPH-827. A pre-minted seat carries whatever scope it was minted with, and a
             # `--seats` file has none. Mixing them would produce a wave that reports as scoped
@@ -356,6 +397,10 @@ def run(
         if prd:
             prd = resolve_prd(planner, prd)
             observe.emit("prd", detail=prd)
+        if line is not None:
+            # GRPH-1697. From `get_context.maintenance_line`, never `get_prd`.
+            line = resolve_line(planner, line)
+            observe.emit("line", detail=line)
         # GRPH-1012. Resolved ONCE for the wave, before anything is cut from it or
         # published against it: the operator's `--base`, else the project's MEASURED
         # gitops base, else the remote's default ref — fetched, and never this checkout's
@@ -390,8 +435,8 @@ def run(
             # the clone nobody starts a supervisor on again. Inside the lock, so this
             # repository answers "held" to the sweep's own try-acquire and is skipped by the
             # rule that protects every other live supervisor.
-            for line in adopt_mod.sweep(state).lines:
-                observe.emit("gc", detail=line)
+            for gc_line in adopt_mod.sweep(state).lines:
+                observe.emit("gc", detail=gc_line)
 
             children: list[Child] = list(leftover)
             roster_path = adopt_mod.children_path(repo, state)
@@ -428,6 +473,7 @@ def run(
                 minted_start=minted,
                 request=request,
                 prd=prd,
+                line=line,
                 budget=budget,
                 shared=shared or {},
                 tiers=tiers or TierTable(),
@@ -436,7 +482,21 @@ def run(
                 adapter=adapter,
                 merge=merge,
                 wave_base=chosen_base,
+                acknowledge_reach=acknowledge_reach,
+                verified_merges=(
+                    Path(state) / "verified-merges.json" if state is not None else None
+                ),
               )
+            except ToolFailed as exc:
+                # GRPH-1669. A roster read (`fleet_status`) answered with a tool error.
+                # Stop the children this wave started and reap them — salvage and publish
+                # what they did — so nothing is left running with nobody watching it.
+                stopped = server_failed(wave, children, exc)
+                if stopped:
+                    _report_exits(stopped, supervisor, wave, ledger=planner)
+                _reap_all(wave, children, client=planner, base_branch=chosen_base.ref)
+                persist()
+                raise
             except CapError as exc:
                 # GRPH-1438. A cap exit stops SPAWNING; it must not abandon a child that is
                 # still running. Design chosen: wait here, keep reaping, and exit only after
@@ -478,10 +538,30 @@ def run(
             _report_capacity_utilization(planner, wave)
         return Report(ok=False, reason=exc.reason, exit=1, detail=str(exc), wave=wave,
                       minted=minted, spawned=len(wave.spawned))
-    except watchdog_mod.Stalled as exc:
-        wave.reason = "stall"
-        return Report(ok=False, reason="stall", exit=1, detail=str(exc), wave=wave,
+    except ToolFailed as exc:
+        # GRPH-1669. One FAILED line naming the tool and the server's message, not a
+        # traceback. Recorded here too for an error raised before the loop had children.
+        record_server_error(wave, exc)
+        wave.reason = "server_error"
+        return Report(ok=False, reason="server_error", exit=1, detail=str(exc), wave=wave,
                       minted=minted, spawned=len(wave.spawned))
+    except watchdog_mod.Stalled as exc:
+        # GRPH-1577. A stall while a signed-off merge is still outstanding is not a
+        # drained queue. Name the items; `idle` is how the open PR was left behind.
+        if wave.merge_pending:
+            lines = list(wave.merge_pending)
+            wave.reason = "merge-pending"
+            return Report(ok=False, reason="merge-pending", exit=0,
+                          detail="; ".join(lines), wave=wave,
+                          minted=minted, spawned=len(wave.spawned), waits=lines)
+        # GRPH-1324. A stall while a dead author's pin is the only ready work is an
+        # exit, and an exit must name the pin. `idle` would read as a drained queue.
+        reason, pin_lines = _named_pin_exit("stall", [], list(wave.pin_waits))
+        wave.reason = reason
+        return Report(ok=False, reason=reason, exit=1, detail=str(exc), wave=wave,
+                      minted=minted, spawned=len(wave.spawned), waits=pin_lines)
+    finally:
+        silence.stop()
 
 
 def _drain_live(wave, children, persist, planner, supervisor, limits, poll, sleep, debug,
@@ -623,6 +703,29 @@ def _preflight_observations(supervisor: Graphban) -> None:
             f"observations route answered the start-up probe with HTTP {exc.status}, not "
             f"403 or 404. Server said: {exc}"
         ) from exc
+
+
+def observations_role_warning(client: Graphban) -> str:
+    """A warning when this key cannot POST /api/fleet/observations, else "" (GRPH-1348).
+
+    `until --dry-run` and `service install` print this. A real `until` run still refuses
+    through `_preflight_observations` (GRPH-1346) — this does not weaken that. A transport
+    failure is not a missing role, so it stays silent: warning on a down server would train
+    an operator to ignore the warning that means the key.
+    """
+    try:
+        client.post_observation(timeout=2.0, **OBSERVATION_PROBE)
+    except ObservationRefused as exc:
+        if exc.status in (401, 403):
+            return (
+                "the stored key cannot POST /api/fleet/observations, so a drain would lose "
+                "every base, lease and PR record. Recording a cut needs the planner role "
+                f"among the key's roles. Server said: {exc}"
+            )
+        return ""
+    except (NotPermitted, ServerUnreachable, OSError):
+        return ""
+    return ""
 
 
 def _item_brief(client, item_id: str | None) -> dict | None:
@@ -859,6 +962,7 @@ def _loop(
     minted_start: int,
     request: str | None = None,
     prd: str | None = None,
+    line: str | None = None,
     budget: int | None = None,
     shared: dict | None = None,
     tiers: TierTable | None = None,
@@ -867,6 +971,8 @@ def _loop(
     adapter: str = "",
     merge: bool = False,
     wave_base: "WaveBase | None" = None,
+    acknowledge_reach: set[str] | None = None,
+    verified_merges: Path | None = None,
 ) -> Report:
     from .mcp import _runner_up, read_preferences
     profile, policy, pref_note, measured, cap_measured, tier_map = read_preferences(supervisor)
@@ -884,6 +990,12 @@ def _loop(
     agent_id = str(identity.get("agent_id") or identity.get("id"))
     empty = 0
     delegated: set[str] = set()
+    # GRPH-1753. Items whose spawn raised this pass. Skipped until the pass is
+    # exhausted so the next item can start; cleared so the next pass retries.
+    # Not `delegated`: marking them delegated hides them until the process
+    # restarts, and the restart is what the open row then refuses.
+    cooled: set[str] = set()
+    fail_rounds = 0
     # GRPH-1315: which child each delegated item was handed to. `delegated` stops THIS loop
     # offering an item while a child has it; once that child exits the server's state is the
     # answer again. Without this, a bounced item back in `next` was never offered by the
@@ -896,6 +1008,7 @@ def _loop(
     review_fails = 0
     ci_stuck: list[dict] = []
     ci_logged: set[tuple[str, str, str]] = set()  # GRPH-1392: events already logged
+    builder_ci_logged: set[tuple[str, str, str]] = set()  # GRPH-1708
     review_spawned: list = []  # GRPH-1374: children this loop spawned for review rows
     # GRPH-842. One gate for the whole run, not one per spawn: a child spawned seconds ago
     # is not in the kernel's numbers yet, and a fresh reading per seat cannot know that. Its
@@ -926,19 +1039,23 @@ def _loop(
         # nothing must not be left for the next cycle to adopt. A child that holds
         # an item stays; its lease is the work.
         _stop_children_holding_nothing(wave, children, supervisor, planner, base)
-        return _finish(wave, reason, code, minted, planner, **kw)
+        return _finish(wave, reason, code, minted, planner, prd=prd, line=line, **kw)
     # GRPH-846, GRPH-880. Built whether or not `merge` was asked for, and inert when it was not:
     # `enabled` is the flag, read once here, so the loop below has one call site and no
     # branch on it — the branch is inside, where a test can see it stay closed. `prd_id`
     # scopes candidates: an item outside this PRD is not merged unless a GRPH-798 hold
     # names it.
     merger = Merger(repo, planner, enabled=bool(merge), remote=remote, base=base,
-                    prd_id=prd or "", agent_id=agent_id)
+                    prd_id=prd or "", line_id=line or "", agent_id=agent_id,
+                    verified_path=verified_merges)
     # Items the GRPH-798 check HELD, with the finished dependencies they wait on. A merge
     # changes the answer, so these are lifted out of `delegated` when one lands.
     held: dict[str, list[str]] = {}
     # GRPH-950: holds are blockers on the server, so they outlive the wave that wrote them.
-    _resume_holds(planner, held, delegated, repo, base)
+    _resume_holds(planner, held, delegated, repo, base, prd=prd)
+    quiet = _quiet_prd(planner, prd, merger, wave, _leave)
+    if quiet is not None:
+        return quiet
     rechecked = time.monotonic()
 
     def next_candidate(seed: str, want: str):
@@ -965,6 +1082,30 @@ def _loop(
                                                   if k in explained}})
         return (launch_for(res.winner.harness, res.winner.model),
                 (res.winner.harness, res.winner.model))
+
+    def _record_spawn_failed(seed: str, exc: BaseException) -> None:
+        """One spawn exception, class and message, on the summary and the log."""
+        text = str(exc).strip()
+        # ConfigError is how `_spawn_one` re-raises a failure `_start` already
+        # named (`UnrenderableSeat: ...`). Prefixing ConfigError would hide that.
+        if not isinstance(exc, ConfigError) and type(exc).__name__ not in text:
+            text = f"{type(exc).__name__}: {text}"
+        line = f"{seed}: {text}" if seed else text
+        wave.spawn_failed.append(line)
+        observe.emit("spawn_failed", item=seed or "", detail=line,
+                     error=type(exc).__name__)
+
+    def _withdraw_spawn(seed: str, tier: str) -> None:
+        """Close the delegation this pass opened. A failure here must not kill the run."""
+        if not seed:
+            return
+        try:
+            planner.call(
+                "delegate", id=seed, lane="backend", tier=tier or "cheap",
+                agent_id=agent_id, withdraw=True,
+            )
+        except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+            observe.emit("withdraw_failed", item=seed, detail=str(exc))
 
     def failover(seat, seed, want, factory, chosen):
         """GRPH-1247, GRPH-1372. Spawn; on a vendor limit, take the next record or vendor.
@@ -1008,10 +1149,29 @@ def _loop(
                         base=base, ledger=planner,
                     )
                     if seed and len(children) > before:
-                        owners[seed] = children[-1]
+                        child = children[-1]
+                        detail = _bound_claim_detail(child, seed, seat)
+                        if detail:
+                            # GRPH-1292. Delegate succeeded and the child registered, but
+                            # the seat did not claim the item (pin, hold, scope). Logging
+                            # it as delegated left the item next with nobody on it.
+                            observe.emit("bound_claim_refused", item=seed, detail=detail)
+                            _note_refused(wave, seed, detail)
+                            _remember_refused(wave, seed, detail, "bound_claim_refused")
+                            stop(child, Reason.ASKED)
+                            _withdraw_spawn(seed, want or "cheap")
+                            if _bound_refusal_retries(child.assigned):
+                                delegated.discard(seed)
+                            return "unstaffed"
+                        owners[seed] = child
+                        _forget_refused(wave, seed)
+                        observe.emit(
+                            "delegated", item=seed, tier=want or "",
+                            bound=bool(seat.item),
+                        )
                     if chosen[0] and chosen[0] not in wave.vendors_launched:
                         wave.vendors_launched.append(chosen[0])
-                    return
+                    return "spawned"
                 except VendorLimit as caught:
                     exc = caught
                     _mark_exhausted(wave, caught, chosen[0], record)
@@ -1030,6 +1190,38 @@ def _loop(
                                      detail=f"{record.name if record else chosen[0]} exhausted; "
                                             f"continuing on {left.name} ({chosen[0]})")
                         continue
+                except (ToolFailed, ServerUnreachable, NotPermitted):
+                    # A server error stops the wave (`server_error`, one FAILED line).
+                    # Cooling the item would hide that and keep spawning.
+                    raise
+                except ResumeBlocked as blocked:
+                    # GRPH-1785. The item's branch is held by a worktree this drain
+                    # will not take, and the child was not started on any other
+                    # branch. Withdraw the delegation opened this pass so the item
+                    # stays claimable. Cooling only skips it for this pass, so the
+                    # loop does not spin on the same checkout.
+                    observe.emit(
+                        "resume_blocked",
+                        item=blocked.item or seed,
+                        worktree=blocked.worktree,
+                        branch=blocked.branch,
+                    )
+                    if seed:
+                        _withdraw_spawn(seed, want or "cheap")
+                        cooled.add(seed)
+                        delegated.discard(seed)
+                    return "failed"
+                except Exception as exc:
+                    # GRPH-1753. One item's spawn failure is not the wave's death.
+                    # Withdraw the delegation this pass opened and cool the item so
+                    # the next one can start. The same failure on every pass is what
+                    # ends the run, as `spawn_failed`, not an unhandled traceback.
+                    _record_spawn_failed(seed, exc)
+                    if seed:
+                        _withdraw_spawn(seed, want or "cheap")
+                        cooled.add(seed)
+                        delegated.discard(seed)
+                    return "failed"
             nxt = next_candidate(seed, want)
             if nxt is None:
                 wave.reason = "capacity"
@@ -1052,6 +1244,9 @@ def _loop(
                          detail=f"{prev} exhausted; continuing on {chosen[0]}")
 
     while True:
+        # GRPH-1786. A pass that is still running is not a silence, even when it has
+        # nothing new to log. A pass blocked inside the next call never reaches here.
+        observe.touch_loop()
         # GRPH-1056. This loop IS the supervisor working. An `mcp` that merely stays
         # up does not touch, and past the idle threshold the next `hold` stops it.
         # Touching here is what keeps a long drain from being read as that.
@@ -1062,7 +1257,7 @@ def _loop(
         # `update_item` is on the planner. Passing supervisor here opened the PR and
         # then logged "PR opened but not recorded" on every item.
         watch_tick(wave, children, limits, planner, debug=debug, persist=persist,
-                   base_branch=base)
+                   base_branch=base, scope_prd=prd)
         # GRPH-834: checked HERE, right after the tick that reads the exit records, and before
         # anything else this pass can spawn. `_cap_children` guards `--max-children` at the
         # spawn site, and that is the wrong shape for a budget: a wave whose last child has
@@ -1079,9 +1274,9 @@ def _loop(
             # S6 (PRD-39 D-i): re-keyed off the fact it measures — a child exited
             # and there are still unheld review rows. Not off a role.
             try:
-                rows_for_reap, beyond = _split_by_prd(_review_rows(planner), prd)
+                rows_for_reap, beyond = _split_by_prd(_review_rows(planner), prd, line)
                 if _staff_every_row(planner):
-                    rows_for_reap = rows_for_reap + beyond
+                    rows_for_reap = rows_for_reap + _widen(beyond, prd, line)
             except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
                 watchdog_mod.current.retry("review_rows(reap)", exc)
                 rows_for_reap = []
@@ -1107,7 +1302,7 @@ def _loop(
             persist()
             if any("handoff-failed" in f for f in wave.failures):
                 wave.reason = "handoff-failed"
-                return _finish(wave, "handoff-failed", 1, minted, planner, prd=prd)
+                return _finish(wave, "handoff-failed", 1, minted, planner, prd=prd, line=line)
 
         live = [c for c in children if c.running]
         wd = watchdog_mod.current
@@ -1123,10 +1318,14 @@ def _loop(
             # row, so a project-wide trigger spawned children that could only exit, and ended
             # the run `review-unsigned` over an item it was never able to review.
             staff_all = _staff_every_row(planner)
-            rows, rows_outside = _split_by_prd(_review_rows(planner), prd)
+            rows, rows_outside = _split_by_prd(_review_rows(planner), prd, line)
             if staff_all:
-                # GRPH-1273: every row visible to the key is this run's to staff.
-                rows, rows_outside = rows + rows_outside, []
+                # GRPH-1273, narrowed by GRPH-1697: other PRDs' rows are this run's to staff;
+                # line rows and rows with neither scope never are, and a line run never widens.
+                extra = _widen(rows_outside, prd, line)
+                rows = rows + extra
+                rows_outside = [r for r in rows_outside if r not in extra]
+                staff_all = staff_all and not line
             # GRPH-1409: a row whose newest refusal is a post-cooldown `pr_ci_not_green` cannot
             # be cleared by another reviewer, so it is taken out of what can spawn one.
             ci_stuck = [r for r in rows if ci_unattestable(r)]
@@ -1135,19 +1334,26 @@ def _loop(
             # attestation will arrive. Those rows wait; only the rest can end the wave.
             ci_pending: dict[str, str] = {}
             for r in list(ci_stuck):
-                running = ci_run_in_progress(repo, r)
+                running = ci_run_in_progress(repo, r, ci_logged)
                 if running:
                     ci_pending[str(r["id"])] = running
                     ci_stuck.remove(r)
             reviews = [str(r["id"]) for r in rows + ci_stuck]
             outside = [str(r["id"]) for r in rows_outside]
             waits = _wait_ids(planner)
+            builder_ci_pending = False
+            try:
+                misblocked = _builder_ci_misblocked_rows(planner, prd, line)
+            except ToolFailed as exc:
+                raise ConfigError(f"cannot list builder CI blockers: {exc}") from exc
+            waits, builder_ci_pending, _ = _apply_builder_ci_blockers(
+                planner, misblocked, repo, waits, builder_ci_logged, agent_id=agent_id)
             for rid, running in ci_pending.items():
-                line = f"{rid}: review_waits_on_ci ({running})"
-                if line not in waits:
-                    waits.append(line)
-                if line not in wave.review_waits:
-                    wave.review_waits.append(line)
+                wait_line = f"{rid}: review_waits_on_ci ({running})"
+                if wait_line not in waits:
+                    waits.append(wait_line)
+                if wait_line not in wave.review_waits:
+                    wave.review_waits.append(wait_line)
                     observe.emit("review_waits_on_ci", review=rid, run=running)
         except NotPermitted as exc:
             raise ConfigError(f"cannot classify review/waits: {exc}") from exc
@@ -1169,17 +1375,23 @@ def _loop(
         # observing departures. An item already `done` with a sign_off attestation is a
         # candidate on the first tick.
         if merger.tick(wave):
-            # The base moved. Whatever was held on a finished-but-unmerged dependency is
-            # offered again — the check re-runs against the freshly fetched ref and either
-            # lets it through or holds it on whatever is still missing.
+            # The base moved. A hold whose dependency is done is offered again — the
+            # check re-runs against the freshly fetched ref and either lets it through
+            # or holds it on whatever is still missing. A dependency that is not done
+            # stays held (GRPH-1605): reopen_on_red is not a merge.
             for item_id in list(held):
+                rework = _dependencies_not_done(planner, item_id)
+                if rework:
+                    _keep_for_rework(planner, item_id, rework)
+                    held[item_id] = [str(r.get("id") or "") for r in rework]
+                    continue
                 # The blocker goes too (GRPH-950), or the server keeps refusing an item this
                 # loop has stopped refusing. The re-check below writes it back if still missing.
                 _lift(planner, item_id)
+                held.pop(item_id, None)
                 delegated.discard(item_id)
                 observe.emit("hold_lifted", item=item_id,
                              detail=f"{item_id}: a merge landed; re-checking its dependencies")
-            held.clear()
         elif held and time.monotonic() - rechecked >= HOLD_RECHECK_SECONDS:
             # Merged by somebody other than this loop — a person, or a wave without `--merge`.
             rechecked = time.monotonic()
@@ -1191,13 +1403,33 @@ def _loop(
             raise CapError("receipts", wave.receipts_blocked)
         try:
             need = _wanted_workers(planner, supervisor, live_n=len(live),
-                                   max_workers=limits.max_workers, prd=prd)
-        except ServerUnreachable as exc:
+                                   max_workers=limits.max_workers, prd=prd, line=line)
+        except (ServerUnreachable, ToolFailed) as exc:
             # D-i: no new spawns while unreachable. Live children run to their lease.
+            # GRPH-1813: with nobody live this is not the spawn cap. A fleet_status
+            # timeout (or a tool error after the read's retries) used to exit `cap`
+            # with spawned 0, which reads as the operator's own limit. Name the
+            # unread roster and keep the error text. `cap` stays the exit where
+            # spawned reached `--max-children`.
             wd.retry("wanted_workers", exc)
-            if not live:
-                wave.reason = "cap"
-                raise CapError("cap", "server unreachable with no live children")
+            if not live and _roster_read_failed(exc):
+                wave.reason = "roster_unreadable"
+                raise CapError(
+                    "roster_unreadable",
+                    f"fleet_status unreadable in wanted_workers: {exc}",
+                )
+            if not live and isinstance(exc, ServerUnreachable):
+                # collision_clusters runs before fleet_status. Its timeout is the
+                # same lie as the roster one: spawned is still 0, so this is not
+                # `--max-children`. Name the call and keep the error.
+                tool = getattr(exc, "tool", "") or "wanted_workers"
+                wave.reason = "server_unreachable"
+                raise CapError(
+                    "server_unreachable",
+                    f"{tool} unreachable in wanted_workers: {exc}",
+                )
+            if isinstance(exc, ToolFailed):
+                raise
             sleep(poll)
             continue
 
@@ -1205,7 +1437,7 @@ def _loop(
             # Re-read before minting into a cluster that just filled (allocation race).
             try:
                 need = _wanted_workers(planner, supervisor, live_n=len(live),
-                                       max_workers=limits.max_workers, prd=prd)
+                                       max_workers=limits.max_workers, prd=prd, line=line)
             except ServerUnreachable as exc:
                 wd.retry("wanted_workers(recheck)", exc)
                 sleep(poll)
@@ -1230,14 +1462,46 @@ def _loop(
             # (CI cancelled the fleet suite after 6h). Count toward idle like a no-work tick.
             flags: dict = {}
             seed, code, want = _delegate_next(planner, agent_id, wave_name, delegated,
-                                              request, prd, repo, base, held=held,
+                                              request, prd, repo, base, line=line, held=held,
                                               merger=merger, bound_out=flags,
-                                              live=live, owners=owners)
+                                              live=live, owners=owners, skip=cooled,
+                                              in_base=wave.in_base,
+                                              acknowledge_reach=acknowledge_reach)
+            for refused_item, why in flags.get("refused", ()):
+                _note_refused(wave, refused_item, why)
+                _remember_refused(wave, refused_item, why, "bound_seat_refused")
+            for pin_line in flags.get("pin_waits") or []:
+                if pin_line not in wave.pin_waits:
+                    wave.pin_waits.append(pin_line)
+            if seed is not None:
+                # The server accepted this item. Its pin, if any, is over.
+                prefix = f"{seed}: "
+                wave.pin_waits = [w for w in wave.pin_waits if not w.startswith(prefix)]
+            if seed is None and cooled and not flags.get("pinned_until"):
+                # Every remaining candidate already failed this pass. A live child
+                # is not a failing pass — it may be the item we moved on to.
+                if not live:
+                    fail_rounds += 1
+                    if fail_rounds >= empty_ticks:
+                        wave.reason = "spawn_failed"
+                        report = _leave(
+                            "spawn_failed", 1, review=reviews, waits=waits,
+                            outside=outside)
+                        report.detail = (
+                            wave.spawn_failed[-1] if wave.spawn_failed else "spawn_failed")
+                        return report
+                    cooled.clear()
+                sleep(poll)
+                continue
             if seed is None and flags.get("pinned_until"):
-                # GRPH-1332. A bounced item is reserved for its live author: a wait, not
-                # idle. The pin ends with its expiry or the author going offline, so this is
-                # bounded; the item was not marked delegated, so the next tick offers it.
+                # GRPH-1332, GRPH-1324. A bounced item reserved for its author is a wait,
+                # not idle — including when that author's child has already exited and
+                # nobody can retry inside the pin. The pin ends when the server stops
+                # reporting it (expiry, or the author going offline). Not marked
+                # delegated, so the next tick offers it again. Progress, not a stall:
+                # waiting out the pin is the work of this tick.
                 empty = 0
+                wd.progress("pinned")
                 sleep(poll)
                 continue
             if seed is not None:
@@ -1298,7 +1562,9 @@ def _loop(
                 if chosen[0]:
                     seat = replace(seat, declare=matrix_mod.declaration(chosen[0], chosen[1], want or None, matrix))
                 _cap_children(wave, limits, item=seed)
-                failover(seat, seed, want, factory, chosen)
+                if failover(seat, seed, want, factory, chosen) in ("failed", "unstaffed"):
+                    continue
+                fail_rounds = 0
                 wd.progress(f"spawned for {seed}")
                 continue
             else:
@@ -1306,7 +1572,7 @@ def _loop(
                 seat, minted_one = _take_seat(
                     pool, planner, agent_id, wave_name, server, api_key,
                     mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,
-                    role="worker", prd=prd,
+                    role="worker", prd=prd, line=line,
                 )
                 if minted_one:
                     minted += 1
@@ -1356,7 +1622,9 @@ def _loop(
                 if chosen[0]:
                     seat = replace(seat, declare=matrix_mod.declaration(chosen[0], chosen[1], want or None, matrix))
                 _cap_children(wave, limits, item=seed)
-                failover(seat, seed, want, factory, chosen)
+                if failover(seat, seed, want, factory, chosen) in ("failed", "unstaffed"):
+                    continue
+                fail_rounds = 0
                 wd.progress(f"spawned for {seed}")
                 continue
 
@@ -1388,6 +1656,27 @@ def _loop(
         # not paid on a poll where `need` or a live review spawn decides nothing spawns.
         unheld_review = [r for r in rows if not review_held(r)]
         ci_waiting: list[dict] = []
+        pr_waiting: list[dict] = []
+        # GRPH-1730: a pushed review row with no linked PR is opened here, before a
+        # reviewer is spawned. `gh pr create` dying on a rate limit used to be the last
+        # try, and every later reviewer was refused `pr_missing` for the same head.
+        #
+        # Not gated on `review_busy`. A second ready row spawns a reviewer, and that
+        # seat used to be handed the unlinked row by `claim_review` (it orders by
+        # sort_order). Holding it dropped the row from `unheld_review`, and gating this
+        # call on `not review_busy` then skipped the retry for the whole lease. The
+        # open is retried while that other reviewer is live. `claim_review` withholds
+        # the row (`pr_unlinked`) until the PR is linked, so the spawned seat cannot
+        # take it; the skip on the seat names the same ids.
+        if unheld_review and need <= 0:
+            unheld_review, pr_waiting = _pr_opened(
+                unheld_review, repo, base, ci_logged, planner=planner)
+        for row in pr_waiting:
+            wait_line = f"{row.get('id')}: review waits on its PR being opened"
+            if wait_line not in waits:
+                waits.append(wait_line)
+            if wait_line not in wave.review_waits:
+                wave.review_waits.append(wait_line)
         if unheld_review and need <= 0 and not review_busy:
             unheld_review, ci_waiting, ci_blocked = _ci_attested(
                 unheld_review, repo, ci_logged, planner=planner, agent_id=agent_id)
@@ -1409,7 +1698,7 @@ def _loop(
             seat, minted_one = _take_seat(
                 pool, planner, agent_id, wave_name, server, api_key,
                 mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,
-                role="worker", prd=None if staff_all else prd, review_only=True,
+                role="worker", prd=None if staff_all else prd, review_only=True, line=line,
             )
             if minted_one:
                 minted += 1
@@ -1419,6 +1708,12 @@ def _loop(
             _cap_children(wave, limits)
             before = len(wave.spawned)
             kids = len(children)
+            # The empty item is deliberate: the seat reviews whatever claim_review
+            # hands it. The unlinked rows are not among those. The skip is the same
+            # list, named in the instruction; the withhold is what enforces it.
+            waiting_ids = tuple(str(r.get("id")) for r in pr_waiting if r.get("id"))
+            if waiting_ids:
+                seat = replace(seat, review_skip=waiting_ids)
             failover(seat, "", "", launch_factory, (adapter, ""))
             if len(children) > kids:
                 review_spawned.append(children[-1])
@@ -1428,23 +1723,35 @@ def _loop(
 
         if busy:
             if unheld_review and live:
-                for line in _review_waits_on_live(
+                for wait_line in _review_waits_on_live(
                         wave, unheld_review, live, review_spawned=review_spawned,
                         gate=review_gate):
-                    if line not in waits:
-                        waits.append(line)
+                    if wait_line not in waits:
+                        waits.append(wait_line)
             empty = 0
             sleep(poll)
             continue
 
-        if ci_waiting:
+        if ci_waiting or pr_waiting:
             # GRPH-1392: CI is still running at these heads. That is a wait, not unsigned
             # work: keep polling until it settles, then the branch above spawns (green) or
             # blocks (red). CI finishes on its own, so this is bounded.
+            # GRPH-1730: a row with no PR is the same shape. The next poll opens it again.
+            for row in pr_waiting:
+                wait_line = f"{row.get('id')}: review waits on its PR being opened"
+                if wait_line not in waits:
+                    waits.append(wait_line)
             for row in ci_waiting:
-                line = f"{row.get('id')}: review waits on CI"
-                if line not in waits:
-                    waits.append(line)
+                wait_line = f"{row.get('id')}: review waits on CI"
+                if wait_line not in waits:
+                    waits.append(wait_line)
+            empty = 0
+            sleep(poll)
+            continue
+
+        if builder_ci_pending:
+            # GRPH-1708: a builder blocked on missing local CI while CI is still running — not
+            # a typed human wait and not idle.
             empty = 0
             sleep(poll)
             continue
@@ -1467,6 +1774,18 @@ def _loop(
             sleep(poll)
             continue
 
+        pending_merges = _merge_pending(merger, wave)
+        if pending_merges:
+            # GRPH-1577. A signed-off item whose merge can still clear is not an empty
+            # board. Counting these polls toward idle is how the drain exited `idle`
+            # and left the PR open when CI attested a few minutes later.
+            wave.merge_pending = pending_merges
+            empty = 0
+            wd.progress("merge-pending")
+            sleep(poll)
+            continue
+        wave.merge_pending = []
+
         empty += 1
         if empty >= empty_ticks:
             if ci_stuck and not rows:
@@ -1483,6 +1802,15 @@ def _loop(
                 return _name_ci_stuck(
                     _leave("review-unsigned", 1, review=reviews, waits=waits,
                            outside=outside), ci_stuck)
+            if line is not None and not waits and not live:
+                # GRPH-1697. Nothing claimable and nothing in flight, but unready line items
+                # exist: the run did not drain the line, it ran out of claimable work.
+                unready_now = _unready(planner, line)
+                if unready_now:
+                    wave.reason = "unready"
+                    done = _leave("unready", 0, review=reviews, outside=outside)
+                    done.ok = False
+                    return done
             if waits:
                 wave.reason = "idle-with-waits"
                 return _leave("idle-with-waits", 0, waits=waits, review=reviews,
@@ -1490,6 +1818,23 @@ def _loop(
             wave.reason = "idle"
             return _leave("idle", 0, review=reviews, outside=outside)
         sleep(poll)
+
+
+def _merge_pending(merger, wave: Wave) -> list[str]:
+    """Signed-off items this drain is still trying to merge (GRPH-1577).
+
+    A refusal that can clear — CI not yet attested, a cooldown, auto-merge armed —
+    stays in `watching`. A skip and a bounce have already left it. One line per item,
+    so a stop can name them. Empty means nothing is waiting on a merge.
+    """
+    if not getattr(merger, "enabled", False):
+        return []
+    lines: list[str] = []
+    for item_id in list(getattr(merger, "watching", {}) or {}):
+        got = wave.merged.get(item_id)
+        reason = (got.reason if got is not None else "") or "merge not finished"
+        lines.append(f"{item_id}: {reason}")
+    return lines
 
 
 def _stamp_service_exit(planner: Graphban, wave: Wave) -> None:
@@ -1512,7 +1857,7 @@ def _stamp_service_exit(planner: Graphban, wave: Wave) -> None:
 def _finish(
     wave: Wave, reason: str, exit_code: int, minted: int, planner: Graphban,
     *, review: list[str] | None = None, waits: list[str] | None = None,
-    outside: list[str] | None = None, prd: str | None = None,
+    outside: list[str] | None = None, prd: str | None = None, line: str | None = None,
 ) -> Report:
     _stamp_service_exit(planner, wave)
     if waits is None:
@@ -1520,9 +1865,19 @@ def _finish(
             waits = _wait_ids(planner)
         except (NotPermitted, ToolFailed, ServerUnreachable):
             waits = []
+    # GRPH-1324. An exit while a bounce pin is still the only ready work must not
+    # read as idle, and the summary names the item and its pinned_until.
+    reason, waits = _named_pin_exit(reason, list(waits), list(wave.pin_waits))
+    # GRPH-1643. A ready item whose delegation stayed refused is a stall. `idle`
+    # (and `idle-with-waits`, which is still exit 0) is how that item sat unseen
+    # for hours. Any other reason was already not idle, so it is kept.
+    if reason in ("idle", "idle-with-waits") and wave.delegate_refused:
+        reason = "stalled"
+        exit_code = 1
+    wave.reason = reason
     if review is None:
         try:
-            inside, beyond = _split_by_prd(_review_rows(planner), prd)
+            inside, beyond = _split_by_prd(_review_rows(planner), prd, line)
             review = [str(r["id"]) for r in inside]
             outside = [str(r["id"]) for r in beyond]
         except (NotPermitted, ToolFailed, ServerUnreachable):
@@ -1536,6 +1891,7 @@ def _finish(
         waits=waits,
         review=review,
         review_outside_prd=list(outside or []),
+        unready=_unready(planner, line) if line is not None else None,
         wave=wave,
     )
 
@@ -1558,6 +1914,7 @@ def _spawn_one(
     ledger: Graphban | None = None,
 ) -> None:
     before = len(wave.spawned)
+    blocked_before = len(wave.resume_blocked)
     # No `room=` on purpose (GRPH-842). `_start`'s own gate is for `up`, which decides how
     # many seats to run in one go; this loop asks `_no_room` BEFORE minting, because a seat
     # minted into a full machine is a consumed enrolment nothing registers on. Passing one
@@ -1570,6 +1927,16 @@ def _spawn_one(
     )
     occupied.update(c.branch for c in children)
     persist()
+    if len(wave.spawned) == before and len(wave.resume_blocked) > blocked_before:
+        # GRPH-1785. `_start` refused to put this seat on any other branch.
+        # Raised here so the drain — not the worktree call — emits the event
+        # and withdraws the delegation. The item stays claimable.
+        last = wave.resume_blocked[-1]
+        raise ResumeBlocked(
+            str(last.get("item") or seat.item or ""),
+            str(last.get("branch") or ""),
+            str(last.get("worktree") or ""),
+        )
     if len(wave.spawned) == before and wave.failures:
         raise ConfigError(wave.failures[-1])
 
@@ -1790,12 +2157,58 @@ def _waiting(blocked: list[dict], *, repeat: int = 0) -> str:
     # a repeat the line says the wait is still live rather than leaving the reader to infer
     # it from a figure that went the wrong way.
     still = " — still held, the lease was renewed" if repeat else ""
+    review = _review_hold_clause(blocked)
+    # A review occupation is not a reservation, so `free_in` is empty and the old line
+    # said "no expiry reported" about a claim that has a clock (GRPH-1290). When the
+    # cluster is held only by review, that clause IS the clock. A reservation hold
+    # keeps "no expiry reported": silence there would read as "never frees".
+    if soonest is not None:
+        clock = f"; the earliest frees in {soonest}s"
+    elif review and set(holders) <= {"review"}:
+        clock = ""
+    else:
+        clock = "; no expiry reported"
     return (f"{len(blocked)} cluster(s) held by {', '.join(holders) or 'another agent'}{still}"
-            + (f"; the earliest frees in {soonest}s" if soonest is not None
-               else "; no expiry reported")
+            + clock
+            + review
             + _merged_on(blocked)
             + "".join(f"; {h}" for c in blocked for h in _held_files(c))
             + ". Not spawning into work that cannot be claimed")
+
+
+def _review_hold_clause(blocked: list[dict]) -> str:
+    """Whether a live reviewer holds a review cluster, and when that hold lapses (GRPH-1290).
+
+    The server writes `live_holder`, `lapse` and `lapses_in` on each review `held_because`
+    row (`review_hold_read`). A cluster that only says `held_by: ["review"]` — an older
+    server — is named as unreported, not as a wait with no end.
+    """
+    bits: list[str] = []
+    saw_review = False
+    for cluster in blocked:
+        if "review" in (cluster.get("held_by") or []):
+            saw_review = True
+        for h in cluster.get("held_because") or []:
+            if not isinstance(h, dict) or h.get("reserved") != "review":
+                continue
+            saw_review = True
+            who = str(h.get("by") or "an item")
+            live = h.get("live_holder")
+            lapse = h.get("lapse")
+            left = h.get("lapses_in")
+            if live:
+                when = (f", lapses in {left}s" if isinstance(left, int)
+                        else ", lapse time unreported")
+                bits.append(f"{who} held by live reviewer {live}{when}")
+            elif lapse:
+                bits.append(f"{who} held by no live reviewer, lapsed ({lapse})")
+            elif "live_holder" in h or "lapse" in h:
+                bits.append(f"{who} held by no live reviewer")
+    if not saw_review:
+        return ""
+    if not bits:
+        return "; no live reviewer reported"
+    return "; " + "; ".join(bits)
 
 
 def _soft_key(free: list[dict]) -> str:
@@ -1866,7 +2279,8 @@ def _joined(cluster: dict) -> list[str]:
 
 
 def plan(planner: Graphban, prd: str | None, max_workers: int,
-         repo: Path | None = None, base: str = "") -> dict:
+         repo: Path | None = None, base: str = "", line: str | None = None,
+         acknowledge_reach: set[str] | None = None) -> dict:
     """What this wave WOULD delegate, without delegating it (GRPH-819).
 
     Reported after a real wave: "you cannot ask what a wave would delegate before it does —
@@ -1878,16 +2292,21 @@ def plan(planner: Graphban, prd: str | None, max_workers: int,
     that can disagree with it — a dry run that models the wave instead of asking it is a dry
     run that reassures you about the wrong plan.
     """
-    clusters = planner.call("collision_clusters", holds=True, **_scope(prd))
+    # GRPH-1710: `--line` resolves through the same `resolve_line` the real run uses (so a PRD
+    # id or a project with no line is refused identically) and filters through `_clusters`.
+    if line is not None:
+        line = resolve_line(planner, line)
+    clusters = _clusters(planner, prd, line or None, holds=True)
     free, blocked = _free_and_blocked(clusters)
     would = [c for c in free[:max_workers]]
     return {
         "prd": prd or None,
+        "line": line or None,
         # GRPH-827: a dry run that showed only what would be HANDED OUT answered half the
         # question. The other half is what the children could then take on their own, and for
         # a scoped wave that is now the same set. Said explicitly, because the previous answer
         # to it was a README paragraph that turned out to be false.
-        "seats_scoped": bool(prd),
+        "seats_scoped": bool(prd or line),
         "would_delegate": [(c.get("items") or [None])[0] for c in would],
         "clusters_free": len(free),
         "clusters_held": len(blocked),
@@ -1914,17 +2333,24 @@ def plan(planner: Graphban, prd: str | None, max_workers: int,
         # GRPH-950: what the loop would hold on an unmerged dependency — "SA-556 waiting on
         # #397 to merge" — and what an earlier wave already holds. Empty without a repository
         # and a base to measure against, which is the one case the check cannot run.
-        "dependency_holds": _dependency_holds(planner, free, repo, base),
+        "dependency_holds": _dependency_holds(planner, free, repo, base, prd=prd),
         "capped_by_max_workers": len(free) > max_workers,
+        # GRPH-1311. Absent when the flag was not passed, so a dry run without it
+        # prints the same plan it printed before. Present, it is the operator's list
+        # — including a name no cluster has — so a typo is not an empty acknowledgement.
+        **({} if acknowledge_reach is None else {
+            "acknowledge_reach": sorted(
+                {str(i).strip() for i in acknowledge_reach if str(i).strip()}),
+        }),
     }
 
 
 def _dependency_holds(planner: Graphban, free: list[dict], repo: Path | None,
-                      base: str) -> list[dict]:
+                      base: str, *, prd: str | None = None) -> list[dict]:
     """The GRPH-950 holds a wave would write now, and the ones already written. READS ONLY."""
     out: list[dict] = []
     seen: set[str] = set()
-    for item_id, blocker in _held_on_server(planner):
+    for item_id, blocker in _held_on_server(planner, prd=prd):
         seen.add(item_id)
         out.append({"item": item_id, "waiting_on": blocker, "already_held": True})
     if repo is None or not base:
@@ -1947,7 +2373,7 @@ def _dependency_holds(planner: Graphban, free: list[dict], repo: Path | None,
     return out
 
 
-def _scope(prd: str | None) -> dict:
+def _scope(prd: str | None, line: str | None = None) -> dict:
     """The wave's work filter, as `collision_clusters` arguments (GRPH-797).
 
     One function rather than an inline dict at each call site, because the two sites decide
@@ -1959,7 +2385,46 @@ def _scope(prd: str | None) -> dict:
     return {"prd_id": prd} if prd else {}
 
 
-def _seat_scope(prd: str | None) -> dict:
+def _clusters(planner: Graphban, prd: str | None, line: str | None = None, **kw) -> dict:
+    """`collision_clusters` for this wave's scope (GRPH-797, GRPH-1697).
+
+    A `--line` wave cannot ask the server to filter: `collision_clusters` takes `prd_id` and
+    no `line_id`, and an argument it does not know is dropped, so the reply would be the whole
+    project's clusters. The line filter is applied here instead, to each cluster's members,
+    from the items' own `line_id`. A cluster left with no members is dropped. A `--prd` or
+    unscoped wave sends exactly what it sent before.
+    """
+    got = planner.call("collision_clusters", **_scope(prd), **kw)
+    if not line:
+        return got
+    keys = _line_keys(planner, line)
+    out = []
+    for c in (got or {}).get("clusters") or []:
+        if not isinstance(c, dict):
+            continue
+        members = [i for i in (c.get("items") or []) if i in keys]
+        if members:
+            out.append({**c, "items": members})
+    return {**(got or {}), "clusters": out, "total": len(out)}
+
+
+#: Statuses a collision cluster can hold a member in: the claim pool plus `review`, which
+#: occupies its areas (GRPH-886), and `in_progress`, which a stale lease puts back in it.
+_CLUSTER_STATUSES = ("next", "backlog", "in_progress", "review")
+
+
+def _line_keys(planner: Graphban, line: str) -> set[str]:
+    """The ids of this line's items in any status a cluster can hold (GRPH-1697)."""
+    keys: set[str] = set()
+    for status in _CLUSTER_STATUSES:
+        got = planner.call("search_items", status=status, fields="full", limit=10_000)
+        for r in (got or {}).get("results") or []:
+            if isinstance(r, dict) and r.get("id") and r.get("line_id") == line:
+                keys.add(str(r["id"]))
+    return keys
+
+
+def _seat_scope(prd: str | None, line: str | None = None) -> dict:
     """The wave's scope, as the arguments that put it on the CREDENTIAL (GRPH-827).
 
     Separate from `_scope` above and deliberately so: that one filters what this loop offers,
@@ -1972,6 +2437,24 @@ def _seat_scope(prd: str | None) -> dict:
     server that has never heard of `scope` drops it silently, which is why `until` refuses to
     run scoped against a server that ignores the filter (`check_scope_is_honoured`).
     """
+    if line:
+        # `mint_enrolment` takes `line`; `delegate` does not and drops it, which is why a line
+        # wave binds its delegated seats `bound_only` instead (see `_delegate_next`).
+        return {"line": line}
+    return {"scope": prd} if prd else {}
+
+
+def _delegate_scope(prd: str | None, line: str | None = None) -> dict:
+    """What bounds a seat `delegate(seat=True)` mints (GRPH-827, GRPH-1697).
+
+    `delegate` reads `scope` (a PRD) and nothing else, so a line cannot be put on its seat.
+    A line wave's delegated child is bound to its line item instead, `bound_only`: once that
+    item leaves `in_progress` the server refuses it every further claim, review included, so
+    it cannot claim or review past the line. The line's reviews are staffed by review-only
+    seats from `mint_enrolment`, which does carry the line.
+    """
+    if line:
+        return {"bound_only": True}
     return {"scope": prd} if prd else {}
 
 
@@ -2023,11 +2506,159 @@ def _attested_here(entry: dict, branch: str) -> bool:
     return not named or named == branch
 
 
-def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
-    """True when this item's branch or an attested commit is already in `base`.
+def _tip(repo: Path, ref: str) -> str:
+    """The commit `ref` names in this clone, or "" when git cannot say."""
+    if not ref:
+        return ""
+    try:
+        done = subprocess.run(
+            ["git", "rev-parse", "--verify", ref],
+            cwd=str(repo), capture_output=True, text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout.strip() if done.returncode == 0 else ""
 
-    A git-merged item still `next` (waiting on sign-off) is not a new build. `reaches`
-    returns None when this clone cannot tell; that is not "merged".
+
+def _names_token(text: str, token: str) -> bool:
+    """True when `token` appears as its own token, not as a prefix of a longer key."""
+    if not token:
+        return False
+    return re.search(rf"(?<![\w/.-]){re.escape(token)}(?![\w/.-])", text) is not None
+
+
+def _url_text_names_item(entry: dict, details: dict, propose_mod) -> bool:
+    """Does this url receipt's own text say it is about this item?
+
+    The supervisor writes "draft PR opened by gbfleet for <branch>". A receipt that
+    names another item's key — "opened PR #803 for GRPH-891" on GRPH-890 — does not.
+    """
+    detail = str(entry.get("detail") or "")
+    branch = str(details.get("branch") or "").strip()
+    key = str(details.get("id") or "").strip()
+    if branch and propose_mod._receipt_branch(detail) == branch:
+        return True
+    return _names_token(detail, key) or _names_token(detail, branch)
+
+
+def _pr_text_names_item(pr: dict, item_id: str) -> bool:
+    """Does the forge's title or body name this item, as its own token?
+
+    A branch lookup returns the PR whose head is that branch. On a shared branch
+    that PR is another item's merge: GRPH-890's branch `gb/p45-followups` resolves
+    to PR #920, which names GRPH-990/995/996 and not GRPH-890. The head equalling
+    the branch is how the forge found the PR, not proof it is this item's. An
+    empty title and body names nothing, and that is not a match.
+    """
+    text = f"{pr.get('title') or ''}\n{pr.get('body') or ''}"
+    return _names_token(text, item_id)
+
+
+def _pr_label(pr: dict, selector: str) -> str:
+    number = pr.get("number")
+    if isinstance(number, int) or (isinstance(number, str) and str(number).isdigit()):
+        return f"#{int(number)}"
+    found = re.search(r"/pull/(\d+)", selector or str(pr.get("url") or ""))
+    return f"#{found.group(1)}" if found else (selector or "PR")
+
+
+def _merge_sha(pr: dict) -> str:
+    got = pr.get("mergeCommit")
+    if isinstance(got, dict) and str(got.get("oid") or "").strip():
+        return str(got["oid"]).strip()
+    return str(pr.get("headRefOid") or "").strip()
+
+
+def _merged_line(pr: dict, selector: str, carrier: str) -> str:
+    """"PR #900 (a url receipt) is MERGED at c0ffee000000" — carrier and sha, named."""
+    sha = _merge_sha(pr)
+    at = f" at {sha}" if sha else ""
+    return f"PR {_pr_label(pr, selector)} ({carrier}) is MERGED{at}"
+
+
+def _merged_pr_of(details: dict, repo: Path) -> str:
+    """Why this item's own PR is MERGED, or "".
+
+    Candidates, in order: the item's `pr` field (its own, by declaration), every
+    `/pull/` url receipt, then the item's branch. A url receipt is believed only
+    when its text names this item's key or its branch, or the forge reports
+    `headRefName` equal to that branch. A PR found by the branch name is believed
+    only when its title or body names this item — the head match is the lookup.
+    A MERGED PR that fails its check gets `in_base_ignored` and is skipped, so a
+    sibling receipt, or a sibling PR that shares the branch, cannot hide this
+    item's own PR and cannot hold the item.
+
+    The receipt stays. Evidence only appends, so an item already poisoned this way
+    (GRPH-890, and any sibling of it) becomes delegable by not believing the
+    receipt — there is nothing to retract.
+
+    A declared `pr` is the only candidate when it is set. That is the PR the item
+    named, and a url beside it is not a second opinion, the same rule `pr_selector`
+    already uses. Only a definitive MERGED counts; an open PR or an unreachable
+    forge is "".
+    """
+    from . import propose as propose_mod
+
+    branch = str(details.get("branch") or "").strip()
+    declared = str(details.get("pr") or "").strip()
+    candidates: list[tuple[str, str, dict | None]] = []
+    if declared:
+        candidates.append((declared, "the item's pr", None))
+    else:
+        for entry in details.get("evidence") or []:
+            if not isinstance(entry, dict) or entry.get("kind") != "url":
+                continue
+            url = str(entry.get("url") or "").strip()
+            if "/pull/" not in url:
+                continue
+            candidates.append((url, "a url receipt", entry))
+        if branch:
+            candidates.append((branch, "the item's branch", None))
+
+    item_id = str(details.get("id") or "")
+    for selector, carrier, entry in candidates:
+        pr, _err = propose_mod.view(repo, selector)
+        if not isinstance(pr, dict):
+            continue
+        merged = str(pr.get("state") or "").upper() == "MERGED"
+        if entry is not None:
+            ours = _url_text_names_item(entry, details, propose_mod)
+            head = str(pr.get("headRefName") or "").strip()
+            # About this item only. `if False` here believes every url receipt.
+            if not ours and not (branch and head == branch):
+                if merged:
+                    observe.emit(
+                        "in_base_ignored", item=item_id,
+                        detail=_merged_line(pr, selector, carrier),
+                    )
+                continue
+        # About this item only. `if False` here believes every PR the branch names.
+        # The head equalling the branch is how the forge found the PR, not proof.
+        if carrier == "the item's branch" and not _pr_text_names_item(pr, item_id):
+            if merged:
+                observe.emit(
+                    "in_base_ignored", item=item_id,
+                    detail=_merged_line(pr, selector, carrier),
+                )
+            continue
+        if merged:
+            return _merged_line(pr, selector, carrier)
+        if entry is None and carrier == "the item's pr":
+            return ""
+    return ""
+
+
+def _in_base_reason(details: dict, repo: Path | None, base: str) -> str:
+    """Why this item's work is already in `base`, or "" when it is not.
+
+    The string names the signal that matched and what it believed (GRPH-1024), and
+    for a forge match the carrier and the sha (GRPH-1023), so a hold can be read
+    without the source. "" is "not in the base". No repo or no base is also "", and
+    that is not a hold: a clone that cannot look must not read as merged. Empty also
+    covers "this clone cannot tell" (`reaches` is None). `_already_in_base` is this
+    answer as a bool.
+
+    A git-merged item still `next` (waiting on sign-off) is not a new build.
 
     GRPH-930: a squash merge rewrites the SHA, so `reaches` returns False for a commit
     whose work IS in the base via the squash. When the forge says the PR is MERGED, the
@@ -2053,9 +2684,19 @@ def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
        as GRPH-981 and the item's bounce history was lost. An attestation that NAMES a branch
        is therefore only believed about that branch. One with no branch recorded is still
        believed, because refusing it would drop the receipts written before that was recorded.
+
+    3. **A sibling PR's url, and a sibling PR that shares the branch (GRPH-1023).**
+       GRPH-983 hardened the attestation. The url carrier was the same hole, and so is
+       the branch lookup behind it: `gh pr view <branch>` returns whichever PR has that
+       head. GRPH-890 carried one url whose text says it belongs to GRPH-891 (PR #803,
+       head `fix/release-notes-squash`). Ignoring that url still left the branch
+       `gb/p45-followups`, whose merged PR #920 names GRPH-990/995/996 and not GRPH-890.
+       Believing it held the item and the wave exited idle. `_merged_pr_of` believes a
+       url about this item only, and a branch-found PR only when its title or body names
+       this item. The poisoned receipt stays and is not believed.
     """
     if not base or repo is None:
-        return False
+        return ""
     from .worktree import reaches as wt_reaches
 
     branch = str(details.get("branch") or "").strip()
@@ -2070,10 +2711,28 @@ def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
 
     # Ancestry is necessary, not sufficient (1): an empty branch is an ancestor too. A receipt
     # that work existed — a commit recorded for this branch, or this item's PR — is the second
-    # signal, and git cannot supply it.
+    # signal, and git cannot supply it. The sentence names what was believed (GRPH-1024) and,
+    # when this clone can name it, the tip sha (GRPH-1023).
     if branch and wt_reaches(repo, base, branch) is True:
-        if usable or str(details.get("pr") or "").strip():
-            return True
+        commits: list[str] = []
+        for entry in usable:
+            commit = str(entry.get("commit") or "").strip()
+            if commit and commit not in commits:
+                commits.append(commit)
+        pr = str(details.get("pr") or "").strip()
+        if commits or pr:
+            believed: list[str] = []
+            if commits:
+                shown = ", ".join(commits[:3])
+                if len(commits) > 3:
+                    shown += f" (+{len(commits) - 3} more)"
+                believed.append(f"commit receipt {shown}")
+            if pr:
+                believed.append(f"pr {pr}")
+            sha = _tip(repo, branch)
+            at = f" at {sha}" if sha else ""
+            return (f"branch {branch} reaches {base}{at}; "
+                    f"believed {' and '.join(believed)} says work existed")
     seen: list[str] = []
     for entry in usable:
         commit = str(entry.get("commit") or "").strip()
@@ -2081,12 +2740,25 @@ def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
             continue
         seen.append(commit)
         if wt_reaches(repo, base, commit) is True:
-            return True
-    # GRPH-930: SHA ancestry says "not in base", but a squash merge rewrites the SHA.
-    # Ask the forge whether this item's PR is MERGED — that fact survives the rewrite.
-    # Only a definitive MERGED counts; an open PR or an unreachable forge leaves the
-    # answer as False (the original git-only verdict), not True.
-    return deps._pr_is_merged(repo, details) is True
+            kind = str(entry.get("kind") or "receipt")
+            about = f" about {branch}" if branch else ""
+            return (f"commit {commit} reaches {base}; "
+                    f"believed a {kind} receipt{about}")
+    # GRPH-930 / GRPH-1023. SHA ancestry says "not in base", but a squash merge rewrites
+    # the SHA. Ask the forge about this item's own PR only — a sibling url, and a merged
+    # PR found by the branch name that does not name this item, are not it. The carrier
+    # and the sha come from `_merged_pr_of`; "believed the forge" names the signal
+    # (GRPH-1024) so an operator can tell it from an ancestry hold.
+    merged_line = _merged_pr_of(details, repo)
+    if merged_line:
+        return (f"{merged_line}; believed the forge, "
+                f"because ancestry did not find the work in {base}")
+    return ""
+
+
+def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
+    """True when `_in_base_reason` names a signal. The reason names the carrier."""
+    return bool(_in_base_reason(details, repo, base))
 
 
 def _hold(planner: Graphban, item_id: str, details: dict, absent: list[dict], base: str) -> bool:
@@ -2209,46 +2881,69 @@ def _release_delegated(delegated: set[str], owners: dict[str, object], finished:
                      detail=f"{item_id}: its child exited; the server decides whether it is offered again")
 
 
-def _adopt_holds(planner: Graphban, held: dict[str, list[str]], delegated: set[str]) -> None:
+def _adopt_holds(planner: Graphban, held: dict[str, list[str]], delegated: set[str],
+                 *, prd: str | None = None) -> None:
     """Holds an earlier wave wrote, taken over so this wave lifts them when their PR merges.
 
     A blocker nobody re-checks strands its item after the merge it waits on — worse than the
     duplicate it prevented, because it looks deliberate.
     """
-    for item_id, _blocker in _held_on_server(planner):
+    for item_id, _blocker in _held_on_server(planner, prd=prd):
         if item_id not in held:
             held[item_id] = []
             delegated.add(item_id)
 
 
 def _resume_holds(planner: Graphban, held: dict[str, list[str]], delegated: set[str],
-                  repo: Path | None, base: str) -> None:
+                  repo: Path | None, base: str, *, prd: str | None = None) -> None:
     """Adopt the holds earlier runs wrote and re-check them NOW, before the first tick.
 
     GRPH-1182: not a recheck period later. Under `gbfleet service` every run is a fresh
     process that may exit idle well inside that period, so a hold whose dependency an
     earlier run merged was lifted by nobody.
     """
-    _adopt_holds(planner, held, delegated)
+    _adopt_holds(planner, held, delegated, prd=prd)
     _recheck_holds(planner, held, delegated, repo, base)
 
 
-def _held_on_server(planner: Graphban) -> list[tuple[str, str]]:
+def _prd_arg_refused(exc: BaseException) -> bool:
+    text = f"{exc} {getattr(exc, 'hint', '')}".lower()
+    return "prd_id" in text or "does not take" in text
+
+
+def _held_on_server(planner: Graphban, *, prd: str | None = None) -> list[tuple[str, str]]:
     """Every GRPH-950 hold the server carries, as (item, blocker). Empty when unreadable.
 
     The search matches on blocker text, but a row that does not carry `blocker` says nothing
     about it (GRPH-1182): `search_items` full rows omitted the field, so every hit read as
     unheld and no later run ever adopted, re-checked or lifted a hold. Such a row is confirmed
     against `get_item_details`, the read that does carry it, never dropped as clean.
+
+    When the wave names a PRD the search is scoped to it (GRPH-1645). An old server
+    that refuses `prd_id` is retried without it and the rows are filtered here.
     """
+    args: dict = {"query": deps.HOLD_MARK, "limit": 200, "fields": "full"}
+    if prd:
+        args["prd_id"] = prd
     try:
-        got = planner.call("search_items", query=deps.HOLD_MARK, limit=200, fields="full") or {}
-    except (ToolFailed, NotPermitted, ServerUnreachable):
+        got = planner.call("search_items", **args) or {}
+    except ToolFailed as exc:
+        if not (prd and _prd_arg_refused(exc)):
+            return []
+        try:
+            got = planner.call(
+                "search_items", query=deps.HOLD_MARK, limit=200, fields="full") or {}
+        except (ToolFailed, NotPermitted, ServerUnreachable):
+            return []
+    except (NotPermitted, ServerUnreachable):
         return []
     out: list[tuple[str, str]] = []
     for row in (got.get("results") if isinstance(got, dict) else None) or []:
         item_id = str(row.get("id") or "") if isinstance(row, dict) else ""
         if not item_id:
+            continue
+        named = row.get("prd_id") if isinstance(row, dict) else None
+        if prd and named is not None and str(named) != prd:
             continue
         if "blocker" in row:
             blocker = str(row["blocker"] or "")
@@ -2263,13 +2958,164 @@ def _held_on_server(planner: Graphban) -> list[tuple[str, str]]:
     return out
 
 
+def _prd_status(planner: Graphban, prd: str) -> str | None:
+    """The PRD's status, or None when this read did not say. Missing is not closed."""
+    try:
+        got = planner.call("get_prd", prd_id=prd) or {}
+    except (ToolFailed, NotPermitted, ServerUnreachable):
+        return None
+    if not isinstance(got, dict):
+        return None
+    status = got.get("status")
+    return status if isinstance(status, str) and status else None
+
+
+def _open_in_prd(planner: Graphban, prd: str) -> int | None:
+    """How many items in `prd` are still open, or None when the server did not say.
+
+    Trusts `total` only. A page without an int total, a row that names another
+    PRD, or a server that refuses `prd_id` is unknown — the caller keeps the
+    ordinary loop. Unknown is not zero: zero is what stops a service.
+    """
+    total = 0
+    for status in _OPEN_STATUSES:
+        try:
+            got = planner.call(
+                "search_items", status=status, prd_id=prd, fields="full", limit=1,
+            ) or {}
+        except (ToolFailed, NotPermitted, ServerUnreachable):
+            return None
+        if not isinstance(got, dict) or not isinstance(got.get("total"), int):
+            return None
+        for row in got.get("results") or []:
+            if not isinstance(row, dict):
+                continue
+            named = row.get("prd_id")
+            if named is not None and str(named) != prd:
+                return None
+        total += got["total"]
+    return total
+
+
+def _quiet_prd(planner: Graphban, prd: str | None, merger, wave: Wave,
+               leave: Callable[..., Report]) -> Report | None:
+    """A PRD with nothing open exits without the history scan (GRPH-1645).
+
+    None means the ordinary loop still has to run: the server did not say, the
+    PRD still has an open item, or a merge is still in flight. A closed PRD
+    stops on this cycle. An empty one stops only after `QUIET_CYCLES` service
+    restarts. A one-off `until` reports idle and unloads nothing. A blocked-only
+    PRD has an open count above zero and is not this path.
+    """
+    if not prd:
+        return None
+    status = _prd_status(planner, prd)
+    opened = _open_in_prd(planner, prd)
+    if opened is None:
+        return None
+    from . import service as service_mod
+
+    drain = service_drain(prd)
+    if opened > 0:
+        if drain is not None:
+            service_mod.reset_quiet_cycle(drain["service"])
+        return None
+    if merger.enabled:
+        merger.tick(wave)
+        if _merge_pending(merger, wave):
+            return None
+    if status == "closed":
+        if drain is not None:
+            service_mod.stop_restarting(drain["service"])
+        return leave(service_mod.REASON_PRD_CLOSED, 0, review=[], waits=[])
+    if drain is None:
+        return leave("idle", 0, review=[], waits=[])
+    cycles = service_mod.note_quiet_cycle(drain["service"], prd)
+    if cycles >= service_mod.QUIET_CYCLES:
+        service_mod.stop_restarting(drain["service"])
+        return leave(service_mod.REASON_NO_OPEN, 0, review=[], waits=[])
+    return leave("idle", 0, review=[], waits=[])
+
+
+def _dependencies_not_done(planner: Graphban, item_id: str) -> list[dict]:
+    """Dependency rows whose status is not `done`.
+
+    `deps.check` only sees done rows: a done-but-unmerged dependency is the gap
+    `blocked_by` cannot see. When `merge.reopen_on_red` moves that row back to next,
+    in_progress or review, it drops out of `deps.check`, and an empty absent list is
+    not "in base" (GRPH-1605). A failed read is empty — not evidence the work is
+    unfinished. A row that does not say its status is not counted: absence is not
+    "not done".
+    """
+    try:
+        related = planner.call("related_work", id=item_id) or {}
+    except (ToolFailed, NotPermitted, ServerUnreachable):
+        return []
+    out: list[dict] = []
+    for row in (related.get("results") if isinstance(related, dict) else None) or []:
+        if not isinstance(row, dict):
+            continue
+        if "dependency" not in [str(t) for t in (row.get("link_types") or [])]:
+            continue
+        status = row.get("status")
+        if not isinstance(status, str) or not status or status == "done":
+            continue
+        out.append(row)
+    return out
+
+
+def _rework_line(item_id: str, rows: list[dict]) -> str:
+    ids = [str(r.get("id") or "") for r in rows if r.get("id")]
+    if len(ids) == 1:
+        who = f"{ids[0]}'s rework"
+    else:
+        who = " and ".join(f"{i}'s rework" for i in ids)
+    return f"{item_id}: waiting on {who}"
+
+
+def _keep_for_rework(planner: Graphban, item_id: str, rows: list[dict]) -> None:
+    """Keep a hold whose dependency left `done`, and say it is waiting on rework.
+
+    A blocker somebody else wrote is left alone. The text still carries the hold
+    mark, so a later merge can lift it and a person's blocker cannot be cleared
+    by mistake.
+    """
+    line = _rework_line(item_id, rows)
+    observe.emit("delegate_held", item=item_id, detail=line)
+    text = f"{line}. Do not copy that work in. {deps.HOLD_MARK}"
+    try:
+        got = planner.call("get_item_details", id=item_id) or {}
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("hold_unrecorded", item=item_id, detail=str(exc))
+        return
+    current = str(got.get("blocker") or "") if isinstance(got, dict) else ""
+    if current and not deps.is_hold(current):
+        return
+    if current == text:
+        return
+    try:
+        planner.call("update_item", id=item_id, blocker=text)
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("hold_unrecorded", item=item_id, detail=str(exc))
+
+
 def _recheck_holds(planner: Graphban, held: dict[str, list[str]], delegated: set[str],
                    repo: Path | None, base: str) -> None:
-    """Lift every hold whose dependency is now in `base` — merged by `--merge`, by a person,
-    or by a squash the forge reports (GRPH-950). Still missing stays held."""
+    """Lift a hold only when every dependency is done and in `base`.
+
+    Merged by `--merge`, by a person, or by a squash the forge reports (GRPH-950).
+    Still missing stays held. A dependency that is not done stays held too
+    (GRPH-1605): reopen_on_red drops it out of the done-but-unmerged set, and that
+    absence used to read as "in origin/main".
+    """
     if not base or repo is None:
         return
     for item_id in list(held):
+        rework = _dependencies_not_done(planner, item_id)
+        if rework:
+            _keep_for_rework(planner, item_id, rework)
+            held[item_id] = [str(r.get("id") or "") for r in rework]
+            continue
         absent, _ = deps.check(planner, item_id, repo, base)
         if absent:
             continue
@@ -2350,11 +3196,15 @@ def _delegate_next(
     prd: str | None = None,
     repo: Path | None = None,
     base: str = "",
+    line: str | None = None,
     held: dict[str, list[str]] | None = None,
     merger: Merger | None = None,
     bound_out: dict | None = None,
     live: list | None = None,
     owners: dict[str, object] | None = None,
+    skip: set[str] | None = None,
+    in_base: dict[str, str] | None = None,
+    acknowledge_reach: set[str] | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """Write the delegation for the seed of the next free cluster, before its seat is minted.
 
@@ -2369,10 +3219,13 @@ def _delegate_next(
     `expired` on Live rather than being papered over here.
     """
     try:
-        clusters = planner.call("collision_clusters", **_scope(prd))
+        clusters = _clusters(planner, prd, line)
     except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
         observe.emit("delegate_skipped", detail=f"collision_clusters: {exc}")
         return None, None, None
+    # GRPH-1753. Cooled items failed this pass. They are not delegated: the next
+    # pass retries them. Hiding them here is what lets the rest of the pass spawn.
+    aside = skip or set()
     seed: str | None = None
     lane = "backend"
     want = str(request or "cheap")
@@ -2387,6 +3240,11 @@ def _delegate_next(
         # mark it delegated — hiding the merged id would make a colliding sibling the seed on
         # the next tick (SA-467/470).
         #
+        # GRPH-1024: a next/backlog member that carries a bounce is the exception. Its
+        # earlier work being in the base does not mean the item is finished — the bounce
+        # is the remainder — and occupying its files is what made the queue behind it
+        # undelegable. It stays a candidate.
+        #
         # GRPH-951: ITS files, not the whole cluster. A cluster is joined by transitivity, and
         # SA-576 in review idled a wave of screens whose files it never named. A sibling whose
         # touchpoints collide with no occupier's (by the server's rule, mirrored in
@@ -2394,7 +3252,7 @@ def _delegate_next(
         details_for: dict[str, dict] = {}
         occupiers: dict[str, list[str]] = {}
         for item_id in items:
-            if item_id in delegated:
+            if item_id in delegated or item_id in aside:
                 continue
             try:
                 got = planner.call("get_item_details", id=item_id) or {}
@@ -2407,19 +3265,35 @@ def _delegate_next(
             status = str(got.get("status") or "")
             if status == "review":
                 occupiers[item_id] = _touchpoints_of(got)
-            elif status in ("next", "backlog") and _already_in_base(got, repo, base):
-                occupiers[item_id] = _touchpoints_of(got)
-                # GRPH-1408: merged but unsigned is unreviewed work in the base. Holding it
-                # forever left GRPH-1359 waiting on a reviewer started by hand. Moved to
-                # `review`, it is a review row, and the drain staffs a reviewer for it.
-                if _offer_merged_for_review(planner, item_id, got, base):
-                    delegated.add(item_id)
-                    continue
-                observe.emit(
-                    "delegate_held", item=item_id,
-                    detail=f"already in {base} (unsigned, git-merged); "
-                           + _holds_sentence(item_id, occupiers[item_id]),
-                )
+            elif status in ("next", "backlog"):
+                why = _in_base_reason(got, repo, base)
+                # A bounce is a request for new work. `bounce_reason` is never cleared
+                # (GRPH-378), so "bounced" is readable and "bounce already addressed" is
+                # not. Re-delegating a hand-merged bounce is the cheaper of the two errors.
+                bounced = str(got.get("bounce_reason") or "").strip()
+                if why and bounced:
+                    observe.emit(
+                        "delegate_remainder", item=item_id,
+                        detail=(f"{item_id}: bounce asks for the remainder; "
+                                f"earlier work is in {base} ({why})"),
+                    )
+                elif why:
+                    occupiers[item_id] = _touchpoints_of(got)
+                    if in_base is not None:
+                        in_base[item_id] = why
+                    # GRPH-1408: merged but unsigned is unreviewed work in the base. Holding it
+                    # forever left GRPH-1359 waiting on a reviewer started by hand. Moved to
+                    # `review`, it is a review row, and the drain staffs a reviewer for it.
+                    if _offer_merged_for_review(planner, item_id, got, base):
+                        delegated.add(item_id)
+                        continue
+                    # GRPH-1023: the carrier and the sha, so the next operator can see which
+                    # receipt did it rather than reading this function.
+                    observe.emit(
+                        "delegate_held", item=item_id,
+                        detail=f"already in {base} (unsigned, git-merged): {why}; "
+                               + _holds_sentence(item_id, occupiers[item_id]),
+                    )
         for item_id in occupiers:
             details_for.pop(item_id, None)
         for item_id in list(details_for):
@@ -2436,7 +3310,7 @@ def _delegate_next(
         # than on the one item this loop happens to delegate.
         clean: list[str] = []
         for candidate in items:
-            if candidate in delegated or candidate not in details_for:
+            if candidate in delegated or candidate in aside or candidate not in details_for:
                 continue
             details = details_for[candidate]
             if not _seed_ready(details):
@@ -2488,45 +3362,208 @@ def _delegate_next(
                 want = str(suggested["value"])
             note = f"gbfleet until, wave {wave_name}"
             code: str | None = None
+            # GRPH-1311. `acknowledge_reach=true` is recorded on the delegation the same
+            # way the MCP argument is. Only the items named on `--acknowledge-reach` get
+            # it; every other call stays the call it was, with the argument absent.
+            delegate_args: dict = dict(
+                id=candidate, lane=lane, tier=want, agent_id=agent_id,
+                note=note, seat=True, wave=wave_name,
+                **_delegate_scope(prd, line),
+            )
+            if acknowledge_reach and candidate in acknowledge_reach:
+                delegate_args["acknowledge_reach"] = True
             try:
                 # PRD-36 D9: a BOUND seat. The server refuses one when the seed's areas are held
                 # by someone else (D13). GRPH-885: do not fall back to an unbound delegate.
                 # GRPH-1089: do not pass bound_only. A wave's finished bound workers review
                 # each other; the flag is opt-in for a caller that wants the child to exit.
-                reply = planner.call("delegate", id=candidate, lane=lane, tier=want, agent_id=agent_id,
-                                     note=note, seat=True, wave=wave_name, **_seat_scope(prd))
+                # A `--line` wave is that caller (GRPH-1697, `_delegate_scope`).
+                reply = planner.call("delegate", **delegate_args)
                 if bound_out is not None and isinstance(reply, dict):
                     bound_out["bound_only"] = bool(reply.get("bound_only"))
                 got_code = reply.get("enrolment_code") if isinstance(reply, dict) else None
                 code = str(got_code) if got_code else None
             except ToolFailed as exc:
-                if "reserved_until=" in str(exc):
-                    # GRPH-1332. Pinned to its author after a bounce: reported as a wait and
-                    # NOT marked delegated, so a later tick re-offers it once the pin lapses.
-                    stamp = str(exc).split("reserved_until=", 1)[1].split(")", 1)[0].strip()
+                stamp = _bounce_pin_stamp(exc)
+                if stamp is not None:
+                    # GRPH-1332, GRPH-1324. Pinned to its author after a bounce: a wait,
+                    # NOT marked delegated, so a later tick re-offers it once the pin
+                    # lapses. The incident refusal carried `pinned_until=` and the hint
+                    # "wait for the pin to lapse, or let the author retry", and did not
+                    # say `reserved_until=` — matching only that later token logged
+                    # `bound_seat_refused` and the drain exited idle.
                     observe.emit("delegate_pinned", item=candidate,
                                  detail=f"{candidate} is reserved for its author until {stamp}")
                     if bound_out is not None:
                         bound_out["pinned_until"] = stamp
+                        # Not `line`: that name is the wave's `--line` scope, and
+                        # rebinding it sent the next candidate to the wrong scope.
+                        pin_line = f"{candidate}: pinned until {stamp}"
+                        lines = bound_out.setdefault("pin_waits", [])
+                        if pin_line not in lines:
+                            lines.append(pin_line)
                     continue
                 observe.emit("bound_seat_refused", item=candidate, detail=str(exc))
+                # GRPH-1336. Marked delegated so the loop does not spin on it — which also
+                # means the run can end `idle` with this item still ready. Handed back so
+                # the summary names it: idle must not read as "nothing to do" when a ready
+                # item was refused (a reach refusal held one for three hours unseen).
+                if bound_out is not None:
+                    bound_out.setdefault("refused", []).append((candidate, str(exc)))
                 delegated.add(candidate)
                 continue
             except (NotPermitted, ServerUnreachable) as exc:
                 observe.emit("delegate_refused", item=candidate, detail=str(exc))
                 continue
             seed = candidate
+            # Marked delegated before the child exists so two ticks cannot mint two
+            # seats for it. The "delegated" event waits until the child has actually
+            # claimed: a bound seat that registers and is told `taken` is not staffed
+            # (GRPH-1292). `failover` emits it, or logs the refusal and returns.
             delegated.add(seed)
-            observe.emit("delegated", item=seed, lane=lane, tier=want, bound=bool(code))
             return seed, code, want
     # No cluster was delegable
     return None, None, None
+
+
+_PINNED_UNTIL_RE = re.compile(r"pinned_until=([^;)\s]+)")
+_RESERVED_UNTIL_RE = re.compile(r"reserved_until=([^;)\s]+)")
+
+
+def _bounce_pin_stamp(exc: BaseException) -> str | None:
+    """The bounce pin's `pinned_until`, or None when `exc` is not that refusal.
+
+    GRPH-1324. A dead author's child has already exited, and the server still pins
+    the item. The refusal the drain logged was `pinned to its author` plus
+    `pinned_until=`, with the hint "wait for the pin to lapse, or let the author
+    retry". It did not contain `reserved_until=` (that token arrived later, with
+    GRPH-1332). Matching only the later token treated the pin as a permanent
+    bound-seat refusal, marked the item delegated, and the run exited `idle`.
+
+    Prefer `pinned_until` — that is the clock the summary has to name. Fall back
+    to `reserved_until`, which is the earlier of that clock and the author going
+    offline. A pin sentence with neither stamp is still a pin (`unreadable`), so
+    it is a wait rather than a clean idle.
+    """
+    text = str(exc)
+    if ("pinned to its author" not in text and "pinned_until=" not in text
+            and "reserved_until=" not in text):
+        return None
+    for pattern in (_PINNED_UNTIL_RE, _RESERVED_UNTIL_RE):
+        match = pattern.search(text)
+        if match and match.group(1) not in {"None", "null", ""}:
+            return match.group(1)
+    if "pinned to its author" in text:
+        return "unreadable"
+    return None
+
+
+def _named_pin_exit(reason: str, waits: list[str], pin_waits: list[str]) -> tuple[str, list[str]]:
+    """An exit that still has a bounce pin outstanding (GRPH-1324).
+
+    The pin's item and its `pinned_until` go on `waits`. `idle` becomes
+    `idle-with-waits`: a person reading `idle` thinks the queue is drained, and
+    the only ready work is waiting out a pin whose author has already exited.
+    Any other reason is kept — it was already not `idle`.
+    """
+    if not pin_waits:
+        return reason, waits
+    merged = list(waits)
+    for line in pin_waits:
+        if line not in merged:
+            merged.append(line)
+    if reason == "idle":
+        reason = "idle-with-waits"
+    return reason, merged
 
 
 #: How many distinct gate refusals a wave records. `until` re-reads the condition every
 #: poll for as long as it lasts, and the JSON summary is not a log — the observe stream has
 #: every one of them.
 GATED_MAX = 20
+
+
+def _bound_claim_detail(child: Child, seed: str, seat: Seat) -> str | None:
+    """Why a bound seat's child did not claim `seed`, or None when that is not a refusal.
+
+    Missing `assigned` is not a refusal: fixtures and unbound children register without
+    one, and treating that as taken would stop every spawn the roster has not described.
+    `claimed` and `none` mean the child holds the item, or the seat was not bound.
+    """
+    if not seed or not seat.item:
+        return None
+    assigned = getattr(child, "assigned", None)
+    if not isinstance(assigned, dict) or assigned.get("state") != "taken":
+        return None
+    reason = assigned.get("reason")
+    held_by = assigned.get("held_by")
+    item = str(assigned.get("item") or seed)
+    reason_s = str(reason).strip() if isinstance(reason, str) else ""
+    held_s = str(held_by).strip() if isinstance(held_by, str) else ""
+    if reason_s and held_s:
+        why = f"{reason_s}, held by {held_s}"
+    elif reason_s:
+        why = reason_s
+    elif held_s:
+        why = f"held by {held_s}"
+    else:
+        why = "not claimed"
+    return f"{item}: bound seat did not claim it ({why})"
+
+
+def _bound_refusal_retries(assigned: dict | None) -> bool:
+    """A pin, a live hold, a ghost, or a reservation that did not stick — try again.
+
+    Scope, review-only, reach, a blocker and a status the seat cannot claim do not
+    change on the next tick. Discarding `delegated` for those mints another seat
+    every poll.
+    """
+    if not isinstance(assigned, dict):
+        return False
+    reason = assigned.get("reason")
+    reason_s = str(reason).strip() if isinstance(reason, str) else ""
+    if reason_s in {"pinned", "held", "ghost"} or reason_s.startswith("reservation failed"):
+        return True
+    return not reason_s and bool(assigned.get("held_by"))
+
+
+def _refusal_label(message: str, event: str) -> str:
+    """A short reason for the summary and for `service status` (GRPH-1643).
+
+    A reach refusal is the one an operator clears with `--acknowledge-reach`, so
+    it is named `reach` rather than quoted in full. Anything else keeps the
+    server's sentence, clipped, so the list is not only an event name.
+    """
+    low = message.lower()
+    if "reach=" in low or "acknowledge_reach" in low:
+        return f"{event} (reach)"
+    clip = " ".join(message.split())
+    if len(clip) > 160:
+        clip = clip[:159] + "…"
+    return f"{event}: {clip}" if clip else event
+
+
+def _remember_refused(wave: Wave, item: str, message: str, event: str) -> None:
+    """One row per item still refused. A later hand-off of the same item drops it."""
+    label = _refusal_label(message, event)
+    wave.delegate_refused = [row for row in wave.delegate_refused if row.get("item") != item]
+    wave.delegate_refused.append({"item": item, "reason": label})
+
+
+def _forget_refused(wave: Wave, item: str) -> None:
+    wave.delegate_refused = [row for row in wave.delegate_refused if row.get("item") != item]
+
+
+def _note_refused(wave: Wave, item: str, reason: str) -> None:
+    """A ready item whose delegation the server refused, as one `gated` line (GRPH-1336).
+
+    `gated` is the summary's list of what held work back. Without this line a drain whose
+    only ready item was refused on every cycle ended `idle` with `spawned: 0`, and the
+    refusal was visible only by grepping the observe log for `bound_seat_refused`.
+    """
+    line = f"{item}: delegation refused: {reason}"
+    if line not in wave.gated and len(wave.gated) < GATED_MAX:
+        wave.gated.append(line)
 
 
 def _no_room(wave: Wave, room: Headroom, live_n: int) -> bool:
@@ -2620,9 +3657,19 @@ def _children_counted(wave) -> tuple[int, set[str], set[str]]:
     return counted, seen, exited_for
 
 
+def _roster_read_failed(exc: BaseException) -> bool:
+    """The failure is the `fleet_status` read, not another call worker-sizing makes.
+
+    A timeout and an HTTP 5xx both arrive as `ServerUnreachable` with `tool` set to
+    the call. A tool error arrives as `ToolFailed` the same way. `collision_clusters`
+    failing is not an unread roster.
+    """
+    return getattr(exc, "tool", "") == "fleet_status"
+
+
 def _wanted_workers(
     planner: Graphban, supervisor: Graphban, *, live_n: int, max_workers: int,
-    prd: str | None = None,
+    prd: str | None = None, line: str | None = None,
 ) -> int:
     """How many more workers to start: free clusters, bounded by the slots live children leave."""
     # READY WORK BOUNDS EVERYTHING. `propose_allocation` describes the roster, not the
@@ -2633,7 +3680,7 @@ def _wanted_workers(
     # 63 registrations against a project with nothing left to do — and `--max-children`
     # never bound. Review work is not this function's job: the unheld-review branch in the
     # loop spawns for that, once, and counts its own failures.
-    clusters = planner.call("collision_clusters", **_scope(prd))
+    clusters = _clusters(planner, prd, line)
     # FREE clusters, not all of them (GRPH-803). An item's lease and its areas are different
     # holds: `claimable` excludes an item somebody claimed and says nothing about one whose
     # files are reserved by an agent working something else. Counting every cluster spawned a
@@ -2694,6 +3741,7 @@ def _take_seat(
     role: str = "worker",
     prd: str | None = None,
     review_only: bool = False,
+    line: str | None = None,
 ) -> tuple[Seat, bool]:
     """Pre-minted pool first (workers). S6: all seats are workers now.
 
@@ -2713,7 +3761,7 @@ def _take_seat(
         return pool.pop(0), False
     code = _mint(planner, agent_id, wave_name, mint_left=mint_left,
                  mint_deadline=mint_deadline, sleep=sleep, role=role, prd=prd,
-                 review_only=review_only)
+                 review_only=review_only, line=line)
     return Seat(code=code, server_url=server, api_key=api_key, role=role,
                 review_only=review_only), True
 
@@ -2729,6 +3777,7 @@ def _mint(
     role: str = "worker",
     prd: str | None = None,
     review_only: bool = False,
+    line: str | None = None,
 ) -> str:
     last: Exception | None = None
     tries = max(1, mint_left)
@@ -2738,7 +3787,7 @@ def _mint(
         try:
             payload = planner.call(
                 "mint_enrolment", agent_id=agent_id, role=role, wave=wave_name,
-                review_only=review_only, **_seat_scope(prd),
+                review_only=review_only, **_seat_scope(prd, line),
             )
         except NotPermitted as exc:
             raise ConfigError(str(exc)) from exc
@@ -2810,17 +3859,23 @@ def ci_unattestable(row: dict) -> bool:
             and "cooldown over" in detail)
 
 
-def ci_run_in_progress(repo: Path, row: dict) -> str:
+def ci_run_in_progress(repo: Path, row: dict, logged: set | None = None) -> str:
     """GRPH-1417. A description of a CI run for this row's head that is queued or in progress,
     or "". Asks the forge (`gh run list`); any failure to ask reads as "none", so an
     unreachable forge falls back to the GRPH-1409 exit rather than waiting forever.
+
+    The branch is `review_ci_branch` (GRPH-1770): the reviewer's CI check reads the
+    recorded PR's head when that head is another branch descending from `item.branch`.
+    A run at that PR head counts, not only a run of the commit the refusal named.
     """
     import subprocess
     m = re.search(r"commit ([0-9a-f]{7,40})", _latest_refusal(row))
-    branch = str(row.get("branch") or "")
+    branch, pr_head = review_ci_branch(repo, row, logged)
     if not m or not branch:
         return ""
-    sha = m.group(1)
+    wanted = [m.group(1)]
+    if pr_head and pr_head not in wanted:
+        wanted.append(pr_head)
     try:
         done = subprocess.run(
             ["gh", "run", "list", "--branch", branch, "--limit", "50",
@@ -2832,7 +3887,8 @@ def ci_run_in_progress(repo: Path, row: dict) -> str:
     except (OSError, ValueError, subprocess.SubprocessError):
         return ""
     for run in runs:
-        if (str(run.get("headSha") or "").startswith(sha)
+        head_sha = str(run.get("headSha") or "")
+        if (any(head_sha.startswith(sha) for sha in wanted)
                 and run.get("status") in ("queued", "in_progress", "waiting", "pending", "requested")):
             return f"run {run.get('databaseId')} {run.get('name') or ''} {run.get('status')}".replace("  ", " ")
     return ""
@@ -2852,6 +3908,143 @@ def ci_stuck_detail(row: dict) -> str:
             "reviewer cannot clear it — needs a CI attestation or an owner close")
 
 
+def _done_refusals(row: dict) -> list[str]:
+    """Every `refused at done` note on the row, oldest first."""
+    found: list[str] = []
+    for ev in row.get("evidence") or []:
+        if not isinstance(ev, dict):
+            continue
+        detail = str(ev.get("detail") or "")
+        if detail.startswith("refused at `done` ("):
+            found.append(detail)
+    return found
+
+
+def _pr_missing_is_the_only_refusal(row: dict) -> bool:
+    """True when nothing but `pr_missing` has refused this row, including no refusal yet.
+
+    A different refusal is a verdict a reviewer can clear, so this gate leaves that row
+    spawnable. No refusal yet is the same gate: the first spawn is the one that used to
+    walk into `pr_missing` on a branch nobody had proposed.
+    """
+    return all(d.startswith("refused at `done` (pr_missing)") for d in _done_refusals(row))
+
+
+def _is_pr_url(url: str) -> bool:
+    low = (url or "").lower()
+    return "/pull/" in low or "/merge_requests/" in low
+
+
+def _linked_pr(row: dict) -> str:
+    """A PR url already on the row, or "".
+
+    `sign_off` refuses `pr_missing` until one is linked. Evidence is what a review
+    listing carries; `github_url` is read when a fuller record has it.
+    """
+    direct = str(row.get("github_url") or "")
+    if _is_pr_url(direct):
+        return direct
+    pr = row.get("pr")
+    if isinstance(pr, dict) and _is_pr_url(str(pr.get("url") or "")):
+        return str(pr["url"])
+    for ev in row.get("evidence") or []:
+        if isinstance(ev, dict) and _is_pr_url(str(ev.get("url") or "")):
+            return str(ev["url"])
+    return ""
+
+
+def _recorded_pr_url(row: dict) -> str:
+    """The row's PR url, including a string `pr` field `_linked_pr` does not read."""
+    found = _linked_pr(row)
+    if found:
+        return found
+    pr = row.get("pr")
+    return pr.strip() if isinstance(pr, str) and _is_pr_url(pr) else ""
+
+
+def _stamp_link(row: dict, branch: str, url: str) -> None:
+    """Remember the link on this poll's copy, so the same pass does not open it twice."""
+    evidence = list(row.get("evidence") or [])
+    evidence.append({
+        "kind": "url",
+        "url": url,
+        "detail": f"draft PR opened by gbfleet for {branch}",
+    })
+    row["evidence"] = evidence
+
+
+def _record_pr(planner, item: str, branch: str, url: str) -> bool:
+    """Link `url` on the item. False when it did not land — `sign_off` would still refuse."""
+    if planner is None or not item or not url:
+        return False
+    try:
+        planner.post_observation(item_id=item, kind="pr_opened", branch=branch, url=url)
+    except Exception:  # noqa: BLE001 — a lost link is a wait, not a spawn
+        return False
+    return True
+
+
+def _note_pr_wait(logged: set, item: str, reason: str) -> None:
+    key = ("review_waits_on_pr", item, (reason or "")[:200])
+    if key in logged:
+        return
+    logged.add(key)
+    observe.emit("review_waits_on_pr", item=item, detail=f"{item}: {reason}")
+
+
+def _pr_opened(rows: list[dict], repo: Path, base: str, logged: set, *,
+               planner=None) -> tuple[list[dict], list[dict]]:
+    """Split unheld review rows into (has a linked PR, waiting for one) (GRPH-1730).
+
+    A reviewer's `sign_off` is refused `pr_missing` for a branch with no linked PR, so a
+    spawn for one is wasted: nine reviewers passed the same head on GRPH-1727 after
+    `gh pr create` hit the GraphQL rate limit once and was never tried again. The PR is
+    opened HERE, each poll, before a reviewer is spawned. A rate limit falls back to the
+    REST pulls endpoint inside `propose` (GRPH-1752); this is the retry of that failure,
+    and of any other transient `gh` error, on the next poll.
+
+    A row whose open failed is held back. A `skipped` answer (no gh, no base) does not
+    hold a row: a repo that cannot propose must not wedge its review queue. A row that
+    already carries some other `done` refusal keeps its reviewer.
+    """
+    from . import propose
+    from .supervisor import _branch_head
+
+    ready: list[dict] = []
+    waiting: list[dict] = []
+    for row in rows:
+        branch = str(row.get("branch") or "")
+        item = str(row.get("id") or "")
+        if not branch or _linked_pr(row) or not _pr_missing_is_the_only_refusal(row):
+            ready.append(row)
+            continue
+        try:
+            subject = propose.title_subject(repo, branch, base)
+            title, body = propose.describe(branch, [item] if item else [], subject)
+            got = propose.propose(
+                repo, branch, base, title=title, body=body,
+                head=_branch_head(repo, branch),
+                items=[item] if item else ())
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            got = propose.Proposed(branch=branch, reason=f"gh could not run: {exc}")
+        if got.url:
+            # An existing PR and a PR this call just opened are the same fact: until the
+            # url is on the item, the next sign_off is still `pr_missing`.
+            if _record_pr(planner, item, branch, got.url):
+                _stamp_link(row, branch, got.url)
+                ready.append(row)
+                continue
+            _note_pr_wait(logged, item, got.reason or "PR opened but not recorded on the item")
+            waiting.append(row)
+            continue
+        if got.skipped:
+            ready.append(row)
+            continue
+        _note_pr_wait(logged, item, got.reason or "no PR")
+        waiting.append(row)
+    return ready, waiting
+
+
 def ci_verdict(repo: Path, branch: str) -> tuple[str, str, str]:
     """(state, head, failing_job) for `branch`'s PR (GRPH-1392): `propose.ci_rollup`.
 
@@ -2862,6 +4055,165 @@ def ci_verdict(repo: Path, branch: str) -> tuple[str, str, str]:
     return propose.ci_rollup(repo, branch)
 
 
+#: How many times the same head may show only an external check red before it is held
+#: (GRPH-1757). Below this the head stays reviewable. A bounce is never one of the exits.
+EXTERNAL_RED_HOLD_AFTER = 3
+
+#: Tail of the blocker `_hold_external_red` writes. Not the dependency hold mark: that
+#: lift clears only its own sentence, and this one is not a missing commit.
+EXTERNAL_HOLD_MARK = "[gbfleet external check hold]"
+
+
+def external_hold_text(checks: str) -> str:
+    """The blocker a person reads when an external check stays red (GRPH-1757).
+
+    Names the check. Avoids the words the builder-CI sweep treats as "the author blocked
+    on a missing local engine", so that sweep does not reopen this hold into a rebuild.
+    """
+    shown = checks.strip() or "unknown check"
+    return (f"external check still red: {shown}. "
+            f"Repo actions passed; not returned to the author. {EXTERNAL_HOLD_MARK}")
+
+
+def _lift_external_hold(planner: Graphban, item: str, agent_id: str) -> None:
+    """Clear the external-check hold once the head is actually green."""
+    args: dict = {"id": item, "blocker": ""}
+    if agent_id:
+        args["agent_id"] = agent_id
+    try:
+        planner.call("update_item", **args)
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("ci_red_external_unlifted", item=item, detail=str(exc))
+        return
+    observe.emit("ci_red_external_lifted", item=item,
+                 detail=f"{item}: external check hold cleared; the head is green")
+
+
+def _external_cycles(logged: set, item: str, head: str) -> int:
+    n = 0
+    while ("ci_red_external_cycle", item, f"{head}#{n + 1}") in logged:
+        n += 1
+    return n
+
+
+def _hold_external_red(planner: Graphban, item: str, checks: str, head: str,
+                       agent_id: str) -> bool:
+    """Write the named hold. False when the write was refused — the caller then waits
+    and retries, and does not bounce."""
+    note = (f"gbfleet: external check still red after {EXTERNAL_RED_HOLD_AFTER} reads "
+            f"at {head[:12]}: {checks}. Not returned to the author.")
+    args: dict = {
+        "id": item,
+        "blocker": external_hold_text(checks),
+        "evidence": [{"kind": "note", "detail": note}],
+    }
+    if agent_id:
+        args["agent_id"] = agent_id
+    try:
+        planner.call("update_item", **args)
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("ci_red_external_unrecorded", item=item, detail=str(exc))
+        return False
+    observe.emit("ci_red_external_hold", item=item, commit=head, job=checks,
+                 detail=f"{item}: held on {checks} at {head[:12]}")
+    return True
+
+
+def _take_external_red(row: dict, item: str, head: str, job: str, logged: set,
+                       planner: Graphban | None, agent_id: str,
+                       ready: list[dict], waiting: list[dict], _blocked: list[dict]) -> None:
+    """Do not bounce. Log `ci_red_external` once, review until the hold, then hold.
+
+    The hold stays in `waiting`, not `blocked`. `blocked` is a row that left `review`
+    (a bounce). This row is still in review: dropping it there lets the drain exit
+    idle while the item sits unsigned, which reads as a clear queue.
+    """
+    if EXTERNAL_HOLD_MARK in str(row.get("blocker") or ""):
+        waiting.append(row)
+        return
+    n = _external_cycles(logged, item, head) + 1
+    logged.add(("ci_red_external_cycle", item, f"{head}#{n}"))
+    log_key = ("ci_red_external", item, head)
+    if log_key not in logged:
+        logged.add(log_key)
+        from . import propose
+        unread = str(getattr(propose.ci_rollup, "required_note", "") or "")
+        extra = f" ({unread})" if unread else ""
+        observe.emit(
+            "ci_red_external", item=item, commit=head, job=job,
+            detail=f"{item}: external check red at {head[:12]}: {job}{extra}")
+    if n >= EXTERNAL_RED_HOLD_AFTER:
+        hold_key = ("ci_red_external_hold", item, head)
+        if hold_key not in logged:
+            if planner is not None and _hold_external_red(planner, item, job, head, agent_id):
+                logged.add(hold_key)
+        waiting.append(row)
+        return
+    ready.append(row)
+
+
+def _tip(repo: Path, branch: str) -> str:
+    """`branch`'s commit, or "" when this clone cannot name it."""
+    if not branch:
+        return ""
+    try:
+        return wt_mod._git(repo, "rev-parse", branch).strip()
+    except (OSError, wt_mod.GitError):
+        return ""
+
+
+def _note_branch_mismatch(logged: set | None, row: dict, item_branch: str, item_head: str,
+                          pr_branch: str, pr_head: str) -> None:
+    """One `review_branch_mismatch` for this pair of heads. A repeat poll says nothing."""
+    item = str(row.get("id") or "")
+    key = ("review_branch_mismatch", item,
+           f"{item_branch}@{item_head}|{pr_branch}@{pr_head}")
+    if logged is not None and key in logged:
+        return
+    if logged is not None:
+        logged.add(key)
+    detail = (f"{item}: review_branch_mismatch item.branch {item_branch}"
+              f"@{item_head[:12] or '?'} pr {pr_branch}@{pr_head[:12] or '?'}")
+    observe.emit("review_branch_mismatch", item=item, branch=item_branch,
+                 pr_branch=pr_branch, commit=item_head, pr_head=pr_head, detail=detail)
+
+
+def review_ci_branch(repo: Path, row: dict, logged: set | None = None) -> tuple[str, str]:
+    """`(branch, pr_head)` the review gate and the reviewer's CI check read (GRPH-1770).
+
+    `item.branch` and "" unless the item's recorded PR has its head on another branch
+    that descends from `item.branch`. That PR head is where CI ran: GRPH-1715 sat in
+    review for two hours because `gb/line-17` was red while PR #1878 on `gb/line-12`
+    was green, and every check asked `gh` about `item.branch`.
+
+    A different head that does not descend is not that PR. The drain emits one
+    `review_branch_mismatch` naming both branches and both heads, and the checks stay
+    on `item.branch`. Looking only at `item.branch` and saying nothing is how the row
+    waited. No recorded PR, or a PR that cannot be read, is not a mismatch: there are
+    not two heads to name, and the checks stay on `item.branch`.
+    """
+    item_branch = str(row.get("branch") or "").strip()
+    url = _recorded_pr_url(row)
+    if not item_branch or not url:
+        return item_branch, ""
+    from . import propose
+    try:
+        pr, _err = propose.view(repo, url)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pr = None
+    if not isinstance(pr, dict):
+        return item_branch, ""
+    pr_branch = str(pr.get("headRefName") or "").strip()
+    pr_head = str(pr.get("headRefOid") or "").strip()
+    if not pr_branch or pr_branch == item_branch:
+        return item_branch, ""
+    item_head = _tip(repo, item_branch)
+    if item_head and pr_head and wt_mod.is_ancestor(repo, item_head, pr_head):
+        return pr_branch, pr_head
+    _note_branch_mismatch(logged, row, item_branch, item_head, pr_branch, pr_head)
+    return item_branch, ""
+
+
 def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
                  planner: Graphban | None = None,
                  agent_id: str = "") -> tuple[list[dict], list[dict], list[dict]]:
@@ -2870,6 +4222,11 @@ def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
     A reviewer cannot `sign_off` until CI has attested the head, so a spawn against pending
     CI is wasted: those rows are held back, logged once per head as `review_waits_on_ci`, and
     returned second so the loop keeps polling for them instead of reading them as unsigned.
+
+    An `external` row — every Actions job passed, and only a third-party or non-required
+    check is red — is not bounced (GRPH-1757). It stays reviewable and logs
+    `ci_red_external` naming the check. The same head still external after
+    `EXTERNAL_RED_HOLD_AFTER` reads is a named hold, never a bounce.
 
     A red row is bounced to its author ONCE (GRPH-1472), the reason naming the failing job
     and tests, and no reviewer is spawned for it. A later red head on a row already bounced
@@ -2884,7 +4241,11 @@ def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
     blocked: list[dict] = []
     for row in rows:
         item = str(row.get("id") or "")
-        state, head, job = ci_verdict(repo, str(row.get("branch") or ""))
+        # GRPH-1770: CI for a recorded PR whose head is another branch is that head's,
+        # not `item.branch`. A head that does not descend stays on `item.branch` and
+        # is named; it is not skipped in silence.
+        branch, _pr_head = review_ci_branch(repo, row, logged)
+        state, head, job = ci_verdict(repo, branch)
         if state == "pending":
             key = ("review_waits_on_ci", item, head)
             if key not in logged:
@@ -2893,6 +4254,14 @@ def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
                              detail=f"{item}: CI has not finished at {head[:12]}")
             waiting.append(row)
             continue
+        if state == "external":
+            # GRPH-1757. A third-party status (Unkey preview, Vercel, …) is not an Actions
+            # failure. Bouncing here sends the author to rebuild code that already passed,
+            # and the next attempt escalates off the cheap tier. Below the hold the head is
+            # reviewable; the same red head N times is a named hold, never a bounce.
+            _take_external_red(row, item, head, job, logged, planner, agent_id,
+                               ready, waiting, blocked)
+            continue
         if state == "red":
             key = ("review_ci_red", item, head)
             if key not in logged:
@@ -2900,15 +4269,18 @@ def _ci_attested(rows: list[dict], repo: Path, logged: set, *,
                 observe.emit("review_ci_red", item=item, commit=head, job=job,
                              detail=f"{item}: CI failed at {head[:12]}: {job}")
             if planner is not None and _rerun_transport_flake(
-                    repo, str(row.get("branch") or ""), item, head, logged):
+                    repo, branch, item, head, logged):
                 # GRPH-1501: the check could not run; it was rerun, so wait for it.
                 waiting.append(row)
                 continue
             if planner is not None and _return_or_block_ci_red(
                     planner, row, head, job, agent_id,
-                    repo=repo, branch=str(row.get("branch") or "")):
+                    repo=repo, branch=branch):
                 blocked.append(row)
                 continue
+        if (state == "green" and planner is not None
+                and EXTERNAL_HOLD_MARK in str(row.get("blocker") or "")):
+            _lift_external_hold(planner, item, agent_id)
         ready.append(row)
     return ready, waiting, blocked
 
@@ -2943,8 +4315,11 @@ def transport_flake_jobs(repo: Path, branch: str) -> list[str]:
         if not m:
             return []
         try:
+            # Actions logs carry pytest colour. `gh api` refuses that body unless
+            # this flag is set, and the CI-red note then names no tests (GRPH-1758).
             got = propose._gh(repo, "api",
-                              f"repos/{{owner}}/{{repo}}/actions/jobs/{m.group(1)}/logs")
+                              f"repos/{{owner}}/{{repo}}/actions/jobs/{m.group(1)}/logs",
+                              "--allow-escape-sequences")
         except (OSError, subprocess.SubprocessError):
             return []
         if got.returncode != 0:
@@ -3031,7 +4406,8 @@ def failed_test_summary(repo: Path, branch: str) -> str:
             continue
         try:
             got = propose._gh(repo, "api",
-                              f"repos/{{owner}}/{{repo}}/actions/jobs/{m.group(1)}/logs")
+                              f"repos/{{owner}}/{{repo}}/actions/jobs/{m.group(1)}/logs",
+                              "--allow-escape-sequences")
         except (OSError, subprocess.SubprocessError) as exc:
             parts.append(f"{name}: log could not be read ({exc})")
             continue
@@ -3178,17 +4554,149 @@ def _block_ci_red(planner: Graphban, item: str, head: str, job: str, agent_id: s
     return True
 
 
+#: Statuses a builder's blocker leaves its item in (GRPH-1708). One read each per poll.
+_BUILDER_CI_STATUSES = ("blocked", "next")
+_BUILDER_CI_LIMIT = 200
+
+#: A builder blocker that is about CI or a missing local engine, not a person (GRPH-1708).
+_BUILDER_CI_BLOCKER = re.compile(
+    r"\b(?:ci|postgres(?:ql)?|suite_green|engine_evidence|github actions|gh)\b",
+    re.IGNORECASE,
+)
+
+
+def _in_wave_scope(row: dict, prd: str | None, line: str | None) -> bool:
+    """Only the drain's own PRD or line. An unscoped drain matches nothing here."""
+    if line:
+        return row.get("line_id") == line
+    if prd:
+        return str(row.get("prd_id") or "") == prd
+    return False
+
+
+def _has_wait_tag(row: dict) -> bool:
+    tags = row.get("tags") or []
+    return any(str(t) in wait_mod.WAIT_TAGS for t in tags if t)
+
+
+def is_builder_ci_blocker(blocker: str) -> bool:
+    """Whether a free-text blocker names CI / Postgres / gh / suite_green (GRPH-1708)."""
+    text = str(blocker or "").strip()
+    if not text or deps.is_hold(text):
+        return False
+    return bool(_BUILDER_CI_BLOCKER.search(text))
+
+
+def _builder_ci_misblocked_rows(
+    planner: Graphban, prd: str | None, line: str | None,
+) -> list[dict]:
+    """Items a builder blocked mistaking missing local CI for a human wait (GRPH-1708).
+
+    Narrow on purpose: the row is in this drain's PRD or line, was built (`built_by`) on a
+    pushed `branch`, carries NO typed `wait:*` tag (a typed wait is a person's, P30 D11), and
+    its blocker text is about CI / Postgres / gh / suite_green — not a dependency hold, not a
+    decision. Anything else is left exactly as the wait read found it.
+    """
+    if not prd and not line:
+        return []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for status in _BUILDER_CI_STATUSES:
+        got = planner.call("search_items", status=status, fields="full",
+                           limit=_BUILDER_CI_LIMIT)
+        rows = got.get("results") if isinstance(got, dict) else None
+        if not isinstance(rows, list):
+            raise ToolFailed("search_items", "error",
+                             f"{status} listing carried no results list")
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            item_id = str(row.get("id") or "")
+            if not item_id or item_id in seen:
+                continue
+            if not _in_wave_scope(row, prd, line):
+                continue
+            if _has_wait_tag(row):
+                continue
+            if not str(row.get("built_by") or "").strip():
+                continue
+            if not str(row.get("branch") or "").strip():
+                continue
+            if not is_builder_ci_blocker(str(row.get("blocker") or "")):
+                continue
+            seen.add(item_id)
+            out.append(row)
+    return out
+
+
+def _apply_builder_ci_blockers(
+    planner: Graphban,
+    rows: list[dict],
+    repo: Path,
+    waits: list[str],
+    logged: set[tuple[str, str, str]],
+    *,
+    agent_id: str = "",
+) -> tuple[list[str], bool, bool]:
+    """Name builder CI waits and reopen a finished red head. Returns (waits, pending, reopened).
+
+    An id leaves `waits` only when it is reported here as CI pending or CI red. Green or
+    unknown CI leaves the row — and every typed wait — exactly as it was.
+    """
+    pending = False
+    reopened = False
+    waits = list(waits)
+    for row in rows:
+        item_id = str(row["id"])
+        branch = str(row.get("branch") or "")
+        state, head, job = ci_verdict(repo, branch)
+        if state not in ("red", "pending"):
+            continue
+        waits = [w for w in waits if w != item_id]
+        if state == "red":
+            # One reopen per red head: a child that blocks again on the same red head is
+            # named, not re-delegated in a loop.
+            key = ("builder_ci_red", item_id, head)
+            first = key not in logged
+            if first:
+                logged.add(key)
+                observe.emit(
+                    "builder_ci_red", item=item_id, commit=head, job=job,
+                    detail=f"{item_id}: builder blocked on missing local CI; "
+                           f"CI red at {head[:12]}: {job}",
+                )
+            if first and _block_ci_red(planner, item_id, head, job, agent_id,
+                                       repo=repo, branch=branch):
+                reopened = True
+            else:
+                wait_line = f"{item_id}: CI red ({job})"
+                if wait_line not in waits:
+                    waits.append(wait_line)
+            continue
+        pending = True
+        key = ("builder_ci_pending", item_id, head)
+        if key not in logged:
+            logged.add(key)
+            observe.emit(
+                "builder_ci_pending", item=item_id, commit=head,
+                detail=f"{item_id}: builder blocked; CI pending at {head[:12]}",
+            )
+        wait_line = f"{item_id}: CI pending at {head[:12]}"
+        if wait_line not in waits:
+            waits.append(wait_line)
+    return waits, pending, reopened
+
+
 def review_held(row: dict) -> bool:
-    """Whether somebody is reviewing this row RIGHT NOW (GRPH-1254).
+    """Whether somebody is reviewing this row RIGHT NOW (GRPH-1254, GRPH-1290).
 
-    `review_claimed_by` is the raw column, and a reviewer that dies leaves it set for good: only
-    a verdict or the holder's own `release_item` clears it. Reading it as "held" kept a wave
-    idle for over an hour on GRPH-1248, logging `held by review; no expiry reported` while the
-    holder was offline and retired and the server would already have handed the item to the
-    next `claim_review`. The server says when a hold has lapsed (`review_claim_lapse`, present
-    only when it has), so liveness has one definition and it is the server's.
+    A current server puts a holder in `review_claimed_by` only while `review_claim_holder`
+    says the claim is live, and sends `review_claim_lapse` once it is not. Reading the raw
+    column as "held" kept a wave idle: `held by review; no expiry reported` while the holder
+    was already gone and `claim_review` would have handed the item on.
 
-    An older server never sends the field, and then this reads exactly as before.
+    An older server sends the raw column and no lapse field. That still reads as held — the
+    server has not said otherwise.
     """
     return bool(row.get("review_claimed_by")) and not row.get("review_claim_lapse")
 
@@ -3230,18 +4738,107 @@ def _staff_every_row(planner: Graphban) -> bool:
         return False
     for t in (got or {}).get("toggles") or []:
         if t.get("rule_id") == STAFF_EVERY_ROW:
+            if t.get("state") == "observing":
+                # GRPH-1778: observing, not applied. Staffing widens to rows this wave did not
+                # cut, which the observations route cannot record, so the rules read says
+                # UNMEASURED for it, never 0.
+                return False
             on = t.get("on")
             return bool(on.get("value") if isinstance(on, dict) else on)
     return False
 
 
-def _split_by_prd(rows: list[dict], prd: str | None) -> tuple[list[dict], list[dict]]:
-    """(this PRD's review rows, everyone else's) — GRPH-1188. Without `--prd` every row is
-    this run's, as before. With it, a row with another `prd_id` or none is outside."""
+def _split_by_prd(rows: list[dict], prd: str | None,
+                  line: str | None = None) -> tuple[list[dict], list[dict]]:
+    """(this run's review rows, everyone else's) — GRPH-1188, GRPH-1697. Without `--prd` or
+    `--line` every row is this run's, as before. With `--prd`, a row with another `prd_id`, a
+    `line_id`, or neither is outside. With `--line`, only the line's own rows are inside."""
+    if line:
+        return ([r for r in rows if r.get("line_id") == line],
+                [r for r in rows if r.get("line_id") != line])
     if not prd:
         return rows, []
-    return ([r for r in rows if r.get("prd_id") == prd],
-            [r for r in rows if r.get("prd_id") != prd])
+    return ([r for r in rows if r.get("prd_id") == prd and not r.get("line_id")],
+            [r for r in rows if r.get("prd_id") != prd or r.get("line_id")])
+
+
+def _widen(beyond: list[dict], prd: str | None, line: str | None) -> list[dict]:
+    """What `review.staff_every_row` adds to a run (GRPH-1273, GRPH-1697): other PRDs' rows,
+    for a `--prd` run only. Never a row with `line_id`, never a row with neither scope, and
+    never anything for a `--line` run."""
+    if line or not prd:
+        return []
+    return [r for r in beyond if r.get("prd_id") and not r.get("line_id")]
+
+
+def resolve_line(planner: Graphban, line: str) -> str:
+    """The key of the project's maintenance line, from `get_context` (GRPH-1697).
+
+    `line` is "" for bare `--line`, or a line id. A PRD id is refused with "use --prd", and a
+    project with no line is refused naming `create_line`. Never `get_prd`.
+    """
+    try:
+        got = planner.call("get_context")
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        raise ConfigError(f"--line could not be resolved: {exc}") from exc
+    ml = (got or {}).get("maintenance_line")
+    if not isinstance(ml, dict) or not (ml.get("id") or ml.get("key")):
+        raise ConfigError("--line: this project has no maintenance line; create it with "
+                          "`create_line` first")
+    names = {str(ml.get(k)) for k in ("id", "key", "line_id") if ml.get(k)}
+    key = str(ml.get("key") or ml.get("id"))
+    if line and line not in names:
+        if "-P" in line or line.upper().startswith("PRD"):
+            raise ConfigError(f"--line {line} names a PRD: use --prd")
+        raise ConfigError(f"--line {line} is not this project's line ({key})")
+    return key
+
+
+#: An acceptance clause: a list item under an `Acceptance`/`Tests` heading, an `Acceptance:`
+#: label line, or a bold/underscore `Acceptance` label. The server's parser is the authority;
+#: this only NAMES what is missing for an item the server already left out of its claim pool.
+_ACCEPT_RE = re.compile(
+    r"^\s*(?:#{1,6}\s*(?:acceptance(?:\s+criteria)?|tests)\b[^\n]*"
+    r"|(?:\*\*|__)acceptance(?:\s+criteria)?:?(?:\*\*|__):?[^\n]*"
+    r"|acceptance(?:\s+criteria)?:\s*)\n(?:\s*\n)*\s*(?:[-*+]|\d+[.)])\s+\S",
+    re.I | re.M)
+
+
+def _unready(planner: Graphban, line: str) -> list[dict]:
+    """`[{id, missing}]` for this line's open items the server will not hand out for want of
+    an acceptance clause or a touchpoint (GRPH-1697). Empty means it looked and found none.
+
+    The server computes this list (`items.unready_line_items`) but returns it only on a line
+    seat's `claim_cluster`, which a supervisor must not call. So WHICH items are unready is
+    the server's verdict, read from its claim pool: a line item counts only when it is open,
+    unheld and unblocked and `collision_clusters` left it out. `missing` is named here, from
+    the item's touchpoints and description, and an item for which neither is missing is out
+    of the pool for another reason (a dependency) and is not listed. A failed read is an empty
+    list: the run is already finishing.
+    """
+    try:
+        pooled = {i for c in (planner.call("collision_clusters") or {}).get("clusters") or []
+                  if isinstance(c, dict) for i in (c.get("items") or [])}
+    except (NotPermitted, ToolFailed, ServerUnreachable):
+        return []
+    out: list[dict] = []
+    for status in ("backlog", "next"):
+        try:
+            got = planner.call("search_items", status=status, fields="full", limit=10_000)
+        except (NotPermitted, ToolFailed, ServerUnreachable):
+            return out
+        for r in (got or {}).get("results") or []:
+            if not isinstance(r, dict) or r.get("line_id") != line or r.get("claimed_by") \
+                    or r.get("blocker") or str(r.get("id")) in pooled:
+                continue
+            missing = []
+            if not _ACCEPT_RE.search(str(r.get("description") or "")):
+                missing.append("acceptance")
+            if not [t for t in (r.get("touchpoints") or []) if str(t).strip()]:
+                missing.append("touchpoints")
+            if missing:
+                out.append({"id": str(r["id"]), "missing": missing})
+    return out
 
 
 def _wait_ids(planner: Graphban) -> list[str]:

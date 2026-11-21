@@ -23,6 +23,9 @@ only one of them means stop.
 
 from __future__ import annotations
 
+import json
+import re
+import subprocess
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -103,6 +106,10 @@ class Limits:
     #: blamed on the network. A child in one long tool call will trip this and that is
     #: fine; it is an observation, not an accusation.
     quiet_after: float = 300.0
+    #: Cap on vendor subagents each child may start (GRPH-1726). None = say nothing, so the
+    #: instruction is unchanged; 0 = tell the child not to spawn any. Written into the
+    #: instruction only; no adapter strips the tool.
+    subagents: int | None = None
 
 
 @dataclass(frozen=True)
@@ -252,6 +259,10 @@ class Wave:
     spawned: list[Child] = field(default_factory=list)
     reaped: list[Reaped] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
+    #: GRPH-1753. Spawn exceptions caught per item, one line each
+    #: ("<item>: <Class>: <message>"). Empty means no spawn raised — a missing
+    #: list would read the same way, which is how a killed process used to look.
+    spawn_failed: list[str] = field(default_factory=list)
     #: Observation writes (base, lease, PR, salvage) the server refused or never answered
     #: (GRPH-1346). Also in `failures`, one line each, but a count is what the summary can
     #: key `ok` on: a wave whose every record was dropped must not read as clean.
@@ -381,6 +392,10 @@ class Wave:
     #: still never started; `until` (D1) writes `idle-with-waits` when only typed
     #: human waits remain.
     reason: str = ""
+    #: GRPH-1669. The tool error a roster or allocation read answered with, once one has.
+    #: Set by `server_failed`; the wave stops on it with one FAILED line naming the tool and
+    #: the server's message, rather than a traceback and no summary.
+    server_error: str = ""
     #: GRPH-1247, GRPH-1372. What the vendor said is out of quota this wave, keyed by the
     #: stored entitlement's name — or by the adapter name when the launch used no record (the
     #: default login): {"entitlement" ("" for none), "adapter", "vendor" (the record's vendor
@@ -419,6 +434,12 @@ class Wave:
     resumed: list[str] = field(default_factory=list)
     #: Resume attempted and abandoned — spawn from HEAD, leftover ref stays listed.
     resume_misses: list[str] = field(default_factory=list)
+    #: GRPH-1785. The item's own branch could not be checked out, so this seat was
+    #: not started on any other branch. Each entry is {item, branch, worktree}.
+    #: `worktree` is the checkout that holds the branch, or "" when resume failed
+    #: without one. The drain emits `resume_blocked` from these and withdraws the
+    #: delegation, so the item stays claimable.
+    resume_blocked: list[dict] = field(default_factory=list)
     #: Names this wave refused because the remote already had them (GRPH-1088). The
     #: next free slot is cut instead. Recorded as the refusal `create` raised, so the
     #: report says which name and which commit were left alone.
@@ -434,6 +455,12 @@ class Wave:
     #: `review` rows held up because a live child is running: one line per row, naming the
     #: child's item (GRPH-1349).
     review_waits: list[str] = field(default_factory=list)
+    #: GRPH-1024. Items this wave did not re-delegate because their work is already in
+    #: the base: item id -> the signal that matched and what it believed. Present and
+    #: empty by default. A missing map would read as "nothing was held", which is how a
+    #: bounced remainder exited the wave as idle. A bounce is not an entry — it is
+    #: delegated, because the remainder is the work.
+    in_base: dict[str, str] = field(default_factory=dict)
     #: Branches pushed but NOT proposed as a PR, with why (GRPH-949): a change outside every
     #: declared touchpoint, or a base the trunk has moved past in a way that matters — a
     #: shared file, a merge conflict, or a behind-check that could not be asked (GRPH-1087).
@@ -479,6 +506,19 @@ class Wave:
     #: Original branch -> (side branch, why). A salvage or rework that must not move the
     #: ref a landed fix already uses (GRPH-1053).
     diverted: dict[str, tuple[str, str]] = field(default_factory=dict)
+    #: "{item}: pinned until {stamp}" for a bounce pin whose author has no live child
+    #: (GRPH-1324). Cleared when that item is delegated. An exit while any remain names
+    #: them under `waits` and is not `idle`.
+    pin_waits: list[str] = field(default_factory=list)
+    #: "{item}: {reason}" for a signed-off merge this drain is still trying (GRPH-1577).
+    #: Set by `until` while `Merger.watching` is non-empty. A stop in that state is
+    #: `merge-pending`, never `idle`: the item is unmerged and the miss can still clear.
+    merge_pending: list[str] = field(default_factory=list)
+    #: `{item, reason}` for a ready item whose delegation this wave refused and did not
+    #: later hand off (GRPH-1643). An exit while any remain is `stalled`, not `idle`:
+    #: the item is still ready. Empty means none were refused. A missing list would
+    #: read the same way, which is how a drain exited idle for hours.
+    delegate_refused: list[dict] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -625,6 +665,43 @@ def _read_allocation(client: Graphban, wave: Wave) -> AllocationRead | None:
         wave.offline = True
         wave.failures.append(f"server unreachable: {exc}")
         return None
+    except ToolFailed as exc:
+        # GRPH-1669. The server answered, with an error. Not D-i's partition — there is no
+        # ceiling to wait out — but the allocation is unknown, so the wave stops here.
+        record_server_error(wave, exc)
+        return None
+
+
+def record_server_error(wave: Wave, exc: ToolFailed) -> None:
+    """Remember the first tool error a supervisor read answered with, as ONE failure line.
+
+    Idempotent: the reads after the first one fail the same way, and a page of identical
+    FAILED lines buries the one that says what happened. `str(exc)` names the tool and the
+    server's message (`fleet_status: error: internal error`).
+    """
+    if wave.server_error:
+        return
+    wave.server_error = str(exc)
+    wave.failures.append(f"server error: {exc}")
+    observe.emit("server_error", tool=getattr(exc, "tool", ""), detail=str(exc))
+
+
+def server_failed(wave: Wave, children: Sequence[Child], exc: ToolFailed) -> list[Child]:
+    """A roster or allocation read failed with a tool error mid-wave: record it once and
+    stop every running child (GRPH-1669). Returns the children it stopped.
+
+    Stopped rather than left running: the supervisor is about to exit, and a child it no
+    longer watches is the orphan this exists to prevent — nobody enforces its wall clock,
+    nobody reaps its tree, nobody pushes its work. The caller reaps them, which salvages
+    and publishes what they did.
+    """
+    record_server_error(wave, exc)
+    stopped: list[Child] = []
+    for child in children:
+        if child.running:
+            stop(child, Reason.SERVER_ERROR)
+            stopped.append(child)
+    return stopped
 
 
 def _rooted(repo: Path | str, workspace: Path | str | None) -> tuple[Path, Path]:
@@ -892,6 +969,23 @@ def up(
             # spends money to produce a process nobody can account for.
             _park(wave, list(seats), "server unreachable; no child was started")
             return wave
+        if wave.server_error:
+            # GRPH-1669. The allocation read came back as a tool error. Nothing started.
+            _park(wave, list(seats), "server error; no child was started")
+            wave.reason = "server-error"
+            return wave
+
+        problems = seats_unrecordable(client, seats)
+        if problems:
+            # GRPH-1648. Before any child: a wave whose receipts this key cannot record
+            # builds, reviews and merges with no base, no lease and no PR on the ledger.
+            refusal = seats_refusal(problems)
+            wave.failures.append(refusal)
+            observe.emit("wait", kind="seats_unrecordable", detail=refusal)
+            _park(wave, list(seats), "this key cannot record this seat's receipts; "
+                  "no child was started")
+            wave.reason = "seats-unrecordable"
+            return wave
 
         problems = seats_unrecordable(client, seats)
         if problems:
@@ -998,9 +1092,16 @@ def up(
             persist()
             return len(wave.spawned) > spawned_before
 
-        refill()
-        _wait_out(wave, children, limits, client, poll=poll, sleep=sleep, debug=debug,
-                  persist=persist, merger=merger, base_branch=base, refill=refill)
+        try:
+            refill()
+            _wait_out(wave, children, limits, client, poll=poll, sleep=sleep, debug=debug,
+                      persist=persist, merger=merger, base_branch=base, refill=refill)
+        except ToolFailed as exc:
+            # GRPH-1669. `fleet_status` (registration wait or watch tick) answered with an
+            # error. Stop with one FAILED line, and stop the children too: falling through to
+            # the reap below with them still running would remove trees they are writing.
+            server_failed(wave, children, exc)
+            wave.reason = "server-error"
         # A seat still in `pending` was neither started nor named. Leaving it
         # there reports a clean wave — unused stays 0 — which is the silent
         # drop this command exists to make loud.
@@ -1014,8 +1115,12 @@ def up(
             # merge it was asked for to the next run.
             merger.tick(wave)
 
-        wave.after = _read_allocation(client, wave)
-        if not wave.failures and not wave.offline:
+        if not wave.server_error:
+            # Not again after a tool error: it would fail the same way, as a second line.
+            wave.after = _read_allocation(client, wave)
+        if wave.server_error:
+            wave.reason = "server-error"
+        elif not wave.failures and not wave.offline:
             # A clean exit that still dropped seats is the failure this command
             # exists to not look like. `ok` is false for any reason but the two
             # idle ones, so the process exits non-zero and the report names them.
@@ -1197,7 +1302,7 @@ def start_one(
     # outcome. `prepare` no-ops when `.gbagent.toml` has no [setup]; a setup that
     # fails refuses the spawn (SetupFailed ⊂ ConfigRefused).
     prepare(tree.path)
-    launch = launch_factory(seat, tree, _instruction_file(tree, seat, wave_name), debug_file)
+    launch = launch_factory(seat, tree, _instruction_file(tree, seat, wave_name, limits.subagents), debug_file)
     child = spawn(
         launch, tree.path, tree.branch, _logs(workspace, f"{wave_name}-{slot}"), base=tree.base,
         # Built per wave under the workspace, not the worktree: a stub directory inside the
@@ -1215,11 +1320,19 @@ def start_one(
     # a partition lasting the whole window is recorded as never-registered rather than
     # lease-lapsed. Slightly the wrong word for the right outcome: a child with no
     # identity has no claim either way (D-i).
-    await_registration(
-        child,
-        lambda: _roster(client, partition) or {},
-        window=registration_window(limits, launch),
-    )
+    try:
+        await_registration(
+            child,
+            lambda: _roster(client, partition) or {},
+            window=registration_window(limits, launch),
+        )
+    except ToolFailed:
+        # GRPH-1669. The roster read answered with a tool error, so this child's
+        # registration cannot be confirmed and nothing will supervise it. Stop it before the
+        # error leaves: `on_spawned` already put it on the caller's record, so the caller
+        # reaps it. Left running, it outlived the `gbfleet mcp` that started it with ppid 1.
+        stop(child, Reason.SERVER_ERROR)
+        raise
     return child
 
 
@@ -1231,6 +1344,86 @@ def registration_window(limits: Limits, launch: Launch) -> float:
     if launch.registration_window is not None:
         return launch.registration_window
     return REGISTRATION_WINDOW
+
+
+class ResumeBlocked(Exception):
+    """The item's branch could not be checked out, so no child is started.
+
+    `worktree` is the checkout that holds the branch, or "" when resume failed
+    without naming one. The drain emits `resume_blocked` and withdraws the
+    delegation. Starting on any other branch is the defect this exists to close
+    (GRPH-1785).
+    """
+
+    def __init__(self, item: str, branch: str, worktree: str = "") -> None:
+        self.item = item
+        self.branch = branch
+        self.worktree = worktree
+        where = worktree or "an unknown checkout"
+        super().__init__(
+            f"{item}: {branch} is held by {where}; not starting on another branch"
+        )
+
+
+def _child_is_running(child: Child) -> bool:
+    running = getattr(child, "running", False)
+    return bool(running() if callable(running) else running)
+
+
+def _live_child_owns(path: Path, children: Sequence[Child]) -> bool:
+    """True when a still-running child was started in `path`."""
+    try:
+        want = path.resolve()
+    except OSError:
+        want = Path(path)
+    for child in children:
+        if not _child_is_running(child):
+            continue
+        try:
+            if Path(child.worktree).resolve() == want:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _reclaim_idle_worktree(
+    repo: Path, branch: str, holder: Path, children: Sequence[Child],
+) -> bool:
+    """Remove `holder` when this drain may take the branch back (GRPH-1785).
+
+    All four have to be true: it is a linked worktree of this clone, no live
+    child owns it, it is clean, and its HEAD is the remote tip of `branch`.
+    Any one missing leaves the checkout where it is. The primary worktree is
+    never removed. `git worktree remove` is not forced.
+    """
+    try:
+        if holder.resolve() == Path(repo).resolve():
+            return False
+    except OSError:
+        return False
+    if _live_child_owns(holder, children):
+        return False
+    if wt_mod.is_dirty(holder):
+        return False
+    if not wt_mod.matches_remote_head(repo, branch, holder):
+        return False
+    try:
+        wt_mod.remove_worktree(repo, holder)
+    except wt_mod.GitError:
+        return False
+    return True
+
+
+def _worktree_in_resume_error(detail: str) -> str:
+    """The path from git's 'already used by worktree at', or ""."""
+    marker = "already used by worktree at "
+    if marker not in detail:
+        return ""
+    raw = detail.split(marker, 1)[1].splitlines()[0].strip()
+    if len(raw) >= 2 and raw[0] in "'\"" and raw[-1] == raw[0]:
+        raw = raw[1:-1]
+    return raw.strip()
 
 
 def _start(
@@ -1309,17 +1502,46 @@ def _start(
             if bounced and bounced not in taken:
                 slot = bounced.rsplit("-", 1)[-1] or slot
                 agent_slot = f"{wave_name}-{slot}"
-                try:
-                    tree = wt_mod.resume_bounced(
-                        repo, workspace / f"{wave_name}-{slot}-bounce", bounced,
-                        base=base,
+                holder = wt_mod.worktree_holding(repo, bounced)
+                if holder is not None and _reclaim_idle_worktree(
+                    repo, bounced, holder, started,
+                ):
+                    observe.emit(
+                        "resume_reclaimed",
+                        item=seat.item or "",
+                        branch=bounced,
+                        worktree=str(holder),
                     )
-                    wave.resumed.append(bounced)
-                    taken.add(bounced)
-                    _record_resume_merge(wave, client, seat.item, tree)
-                except wt_mod.ResumeFailed as exc:
-                    wave.resume_misses.append(str(exc))
-                    observe.emit("resume_miss", detail=str(exc), branch=bounced)
+                    holder = None
+                blocking = "" if holder is None else str(holder)
+                if holder is not None:
+                    # Still checked out, and not ours to take. Do not add a second
+                    # worktree for it — git will refuse — and do not start elsewhere.
+                    wave.resume_misses.append(
+                        f"{bounced}: already used by worktree at {holder}"
+                    )
+                else:
+                    try:
+                        tree = wt_mod.resume_bounced(
+                            repo, workspace / f"{wave_name}-{slot}-bounce", bounced,
+                            base=base,
+                        )
+                        wave.resumed.append(bounced)
+                        taken.add(bounced)
+                        _record_resume_merge(wave, client, seat.item, tree)
+                    except wt_mod.ResumeFailed as exc:
+                        wave.resume_misses.append(str(exc))
+                        observe.emit(
+                            "resume_miss", detail=str(exc), branch=bounced,
+                            item=seat.item or "",
+                        )
+                        blocking = blocking or _worktree_in_resume_error(str(exc))
+                if tree is None:
+                    # GRPH-1785. The item's branch was not checked out. Do not fall
+                    # through to a salvage or a fresh gb/<wave>-* cut: that is how a
+                    # bounced item was built on an unrelated branch. The drain emits
+                    # resume_blocked and leaves the item claimable.
+                    raise ResumeBlocked(seat.item or "", bounced, blocking)
             if tree is None:
                 # Bound seats resume only the salvage that names their item. An unbound
                 # seat still walks the list, skipping branches this wave already took.
@@ -1419,9 +1641,32 @@ def _start(
                 _report_event(wave, ledger, seat, "limit_hit", limit.said or str(limit))
                 raise
             except LaunchFailed as failed:
-                _report_event(wave, ledger, seat, "spawn_failed", str(failed))
+                _report_event(wave, ledger, seat, "spawn_failed",
+                              f"{type(failed).__name__}: {failed}")
                 raise
+            except (ToolFailed, ServerUnreachable, NotPermitted):
+                # GRPH-1753. A roster read that answered with an error is the wave's
+                # stop (`server-error`, one FAILED line), not this seat's spawn failure.
+                # Wrapping it as LaunchFailed recorded a second line and let the wave
+                # continue into the same read.
+                raise
+            except Exception as exc:
+                # GRPH-1753. seat.write raises UnrenderableSeat, and a full disk or a
+                # missing binary can raise before spawn() wraps it as LaunchFailed.
+                # Those killed `until` with the delegation still open. Name the class,
+                # then fall into the handler below so the empty worktree is reaped.
+                text = f"{type(exc).__name__}: {exc}"
+                _report_event(wave, ledger, seat, "spawn_failed", text)
+                raise LaunchFailed(text) from exc
             _report_event(wave, ledger, seat, "registered")
+        except ResumeBlocked as blocked:
+            wave.resume_blocked.append({
+                "item": blocked.item,
+                "branch": blocked.branch,
+                "worktree": blocked.worktree,
+            })
+            _note_unredeemed(wave, seat, str(blocked))
+            continue
         except (LaunchFailed, wt_mod.GitError, wt_mod.BranchExists, SetupFailed) as exc:
             wave.failures.append(f"{agent_slot}: {exc}")
             vendor_limit = isinstance(exc, VendorLimit)
@@ -1456,7 +1701,8 @@ def _start(
     return started
 
 
-def _instruction_file(tree: Worktree, seat: Seat, wave_name: str) -> Path:
+def _instruction_file(tree: Worktree, seat: Seat, wave_name: str,
+                      subagents: int | None = None) -> Path:
     """The child's marching orders, on disk rather than on the command line.
 
     The instruction carries the enrolment code, and argv is visible to every process on
@@ -1467,7 +1713,8 @@ def _instruction_file(tree: Worktree, seat: Seat, wave_name: str) -> Path:
     path = tree.path / ".gbfleet-instruction"
     path.write_text(instruction_for(seat, tree.path, tree.branch,
                                          behind_ref=tree.behind_ref,
-                                         conflicts=tree.behind_conflicts),
+                                         conflicts=tree.behind_conflicts,
+                                         subagents=subagents),
                     encoding="utf-8")
     # This file carries the enrolment CODE, so it is the more sensitive of the two and
     # was protected by the same call that does nothing on Windows.
@@ -1488,6 +1735,176 @@ def _logs(workspace: Path, slot: str) -> Path:
     return workspace / "logs" / slot
 
 
+# Same key grammar and the same person/decision words as items.record_blocker_dependencies
+# (GRPH-1530). The server clears a blocker when the named item reaches done; this pass
+# clears one whose items were already done, which that transition will not see again.
+_BLOCKER_KEY = re.compile(
+    r"(?<![\w/.-])([A-Za-z][A-Za-z0-9]{1,3}-[RrPpAaLl]?\d+)(?![\w/.-])"
+)
+_PERSON_OR_DECISION = re.compile(r"\b(?:person|human|decision)\b", re.IGNORECASE)
+_BLOCKING_FIX_SUFFIX = ": blocking fix filed on this item"
+_WAIT_TAGS = frozenset({
+    "wait:merge", "wait:decision", "wait:secret", "wait:access", "wait:deploy",
+})
+_STALE_BLOCKER_STATUSES = ("blocked", "next")
+
+
+def blocker_item_keys(text: str) -> list[str]:
+    """Item-key tokens in a blocker, in order, without duplicates."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for match in _BLOCKER_KEY.finditer(text or ""):
+        key = match.group(1)
+        if key not in seen:
+            seen.add(key)
+            found.append(key)
+    return found
+
+
+#: Same sentence `deps.HOLD_MARK` writes. Not imported: this module must not take
+#: a dependency on `deps` (the hold writer imports the supervisor). A dependency
+#: hold names the finished-but-unmerged item, so clearing it and the next cycle
+#: writing it back is the rewrite loop GRPH-1645 measured.
+_DEPENDENCY_HOLD = "[gbfleet dependency hold]"
+
+
+def _prd_arg_refused(exc: BaseException) -> bool:
+    """An old server that has not heard of `search_items.prd_id` (GRPH-1645)."""
+    text = f"{exc} {getattr(exc, 'hint', '')}".lower()
+    return "prd_id" in text or "does not take" in text
+
+
+def blocker_left_alone(text: str, tags: list | None) -> bool:
+    """A person, a decision, a typed wait, a blocking-fix filing, or a dependency hold.
+
+    A dependency hold is left alone even when every item it names is `done`: done
+    is not merged, and clearing the hold lets the next cycle write the same text
+    back (GRPH-1645).
+    """
+    if _DEPENDENCY_HOLD in (text or ""):
+        return True
+    if _PERSON_OR_DECISION.search(text or ""):
+        return True
+    if (text or "").endswith(_BLOCKING_FIX_SUFFIX):
+        return True
+    return any(str(tag).lower() in _WAIT_TAGS for tag in (tags or []))
+
+
+def _in_prd(row: dict, prd: str | None) -> bool:
+    """Keep a row the server did not label, and drop one that names another PRD.
+
+    A page with no `prd_id` is an old full-row shape, not evidence the item is
+    outside the wave. A row that names a different PRD is the server ignoring
+    the filter.
+    """
+    if not prd:
+        return True
+    named = row.get("prd_id")
+    return named is None or str(named) == prd
+
+
+def _search_status(client: Graphban, status: str, *, prd: str | None = None) -> list[dict]:
+    """Every full row in `status`. A short page is not the whole board.
+
+    `prd` scopes the read (GRPH-1645). An old server that refuses the argument is
+    re-read without it and filtered here, so a drain keeps working during the
+    upgrade. The retry is one project-wide read, not one per item.
+    """
+    try:
+        return _search_status_pages(client, status, prd=prd)
+    except ToolFailed as exc:
+        if prd and _prd_arg_refused(exc):
+            rows = _search_status_pages(client, status, prd=None)
+            return [row for row in rows if _in_prd(row, prd)]
+        raise
+
+
+def _search_status_pages(client: Graphban, status: str, *,
+                         prd: str | None) -> list[dict]:
+    rows: list[dict] = []
+    offset = 0
+    limit = 200
+    while offset <= 5000:
+        args: dict = {"status": status, "fields": "full", "limit": limit, "offset": offset}
+        if prd:
+            args["prd_id"] = prd
+        got = client.call("search_items", **args)
+        page = got.get("results") if isinstance(got, dict) else None
+        if not isinstance(page, list):
+            raise ToolFailed(
+                "search_items", "error", f"{status} listing carried no results list")
+        rows.extend(row for row in page if isinstance(row, dict))
+        if not (isinstance(got, dict) and got.get("has_more")):
+            break
+        offset += limit
+    return rows
+
+
+def _named_status(client: Graphban, key: str, cache: dict[str, str | None]) -> str | None:
+    if key in cache:
+        return cache[key]
+    try:
+        got = client.call("get_item_details", id=key) or {}
+    except (ToolFailed, NotPermitted, ServerUnreachable):
+        cache[key] = None
+        return None
+    status = str(got.get("status") or "") if isinstance(got, dict) else ""
+    cache[key] = status or None
+    return cache[key]
+
+
+def clear_stale_blockers(client: Graphban, *, prd: str | None = None) -> list[str]:
+    """Clear blockers that name only done items. Report is the caller's.
+
+    A planner drain holds `update_item`. A supervisor allowlist does not, and
+    this returns without reading: a client that cannot write must not look like
+    it checked. A blocker that names a person, a decision, or a dependency hold
+    is left alone. `prd` keeps the read inside the wave (GRPH-1645).
+    """
+    allowed = getattr(client, "allowed", ())
+    if "update_item" not in allowed or "search_items" not in allowed:
+        return []
+    if "get_item_details" not in allowed:
+        return []
+    cleared: list[str] = []
+    seen: set[str] = set()
+    statuses: dict[str, str | None] = {}
+    for status in _STALE_BLOCKER_STATUSES:
+        for row in _search_status(client, status, prd=prd):
+            item_id = str(row.get("id") or "")
+            if not item_id or item_id in seen or "blocker" not in row:
+                continue
+            seen.add(item_id)
+            text = str(row.get("blocker") or "").strip()
+            if not text or blocker_left_alone(text, row.get("tags")):
+                continue
+            if not _in_prd(row, prd):
+                continue
+            keys = blocker_item_keys(text)
+            if not keys:
+                continue
+            named = [_named_status(client, key, statuses) for key in keys]
+            if any(state != "done" for state in named):
+                continue
+            fields: dict = {
+                "id": item_id,
+                "blocker": "",
+                "evidence": [{
+                    "kind": "note",
+                    "detail": f"blocker cleared: {', '.join(keys)} done",
+                }],
+            }
+            if str(row.get("status") or status) == "blocked":
+                fields["status"] = "next"
+            client.call("update_item", **fields)
+            cleared.append(item_id)
+            observe.emit(
+                "blocker_cleared", item=item_id,
+                detail=f"{item_id}: blocker cleared, {', '.join(keys)} done",
+            )
+    return cleared
+
+
 def watch_tick(
     wave: Wave,
     children: list[Child],
@@ -1497,6 +1914,7 @@ def watch_tick(
     debug: bool = False,
     persist: Callable[[], None] | None = None,
     base_branch: str = "",
+    scope_prd: str | None = None,
 ) -> None:
     """One pass of the watch loop: keep the lease, then wall-clock, output, disowned.
 
@@ -1505,11 +1923,12 @@ def watch_tick(
     PRD-22 four (wall-clock, never-registered, seat-gone, lease-lapsed), plus the
     planner's `stop`.
 
-    The keep-alive is first, before `_roster` (GRPH-1116). `fleet_status` requeues an
-    agent whose presence has lapsed, and a child blocked in a test suite does not
-    heartbeat itself. Posting `kind=lease` while the pid is alive is what keeps that
-    requeue from firing. Once the process has exited, nothing here posts, and the
-    server clock lapses the lease as before.
+    The keep-alive is first, before `_roster` (GRPH-1116, which is the fix GRPH-1069
+    asked for). `fleet_status` requeues an agent whose presence has lapsed, and a
+    child blocked in one tool call does not heartbeat itself. Posting `kind=lease`
+    while the pid is alive keeps that requeue from firing across a call longer than
+    the presence TTL, and it does not write a `released` attempt. Once the process
+    has exited, nothing here posts, and the server clock requeues within one TTL.
     """
     keep_leases(wave, children, client)
     roster = _roster(client, wave.partition)
@@ -1559,6 +1978,13 @@ def watch_tick(
     # during this tick belongs to the reap.
     _publish_in_review(wave, children, client)
     _report_exits(children, client, wave)
+    # GRPH-1530. Each drain pass, not a separate command: a blocker that names
+    # only done items is cleared here, and one that names a person or a decision
+    # is left. A client that cannot write skips the read.
+    try:
+        clear_stale_blockers(client, prd=scope_prd)
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("blocker_clear_failed", detail=str(exc))
     if persist is not None:
         persist()
 
@@ -1949,6 +2375,13 @@ def _held_for_undeclared(wave: Wave, child: Child, repo: Path, items: list[str],
     wave.undeclared.pop(child.branch, None)
     _note_touchpoints(wave, child, client)
     missing = wave.undeclared.get(child.branch) or []
+    mode, observing = _undeclared_rule(client)
+    if missing and observing:
+        # GRPH-1778: observing, so nothing is held; what a hold would have done is posted.
+        if mode == "hold":
+            _post_would_have(wave, client, items, UNDECLARED_RULE, "would_hold",
+                             child, "would have held: " + _shown(missing))
+        return False
     if not missing or _undeclared_mode(client) == "warn":
         return False
     _hold_undeclared(wave, client, items, child.branch, missing, in_review=set(items))
@@ -2041,7 +2474,18 @@ def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) 
         wave.declared_unread[child.branch] = "; ".join(unread)
     if declared:
         missing = tp_mod.undeclared(measured, declared)
-        allowed = generated_paths(client)
+        configured, observing, _unread = _generated_rule(client)
+        # GRPH-1778: an observing loosening applies the pre-rule list, and says what the
+        # configured one would have let through. `_unread` is for check-touchpoints, which
+        # has to say the rule was not read; the hold already logged that inside the read.
+        allowed = DEFAULT_GENERATED if observing else configured
+        if observing:
+            would = [f for f in missing if is_generated(f, configured)
+                     and not is_generated(f, allowed)]
+            if would:
+                _post_would_have(wave, client, _branch_items(child), GENERATED_RULE,
+                                 "would_allow", child,
+                                 "would have let through: " + ", ".join(would[:8]))
         generated = [f for f in missing if is_generated(f, allowed)]
         if generated:
             # GRPH-1352: the repo's own generators rewrite these on any migration or test
@@ -2082,6 +2526,36 @@ def generated_paths(client: Graphban | None) -> tuple[str, ...]:
     """The paths the undeclared-file hold ignores: the project's resolved
     `build.generated_files` rule. When it cannot be read — no client, the server does not
     answer, or the pack does not carry the rule — today's list is used and that is logged."""
+    return _generated_rule(client)[0]
+
+
+def _is_observing(toggle: dict) -> bool:
+    return toggle.get("state") == "observing"
+
+
+def _post_would_have(wave: Wave, client: Graphban | None, items: list[str], rule_id: str,
+                     outcome: str, child, reason: str) -> None:
+    """GRPH-1778 (P91 D5): an observing supervisor rule applied the pre-rule behaviour; post
+    what it would have done, per item, with the branch head. Never fatal."""
+    commit = ""
+    wt = getattr(child, "worktree", None)
+    if wt:
+        commit = _branch_head(Path(wt), child.branch)
+    for item_id in items:
+        _observe(wave, client, item_id, "would-have outcome not recorded",
+                 kind="rule_would_have", rule_id=rule_id, outcome=outcome,
+                 branch=child.branch, commit=commit or None, reason=reason)
+
+
+def _generated_rule(client: Graphban | None) -> tuple[tuple[str, ...], bool, str]:
+    """(configured paths, whether the rule is observing, why it was not read).
+
+    The third value is "" when the project's list was read. An observing rule was
+    read: the third value stays "" and the caller still applies the built-in list,
+    because the loosening is not adopted yet. `generated_paths` returns the first
+    value, which is the configured list even while observing — the hold must not
+    use that alone.
+    """
     why = ""
     allowed = getattr(client, "allowed", None)
     if client is None:
@@ -2101,13 +2575,13 @@ def generated_paths(client: Graphban | None) -> tuple[str, ...]:
                     params = params.get("value") if isinstance(params, dict) and "value" in params else params
                     paths = (params or {}).get("paths") if isinstance(params, dict) else None
                     if isinstance(paths, list) and all(isinstance(x, str) for x in paths):
-                        return tuple(paths)
+                        return tuple(paths), _is_observing(t), ""
                     why = f"{GENERATED_RULE} has no readable `paths`"
                     break
             else:
                 why = f"{GENERATED_RULE} is not in the server's rule toggles"
     observe.emit("generated_files_rule_unread", detail=f"{why}; using the built-in list")
-    return DEFAULT_GENERATED
+    return DEFAULT_GENERATED, False, why
 
 
 def is_generated(path: str, paths: tuple[str, ...] | list[str] | None = None) -> bool:
@@ -2733,8 +3207,13 @@ def _proposal_items(tree: Worktree, child: Child | None) -> list[str]:
     proposed as B's: one PR titled for B carrying A's files. Every item the child ever held
     and a commit names goes in, so `propose_branch` splits the branch one PR per item. An
     item it held and never committed for stays out — `split_by_item` would refuse the whole
-    branch for it. With fewer than two named, the old reading stands, and the single-item
-    gate in `propose_branch` refuses a branch carrying another item's commits.
+    branch for it.
+
+    One named is enough (GRPH-1657). A bound child built GRPH-1562, then was handed GRPH-933
+    by `claim_next` and released it unbuilt; at reap `held_items` was [GRPH-933], and the
+    branch was proposed for an item it carries nothing for and withheld as "carries commits
+    for GRPH-1562". With none named, the old reading stands, and the single-item gate in
+    `propose_branch` refuses a branch carrying another item's commits.
     """
     held = [i for i in ((child.held_items if child else []) or []) if i]
     if child is None or not tree.base:
@@ -2743,7 +3222,7 @@ def _proposal_items(tree: Worktree, child: Child | None) -> list[str]:
     named: list[str] = []
     for _sha, ids in wt_mod.attributed_commits(tree.repo, tree.branch, tree.base, known):
         named += [i for i in ids if i in known and i not in named]
-    if len(named) > 1:
+    if named:
         return [i for i in known if i in named]
     return held
 
@@ -2836,23 +3315,34 @@ def _record_cut_from(wave: Wave, client, item_id: str | None, branch: str, base:
              kind="cut_from", branch=branch, base=base)
 
 
-def _undeclared_mode(client: Graphban | None) -> str:
-    """The project's `build.undeclared_files` mode (GRPH-1425): `hold` or `warn`. Anything
-    unreadable — no client, a client not allowed the tool, a server without the rule — is
-    `hold`, today's behaviour: a hold is never loosened by not knowing."""
+UNDECLARED_RULE = "build.undeclared_files"
+
+
+def _undeclared_rule(client: Graphban | None) -> tuple[str, bool]:
+    """(configured mode, whether the rule is observing). Anything unreadable — no client, a
+    client not allowed the tool, a server without the rule — is `hold`, not observing."""
     if client is None:
-        return "hold"
+        return "hold", False
     try:
         got = client.call("get_rule_toggles")
     except (NotPermitted, ToolFailed, ServerUnreachable):
-        return "hold"
+        return "hold", False
     for t in (got or {}).get("toggles") or []:
-        if t.get("rule_id") == "build.undeclared_files":
+        if t.get("rule_id") == UNDECLARED_RULE:
             params = t.get("params")
             value = params.get("value") if isinstance(params, dict) else None
             mode = (value or {}).get("mode") if isinstance(value, dict) else None
-            return "warn" if mode == "warn" else "hold"
-    return "hold"
+            return ("warn" if mode == "warn" else "hold"), _is_observing(t)
+    return "hold", False
+
+
+def _undeclared_mode(client: Graphban | None) -> str:
+    """The project's `build.undeclared_files` mode (GRPH-1425): `hold` or `warn`. Anything
+    unreadable — no client, a client not allowed the tool, a server without the rule — is
+    `hold`, today's behaviour: a hold is never loosened by not knowing. While the rule is
+    observing (GRPH-1778) it holds nothing, so it reads `warn`."""
+    mode, observing = _undeclared_rule(client)
+    return "warn" if observing else mode
 
 
 def _refuse_proposal(wave: Wave, branch: str, *, undeclared_mode: str = "hold") -> str:
@@ -2973,6 +3463,34 @@ def _carries_another_item(repo: Path, branch: str, base: str, items: list[str]) 
             f"one PR per item, so {item}'s commits go on a branch of their own")
 
 
+def _recorded_merge(client: Graphban | None, item_id: str) -> str:
+    """What a `done` item's recorded merge names, or "" (GRPH-1709).
+
+    Asked before a reap opens a PR: the receipt says the work landed, so a PR for it asks a
+    person to merge something already on the trunk, and the merge loop proposes that PR again
+    on every later cycle. Only `done` counts — an item bounced back to `next` keeps its
+    receipt (evidence only appends) and its rework is exactly the work that still needs a PR.
+
+    Every client that reaches a proposal holds the read (`SPAWN_READS` on `up`/`mcp`,
+    `PLANNER_TOOLS` on `until`); one that does not is asked nothing, the way `_ids_in_review`
+    asks nothing of it, and the head-keyed check in `propose` — which needs no ledger at all —
+    is what still covers that case. Anything unreadable is "", which proposes as before
+    rather than dropping work because a ledger did not answer.
+    """
+    if client is None or not item_id:
+        return ""
+    allowed = getattr(client, "allowed", frozenset()) or frozenset()
+    if "get_item_details" not in allowed:
+        return ""
+    try:
+        item = client.call("get_item_details", id=item_id) or {}
+    except (NotPermitted, ToolFailed, ServerUnreachable):
+        return ""
+    if str(item.get("status") or "") != "done":
+        return ""
+    return propose_mod.merge_receipt(item)
+
+
 def _open_pr(wave: Wave, repo: Path, branch: str, items: list[str], base: str, subj: str, *,
              client: Graphban | None, attest: bool = False) -> None:
     """One draft PR for one branch carrying at most one item, and the receipt on that item.
@@ -2980,6 +3498,14 @@ def _open_pr(wave: Wave, repo: Path, branch: str, items: list[str], base: str, s
     `attest` writes `Attests: <item>` into the body. The per-item split asks for it; a
     single-item branch does not, and its body stays the one it had.
     """
+    for item_id in items:
+        receipt = _recorded_merge(client, item_id)
+        if receipt:
+            wave.proposed[branch] = propose_mod.Proposed(
+                branch=branch, skipped=True,
+                reason=f"{item_id} is done and its merge is recorded ({receipt}); not opening "
+                       "another PR for work already on the trunk")
+            return
     # GRPH-1419: title from the build commit, not the newest follow-up fix.
     subj = propose_mod.title_subject(repo, branch, base) or subj
     title, body = propose_mod.describe(branch, items, subj, attest=attest)
@@ -3218,6 +3744,88 @@ def publish_salvaged(wave: Wave, repo: Path, salvaged: list, *,
 MERGE_RECHECK_S = 60.0
 
 
+def _merge_recorded(row: dict) -> bool:
+    """True when the item carries the `url` receipt `Merger._record` writes."""
+    for e in row.get("evidence") or []:
+        if (isinstance(e, dict) and e.get("kind") == "url" and e.get("commit")
+                and str(e.get("detail") or "").startswith("merged by gbfleet:")):
+            return True
+    return False
+
+
+#: Reasons a finished merge attempt must take the item back out of `done` (GRPH-1348).
+#: A transient hold — CI not attested, auto-merge armed, "proposed; next tick", and
+#: "not mergeable yet" while the forge is still computing mergeability — is absent on
+#: purpose. Matching one of those would flap a good PR back to `next` every cycle.
+#: "not mergeable" is a substring of that hold (`not mergeable yet: mergeable=UNKNOWN`),
+#: so it is not a marker. A terminal miss still matches: no PR, a draft that cannot be
+#: marked ready, branch protection, a closed PR, a failed `gh pr merge`, a merge commit
+#: that is not an ancestor of the default branch.
+_LEAVE_DONE_MARKERS = (
+    "no PR for",
+    "names no PR",
+    "done without a PR",
+    "gh pr ready failed",
+    "branch protection blocks",
+    "not an ancestor of",
+    ", not open",
+    "gh pr merge failed",
+)
+
+
+def commit_on_default(repo: Path, commit: str, base: str) -> bool | None:
+    """Is `commit` an ancestor of `base`?
+
+    Three answers. `None` means this clone has no `base` ref to ask — a unit fixture, or a
+    base this process was not given. That is not "absent from the trunk". `False` means the
+    ref exists and the commit is not on it, including a commit this clone has never seen:
+    the object is not on the ref we have. `True` only when git says it is an ancestor. A
+    commit equal to the tip of `base` is an ancestor of itself.
+    """
+    commit = (commit or "").strip()
+    base = (base or "").strip()
+    if not commit or not base:
+        return None
+    try:
+        present = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"],
+            cwd=str(repo), capture_output=True, text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # Not a repository — a unit fixture, not evidence the commit is absent.
+        return None
+    if present.returncode != 0:
+        return None
+    try:
+        obj = subprocess.run(
+            ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+            cwd=str(repo), capture_output=True, text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if obj.returncode != 0:
+        return False
+    answer = wt_mod.reaches(repo, base, commit)
+    if answer is None:
+        return False
+    return answer
+
+
+def _should_leave_done(got: "propose_mod.Merged") -> bool:
+    """A terminal miss that must not remain `done` (GRPH-1348).
+
+    `not mergeable yet` is the forge's momentary answer after a push (UNKNOWN or
+    UNSTABLE). It is not skipped, so the next tick can merge. It stays `done` because
+    no marker matches that phrase — "not mergeable" would, and is not a marker for
+    that reason. A terminal refusal (branch protection, a closed PR, a failed merge)
+    still matches and leaves `done`.
+    """
+    if got.ok or got.pending or got.conflicts or got.rereview:
+        return False
+    reason = got.reason or ""
+    return any(marker in reason for marker in _LEAVE_DONE_MARKERS)
+
+
 @dataclass
 class Merger:
     """Finishes the merge for items that reach `done` (GRPH-846, GRPH-880). Off unless asked.
@@ -3244,10 +3852,16 @@ class Merger:
     merge that happened.
 
     WHAT IT NEVER DOES. Decide that an unreviewed head may land. A head that moved after
-    sign-off, or a rebase conflict, is bounced back to its author — left `done`, that PR
-    stays mergeable and the next tick records whatever a person merged. Every other
-    precondition miss leaves the item alone and says which check failed. A merge the forge
-    refuses is `skipped`. Branch protection is the backstop and this does not go around it.
+    sign-off, or a rebase conflict, is bounced back to its author. A merge that did not
+    land — no PR, a draft that cannot be marked ready, branch protection, a closed PR,
+    a failed `gh pr merge`, or a merge commit that is not an ancestor of the default
+    branch — does not stay `done` (GRPH-1348). It is bounced to `next` when this fleet
+    opened the PR, and blocked with the reason when the server refuses that bounce. The
+    drain log names the item and the reason. A commit is recorded as merged only after
+    it is an ancestor of the default branch, or when this clone has no such ref to ask.
+    CI that has not attested, an armed auto-merge, a PR this tick just proposed, and a
+    PR the forge has not scored yet ("not mergeable yet") stay watched. Branch protection
+    is the backstop and this does not go around it.
     """
 
     repo: Path
@@ -3256,6 +3870,9 @@ class Merger:
     #: The PRD this wave is scoped to (if any). Candidates outside this scope are not merged
     #: unless a GRPH-798 hold names them.
     prd_id: str = ""
+    #: The maintenance line this wave is scoped to (if any). Same rule as `prd_id`: with no
+    #: PRD, a `--line` run must not walk every done item in the project (GRPH-1719).
+    line_id: str = ""
     #: The planner this wave registered. `bounce` on a fleet credential refuses an
     #: unidentified caller, which is what left a conflicted `done` item unbounced.
     agent_id: str = ""
@@ -3275,6 +3892,12 @@ class Merger:
     disabled_because: str = ""
     #: Item ids already discovered as candidates, so we do not re-scan them every tick.
     _seen: set[str] = field(default_factory=set, repr=False)
+    #: JSON of item id → merge receipt. A fresh process loads it so a merge already
+    #: verified is not said again (GRPH-1645). None keeps the first-sighting report
+    #: the in-process tests already pin.
+    verified_path: Path | None = None
+    _verified: dict[str, str] = field(default_factory=dict, repr=False)
+    _verified_loaded: bool = field(default=False, repr=False)
 
     def note_review(self, rows: list[dict]) -> None:
         """Rows currently in `review`. Kept for interface compatibility; candidacy is now
@@ -3299,7 +3922,7 @@ class Merger:
         if not self.enabled or self.disabled_because:
             return False
         # GRPH-880: discover candidates from the attestation, not from observing departures.
-        self._discover_candidates()
+        self._discover_candidates(wave)
         merged_any = False
         release: str | None = None
         for item_id in list(self.watching):
@@ -3330,26 +3953,38 @@ class Merger:
             wt_mod.refresh_ref(self.repo, self.remote, self.base)
         return merged_any
 
-    def _discover_candidates(self) -> None:
+    def _discover_candidates(self, wave: Wave | None = None) -> None:
         """Scan for done items with a fleet.sign_off attestation naming a commit.
 
         GRPH-880: candidacy is a READ of a named fact, not an observation of departure.
         An item already `done` when the `--merge` wave starts is a candidate on the first
         tick — no requirement that this process saw it leave `review`.
 
-        Scope: if `prd_id` is set, only items belonging to that PRD are candidates.
+        Scope: if `prd_id` is set, only items belonging to that PRD are candidates; else if
+        `line_id` is set, only that line's items (GRPH-1719).
         Hold deps (added via `note_hold`) bypass the scope filter — they are merges that
         would clear a hold, which is the merge most worth finishing.
         """
         if not self.enabled or self.disabled_because:
             return
+        self._load_verified()
+        kwargs: dict = {"status": "done", "fields": "full", "limit": 10_000}
+        if self.prd_id:
+            kwargs["prd_id"] = self.prd_id
         try:
-            payload = self.client.call("search_items", status="done", fields="full",
-                                       limit=10_000)
+            payload = self.client.call("search_items", **kwargs)
         except NotPermitted as exc:
             self._disable(f"cannot read done items: {exc}")
             return
-        except (ToolFailed, ServerUnreachable):
+        except ToolFailed as exc:
+            if not (self.prd_id and _prd_arg_refused(exc)):
+                return
+            try:
+                payload = self.client.call(
+                    "search_items", status="done", fields="full", limit=10_000)
+            except (ToolFailed, ServerUnreachable, NotPermitted):
+                return
+        except ServerUnreachable:
             return
         rows = payload.get("results") if isinstance(payload, dict) else None
         if not isinstance(rows, list):
@@ -3366,6 +4001,30 @@ class Merger:
                 item_prd = str(row.get("prd_id") or "")
                 if item_prd != self.prd_id and item_id not in self.watching:
                     continue
+            elif self.line_id:
+                if (str(row.get("line_id") or "") != self.line_id
+                        and item_id not in self.watching):
+                    continue
+            # GRPH-1719: a merge this supervisor already recorded is read from the item, so
+            # a restarted process does not look the PR up again.
+            if _merge_recorded(row):
+                self._seen.add(item_id)
+                self.watching.pop(item_id, None)
+                receipt = propose_mod.merge_receipt(row)
+                # GRPH-1645: a later process already said this receipt. Saying it
+                # again is the merge event an idle drain emitted per long-merged item.
+                if receipt and self._verified.get(item_id) == receipt:
+                    continue
+                # GRPH-1755: the skip is still a verdict the wave report names (GRPH-1709),
+                # read from the row already in hand — no `gh` call, no second receipt.
+                if wave is not None:
+                    got = self._recorded_skip(item_id, row)
+                    wave.merged[item_id] = got
+                    self._say(item_id, got)
+                if receipt:
+                    self._verified[item_id] = receipt
+                    self._save_verified()
+                continue
             # Check for fleet.sign_off attestation naming a commit.
             if not propose_mod.reviewed_commit(row):
                 continue
@@ -3374,6 +4033,15 @@ class Merger:
                 continue
             self._seen.add(item_id)
             self.watching.setdefault(item_id, str(row.get("branch") or ""))
+
+    def _recorded_skip(self, item_id: str, item: dict,
+                       selector: str = "") -> "propose_mod.Merged":
+        """The final, not-ok skip for an item whose merge is already recorded (GRPH-1709)."""
+        receipt = propose_mod.merge_receipt(item)
+        return propose_mod.Merged(
+            item=item_id, selector=selector or propose_mod.pr_selector(item) or "",
+            skipped=True, checked=("merge-receipt",),
+            reason=f"already merged and recorded ({receipt})")
 
     def _release(self) -> str | None:
         """The project's release ref ("" when unset), or None when it could not be read."""
@@ -3416,6 +4084,15 @@ class Merger:
             self.watching.pop(item_id, None)
             return None
         selector = propose_mod.pr_selector(item) or self.watching.get(item_id, "")
+        if propose_mod.merge_receipt(item):
+            # GRPH-1709: this merge landed and was written down, so there is nothing left to
+            # ask GitHub — and every call this would make shares one rate limit with every
+            # other drain on the account. When `view` misses under that limit the pass reads
+            # GRPH-1457's stuck state and proposes a SECOND PR for an already-merged head,
+            # then logs "proposed #1847; merge is attempted next tick" on every cycle after.
+            # Skipped, which is final: the item leaves `watching` and no later tick re-asks.
+            self.watching.pop(item_id, None)
+            return self._recorded_skip(item_id, item, selector)
         got = propose_mod.merge(
             self.repo, item_id, selector,
             reviewed=propose_mod.reviewed_commit(item),
@@ -3429,16 +4106,25 @@ class Merger:
             siblings=propose_mod.pr_receipts(item),
             # Lazy: only read when the PR has files outside this item's own touchpoints.
             covering=lambda: self._covering(item_id, item),
+            # A recorded URL that cannot be viewed is not "no PR": look the branch up
+            # before giving up (GRPH-1348). `view` already does this when the selector
+            # IS the branch.
+            branch=str(item.get("branch") or ""),
         )
         if got.skipped and got.reason.startswith("no PR for"):
-            # GRPH-1457: done with its work on a branch and no PR is a stuck state, not a
-            # skip. Propose it; if that cannot be done, say so and keep watching.
+            # GRPH-1457: commits on a branch with no PR are proposed here. A PR that opens
+            # stays watched for the next tick. One that cannot be opened is terminal; the
+            # caller takes the item out of done (GRPH-1348).
             got = self._propose_unproposed(item_id, item, got)
         got = propose_mod.close_after_merge(self.repo, got)
+        if got.ok and got.commit:
+            got = self._require_on_default(got)
         if got.ok and got.commit:
             got = self._record(wave, got)
         if got.conflicts or got.rereview:
             self._bounce(wave, item_id, got)
+        elif _should_leave_done(got):
+            self._leave_done(wave, item_id, got)
         return got
 
     def _propose_unproposed(self, item_id: str, item: dict,
@@ -3446,9 +4132,10 @@ class Merger:
         """GRPH-1457: a `done` item whose branch carries commits and has no PR gets one.
 
         The same path as a normal reap (`propose_mod.propose`). Never a silent skip: when it
-        cannot be opened, a `wait` naming the item is emitted and the item stays watched
-        (the returned outcome is neither `skipped` nor `ok`, so it is not final). Once the PR
-        exists the next tick merges it through the usual checks.
+        cannot be opened, a `wait` naming the item is emitted. The returned outcome is neither
+        `skipped` nor `ok`. The caller then takes the item out of `done` (GRPH-1348) — staying
+        `done` with no PR is the defect this used to leave behind. Once a PR exists the next
+        tick merges it through the usual checks, and that outcome stays watched.
         """
         branch = str(item.get("branch") or "").strip()
 
@@ -3530,6 +4217,19 @@ class Merger:
             self.watching.pop(item_id, None)
         except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
             wave.failures.append(f"{item_id}: {got.reason} (could not bounce: {exc})")
+            return
+        # GRPH-1577. `bounce` stores `bounce_reason` and sets `next`. That field is not
+        # evidence: the next builder reads the item's notes. The reason already names the
+        # conflicting files, or the commits when the head moved. A refused note leaves the
+        # bounce standing — the item is already `next`.
+        try:
+            self.client.call("update_item", id=item_id, evidence=[{
+                "kind": "note",
+                "detail": f"gbfleet: reopened to next — {got.reason}",
+            }])
+        except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
+            wave.failures.append(
+                f"{item_id}: reopened to next but the note was not recorded ({exc})")
 
     def _covering(self, item_id: str, item: dict) -> list[str]:
         """Touchpoints of the OTHER done items on this item's branch whose sign-off names the
@@ -3554,6 +4254,66 @@ class Merger:
                 continue
             out.extend(str(p) for p in (row.get("touchpoints") or []))
         return out
+
+    def _require_on_default(self, got: "propose_mod.Merged") -> "propose_mod.Merged":
+        """Record a merge only when its commit is on the default branch (GRPH-1348).
+
+        `None` from `commit_on_default` — no base, or no such ref in this clone — keeps the
+        merge. The fixtures that merge against `/tmp/does-not-matter` have no ref, and a
+        check that failed closed there would refuse every one of them. `False` is a merge
+        commit the trunk does not contain: drop `ok` so `_record` does not write the receipt
+        that later ticks treat as landed.
+        """
+        base = (self.base or "").strip()
+        if not base or not got.commit:
+            return got
+        if self.remote:
+            # A squash SHA that just landed is not in this clone until the base is fetched.
+            # Skipping this reads a good merge as absent and takes the item back out of done.
+            wt_mod.refresh_ref(self.repo, self.remote, self.base)
+        verdict = commit_on_default(self.repo, got.commit, base)
+        if verdict is False:
+            return replace(
+                got, ok=False, skipped=True,
+                reason=f"merge commit {got.commit[:12]} is not an ancestor of {base}",
+            )
+        return got
+
+    def _leave_done(self, wave: Wave, item_id: str, got: "propose_mod.Merged") -> None:
+        """Take an item whose merge did not land back out of `done` (GRPH-1348).
+
+        Bounce to `next` when the server allows it (this fleet opened the PR and no merge
+        receipt is recorded). A signed-off item with no PR cannot be bounced — the server
+        says no merge is pending — so it is blocked with the reason instead. Either way the
+        drain log names the item and the reason. Both writes failing is a wave failure; the
+        item stays watched so the next tick can try again, unless the outcome is already
+        final and `tick` drops it.
+        """
+        reason = got.reason or "merge did not land"
+        observe.emit("merge_left_done", item=item_id, detail=f"{item_id}: {reason}")
+        try:
+            self.client.call("bounce", id=item_id, reason=reason, agent_id=self.agent_id)
+        except (NotPermitted, ToolFailed, ServerUnreachable):
+            try:
+                self.client.call("update_item", id=item_id, status="blocked", blocker=reason,
+                                 evidence=[{
+                                     "kind": "note",
+                                     "detail": f"gbfleet: blocked, merge did not land — {reason}",
+                                 }])
+            except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
+                wave.failures.append(f"{item_id}: {reason} (could not leave done: {exc})")
+                return
+            self.watching.pop(item_id, None)
+            return
+        self.watching.pop(item_id, None)
+        try:
+            self.client.call("update_item", id=item_id, evidence=[{
+                "kind": "note",
+                "detail": f"gbfleet: reopened to next — {reason}",
+            }])
+        except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
+            wave.failures.append(
+                f"{item_id}: reopened to next but the note was not recorded ({exc})")
 
     def _record(self, wave: Wave, got: "propose_mod.Merged") -> "propose_mod.Merged":
         """The receipt. `commit` is on the row so `deps._commits` reads the merge commit as
@@ -3581,6 +4341,30 @@ class Merger:
             wave.failures.append(f"{got.item}: merged as {got.commit[:12]} but not recorded "
                                  f"({exc})")
         return got
+
+    def _load_verified(self) -> None:
+        if self._verified_loaded:
+            return
+        self._verified_loaded = True
+        path = self.verified_path
+        if path is None:
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if isinstance(data, dict):
+            self._verified = {str(k): str(v) for k, v in data.items() if v}
+
+    def _save_verified(self) -> None:
+        path = self.verified_path
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(self._verified), encoding="utf-8")
+        except OSError:
+            return
 
     def _say(self, item_id: str, got: "propose_mod.Merged") -> None:
         key = f"{got.ok}|{got.pending}|{got.skipped}|{got.reason}|{got.release}"

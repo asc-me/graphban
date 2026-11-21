@@ -167,8 +167,9 @@ INVOCATIONS = {
 #: Driven separately: `login` sends a password (its own test), `doctor` and `fleet` are PR 2,
 #: `setup` writes config files and so needs a repository and a target of its own
 #: (`test_setup.py`, which makes the same route-documentation assertion this file does),
-#: `swamp` is `test_swamp.py`, and `stack` is `test_stackmap.py`.
-NOT_DRIVEN_HERE = {"login", "doctor", "fleet", "setup", "swamp", "stack", "update"}
+#: `swamp` is `test_swamp.py`, `stack` is `test_stackmap.py`, and `code` (which talks MCP,
+#: not a REST route) is `test_codemap.py`.
+NOT_DRIVEN_HERE = {"login", "doctor", "fleet", "setup", "swamp", "stack", "code", "update"}
 
 
 def _documented() -> list[re.Pattern]:

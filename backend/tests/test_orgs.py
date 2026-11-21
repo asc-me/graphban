@@ -326,3 +326,71 @@ def test_member_access_does_not_leak_another_orgs_projects(client, hosted):
     me = next(r for r in rows if r["user"]["email"] == "alex@ascme-labs.com")
     # The seeded demo projects belong to no org, so none of them may show up here.
     assert me["access"] == []
+
+
+# ---- GRPH-1817: my invitations (list, decline) and leaving an org -------------
+def _invite_dana(client, alex, org):
+    r = client.post(f"/api/orgs/{org['id']}/invites",
+                    json={"email": "dana@ascme-labs.com", "role": "member"}, headers=alex)
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def test_my_invites_lists_only_pending_addressed_to_me(client, hosted):
+    alex = _login(client, "alex@ascme-labs.com")
+    dana = _login(client, "dana@ascme-labs.com")
+    org = _make_org(client, alex)
+    inv = _invite_dana(client, alex, org)
+    assert client.get("/api/me/invites", headers=alex).json() == []
+    rows = client.get("/api/me/invites", headers=dana).json()
+    assert [r["id"] for r in rows] == [inv["id"]]
+    assert rows[0]["org_name"] == "Acme" and rows[0]["role"] == "member"
+    assert rows[0]["token"] == _token_of(client, inv)
+    # revoked invites drop out
+    client.delete(f"/api/orgs/{org['id']}/invites/{inv['id']}", headers=alex)
+    assert client.get("/api/me/invites", headers=dana).json() == []
+
+
+def test_my_invites_hides_expired(client, hosted):
+    from datetime import timedelta
+    from app.db import SessionLocal
+    from app.models import OrgInvite, utcnow
+
+    alex = _login(client, "alex@ascme-labs.com")
+    dana = _login(client, "dana@ascme-labs.com")
+    org = _make_org(client, alex)
+    inv = _invite_dana(client, alex, org)
+    with SessionLocal() as db:
+        db.get(OrgInvite, inv["id"]).expires_at = utcnow() - timedelta(days=1)
+        db.commit()
+    assert client.get("/api/me/invites", headers=dana).json() == []
+
+
+def test_decline_removes_invite_and_blocks_accept(client, hosted):
+    alex = _login(client, "alex@ascme-labs.com")
+    dana = _login(client, "dana@ascme-labs.com")
+    org = _make_org(client, alex)
+    inv = _invite_dana(client, alex, org)
+    # only the invitee can decline
+    assert client.post(f"/api/me/invites/{inv['id']}/decline", headers=alex).status_code == 404
+    assert client.post(f"/api/me/invites/{inv['id']}/decline", headers=dana).status_code == 204
+    assert client.get("/api/me/invites", headers=dana).json() == []
+    r = client.post("/api/invites/accept", json={"token": _token_of(client, inv)}, headers=dana)
+    assert r.status_code == 404
+    # declining twice is a 404 too
+    assert client.post(f"/api/me/invites/{inv['id']}/decline", headers=dana).status_code == 404
+
+
+def test_member_can_leave_and_only_owner_cannot(client, hosted):
+    alex = _login(client, "alex@ascme-labs.com")
+    dana = _login(client, "dana@ascme-labs.com")
+    org = _make_org(client, alex)
+    inv = _invite_dana(client, alex, org)
+    r = client.post("/api/invites/accept", json={"token": _token_of(client, inv)}, headers=dana)
+    assert r.status_code == 200, r.text
+    r = client.delete(f"/api/orgs/{org['id']}/me", headers=alex)
+    assert r.status_code == 409 and "only owner" in r.json()["detail"]
+    assert r.json()["rule_id"] == "org.only_owner_cannot_leave"
+    assert client.delete(f"/api/orgs/{org['id']}/me", headers=dana).status_code == 200
+    assert client.delete(f"/api/orgs/{org['id']}/me", headers=dana).status_code == 404
+    assert org["id"] not in [o["id"] for o in client.get("/api/orgs", headers=dana).json()]

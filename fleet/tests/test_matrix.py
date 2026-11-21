@@ -167,6 +167,35 @@ def test_ties_break_verified_then_the_users_defaults_order_then_matrix_order():
     assert _matrix(b, a).resolve(tier="cheap", installed=ALL_INSTALLED).winner is a, "then the matrix's order field"
 
 
+def test_a_harness_model_default_admits_that_model_only_and_is_not_an_entry_naming_nothing():
+    """GRPH-977: `excludes` matched `harness:model` and `defaults` did not, so `claude:opus`
+    saved cleanly and dropped every claude row as 'not in your defaults'."""
+    opus = _row("claude", "opus", cost_class="cheap", order=1)
+    sonnet = _row("claude", "sonnet", cost_class="cheap", order=2)
+    q = _row("gbagent", "qwen3.6:35b", cost_class="cheap", order=3)
+    mat = _matrix(opus, sonnet, q)
+    res = mat.resolve(tier="cheap", profile=m.Profile(user="u", defaults=("claude:opus",)), installed=ALL_INSTALLED)
+    assert res.winner is opus and not res.refused
+    assert res.explain()["dropped"]["profile"] == ["claude:sonnet (not in your defaults)",
+                                                   "gbagent:qwen3.6:35b (not in your defaults)"]
+    # a model name that itself contains a colon is still one key
+    res = mat.resolve(tier="cheap", profile=m.Profile(user="u", defaults=("gbagent:qwen3.6:35b",)), installed=ALL_INSTALLED)
+    assert res.winner is q
+
+
+def test_defaults_order_ranks_a_model_entry_ahead_of_its_own_harness():
+    """`claude:sonnet, gbagent, claude` means sonnet first, then gbagent, then any other claude
+    model: a row takes the index of the FIRST entry that names it."""
+    opus = _row("claude", "opus", cost_class="cheap", order=1)
+    sonnet = _row("claude", "sonnet", cost_class="cheap", order=2)
+    q = _row("gbagent", "q", cost_class="cheap", order=3)
+    mat = _matrix(opus, sonnet, q)
+    prof = m.Profile(user="u", defaults=("claude:sonnet", "gbagent", "claude"))
+    res = mat.resolve(tier="cheap", profile=prof, installed=ALL_INSTALLED)
+    assert [s[0].key for s in res.scored] == ["claude:sonnet", "gbagent:q", "claude:opus"]
+    assert res.dropped["profile"] == [], "claude:sonnet, gbagent, claude admits every row"
+
+
 # ---- spawn goes through the matrix when the tier has no flag (criteria 13, 15) -------------------
 
 @pytest.fixture
@@ -943,6 +972,20 @@ def test_a_grok_declaration_carries_one_vendor_spelling():
     assert canonical_vendor("xai") == "xai"
     assert canonical_vendor("grok-4.7") == "xai"
     assert canonical_vendor("anthropic") == "anthropic"
+    # GRPH-1090: every adapter name folds onto the company its matrix row records.
+    # An unknown string, and a model id that only starts with another vendor's
+    # name, are returned as given.
+    assert canonical_vendor("claude") == "anthropic"
+    assert canonical_vendor("agy") == "google"
+    assert canonical_vendor("qwen-code") == "alibaba"
+    assert canonical_vendor("dsh") == "deepseek"
+    assert canonical_vendor("cursor-agent") == "cursor"
+    assert canonical_vendor("codex") == "openai"
+    assert canonical_vendor("gbagent") == "gbagent"
+    assert canonical_vendor("acme-labs") == "acme-labs"
+    assert canonical_vendor("claude-opus-4-6-thinking") == "claude-opus-4-6-thinking"
+    assert m.vendor_of("claude", _matrix()) == "anthropic", \
+        "no row: the harness name is still Anthropic"
     assert m.declaration("grok", "grok-4.7", "frontier")["vendor"] == "xai"
     stale = _matrix(_row("grok", "grok-4.7", vendor="grok", tier="frontier",
                          cost_class="frontier"))

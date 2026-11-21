@@ -101,8 +101,10 @@ def collision_clusters(db: Session, items: list[Item], project_id: str | None) -
     `predicted` marks a cluster whose grouping leaned on inferred (not actual) areas —
     lower confidence, a candidate for human tag-correction.
     """
+    from app.services import fleet as fleet_svc
     areas, predicted = _areas_for(db, items, project_id)
-    return _partition([it.id for it in items], areas, predicted)
+    return _partition([it.id for it in items], areas, predicted,
+                      fleet_svc.project_hard_areas(db, project_id))
 
 
 def serialisation_preview(db: Session, project_id: str | None, prefixes: list[str]) -> dict:
@@ -116,19 +118,18 @@ def serialisation_preview(db: Session, project_id: str | None, prefixes: list[st
     hards = fleet_svc._hard_paths(prefixes)
     pool = [it for it in items_svc.list_items(db, project_id=project_id) if it.status != "done"]
     by_id = {it.id: it for it in pool}
-    clusters = collision_clusters(db, pool, project_id)
     areas = {it.id: touch_areas(db, it, project_id, pool)[0] for it in pool}
     hit: dict[str, set[str]] = {}
-    for c in clusters:
-        if not c["collides"]:
-            continue
-        for a in c["items"]:
-            for b in c["items"]:
-                if a == b:
-                    continue
-                shared = fleet_svc.hard_collide(areas[a], areas[b], hards)
-                if shared:
-                    hit.setdefault(a, set()).update(shared)
+    # GRPH-1742: pairwise over the pool, not only inside colliding clusters — two different
+    # files under one candidate prefix never share a cluster by `areas_collide` alone.
+    ids = [it.id for it in pool]
+    for a in ids:
+        for b in ids:
+            if a == b:
+                continue
+            shared = fleet_svc.hard_collide(areas[a], areas[b], hards)
+            if shared:
+                hit.setdefault(a, set()).update(shared)
     items = [{"id": by_id[i].key, "title": by_id[i].title, "status": by_id[i].status,
               "areas": sorted(hit[i])} for i in sorted(hit)]
     return {"prefixes": list(hards), "open_items": len(pool), "serialised": items}
@@ -152,7 +153,8 @@ def _areas_for(db: Session, items: list[Item],
 
 
 def _partition(ids: list[str], areas: dict[str, list[str]],
-               predicted: dict[str, bool]) -> list[dict]:
+               predicted: dict[str, bool],
+               hards: tuple[str, ...] | list[str] | None = None) -> list[dict]:
     """The union-find behind `collision_clusters`, over areas already computed.
 
     Separate so a cluster split by a review hold (GRPH-951) is re-partitioned by the same rule
@@ -186,6 +188,11 @@ def _partition(ids: list[str], areas: dict[str, list[str]],
                 # independent reason where there is one.
                 continue
             reasons = _reasons(areas[a], areas[b])
+            if not reasons and hards is not None:
+                # GRPH-1742: distinct files under one exclusive prefix still collide.
+                from app.services import fleet as fleet_svc
+                reasons = [{"a": p, "b": p, "rule": "exclusive-area"}
+                           for p in fleet_svc.shared_exclusive_prefixes(areas[a], areas[b], hards)]
             if not reasons:
                 continue
             merges.append({"items": sorted((a, b)), "on": reasons})
@@ -212,7 +219,8 @@ def _partition(ids: list[str], areas: dict[str, list[str]],
 
 def clusters_for_project(db: Session, project_id: str | None, status: str | None = None,
                          lease_seconds: int = items_svc.DEFAULT_LEASE_SECONDS,
-                         prd_id: str | None = None) -> list[dict]:
+                         prd_id: str | None = None,
+                         line_id: str | None = None) -> list[dict]:
     """Collision clusters over a project's work pool. Defaults to everything an agent could
     actually take right now — which is NOT the same as the unstarted pool.
 
@@ -250,6 +258,9 @@ def clusters_for_project(db: Session, project_id: str | None, status: str | None
         # a promise that its members do not collide, and dropping members from one afterwards
         # would hand out a promise computed over items that are no longer in it.
         pool = [it for it in pool if (it.prd_id or "") == prd_id]
+    if line_id:
+        # GRPH-1685. The same filter on the same side of the partition, for the same reason.
+        pool = [it for it in pool if (it.line_id or "") == line_id]
     # GRPH-885: filter out items with unmet dependencies. A cluster that includes a blocked
     # item is a promise the divvy cannot keep — the seed may be pinned or refused, and the
     # rest of the glob becomes the seed, skip-ahead the DAG. Withholding blocked items from
@@ -257,16 +268,63 @@ def clusters_for_project(db: Session, project_id: str | None, status: str | None
     ctx = prio.context(db, project_id)
     pool = [it for it in pool if it.status in ("in_progress", "review") or prio.ready(ctx, it)]
     areas, predicted = _areas_for(db, pool, project_id)
-    clusters = _partition([it.id for it in pool], areas, predicted)
+    from app.services import fleet as fleet_svc
+    hards = fleet_svc.project_hard_areas(db, project_id)
+    clusters = _partition([it.id for it in pool], areas, predicted, hards)
     # Review holds BEFORE reservations: splitting a cluster changes its areas, and a
     # reservation check run on the unsplit cluster would hold the freed siblings anyway.
-    clusters = _occupy_review_globs(clusters, pool, areas, predicted)
-    return _with_reservations(db, clusters, project_id, lease_seconds=lease_seconds)
+    clusters = _occupy_review_globs(clusters, pool, areas, predicted, hards)
+    clusters = _with_reservations(db, clusters, project_id, lease_seconds=lease_seconds)
+    if prd_id or line_id:
+        clusters = _scoped_order(clusters, {it.id: it for it in pool}, ctx,
+                                 (prd_id or "", line_id or ""))
+    return clusters
+
+
+def _is_security(item: Item) -> bool:
+    """`severity=security` (GRPH-1683) — the field, not a tag that happens to read alike."""
+    return (getattr(item, "severity", "") or "") == "security"
+
+
+def _blocking_fix(item: Item, ctx, scope: tuple[str, str]) -> bool:
+    """A fix that holds other work: a `kind=fix` with a PRD and no section that an item
+    carrying that same PRD depends on, or a fix that any item in this scope depends on.
+
+    Scope membership is read off the dependent, not the claim pool: a dependent waiting on
+    this fix has an unmet dependency, so it was withheld from the pool by construction."""
+    if item.kind != "fix":
+        return False
+    dependents = [ctx.item(d) for d in ctx.dependents.get(item.id, [])]
+    dependents = [d for d in dependents if d is not None and d.status != "done"]
+    if item.prd_id and not item.prd_section:
+        if any(d.prd_id == item.prd_id for d in dependents):
+            return True
+    prd_id, line_id = scope
+    return any((prd_id and d.prd_id == prd_id) or (line_id and d.line_id == line_id)
+               for d in dependents)
+
+
+def _scoped_order(clusters: list[dict], by_id: dict[str, Item], ctx,
+                  scope: tuple[str, str]) -> list[dict]:
+    """Claim order for a scoped seat (GRPH-1685): a cluster holding a blocking fix, then one
+    holding a security item, then the older `created_at`. Size is not a key. Stable, so the
+    unscoped order is the tiebreak below the three."""
+    far = float("inf")
+
+    def key(c: dict):
+        members = [by_id[i] for i in c.get("items") or [] if i in by_id]
+        blocking = any(_blocking_fix(m, ctx, scope) for m in members)
+        security = any(_is_security(m) for m in members)
+        ages = [m.created_at.timestamp() for m in members if m.created_at is not None]
+        return (not blocking, not security, min(ages) if ages else far)
+
+    return sorted(clusters, key=key)
 
 
 def _occupy_review_globs(clusters: list[dict], pool: list[Item],
                          areas: dict[str, list[str]] | None = None,
-                         predicted: dict[str, bool] | None = None) -> list[dict]:
+                         predicted: dict[str, bool] | None = None,
+                         hards: tuple[str, ...] | list[str] | None = None) -> list[dict]:
     """A member in `review` occupies ITS OWN areas after its reservation is gone (GRPH-886,
     GRPH-951).
 
@@ -302,7 +360,9 @@ def _occupy_review_globs(clusters: list[dict], pool: list[Item],
         # A review member with no areas names nothing to hold by, so it holds all of them.
         stuck = [i for i in siblings
                  if not held_areas or not areas.get(i)
-                 or fleet_svc.areas_collide(areas.get(i, []), held_areas)]
+                 or fleet_svc.areas_collide(areas.get(i, []), held_areas)
+                 or (hards is not None and fleet_svc.shared_exclusive_prefixes(
+                     areas.get(i, []), held_areas, hards))]
         free = [i for i in siblings if i not in stuck]
 
         occupied = dict(cluster)
@@ -317,6 +377,11 @@ def _occupy_review_globs(clusters: list[dict], pool: list[Item],
         for r in review_ids:
             mine = areas.get(r, [])
             key = by_id[r].key
+            # Who is actually reviewing, and when that claim lapses (GRPH-1290). `held_by`
+            # is the word "review" and this occupation has no reservation clock, so a drain
+            # logged "no expiry reported" for a hold that had already ended. The read is
+            # `review_hold_read`, the same one `item_dict` uses.
+            hold = fleet_svc.review_hold_read(by_id[r])
             held_because.append({
                 "area": "",
                 "reserved": "review",
@@ -326,14 +391,19 @@ def _occupy_review_globs(clusters: list[dict], pool: list[Item],
                 "holds": mine,
                 "held": sorted(by_id[i].key for i in stuck
                                if not mine or not areas.get(i)
-                               or fleet_svc.areas_collide(areas.get(i, []), mine)),
+                               or fleet_svc.areas_collide(areas.get(i, []), mine)
+                               or (hards is not None and fleet_svc.shared_exclusive_prefixes(
+                                   areas.get(i, []), mine, hards))),
                 "rule": (f"{key} is in review and holds {', '.join(mine)}" if mine else
                          f"{key} is in review and declares no areas, so it holds its cluster"),
+                "live_holder": hold["holder"],
+                "lapse": hold["lapse"],
+                "lapses_in": hold["lapses_in"],
             })
         occupied["held_because"] = held_because
         out.append(occupied)
         if free:
-            out.extend(_partition(free, areas, predicted))
+            out.extend(_partition(free, areas, predicted, hards))
     out.sort(key=lambda c: (-len(c["items"]), c["items"][0]))
     return out
 
@@ -558,8 +628,10 @@ def open_clusters(db: Session, project_id: str | None) -> list[dict]:
     judged against this wider partition, and only an item joining, leaving or finishing changes
     the set."""
     pool = [it for it in items_svc.list_items(db, project_id=project_id) if it.status != "done"]
+    from app.services import fleet as fleet_svc
     areas, predicted = _areas_for(db, pool, project_id)
-    return _partition([it.id for it in pool], areas, predicted)
+    return _partition([it.id for it in pool], areas, predicted,
+                      fleet_svc.project_hard_areas(db, project_id))
 
 
 def _live(db: Session, project_id: str | None, *, clusters: list[dict] | None = None):

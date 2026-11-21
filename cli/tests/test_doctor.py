@@ -833,3 +833,141 @@ def test_doctor_fails_when_the_graphban_entry_is_gone_from_claude_json(home, mon
     found = [l for l in lines if l["name"] == "claude mcp"]
     assert code == 1 and found[0]["status"] == "FAIL"
     assert str(cfg) in found[0]["detail"]
+
+
+# ---- GRPH-1640: the HTTPS address -------------------------------------------------------------
+
+class _HttpsServer(_Server):
+    def __init__(self, https=None, https_error=None):
+        super().__init__()
+        self.https, self.https_error = https, https_error
+
+    def call(self, method, path, body=None):
+        if path == "/api/https":
+            if self.https_error is not None:
+                raise self.https_error
+            return self.https
+        return super().call(method, path, body)
+
+
+def test_doctor_prints_the_https_address_for_an_http_url(home, monkeypatch):
+    server = _HttpsServer(https={"https_url": "https://gb.local:8443"})
+    lines, _ = _lines(monkeypatch, server, home)
+    https = [l for l in lines if l["name"] == "https"]
+    assert len(https) == 1 and https[0]["status"] == doctor.PASS
+    assert "https://gb.local:8443" in https[0]["detail"]
+    assert "keep working while http stays on" in https[0]["detail"]
+
+
+def test_doctor_says_cant_tell_when_the_https_status_call_fails(home, monkeypatch):
+    server = _HttpsServer(https_error=Unreachable("connection refused"))
+    lines, _ = _lines(monkeypatch, server, home)
+    https = [l for l in lines if l["name"] == "https"]
+    assert https[0]["status"] == doctor.UNKNOWN
+    assert "can't tell" in https[0]["detail"]
+    assert "no HTTPS" not in https[0]["detail"]
+
+
+# The shape tls_ca.status() returns today: no `https_url`. The box may well serve HTTPS
+# (the box CA listener on WEB_HTTPS_PORT), so the answer is "can't tell", never "no HTTPS".
+_REAL_SHAPED_STATUS = {
+    "tier": "box-ca", "ready": True,
+    "names": [{"name": "gb.local", "source": "auto", "origin": "hostname"}],
+    "outside_constraints": [], "max_names": 32, "covered_names": ["gb.local"],
+    "leaf_not_after": "2027-01-01T00:00:00+00:00", "ca_not_after": "2036-01-01T00:00:00+00:00",
+    "ca_certificate_path": "/api/https/ca.crt",
+}
+
+
+def test_doctor_says_cant_tell_when_the_status_has_no_https_address(home, monkeypatch):
+    server = _HttpsServer(https=_REAL_SHAPED_STATUS)
+    lines, _ = _lines(monkeypatch, server, home)
+    https = [l for l in lines if l["name"] == "https"]
+    assert len(https) == 1 and https[0]["status"] == doctor.UNKNOWN
+    assert "can't tell" in https[0]["detail"]
+    assert "no HTTPS" not in https[0]["detail"]
+
+
+def test_doctor_says_cant_tell_when_the_https_status_is_refused(home, monkeypatch):
+    server = _HttpsServer(https_error=Refused(404, "not found"))
+    lines, _ = _lines(monkeypatch, server, home)
+    https = [l for l in lines if l["name"] == "https"]
+    assert https[0]["status"] == doctor.UNKNOWN and "can't tell" in https[0]["detail"]
+
+
+def test_doctor_has_no_https_line_for_an_https_server_url(home, monkeypatch):
+    server = _HttpsServer(https={"https_url": "https://gb.local:8443"})
+    monkeypatch.setattr("gban.doctor.authenticated", lambda url: server)
+    monkeypatch.setattr("gban.doctor.shutil.which", lambda name: None)
+    lines, _ = doctor.run("https://gb.invalid", "core", "", repo=home)
+    assert not [l for l in lines if l["name"] == "https"]
+
+
+# ---- the stored supervisor key (GRPH-1317) ----------------------------------------------------
+
+class _KeyContext:
+    """`Client(url, api_key=...)` answering get_context per key, as the server does."""
+
+    contexts: dict = {}
+    asked: list = []
+
+    def __init__(self, url, api_key=None, **kw):
+        self.key = api_key
+
+    def call(self, method, path, body=None):
+        _KeyContext.asked.append(body["params"]["arguments"]["project_id"])
+        ctx = _KeyContext.contexts[self.key]
+        return {"result": {"content": [{"text": json.dumps(ctx)}]}}
+
+
+def _with_stored(monkeypatch, home, *, stored: dict, contexts: dict, repo_project: str = ""):
+    for project, key in stored.items():
+        config.save_supervisor_key(project, key)
+    if repo_project:
+        (home / ".mcp.json").write_text(json.dumps({"mcpServers": {"gbfleet": {
+            "command": "gbfleet",
+            "args": ["mcp", "--repo", str(home), "--project", repo_project]}}}))
+    _KeyContext.contexts, _KeyContext.asked = contexts, []
+    monkeypatch.setattr("gban.doctor.Client", _KeyContext)
+    lines, _code = _lines(monkeypatch, _Server(), home)
+    return [l for l in lines if l["name"] == "stored key"]
+
+
+def test_doctor_names_the_repositorys_stored_key_project_and_planner_without_the_key(
+        home, monkeypatch):
+    """In the rules repo the login default is `core`; the repository's own gbfleet entry
+    names `rules`, and that is the key `gban fleet until --project rules` will use."""
+    good = "gb_sk_rulesgood"
+    lines = _with_stored(monkeypatch, home, stored={"rules": good},
+                         contexts={good: {"key_project_id": "rules",
+                                          "eligible_roles": ["planner", "worker"]}},
+                         repo_project="rules")
+    [line] = lines
+    assert line["status"] == "PASS", line
+    assert "rules (this repository's project)" in line["detail"]
+    assert "scoped to rules" in line["detail"] and "planner yes" in line["detail"]
+    assert good not in json.dumps(lines), "the key itself was printed"
+    assert _KeyContext.asked == ["rules"]
+
+
+def test_doctor_fails_a_stored_key_without_planner_or_scope(home, monkeypatch):
+    worker, unscoped = "gb_sk_workeronly", "gb_sk_unscoped"
+    lines = _with_stored(
+        monkeypatch, home, stored={"rules": worker, "core": unscoped},
+        contexts={worker: {"key_project_id": "rules", "eligible_roles": ["worker"]},
+                  unscoped: {"key_project_id": None,
+                             "eligible_roles": ["planner", "worker"]}},
+        repo_project="rules")
+    by = {l["detail"].split(" ")[0]: l for l in lines}
+    assert by["rules"]["status"] == "FAIL" and "planner NO" in by["rules"]["detail"]
+    assert by["core"]["status"] == "FAIL" and "unscoped" in by["core"]["detail"]
+    assert "the login default" in by["core"]["detail"]
+    assert worker not in json.dumps(lines) and unscoped not in json.dumps(lines)
+
+
+def test_doctor_says_when_the_repositorys_project_has_no_stored_key(home, monkeypatch):
+    lines = _with_stored(monkeypatch, home, stored={}, contexts={}, repo_project="rules")
+    [line] = lines
+    assert line["status"] == "UNKNOWN"
+    assert "no supervisor key stored" in line["detail"]
+    assert "gban setup --project rules" in line["detail"]

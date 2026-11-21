@@ -2,7 +2,7 @@
 
 Graphban is an agent-native dev tool: linear tracker + pgvector agent memory +
 request triage + a code-structure graph, all operable by coding agents through
-78 MCP tools (`POST /api/mcp`, JSON-RPC) that share one service layer with the
+81 MCP tools (`POST /api/mcp`, JSON-RPC) that share one service layer with the
 REST API and web UI. Local-Docker-first; stays fully offline by default (stub
 embeddings/chat — real providers are opt-in env config).
 
@@ -89,6 +89,14 @@ kind, add it here so it is never asked twice.
   twice, file the item and say so.
 - **Follow-ups are filed, not proposed.** An out-of-scope defect you found while working
   is a new item with what you saw, not a question to the user.
+- **A defect has three exits, and a fix needs a scope.** Fix it on the item you hold (only
+  when `build.found_bug` is `fix_in_build`); file a blocking fix on the PRD (`create_item`
+  `kind=fix`, `prd_id`, `blocks=<an item on that PRD>`) — when `blocks` is the item you hold,
+  the same call releases it to `blocked` naming the fix; or file a fix on the line
+  (`create_item` `kind=fix`, `line_id` from `get_context.maintenance_line.id`, never a
+  hardcoded key). A fix with neither `prd_id` nor `line_id` is stored on the project's
+  maintenance line when one exists (the reply says `line_defaulted: true`), and refused
+  when the project has none.
 
 Still a person's call, every time: a new policy (fork PRs, hosted vs self-hosted runners,
 release paths), a change to product behaviour, a security-scan finding, a migration's data
@@ -101,7 +109,7 @@ needs a person's own terminal (`sudo`, an interactive login).
   functions in `backend/app/services/`. Never duplicate domain logic in a router
   or tool handler.
 - **Schema is owned by Alembic** on Postgres (`backend/alembic/versions/`,
-  currently 0001–0200). SQLite/tests use `create_all`. Never edit an applied
+  currently 0001–0225). SQLite/tests use `create_all`. Never edit an applied
   migration; add a new one.
 - **AI providers only via `backend/app/providers/`** (`Embedder`/`ChatModel`/
   `Extractor` protocols, selected by `EMBED_PROVIDER`/`CHAT_PROVIDER`). Offline

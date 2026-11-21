@@ -98,7 +98,7 @@ async function show() {
   mocks.prdCoverage.mockResolvedValue({
     prd_id: "GRPH-P47", title: "Design rework", status: "review", sections: [],
     section_count: 0, implementable_sections: 0, sections_with_tasks: 0, gaps: [],
-    shaped: true, empty_sections: [], total_items: 0, done_items: 0, percent_done: 0,
+    shaped: true, empty_sections: [], total_items: 0, done_items: 0, resolved_items: 0, percent_done: 0,
     open_high_fidelity: 0,
   });
   // One section dropped from the baseline, so the acceptance tab has something to say.

@@ -348,6 +348,10 @@ class PolicyIn(BaseModel):
     ladder: list[str] | None = None
     routing_mode: str = "next_available"
     subscription_order: list[str] | None = None
+    #: GRPH-1713: `{rung: {"order": [...], "tie_break": ...}}` — a preference within each rung.
+    rung_preference: dict | None = None
+    tie_break: str | None = None
+    when_exhausted: str | None = None
 
 
 @router.get("/profile")
@@ -599,6 +603,9 @@ class ObservationIn(BaseModel):
     agent_id: str | None = None
     #: Enrolment codes for `kind="seats"`, the start-up check (GRPH-1648). Nothing written.
     seats: list[str] | None = None
+    #: `kind="rule_would_have"` (GRPH-1778): the observing rule and the outcome it would have had.
+    rule_id: str | None = None
+    outcome: str | None = None
 
 
 @router.post("/observations")
@@ -617,6 +624,7 @@ def post_observation(body: ObservationIn, db: Session = Depends(get_db),
             db, key, item_key=body.item_id, kind=body.kind, branch=body.branch,
             base=body.base, url=body.url, commit=body.commit, reason=body.reason,
             agent_id=body.agent_id, seats=body.seats,
+            rule_id=body.rule_id, outcome=body.outcome,
         )
     except fleet_svc.ObservationError as exc:
         raise HTTPException(exc.status, str(exc)) from exc

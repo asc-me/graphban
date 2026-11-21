@@ -18,15 +18,18 @@ place.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
-from app.errors import Refused
-from app.models import ApiKey, Project, SyncLink, User
-from app.schemas import GitopsView, SyncLinkIn, SyncOrgOverviewOut, SyncStatusOut
+from app.errors import Refused, Validation
+from app.models import ApiKey, Organization, Project, SyncLink, User
+from app.schemas import (
+    GitopsView, ProjectSyncIn, SyncBudgetIn, SyncLinkIn, SyncOrgOverviewOut, SyncStatusOut,
+)
 from app.security import authz
 from app.security.deps import get_agent_key, get_current_user
 from app.services import code_graph
@@ -35,6 +38,9 @@ from app.services import events as events_svc
 from app.services import galaxy as galaxy_svc
 from app.services import gitops
 from app.services import link_device
+from app.services import project_sync_admin as project_admin
+from app.services import project_sync_flush as project_flush
+from app.services import sync_storage as sync_storage_svc
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 
@@ -73,6 +79,7 @@ def sync_status(db: Session = Depends(get_db), user: User = Depends(get_current_
 
 
 LINK_RULE = "sync.link_needs_box_admin"
+DESTINATION_RULE = "sync.destination_owned_by_org"
 
 
 def refuse_unless_box_admin(db: Session, user: User, action: str) -> None:
@@ -218,6 +225,48 @@ def cloud_rule_decisions_applied(body: RuleDecisionApplied, db: Session = Depend
         raise HTTPException(404, "no such organization for this credential")
     row = rules_org.record_box_applied(db, key, org_id, body.version)
     return {"applied_version": row.applied_version, "applied_at": row.applied_at}
+
+
+class BoxDestinationIn(BaseModel):
+    path: str = ""
+    branch: str = ""
+
+
+@router.get("/destination")
+def cloud_destination(db: Session = Depends(get_db), key: ApiKey = Depends(get_agent_key)):
+    """CLOUD: the URL and branch this org is publishing to (GRPH-1761). The box pulls it.
+    The org comes from the sync credential, never the request. 404 when that credential
+    has no org. An unconfigured org still answers, with empty strings — it does not 404,
+    because 404 here means "no org", and an empty pair is a real answer."""
+    org = db.get(Organization, _key_org(db, key))
+    if org is None:
+        raise HTTPException(404, "no organization for this credential")
+    view = sync_storage_svc.org_destination(db, org)
+    return {"url": view["url"], "branch": view["branch"]}
+
+
+@router.put("/destination")
+def put_box_destination(body: BoxDestinationIn, db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    """BOX: save a local path and branch. Box admin, and only while this box is not linked.
+    A linked box is 403 and the stored pair is unchanged: the org admin owns the destination."""
+    refuse_unless_box_admin(db, user, "set the publish destination of")
+    try:
+        return sync_storage_svc.save_local(db, path=body.path, branch=body.branch)
+    except sync_storage_svc.DestinationOwned as e:
+        raise Refused(403, str(e), rule_id=DESTINATION_RULE,
+                      hint="ask an owner or admin of the linked org to change it from the console",
+                      target=("instance", "sync_destination")) from e
+    except Validation as e:
+        raise HTTPException(422, str(e) + (f" — {e.hint}" if getattr(e, "hint", "") else ""))
+
+
+@router.post("/destination/pull")
+def pull_box_destination(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """BOX: pull the org's destination now. Box admin. A pull with no answer leaves the last
+    destination and the publishing flag as they were and records pull unknown."""
+    refuse_unless_box_admin(db, user, "pull the publish destination of")
+    return sync_storage_svc.pull_destination(db)
 
 
 @router.post("/pull-rules")
@@ -377,18 +426,42 @@ class ProjectMapIn(BaseModel):
     mappings: list[ProjectMapping]
 
 
-def _mapping_view(db: Session) -> list[dict]:
-    return [{"local_project_id": pid, **link_device.project_view(m)}
-            for pid, m in sorted(link_device.mappings(db).items())]
+def _mapping_view(db: Session, local: list[dict] | None = None) -> list[dict]:
+    """Stored local → cloud rows, plus the per-project sync facts from ``local``.
+
+    ``last_push_result`` is the stored word. ``unknown`` is left as ``unknown``."""
+    facts = {row["project_id"]: row for row in (local if local is not None else project_admin.local_projects(db))}
+    out = []
+    for pid, mapping in sorted(link_device.mappings(db).items()):
+        extra = facts.get(pid, {})
+        out.append({
+            "local_project_id": pid,
+            **link_device.project_view(mapping),
+            "sync_level": extra.get("sync_level"),
+            "cloud_permission": extra.get("cloud_permission"),
+            "backfill": extra.get("backfill"),
+            "queued": extra.get("queued", 0),
+            "parked": extra.get("parked", {"count": 0, "reasons": []}),
+            "backlog_bytes": extra.get("backlog_bytes", 0),
+            # No default of false: a mapping this read did not measure is null.
+            "backlog_full": extra.get("backlog_full"),
+            "held_by": extra.get("held_by"),
+        })
+    return out
 
 
 @router.get("/projects")
 def list_cloud_projects(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """The cloud projects the linked engineer can reach, read live from the console (box
     admin): `ok {projects}` (possibly empty), `refused {reason}` or `unknown {reason}`, never
-    an empty list for an unreachable console. `mapping` is the stored local → cloud map."""
+    an empty list for an unreachable console. `mapping` is the stored local → cloud map.
+    `local` is every local project: sync level, permission, backfill, queue, and hold.
+    A project with no mapping is `local`, not digests. `unknown` stays `unknown`.
+    `backlog_full` is true when the outbox table is at its 100 MB cap, false when
+    that table was measured under it, and null when this read did not measure it."""
     refuse_unless_box_admin(db, user, "map projects of")
-    return {**_linked(code_sync.console_projects, db), "mapping": _mapping_view(db)}
+    local = project_admin.local_projects(db)
+    return {**_linked(code_sync.console_projects, db), "mapping": _mapping_view(db, local), "local": local}
 
 
 @router.put("/projects")
@@ -408,6 +481,65 @@ def put_project_map(body: ProjectMapIn, db: Session = Depends(get_db),
     tags = {m.cloud_project_id.strip(): m.cloud_project_tag.strip() for m in body.mappings}
     code_sync.set_project_map(db, list(pairs.items()), tags)
     return {"mapping": _mapping_view(db)}
+
+
+@router.put("/projects/{project_id}")
+def put_project_sync(project_id: str, body: ProjectSyncIn, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """Set one project's sync level, cloud permission, or create it in the org (box admin).
+
+    ``409`` ``{detail: tag_taken, owner_label}`` stores no mapping. The admin check is
+    this function's first act: an invalid level is ``422`` only after it, so a non-admin
+    is refused rather than told the body is wrong.
+    """
+    refuse_unless_box_admin(db, user, "set the sync level of")
+    try:
+        return project_admin.configure_project(
+            db, project_id, sync_level=body.sync_level,
+            cloud_permission=body.cloud_permission, create_in_org=body.create_in_org,
+            purge=body.purge, user=user, cloud_project_id=body.cloud_project_id,
+            cloud_project_tag=body.cloud_project_tag,
+        )
+    except project_admin.TagTaken as e:
+        return JSONResponse(
+            status_code=409, content={"detail": "tag_taken", "owner_label": e.owner_label},
+        )
+    except LookupError:
+        raise HTTPException(404, f"no local project {project_id!r}")
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@router.post("/projects/{project_id}/retry-parked")
+def retry_project_parked(project_id: str, db: Session = Depends(get_db),
+                         user: User = Depends(get_current_user)):
+    """Put this project's parked outbox rows back on the queue (box admin).
+
+    ``retried`` is how many were parked. Zero means the project was read and had none."""
+    refuse_unless_box_admin(db, user, "retry parked rows of")
+    if db.get(Project, project_id) is None:
+        raise HTTPException(404, f"no local project {project_id!r}")
+    return {"retried": project_flush.retry_parked(db, project_id)}
+
+
+@router.get("/budget")
+def get_sync_budget(user: User = Depends(get_current_user)):
+    """The live per-box flush budget. The env values are what the process started with;
+    a PUT replaces them until restart. Any signed-in user can read it."""
+    del user
+    return project_flush.budget_view()
+
+
+@router.put("/budget")
+def put_sync_budget(body: SyncBudgetIn, db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
+    """Replace the live flush budget (box admin). Negative is ``422``. Zero is a ceiling.
+    A non-admin is ``403`` and the running budget is unchanged."""
+    refuse_unless_box_admin(db, user, "set the sync budget of")
+    try:
+        return project_flush.set_budget(body.bytes_per_min, body.requests_per_min)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
 
 
 @router.post("/push")

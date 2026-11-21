@@ -150,3 +150,78 @@ def test_api_key_gets_401_on_all_three_routes(client, feed):
                        headers=k).status_code == 401
     assert client.post("/api/rules/pack/accept", json={"version": "1.0.0", "sha256": "x"},
                        headers=k).status_code == 401
+
+
+# --- GITHUB_TOKEN on the feed, never on the asset download (GRPH-1666) ----------------
+
+GH_FEED = "https://api.github.com/repos/asc-me/graphban-rules-releases/releases"
+
+
+@pytest.fixture()
+def gh_feed(monkeypatch, feed):
+    from app.services import instance_update
+    instance_update.reset_github_state()
+    seen: dict[str, dict] = {}
+    inner = feed.get
+
+    def get(url, headers=None, **kw):
+        seen[url] = dict(headers or {})
+        return inner(FEED if url == GH_FEED else url, **kw)
+
+    monkeypatch.setattr(settings, "rule_pack_feed_url", GH_FEED)
+    monkeypatch.setattr(P.httpx, "get", get)
+    feed.seen = seen
+    yield feed
+    instance_update.reset_github_state()
+
+
+def test_token_reaches_the_feed_but_not_the_asset_download(monkeypatch, gh_feed):
+    monkeypatch.setattr(settings, "github_token", "tok-1666")
+    gh_feed.add("1.4.0")
+    art, sig = P.fetch_version("1.4.0")
+    assert art and sig
+    assert gh_feed.seen[GH_FEED].get("Authorization") == "Bearer tok-1666"
+    downloads = [u for u in gh_feed.seen if u.startswith("https://dl.test/")]
+    assert len(downloads) == 2
+    for u in downloads:
+        assert "Authorization" not in gh_feed.seen[u]
+
+
+def test_no_token_sends_no_authorization(monkeypatch, gh_feed):
+    monkeypatch.setattr(settings, "github_token", "")
+    gh_feed.add("1.4.0")
+    P.fetch_version("1.4.0")
+    assert "Authorization" not in gh_feed.seen[GH_FEED]
+
+
+def test_rate_limited_feed_reports_the_reset_time(monkeypatch, gh_feed):
+    import time as _time
+
+    from app.services import instance_update
+    reset = _time.time() + 1800
+
+    class _Limited:
+        status_code = 403
+        headers = {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(int(reset))}
+        content = b""
+
+    monkeypatch.setattr(P.httpx, "get", lambda url, **_: _Limited())
+    with pytest.raises(P.PackFeedError) as ei:
+        P._releases()
+    msg = str(ei.value)
+    assert "rate limit" in msg
+    assert _time.strftime("%H:%M", _time.localtime(int(reset))) in msg
+    # The budget is shared with the update check: its backoff now knows the reset.
+    assert instance_update.backoff_until() == pytest.approx(int(reset))
+
+
+def test_bare_403_without_rate_limit_headers_stays_a_403(monkeypatch, gh_feed):
+    class _Forbidden:
+        status_code = 403
+        headers: dict = {}
+        content = b""
+
+    monkeypatch.setattr(P.httpx, "get", lambda url, **_: _Forbidden())
+    with pytest.raises(P.PackFeedError) as ei:
+        P._releases()
+    assert "returned 403" in str(ei.value) and "rate limit" not in str(ei.value)

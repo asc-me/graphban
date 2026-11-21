@@ -1,33 +1,43 @@
 /**
  * The New project wizard (GRPH-1584), local edition: a 960×640 split window with a graphic
  * panel on the left and a step rail on the right. Steps: ① Name & tag · ② Repository ·
- * ③ Model · ④ Review, then a ready card.
+ * ③ Maintenance · ④ Model · ⑤ Review, then a ready card.
  *
- * Nothing is created until Review → Create project. The model choice is applied right after
- * the project exists, through the same writer the Quick Start model step uses.
+ * Nothing is created until Review → Create project. When Maintenance is on, the line is
+ * created after the project exists (GRPH-1749). The model choice is applied right after
+ * that, through the same writer the Quick Start model step uses.
+ *
+ * The identity accent is a solid colour or an ombre, plus a tile pattern (GRPH-1750).
+ * The second colour, the pattern and the live tile all paint through `projectFill`.
  */
 import { useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
+import { ProjectThemePicker, accentSummary, radioArrows, shiftAccent, type ProjectThemeValue } from "@/components/ProjectThemePicker";
+import { ProjectTile } from "@/components/ProjectTile";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { saveModelCredential } from "@/features/onboarding/QuickStartDialog";
 import { normalizeAddress } from "@/features/onboarding/quickStartProgress";
+import { PROJECT_ACCENTS, PROJECT_ACCENT_SWATCHES } from "@/features/onboarding/projectAccents";
 import { TagField, useTagField } from "@/features/onboarding/TagField";
 import { type GraphicSpec, HeroDrawing, LogoMark, prefersReducedMotion, WizardKeyframes } from "@/features/onboarding/WizardGraphic";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { projectFill } from "@/lib/projectFill";
 import { keys, useConfirmSetup } from "@/lib/queries";
+import type { ProjectPattern } from "@/lib/types";
 
-export const PROJECT_ACCENTS = ["#c6f24e", "#a78bfa", "#7ca2ff", "#e0b34a", "#5fd07a", "#ff8f8f"];
+export { PROJECT_ACCENTS, PROJECT_ACCENT_SWATCHES, radioArrows };
 
-type Step = "identity" | "repo" | "model" | "review";
-const STEPS: Step[] = ["identity", "repo", "model", "review"];
+type Step = "identity" | "repo" | "line" | "model" | "review";
+const STEPS: Step[] = ["identity", "repo", "line", "model", "review"];
 const STEP_LABEL: Record<Step, string> = {
   identity: "Name & tag",
   repo: "Repository",
+  line: "Maintenance",
   model: "Model",
   review: "Review",
 };
@@ -43,9 +53,35 @@ const MODEL_LABEL: Record<Model, string> = {
   ollama: "Local · Ollama",
   claude: "Cloud · Claude",
 };
+const LINE_CHOICES: { value: boolean; title: string; desc: string }[] = [
+  {
+    value: true,
+    title: "Create the maintenance line",
+    desc: "File bugs and issues against it from the tracker or triage. A drain can work it like a PRD.",
+  },
+  {
+    value: false,
+    title: "Not now",
+    desc: "Every fix needs a PRD to be drained. You can add the line later.",
+  },
+];
+const LINE_VALUES = LINE_CHOICES.map((choice) => choice.value);
+
+function lineHow(tag: string): string[] {
+  return [
+    `Bugs and issues are filed against ${tag}-L1 instead of a PRD. Without a line, a fix with no PRD stays unscoped.`,
+    "A fix goes on the line only with an acceptance clause and a file it touches, the same as a PRD item. One missing either stays unscoped and says what it needs.",
+    "A drain runs on the line the way it runs on a PRD, and claims only the fixes that are ready. Security fixes carry a SECURITY chip.",
+  ];
+}
+
 const COPY: Record<Step, [string, string]> = {
   identity: ["Name your project", "A project holds a tracker, agent memory, requests and PRDs. You can add more later."],
   repo: ["Point it at a repository", "Optional. Add the git remote now, or skip and add it later in Settings."],
+  line: [
+    "Add a maintenance line?",
+    "An operations backlog for bugs and issues that don’t belong to a PRD. It works like a PRD, so a drain can run on it.",
+  ],
   model: ["Pick a model", "Agents use this model for chat and grading. Change it later in Settings → AI providers."],
   review: ["Review and create", "Check the details. The tag can change later; keys already issued keep the old prefix."],
 };
@@ -57,47 +93,6 @@ function repoSlug(repo: string): string {
   return repo.trim().replace(/^.*[:/]([^/]+\/[^/]+?)(\.git)?$/, "$1");
 }
 
-/** The WAI-ARIA radio group keyboard model (GRPH-1613, GRPH-1618). ArrowRight/ArrowDown select
- *  the next option and ArrowLeft/ArrowUp the previous, wrapping at the ends, on either axis as
- *  the pattern says; Home and End go to the first and last. Disabled options are skipped, and
- *  focus follows the checked option. A locked group ignores the keys. */
-export function radioArrows<T>(
-  e: React.KeyboardEvent<HTMLElement>,
-  o: {
-    values: readonly T[];
-    current: T;
-    set: (v: T) => void;
-    locked?: boolean;
-    disabled?: (v: T) => boolean;
-  },
-) {
-  if (o.locked) return;
-  const n = o.values.length;
-  const usable = (i: number) => !o.disabled?.(o.values[i]);
-  const from = o.values.indexOf(o.current);
-  let i = -1;
-  if (e.key === "Home" || e.key === "End") {
-    const order = [...Array(n).keys()];
-    if (e.key === "End") order.reverse();
-    i = order.find(usable) ?? -1;
-  } else {
-    const step =
-      e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
-    if (!step) return;
-    for (let k = 1; k <= n; k++) {
-      const j = (((from + step * k) % n) + n) % n;
-      if (usable(j)) {
-        i = j;
-        break;
-      }
-    }
-  }
-  e.preventDefault();
-  if (i < 0 || i === from) return;
-  o.set(o.values[i]);
-  e.currentTarget.closest('[role="radiogroup"]')?.querySelectorAll<HTMLElement>('[role="radio"]')[i]?.focus();
-}
-
 const LABEL = "mb-1.5 block font-mono text-[10px] uppercase tracking-wide text-faint";
 
 /** The spec and caption the left panel draws for where the wizard is (GRPH-1587). */
@@ -107,18 +102,29 @@ export function graphicFor(o: {
   tag: string;
   repo: string;
   repoOk: boolean;
+  line: boolean;
   model: Model;
   busy: boolean;
   created: boolean;
   failed: boolean;
 }): { spec: GraphicSpec; caption: string } {
   const T = o.tag || "PROJECT";
+  const lineTag = o.tag || "TAG";
   if (o.created) return { spec: { kind: "single", from: "YOU", to: T, lit: true }, caption: `CREATED · ${T}` };
   if (o.failed) return { spec: { kind: "single", from: "YOU", to: T, broken: true }, caption: "NOT CREATED" };
   if (o.step === "identity") return { spec: { kind: "pulse", label: T }, caption: `PROJECT · ${o.name.trim() ? T : "UNNAMED"}` };
   if (o.step === "repo") {
     const has = !!o.repo.trim();
     return { spec: { kind: "single", from: "REPO", to: T, lit: has && o.repoOk }, caption: has ? `REPO → ${T}` : "REPO · NONE YET" };
+  }
+  if (o.step === "line") {
+    if (o.line) {
+      return {
+        spec: { kind: "single", from: "FIXES", to: `${lineTag}-L1`, lit: true },
+        caption: `LINE · ${lineTag}-L1 · MAINTENANCE`,
+      };
+    }
+    return { spec: { kind: "single", from: "FIXES", to: lineTag, broken: true }, caption: "LINE · NONE · FIXES STAY UNSCOPED" };
   }
   if (o.step === "model") {
     const sel = MODELS.findIndex((m) => m.id === o.model);
@@ -130,7 +136,7 @@ export function graphicFor(o: {
   return { spec: { kind: "single", from: "YOU", to: T }, caption: o.busy ? `CREATING · ${T}` : `REVIEW · ${T}` };
 }
 
-function Graphic({ spec, caption, accent, still }: { spec: GraphicSpec; caption: string; accent: string; still: boolean }) {
+function Graphic({ spec, caption, fill, still }: { spec: GraphicSpec; caption: string; fill: string; still: boolean }) {
   return (
     <div aria-hidden="true" className="relative hidden w-[380px] shrink-0 overflow-hidden border-r border-line-2 bg-bg md:block">
       <div className="absolute inset-0">
@@ -142,7 +148,11 @@ function Graphic({ spec, caption, accent, still }: { spec: GraphicSpec; caption:
         <span className="font-mono text-[10px] tracking-wide text-faint">LOCAL</span>
       </div>
       <div className="absolute bottom-5 left-[22px] right-[22px] flex items-center gap-2">
-        <span data-testid="pw-accent-square" className="h-2 w-2 rounded-[2px]" style={{ background: accent }} />
+        <span
+          data-testid="pw-accent-square"
+          className="h-2 w-2 rounded-[2px]"
+          style={{ background: fill, "--tile-fill": fill } as React.CSSProperties}
+        />
         <span data-testid="pw-caption" className="font-mono text-[10.5px] tracking-wide text-faint-2">
           {caption}
         </span>
@@ -183,8 +193,14 @@ export function NewProjectWizard({
   const confirm = useConfirmSetup();
   const [step, setStep] = React.useState<Step>("identity");
   const [name, setName] = React.useState("");
-  const [accent, setAccent] = React.useState(PROJECT_ACCENTS[0]);
+  const [accent, setAccent] = React.useState<string>(PROJECT_ACCENTS[0]);
+  // The design seeds the second colour four steps along, so the first ombre is already a pair.
+  const [accent2, setAccent2] = React.useState<string>(shiftAccent(PROJECT_ACCENTS[0]));
+  const [ombre, setOmbre] = React.useState(false);
+  const [pattern, setPattern] = React.useState<ProjectPattern>("none");
   const [repo, setRepo] = React.useState("");
+  const [line, setLine] = React.useState(false);
+  const [lineMade, setLineMade] = React.useState(false);
   const [model, setModel] = React.useState<Model>("offline");
   const [ollamaUrl, setOllamaUrl] = React.useState("http://host.docker.internal:11434");
   const [claudeKey, setClaudeKey] = React.useState("");
@@ -203,7 +219,12 @@ export function NewProjectWizard({
     setStep("identity");
     setName("");
     setAccent(PROJECT_ACCENTS[0]);
+    setAccent2(shiftAccent(PROJECT_ACCENTS[0]));
+    setOmbre(false);
+    setPattern("none");
     setRepo("");
+    setLine(false);
+    setLineMade(false);
     setModel("offline");
     setOllamaUrl("http://host.docker.internal:11434");
     setClaudeKey("");
@@ -227,7 +248,7 @@ export function NewProjectWizard({
   const identityOk = !!name.trim() && tagValid && tagField.status.kind === "ok";
   const repoOk = !repo.trim() || REMOTE_RE.test(repo.trim());
   const modelOk = model === "offline" || (model === "ollama" ? !!ollamaUrl.trim() : claudeKey.trim().length > 8);
-  const okFor: Record<Step, boolean> = { identity: identityOk, repo: repoOk, model: modelOk, review: true };
+  const okFor: Record<Step, boolean> = { identity: identityOk, repo: repoOk, line: true, model: modelOk, review: true };
   const idx = STEPS.indexOf(step);
   const reachable = (k: Step) => STEPS.slice(0, STEPS.indexOf(k)).every((x) => okFor[x]);
 
@@ -241,13 +262,31 @@ export function NewProjectWizard({
     setBusy(true);
     setError("");
     let id = createdId;
+    // A second createLine is a 409 — the project already has one — so a later failure must
+    // not run it again. The flag is what the retry consults, not the radio.
+    let made = lineMade;
+    let failedAt: "project" | "line" | "followup" = "project";
     try {
       if (!id) {
-        const p = await api.createProject({ name: name.trim(), tag: tagField.tag || undefined, accent });
+        const p = await api.createProject({
+          name: name.trim(),
+          tag: tagField.tag || undefined,
+          accent,
+          accent2: ombre ? accent2 : null,
+          pattern,
+        });
         id = p.id;
         setCreatedId(id);
       }
+      failedAt = "followup";
       if (repo.trim()) await api.updateProject(id, { repo_url: repo.trim() });
+      if (line && !made) {
+        failedAt = "line";
+        await api.createLine(id);
+        made = true;
+        setLineMade(true);
+      }
+      failedAt = "followup";
       if (model === "ollama") await saveModelCredential(id, "ollama", { base_url: normalizeAddress(ollamaUrl) });
       else if (model === "claude") await saveModelCredential(id, "anthropic", { api_key: claudeKey.trim() });
       else await confirm.mutateAsync({ projectId: id, body: { decision: "offline" } });
@@ -255,9 +294,11 @@ export function NewProjectWizard({
       setReady(true);
     } catch {
       setError(
-        id
-          ? `${name.trim()} was created, but a follow-up step failed. Press Create project to retry it.`
-          : "Could not create the project. Please try again.",
+        !id
+          ? "Could not create the project. Please try again."
+          : failedAt === "line"
+            ? `${name.trim()} was created, but the maintenance line wasn’t. You can make it from the tracker’s Maintenance filter.`
+            : `${name.trim()} was created, but a follow-up step failed. Press Create project to retry it.`,
       );
     } finally {
       setBusy(false);
@@ -311,11 +352,21 @@ export function NewProjectWizard({
   const summary: [string, string, Step, boolean][] = [
     ["NAME", name, "identity", false],
     ["TAG", `${T} · ${T}-12, ${T}-R33`, "identity", true],
-    ["ACCENT", accent, "identity", true],
+    ["ACCENT", accentSummary(ombre, accent, accent2, pattern), "identity", false],
     ["REPOSITORY", repo.trim() || "None yet", "repo", true],
+    ["MAINTENANCE LINE", line ? `${T}-L1 · Maintenance` : "Not now", "line", line],
     ["MODEL", MODEL_LABEL[model], "model", false],
   ];
-  const graphic = graphicFor({ step, name, tag: T, repo, repoOk, model, busy, created: ready, failed: !!error && !createdId });
+  const sentAccent2 = ombre ? accent2 : null;
+  const fill = projectFill({ accent, accent2: sentAccent2, pattern });
+  const graphic = graphicFor({ step, name, tag: T, repo, repoOk, line, model, busy, created: ready, failed: !!error && !createdId });
+
+  function applyTheme(next: ProjectThemeValue) {
+    setAccent(next.accent);
+    setAccent2(next.accent2);
+    setOmbre(next.ombre);
+    setPattern(next.pattern);
+  }
 
   return (
     <Dialog open={open} onOpenChange={close}>
@@ -330,10 +381,10 @@ export function NewProjectWizard({
       >
         <DialogTitle className="sr-only">New project</DialogTitle>
         <DialogDescription id="pw-desc" className="sr-only">
-          Create a project in four steps.
+          Create a project in five steps.
         </DialogDescription>
         <WizardKeyframes />
-        <Graphic spec={graphic.spec} caption={graphic.caption} accent={accent} still={still} />
+        <Graphic spec={graphic.spec} caption={graphic.caption} fill={fill} still={still} />
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className="flex items-center gap-2 py-3.5 pl-6 pr-12">
             <span className="font-mono text-[10px] tracking-wide text-faint">NEW PROJECT</span>
@@ -401,39 +452,13 @@ export function NewProjectWizard({
                 ) : (
                   <TagField tag={tagField.tag} setTag={tagField.setTag} status={tagField.status} compact />
                 )}
-                <div>
-                  <span id="pw-accent" className={cn(LABEL, "mb-2")}>
-                    Accent
-                  </span>
-                  <div role="radiogroup" aria-labelledby="pw-accent" className="flex gap-2.5">
-                    {PROJECT_ACCENTS.map((c) => (
-                      <button
-                        key={c}
-                        type="button"
-                        role="radio"
-                        aria-checked={accent === c}
-                        tabIndex={accent === c ? 0 : -1}
-                        disabled={!!createdId}
-                        onClick={() => setAccent(c)}
-                        onKeyDown={(e) =>
-                          radioArrows(e, {
-                            values: PROJECT_ACCENTS,
-                            current: accent,
-                            set: setAccent,
-                            locked: !!createdId,
-                          })
-                        }
-                        aria-label={`accent ${c}`}
-                        className="h-7 w-7 rounded-[8px] transition-transform hover:scale-110"
-                        style={{
-                          background: c,
-                          outline: accent === c ? "2px solid var(--color-fg)" : "none",
-                          outlineOffset: "2px",
-                        }}
-                      />
-                    ))}
-                  </div>
-                </div>
+                <ProjectThemePicker
+                  value={{ accent, accent2, ombre, pattern }}
+                  onChange={applyTheme}
+                  disabled={!!createdId}
+                  tag={T}
+                  still={still}
+                />
               </>
             )}
 
@@ -464,6 +489,64 @@ export function NewProjectWizard({
                     gban setup reads the git remote in your checkout and matches it here. Without it, each machine asks which project to use.
                   </p>
                 </div>
+              </>
+            )}
+
+            {!ready && step === "line" && (
+              <>
+                <div role="radiogroup" aria-label="Maintenance line" className="flex flex-col gap-2">
+                  {LINE_CHOICES.map((choice) => {
+                    const on = line === choice.value;
+                    const key = choice.value ? `${T || "TAG"}-L1` : "";
+                    return (
+                      <div
+                        key={choice.title}
+                        className={cn(
+                          "rounded-[10px] border",
+                          on ? "border-accent/45 bg-accent/5" : "border-line bg-surface",
+                        )}
+                      >
+                        <button
+                          type="button"
+                          role="radio"
+                          aria-checked={on}
+                          tabIndex={on ? 0 : -1}
+                          onClick={() => setLine(choice.value)}
+                          onKeyDown={(e) => radioArrows(e, { values: LINE_VALUES, current: line, set: setLine })}
+                          className="grid w-full grid-cols-[16px_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-[3px] px-3.5 py-3 text-left text-fg"
+                        >
+                          <RadioDot on={on} />
+                          <span className="text-[13.5px] font-semibold">{choice.title}</span>
+                          <span className={cn("font-mono text-small", on && key ? "text-accent" : "text-faint")}>{key}</span>
+                          <span className="col-start-2 col-span-2 text-[12px] leading-snug text-muted">{choice.desc}</span>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+                {line ? (
+                  <div
+                    data-testid="pw-line-how"
+                    className="pw-anim flex flex-col gap-2 rounded-[10px] border border-line-2 bg-surface-2 p-3"
+                    style={still ? undefined : { animation: "pwReveal .24s ease-out" }}
+                  >
+                    <div className="flex items-baseline gap-2">
+                      <span className="font-mono text-[10px] tracking-wide text-faint">HOW THE LINE WORKS</span>
+                      <span className="flex-1" />
+                      <span className="font-mono text-small text-accent">{`${T || "TAG"}-L1 · Maintenance`}</span>
+                    </div>
+                    {lineHow(T || "TAG").map((text, i) => (
+                      <p key={text} className="grid grid-cols-[18px_minmax(0,1fr)] gap-2 text-body leading-relaxed text-fg-2">
+                        <span className="font-mono text-[10.5px] text-faint">{i + 1}</span>
+                        <span>{text}</span>
+                      </p>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[12px] leading-relaxed text-faint">
+                    Fixes with no PRD stay unscoped, and no drain picks them up. You can create the line later from the tracker’s Maintenance filter.
+                  </p>
+                )}
               </>
             )}
 
@@ -550,8 +633,15 @@ export function NewProjectWizard({
                     >
                       <dt className="font-mono text-[10px] tracking-wide text-faint">{k}</dt>
                       <dd className="m-0 flex min-w-0 items-center gap-2">
-                        {k === "ACCENT" && <span className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: accent }} />}
-                        <span className={cn("truncate text-body", mono && "font-mono", v === "None yet" ? "text-faint" : "text-fg")}>{v}</span>
+                        {k === "ACCENT" && (
+                          <span
+                            data-testid="pw-review-swatch"
+                            aria-hidden="true"
+                            className="h-3.5 w-3.5 shrink-0 rounded-[4px]"
+                            style={{ background: fill, "--tile-fill": fill } as React.CSSProperties}
+                          />
+                        )}
+                        <span className={cn("truncate text-body", mono && "font-mono", v === "None yet" || v === "Not now" ? "text-faint" : "text-fg")}>{v}</span>
                       </dd>
                       {createdId && st === "identity" ? (
                         <span className="text-[12px] text-faint">Created</span>
@@ -581,16 +671,12 @@ export function NewProjectWizard({
             {ready && (
               <>
                 <div className="flex items-center gap-3 rounded-[12px] border border-line bg-surface px-4 py-3.5">
-                  <span
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] font-mono text-small font-semibold text-bg"
-                    style={{ background: accent }}
-                  >
-                    {tagField.tag}
-                  </span>
+                  <ProjectTile project={{ tag: tagField.tag, accent, accent2: sentAccent2, pattern }} size={32} />
                   <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                     <p className="truncate text-lead font-semibold">{name}</p>
                     <p className="font-mono text-small text-muted">
                       {tagField.tag} · {repo.trim() ? repoSlug(repo) : "no repository"}
+                      {line ? ` · line ${tagField.tag}-L1` : ""}
                     </p>
                   </div>
                   <span className="font-mono text-[12px] text-st-done">✓</span>
@@ -628,7 +714,7 @@ export function NewProjectWizard({
             )}
             <span className="flex-1" />
             {!ready && step === "repo" && !repo.trim() && (
-              <Button type="button" variant="ghost" size="sm" className="h-[34px] text-[13px]" onClick={() => setStep("model")}>
+              <Button type="button" variant="ghost" size="sm" className="h-[34px] text-[13px]" onClick={() => setStep(STEPS[idx + 1])}>
                 Skip
               </Button>
             )}

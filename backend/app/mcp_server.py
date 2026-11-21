@@ -49,10 +49,12 @@ from app.services import clustering as cluster_svc
 from app.services import code_graph as code_svc
 from app.services import design_sets as design_sets_svc
 from app.services import documents as documents_svc
+from app.services import handles
 from app.services import scans as scans_svc
 from app.services import touchpoint_check
 from app.services import events as events_svc
 from app.services import fleet as fleet_svc
+from app.services import lines as lines_svc
 from app.services import gitops
 from app.services import idempotency as idem_svc
 from app.services import insights as insights_svc
@@ -67,11 +69,13 @@ from app.services import tool_tiers
 from app.services import waits as waits_svc
 from app.services import delegation as delegation_svc
 from app.services import entitlements as entitlements_svc
+from app.services import rule_proposals as rule_proposals_svc
 from app.services import rule_toggles as rule_toggles_svc
 from app.services import headroom as headroom_svc
 from app.services import quotas
 from app.services import artifacts as art_svc
 from app.services import prds as prd_svc
+from app.services import spec_pull as spec_pull_svc
 from app.services import projects as projects_svc
 from app.services import prioritization as prio_svc
 from app.services import requests as req_svc
@@ -137,16 +141,16 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "list_projects",
-        "description": "List all projects (id, name, tag, accent, description). `tag` is the short prefix its item/request/PRD keys render with. Use an id as the `project_id` override.",
+        "description": (
+            "`accent` is the one solid colour. `accent2` (null means solid) and `pattern` fill the tile."
+        ),
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "create_project",
         "description": (
-            "Create a project when the one you need doesn't exist yet. SELF-HOST ONLY, and only "
-            "while this instance is not linked to a cloud org. `tag` is derived from the name "
-            "when omitted. A HUMAN should still confirm it's the right workspace — you can "
-            "create one, but you can't know it's the one they meant."
+            "SELF-HOST ONLY, unlinked to a cloud org. `tag` derived if omitted. "
+            "`accent2` (#rrggbb) and `pattern` fill the tile; equal to accent stores null only."
         ),
         "inputSchema": {
             "type": "object",
@@ -154,6 +158,8 @@ TOOLS: list[dict[str, Any]] = [
                 "name": {"type": "string"},
                 "tag": {"type": "string", "description": "2-4 chars, e.g. GB. Derived if omitted."},
                 "description": {"type": "string"},
+                "accent2": {"type": "string"},
+                "pattern": {"type": "string", "enum": list(projects_svc.TILE_PATTERNS)},
             },
             "required": ["name"],
         },
@@ -191,6 +197,11 @@ TOOLS: list[dict[str, Any]] = [
                 "kind": {"enum": _KIND_ENUM},
                 "prd_id": {"type": "string"},
                 "prd_section": {"type": "string"},
+                "line_id": {"type": "string"},
+                "blocks": {"type": "string"},
+                "severity": {"enum": ["security"]},
+                "distinct_from": {"type": "array"},
+                "found_during": {"type": "string"},
                 "question": {"type": "string", "description": "Asks a human."},
                 "options": {"type": "array", "items": {"type": "string"}},
             },
@@ -220,6 +231,8 @@ TOOLS: list[dict[str, Any]] = [
                 "kind": {"enum": _KIND_ENUM},
                 "prd_id": {"type": "string"},
                 "prd_section": {"type": "string"},
+                "line_id": {"type": "string"},
+                "severity": {"enum": ["security"]},
                 "evidence": {
                     "type": "array",
                     # The kind list that used to live here is dropped, not squeezed: the
@@ -326,9 +339,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "publish_memory",
         "description": (
-            "SUBMIT one of your candidate shards for adjudication — an independent judge decides, "
-            "not you. Returns `{shard, verdict}`; `kept: false` is a normal outcome. Needs the project "
-            "to allow agent adjudication and a real chat model, else the shard stays a candidate."
+            "SUBMIT your own candidate shard; an independent judge decides not you. "
+            "`kept: false` is normal. Needs agent adjudication and a real chat model, else "
+            "the shard stays a candidate."
         
         ),
         "inputSchema": {
@@ -357,11 +370,13 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_backlog",
         "description": (
-            "Prioritized backlog/next items, ready-first then by composite score. Each row carries "
-            "`ready`, `blocked_by` (unfinished deps), `unblocks`, `votes`, `score`. Rows are lean "
-            "(id/title/status) by default; `fields=full` for all item fields."
+            "Prioritized backlog/next, ready-first. Lean rows; fields=full for every field. "
+            "line_id returns only that line; total counts only those."
         ),
-        "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer"}}},
+        "inputSchema": {"type": "object", "properties": {
+            "limit": {"type": "integer"},
+            "line_id": {"type": "string"},
+        }},
     },
     {
         "name": "get_item_details",
@@ -440,19 +455,21 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "decompose_prd",
         "description": (
-            "One task per un-covered PRD section, each carrying the PRD's framing prose so it "
-            "needs no other reading. `create=true` files them if approved (grill earns it). "
-            "Framing sections aren't tasks unless `include_prose=true`."
+            "One task per uncovered section. Missing acceptance or touchpoints: blocked. "
+            "`depends_on` from the body. "
+            "`oversized`; `splits` files pieces blocked, linked, then backlog. "
+            "Needs approved (grill). Framing skipped unless `include_prose`."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "prd_id": {"type": "string"},
-                "create": {"type": "boolean", "description": "Create the proposed tasks (default false = dry-run)."},
-                "include_prose": {
-                    "type": "boolean",
-                    "description": "Also propose tasks for framing sections (default false).",
-                },
+                "create": {"type": "boolean"},
+                "include_prose": {"type": "boolean"},
+                "touchpoints": {"type": "object"},
+                "splits": {"type": "object"},
+                "drop_links": {"type": "array"},
+                "add_links": {"type": "array"},
             },
             "required": ["prd_id"],
         },
@@ -473,6 +490,19 @@ TOOLS: list[dict[str, Any]] = [
             },
             "required": ["title"],
         },
+    },
+    {
+        "name": "create_line",
+        "description": "Open the project's one maintenance line (title defaults to Maintenance).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+        },
+    },
+    {
+        "name": "unscoped_fixes",
+        "description": "Fixes with no PRD and no line: {ids, count}. Set line_id to move one.",
+        "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "get_prd",
@@ -616,6 +646,20 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {"type": "object", "properties": {"project_id": {"type": "string"}}},
     },
     {
+        "name": "propose_rule",
+        "description": (
+            "Cited rule suggestion; agents tighten only. guidance: draft{stage,label,text}"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string"},
+                "draft": {"type": "object"},
+                "citations": {"type": "array"},
+            },
+        },
+    },
+    {
         "name": "list_entitlements",
         "description": (
             "The org's AI entitlements and the runners that declared each — self-declared, "
@@ -755,7 +799,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "claim_review",
         "description": (
             "Lease an item in review you did NOT build. `claimed` is false if it is yours or "
-            "needs `gh` or `human-only` you did not declare; do not bounce. `branch` is the diff."
+            "needs `gh` or `human-only` you did not declare; do not bounce. `branch` is the diff. "
+            "`withheld`: what you were not handed, and why."
         ),
         "inputSchema": {
             "type": "object",
@@ -947,11 +992,10 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "describe_code",
         "description": (
-            "Upsert the codebase's structure as a graph of `nodes` and `edges`; you have the repo, so "
-            "you are the source of truth. Idempotent per path — re-describe a changed file with its new "
+            "Upsert the codebase's structure as a graph of `nodes` and `edges`; you are the source of truth. Idempotent per path — re-describe a changed file with its new "
             "`content_hash`. `revision` lets a reader tell whether the map is current. `prune=true` "
-            "after a whole subtree marks unseen nodes stale. A `kind` contradicting its path is "
-            "corrected in `kind_corrections`."
+            "after a whole subtree marks unseen nodes stale. An omitted "
+            "`summary`/`name` is kept; `\"\"` clears. A contradicting `kind` is corrected in `kind_corrections`."
         ),
         "inputSchema": {
             "type": "object",
@@ -967,8 +1011,8 @@ TOOLS: list[dict[str, Any]] = [
                                      "description": "package | file | `path::name` | prose | settings. Include docs and config."},
                             "name": {"type": "string", "description": "Short label."},
                             "lang": {"type": "string", "description": "python | ts | ... (optional)."},
-                            "summary": {"type": "string", "description": "One paragraph: what it is and owns."},
-                            "content_hash": {"type": "string", "description": "`sha256:<hex>` of rstripped contents."},
+                            "summary": {"type": "string", "description": "What it is and owns."},
+                            "content_hash": {"type": "string", "description": "`sha256:<hex>` of contents."},
                         },
                         "required": ["path"],
                     },
@@ -982,7 +1026,7 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "edges": {
                     "type": "array",
-                    "description": "Directed, typed relations between paths. A dst need not be a described node yet.",
+                    "description": "Typed relations between paths; a dst need not be described yet.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -993,7 +1037,8 @@ TOOLS: list[dict[str, Any]] = [
                         "required": ["src", "dst"],
                     },
                 },
-                "prune": {"type": "boolean", "description": "Mark project nodes absent from this batch as stale (default false)."},
+                "prune": {"type": "boolean", "description": "Mark nodes absent from this batch stale."},
+                "stale": {"type": "array", "items": {"type": "string"}, "description": "Gone paths to mark stale."},
             },
         },
     },
@@ -1551,10 +1596,10 @@ _PROJECT_SCOPED = {
     "get_backlog", "suggest_next", "generate_digest", "link_items", "unlink_items", "claim_next", "next_cluster",
     "describe_code", "get_code_map", "code_neighbors", "search_code", "graph_query",
     "link_code", "unlink_code", "record_scan", "scan_status", "scans_due", "create_prd",
-    "put_document", "get_document", "search_docs",
+    "create_line", "unscoped_fixes", "put_document", "get_document", "search_docs",
     "open_design", "put_preamble", "put_set_constraints",
     "confirm_tier", "get_design_set",
-    "compile_prompts", "put_canvas", "file_finding", "resolve_finding",
+    "compile_prompts", "put_canvas", "file_finding", "resolve_finding", "propose_rule",
 }
 # Tools that ACCEPT `project_id`, which is a different question from the one above.
 #
@@ -1594,7 +1639,7 @@ _READ_ONLY = {
     "get_backlog", "get_item_details", "suggest_next", "generate_digest", "related_work",
     "prd_coverage", "grill_prd", "get_code_map", "code_neighbors", "search_code",
     "graph_query", "scan_status", "scans_due",
-    "prd_acceptance", "learning_loop", "fleet_status",
+    "prd_acceptance", "learning_loop", "fleet_status", "unscoped_fixes",
     # PRD-62 S2: a read of the org's registry; `set_entitlement` is the write.
     "list_entitlements",
     # PRD-P63 S2a: there is no MCP write for it at all (D10).
@@ -1678,6 +1723,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "properties": {"results": {"type": "array", "items": {
             "type": "object",
             "properties": {"id": _STR, "name": _STR, "tag": _STR, "accent": _STR,
+                           "accent2": _NULLABLE_STR, "pattern": _STR,
                            "description": _STR},
         }}},
     },
@@ -1712,6 +1758,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "type": "object",
         "properties": {
             "id": _STR, "name": _STR, "tag": _STR, "description": _STR,
+            "accent2": _NULLABLE_STR, "pattern": _STR,
             "usable_by_this_key": {"type": "boolean"}, "confirm": _STR,
         },
     },
@@ -1816,6 +1863,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     },
     "list_entitlements": {"type": "object", "properties": {"entitlements": {"type": "array"}}},
     "get_rule_toggles": {"type": "object", "properties": {"toggles": {"type": "array"}}},
+    "propose_rule": {"type": "object", "properties": {"id": {"type": "integer"}}},
     "set_entitlement": {"type": "object", "properties": {"id": {"type": "string"}}},
     "report_entitlement_event": {"type": "object", "properties": {"admitted": {"type": "boolean"}}},
     "report_utilization": {"type": "object", "properties": {"recorded": {"type": "boolean"}}},
@@ -1857,7 +1905,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "properties": {
             "claimed": {"type": "boolean"}, "item": {"type": ["object", "null"]},
             "branch": {"type": "string"}, "worker_agent": {"type": ["string", "null"]},
-            "reason": {"type": "string"},
+            "reason": {"type": "string"}, "withheld": {"type": "array"},
         },
     },
     "sign_off": _ITEM_SCHEMA,
@@ -1930,6 +1978,8 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "properties": {"prd_id": _STR, "proposals": {"type": "array"}, "created": {"type": "array"}},
     },
     "create_prd": _PRD_SCHEMA_REF,
+    "create_line": {"type": "object", "properties": {"id": _STR, "title": _STR}},
+    "unscoped_fixes": {"type": "object", "properties": {"ids": {"type": "array"}, "count": {"type": "integer"}}},
     "update_prd": _PRD_SCHEMA_REF,
     "answer_grill": {
         "type": "object",
@@ -2238,10 +2288,22 @@ _FLEET_ONLY_ARGS = {
                            "it is not. Recorded against the delegation.",
         },
         **_BOUND_ONLY_ARG,
+        # GRPH-1753. A spawn that raised has nothing to replace the open row with.
+        # Re-delegating would withdraw it and open another, which is the orphan the
+        # next planner is then refused for. `withdraw` closes and stops.
+        "withdraw": {
+            "type": "boolean",
+            "description": "Close your open delegation on `id` and open nothing. "
+                           "For a spawn that never started.",
+        },
     },
     "mint_enrolment": {
         **_SEAT_SCOPE_ARG,
         **_BOUND_ONLY_ARG,
+        "line": {
+            "type": "string",
+            "description": "Maintenance line this seat may claim within. Exclusive with scope.",
+        },
         "item": {
             "type": "string",
             "description": "Item a bound_only seat is bound to. Required with bound_only; "
@@ -2271,6 +2333,13 @@ _FLEET_ONLY_ARGS = {
         "type": "string", "enum": ["cheap", "frontier"],
         "description": "The author's tier cannot do this: no pin; re-seated at this tier.",
     }},
+    # GRPH-1645. Fleet-only for the reason every entry here is: the ceiling is measured
+    # on the base manifest, and only a drain sends this. The dispatcher still filters,
+    # so an old client that omits it is unchanged. A key the caller sends is resolved
+    # to the stored id before the SQL comparison.
+    "search_items": {
+        "prd_id": {"type": "string", "description": "Only this PRD's items."},
+    },
     # GRPH-1031. Planner/supervisor retarget after a bounce. Fleet-only for the reason
     # every entry here is: the ceiling is measured on the base manifest, and a worker
     # must not be told it can rewrite identity. Empty is not a write.
@@ -2282,6 +2351,13 @@ _FLEET_ONLY_ARGS = {
         # GRPH-1398. The fleet tier is where touchpoints are written and narrowed, and the core
         # manifest has no headroom. The dispatcher accepts it whether or not it was advertised.
         "touchpoints_remove": {"type": "array", "items": {"type": "string"}},
+        # GRPH-1671. Planner-only, so fleet-only for the reason every entry here is.
+        "resolution": {
+            "type": "object",
+            "description": "Planner: close as done with no attestation. {kind: duplicate|"
+                           "superseded, of: item (or PRD), reason}. A duplicate's item must "
+                           "be done.",
+        },
     },
     # GRPH-1061. A tests scan's counts. Fleet-only for the reason every entry here is: the
     # ceiling had no room for it, and `record_scan` is a worker tool (fleet.py gates it to
@@ -2311,6 +2387,8 @@ _FLEET_ONLY_ARGS = {
     # headroom. A worker that sends no agent_id is still resolved from the connection's single
     # live agent; the dispatcher reads an agent_id whether or not it was advertised.
     "create_item": {"agent_id": {"type": "string"}},
+    # GRPH-1775. The proposer is stamped from it; same reason as create_item's.
+    "propose_rule": {"agent_id": {"type": "string"}},
     "fleet_status": {"view": {
         "type": "string", "enum": ["lean", "live", "full"],
         "description": "lean (default) drops display-only fields; live drops offline agents "
@@ -2469,16 +2547,75 @@ _JSON_TYPES: dict[str, tuple[type | tuple[type, ...], str]] = {
 }
 
 
+# Arguments the dispatcher reads on any call. They name the caller, not the
+# result, and are accepted whether or not the tool's schema advertises them
+# (presence on a read, PRD-34). A filter is not one of these.
+_CALLER_ARGS = frozenset({"agent_id"})
+
+# Reads whose arguments narrow a collection, pick a slice of a report, or return
+# a list a caller would try to filter. An argument none of the schemas declare
+# is refused: dropping it hands back the wider set, and the caller reads that as
+# "the filter matched" (GRPH-1799). `get_backlog`'s `line_id` is the case that
+# shipped; the rest of this set is the same mistake waiting on the next name.
+#
+# Exempt, named in docs/mcp.md: identity reads (`get_item_details`, `get_prd`,
+# `grill_prd`, `related_work`, `code_neighbors`, `get_document`, `get_design_set`)
+# answer one subject named by a required id, so a dropped extra cannot widen a
+# page. Every other tool is a write. An unknown field there is not a filter of a
+# page the caller then reads as matched, and fleet-only / gate-only fields are
+# accepted on purpose when the manifest cannot carry them. `set_entitlement`
+# still refuses an unknown field in the service, because a dropped credential
+# would store the wrong thing.
+_FILTER_READS = frozenset({
+    "get_context", "list_projects", "setup_project", "search_items", "search_memory",
+    "get_lessons", "get_backlog", "suggest_next", "generate_digest", "prd_coverage",
+    "unscoped_fixes", "get_rule_toggles", "list_entitlements", "propose_allocation",
+    "collision_clusters",
+    "fleet_status", "get_code_map", "graph_query", "search_code", "scan_status",
+    "scans_due", "prd_acceptance", "learning_loop", "search_docs",
+})
+
+
+def _known_args(name: str, props: dict) -> set[str]:
+    """Arguments this tool may be sent without that being 'unknown'.
+
+    The base schema, plus fleet-only and gate-only fields the dispatcher reads
+    whether or not the manifest advertised them, plus `agent_id`.
+    """
+    known = set(props) | set(_FLEET_ONLY_ARGS.get(name, {})) | set(_CALLER_ARGS)
+    if name == "update_item":
+        known |= set(_GATE_ONLY_ARGS)
+    return known
+
+
 def _validate_args(name: str, args: dict[str, Any]) -> None:
     """Check args against the tool's declared inputSchema BEFORE dispatch, so a
     bad call becomes an actionable `validation` error instead of a KeyError or a
     silently-accepted junk value (AL-47). Required fields, enums, and primitive
-    types only — deliberately lightweight, no external validator dependency."""
+    types only — deliberately lightweight, no external validator dependency.
+
+    On a filtering read, an argument the schema does not declare is refused by
+    name (GRPH-1799). Everywhere else, unknown extras stay ignored: a write that
+    drops a field does not widen a page the caller is reading as filtered, and
+    fleet-only arguments are accepted on purpose when the ceiling cannot carry
+    them. `None` still means absent.
+    """
     schema = _SCHEMA_BY_NAME.get(name)
     if schema is None:
         return  # unknown tool handled by the dispatcher
     props: dict = schema.get("properties", {})
     required: list = schema.get("required", [])
+
+    if name in _FILTER_READS:
+        unknown = sorted(
+            k for k, v in args.items() if v is not None and k not in _known_args(name, props))
+        if unknown:
+            listed = ", ".join(unknown)
+            raise errors.Validation(
+                f"{name} does not take {listed}",
+                hint="that argument was not applied. "
+                     f"accepted: {', '.join(sorted(_known_args(name, props)))}",
+            )
 
     missing = [f for f in required if args.get(f) in (None, "")]
     if missing:
@@ -2491,7 +2628,7 @@ def _validate_args(name: str, args: dict[str, Any]) -> None:
     for field, value in args.items():
         spec = props.get(field)
         if not spec or value is None:
-            continue  # unknown extras are ignored; None means "absent"
+            continue  # unknown extras on a non-filtering tool are ignored; None means "absent"
         enum = spec.get("enum")
         if enum is not None and value not in enum:
             raise errors.Validation(
@@ -2506,6 +2643,42 @@ def _validate_args(name: str, args: dict[str, Any]) -> None:
                 raise errors.Validation(
                     f"{field} must be {label}", hint=f"got {type(value).__name__}"
                 )
+
+
+def _resolve_item_call(db, args, key, allowed, defer) -> dict:
+    """`update_item(resolution=...)`: close as a duplicate or superseded (GRPH-1671).
+
+    Planner-only, checked here because the service is principal-free (as `owner_close` is on
+    the REST side). Nothing else may ride on the call: a resolution is the whole write, so a
+    title or status sent with it would be either ignored or half-applied."""
+    res = args["resolution"]
+    if not isinstance(res, dict):
+        raise errors.Validation("resolution is an object: {kind, of, reason}")
+    others = sorted(k for k in args
+                    if k not in ("id", "agent_id", "resolution", "status") and args[k] is not None)
+    if others or args.get("status") not in (None, "done"):
+        raise errors.Validation(
+            "resolution is the whole write; send it alone (status may be omitted or `done`), "
+            f"not with {', '.join(others) or 'status=' + str(args.get('status'))}")
+    if not _caller_is_planner(db, key, args.get("agent_id")):
+        raise errors.Refused(
+            403, "closing an item as a duplicate or superseded skips the completion gate, so "
+                 "only a planner (or the project owner, in the web app) may do it",
+            rule_id=items_svc.RESOLUTION_RULE, target=("item", str(args["id"])))
+    agent = args.get("agent_id")
+    try:
+        item = items_svc.resolve_item(
+            db, args["id"], kind=str(res.get("kind") or ""), of=str(res.get("of") or ""),
+            reason=str(res.get("reason") or ""),
+            actor=fleet_svc.caller_identity(agent, key),
+            actor_agent=agent or None, defer=defer)
+    except items_svc.ResolutionRefused as e:
+        raise errors.Refused(409, str(e), rule_id=items_svc.RESOLUTION_RULE,
+                             meta={"reason": e.reason},
+                             target=("item", str(args["id"]))) from e
+    if item is None:
+        raise errors.NotFound(f"item not found: {args['id']}")
+    return _item_dict(item)
 
 
 def _caller_is_planner(db, key, agent_id) -> bool:
@@ -2621,6 +2794,27 @@ def _prd_dict(prd) -> dict:
     }
 
 
+def _backlog_line(db: Session, project_id: str | None, asked: Any) -> str | None:
+    """The frozen line id `get_backlog`'s `line_id` means, or None when it was omitted.
+
+    Empty is not "no filter": the caller sent a filter and a blank one would return
+    the whole project, which is the misread this argument exists to stop.
+    """
+    if asked is None:
+        return None
+    if not isinstance(asked, str) or not asked.strip():
+        raise errors.Validation(
+            "line_id must name a line",
+            hint="pass the line key from get_context.maintenance_line, or omit line_id",
+        )
+    if not project_id:
+        raise errors.Validation(
+            "line_id needs a project in scope",
+            hint="pass project_id, or use a key that has a default project",
+        )
+    return lines_svc.resolve_for_item(db, asked.strip(), project_id)
+
+
 def _paginate(rows: list, args: dict, *, fields: tuple[str, ...] | None = None) -> dict:
     """Slice a full result list to a page and report totals (#9).
 
@@ -2677,6 +2871,20 @@ def _prd_ref(db: Session, project_id: str | None, asked: str | None) -> str | No
     if not asked:
         return None
     return items_svc._stored_prd_id(db, asked, project_id) or asked
+
+
+def _seat_line_id(db: Session, project_id: str | None, asked: str | None) -> str | None:
+    """Resolve the line a seat is scoped to into the stored id (GRPH-1685), or None.
+
+    Refused when unknown or another project's, for the reason `_scope_id` gives: a scope that
+    quietly stops applying is a worse failure than a refused mint.
+    """
+    if not asked:
+        return None
+    try:
+        return lines_svc.resolve_for_item(db, asked, project_id or "")
+    except ValueError as e:
+        raise errors.Validation(str(e))
 
 
 def _scope_id(db: Session, project_id: str | None, asked: str | None) -> str | None:
@@ -2928,6 +3136,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             "project_id": pid,
             "project_name": proj.name if proj else None,
             "key_project_id": key.project_id,  # None => global key; agent should pass project_id
+            # GRPH-1317. The roles this credential may hold. `planner` is what the
+            # supervisor's observations route requires, and `gban doctor`/`gban setup` read
+            # it here rather than learning it from a 403 mid-wave.
+            "eligible_roles": list(fleet_svc.eligible_roles(key)),
             "scopes": key.scopes,
             "readable_projects": readable,
             "writable_projects": authz.key_writable_ids(db, key),
@@ -2959,6 +3171,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # First-run signal (AL-133): an empty project → call setup_project for a bootstrap.
             "empty": setup_svc.is_empty(db, pid) if pid else False,
             "gitops": gitops.for_agent(view),
+            # GRPH-1681. Null = the line has not been created, NOT "no bugs".
+            "maintenance_line": lines_svc.context_field(db, pid),
         }
     if name == "create_project":
         # An AUTHORITY gate, narrowly opened (PRD-14 D4). Both refusals below are the
@@ -2985,6 +3199,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             project = projects_svc.create_project(
                 db, name=args["name"], owner_user_id=key.user_id,
                 tag=args.get("tag"), description=args.get("description", ""),
+                accent2=args.get("accent2"),
+                pattern=args["pattern"] if "pattern" in args else "none",
             )
         except ValueError as e:
             raise errors.Validation(str(e)) from e
@@ -2996,6 +3212,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         return {
             "id": project.id, "name": project.name, "tag": project.tag,
             "description": project.description,
+            "accent2": project.accent2, "pattern": project.pattern,
             # A key PINNED to another project still can't write here — it was minted for
             # one project and creating a second doesn't widen it. Say so, or the next
             # call 403s and reads like a bug.
@@ -3008,6 +3225,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "list_projects":
         return {"results": [
             {"id": p.id, "name": p.name, "tag": p.tag, "accent": p.accent,
+             "accent2": p.accent2, "pattern": p.pattern,
              "description": p.description}
             for p in db.scalars(select(Project).order_by(Project.name)).all()
             if p.id in readable
@@ -3024,9 +3242,19 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         is_wait = bool(args.get("question")) or any(
             str(t).strip().lower() == "wait:decision" for t in (args.get("tags") or []))
         caller = _agent_for_call(db, key, args, session_id) if is_wait else None
+        held: list = []
+        if args.get("kind") == "fix" or any(
+                str(t).strip().lower() == "bug" for t in (args.get("tags") or [])):
+            who = _agent_for_call(db, key, args, session_id)
+            if who:
+                held = list(db.scalars(select(Item).where(
+                    Item.claimed_by == who, Item.status == "in_progress")).all())
         item = items_svc.create_item(
             db,
             commit=not is_wait,
+            distinct_from=args.get("distinct_from"),
+            found_during=args.get("found_during"),
+            held=held,
             title=args["title"],
             description=args.get("description", ""),
             tags=args.get("tags", []),
@@ -3040,11 +3268,19 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             prd_section=args.get("prd_section", ""),
             question=args.get("question"),
             options=args.get("options"),
+            line_id=args.get("line_id"),
+            severity=args.get("severity", ""),
+            blocks=args.get("blocks"),
+            agent_create=True,
             reporter={"name": "Agent", "handle": "mcp", "avatar": "#a78bfa"},
         )
         wait_link = waits_svc.attach_to_claim(db, item, caller) if is_wait else None
         _idempotent_remember(db, args, "create_item", item.id)
         out = _item_dict(item)
+        if item.id in db.info.get("line_defaulted", ()):
+            # GRPH-1798. Reply-only, like touchpoint_warnings: the manifest has no room
+            # for another property on every item tool, and a later read does not say it.
+            out["line_defaulted"] = True
         if wait_link is not None:
             out["wait_link"] = wait_link
         # GRPH-1393: a touchpoint matching nothing in the code graph is named, with the
@@ -3055,6 +3291,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         return out
     if name == "update_item":
         _scoped_item(db, args["id"], allowed)
+        if args.get("resolution") is not None:
+            return _resolve_item_call(db, args, key, allowed, defer)
         if "reach" in args:
             # GRPH-832. Refused rather than ignored. `reach` is not in `update_item`'s field
             # whitelist, so passing it here would have written nothing and returned 200 — and
@@ -3096,6 +3334,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             ack_section_drift=args.get("ack_section_drift"),
             evidence=args.get("evidence"),
             branch=args.get("branch"),
+            severity=args.get("severity"),
+            # Only when sent: a None here would read as "clear the line".
+            **({"line_id": args["line_id"]} if "line_id" in args else {}),
         )
         if item is None:
             raise errors.NotFound(f"item not found: {args['id']}")
@@ -3136,9 +3377,14 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 out["touchpoint_warnings"] = tw
         return out
     if name == "search_items":
+        asked_prd = args.get("prd_id")
+        stored_prd = (
+            _prd_ref(db, pid, str(asked_prd))
+            if isinstance(asked_prd, str) and asked_prd.strip() else None
+        )
         rows = items_svc.search_items(
             db, args.get("query", ""), status=args.get("status"), project_id=pid,
-            tags=args.get("tags"), limit=10_000,
+            tags=args.get("tags"), limit=10_000, prd_id=stored_prd,
         )
         lean = not _full(args)
         # GRPH-1182: the full row carries `blocker`, the field this search matches on. Without
@@ -3249,7 +3495,11 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             )
         return json.loads(json.dumps(payload, default=str))
     if name == "get_backlog":
-        ranked = prio_svc.prioritized(db, pid, statuses=("backlog", "next"), include_blocked=True)
+        # Resolved here, compared in the service: a key the project does not have is an
+        # error, not an empty page, and an empty page is only "this line has no open items".
+        ranked = prio_svc.prioritized(
+            db, pid, statuses=("backlog", "next"), include_blocked=True,
+            line_id=_backlog_line(db, pid, args.get("line_id")))
         # The ranking signal (ready/blocked_by/unblocks/votes/score) is the reason to
         # call get_backlog, so it stays; only the fat item fields are opt-in (AL-78).
         lean = not _full(args)
@@ -3291,10 +3541,16 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "next_cluster":
         agent = fleet_svc.caller_identity(args.get("agent_id"), key)
         batch = cluster_svc.next_cluster(db, agent, project_id=pid, max_items=args.get("max_items", 3))
-        return {"claimed": len(batch), "cluster": [
+        out = {"claimed": len(batch), "cluster": [
             {**_item_dict(b["item"]), "seed": b["seed"], "shared": b["shared"], "link_types": b["link_types"]}
             for b in batch
         ]}
+        # GRPH-1647. The seed comes through `claim_next`, which skips a tier it is below.
+        # An empty batch must say so; a bare zero reads as an empty neighbourhood.
+        if not batch:
+            if blocked := items_svc.below_needs_tier(db, agent, project_id=pid):
+                out["needs_tier"] = blocked
+        return out
     if name == "link_items":
         cached = _idempotent_get(db, args, "link_items", Link)
         if cached is not None:
@@ -3351,12 +3607,37 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # cannot tell them apart is guessing at the one decision this response drives.
             if reserved := items_svc.reserved_elsewhere(db, agent, project_id=pid):
                 out["reserved"] = reserved
+            # GRPH-1647. Present only when the sweep skipped something for tier, same rule
+            # as `reserved`: an always-present key would make an empty board look held.
+            if blocked := items_svc.below_needs_tier(
+                    db, agent, project_id=pid,
+                    lease_seconds=args.get("lease_seconds", items_svc.DEFAULT_LEASE_SECONDS)):
+                out["needs_tier"] = blocked
         return out
     if name == "propose_allocation":
         return fleet_svc.propose_allocation(db, pid)
     if name == "get_rule_toggles":
         return {"library_loaded": rule_toggles_svc.library_loaded(),
                 "toggles": rule_toggles_svc.effective(db, pid)}
+    if name == "propose_rule":
+        # P91 D2: any agent on the project may SUGGEST; nothing here adopts (rules.person_adopts).
+        draft = args.get("draft") or {}  # {slug, primitive, title, why, params} or {rule_id, params}
+        who = fleet_svc.caller_identity(args.get("agent_id"), key)
+        if args.get("kind") == rule_proposals_svc.GUIDANCE_KIND:
+            # P91 D8: advisory text, cited; a person adopts it (rules.person_adopts).
+            g = rule_proposals_svc.file_guidance(
+                db, project_id=pid, proposer_kind="agent", proposer=who,
+                stage=draft.get("stage"), label=draft.get("label"), text=draft.get("text"),
+                citations=args.get("citations"))
+            return rule_proposals_svc.guidance_view(g)
+        row, folded = rule_proposals_svc.propose(
+            db, project_id=pid, proposer_kind="agent",
+            proposer=fleet_svc.caller_identity(args.get("agent_id"), key),
+            kind=args.get("kind") or "", citations=args.get("citations"),
+            rule_id=draft.get("rule_id"),
+            slug=draft.get("slug"), primitive=draft.get("primitive"), title=draft.get("title"),
+            why=draft.get("why"), params=draft.get("params"))
+        return rule_proposals_svc.view(row, folded=folded)
     if name == "list_entitlements":
         return {"entitlements": entitlements_svc.list_entitlements(
             db, entitlements_svc.org_for_project(db, pid))}
@@ -3387,6 +3668,16 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                                     "register_agent on this connection first")
         agent = db.get(Agent, me)
         try:
+            if args.get("withdraw"):
+                # GRPH-1753. Close the row this caller just opened. Do not mint, and do not
+                # open a replacement — a replacement is what the next planner is refused for.
+                # The refusal shares the raise below: a second `errors.Conflict` is a bare
+                # 409, and the ratchet only goes down.
+                withdrew = delegation_svc.withdraw(db, agent=agent, item=item)
+                return {"delegation_id": withdrew or "",
+                        "state": "closed" if withdrew else "absent",
+                        "withdrew": withdrew, "enrolment_code": None, "bound_only": False,
+                        "brief": {}}
             row, withdrew, code = delegation_svc.delegate(
                 db, agent=agent, item=item, lane=args["lane"], tier=args["tier"],
                 note=args.get("note", ""), lease_seconds=items_svc.DEFAULT_LEASE_SECONDS,
@@ -3467,9 +3758,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
 
         got = fleet_svc.park(db, _attempt, agent_id=args.get("agent_id"),
                              wait_seconds=args.get("wait_seconds"))
-        return got or miss.get("last") or {
+        reply = got or miss.get("last") or {
             "claimed": False, "items": [], "areas": [], "predicted": False, "held_by": [],
             "reason": "nothing ready to claim"}
+        if items_svc.seat_line(db, agent):
+            # GRPH-1685. Line seats only; an empty list means it looked and found none.
+            reply = {**reply, "unready": items_svc.unready_line_items(db, pid)}
+        return reply
     if name == "claim_review":
         agent = fleet_svc.caller_identity(args.get("agent_id"), key)
         item = fleet_svc.park(
@@ -3481,11 +3776,15 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # phrasing it as a failure would send a solo agent hunting for a bug.
             # The reason matters more than the refusal: "nothing waiting" and "waiting, but
             # you are not independent of it" send an operator to opposite places.
+            # GRPH-1652: and NAME what was withheld, by item and rule. An item in review that
+            # nobody is handed is otherwise indistinguishable from an empty queue.
             return {"claimed": False, "item": None, "branch": "", "worker_agent": None,
                     "reason": fleet_svc.review_block_reason(
-                        db, agent_id=args.get("agent_id") or agent, project_id=pid)}
+                        db, agent_id=args.get("agent_id") or agent, project_id=pid),
+                    "withheld": fleet_svc.review_withheld(
+                        db, agent_id=agent, project_id=pid, skip=args.get("skip"))}
         return {"claimed": True, "item": _item_dict(item), "branch": item.branch or "",
-                "worker_agent": item.claimed_by, "reason": ""}
+                "worker_agent": item.claimed_by, "reason": "", "withheld": []}
     if name == "sign_off":
         _scoped_item(db, args["id"], allowed)
         agent = fleet_svc.caller_identity(args.get("agent_id"), key)
@@ -3573,6 +3872,14 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 409, str(e), rule_id="review.attest_the_head", meta=_who, hint=(
                     "attest the head of the branch you reviewed — `git rev-parse HEAD` in the "
                     "worktree, the full SHA — not a commit typed from memory"),
+            ) from e
+        except fleet_svc.DependenciesOpen as e:
+            # GRPH-1292. The caller may sign this off once the blocker is done, or by
+            # recording why it is not. 409: this is unfinished work, not a permission.
+            raise errors.Refused(
+                409, str(e), rule_id="review.dependencies_done", meta=_who, hint=(
+                    "finish the blocking item, or waive it on the record with "
+                    'waive={"dependencies_done": "<why>"}'),
             ) from e
         except fleet_svc.UncomparedPredicate as e:
             # The caller may sign this off, the receipt simply would not stand behind it.
@@ -3748,6 +4055,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 db, minter_id=args["agent_id"], project_id=project_id, role=args["role"],
                 api_key=key, wave=args.get("wave"),
                 prd_id=_scope_id(db, project_id, args.get("scope")),
+                line_id=_seat_line_id(db, project_id, args.get("line")),
                 review_only=bool(args.get("review_only")),
                 item_id=item_id, bound_only=bound_only)
         except ValueError as e:
@@ -3891,6 +4199,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             raise authz.Forbidden(f"prd {args['prd_id']!r} is outside this key's project scope")
         return prd_svc.coverage(db, prd)
     if name == "decompose_prd":
+        spec_pull_svc.refuse_if_remote(db, str(args["prd_id"]))
         prd = prd_svc.get_prd(db, args["prd_id"])
         if prd is None:
             raise errors.NotFound(f"prd not found: {args['prd_id']}")
@@ -3900,6 +4209,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             db, prd,
             create=bool(args.get("create", False)),
             include_prose=bool(args.get("include_prose", False)),
+            touchpoints=args.get("touchpoints") or None,
+            splits=args.get("splits") if isinstance(args.get("splits"), dict) else None,
+            drop_links=args.get("drop_links"),
+            add_links=args.get("add_links"),
         )
     if name == "create_prd":
         prd = prd_svc.create_prd(
@@ -3908,6 +4221,11 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             created_by=_key_user_id(db, key),
         )
         return _prd_dict(prd)
+    if name == "create_line":
+        return lines_svc.line_dict(
+            lines_svc.create_line(db, pid, args.get("title"), created_by=_key_user_id(db, key)))
+    if name == "unscoped_fixes":
+        return lines_svc.unscoped_fixes(db, pid)
     if name == "get_prd":
         # The read that was missing (GRPH-519). `answer_grill` reports `body_absorbed: false`,
         # and the only tool that could fix it replaces the body WHOLE — so without this an
@@ -4154,6 +4472,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             edges=args.get("edges", []),
             prune=bool(args.get("prune", False)),
             revision=str(args.get("revision", "")),
+            stale=[str(x) for x in (args.get("stale") or [])],
         )
     if name == "get_code_map":
         # Bounded BY DEFAULT (GRPH-146). An agent that omits `limit` gets a page rather than
@@ -4759,7 +5078,8 @@ async def mcp_endpoint(
             meta = dict(e.meta)
             owner = db.get(User, key.user_id) if key.user_id else None
             if owner is not None:  # the human behind the key, as `record_key` stamps it
-                meta["principal"] = {"id": owner.id, "label": owner.handle or owner.name}
+                meta["principal"] = {"id": owner.id, "label": handles.project_handle(
+                    db, owner, key.project_id) or owner.name}
             events_svc.record_refusal(
                 db, rule_id=e.rule_id, surface="mcp", where=name, status=e.status_code,
                 detail=str(e.detail), actor=("apikey", key.id, key.name or key.id),
@@ -4845,6 +5165,10 @@ async def mcp_endpoint(
             return _fail("conflict", str(e),
                                "nothing is wrong with the call — wait for the cooldown to "
                                "elapse and send it again")
+        except spec_pull_svc.RemoteSpecRefused as e:
+            return _refused(errors.Refused(
+                409, str(e), rule_id=spec_pull_svc.REMOTE_SPEC_RULE,
+                hint="decompose it on the box named as its home"))
         except prd_svc.DecomposeRequiresApproval as e:
             # CONFLICT, not validation (GRPH-654). The arguments are fine; the PRD has not
             # earned approved. `validation` would send an agent editing a payload that is
@@ -4864,6 +5188,14 @@ async def mcp_endpoint(
                          "nothing is wrong with the call and no item would have been the right "
                          "one: this seat may review and may not build. claim_review, then exit "
                          "when it answers claimed=false")
+        except items_svc.TierBelowNeeds as e:
+            # CONFLICT, not internal (GRPH-1647). A named claim — the bound seat's reclaim,
+            # `claim_item` from anywhere — raises, and the generic handler would call that
+            # "safe to retry". The tier will not change on a retry. The message names
+            # `needs_tier`. An undeclared tier does not raise.
+            return _fail("conflict", str(e),
+                         "this agent's declared tier is below the tier the last bounce named. "
+                         "A seat that declares that tier takes the item")
         except items_svc.BoundOnlySeat as e:
             # CONFLICT, same reason as ReviewOnlySeat (GRPH-1089). `claim_review` returns None
             # for an empty queue; this must not become that, and it must not become `internal`

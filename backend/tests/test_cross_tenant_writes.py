@@ -103,6 +103,10 @@ def _project_scoped_writes(client) -> dict[str, dict]:
                 body = {n: _dummy(p, comps) for n, p in props.items() if n in required}
             found[f"{verb.upper()} {path}"] = {
                 "verb": verb, "path": path, "in_param": in_param, "body": body,
+                # A typed path id (an integer proposal id) needs a value of its type, or the
+                # probe is a 422 on the path and the route is never asked the question.
+                "path_dummies": {p["name"]: _dummy(p.get("schema", {}), comps)
+                                 for p in op.get("parameters", []) if p.get("in") == "path"},
             }
     return found
 
@@ -142,7 +146,8 @@ def test_every_project_scoped_write_blocks_another_org(client, tenants):
         url = spec["path"].replace("{project_id}", pb)
         if "{" in url:  # another resource id we do not have — give it something shaped right
             import re
-            url = re.sub(r"\{[^}]+\}", "probe", url)
+            url = re.sub(r"\{([^}]+)\}",
+                         lambda m: str(spec["path_dummies"].get(m.group(1), "probe")), url)
         body = dict(spec["body"] or {})
         if spec["in_param"] and "{project_id}" not in spec["path"]:
             url += ("&" if "?" in url else "?") + f"project_id={pb}"
@@ -206,3 +211,38 @@ def test_a_route_that_refuses_both_credentials_is_reported_too(client, tenants):
     with pytest.raises(AssertionError) as e:
         test_every_project_scoped_write_blocks_another_org(client, broken)
     assert "401 with both a JWT and an API key" in str(e.value)
+
+
+def test_profile_writes_touch_only_the_caller_and_see_only_their_orgs(client, tenants):
+    """GRPH-1788: `PATCH /auth/me` and the handle check take no project or user id, so the
+    sweep above cannot enumerate them. Ask the cross-tenant question directly: org B's
+    handle is free for alex, and nothing alex writes lands on dana."""
+    from app.db import SessionLocal
+    from app.models import OrgMembership, User
+
+    dana_before = client.get("/api/auth/me", headers=tenants["dana"]).json()
+    db = SessionLocal()
+    try:
+        seat = db.query(OrgMembership).filter_by(org_id=tenants["org_b"], user_id="u2").one()
+        seat.handle = handle = "dana-b"  # the seeded handle predates the format
+        db.commit()
+    finally:
+        db.close()
+    check = client.get(f"/api/auth/me/handle-check?handle={handle}", headers=tenants["alex"])
+    assert check.json()["org"] is None and check.json()["available"] is True
+    r = client.patch("/api/auth/me", json={"name": "Alex Renamed"}, headers=tenants["alex"])
+    assert r.status_code == 200
+    assert client.get("/api/auth/me", headers=tenants["dana"]).json() == dana_before
+    db = SessionLocal()
+    try:
+        assert db.get(User, "u2").name == dana_before["name"]
+    finally:
+        db.close()
+
+
+def test_org_handle_write_blocks_another_org(client, tenants):
+    """`PATCH /orgs/{org_id}/me/handle` names an org, not a project, so the project sweep
+    above cannot see it. Probe it directly: alex is not in org B."""
+    r = client.patch(f"/api/orgs/{tenants['org_b']}/me/handle", json={"handle": "probe-handle"},
+                     headers=tenants["alex"])
+    assert _blocked(r.status_code), r.text

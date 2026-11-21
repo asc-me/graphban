@@ -142,6 +142,12 @@ Three properties worth knowing, each of which is a bug this command exists to no
   outside the repository cannot be committed. Re-running a working setup still
   *repairs* a missing `gbfleet` entry and a missing `--workspace`; reuse skips a mint,
   never a write.
+- **`--scope project` touches nothing outside the repository** (GRPH-1661). It writes
+  `.mcp.json` and `.grok/config.toml` beside the repo and says it left `~/.claude.json` and
+  `~/.grok/config.toml` alone. Grok's user file has one `mcp_servers` table for every
+  repository, so writing it from a scratch repo repointed the main one. When `--scope user`
+  replaces a user-level `gbfleet` entry pointing at a different repository or project, the
+  file is first saved as `<file>.bak-<timestamp>` and the line names the old and new targets.
 - **`--auto` matches, and says so.** A project carries no repository link — no remote, no
   path — so `--auto` compares your project ids and names against this directory, what is in
   it, and its siblings. One level, never a recursive walk. Two directories answering to one
@@ -201,7 +207,7 @@ What it reads:
 - Dependency manifests (`package.json`, `pyproject.toml`, `requirements*.txt`, `go.mod`, `Cargo.toml`, `Gemfile`). Every `package.json` and `Cargo.toml` is a component named from the manifest's `name`. The known-SDK table adds edges; it is not what decides whether the component exists. `file:` and `workspace:` dependencies (and a Cargo `path` or `workspace = true`) are internal edges. Other manifests still become a component only when a dependency hits the table, and that edge is attributed to the component whose directory contains the file.
 - Deploy manifests (`vercel.json`, `railway.json`, `railway.toml`, `fly.toml`, `netlify.toml`, `render.yaml`) are a platform node. The file body is not stored.
 - `.env.example` only. A real `.env` is not a template and is not opened. A commented `KEY=` is read and the edge is `state: documented` rather than `set`. `*_TOKEN`, `*_CLIENT_ID`, and `*_CLIENT_SECRET` count, and so do `*_BASE` and `*_ISSUER` when the value is a URL. A passphrase (`AUTH_SECRET`, `ENCRYPTION_KEY`) is not an edge unless a table row names it. Values stay out of the record.
-- Source files are not scanned. There is no source-HTTP pass in this command. stderr always prints a coverage line: files read, files that produced nothing, commented template keys skipped, and that source was not scanned. Exit 0 means the record was built.
+- Source files (`.py`, `.js`/`.ts` and variants, `.go`, `.rb`; test paths skipped) are scanned for raw HTTP calls (GRPH-1464): a line that calls an HTTP client (`requests.get(...)`, `fetch(...)`, `http.Get(...)`, …) with a literal `http(s)://` URL. Each host the known-SDK table does not match, and that no compose, manifest or env-template rule already put on the map, becomes an external node with an edge from the deployable that owns the file, labelled `HTTP call`, with rule `source.http-call` and the file and line as provenance. Only the host is kept. Example and local hosts are skipped. A URL held in a variable is not followed. stderr always prints a coverage line: files read, files that produced nothing, commented template keys skipped, and how many source files were scanned and calls mapped. Exit 0 means the record was built.
 
 The known-SDK table ships at `cli/src/gban/data/stack_sdks.toml` and is versioned with `gban`. A checkout may add rows in `.graphban/stack-sdks.toml` (same shape); those rows are consulted first.
 

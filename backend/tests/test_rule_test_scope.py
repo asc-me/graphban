@@ -139,3 +139,24 @@ def test_engines_must_be_a_non_empty_list_of_strings(client, monkeypatch):
 def test_brief_line_names_engines_under_agent_full():
     assert "Engines: mysql." in D.test_scope_line("agent_full", ["mysql"])
     assert "Engines" not in D.test_scope_line("agent_targeted", ["mysql"])
+
+
+def test_targeted_and_and_pr_briefs_name_supervisor_ci_and_missing_local_is_not_a_blocker(
+        client, library,
+):
+    """GRPH-1708. Sabotage: drop the CI handoff line from `_text` — this fails."""
+    from app.db import SessionLocal
+    from app.models import Item
+
+    auth = _login(client)
+    db = SessionLocal()
+    try:
+        item = db.query(Item).filter(Item.project_id == "core").first()
+        for mode in ("agent_targeted", "agent_and_pr"):
+            assert _put(client, auth, {"params": {"mode": mode}, "reason": "r"}).status_code == 200
+            text = D.brief(db, item)["text"]
+            assert D._CI_HANDOFF_LINE in text, mode
+        assert _put(client, auth, {"params": {"mode": "agent_full"}, "reason": "r"}).status_code == 200
+        assert D._CI_HANDOFF_LINE not in D.brief(db, item)["text"]
+    finally:
+        db.close()

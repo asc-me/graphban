@@ -14,10 +14,11 @@ import uuid
 from datetime import timedelta, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.errors import Refused
 from app.models import (
     Membership,
     OrgInvite,
@@ -33,6 +34,7 @@ from app.models import (
 )
 from app.security import authz
 from app.services import email as email_svc
+from app.services import handles as handles_svc
 from app.services import quotas
 
 
@@ -345,7 +347,7 @@ def create_org(db: Session, user: User, name: str) -> Organization:
     # PRD-43 D8: assign random public_host.
     org.public_host = _ensure_unique_random_slug(db)
     org.public_host_custom = False
-    db.add(OrgMembership(org_id=org.id, user_id=user.id, role="owner"))
+    db.add(OrgMembership(org_id=org.id, user_id=user.id, role="owner", handle=user.handle))
     db.commit()
     db.refresh(org)
     return org
@@ -386,14 +388,15 @@ def create_invite(db: Session, org: Organization, email: str, role: str, inviter
     db.commit()
     db.refresh(invite)
 
-    _send_invite_email(invite, org, inviter)
+    _send_invite_email(invite, org, inviter, handles_svc.org_handle(db, inviter, org.id))
     return invite
 
 
-def _send_invite_email(invite: OrgInvite, org: Organization, inviter: User) -> None:
+def _send_invite_email(invite: OrgInvite, org: Organization, inviter: User,
+                       inviter_handle: str = "") -> None:
     link = f"{settings.app_base_url.rstrip('/')}/invite/{invite.token}"
     subject = f"You're invited to join {org.name} on Graphban"
-    who = inviter.name or inviter.handle or "A teammate"
+    who = inviter.name or inviter_handle or "A teammate"
     text = (
         f"{who} invited you to join the “{org.name}” organization on Graphban "
         f"as {invite.role}.\n\n"
@@ -542,7 +545,28 @@ def _validate_pending(invite: OrgInvite | None) -> OrgInvite:
     return invite
 
 
-def accept_invite(db: Session, token: str, user: User) -> Organization:
+def suggest_handle(db: Session, base: str, org_id: str, user_id: str | None = None) -> str:
+    """A handle derived from `base` that is free in `org_id` (reads only that org)."""
+    stem = (base or "member")[:20].strip("-") or "member"
+    for n in range(2, 1000):
+        cand = f"{stem}-{n}"
+        try:
+            handles_svc.validate(cand)
+        except ValueError:
+            continue
+        if handles_svc.check_free(db, cand, [org_id], exclude_user=user_id) is None:
+            return cand
+    return f"{stem[:14]}-{uuid.uuid4().hex[:8]}"
+
+
+def _handle_error(db: Session, org: Organization, handle: str, user: User, code: str) -> HTTPException:
+    return HTTPException(409, {
+        "code": code, "org_id": org.id, "org_name": org.name,
+        "suggested": suggest_handle(db, handle, org.id, user.id),
+    })
+
+
+def accept_invite(db: Session, token: str, user: User, handle: str | None = None) -> Organization:
     """Join the invite's org as the accepting user. Commits.
 
     The invite is email-bound: the logged-in user's email must match the address it
@@ -570,7 +594,17 @@ def accept_invite(db: Session, token: str, user: User) -> Organization:
         )
     )
     if existing is None:
-        db.add(OrgMembership(org_id=invite.org_id, user_id=user.id, role=invite.role))
+        # The check reads ONLY the inviting org. A clash refuses with a suggestion; it
+        # never blocks the join itself (a retry with a free `handle` takes the seat).
+        chosen = handle if handle is not None else user.handle
+        if handle is not None:
+            try:
+                handles_svc.validate(handle)
+            except ValueError as e:
+                raise HTTPException(422, f"invalid handle: {e}") from e
+        if handles_svc.check_free(db, chosen, [org.id], exclude_user=user.id) is not None:
+            raise _handle_error(db, org, chosen, user, "handle_taken")
+        db.add(OrgMembership(org_id=invite.org_id, user_id=user.id, role=invite.role, handle=chosen))
     invite.status = "accepted"
     invite.accepted_at = utcnow()
     invite.accepted_user_id = user.id
@@ -601,6 +635,77 @@ def revoke_invite(db: Session, invite: OrgInvite) -> None:
     db.commit()
 
 
+def my_pending_invites(db: Session, user: User) -> list[OrgInvite]:
+    """Pending, unexpired org invitations addressed to this user's email. Expired,
+    revoked, accepted and declined rows are not offers and are not listed."""
+    email = (user.email or "").lower()
+    if not email:
+        return []
+    rows = db.scalars(
+        select(OrgInvite)
+        .where(
+            OrgInvite.kind == "org",
+            OrgInvite.status == "pending",
+            func.lower(OrgInvite.email) == email,
+        )
+        .order_by(OrgInvite.created_at.desc())
+    )
+    return [i for i in rows if not invite_is_expired(i)]
+
+
+def decline_invite(db: Session, invite_id: str, user: User) -> OrgInvite:
+    """The invitee turns an invitation down. Commits. Only the addressee can; anyone
+    else (or a non-pending/expired/unknown id) gets the same 404. A declined invite
+    is no longer pending, so `accept_invite` refuses it."""
+    invite = db.get(OrgInvite, invite_id)
+    if (
+        invite is None
+        or invite.kind != "org"
+        or invite.status != "pending"
+        or invite_is_expired(invite)
+        or invite.email.lower() != (user.email or "").lower()
+    ):
+        raise HTTPException(404, "invitation not found or already used")
+    invite.status = "declined"
+    db.commit()
+    return invite
+
+
+def leave_org(db: Session, org_id: str, user: User) -> dict:
+    """Self-leave: drop the caller's own seat and their project memberships in the org.
+    Commits. The only owner is refused with a named reason the UI can show; the
+    last-administrator floor still applies to admins."""
+    seat = _seat(db, org_id, user.id)
+    if seat.role == "owner":
+        owners = list(db.scalars(
+            select(OrgMembership).where(
+                OrgMembership.org_id == org_id, OrgMembership.role == "owner"
+            ).with_for_update()
+        ))
+        if len(owners) <= 1:
+            raise Refused(
+                409,
+                "you are the only owner of this organization — make somebody else an "
+                "owner before you leave",
+                rule_id="org.only_owner_cannot_leave",
+            )
+    _refuse_if_last_administrator(db, org_id, seat)
+    project_ids = [p.id for p in db.scalars(select(Project).where(Project.org_id == org_id))]
+    dropped = []
+    if project_ids:
+        for m in db.scalars(
+            select(Membership).where(
+                Membership.user_id == user.id, Membership.project_id.in_(project_ids)
+            )
+        ):
+            dropped.append(m.project_id)
+            db.delete(m)
+    role = seat.role
+    db.delete(seat)
+    db.commit()
+    return {"removed_role": role, "projects_revoked": dropped}
+
+
 def pending_invites(db: Session, org_id: str) -> list[OrgInvite]:
     """Pending invites for one org — org-kind only, so the operator's platform
     invites never surface inside a tenant's member list."""
@@ -615,3 +720,24 @@ def pending_invites(db: Session, org_id: str) -> list[OrgInvite]:
             .order_by(OrgInvite.created_at.desc())
         )
     )
+
+
+def set_org_handle(db: Session, org: Organization, user: User, handle: str) -> OrgMembership:
+    """Change `user`'s org-only handle in `org`; holds the old one there for 30 days. Commits."""
+    seat = db.scalar(select(OrgMembership).where(
+        OrgMembership.org_id == org.id, OrgMembership.user_id == user.id))
+    if seat is None:
+        raise HTTPException(404, "organization not found")
+    try:
+        handles_svc.validate(handle)
+    except ValueError as e:
+        raise HTTPException(422, f"invalid handle: {e}") from e
+    if handle == seat.handle:
+        return seat
+    if handles_svc.check_free(db, handle, [org.id], exclude_user=user.id) is not None:
+        raise _handle_error(db, org, handle, user, "handle_taken")
+    old = seat.handle
+    seat.handle = handle
+    handles_svc.write_holds(db, user, old, [org.id])
+    db.commit()
+    return seat

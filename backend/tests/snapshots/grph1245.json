@@ -552,6 +552,7 @@
     "assigned": {
      "held_by": null,
      "item": "item:COUN-1",
+     "reason": "held",
      "state": "taken"
     },
     "branch": "br0",
@@ -1034,6 +1035,7 @@
     "assigned": {
      "held_by": null,
      "item": "item:COUN-16",
+     "reason": null,
      "state": "claimed"
     },
     "branch": "br15",
@@ -2194,6 +2196,7 @@
     "assigned": {
      "held_by": null,
      "item": "item:COUN-1",
+     "reason": "held",
      "state": "taken"
     },
     "branch": "br0",
@@ -2676,6 +2679,7 @@
     "assigned": {
      "held_by": null,
      "item": "item:COUN-16",
+     "reason": null,
      "state": "claimed"
     },
     "branch": "br15",
@@ -4318,6 +4322,7 @@
     "assigned": {
      "held_by": null,
      "item": "item:COUN-1",
+     "reason": "held",
      "state": "taken"
     },
     "branch": "br0",
@@ -4748,6 +4753,7 @@
     "assigned": {
      "held_by": null,
      "item": "item:COUN-16",
+     "reason": null,
      "state": "claimed"
     },
     "branch": "br15",

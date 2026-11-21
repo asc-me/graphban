@@ -103,6 +103,26 @@ installed)` rather than pretending the bundle matches.
 installed revision. The unit sets it; stuffing it only into `.env` is wiped the
 moment an upgrade replaces the tree, which is why the unit carries it.
 
+## HTTPS on a native install
+
+See [https.md](https.md) for the tiers, device trust and the redirect rule.
+
+The API serves plain HTTP itself. To add the box's HTTPS listener, run a single
+[Caddy](https://caddyserver.com/docs/install) binary beside it with the repository's
+`web/Caddyfile` and `web/https.on.caddy`/`https.off.caddy`/`redirect.*.caddy` next to it:
+
+```sh
+export PORT=8080 HTTPS_PORT=8443 API_SCHEME=http API_UPSTREAM=127.0.0.1:8000 \
+       ASK_URL=http://127.0.0.1:8000/api/https/ask \
+       HTTPS_SNIPPET=web/https.on.caddy REDIRECT_SNIPPET=web/redirect.off.caddy
+caddy run --config web/Caddyfile --adapter caddyfile
+```
+
+Point the API's `TLS_DIR` at the directory `https.on.caddy` loads `box.crt`/`box.key` from, and
+run `caddy reload --force --config web/Caddyfile --adapter caddyfile` after they change (the
+container entrypoint does this for you). http keeps working on `PORT` exactly as before. The
+admin API stays on `localhost:2019`.
+
 ## What has been walked
 
 See [acceptance-prd27.md](acceptance-prd27.md). macOS, all eight steps, in the

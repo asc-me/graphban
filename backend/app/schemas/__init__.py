@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+from pydantic import (
+    BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator, model_serializer,
+)
 
 # Imports nothing from `app`, so this cannot cycle back through schemas.
 from app.services import tool_tiers as tool_tiers_svc
@@ -13,6 +15,7 @@ from app.services import tool_tiers as tool_tiers_svc
 # imports schemas (nor does anything they import), so neither can cycle back here.
 from app.services import items as items_svc
 from app.services import preferences as prefs_svc
+from app.services import projects as projects_svc
 
 
 class ORMModel(BaseModel):
@@ -89,7 +92,26 @@ class UserOut(ORMModel):
     handle: str
     email: EmailStr
     avatar: str
+    avatar2: str | None = None
+    avatar_pattern: str = "none"
     initials: str
+
+
+class MeOut(UserOut):
+    """`GET /auth/me`: the profile plus a summary of the caller's API keys (GRPH-1788)."""
+    api_keys: dict = {"count": 0, "projects": []}
+
+
+class ProfileIn(BaseModel):
+    """`PATCH /auth/me` (GRPH-1788). Every field optional; unknown fields are refused.
+    Value rules live in the router so refusals are field-level, not a bare 422."""
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    handle: str | None = None
+    initials: str | None = None
+    avatar: str | None = None
+    avatar2: str | None = None
+    avatar_pattern: str | None = None
 
 
 # ---- Per-user UI preferences (PRD-60 D1 / GRPH-1133) ----
@@ -263,6 +285,7 @@ class OrgOut(BaseModel):
     name: str
     plan: str
     role: str  # the requesting user's role in this org
+    handle: str | None = None  # the caller's org-only handle, only where it differs from the account handle
 
 
 class OrgProjectAccessOut(BaseModel):
@@ -355,6 +378,20 @@ class InviteOut(ORMModel):
     created_at: datetime
     expires_at: datetime | None = None
     accept_url: str = ""  # convenience: the link emailed to the invitee (copy-able by admins)
+
+
+class MyInviteOut(BaseModel):
+    """A pending invitation addressed to the caller. Accept goes through
+    /invites/accept with `token`; decline through /me/invites/{id}/decline."""
+
+    id: str
+    token: str
+    org_id: str
+    org_name: str
+    role: str
+    invited_by: str
+    created_at: datetime
+    expires_at: datetime | None = None
 
 
 class PlatformInviteCreate(BaseModel):
@@ -485,6 +522,11 @@ class InvitePreviewOut(BaseModel):
 
 class InviteAcceptIn(BaseModel):
     token: str
+    handle: str | None = None  # org-only handle, on a retry after `handle_taken`
+
+
+class OrgHandleIn(BaseModel):
+    handle: str
 
 
 # ---- Plans & quotas (hosted-only, AL-75) ----
@@ -503,11 +545,30 @@ class UsageOut(BaseModel):
 
 
 # ---- Projects ----
+def _optional_hex(v: str | None, field: str) -> str | None:
+    if v is None:
+        return None
+    return projects_svc.normalize_hex(v, field=field)
+
+
+def _optional_pattern(v: str | None) -> str | None:
+    # None is "omit" on PATCH. An explicit null is still None here; the service
+    # refuses it, because `pattern` is not nullable.
+    if v is None:
+        return None
+    return projects_svc.normalize_pattern(v)
+
+
 class ProjectOut(ORMModel):
     id: str
     name: str
     tag: str  # short key prefix; item/request/PRD keys render from it (PRD-13)
+    # The one solid colour for chips, graph nodes, borders and text.
     accent: str
+    # Ombre's second colour. Null = solid. Only shapes the tile fill.
+    accent2: str | None = None
+    # Tile pattern. Only shapes the tile fill. `none` is unpatterned.
+    pattern: str = "none"
     visibility: str
     description: str
     share_global_memory: bool
@@ -538,6 +599,7 @@ class ProjectOut(ORMModel):
     # The release branch, set on this box (PRD-P57 S2). Null is unmeasured, never `main`.
     release_ref: str | None = None
     repo_url: str | None = None
+    publish_to_org: dict = {"specs": True, "item_digests": True}
 
 
 class ProjectSummaryOut(BaseModel):
@@ -563,12 +625,33 @@ class ProjectCreate(BaseModel):
     # Optional: derived from `name` when omitted. NOT on ProjectUpdate — changing a tag
     # has to go through the retag path so it records tag history (AL-258).
     tag: str | None = None
+    # The one solid colour (#rrggbb). Not the tile's second colour.
     accent: str = "#c6f24e"
+    # Ombre's second colour. Null = solid. Equal to `accent` is stored as null.
+    # Only shapes the tile fill.
+    accent2: str | None = None
+    # Pattern over the tile fill. Only shapes the tile fill.
+    pattern: str = "none"
     description: str = ""
     # Hosted-only (AL-74b): the org to create the project under. Optional when the
     # caller belongs to exactly one org (defaulted server-side); required otherwise.
     # Ignored on self-host, where projects have no org.
     org_id: str | None = None
+
+    @field_validator("accent")
+    @classmethod
+    def _accent(cls, v: str) -> str:
+        return projects_svc.normalize_hex(v, field="accent")
+
+    @field_validator("accent2")
+    @classmethod
+    def _accent2(cls, v: str | None) -> str | None:
+        return _optional_hex(v, "accent2")
+
+    @field_validator("pattern")
+    @classmethod
+    def _pattern(cls, v: str) -> str:
+        return projects_svc.normalize_pattern(v)
 
 
 # ---- Items ----
@@ -587,6 +670,10 @@ class ItemCreate(BaseModel):
     #: `feature` / `fix` / `chore` (GRPH-1358). Unset takes the service default — `fix` for a
     #: `bug`-tagged item, otherwise "" (not recorded).
     kind: str | None = None
+    #: GRPH-1683. A fix's scope, severity and the PRD item it blocks.
+    line_id: str | None = None
+    severity: str = ""
+    blocks: str | None = None
 
 
 class WaitAnswerIn(BaseModel):
@@ -616,6 +703,8 @@ class ItemUpdate(BaseModel):
     # web PATCH silently could not, so the loop this item closes had no confirm button.
     fidelity: str | None = None
     kind: str | None = None  # GRPH-1358; validated against items.KINDS in the service
+    line_id: str | None = None  # GRPH-1683
+    severity: str | None = None
     #: Where this item's work lands (GRPH-832). Accepted HERE and on no agent-facing route:
     #: this patch takes a bearer JWT, so declaring an item `deploy` — or clearing it back to
     #: `repo` — is a signed-in person's act and cannot be done by a credential a child holds.
@@ -629,6 +718,13 @@ class OwnerCloseIn(BaseModel):
     """Body for POST /api/items/{id}/owner-close (GRPH-1030)."""
     commit: str
     pr_url: str | None = None
+
+
+class ResolveIn(BaseModel):
+    """Body for POST /api/items/{id}/resolve (GRPH-1671)."""
+    kind: str
+    of: str
+    reason: str = ""
 
 
 class ReorderIn(BaseModel):
@@ -678,6 +774,9 @@ class ItemOut(ORMModel):
     #: `checking` | `response_needed` | null (GRPH-P75 D1), from `waits.question_state` via the
     #: `Item.question_state` property, so the web never computes it a second time.
     question_state: str | None = None
+    #: Closed as a duplicate or superseded (GRPH-1671): `{kind, of, reason, by, at}`; null on
+    #: every item that was not. A resolved item is done but delivered nothing.
+    resolution: dict | None = None
 
     @field_validator("decision", mode="before")
     @classmethod
@@ -699,6 +798,17 @@ class ItemWritten(ItemOut):
     read and list shapes stay exactly as they were."""
 
     touchpoint_warnings: list[dict] = []
+    #: GRPH-1798. True only on the create that stored the project's maintenance line because
+    #: the caller sent neither `prd_id` nor `line_id`. Omitted when false, so an update and
+    #: a create that named its scope keep the previous shape.
+    line_defaulted: bool = False
+
+    @model_serializer(mode="wrap")
+    def _omit_line_defaulted_when_false(self, handler):
+        data = handler(self)
+        if not data.get("line_defaulted"):
+            data.pop("line_defaulted", None)
+        return data
 
 
 #: What the project list leaves out by default (GRPH-1228): the per-item fields that are large
@@ -1151,6 +1261,25 @@ class SyncProjectState(BaseModel):
     last_push_reason: str | None = None
 
 
+class ProjectSyncIn(BaseModel):
+    """PUT /api/sync/projects/{id} (GRPH-1739). Omitted fields are left alone.
+    ``create_in_org`` registers the local tag when the project has no cloud id."""
+    sync_level: str | None = None  # sync | digests | local
+    cloud_permission: str | None = None  # read_only | comments | proposals
+    create_in_org: bool = False
+    purge: bool = True
+    #: Point this one project at an existing cloud project (sync or digests). It touches
+    #: no other project's mapping, unlike ``PUT /api/sync/projects``.
+    cloud_project_id: str | None = None
+    cloud_project_tag: str = ""
+
+
+class SyncBudgetIn(BaseModel):
+    """PUT /api/sync/budget. Both limits, in the same units the flusher counts."""
+    bytes_per_min: int
+    requests_per_min: int
+
+
 class SyncPendingSignIn(BaseModel):
     """A device-code sign-in in flight, as the link wizard resumes it (GRPH-1575)."""
     console_url: str
@@ -1323,7 +1452,13 @@ class ProjectRetagIn(BaseModel):
 
 class ProjectUpdate(BaseModel):
     name: str | None = None
+    # The one solid colour (#rrggbb). Not the tile's second colour.
     accent: str | None = None
+    # Null clears the ombre. Equal to the stored accent is stored as null.
+    # Only shapes the tile fill.
+    accent2: str | None = None
+    # Only shapes the tile fill. Null is refused: the column is not nullable.
+    pattern: str | None = None
     visibility: str | None = None
     description: str | None = None
     share_global_memory: bool | None = None
@@ -1345,6 +1480,21 @@ class ProjectUpdate(BaseModel):
     release_ref: str | None = None
     # Null or blank clears; stored normalized (services/projects.normalize_repo_url).
     repo_url: str | None = None
+
+    @field_validator("accent")
+    @classmethod
+    def _accent(cls, v: str | None) -> str | None:
+        return _optional_hex(v, "accent")
+
+    @field_validator("accent2")
+    @classmethod
+    def _accent2(cls, v: str | None) -> str | None:
+        return _optional_hex(v, "accent2")
+
+    @field_validator("pattern")
+    @classmethod
+    def _pattern(cls, v: str | None) -> str | None:
+        return _optional_pattern(v)
 
     @field_validator("memory_write_mode")
     @classmethod
@@ -1858,10 +2008,33 @@ class RuleToggleOut(BaseModel):
     #: GRPH-1631: per field (`on`, `params`), what a Reset (null) lands on: `org` when the org
     #: has a row setting that field, else `platform default`.
     inherits: dict[str, str] | None = None
+    #: GRPH-1727: per field (`on`, `params`), the value a Reset (null) lands on — the org row's
+    #: value when it sets that field, else the library default. A client draws it after Reset.
+    inherited: dict | None = None
     locked: bool
     locked_by: str | None = None
     #: `merge.done_predicates` only (GRPH-1426): each predicate `done` needs, with its source.
     effective_predicates: list[dict] | None = None
+    #: Custom rules only (GRPH-1774): the rule's state, and why it is drawn UNMEASURED.
+    state: str | None = None
+    unmeasured_reason: str | None = None
+    #: GRPH-1777: while `state` is `observing`, what the rule would have held or refused, and
+    #: `decision_due` (14 days or 10 would-have outcomes). Never promotes itself.
+    observation: dict | None = None
+
+
+class RulePromote(BaseModel):
+    reason: str
+
+
+class RuleObservationOut(BaseModel):
+    id: int
+    rule_id: str
+    outcome: str
+    item_id: str | None = None
+    commit: str | None = None
+    detail: dict
+    at: datetime
 
 
 class RuleTogglesOut(BaseModel):
@@ -1871,6 +2044,134 @@ class RuleTogglesOut(BaseModel):
     #: Why the installed pack is not in force (refused at startup), else None.
     library_reason: str | None = None
     toggles: list[RuleToggleOut]
+
+
+class CustomRuleWrite(BaseModel):
+    """A person authoring a custom rule directly; saved `active` (GRPH-1774)."""
+    model_config = {"extra": "forbid"}
+    slug: str
+    primitive: str
+    title: str
+    why: str
+    reason: str = ""
+    params: dict = {}
+    claims: str | None = None
+
+
+class RuleProposalWrite(BaseModel):
+    """A rule proposal from a person or the import CLI (GRPH-1775). `import_run` marks an import."""
+    model_config = {"extra": "forbid"}
+    kind: str
+    citations: list[dict] = []
+    rule_id: str | None = None
+    slug: str | None = None
+    primitive: str | None = None
+    title: str | None = None
+    why: str | None = None
+    params: dict | None = None
+    import_run: str | None = None
+    # kind == "guidance" (GRPH-1780): advisory text under a stage, in place of a rule change.
+    stage: str | None = None
+    label: str | None = None
+    text: str | None = None
+
+
+class RuleProposalOut(BaseModel):
+    id: int
+    project_id: str
+    kind: str
+    rule_id: str
+    primitive: str
+    draft: dict
+    params: dict
+    citations: list
+    proposer: str
+    proposer_kind: str
+    direction: str
+    loosens: bool
+    status: str
+    folded: bool = False
+    created_at: datetime
+    decided_by: str | None = None
+    decided_reason: str | None = None
+    decided_at: datetime | None = None
+    org_dismissed_by: str | None = None
+    org_dismissed_reason: str | None = None
+    org_dismissed_at: datetime | None = None
+
+
+class RuleProposalAdopt(BaseModel):
+    """Adopt one or several proposals under one reason (GRPH-1776)."""
+    model_config = {"extra": "forbid"}
+    proposal_ids: list[int]
+    reason: str
+
+
+class RuleProposalDismiss(BaseModel):
+    model_config = {"extra": "forbid"}
+    reason: str
+
+
+class RuleProposalDecisionOut(RuleProposalOut):
+    pass
+
+
+class OrgRuleProposalAdopt(BaseModel):
+    """Adopt proposals at org scope, for every project in the org (GRPH-1808)."""
+    model_config = {"extra": "forbid"}
+    ids: list[int]
+    reason: str
+    dry_run: bool = False
+
+
+class OrgRuleProposalOut(RuleProposalDecisionOut):
+    project_name: str | None = None
+    overrides: list[dict] = []
+    state: str | None = None
+    projects_changed: list[str] | None = None
+
+
+class RuleGuidanceOut(BaseModel):
+    id: int
+    project_id: str
+    kind: str
+    stage: str
+    label: str
+    text: str
+    citations: list
+    proposer: str
+    proposer_kind: str
+    status: str
+    created_at: datetime
+
+
+class CustomRuleOut(BaseModel):
+    rule_id: str
+    primitive: str
+    stage: str
+    title: str
+    why: str
+    claims: str
+    params: dict
+    state: str
+    author: str | None = None
+    reason: str = ""
+    created_at: datetime
+    on: bool
+    source: str
+    #: GRPH-1779: `project` or `org`; `override` is a project row the org's rule also exists
+    #: behind; `locked` is the org's lock holding it.
+    scope: str = "project"
+    locked: bool = False
+    override: bool = False
+    unmeasured_reason: str | None = None
+
+
+class PublishToOrgWrite(BaseModel):
+    """Either or both flags; an absent flag is left as it is."""
+    model_config = {"extra": "forbid"}
+    specs: bool | None = None
+    item_digests: bool | None = None
 
 
 class MemoryWriteModeWrite(BaseModel):

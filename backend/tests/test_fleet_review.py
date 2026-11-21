@@ -81,14 +81,29 @@ def _new_item(client, key, title="work", touchpoints=None):
     return _ok(client, key, "create_item", body)
 
 
+def _link_pr(item_id: str) -> None:
+    """GRPH-1730 withholds a branch with no PR. `github_url` releases that gate and
+    is not evidence, so a later read of the evidence list stays the test's own."""
+    from app.db import SessionLocal
+
+    s = SessionLocal()
+    try:
+        s.get(Item, item_id).github_url = "https://github.com/o/r/pull/1"
+        s.commit()
+    finally:
+        s.close()
+
+
 def _built_by(client, key, agent, title="work"):
     """An item claimed and pushed to `review` by `agent` — the state a reviewer acts on."""
     _new_item(client, key, title)
     c = _ok(client, key, "claim_next", {"agent_id": agent["agent_id"]})
     assert c["claimed"], "the fixture item should have been claimable"
+    item_id = c["item"]["id"]
     _ok(client, key, "update_item",
-        {"id": c["item"]["id"], "status": "review", "agent_id": agent["agent_id"]})
-    return c["item"]["id"]
+        {"id": item_id, "status": "review", "agent_id": agent["agent_id"]})
+    _link_pr(item_id)
+    return item_id
 
 
 def _register(client, key, role, label=None, vendor=None, instance=None):
@@ -130,6 +145,8 @@ def test_a_lone_agent_cannot_review_its_own_work(client, agent_key, db):
 
     assert out["claimed"] is False
     assert out["reason"] == "no item awaiting a second pair of eyes"
+    # GRPH-1652: still named, by item and rule.
+    assert [w["rule"] for w in out["withheld"]] == ["own_work"]
 
 
 def test_two_agents_can_review_each_other(client, agent_key, db):

@@ -40,11 +40,18 @@ services:
       # uvicorn workers; 0 = min(4, cpu_count), 1 = single process (GRPH-1241).
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-0}
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me-in-production-0123456789abcdef}
-      # One proxy in front (nginx), so the rate limiter reads one hop from the RIGHT of
-      # X-Forwarded-For — what nginx actually observed, rather than the client-supplied
+      # One proxy in front (Caddy), so the rate limiter reads one hop from the RIGHT of
+      # X-Forwarded-For — what Caddy actually observed, rather than the client-supplied
       # prefix it appends to (GRPH-553). This is the value that makes per-IP limits
       # per-IP on the self-host; leaving it 0 means every caller shares one bucket.
       TRUSTED_HOPS: ${TRUSTED_HOPS:-1}
+      # Where the box CA writes box.crt/box.key. The web container reloads Caddy itself when
+      # they change, so TLS_RELOAD_URL stays empty (GRPH-1635).
+      TLS_DIR: /etc/graphban/tls
+      # The published HTTPS port (the web service maps it below). The API builds the box's
+      # `https_url` from it for /api/https; not forwarding it would report :8443 whatever
+      # the operator set — the GRPH-553/GRPH-1579 class (GRPH-1664).
+      WEB_HTTPS_PORT: ${WEB_HTTPS_PORT:-8443}
       # Deprecated, and it was never forwarded here at all before GRPH-553 — so the
       # flag docs/deploy.md told an operator to consider had no effect on this
       # stack whatever they set it to. Passed through now so the documented knob
@@ -76,6 +83,13 @@ services:
       # Local -> console code-graph push and link (GRPH-1554). Empty leaves the box unlinked.
       SYNC_CLOUD_URL: ${SYNC_CLOUD_URL:-}
       SYNC_API_KEY: ${SYNC_API_KEY:-}
+      # Project-sync flush budget (GRPH-1735). Defaults are D11; set these to change them.
+      SYNC_FLUSH_SECONDS: ${SYNC_FLUSH_SECONDS:-5}
+      SYNC_FLUSH_BYTES_PER_MIN: ${SYNC_FLUSH_BYTES_PER_MIN:-262144}
+      SYNC_FLUSH_REQUESTS_PER_MIN: ${SYNC_FLUSH_REQUESTS_PER_MIN:-30}
+      # Optional token for the update check's GitHub API calls (GRPH-1663). Empty is
+      # unauthenticated (60/hour shared per public IP).
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-${GRAPHBAN_GITHUB_TOKEN:-}}
     volumes:
       # Drive sync target. Point SYNC_HOST_DIR at a Google Drive Desktop folder to reach Drive.
       - ${SYNC_HOST_DIR:-./sync}:/data/sync
@@ -84,6 +98,8 @@ services:
       # Default is an empty local dir — no socket, Install stays disabled. Not
       # the Docker socket. See docs/deploy.md.
       - ${GRAPHBAN_APPLY_DIR:-./.graphban-apply}:/run/graphban-apply
+      # The box certificate the CA writes for the web container to serve (GRPH-1635).
+      - box_tls:/etc/graphban/tls
     depends_on:
       db:
         condition: service_healthy
@@ -100,7 +116,14 @@ services:
       - api
     ports:
       - "${WEB_PORT:-8080}:80"
+      # The box's HTTPS listener (GRPH-1635). Serves the certificate the API's box CA writes
+      # into the shared `box_tls` volume; the Caddy admin API is NOT published.
+      - "${WEB_HTTPS_PORT:-8443}:8443"
+    volumes:
+      - box_tls:/etc/graphban/tls:ro
 
 volumes:
+  # The box certificate the API writes (TLS_DIR) and the web container serves (GRPH-1635).
+  box_tls:
   # Frozen: renaming this key orphans the existing volume and reads as data loss.
   agentledger_pgdata:

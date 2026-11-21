@@ -10,7 +10,8 @@ from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Agent, Enrolment, Item, Prd, Project, utcnow
+from app.errors import Refused
+from app.models import Agent, Enrolment, Item, Link, Prd, Project, utcnow
 from app.services import keys
 from app.services import routing as routing_svc
 
@@ -27,6 +28,224 @@ def _check_kind(kind: str) -> None:
     if kind not in KINDS and kind != "":
         raise ValueError(
             f"invalid kind: {kind!r} — one of {', '.join(KINDS)}, or empty for not recorded")
+
+
+def check_line(line_id: str | None, prd_id: str | None, kind: str | None) -> None:
+    """A line item is a `fix` and has no PRD (GRPH-1681). Empty `kind` is not a fix."""
+    if not line_id:
+        return
+    if prd_id:
+        raise ValueError("an item cannot have both prd_id and line_id")
+    if kind != "fix":
+        raise ValueError(
+            f"only a fix can carry line_id (kind is {kind or 'empty'!r}); "
+            "a feature or chore belongs to a PRD")
+
+#: What `severity` may hold (GRPH-1683). Empty = not recorded.
+SEVERITIES = ["security"]
+
+#: The dependency reason and the blocker text filing a blocking fix writes (GRPH-1696).
+#: `release_when_blocking_fix_done` reads both. A manual blocker does not end with the suffix.
+BLOCKING_FIX_REASON = "blocking fix"
+BLOCKING_FIX_BLOCKER_SUFFIX = ": blocking fix filed on this item"
+
+#: Dependency reason written when a blocker text names the items it waits on (GRPH-1530).
+#: A manual note, a typed wait, and a blocking-fix filing do not use it. The fleet drain
+#: matches the same key grammar and the same person/decision words; keep them together.
+BLOCKER_DEP_REASON = "blocker"
+_BLOCKER_KEY = re.compile(
+    r"(?<![\w/.-])([A-Za-z][A-Za-z0-9]{1,3}-[RrPpAaLl]?\d+)(?![\w/.-])"
+)
+_PERSON_OR_DECISION = re.compile(r"\b(?:person|human|decision)\b", re.IGNORECASE)
+
+#: The three exits an agent that finds a defect has. Every fix refusal quotes them.
+FIX_EXITS = (
+    "a defect has three exits: fix it on the item you hold (only when build.found_bug is "
+    "fix_in_build); file a blocking fix on a PRD — create_item(kind=fix, prd_id=<the PRD>, "
+    "blocks=<an item on that PRD>, description with ## Acceptance, touchpoints); or file it on "
+    "the maintenance line — create_item(kind=fix, line_id=<get_context.maintenance_line.id>, "
+    "description with ## Acceptance, touchpoints)")
+
+
+def _check_severity(severity: str, kind: str | None) -> None:
+    if severity not in SEVERITIES and severity != "":
+        raise ValueError(
+            f"invalid severity: {severity!r} — {', '.join(SEVERITIES)}, or empty for not recorded")
+    if severity and kind != "fix":
+        raise ValueError(
+            f"severity={severity} is only for a fix (kind is {kind or 'empty'!r}); "
+            "set kind=fix, or drop severity")
+
+
+def is_filed_fix(db: Session, item) -> bool:
+    """A fix filed under the GRPH-1683 rules: on the line, or a blocking fix on a PRD.
+
+    A blocking fix is a `fix` on a PRD with no section and an item on that PRD depending on
+    it. A historical fix with a section, or with nothing waiting on it, is neither, and keeps
+    today's sign-off rule.
+    """
+    if item.kind != "fix":
+        return False
+    if item.line_id:
+        return True
+    return bool(item.prd_id) and not item.prd_section and has_blocking_dependency(db, item)
+
+
+def check_fix_scope(*, kind: str | None, line_id: str | None, prd_id: str | None,
+                    prd_section: str) -> None:
+    """A fix must say where it lives (GRPH-1683).
+
+    `create_item` may already have filled `line_id` from the project's maintenance line
+    (GRPH-1798). This check does not look the line up itself: a fix that still has
+    neither scope is refused, which is the behaviour when the project has no line.
+    """
+    if kind != "fix":
+        return
+    if not line_id and not prd_id:
+        raise ValueError(f"a fix needs a scope: it has neither prd_id nor line_id. {FIX_EXITS}")
+    if prd_id and not line_id and prd_section:
+        raise ValueError(
+            f"a blocking fix on a PRD carries no prd_section (got {prd_section!r}): it is not "
+            "a section's work. Drop prd_section; to put it on a section, file a feature")
+
+
+def check_fix_shape(*, description: str, touchpoints) -> None:
+    """Acceptance and touchpoints a filed fix must carry; the refusal names which is missing."""
+    from app.services.fleet import parse_acceptance
+    missing = []
+    if not parse_acceptance(description or "")[0]:
+        missing.append("an acceptance clause (a list item under `## Acceptance` in the "
+                       "description)")
+    if not [t for t in (touchpoints or []) if isinstance(t, str) and t.strip()]:
+        missing.append("a touchpoint (touchpoints=[...] naming the files the fix changes)")
+    if missing:
+        raise ValueError("a fix needs " + " and ".join(missing) + " before it can be filed")
+
+
+def _blocked_item(db: Session, blocks: str | None, prd_id: str | None) -> Item:
+    """The item on `prd_id` that a blocking fix holds up (the dependency's source)."""
+    if not blocks:
+        raise ValueError(
+            "a blocking fix needs `blocks`: an item on the same PRD that depends on it, so the "
+            f"fix is not filed with nothing waiting on it. {FIX_EXITS}")
+    blocked = db.get(Item, keys.resolve_item(db, blocks) or blocks)
+    if blocked is None:
+        raise ValueError(f"blocks: unknown item {blocks!r}")
+    if blocked.prd_id != prd_id:
+        raise ValueError(
+            f"blocks: {blocked.key} is not on the PRD this fix is filed on; name an item on "
+            "that PRD (it may differ from the PRD you are building)")
+    return blocked
+
+
+def has_blocking_dependency(db: Session, item: Item) -> bool:
+    """True if an item on `item`'s PRD depends on it."""
+    from app.models import Link
+    srcs = db.scalars(select(Link.a).where(Link.b == item.id, Link.type == "dependency")).all()
+    return any((o := db.get(Item, a)) is not None and o.prd_id == item.prd_id for a in srcs)
+
+
+def lines_svc_resolve(db: Session, line_id: str, project_id: str) -> str:
+    from app.services import lines as lines_svc
+    return lines_svc.resolve_for_item(db, line_id, project_id)
+
+
+def _open_overlaps(db: Session, *, line_id: str | None, prd_id: str | None,
+                   touchpoints, exclude=()) -> list[Item]:
+    """Open items on the same scope (the line, else the PRD) sharing a touchpoint (GRPH-1695).
+
+    `exclude` are ids that are not candidate duplicates: the item a blocking fix holds and
+    the item the fix was found during — a fix usually touches exactly their files."""
+    from app.services.clustering import shared_touchpoints
+    scope = Item.line_id == line_id if line_id else Item.prd_id == prd_id
+    rows = db.scalars(select(Item).where(scope, Item.status != "done")).all()
+    return [o for o in rows if o.id not in set(exclude)
+            and shared_touchpoints(o.touchpoints or [], touchpoints or [])]
+
+
+def check_duplicates(db: Session, *, line_id: str | None, prd_id: str | None,
+                     touchpoints, distinct_from, exclude=()) -> list[tuple[Item, str]]:
+    """Refuse a fix overlapping an open item on its scope unless every overlap is named in
+    `distinct_from` with a reason. Returns the (item, reason) pairs to link."""
+    named: list[tuple[Item, str]] = []
+    for entry in distinct_from or []:
+        ref = entry.get("id") if isinstance(entry, dict) else None
+        reason = entry.get("reason") if isinstance(entry, dict) else None
+        if not isinstance(ref, str) or not isinstance(reason, str) or not reason.strip():
+            raise ValueError("distinct_from entries are {id, reason}, and the reason says in "
+                             f"what way the fix is not a duplicate; got {entry!r}")
+        other = db.get(Item, keys.resolve_item(db, ref) or ref)
+        if other is None:
+            raise ValueError(f"distinct_from: unknown item {ref!r}")
+        named.append((other, reason.strip()))
+    overlaps = _open_overlaps(db, line_id=line_id, prd_id=prd_id, touchpoints=touchpoints,
+                              exclude=exclude)
+    left = [o for o in overlaps if o.id not in {n.id for n, _ in named}]
+    if left:
+        raise ValueError(
+            "possible duplicate: open items on this scope already touch the same files: "
+            + ", ".join(o.key for o in left)
+            + ". Resubmit with distinct_from=[{id, reason}] naming each, with why the fix is "
+            "not the same work")
+    return named
+
+
+def resolve_found_during(db: Session, *, found_during: str | None,
+                         held: list[Item]) -> Item | None:
+    """The item a fix was found on: named, else the one item the caller holds (GRPH-1695)."""
+    if found_during:
+        item = db.get(Item, keys.resolve_item(db, found_during) or found_during)
+        if item is None:
+            raise ValueError(f"found_during: unknown item {found_during!r}")
+        return item
+    if len(held) > 1:
+        raise ValueError("you hold more than one item, so say which one this fix was found "
+                         "during: found_during=<one of " + ", ".join(h.key for h in held) + ">")
+    return held[0] if held else None
+
+
+def found_during_of(db: Session, item: Item) -> str | None:
+    """Key of the item `item` was found on, or None (not recorded)."""
+    from app.models import Link
+    b = db.scalar(select(Link.b).where(Link.a == item.id, Link.type == "found_during"))
+    other = db.get(Item, b) if b else None
+    return other.key if other is not None else None
+
+
+def refuse_overlap_with_held(db: Session, *, touchpoints, held: list[Item],
+                             project_id: str) -> None:
+    """`build.found_bug` under `fix_in_build`: a new fix over the files of an item the caller
+    holds is fixed on that item, not filed (GRPH-1682). `file_ticket` does not refuse."""
+    from app.services import rule_toggles
+    from app.services.clustering import shared_touchpoints
+    if rule_toggles.found_bug_mode(db, project_id) != "fix_in_build":
+        return
+    hit = [h for h in held if shared_touchpoints(h.touchpoints or [], touchpoints or [])]
+    if hit:
+        raise Refused(
+            409, f"{rule_toggles.FOUND_BUG_RULE} is fix_in_build: this fix touches the files of "
+            f"{hit[0].key}, which you hold. Fix the bug on {hit[0].key} instead of filing a "
+            "ticket for it", rule_id=rule_toggles.FOUND_BUG_RULE)
+
+
+def refuse_review_over_open_fix(db: Session, item: Item) -> None:
+    """`build.found_bug` under `file_ticket`: the held item does not reach review while its
+    diff touches a path on an open fix found during it (GRPH-1682)."""
+    from app.models import Link
+    from app.services import rule_toggles
+    from app.services.clustering import shared_touchpoints
+    if rule_toggles.found_bug_mode(db, item.project_id) != "file_ticket":
+        return
+    ids = db.scalars(select(Link.a).where(Link.b == item.id, Link.type == "found_during")).all()
+    for fid in ids:
+        fix = db.get(Item, fid)
+        if (fix is not None and fix.kind == "fix" and fix.status != "done"
+                and shared_touchpoints(item.touchpoints or [], fix.touchpoints or [])):
+            raise Refused(
+                409, f"{rule_toggles.FOUND_BUG_RULE} is file_ticket: {item.key} cannot move to "
+                f"review while its diff touches a path on open fix {fix.key}. Finish {fix.key}, "
+                "or take those paths out of this item's diff",
+                rule_id=rule_toggles.FOUND_BUG_RULE)
 
 
 def _default_kind(tags) -> str:
@@ -99,6 +318,27 @@ def get_item(db: Session, item_id: str) -> Item | None:
     return db.get(Item, keys.resolve_item(db, item_id) or item_id)
 
 
+def default_maintenance_line(db: Session, *, kind: str | None, explicit_kind: bool,
+                             agent_create: bool, prd_id: str | None,
+                             line_id: str | None, project_id: str) -> tuple[str | None, bool]:
+    """GRPH-1798. A filed fix with neither scope lands on the project's maintenance line.
+
+    An explicit `prd_id` or `line_id` is returned unchanged. A project with no line
+    returns the caller's `line_id` and False, so the scope refusal is unchanged.
+
+    Only a filed fix takes the default: an explicit `kind=fix`, or any fix an agent
+    files (a `bug` tag defaults kind there too). A non-agent bug-tagged default is
+    the historical path that predates the filing rules and stays unscoped.
+    """
+    if kind != "fix" or not (explicit_kind or agent_create) or prd_id or line_id:
+        return line_id, False
+    from app.services import lines as lines_svc
+    line = lines_svc.get_line(db, project_id)
+    if line is None:
+        return line_id, False
+    return line.id, True
+
+
 def create_item(
     db: Session,
     *,
@@ -118,6 +358,13 @@ def create_item(
     question: str | None = None,
     options: list[str] | None = None,
     kind: str | None = None,
+    line_id: str | None = None,
+    severity: str = "",
+    blocks: str | None = None,
+    agent_create: bool = False,
+    distinct_from: list | None = None,
+    found_during: str | None = None,
+    held: list[Item] | None = None,
 ) -> Item:
     """Create a tracked item.
 
@@ -144,10 +391,41 @@ def create_item(
         )
     if fidelity not in FIDELITIES:
         raise ValueError(f"invalid fidelity: {fidelity}")
+    explicit_kind = kind is not None
     kind = _default_kind(tags) if kind is None else kind
     _check_kind(kind)
+    severity = severity or ""
+    _check_severity(severity, kind)
     if db.get(Project, project_id) is None:
         raise ValueError(f"unknown project: {project_id!r}")
+    line_id, line_defaulted = default_maintenance_line(
+        db, kind=kind, explicit_kind=explicit_kind, agent_create=agent_create,
+        prd_id=prd_id, line_id=line_id, project_id=project_id)
+    check_line(line_id, prd_id, kind)
+    blocked = None
+    distinct: list[tuple[Item, str]] = []
+    origin: Item | None = None
+    # An explicit `fix`, or any `fix` an agent files (a bug tag defaults it there too), is a
+    # filed fix (GRPH-1683). Only a non-agent caller's bug-tagged default predates the rules.
+    if kind == "fix" and (explicit_kind or agent_create):
+        check_fix_scope(kind=kind, line_id=line_id, prd_id=prd_id, prd_section=prd_section)
+        if agent_create:
+            check_fix_shape(description=description, touchpoints=touchpoints)
+        if prd_id and not line_id:
+            blocked = _blocked_item(db, blocks, _stored_prd_id(db, prd_id, project_id))
+        if agent_create:
+            origin = resolve_found_during(db, found_during=found_during, held=held or [])
+            refuse_overlap_with_held(db, touchpoints=touchpoints, held=held or [],
+                                     project_id=project_id)
+            distinct = check_duplicates(
+                db, line_id=lines_svc_resolve(db, line_id, project_id) if line_id else None,
+                prd_id=_stored_prd_id(db, prd_id, project_id), touchpoints=touchpoints,
+                distinct_from=distinct_from,
+                exclude=[x.id for x in (blocked, origin) if x is not None])
+    elif blocks:
+        raise ValueError("blocks is only for a blocking fix (kind=fix with prd_id)")
+    if line_id:
+        line_id = lines_svc_resolve(db, line_id, project_id)
     effort_val = int(effort or 0)
     if effort_val < 0:
         raise ValueError(f"negative effort: {effort_val}")
@@ -168,20 +446,52 @@ def create_item(
         reporter=reporter or {},
         date=date,
         prd_id=_stored_prd_id(db, prd_id, project_id),
+        line_id=line_id or None,
         prd_linked_at=utcnow() if prd_id else None,
         prd_section=prd_section or "",
         fidelity=fidelity,
         kind=kind,
+        severity=severity,
     )
     if question or options:
         from app.services.waits import set_decision
         set_decision(item, question, options)
     db.add(item)
+    if blocked is not None:
+        from app.models import Link
+        db.flush()
+        # In the same transaction as the fix: a blocking fix with nothing waiting on it is
+        # the state this refuses.
+        db.add(Link(project_id=blocked.project_id, a=blocked.id, b=item.id, type="dependency",
+                    reason=BLOCKING_FIX_REASON, confidence=1.0))
+    if distinct or origin is not None:
+        from app.models import Link
+        db.flush()
+        for other, reason in distinct:
+            db.add(Link(project_id=item.project_id, a=item.id, b=other.id, type="semantic",
+                        reason=reason, confidence=1.0))
+        if origin is not None:
+            db.add(Link(project_id=item.project_id, a=item.id, b=origin.id,
+                        type="found_during", reason="found during", confidence=1.0))
     if commit:
         db.commit()
         db.refresh(item)
     else:
         db.flush()  # assigns the row without ending the caller's transaction
+    # GRPH-1696: the holder stops when they are the blocked item. A dependency written after
+    # the fact does not retract a lease; filing the blocking fix does. A held item is one the
+    # caller holds (`held` is built from the caller's own claims), so another agent's lease on
+    # the blocked item is never touched.
+    if blocked is not None and agent_create and any(h.id == blocked.id for h in held or []):
+        holder = blocked.claimed_by
+        if holder and release_item(db, blocked.id, holder, to_status="blocked",
+                                   reason=f"blocked by the fix {item.key} it filed") is not None:
+            blocked.blocker = f"{item.key}{BLOCKING_FIX_BLOCKER_SUFFIX}"
+            if commit:
+                db.commit()
+                db.refresh(item)
+            else:
+                db.flush()
     if item.touchpoints:
         from app.services.clustering import sync_code_links
         sync_code_links(db, item)
@@ -190,6 +500,10 @@ def create_item(
         harness_svc.on_bug_filed(db, item)
         if commit:
             db.commit()
+    if line_defaulted:
+        # Reply-only. Not a column: a later read of the row must not say the line was
+        # defaulted, and a refresh must not drop the flag before the caller serializes.
+        db.info.setdefault("line_defaulted", set()).add(item.id)
     return item
 
 
@@ -1235,6 +1549,13 @@ def require_engine_evidence(db: Session, item: Item, incoming, head: str | None 
                    f"CI's {engine} run: {CI_PREDICATE} must be attested at its current head "
                    + (f"{at[:12]}" if at else "(none is recorded; push and let CI report)")
                    + ", and an attestation at another commit or a failing one does not count.")
+    if state.get("state") == "observing":
+        # GRPH-1777: observing records what it would have refused, and lets the item through.
+        from app.services import rule_observations
+        rule_observations.record(db, item.project_id, ENGINE_EVIDENCE_RULE, "would_refuse",
+                                 item_id=item.id, commit=(head or item.head_commit),
+                                 detail={"path": path, "engine": engine})
+        return
     raise EvidenceRequired(
         f"{item.key} cannot move to review while {ENGINE_EVIDENCE_RULE} is on: it touches "
         f"{path} and carries no test receipt recording a full {engine} suite run.{waiting} Record one "
@@ -1454,6 +1775,16 @@ def refuse_if_predicates_missing(db, item, merged, head) -> None:
     if CI_PREDICATE in required and head and external_ci_green(db, item, merged, [head]):
         required = [n for n in required if n != CI_PREDICATE]
     absent = missing_predicates(merged, required, commit=head or None)
+    if not absent:
+        # GRPH-1777: an observing `merge.done_predicates` records what it would have refused.
+        from app.services import rule_observations, rule_toggles
+        watched = missing_predicates(
+            merged, rule_toggles.observed_done_predicates(db, item.project_id),
+            commit=head or None)
+        if watched:
+            rule_observations.record(db, item.project_id, rule_toggles.DONE_PREDICATES_RULE,
+                                     "would_refuse", item_id=item.id, commit=head or None,
+                                     detail={"missing": watched})
     if absent:
         attested = sorted(attested_predicates(merged, commit=head or None))
         failed = [n for n in absent
@@ -1757,6 +2088,124 @@ def set_reach(db: Session, item: Item, value: str) -> Item:
     return item
 
 
+#: How an item can be closed without delivering anything (GRPH-1671).
+RESOLUTION_KINDS = ("duplicate", "superseded")
+#: The rule a refused resolution cites (services/rules.py).
+RESOLUTION_RULE = "close.resolution_points_at_the_work"
+
+
+class ResolutionRefused(ValueError):
+    """A close-as-duplicate/superseded the item or its pointer does not allow (GRPH-1671).
+
+    `reason` is a stable code the boundary carries into the refusal: `already_done`,
+    `bad_kind`, `target_missing`, `target_self`, `target_other_project`,
+    `target_not_done`, `reason_required`, `claim_holder`, `typed_wait`."""
+
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
+
+
+def resolve_item(db: Session, item_id: str, *, kind: str, of: str, reason: str = "",
+                 actor: str, actor_agent: str | None = None, defer=None) -> Item | None:
+    """Close an item as a duplicate of another, or as superseded, WITHOUT an attestation
+    (GRPH-1671).
+
+    The completion gate asks for proof that work was checked. A duplicate did no work, so
+    the gate could never open and the item sat in `blocked` forever. This is the one path
+    that closes without that proof, and it is narrow on purpose:
+
+    - `duplicate` points at another item in the same project that is itself `done` — its
+      own attestation (or its own resolution) is what vouches for the work. Pointing at
+      unfinished work is refused, or "duplicate of" would be a way round review.
+    - `superseded` points at the item or PRD that replaced it, which need not be done yet,
+      and needs a reason.
+    - `actor_agent`, when an agent is calling, must not hold this item's build or review
+      claim: the builder cannot close its own work this way. WHO may call at all (a
+      planner, or the project owner) is the boundary's check — services stay
+      principal-free, as `owner_close` does.
+
+    The item is `done` but never `delivered` (`Item.delivered`): completeness and the close
+    report count the item `of` points at, not this one.
+    """
+    item = get_item(db, item_id)
+    if item is None:
+        return None
+    if item.status == "done":
+        raise ResolutionRefused("already_done", f"{item.key} is already done")
+    if kind not in RESOLUTION_KINDS:
+        raise ResolutionRefused(
+            "bad_kind", f"resolution kind must be one of {', '.join(RESOLUTION_KINDS)}, "
+                        f"not {kind!r}")
+    from app.services.waits import wait_tags_on
+    if wait_tags_on(item):
+        raise ResolutionRefused(
+            "typed_wait", f"{item.key} is a typed human wait; clear it the way a wait clears "
+                          "(answer it, or mark it done when the person has acted)")
+    if actor_agent and actor_agent in {item.claimed_by, item.review_claimed_by}:
+        raise ResolutionRefused(
+            "claim_holder", f"{actor_agent} holds {item.key}'s "
+            f"{'build' if actor_agent == item.claimed_by else 'review'} claim; the agent "
+            "working an item cannot close it as a duplicate or superseded. Release it, and "
+            "let a planner or the project owner close it")
+    why = (reason or "").strip()
+    if kind == "superseded" and not why:
+        raise ResolutionRefused(
+            "reason_required", "superseded needs a one-line reason: what replaced it and why")
+    ref = (of or "").strip()
+    target_item = None
+    target_prd = None
+    tid = keys.resolve_item(db, ref) if ref else None
+    if tid:
+        target_item = db.get(Item, tid)
+    elif ref and kind == "superseded":
+        from app.models import Prd
+        pid = keys.resolve_prd(db, ref)
+        target_prd = db.get(Prd, pid) if pid else None
+    if target_item is None and target_prd is None:
+        raise ResolutionRefused(
+            "target_missing",
+            f"{ref or '(nothing)'} is not an item" + (" or PRD" if kind == "superseded" else "")
+            + " — name the one that carries the work")
+    target_project = (target_item or target_prd).project_id
+    if target_project != item.project_id:
+        raise ResolutionRefused(
+            "target_other_project", f"{ref} is in another project; a resolution points at "
+                                    f"work in {item.key}'s own project")
+    if target_item is not None and target_item.id == item.id:
+        raise ResolutionRefused("target_self", f"{item.key} cannot resolve to itself")
+    if kind == "duplicate" and target_item is None:
+        raise ResolutionRefused("target_missing", f"a duplicate points at an item, not {ref}")
+    if kind == "duplicate" and target_item.status != "done":
+        raise ResolutionRefused(
+            "target_not_done",
+            f"{target_item.key} is {target_item.status}, not done. A duplicate points at work "
+            "that has been finished and checked; until it is, close this one as superseded "
+            "or leave it open")
+    resolution = {
+        "kind": kind,
+        "of": target_item.key if target_item is not None else target_prd.key,
+        "reason": why,
+        "by": actor,
+        "at": utcnow().isoformat(),
+    }
+    out = update_item(db, item.id, defer=defer, status="done", resolution=resolution)
+    if out is None:
+        return None
+    from app.services import delegation as delegation_svc
+    from app.services import fleet as fleet_svc
+    fleet_svc.release_reservations(db, item_id=out.id)
+    out.claimed_by = None
+    out.claimed_at = None
+    out.review_claimed_by = None
+    out.review_claimed_at = None
+    out.review_takes = 0
+    delegation_svc.on_outcome(db, out, "released")
+    db.commit()
+    db.refresh(out)
+    return out
+
+
 def owner_close(db: Session, item_id: str, *, closer: dict, commit: str,
                 pr_url: str | None = None, defer=None) -> Item | None:
     """Close an item whose work is on the base, as a signed-in project owner (GRPH-1030).
@@ -1841,6 +2290,37 @@ def owner_close(db: Session, item_id: str, *, closer: dict, commit: str,
     return out
 
 
+def _check_fix_transition(db: Session, item: Item, fields: dict) -> None:
+    """An update that turns a row INTO a filed fix meets the create rules (GRPH-1683).
+
+    An update that changes neither kind nor scope leaves an old row alone.
+    """
+    new_kind = fields["kind"] if fields.get("kind") is not None else item.kind
+    new_line = (fields["line_id"] or None) if "line_id" in fields else item.line_id
+    new_prd = fields["prd_id"] if fields.get("prd_id") is not None else item.prd_id
+    if fields.get("severity") is not None:
+        _check_severity(fields["severity"], new_kind)
+    sets_kind = fields.get("kind") == "fix" and item.kind != "fix"
+    sets_line = bool(fields.get("line_id")) and not item.line_id and not item.prd_id
+    sets_prd = (bool(fields.get("prd_id")) and new_kind == "fix" and not item.line_id
+                and not item.prd_id)
+    if not (sets_kind or sets_line or sets_prd):
+        return
+    section = fields["prd_section"] if fields.get("prd_section") is not None else item.prd_section
+    check_line(new_line, new_prd, new_kind)
+    check_fix_scope(kind=new_kind, line_id=new_line, prd_id=new_prd, prd_section=section or "")
+    desc = fields["description"] if fields.get("description") is not None else item.description
+    tps = list(item.touchpoints or []) + list(fields.get("touchpoints") or [])
+    check_fix_shape(description=desc, touchpoints=tps)
+    if new_prd and not new_line:
+        stored = _stored_prd_id(db, new_prd, item.project_id)
+        probe = Item(id=item.id, prd_id=stored)
+        if not has_blocking_dependency(db, probe):
+            raise ValueError(
+                f"a blocking fix needs a dependency from an item on its PRD: "
+                f"link_items(a=<an item on that PRD>, b={item.key}, type=dependency). {FIX_EXITS}")
+
+
 def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None = None,
                 **fields) -> Item | None:
     """Patch fields or advance status.
@@ -1914,6 +2394,7 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
                 "branch, or attach the PR url as evidence, then move it to review"
             )
     if fields.get("status") == "review" and prev_status != "review":
+        refuse_review_over_open_fix(db, item)
         require_engine_evidence(db, item, fields.get("evidence"),
                                 head=fields.get("head_commit"))
     # THE COMPLETION GATE (GRPH-543). Before this, `update_item` validated a status
@@ -1941,6 +2422,11 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
     # it done from Tracker; requiring an attestation would make the wait un-clearable
     # without CI, which is the opposite of "a human emptied it".
     if _completing and _wait_tags_on(item):
+        _completing = False
+    # GRPH-1671. A duplicate or superseded item delivered nothing, so there is nothing to
+    # attest. Only `resolve_item` passes `resolution`, after checking what it points at;
+    # neither the MCP `update_item` field list nor the REST PATCH schema carries it.
+    if _completing and fields.get("resolution"):
         _completing = False
     if _completing:
         merged_for_gate = append_evidence(item.evidence, fields.get("evidence") or [])
@@ -2019,6 +2505,20 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         _pending_hold(db, item)
         if fields.get("status") == "done" and prev_status != "done" else None
     )
+    _check_fix_transition(db, item, fields)
+    if fields.get("line_id") is not None or item.line_id:
+        # Checked against the row as it WILL be, so setting line_id on a feature, and
+        # setting prd_id or kind on a line item, are refused alike. An empty string clears.
+        new_line = fields["line_id"] if "line_id" in fields else item.line_id
+        if fields.get("line_id"):
+            from app.services import lines as lines_svc
+            new_line = lines_svc.resolve_for_item(db, fields["line_id"], item.project_id)
+        check_line(
+            new_line or None,
+            fields["prd_id"] if fields.get("prd_id") is not None else item.prd_id,
+            fields["kind"] if fields.get("kind") is not None else item.kind,
+        )
+        fields = {**fields, "line_id": new_line or None}
     if fields.get("prd_id") is not None:
         # The ITEM's project, not the caller's: an update must be scoped to where the
         # row actually lives, or a caller whose key defaults elsewhere could re-open
@@ -2032,9 +2532,23 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
             item.prd_linked_at = utcnow()
     for key in ("title", "description", "status", "tags", "effort", "blocker", "pr", "date",
                 "head_commit",
-                "github_url", "assignee", "prd_id", "prd_section", "fidelity", "kind"):
+                "github_url", "assignee", "prd_id", "prd_section", "fidelity", "kind",
+                "severity"):
         if key in fields and fields[key] is not None:
             setattr(item, key, fields[key])
+    if "blocker" in fields and (item.blocker or "").strip():
+        # GRPH-1530. The text is not the only record: item ids named in it become
+        # dependency links in this same commit, so a later `done` can clear the block.
+        record_blocker_dependencies(db, item)
+    if "line_id" in fields:
+        item.line_id = fields["line_id"]
+    # GRPH-1671. Written only with the `done` it justifies (`resolve_item`), and dropped the
+    # moment the item leaves `done`: a reopened duplicate is open work again, and must face
+    # the completion gate like any other item when it next closes.
+    if fields.get("resolution") and item.status == "done":
+        item.resolution = fields["resolution"]
+    elif item.status != "done" and item.resolution:
+        item.resolution = None
     # GRPH-1031. `branch` is identity, not branding: a worker rewriting it under a live
     # reviewer is how GRPH-946's "reviewer has nothing to read" comes back. The CALL
     # gate (planner/supervisor only) lives in `fleet.check_tool_role`; this half is
@@ -2134,6 +2648,11 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
     db.commit()
     db.refresh(item)
 
+    # GRPH-1530. A blocker set onto items that are already done does not wait for
+    # the next drain pass. Open dependencies leave it exactly as written.
+    if "blocker" in fields and (item.blocker or "").strip():
+        clear_satisfied_blocker(db, item)
+
     if pending_lesson_applies:
         _record_applied_lessons(db, item, pending_lesson_applies)
 
@@ -2164,12 +2683,18 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         stamp_baseline_at_start(db, item)
 
     if item.status == "done" and prev_status != "done":
-        from app.services.waits import release_waiters, wait_tags_on
+        from app.services.waits import (
+            release_waiters, release_when_blocking_fix_done, wait_tags_on,
+        )
 
         if wait_tags_on(item):
             # The wait is the human act. Clearing it unblocks the original unless
             # another unmet dep remains. Does not rewrite `in_progress`.
             release_waiters(db, item)
+        # GRPH-1772. `sign_off` writes `done` itself and calls this same helper.
+        release_when_blocking_fix_done(db, item)
+        # GRPH-1530. A blocker that names this item, and nothing still open, clears.
+        release_when_named_blockers_done(db, item)
         # A stored `code` link to finished work is noise every read pays for (GRPH-1068);
         # `related_items` still finds it by live overlap.
         # Committed even when nothing matched: the DELETE alone opens a write transaction, and
@@ -2327,15 +2852,20 @@ def search_items(
     limit: int = 25,
     project_id: str | None = None,
     tags: list[str] | None = None,
+    prd_id: str | None = None,
 ) -> list[Item]:
-    # Status/project are simple column filters (SQL); the free-text query and tag
+    # Status/project/PRD are simple column filters (SQL); the free-text query and tag
     # matching run in Python so `query` can match a tag too and stay dialect-agnostic
-    # (tags is a JSON column). The result set here is small.
+    # (tags is a JSON column). `prd_id` is the stored id (`_prd_ref` resolved the
+    # caller's key). Filtering it in Python would still load every item in the
+    # project, which is the idle-drain scan GRPH-1645 removes.
     stmt = select(Item)
     if project_id:
         stmt = stmt.where(Item.project_id == project_id)
     if status:
         stmt = stmt.where(Item.status == status)
+    if prd_id:
+        stmt = stmt.where(Item.prd_id == prd_id)
     rows = list(db.scalars(stmt.order_by(Item.sort_order.asc())).all())
 
     q = query.lower().strip()
@@ -2424,6 +2954,48 @@ def reserved_elsewhere(db: Session, agent_id: str, project_id: str | None = None
     return out
 
 
+def below_needs_tier(db: Session, agent_id: str, project_id: str | None = None,
+                     lease_seconds: int = DEFAULT_LEASE_SECONDS) -> list[dict]:
+    """Ready items this agent was skipped past because its declared tier is too low.
+
+    The same job as `reserved_elsewhere` (GRPH-1647). An empty `claim_next` is otherwise
+    byte-identical whether the board is empty or every ready item needs a higher tier, so
+    a cheap worker concludes the project is finished and the frontier item is never seated.
+    An agent that declared no tier is absent from this list: it is not below anything, and
+    listing it would be the silent refusal the mismatch rule forbids.
+    """
+    from app.services import fleet as fleet_svc
+
+    declared = fleet_svc.agent_declared_tier(db, agent_id)
+    if declared is None:
+        return []
+    scope = seat_scope(db, agent_id)
+    seated = held_by_a_seat(db, agent_id)
+    out = []
+    for cand in _ready_candidates(db, project_id, lease_seconds):
+        # The same filters as `claim_next`, in the same order. An item the sweep skipped
+        # for scope, deploy, a pin or headroom was not skipped for tier, and naming it
+        # here would point the caller at the wrong fact.
+        if not in_scope(cand, scope):
+            continue
+        if (cand.reach or "repo") == "deploy" and seated:
+            continue
+        if pinned_elsewhere(cand, agent_id):
+            continue
+        if routing_svc.held_back(db, cand, agent_id):
+            continue
+        needs = fleet_svc.bounce_needs_tier(cand)
+        if fleet_svc.tier_is_below(declared, needs):
+            out.append({"id": cand.key, "needs_tier": needs, "declared_tier": declared})
+    return out
+
+
+def _found_during_for(item: Item) -> str | None:
+    from sqlalchemy.orm import object_session
+    db = object_session(item)
+    return found_during_of(db, item) if db is not None else None
+
+
 def item_dict(item: Item) -> dict:
     """The fields every item read shares — the ONE renderer (GRPH-821).
 
@@ -2455,6 +3027,12 @@ def item_dict(item: Item) -> dict:
         # manifest, and the footprint has seventeen tokens of headroom.
         "review_claimed_by": item.review_claimed_by,
         "prd_id": item.prd_key,
+        # GRPH-1681. Reply-only; null for an item that is not on the maintenance line.
+        "line_id": item.line_key,
+        # GRPH-1683. Reply-only and omitted when empty.
+        **({"severity": item.severity} if item.severity else {}),
+        # GRPH-1695. A fix's provenance; null is "not recorded". Reply-only.
+        **({"found_during": _found_during_for(item)} if item.kind == "fix" else {}),
         "prd_section": item.prd_section,
         "fidelity": item.fidelity,
         # GRPH-1358. Always present: "" is the honest "not recorded", which a release must be
@@ -2475,21 +3053,26 @@ def item_dict(item: Item) -> dict:
         # usually blank.
         out["branch"] = item.branch
     if item.review_claimed_by:
-        # WHY the review hold above is no longer live, PRESENT ONLY WHEN IT HAS LAPSED
-        # (GRPH-1254). `review_claimed_by` is the raw column and stays set after its holder
-        # dies, so a supervisor reading it alone saw a dead reviewer as a live one and never
-        # spawned the reviewer that `claim_review` would already have let take the item over.
-        # The reason comes from `review_claim_lapse`, the one definition of a live hold, so no
-        # client re-derives presence. Reply-only, like `review_claimed_by`.
-        from app.services.fleet import review_claim_lapse
-        lapse = review_claim_lapse(item)
-        if lapse:
-            out["review_claim_lapse"] = lapse
+        # The column stays set after the holder dies (GRPH-1254). Printing it as the holder
+        # is how a planner, reading `get_item_details`, concluded a lapsed claim would never
+        # lapse (GRPH-1290). The field a reader sees is `review_claim_holder`: a live holder,
+        # or nobody. A lapsed hold carries `review_claim_lapse` and does not name a holder.
+        # Reply-only, like the column itself.
+        from app.services.fleet import review_hold_read
+        hold = review_hold_read(item)
+        out["review_claimed_by"] = hold["holder"]
+        if hold["lapse"]:
+            out["review_claim_lapse"] = hold["lapse"]
     if item.decision:
         # The agent's question and options, and the answer once given (GRPH-1137). Present
         # only on a decision wait; `notify` bookkeeping stays server-side. Reply-only.
         from app.services.waits import decision_dict
         out["decision"] = decision_dict(item)
+    if item.resolution:
+        # Closed as a duplicate or superseded (GRPH-1671): `{kind, of, reason, by, at}`.
+        # Present only when set, like `decision`, so a done item that delivered work and one
+        # that delivered nothing never read alike. Reply-only.
+        out["resolution"] = dict(item.resolution)
     qs = item.question_state
     if qs:
         # Present only when set (GRPH-P75 D1), like `branch`: one function, every surface.
@@ -2642,6 +3225,11 @@ def _is_claimable(it: Item, cutoff) -> bool:
     if stale:
         return it.status in ("next", "backlog", "in_progress")
     if it.claimed_by is None:
+        # GRPH-1685. A line item with no acceptance clause or no touchpoint is in the line's
+        # pool for reporting and out of it for claim. Fresh work only: a stale reclaim above
+        # was ready when it was taken.
+        if it.line_id and unready_reasons(it):
+            return False
         return it.status in ("next", "backlog")
     return False  # someone holds a live lease
 
@@ -2672,13 +3260,47 @@ def _ready_candidates(db: Session, project_id: str | None, lease_seconds: int) -
     for it in ctx.items:
         if not _is_claimable(it, cutoff):
             continue
-        # Fresh backlog/next must be dependency-ready; a stale in-progress reclaim is already
-        # underway, so we don't re-gate it on dependencies.
-        if it.status in ("backlog", "next") and not prio.ready(ctx, it):
+        # An unfinished dependency is not claimable on any status this sweep offers,
+        # including a stale in_progress reclaim (GRPH-1530). A status write back to
+        # `next` used to make the dependent look free while the dependency was still
+        # being built. A free-text blocker is already refused by `_is_claimable`.
+        if prio.blocked_by(ctx, it):
             continue
         out.append(it)
     out.sort(key=lambda it: (-prio.score(ctx, it), it.sort_order))
     return out
+
+
+class TierBelowNeeds(Exception):
+    """The claimant declared a tier below the one the last bounce named (GRPH-1647).
+
+    Not a subclass of `OutOfScope`. Those loops skip and carry on, which is right for one
+    neighbour and wrong for a named claim: `claim_item` has to say `needs_tier`. The sweep
+    paths catch this and skip, and an empty reply names the tier. A bare None would read
+    as an empty board.
+    """
+
+    def __init__(self, item_key: str, needs_tier: str, declared_tier: str):
+        self.item_key = item_key
+        self.needs_tier = needs_tier
+        self.declared_tier = declared_tier
+        super().__init__(
+            f"{item_key} needs_tier={needs_tier}; declared tier {declared_tier} is below it")
+
+
+def tier_block(db: Session, item: Item, agent_id: str) -> TierBelowNeeds | None:
+    """The refusal when `agent_id`'s declared tier is below this item's, else None.
+
+    An agent that declared no tier is not blocked: that is `undeclared`, and the mismatch
+    rule records it as a decision rather than a refusal (PRD-35 D8, GRPH-1647).
+    """
+    from app.services import fleet as fleet_svc
+
+    declared = fleet_svc.agent_declared_tier(db, agent_id)
+    needs = fleet_svc.bounce_needs_tier(item)
+    if declared is None or not fleet_svc.tier_is_below(declared, needs):
+        return None
+    return TierBelowNeeds(item.key, needs, declared)
 
 
 class ReachesOutsideTheRepo(Exception):
@@ -2773,7 +3395,23 @@ def seat_scope(db: Session, agent_id: str | None) -> str:
     if agent is None or not agent.enrolment_id:
         return ""
     seat = db.get(Enrolment, agent.enrolment_id)
-    return (seat.prd_id or "") if seat is not None else ""
+    if seat is None:
+        return ""
+    # GRPH-1685. A seat has at most one scope, the PRD or the maintenance line, and this
+    # returns whichever is set. Both are frozen ids from different key namespaces, so
+    # `in_scope` can match either against an item without a second parameter.
+    return seat.prd_id or seat.line_id or ""
+
+
+def seat_line(db: Session, agent_id: str | None) -> str:
+    """The maintenance line this agent's seat is scoped to, or "" (GRPH-1685)."""
+    if not agent_id:
+        return ""
+    agent = db.get(Agent, agent_id)
+    if agent is None or not agent.enrolment_id:
+        return ""
+    seat = db.get(Enrolment, agent.enrolment_id)
+    return (seat.line_id or "") if seat is not None else ""
 
 
 def held_by_a_seat(db: Session, agent_id: str | None) -> bool:
@@ -2955,7 +3593,39 @@ def in_scope(item: Item, scope: str) -> bool:
     part of a PRD. Until then the operator's choice is a scoped wave or a reachable backlog,
     and it is better that this is written down than discovered.
     """
-    return not scope or (item.prd_id or "") == scope
+    return not scope or scope in ((item.prd_id or ""), (item.line_id or ""))
+
+
+def unready_reasons(item: Item) -> list[str]:
+    """What a LINE item lacks before it may be claimed (GRPH-1685): any of `acceptance`
+    (no parsed clause) and `touchpoints` (none). Empty for a ready item and for any item that
+    is not on the line, whose readiness is the ordinary rules' business."""
+    if not item.line_id:
+        return []
+    from app.services import fleet as fleet_svc
+
+    missing = []
+    if not fleet_svc.parse_acceptance(item.description or "")[0]:
+        missing.append("acceptance")
+    if not [t for t in (item.touchpoints or []) if str(t).strip()]:
+        missing.append("touchpoints")
+    return missing
+
+
+def unready_line_items(db: Session, project_id: str | None) -> list[dict]:
+    """`[{id, missing}]` for every open line item that is out of the claim pool for lacking an
+    acceptance clause or a touchpoint. Empty means it looked and found none."""
+    stmt = select(Item).where(Item.line_id.is_not(None),
+                              Item.status.in_(("backlog", "next")),
+                              Item.claimed_by.is_(None))
+    if project_id:
+        stmt = stmt.where(Item.project_id == project_id)
+    out = []
+    for it in db.scalars(stmt.order_by(Item.number)).all():
+        missing = unready_reasons(it)
+        if missing:
+            out.append({"id": it.key, "missing": missing})
+    return out
 
 
 class AlreadyHolding(Exception):
@@ -2990,6 +3660,171 @@ def live_claim(db: Session, agent_id: str, *, lease_seconds: int = DEFAULT_LEASE
     return None
 
 
+def keys_named_in(text: str) -> list[str]:
+    """Item-key tokens in `text`, in order, without duplicates.
+
+    The grammar is the rendered key (`GRPH-1685`, `GBC-77`), not a prefix of a
+    longer token. The fleet drain uses the same expression.
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+    for match in _BLOCKER_KEY.finditer(text or ""):
+        key = match.group(1)
+        if key not in seen:
+            seen.add(key)
+            found.append(key)
+    return found
+
+
+def blocker_names_person_or_decision(text: str) -> bool:
+    """A person or a decision, named in the blocker text. Those are left alone."""
+    return bool(_PERSON_OR_DECISION.search(text or ""))
+
+
+def unfinished_dependency_ids(db: Session, item: Item) -> list[str]:
+    """Dependency targets that exist and are not `done`. A missing row does not block."""
+    ids = db.scalars(select(Link.b).where(
+        Link.type == "dependency", Link.a == item.id)).all()
+    open_ids: list[str] = []
+    for dep_id in dict.fromkeys(ids):
+        dep = db.get(Item, dep_id)
+        if dep is not None and dep.status != "done":
+            open_ids.append(dep_id)
+    return open_ids
+
+
+def _hold_live(item: Item) -> bool:
+    if not item.claimed_by or item.claimed_at is None:
+        return False
+    cutoff = utcnow() - timedelta(seconds=DEFAULT_LEASE_SECONDS)
+    claimed = _aware(item.claimed_at)
+    return claimed is not None and claimed >= cutoff
+
+
+def record_blocker_dependencies(db: Session, item: Item) -> list[str]:
+    """Link this item to every item its blocker text names (GRPH-1530).
+
+    The free-text field is what a worker types; the link is what a later `done`
+    can see. A person, a decision, a typed wait, and a blocking-fix filing are
+    not this record — those already have their own release rules. Returns the
+    stored ids linked, including ones that already had a dependency edge.
+    """
+    text = (item.blocker or "").strip()
+    if (not text or blocker_names_person_or_decision(text)
+            or text.endswith(BLOCKING_FIX_BLOCKER_SUFFIX)):
+        return []
+    from app.services.waits import wait_tags_on
+    if wait_tags_on(item):
+        return []
+    linked: list[str] = []
+    for token in keys_named_in(text):
+        stored = keys.resolve_item(db, token)
+        if not stored or stored == item.id:
+            continue
+        other = db.get(Item, stored)
+        if other is None:
+            continue
+        existing = db.scalar(select(Link).where(
+            Link.type == "dependency", Link.a == item.id, Link.b == other.id))
+        if existing is None:
+            db.add(Link(
+                project_id=item.project_id, a=item.id, b=other.id,
+                type="dependency", reason=BLOCKER_DEP_REASON, confidence=1.0,
+            ))
+        elif not (existing.reason or "").strip():
+            existing.reason = BLOCKER_DEP_REASON
+        linked.append(other.id)
+    return linked
+
+
+def _satisfied_blocker_keys(db: Session, item: Item) -> list[str] | None:
+    """Keys this blocker waits on, when every one of them is `done`.
+
+    None means leave the blocker alone: it names a person or a decision, it is a
+    typed wait or a blocking-fix filing, a named token is not a done item, or it
+    names nothing this rule can see.
+    """
+    text = (item.blocker or "").strip()
+    if not text or item.status not in ("blocked", "next"):
+        return None
+    if blocker_names_person_or_decision(text) or text.endswith(BLOCKING_FIX_BLOCKER_SUFFIX):
+        return None
+    from app.services.waits import wait_tags_on
+    if wait_tags_on(item):
+        return None
+    targets: dict[str, Item] = {}
+    for token in keys_named_in(text):
+        stored = keys.resolve_item(db, token)
+        if not stored:
+            return None
+        other = db.get(Item, stored)
+        if other is None:
+            return None
+        targets[other.id] = other
+    link_ids = db.scalars(select(Link.b).where(
+        Link.type == "dependency", Link.a == item.id,
+        Link.reason == BLOCKER_DEP_REASON)).all()
+    for dep_id in dict.fromkeys(link_ids):
+        dep = db.get(Item, dep_id)
+        if dep is None:
+            return None
+        targets.setdefault(dep.id, dep)
+    if not targets or any(dep.status != "done" for dep in targets.values()):
+        return None
+    return [dep.key for dep in targets.values()]
+
+
+def clear_satisfied_blocker(db: Session, item: Item, *, commit: bool = True) -> bool:
+    """Clear a blocker whose named dependencies are all done, and say why.
+
+    `blocked` returns to `next` (or stays `in_progress` on a live lease). A
+    `next` item keeps its status; dropping the text is what makes it ready.
+    """
+    names = _satisfied_blocker_keys(db, item)
+    if not names:
+        return False
+    shown = ", ".join(names)
+    item.evidence = append_evidence(item.evidence, [{
+        "kind": "note",
+        "detail": f"blocker cleared: {shown} done",
+    }])
+    item.blocker = ""
+    if item.status == "blocked":
+        item.status = "in_progress" if _hold_live(item) else "next"
+    if commit:
+        db.commit()
+        db.refresh(item)
+    return True
+
+
+def release_when_named_blockers_done(db: Session, finished: Item) -> list[str]:
+    """After `finished` reaches `done`, clear blockers that named only done items.
+
+    Covers a dependency link and a blocker text that mentions the key. A person,
+    a decision, a typed wait, and a blocking-fix filing are left to their own
+    rules (GRPH-1530, GRPH-1772).
+    """
+    if finished.status != "done":
+        return []
+    candidate_ids = list(db.scalars(select(Link.a).where(
+        Link.type == "dependency", Link.b == finished.id)).all())
+    key = (finished.key or "").strip()
+    if key:
+        mentioned = db.scalars(select(Item.id).where(
+            Item.blocker.is_not(None), Item.blocker.contains(key))).all()
+        candidate_ids.extend(mentioned)
+    released: list[str] = []
+    for dep_id in dict.fromkeys(candidate_ids):
+        if dep_id == finished.id:
+            continue
+        item = db.get(Item, dep_id)
+        if item is None:
+            continue
+        if clear_satisfied_blocker(db, item):
+            released.append(item.id)
+    return released
+
+
 def claim_next(
     db: Session, agent_id: str, project_id: str | None = None,
     lease_seconds: int = DEFAULT_LEASE_SECONDS, skip: list[str] | None = None,
@@ -3004,6 +3839,10 @@ def claim_next(
     cold agent throws away precisely what cluster assignment exists to preserve. The pin
     LAPSES rather than binding forever — an author who never comes back is the common case,
     and a hard pin would strand the item.
+
+    Skips an item whose last bounce named a tier above the one this agent declared
+    (GRPH-1647). `gbfleet until` already re-seats that item; a claim that does not read the
+    tier puts a cheap worker back on it. An agent that declared no tier is not skipped.
     """
     # What the caller has already declined this call-round (GRPH-429). Releasing an item does
     # not advance the queue — the released item is top-scored again, so a claim/release loop
@@ -3057,6 +3896,10 @@ def claim_next(
     # property of the caller, and reading it inside the loop would be a query per item.
     scope = seat_scope(db, agent_id)
     seated = held_by_a_seat(db, agent_id)
+    # Resolved once: the tier is a property of the caller, and reading it per candidate
+    # would be a query per item for an answer that cannot change mid-sweep.
+    from app.services import fleet as fleet_svc
+    declared_tier = fleet_svc.agent_declared_tier(db, agent_id)
     for cand in _ready_candidates(db, project_id, lease_seconds):
         if cand.id in declined or cand.key in declined:
             continue
@@ -3074,6 +3917,12 @@ def claim_next(
         # PRD-62 S4: capacity routing. Skipped like the pin, for the same reason: the caller
         # asked for "whatever is next" and the next may be held for a runner with headroom.
         if routing_svc.held_back(db, cand, agent_id):
+            continue
+        # GRPH-1647. Skipped, like the pin: the caller asked for whatever is next, and the
+        # next item may not be the one a bounce held for a higher tier. The empty reply
+        # names what was skipped (`below_needs_tier`); a bare None would say the board
+        # was empty. An undeclared tier is not below, so it is not skipped.
+        if fleet_svc.tier_is_below(declared_tier, fleet_svc.bounce_needs_tier(cand)):
             continue
         claimed = _try_claim(db, cand, agent_id)
         if claimed is not None:
@@ -3198,6 +4047,22 @@ def claim_item(db: Session, item_id: str, agent_id: str, lease_seconds: int = DE
     it = db.get(Item, keys.resolve_item(db, item_id) or item_id)
     if it is None or not _is_claimable(it, cutoff) or pinned_elsewhere(it, agent_id):
         return None
+    # GRPH-1530. The cluster pool keeps a stale in_progress row even when a dependency
+    # is still open (collision.clusters_for_project includes every claimable
+    # in_progress item, ready or not). None, like the other "not claimable" answers:
+    # the cluster loop tries the next member and still reserves the area from the one
+    # it does claim. A fresh backlog/next row is not this case — claim_next and that
+    # pool's ready() filter already withhold it, and refusing it here also refuses an
+    # explicit claim of a named item. The seed's AL-12 depends on AL-08, which is not
+    # done, and a lease test that claims it by id is not a handout.
+    stale_reclaim = (
+        it.status == "in_progress"
+        and it.claimed_by is not None
+        and it.claimed_at is not None
+        and _aware(it.claimed_at) < cutoff
+    )
+    if stale_reclaim and unfinished_dependency_ids(db, it):
+        return None
     # GRPH-988, and first among the seat checks: the seat's KIND is the one fact here that no
     # wait, release or retry can change, so it is the one worth answering before anything that
     # can. `claim_next` says the same sentence; see REVIEW_ONLY_REFUSAL.
@@ -3244,6 +4109,11 @@ def claim_item(db: Session, item_id: str, agent_id: str, lease_seconds: int = DE
     # PRD-62 S4: held for a runner with headroom. None, like the pin above — not a lost race.
     if routing_svc.held_back(db, it, agent_id):
         return None
+    # GRPH-1647. Raised, not None: None is "lost the race" or "not claimable", and a
+    # caller that treats a tier refusal as one of those retries or reports the item held.
+    # The message names `needs_tier`. An undeclared tier does not raise — see `tier_block`.
+    if block := tier_block(db, it, agent_id):
+        raise block
     claimed = _try_claim(db, it, agent_id)
     if claimed is not None:
         routing_svc.record_claim(db, claimed, agent_id)

@@ -10,14 +10,17 @@ import * as React from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
+import { useHideDocsTrigger } from "@/features/docs/DocsReader";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
 import { useCanvasListbox, type CanvasListNode } from "@/lib/graph/useGraphKeyboard";
 import { useGraphViewport, zoomAbout } from "@/lib/graph/useGraphViewport";
-import { useConfig, useGitops, useRulePack, useRulePackAvailable, useRulesFlow, useUnmappedRefusals } from "@/lib/queries";
-import { relTime } from "@/lib/relTime";
+import { useGitops, useRulePack, useRulePackAvailable, useRulesFlow, useUnmappedRefusals } from "@/lib/queries";
 import { projectPath, settingsPath, tagFromPath } from "@/lib/routes";
+import { ObservingRules } from "./ObservingRules";
+import { ProposalsStrip } from "./ProposalsStrip";
+import { StageProposals } from "./StageProposals";
 import type { RuleFlowRule, RuleStage, RuleSuggestion, RulesFlow } from "@/lib/types";
 
 import {
@@ -31,35 +34,31 @@ import {
   OUTLINE_ZOOM,
   PACK_H,
   PACK_W,
+  STAGE_GLOW,
   STAGE_H,
   STAGE_W,
   STAGE_Y,
-  enforcerKindLabel,
-  enforcerText,
-  externalText,
+  TALLY_COLS,
+  TALLY_ROW_H,
   legendCounts,
   mapLayout,
   packOf,
-  quietLine,
   ruleLevel,
-  sourceLabel,
   stageLevel,
   stageRules,
   stageX,
   tally,
   tallyText,
-  valueText,
   weakestFirst,
   type Level,
   type MapLayout,
 } from "./levels";
-import { LibraryRuleControls, MemoryWriteModeControl, useCanWriteRules } from "./LibraryRuleControls";
-import { RecommendedSheet, UnmappedSheet, useDialogBehavior } from "./RefusalPanels";
-import { AdminGitopsLink, BudgetCapEditor, GITOPS_RULE_FIELDS, GitopsRuleEditor, useOrgName } from "./RuleEditors";
+import { RecommendedSheet, UnmappedSheet } from "./RefusalPanels";
+import { AdminGitopsLink, useOrgName } from "./RuleEditors";
 import { RuleLevelIcon } from "./RuleLevelIcon";
 import { QuickConfigure, QuickConfigureBar, type QuickScreen } from "./QuickConfigure";
 import { ChangedRulesContext, SetupWizard } from "./SetupWizard";
-import { StageEditor, stageIsEditable } from "./StageEditor";
+import { DockEditor } from "./DockEditor";
 
 const PACK_KEY = "pack";
 const stageKey = (id: string) => `s:${id}`;
@@ -99,8 +98,28 @@ export function RulesView() {
   const narrow = useNarrow();
   const [params] = useSearchParams();
   const linked = params.get("stage");
+  const [proposalStage, setProposalStage] = React.useState<string | null>(null);
   const [sel, setSel] = React.useState<string | null>(linked ? stageKey(linked) : null);
+  // A dirty draft in the dock holds a stage switch (or a close) behind an in-page confirm.
+  const dirtyRef = React.useRef(false);
+  const onDirty = React.useCallback((d: boolean) => {
+    dirtyRef.current = d;
+  }, []);
+  const [pendingSel, setPendingSel] = React.useState<{ to: string | null; after?: () => void } | null>(null);
+  // `sel` is read through a ref so selectStage keeps one identity: effects that call it (the
+  // ?rule= focus) must re-run only when their own inputs change, not on every selection.
+  const selRef = React.useRef(sel);
+  selRef.current = sel;
+  const selectStage = React.useCallback((to: string | null, after?: () => void) => {
+    if (to !== selRef.current && dirtyRef.current) setPendingSel({ to, after });
+    else {
+      setSel(to);
+      after?.();
+    }
+  }, []);
   const { pathname } = useLocation();
+  // The docs trigger sits on the dock's pinned Save row; hide it while the dock is open (GRPH-1729).
+  useHideDocsTrigger(!!flow && !!sel);
   // Following a refusal (frames 4a1–4b2): `?rule=` focuses one rule, `?from=` is the event to
   // go back to, `?pulse=unmapped` is "see all rules" for a refusal that names no rule.
   const ruleParam = params.get("rule");
@@ -110,6 +129,16 @@ export function RulesView() {
   React.useEffect(() => {
     setFocusRule(ruleParam);
   }, [ruleParam]);
+  const bodyRef = React.useRef<HTMLDivElement | null>(null);
+  const [mapPct, setMapPct] = React.useState(readDockPct);
+  const setPct = React.useCallback((pct: number) => {
+    setMapPct(pct);
+    try {
+      window.localStorage.setItem(DOCK_KEY, String(pct));
+    } catch {
+      /* storage refused: the height holds for this visit only */
+    }
+  }, []);
   const [wizard, setWizard] = React.useState(false);
   const [quick, setQuick] = React.useState<QuickScreen | null>(null);
   const [changed, setChanged] = React.useState<ReadonlySet<string>>(new Set());
@@ -121,21 +150,21 @@ export function RulesView() {
   const focusedRule = flow && focusRule ? flow.stages.flatMap((s) => s.rules).find((r) => r.id === focusRule) ?? null : null;
   const focusedStage = focusedRule?.stage ?? null;
   React.useEffect(() => {
-    if (focusedStage) setSel(stageKey(focusedStage));
-  }, [focusedStage]);
+    if (focusedStage) selectStage(stageKey(focusedStage));
+  }, [focusedStage, selectStage]);
 
   function openValueSuggestion(s: RuleSuggestion) {
     if (s.rule_id && s.value !== null) setPrefill({ rule: s.rule_id, value: s.value });
     setFocusRule(s.rule_id);
-    if (!s.rule_id) setSel(stageKey(s.stage));
-    setSheet(null);
+    if (!s.rule_id) selectStage(stageKey(s.stage), () => setSheet(null));
+    else setSheet(null);
   }
 
   // A ?stage= that names no stage on this payload selects nothing, rather than an empty inspector.
   React.useEffect(() => {
     if (!flow || !sel || sel === PACK_KEY) return;
-    if (!flow.stages.some((s) => stageKey(s.id) === sel)) setSel(null);
-  }, [flow, sel]);
+    if (!flow.stages.some((s) => stageKey(s.id) === sel)) selectStage(null);
+  }, [flow, sel, selectStage]);
 
   // A null model is also what linked_unset and linked_unreachable look like; only a local
   // project with no model is new.
@@ -147,7 +176,7 @@ export function RulesView() {
   const setWizardDirty = React.useCallback((d: boolean) => { wizardDirty.current = d; }, []);
   const openQuick = (s: QuickScreen) => {
     if (wizard && wizardDirty.current && !window.confirm("Leave setup? Your answers are not saved and will be discarded.")) return;
-    setSel(null); setWizard(false); setQuick(s);
+    selectStage(null, () => { setWizard(false); setQuick(s); });
   };
 
   return (
@@ -162,7 +191,7 @@ export function RulesView() {
               ref={unmappedBtn}
               aria-haspopup="dialog"
               aria-expanded={sheet === "unmapped"}
-              onClick={() => { setPulse(false); setSel(null); setSheet("unmapped"); }}
+              onClick={() => selectStage(null, () => { setPulse(false); setSheet("unmapped"); })}
               onAnimationEnd={() => setPulse(false)}
               data-testid="rules-open-unmapped"
               data-pulse={pulse ? "true" : "false"}
@@ -178,7 +207,7 @@ export function RulesView() {
               ref={recommendedBtn}
               aria-haspopup="dialog"
               aria-expanded={sheet === "recommended"}
-              onClick={() => { setSel(null); setSheet("recommended"); }}
+              onClick={() => selectStage(null, () => setSheet("recommended"))}
               data-testid="rules-open-recommended"
               className="h-7 rounded-[8px] border border-control px-2.5 text-small text-fg-2 hover:text-fg"
             >
@@ -186,7 +215,7 @@ export function RulesView() {
             </button>
             <button
               type="button"
-              onClick={() => { setSel(null); setQuick(null); setWizard(true); }}
+              onClick={() => selectStage(null, () => { setQuick(null); setWizard(true); })}
               data-testid="rules-open-wizard"
               className="h-7 rounded-[8px] border border-control px-2.5 text-small text-fg-2 hover:text-fg"
             >
@@ -214,9 +243,24 @@ export function RulesView() {
           The refusal names {focusRule}, which is not in this project's registry on this server. The rule exists in the refusal's record; the map can't show it.
         </div>
       )}
-      <ControlBanner state={controlState} gitops={gitops} />
-      <QuickConfigureBar onOpen={openQuick} />
-      {fresh && (
+      {/* With the dock open these collapse to one line each, so the presets divide the space under the header (GRPH-1725). */}
+      <ControlBanner state={controlState} gitops={gitops} compact={!!sel} />
+      <QuickConfigureBar onOpen={openQuick} compact={!!sel} />
+      {fresh && sel && (
+        <div
+          role="status"
+          data-testid="rules-fresh-banner"
+          data-collapsed="true"
+          className="mx-5 mt-1 flex flex-none items-center gap-2 overflow-hidden whitespace-nowrap text-small"
+        >
+          <span className={cn(MONO, "text-meta font-semibold tracking-[0.07em] text-[#ff6b6b]")}>NEW PROJECT</span>
+          <span className="truncate text-fg-2">Your delivery contract is unmeasured.</span>
+          <button type="button" onClick={() => openQuick({ screen: "picker" })} data-testid="rules-fresh-quick" className="flex-none text-accent underline">
+            Quick configure
+          </button>
+        </div>
+      )}
+      {fresh && !sel && (
         <div
           role="status"
           data-testid="rules-fresh-banner"
@@ -237,7 +281,7 @@ export function RulesView() {
           </button>
           <button
             type="button"
-            onClick={() => { setSel(null); setWizard(true); }}
+            onClick={() => selectStage(null, () => setWizard(true))}
             data-testid="rules-fresh-setup"
             className="h-[30px] rounded-[8px] bg-accent px-3 text-body font-semibold text-[#0a0c0e]"
           >
@@ -245,7 +289,7 @@ export function RulesView() {
           </button>
           <button
             type="button"
-            onClick={() => setSel(stageKey("merge"))}
+            onClick={() => selectStage(stageKey("merge"))}
             className="h-[30px] rounded-[8px] border border-control px-3 text-body text-fg-2"
           >
             Set it up in Merge
@@ -253,7 +297,7 @@ export function RulesView() {
         </div>
       )}
       <ChangedRulesContext.Provider value={changed}>
-      <div className="relative min-h-0 flex-1 overflow-hidden">
+      <div ref={bodyRef} className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
         {wizard && flow && (
           <SetupWizard
             flow={flow}
@@ -274,17 +318,46 @@ export function RulesView() {
             onSetup={() => { setQuick(null); setWizard(true); }}
           />
         )}
+        <ProposalsStrip stageFilter={proposalStage} onClearFilter={() => setProposalStage(null)} />
         {q.isError && !flow ? (
           <LoadError detail={errorDetail(q.error, "request failed")} onRetry={() => void q.refetch()} />
         ) : !flow ? (
           <LoadingMap />
-        ) : narrow ? (
-          <NarrowList flow={flow} sel={sel} onSelect={setSel} />
         ) : (
-          <RulesCanvas flow={flow} sel={sel} onSelect={setSel} />
+          <div className="relative min-h-0" style={{ height: sel ? `${mapPct}%` : "100%" }} data-testid="rules-map-area" data-map-pct={sel ? mapPct : 100}>
+            {narrow ? (
+              <NarrowList flow={flow} sel={sel} onSelect={selectStage} />
+            ) : (
+              <RulesCanvas flow={flow} sel={sel} onSelect={selectStage} fitKey={sel ? mapPct : null} />
+            )}
+          </div>
         )}
         {flow && sel && (
-          <Inspector flow={flow} sel={sel} sheet={narrow} focusRule={focusRule} prefill={prefill} onClose={() => setSel(null)} />
+          <StageDock
+            flow={flow}
+            sel={sel}
+            focusRule={focusRule}
+            prefill={prefill}
+            mapPct={mapPct}
+            onMapPct={setPct}
+            containerRef={bodyRef}
+            onClose={() => selectStage(null)}
+            onDirty={onDirty}
+            onReviewProposals={setProposalStage}
+            leave={
+              pendingSel && {
+                closing: pendingSel.to === null,
+                onLeave: () => {
+                  dirtyRef.current = false;
+                  const { to, after } = pendingSel;
+                  setSel(to);
+                  setPendingSel(null);
+                  after?.();
+                },
+                onStay: () => setPendingSel(null),
+              }
+            }
+          />
         )}
         {sheet === "unmapped" && <UnmappedSheet returnTo={unmappedBtn} onClose={() => setSheet(null)} />}
         {sheet === "recommended" && <RecommendedSheet returnTo={recommendedBtn} onClose={() => setSheet(null)} onOpenValue={openValueSuggestion} />}
@@ -381,10 +454,14 @@ function TallyLine({ rules }: { rules: RuleFlowRule[] }) {
   const t = tally(rules);
   if (!t.length) return <span className={cn(MONO, "text-[10.5px] text-muted")}>nothing registered yet</span>;
   return (
-    <span className={cn(MONO, "flex flex-wrap gap-x-1.5 text-[10.5px]")}>
-      {t.map((x, i) => (
-        <span key={x.level} style={{ color: x.level === "enforced" ? "#8b949e" : LEVELS[x.level].color }}>
-          {i ? "· " : ""}
+    <span
+      className={cn(MONO, "grid gap-x-1.5 text-[10.5px]")}
+      style={{ gridTemplateColumns: `repeat(${TALLY_COLS}, minmax(0, 1fr))`, gridAutoRows: TALLY_ROW_H, lineHeight: `${TALLY_ROW_H}px` }}
+      data-testid="rules-stage-tally"
+      data-rows={Math.ceil(t.length / TALLY_COLS)}
+    >
+      {t.map((x) => (
+        <span key={x.level} className="truncate whitespace-nowrap" style={{ color: x.level === "enforced" ? "#8b949e" : LEVELS[x.level].color }}>
           {tallyText(x)}
         </span>
       ))}
@@ -410,10 +487,13 @@ function RulesCanvas({
   flow,
   sel,
   onSelect,
+  fitKey = null,
 }: {
   flow: RulesFlow;
   sel: string | null;
   onSelect: (key: string | null) => void;
+  /** The dock's height preset while the dock is open: the map is then a strip, refitted on every change. */
+  fitKey?: number | null;
 }) {
   const layout = React.useMemo(() => mapLayout(flow), [flow]);
   const { width: W, height: H } = layout;
@@ -436,15 +516,26 @@ function RulesCanvas({
   const pack = packOf(flow);
   const [hover, setHover] = React.useState<string | null>(null);
 
-  // Fit never enlarges past 1:1; the legend and zoom bar keep the bottom 120px.
+  // Fit never enlarges past 1:1; the legend and zoom bar keep the bottom 120px. Docked, the map is
+  // a strip with no legend or zoom bar (GRPH-1725): every stage card fits the strip's width and
+  // height, the row centred, and the fit is recomputed whenever the dock opens or changes height.
   const { setViewport } = view;
+  const docked = fitKey !== null;
+  const fits = React.useRef(0);
   const fit = React.useCallback(() => {
+    fits.current += 1;
+    if (docked) {
+      // The selected card's ring and glow stay inside the strip: fit the card plus its glow room.
+      const k = Math.max(0.2, Math.min(1, (size.w - 48) / W, (size.h - 8) / (STAGE_H + 2 * STAGE_GLOW)));
+      setViewport({ k, x: (size.w - W * k) / 2, y: (size.h - STAGE_H * k) / 2 - STAGE_Y * k });
+      return;
+    }
     const k = Math.max(0.2, Math.min(1, (size.w - 48) / W, (size.h - 140) / H));
     setViewport({ k, x: (size.w - W * k) / 2, y: Math.max(16, (size.h - 120 - H * k) / 2) });
-  }, [setViewport, size.w, size.h, W, H]);
+  }, [setViewport, size.w, size.h, W, H, docked]);
   React.useEffect(() => {
     fit();
-  }, [fit]);
+  }, [fit, fitKey]);
 
   // The stages and the pack node ride the same listbox hook as the code graph (GRPH-1076):
   // live-region announcements, typeahead by stage name, Enter opens, Escape closes. The order is
@@ -508,7 +599,14 @@ function RulesCanvas({
   const counts = legendCounts(flow);
 
   return (
-    <div ref={boxRef} className="absolute inset-0" data-testid="rules-canvas">
+    <div
+      ref={boxRef}
+      className="absolute inset-0"
+      data-testid="rules-canvas"
+      data-docked={docked ? "true" : undefined}
+      data-zoom={view.viewport.k.toFixed(3)}
+      data-fits={fits.current}
+    >
       <div
         role="listbox"
         tabIndex={0}
@@ -537,8 +635,21 @@ function RulesCanvas({
             <marker id="rl-ahs" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto">
               <path d="M0,0 L8,4 L0,8 z" fill="#c6f24e" />
             </marker>
+            <pattern id="rules-dots" width="24" height="24" patternUnits="userSpaceOnUse">
+              <circle cx="1.5" cy="1.5" r="1" fill="#1a2026" />
+            </pattern>
           </defs>
           <g transform={view.transform} style={{ transition: view.panning ? undefined : "transform 220ms ease" }}>
+            {/* The canvas dot grid, the code graph's `code-dots` to its numbers (GRPH-1728). */}
+            <rect
+              data-testid="rules-dots"
+              x={-W * 2}
+              y={-H * 2}
+              width={W * 5}
+              height={H * 5}
+              fill="url(#rules-dots)"
+              pointerEvents="none"
+            />
             <Edges flow={flow} layout={layout} sel={sel} hover={hover} outline={outline} />
             {flow.stages.map((s, i) => (
               <StageColumn
@@ -569,15 +680,19 @@ function RulesCanvas({
       <div aria-live="polite" aria-atomic="true" data-testid="rules-live" className="sr-only">
         {kb.live}
       </div>
-      <Legend counts={counts} />
-      <ZoomControls
-        pct={Math.round(view.viewport.k * 100)}
-        outline={outline}
-        onIn={() => zoomBy(1.2)}
-        onOut={() => zoomBy(1 / 1.2)}
-        onFit={fit}
-        onOneToOne={() => view.setViewport((v) => zoomAbout(v, 1 / v.k, size.w / 2, size.h / 2))}
-      />
+      {!docked && (
+        <>
+          <Legend counts={counts} />
+          <ZoomControls
+            pct={Math.round(view.viewport.k * 100)}
+            outline={outline}
+            onIn={() => zoomBy(1.2)}
+            onOut={() => zoomBy(1 / 1.2)}
+            onFit={fit}
+            onOneToOne={() => view.setViewport((v) => zoomAbout(v, 1 / v.k, size.w / 2, size.h / 2))}
+          />
+        </>
+      )}
     </div>
   );
 }
@@ -679,23 +794,34 @@ function StageColumn({
   const dim = level === "not_used";
   return (
     <>
-      <foreignObject x={x} y={STAGE_Y} width={STAGE_W} height={STAGE_H}>
+      {/* The foreignObject keeps STAGE_GLOW of room on every side, so the selected card's glow is
+          drawn whole; the room passes pointer events through to the canvas (GRPH-1728). */}
+      <foreignObject
+        x={x - STAGE_GLOW}
+        y={STAGE_Y - STAGE_GLOW}
+        width={STAGE_W + 2 * STAGE_GLOW}
+        height={STAGE_H + 2 * STAGE_GLOW}
+        data-testid={`rules-stage-box-${stage.id}`}
+      >
+        <div className="pointer-events-none h-full w-full" style={{ padding: STAGE_GLOW }}>
         <div
           id={optionId(key)}
           role="option"
           aria-selected={selected}
           aria-label={stageAria(stage)}
           data-testid={`rules-stage-${stage.id}`}
+          data-selected={selected ? "true" : undefined}
           data-level={level ?? "none"}
           onClick={onPick}
           onMouseEnter={() => onHover(true)}
           onMouseLeave={() => onHover(false)}
-          className="flex h-full w-full cursor-pointer flex-col gap-1.5 overflow-hidden rounded-[12px] px-3 py-2.5 text-fg transition-[box-shadow,transform] duration-200 hover:-translate-y-0.5"
+          className="pointer-events-auto flex h-full w-full cursor-pointer flex-col gap-1.5 overflow-hidden rounded-[12px] px-3 py-2.5 text-fg transition-[box-shadow,transform] duration-200 hover:-translate-y-0.5"
           style={{
-            border: meta ? meta.stageBorder : "1.5px dashed #626c75",
+            // The opened stage: an accent border and glow, readable at the strip's scale.
+            border: selected ? "2px solid #c6f24e" : meta ? meta.stageBorder : "1.5px dashed #626c75",
             background: dim ? "#0f1317" : "#12171b",
-            boxShadow: ring(selected, focused),
-            opacity: dim ? 0.5 : 1,
+            boxShadow: selected ? "0 0 0 3px rgba(198,242,78,.22), 0 0 24px rgba(198,242,78,.35)" : ring(false, focused),
+            opacity: dim && !selected ? 0.5 : 1,
           }}
         >
           {!outline && (
@@ -715,6 +841,7 @@ function StageColumn({
               <TallyBar rules={rules} />
             </>
           )}
+        </div>
         </div>
       </foreignObject>
       {!outline &&
@@ -980,136 +1107,211 @@ function NarrowList({
           <LevelWord level="advisory" className="text-meta" />
         </button>
       )}
-      <div className="mt-4 flex flex-wrap gap-3" data-testid="rules-legend">
-        {LEVEL_ORDER.map((l) => (
-          <span key={l} data-testid={`rules-legend-${l}`} className="flex items-center gap-1.5">
-            <LevelWord level={l} className="text-[10px]" />
-            {l === "not_used" && <span className="text-[10px] text-muted">not used by this project's model</span>}
-            <span className={cn(MONO, "text-[10px] text-fg-2")}>{counts[l]}</span>
-          </span>
-        ))}
-      </div>
+      {/* Docked, the list is a strip over the editor: no legend (GRPH-1725). */}
+      {!sel && (
+        <div className="mt-4 flex flex-wrap gap-3" data-testid="rules-legend">
+          {LEVEL_ORDER.map((l) => (
+            <span key={l} data-testid={`rules-legend-${l}`} className="flex items-center gap-1.5">
+              <LevelWord level={l} className="text-[10px]" />
+              {l === "not_used" && <span className="text-[10px] text-muted">not used by this project's model</span>}
+              <span className={cn(MONO, "text-[10px] text-fg-2")}>{counts[l]}</span>
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-// ── Inspector (frames 2a–2e) ───────────────────────────────────────────────────
+// ── Stage view (replaces the 400px inspector panel; GRPH-1659) ─────────────────
 
-function Inspector({
+// ── Docked editor (GRPH-1718, layout C) ────────────────────────────────────────
+
+const DOCK_KEY = "rules.dock.mapPct";
+/** The map's share of the height with the dock open; the dock takes the rest. */
+const DOCK_PRESETS = [["HALF", 46], ["TALL", 34], ["FULL", 18]] as const;
+const DOCK_DEFAULT = 34;
+const DOCK_MIN = 12;
+const DOCK_MAX = 70;
+
+function readDockPct(): number {
+  try {
+    const v = Number(window.localStorage.getItem(DOCK_KEY));
+    return v >= DOCK_MIN && v <= DOCK_MAX ? v : DOCK_DEFAULT;
+  } catch {
+    return DOCK_DEFAULT;
+  }
+}
+
+function StageDock({
   flow,
   sel,
-  sheet,
   focusRule,
   prefill,
+  mapPct,
+  onMapPct,
+  containerRef,
   onClose,
+  onDirty,
+  onReviewProposals,
+  leave,
 }: {
   flow: RulesFlow;
   sel: string;
-  sheet: boolean;
   focusRule: string | null;
   prefill: { rule: string; value: string } | null;
+  mapPct: number;
+  onMapPct: (pct: number) => void;
+  containerRef: React.RefObject<HTMLDivElement | null>;
   onClose: () => void;
+  onDirty: (dirty: boolean) => void;
+  onReviewProposals: (stageId: string) => void;
+  /** A stage switch or close is waiting on a dirty draft: ask before throwing it away. */
+  leave: { closing: boolean; onLeave: () => void; onStay: () => void } | null;
 }) {
-  const dialog = useDialogBehavior<HTMLElement>(onClose);
-  const [editing, setEditing] = React.useState(false);
-  const { activeId } = useProjectCtx();
-  const canWrite = useCanWriteRules(activeId);
-  // Switching stage ends the draft with it; the draft is one stage's.
-  React.useEffect(() => setEditing(false), [sel]);
   const pack = sel === PACK_KEY ? packOf(flow) : null;
   const index = flow.stages.findIndex((s) => stageKey(s.id) === sel);
   const stage = index >= 0 ? flow.stages[index] : null;
+  const ref = React.useRef<HTMLElement | null>(null);
+  const [ruleTitle, setRuleTitle] = React.useState<string | null>(null);
+  const onRule = React.useCallback((r: RuleFlowRule | null) => setRuleTitle(r?.title ?? null), []);
+  // Opening takes focus (Escape then closes it); closing hands focus back to what opened it.
+  // A refusal's ?rule= focus belongs to the rule's own row, so the dock leaves it there.
+  React.useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    if (!focusRule) ref.current?.focus({ preventScroll: true });
+    return () => {
+      if (opener && opener !== document.body) opener.focus?.({ preventScroll: true });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   if (!pack && !stage) return null;
-
   const title = pack ? pack.title : stage!.title;
-  const kicker = pack
-    ? `OFF THE MAIN FLOW · LINKED TO ${(flow.stages.find((s) => s.id === pack.stage)?.title ?? pack.stage).toUpperCase()}, REVIEW`
-    : `STAGE ${String(index + 1).padStart(2, "0")} · ${stage!.title.toUpperCase()}`;
-  const level = pack ? ruleLevel(pack) : stageLevel(stage!);
-  const rules = stage ? weakestFirst(stageRules(stage)) : [];
+
+  function drag(e: React.PointerEvent<HTMLDivElement>) {
+    const box = containerRef.current?.getBoundingClientRect();
+    if (!box || box.height === 0) return;
+    e.preventDefault();
+    const move = (ev: PointerEvent) => {
+      const pct = ((ev.clientY - box.top) / box.height) * 100;
+      onMapPct(Math.min(DOCK_MAX, Math.max(DOCK_MIN, Math.round(pct))));
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
 
   return (
-    <aside
-      ref={dialog.ref}
+    <section
+      ref={ref}
       tabIndex={-1}
-      onKeyDown={dialog.onKeyDown}
-      role="dialog"
       aria-label={`${title} ${pack ? "inspector" : "stage inspector"}`}
       data-testid="rules-inspector"
-      className={cn(
-        "z-10 flex flex-col overflow-hidden border border-line-2 bg-surface-2 shadow-2xl",
-        sheet
-          ? "absolute inset-x-0 bottom-0 max-h-[70%] rounded-t-[16px]"
-          : "absolute right-4 top-4 bottom-4 w-[400px] rounded-[16px]",
-      )}
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && !/^(INPUT|TEXTAREA|SELECT)$/.test((e.target as HTMLElement).tagName)) onClose();
+      }}
+      className="flex min-h-0 flex-1 flex-col border-t border-line-2 outline-none"
     >
-      <div className="flex gap-3 border-b border-line px-4 py-3.5">
-        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-          <span className={cn(MONO, "text-meta tracking-[0.07em] text-muted-2")}>{kicker}</span>
-          <span className="text-[16px] font-semibold leading-tight">{title}</span>
-          <div className="flex flex-wrap items-center gap-2">
-            <StagePill level={level} />
-            {stage && <TallyLine rules={stageRules(stage)} />}
-            {pack && (
-              <span className={cn(MONO, "text-[10.5px] text-muted")}>
-                {pack.skills ? `${pack.skills.length} skills shipped with gban ${pack.skills_version ?? ""}`.trim() : "skill list not readable on this server"}
-              </span>
-            )}
-          </div>
-          {stage && <TallyBar rules={stageRules(stage)} />}
-          <span className="text-body leading-normal text-muted">{pack ? pack.summary : stage!.summary}</span>
+      <div
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize the editor"
+        data-testid="rules-dock-handle"
+        onPointerDown={drag}
+        className="h-1.5 flex-none cursor-row-resize bg-surface-2 hover:bg-accent/40"
+      />
+      <div className="flex flex-none flex-wrap items-center gap-2 border-b border-line px-4 py-1.5">
+        <span className={cn(MONO, "flex-none text-meta tracking-[0.07em] text-muted-2")}>
+          {pack ? "AGENT INSTRUCTIONS" : `STAGE ${String(index + 1).padStart(2, "0")} · ${title.toUpperCase()}`}
+        </span>
+        {!pack && ruleTitle && (
+          <span className="min-w-0 truncate text-body font-semibold text-fg" data-testid="rules-dock-rule-title">
+            {ruleTitle}
+          </span>
+        )}
+        <span className="flex-1" />
+        <div role="group" aria-label="Editor height" className="flex gap-1">
+          {DOCK_PRESETS.map(([label, pct]) => (
+            <button
+              key={label}
+              type="button"
+              aria-pressed={mapPct === pct}
+              data-testid={`rules-dock-height-${label.toLowerCase()}`}
+              onClick={() => onMapPct(pct)}
+              className={cn(
+                MONO,
+                "h-6 rounded-[8px] border px-2 text-meta tracking-[0.05em]",
+                mapPct === pct ? "border-accent text-accent" : "border-control text-fg-2 hover:text-fg",
+              )}
+            >
+              {label}
+            </button>
+          ))}
         </div>
         <button
           type="button"
           onClick={onClose}
-          aria-label="Close inspector"
-          className="h-7 w-7 flex-none rounded-[8px] border border-control text-[15px] leading-none text-muted hover:text-fg"
+          aria-label="Close editor"
+          data-testid="rules-dock-close"
+          className="h-6 w-6 rounded-[8px] border border-control text-small leading-none text-muted hover:text-fg"
         >
           ×
         </button>
       </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-3">
-        {pack && <PackBody pack={pack} />}
-        {stage && !editing && stageIsEditable(stage) && canWrite !== false && (
+      {leave && (
+        <div
+          role="alertdialog"
+          aria-label="Unsaved changes"
+          data-testid="rules-stage-leave"
+          className="flex flex-none flex-wrap items-center gap-2 border-b border-accent bg-surface-2 px-4 py-2"
+        >
+          <span className="text-small text-fg">
+            You have unsaved changes on this stage. {leave.closing ? "Close the editor" : "Switch stage"} without saving?
+          </span>
           <button
             type="button"
-            onClick={() => setEditing(true)}
-            data-testid="rules-edit-stage"
-            className="h-[30px] self-start rounded-[8px] border border-control px-3 text-body font-semibold text-fg hover:border-accent"
+            data-testid="rules-stage-leave-confirm"
+            onClick={leave.onLeave}
+            className="h-6 rounded-[8px] border border-control px-2 text-small text-fg"
           >
-            Edit {stage.title} rules
+            Discard and leave
           </button>
-        )}
-        {stage && editing && <StageEditor stage={stage} narrow={sheet} onClose={() => setEditing(false)} />}
-        {stage && !editing && level === "not_used" && (
-          <div className="flex flex-col gap-1 rounded-[8px] px-3 py-2.5" style={{ border: "1.5px dashed #1e242a" }}>
-            <LevelWord level="not_used" className="text-[10px]" />
-            <span className="text-[12px] leading-snug text-muted">
-              Every rule on this stage is not used by this project's model: {flow.model}. They stay drawn so you can see what would apply.
-            </span>
-          </div>
-        )}
-        {stage && rules.length === 0 && (
-          <div className="flex flex-col gap-1.5 rounded-[12px] p-3.5" style={{ border: "1.5px dashed #626c75" }} data-testid="rules-stage-empty">
-            <span className={cn(MONO, "text-[10px] font-semibold tracking-[0.06em] text-fg-2")}>NOTHING REGISTERED</span>
-            <span className="text-[13px] font-semibold">No rules registered for this stage yet</span>
-            <span className="text-[12px] leading-normal text-muted">
-              Nothing in the registry governs this stage yet. That isn't the same as nothing applying.
-            </span>
-          </div>
-        )}
-        {!editing && rules.map((r) => (
-          <RuleRow
-            key={r.id}
-            rule={r}
-            version={flow.version}
-            model={flow.model}
-            focused={focusRule === r.id}
-            prefill={prefill?.rule === r.id ? prefill.value : undefined}
-          />
-        ))}
-      </div>
-    </aside>
+          <button
+            type="button"
+            data-testid="rules-stage-leave-stay"
+            onClick={leave.onStay}
+            className="h-6 rounded-[8px] border border-control px-2 text-small text-fg-2"
+          >
+            Keep editing
+          </button>
+        </div>
+      )}
+      {pack ? (
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          <p className="mb-2 text-body leading-normal text-muted">{pack.summary}</p>
+          <PackBody pack={pack} />
+        </div>
+      ) : (
+        <>
+        <StageProposals stageId={stage!.id} ruleIds={stage!.rules.map((r) => r.id)} onReview={onReviewProposals} />
+        <ObservingRules stageId={stage!.id} ruleIds={stage!.rules.map((r) => r.id)} />
+        <DockEditor
+          key={stage!.id}
+          stage={stage!}
+          version={flow.version}
+          model={flow.model}
+          focusRule={focusRule}
+          prefill={prefill}
+          onClose={onClose}
+          onDirty={onDirty}
+          onRule={onRule}
+        />
+        </>
+      )}
+    </section>
   );
 }
 
@@ -1134,126 +1336,6 @@ function PackBody({ pack }: { pack: RuleFlowRule }) {
   );
 }
 
-function RuleRow({
-  rule,
-  version,
-  model,
-  focused = false,
-  prefill,
-}: {
-  rule: RuleFlowRule;
-  version: string;
-  model: string | null;
-  focused?: boolean;
-  prefill?: string;
-}) {
-  const level = ruleLevel(rule);
-  const ref = React.useRef<HTMLDivElement | null>(null);
-  React.useEffect(() => {
-    if (!focused) return;
-    ref.current?.scrollIntoView?.({ block: "center" });
-    ref.current?.focus({ preventScroll: true });
-  }, [focused]);
-  const quiet = quietLine(rule);
-  const enforcer = enforcerText(rule, version);
-  const value = valueText(rule.value);
-  const library = rule.control === "toggle";
-  // A refused template is UNMEASURED, not a dimmed choice; an off rule is dimmed and still listed.
-  const dim = !rule.used && !rule.unmeasured_reason;
-  return (
-    <div
-      ref={ref}
-      data-testid={`rules-row-${rule.id}`}
-      data-level={level}
-      data-focused={focused ? "true" : undefined}
-      aria-current={focused ? "true" : undefined}
-      tabIndex={focused ? -1 : undefined}
-      className="grid grid-cols-[100px_minmax(0,1fr)] gap-2.5 rounded-[12px] border border-[#2a333a] p-3"
-      style={focused ? { borderLeft: "4px solid #c6f24e" } : undefined}
-    >
-      <span className="pt-0.5" style={{ opacity: dim ? 0.55 : 1 }}>
-        <LevelWord level={level} size={13} className="text-[10px]" />
-      </span>
-      <div className="flex min-w-0 flex-col gap-1.5">
-        <div className="flex flex-col gap-1.5" style={{ opacity: dim ? 0.55 : 1 }}>
-          <span className="text-[13px] font-semibold leading-snug text-fg">{rule.title}</span>
-          <span className="text-[12px] leading-snug text-muted">{rule.summary}</span>
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className={cn(MONO, "break-all text-[10.5px] text-fg-2")}>{rule.id}</span>
-            <span
-              className={cn(MONO, "rounded-[4px] px-1 text-[9px] tracking-[0.04em]")}
-              style={{
-                border: `1px solid ${rule.truth === "db" ? "#626c75" : "#2a333a"}`,
-                color: rule.truth === "db" ? "#e6e9ec" : "#8b949e",
-              }}
-            >
-              {rule.truth}
-            </span>
-          </div>
-          <EnforcerLink kind={rule.enforcer.kind} text={enforcer} url={rule.enforcer.url} />
-        </div>
-        {dim && (
-          <span className="text-[11.5px] leading-snug text-muted" data-testid="rules-row-not-used">
-            {rule.not_used_reason
-              ? `NOT USED — ${rule.not_used_reason}.`
-              : library
-              ? `NOT USED — ${rule.label ?? "turned off for this project"}. On, it is ${LEVELS[rule.enforcement].word}.`
-              : `Not used by this project's model${model ? `: ${model}` : ""}.`}
-          </span>
-        )}
-        {quiet && <span className="text-[11.5px] leading-snug text-muted-2">{quiet}</span>}
-        {rule.used && rule.enforcement === "external" && (
-          <div className="flex flex-col gap-1 rounded-[8px] px-2.5 py-2" style={{ border: "3px double rgba(167,139,250,.45)" }}>
-            <span className={cn(MONO, "flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.06em] text-[#c9b8ff]")}>
-              <span className="h-[7px] w-[7px] rounded-full border-[1.5px] border-[#c9b8ff]" />
-              NOT VERIFIED
-            </span>
-            <span className="text-[11.5px] leading-snug text-fg-2">{externalText(rule)}</span>
-          </div>
-        )}
-        {rule.used && rule.enforcement === "checked" && (rule.last_result ? (
-          <div
-            data-testid="rules-result"
-            data-outcome={rule.last_result.outcome}
-            className="flex flex-col gap-0.5 rounded-[8px] px-2.5 py-[7px]"
-            style={{ border: "1.5px solid #626c75" }}
-          >
-            <span className={cn(MONO, "text-[10px] font-semibold tracking-[0.06em] text-fg-2")}>
-              {rule.last_result.outcome === "pass" ? "PASS" : "FAIL"} · last attested{" "}
-              {relTime(rule.last_result.at) ?? "at an unknown time"}
-            </span>
-            <span className="text-[11.5px] text-muted">{rule.last_result.item}</span>
-          </div>
-        ) : (
-          // No attestation on a merged item: said as such, never drawn as a pass.
-          <div
-            data-testid="rules-no-result"
-            className="flex flex-col gap-0.5 rounded-[8px] px-2.5 py-[7px]"
-            style={{
-              border: "1.5px dashed #626c75",
-              background: "repeating-linear-gradient(45deg,transparent 0 6px,rgba(139,148,158,.1) 6px 7px)",
-            }}
-          >
-            <span className={cn(MONO, "flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.06em] text-fg-2")}>
-              <span className="h-[7px] w-[7px] rounded-full border-[1.5px] border-muted" />
-              NO RESULT RECORDED
-            </span>
-            <span className="text-[11.5px] text-muted">Nothing has reported yet. That is not a pass.</span>
-          </div>
-        ))}
-        {rule.control === "select" ? (
-          <MemoryWriteModeControl rule={rule} />
-        ) : library ? (
-          <LibraryRuleControls rule={rule} />
-        ) : rule.truth === "db" && rule.id !== "plan.budget_cap" && (
-          <ValueBox rule={rule} value={value} prefill={prefill} />
-        )}
-        {rule.id === "plan.budget_cap" && rule.used && <BudgetCapEditor />}
-      </div>
-    </div>
-  );
-}
-
 const CONTROL_BANNERS = {
   linked_set: { label: "LINKED", color: "#c9b8ff", text: "Gitops values come from your org." },
   linked_unset: { label: "LINKED · NOT SET", color: "#dfe3e7", text: "Your org has not set a gitops contract for this project." },
@@ -1261,10 +1343,23 @@ const CONTROL_BANNERS = {
 } as const;
 
 /** Frames 3b–3d: which plane holds the gitops contract, and the pill that says so. */
-function ControlBanner({ state, gitops }: { state: string | null; gitops: ReturnType<typeof useGitops>["data"] }) {
+function ControlBanner({ state, gitops, compact = false }: { state: string | null; gitops: ReturnType<typeof useGitops>["data"]; compact?: boolean }) {
   const orgName = useOrgName(gitops);
   if (state !== "linked_set" && state !== "linked_unset" && state !== "linked_unreachable") return null;
   const b = CONTROL_BANNERS[state];
+  if (compact) {
+    return (
+      <div
+        role="status"
+        data-testid={`rules-control-banner-${state}`}
+        data-collapsed="true"
+        className="mx-5 mt-1 flex flex-none items-center gap-2 overflow-hidden whitespace-nowrap text-small"
+      >
+        <span className={cn(MONO, "text-meta font-semibold tracking-[0.07em]")} style={{ color: b.color }}>{b.label}</span>
+        <span className="truncate text-fg-2">{gitops?.control.message || b.text}</span>
+      </div>
+    );
+  }
   return (
     <div
       role="status"
@@ -1287,73 +1382,3 @@ function ControlBanner({ state, gitops }: { state: string | null; gitops: Return
   );
 }
 
-function ModelWhere() {
-  const { data: config } = useConfig();
-  const hosted = config?.hosted_mode ?? false;
-  return (
-    <span className="text-[11.5px] leading-snug text-muted" data-testid="rules-gitops-model-where">
-      A preset rewrites other fields, so the model is not edited inline. Change it in{" "}
-      {hosted ? <AdminGitopsLink /> : (
-        <Link to={settingsPath("deployment/gitops")} className="text-accent hover:underline">Settings → Gitops</Link>
-      )}
-    </span>
-  );
-}
-
-function ValueBox({ rule, value, prefill }: { rule: RuleFlowRule; value: string | null; prefill?: string }) {
-  const box = (
-          <div className="flex flex-col gap-2 rounded-[8px] border border-[#2a333a] bg-bg p-2.5">
-            <div className="flex items-center gap-2">
-              <span className={cn(MONO, "text-[10px] text-muted-2")}>{rule.id.split(".").pop()}</span>
-              <span className="flex-1" />
-              <span
-                className={cn(MONO, "rounded-[4px] px-1.5 text-meta tracking-[0.04em]")}
-                style={{
-                  border: `1px ${rule.source === "project" || rule.source === "org" ? "solid" : "dashed"} ${
-                    rule.source === "project" ? "rgba(167,139,250,.42)" : rule.source === "org" ? "#626c75" : "#ff6b6b"
-                  }`,
-                  color: rule.source === "project" ? "#c9b8ff" : rule.source === "org" ? "#dfe3e7" : "#ff6b6b",
-                }}
-              >
-                {sourceLabel(rule.source)}
-              </span>
-            </div>
-            <span
-              className={cn(MONO, "text-[13px] font-semibold")}
-              style={{ color: value === null ? "#ff6b6b" : "#e6e9ec" }}
-            >
-              {value ?? "— no value"}
-            </span>
-          </div>
-  );
-  const field = GITOPS_RULE_FIELDS[rule.id];
-  if (rule.id === "gitops.model") {
-    return (
-      <div className="flex flex-col gap-1.5">
-        {box}
-        <ModelWhere />
-      </div>
-    );
-  }
-  return field ? <GitopsRuleEditor rule={rule} field={field} fallback={box} prefill={prefill} /> : box;
-}
-
-function EnforcerLink({ kind, text, url }: { kind: string; text: string; url: string }) {
-  const body = (
-    <>
-      <span className="flex-none rounded-[3px] border border-[#2a333a] px-1 text-[9px] tracking-[0.05em] text-muted">
-        {enforcerKindLabel(kind)}
-      </span>
-      <span>{text}</span>
-    </>
-  );
-  const cls = cn(MONO, "flex items-center gap-1.5 break-all text-small leading-snug");
-  // No URL from the server means no link — a guessed one would read as a verified source.
-  if (!url) return <span className={cn(cls, "text-fg-2")} data-testid="rules-enforcer">{body}</span>;
-  return (
-    <a href={url} target="_blank" rel="noopener noreferrer" className={cn(cls, "text-accent hover:underline")} data-testid="rules-enforcer">
-      {body}
-      <span aria-hidden>↗</span>
-    </a>
-  );
-}

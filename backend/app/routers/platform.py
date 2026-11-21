@@ -24,6 +24,7 @@ from app.services import drive_sync
 from app.services import sync_storage as sync_storage_svc
 from app.services import events as events_svc
 from app.services import items as items_svc
+from app.services import handles
 from app.services import credential_retry
 from app.services import reindex
 from app.services import rule_pack as rule_pack_svc
@@ -92,7 +93,7 @@ def update_check(refresh: bool = False, db: Session = Depends(get_db),
     running tag and, when a newer cut exists, the latest — empty is not
     unknown. JWT so it is a Settings fact, not a public oracle beyond
     `/health`. Bounded by a 5 s total deadline; a definite answer is cached for
-    a minute and `?refresh=true` bypasses the cache.
+    10 minutes and `?refresh=true` bypasses the cache, not GitHub's rate-limit backoff.
     """
     out = dict(instance_update.check_cached(refresh=refresh))
     latest = out.get("latest")
@@ -126,7 +127,8 @@ def update_apply(body: UpdateApplyIn, _: User = Depends(get_current_user)):
     JWT operator only — not MCP. Compose: host helper starts `deploy.sh`.
     Native: fetch the GitHub tarball and start `graphban_host.py upgrade`.
     Returns 202 when that has started; this process is about to stop. Hosted
-    403. No apply path 503. Tag that is not the advertised cut 409.
+    403. No apply path 503. Feed could not be asked 503. Tag that is not the
+    advertised cut 409.
     """
     got = instance_update.apply(body.tag)
     if not got.get("ok"):
@@ -592,7 +594,7 @@ def github_create_issue(
     cfg = platform_svc.get_config(db, project_id)
     item = items_svc.create_item(
         db, title=body.title, description=body.body, tags=["github", body.type],
-        project_id=project_id, reporter={"name": user.name, "handle": user.handle, "avatar": user.avatar},
+        project_id=project_id, reporter={"name": user.name, "handle": handles.project_handle(db, user, project_id), "avatar": user.avatar},
     )
     return {
         "item": {"id": item.id, "title": item.title},
@@ -642,13 +644,24 @@ def _require_self_hosted_box() -> None:
                                  "deployment does not take filesystem paths")
 
 
+def _with_destination(db: Session, user: User, payload: dict) -> dict:
+    """Who may edit is a fact about the caller. The service stays principal-free and forces
+    editable false while the box is linked, even when this passes true."""
+    from app.services import code_sync
+
+    payload["destination"] = sync_storage_svc.destination_fact(
+        db, editable=code_sync.is_box_admin(db, user))
+    return payload
+
+
 @router.get("/sync-storage")
 def get_sync_storage(project_id: str = "core", db: Session = Depends(get_db),
                      user: User = Depends(get_current_user)):
     """Sync storage on Specs (GRPH-1320): the folder path, the blob directory, whether the
-    index is available, and each PRD row's sync state, read without syncing."""
+    index is available, and each PRD row's sync state, read without syncing. Includes the
+    publish destination (GRPH-1761)."""
     authz.require_readable(db, user.id, project_id)
-    return sync_storage_svc.status(db, project_id)
+    return _with_destination(db, user, sync_storage_svc.status(db, project_id))
 
 
 @router.put("/sync-storage")
@@ -663,7 +676,7 @@ def put_sync_storage(body: SyncStorageIn, project_id: str = "core", db: Session 
         sync_storage_svc.update_config(db, **body.model_dump(exclude_unset=True))
     except errors.Validation as e:
         raise HTTPException(422, str(e) + (f" — {e.hint}" if getattr(e, "hint", "") else ""))
-    return sync_storage_svc.status(db, project_id)
+    return _with_destination(db, user, sync_storage_svc.status(db, project_id))
 
 
 @router.post("/sync-storage/run")
@@ -672,7 +685,62 @@ def run_sync_storage(project_id: str = "core", db: Session = Depends(get_db),
     """Run sync, then return the refreshed facts and row states plus the run's report."""
     authz.require_writable(db, user.id, project_id)
     _require_self_hosted_box()
-    return sync_storage_svc.run(db, project_id)
+    return _with_destination(db, user, sync_storage_svc.run(db, project_id))
+
+
+PUBLISHING_RULE = "sync.publishing_needs_box_admin"
+
+
+def _refuse_unless_box_admin(db: Session, user: User, action: str) -> None:
+    """Publishing is the box's to turn on (GRPH-1762). An org admin is not a box admin: the
+    org never turns publishing on for a machine."""
+    from app.services import code_sync
+
+    if not code_sync.is_box_admin(db, user):
+        raise errors.Refused(
+            403, f"only an admin of this box can {action}", rule_id=PUBLISHING_RULE,
+            hint="ask the box's operator, or an owner/admin of one of their projects",
+            target=("instance", "publishing"))
+
+
+class PublishingIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+
+
+class CredentialIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    #: A path to a file on this box, or empty for the box's own git credential. Null clears it.
+    path: str | None
+
+
+@router.put("/sync-storage/publishing")
+def put_publishing(body: PublishingIn, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """Turn git publishing on or off for this deployment (GRPH-1762). Box admin only. On is a
+    422 naming the empty field — the switch stays off — while the destination or the
+    credential is missing; once accepted it runs one push of the current earned set and
+    answers that push's outcome as `push`. Never answers the credential path or bytes."""
+    _refuse_unless_box_admin(db, user, "turn publishing on or off")
+    _require_self_hosted_box()
+    try:
+        return sync_storage_svc.set_publishing(db, enabled=body.enabled)
+    except sync_storage_svc.PublishRefused as e:
+        raise HTTPException(422, {"field": e.field, "message": str(e)}) from e
+
+
+@router.put("/sync-storage/credential")
+def put_publish_credential(body: CredentialIn, db: Session = Depends(get_db),
+                           user: User = Depends(get_current_user)):
+    """Set the publish credential (GRPH-1762): a file path on this box, empty for the box's
+    git credential, or null to clear. Box admin only. The answer says only whether a
+    credential is set."""
+    _refuse_unless_box_admin(db, user, "set the publish credential")
+    _require_self_hosted_box()
+    try:
+        return sync_storage_svc.save_credential(db, path=body.path)
+    except errors.Validation as e:
+        raise HTTPException(422, str(e)) from e
 
 
 class PlanGrantIn(BaseModel):

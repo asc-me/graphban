@@ -22,9 +22,14 @@ import re
 import subprocess
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 BRANCH_PREFIX = "gb/"
+
+#: Bound on every git command that can talk to a remote, and on `_git` (push goes
+#: through it). A fetch with no timeout is a waitpid the until loop never leaves
+#: (GRPH-1786). Two minutes is the same bound `propose` already uses for `git fetch`.
+GIT_NETWORK_TIMEOUT = 120.0
 
 #: Credential files a vendor forces INSIDE the worktree (PRD-22 D-f). Cursor has no
 #: per-invocation config flag and reads `.cursor/mcp.json` from the project directory,
@@ -83,7 +88,12 @@ class SeatPathIsTracked(GitError):
 
 
 class ResumeFailed(RuntimeError):
-    """Could not check out a salvage branch. Spawn from HEAD instead; do not abort."""
+    """Could not check out the branch this spawn meant to resume.
+
+    A salvage with no item of its own may still spawn from HEAD. An item that
+    already has a branch must not (GRPH-1785): the caller leaves it claimable
+    instead of starting the child on some other branch.
+    """
 
 
 class BranchExists(RuntimeError):
@@ -137,10 +147,45 @@ class Disposition(str, Enum):
     LEFT_DIRTY = "left_dirty"
 
 
-def _git(cwd: Path | str, *args: str, check: bool = True) -> str:
-    proc = subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, text=True
+def _note_git_timeout(args: list[str]) -> None:
+    from . import observe
+
+    observe.emit(
+        "git_timeout",
+        argv=" ".join(args[:6]),
+        timeout=GIT_NETWORK_TIMEOUT,
     )
+
+
+def _bounded_git(args: list[str], cwd: Path | str) -> subprocess.CompletedProcess[str]:
+    """Run `args` and return. A timeout is a finished process with code 124, plus a log line.
+
+    The until loop calls this on the thread that also polls. `subprocess.run` without
+    a timeout is a wait that never becomes a log line.
+    """
+    from . import observe
+
+    observe.touch_loop()
+    try:
+        return subprocess.run(
+            args, cwd=str(cwd), capture_output=True, text=True,
+            timeout=GIT_NETWORK_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        _note_git_timeout(args)
+        return subprocess.CompletedProcess(
+            args, 124, "", f"timed out after {GIT_NETWORK_TIMEOUT:g}s",
+        )
+
+
+def _git(cwd: Path | str, *args: str, check: bool = True) -> str:
+    proc = _bounded_git(["git", *args], cwd)
+    if proc.returncode == 124:
+        if not check:
+            return ""
+        raise GitError(
+            f"git {' '.join(args)} timed out after {GIT_NETWORK_TIMEOUT:g}s in {cwd}"
+        )
     if check and proc.returncode != 0:
         raise GitError(
             f"git {' '.join(args)} failed in {cwd} ({proc.returncode}): "
@@ -560,11 +605,8 @@ def remote_name(repo: Path | str, branch: str) -> RemoteName:
     remote = remote_for(repo)
     if not remote:
         return RemoteName(known=True, exists=False)
-    proc = subprocess.run(
-        ["git", "ls-remote", "--heads", remote, f"refs/heads/{branch}"],
-        cwd=str(repo),
-        capture_output=True,
-        text=True,
+    proc = _bounded_git(
+        ["git", "ls-remote", "--heads", remote, f"refs/heads/{branch}"], repo,
     )
     if proc.returncode != 0:
         reason = (proc.stderr or proc.stdout or "").strip().replace("\n", " ")
@@ -580,6 +622,80 @@ def remote_name(repo: Path | str, branch: str) -> RemoteName:
         if len(parts) >= 2 and parts[1] == want:
             return RemoteName(known=True, exists=True, remote=remote, sha=parts[0])
     return RemoteName(known=True, exists=False, remote=remote)
+
+
+def worktree_key(path: str | Path) -> str:
+    """One spelling for a checkout path.
+
+    `git worktree list --porcelain` prints `C:/Users/...`. `str(Path)` on
+    Windows is `C:\\Users\\...`. A substring check of one against the other
+    reads a checkout that is still there as absent (GRPH-1785).
+    """
+    text = str(path).strip().strip('"')
+    if "\\" in text or (len(text) >= 2 and text[1] == ":"):
+        text = PureWindowsPath(text).as_posix()
+    else:
+        text = PurePosixPath(text).as_posix()
+    if len(text) > 1:
+        text = text.rstrip("/")
+    return text
+
+
+def porcelain_lists_worktree(text: str, path: str | Path) -> bool:
+    """True when `git worktree list --porcelain` names `path`.
+
+    Separators are normalised on both sides. A forward-slash line matches a
+    backslash path, and the reverse.
+    """
+    prefix = "worktree "
+    want = worktree_key(path)
+    return any(
+        worktree_key(line[len(prefix):]) == want
+        for line in text.splitlines()
+        if line.startswith(prefix)
+    )
+
+
+def worktree_holding(repo: Path | str, branch: str) -> Path | None:
+    """The worktree in this clone that has `branch` checked out, or None.
+
+    The primary checkout is included. A detached worktree is not: it does not
+    lock the branch name, so `worktree add` of that branch can still succeed.
+    """
+    branch = (branch or "").strip()
+    if not branch:
+        return None
+    current: Path | None = None
+    for line in _git(repo, "worktree", "list", "--porcelain").splitlines():
+        if line.startswith("worktree "):
+            current = Path(worktree_key(line.split(" ", 1)[1]))
+        elif line == f"branch refs/heads/{branch}" and current is not None:
+            return current
+    return None
+
+
+def matches_remote_head(repo: Path | str, branch: str, worktree: Path) -> bool:
+    """True when `worktree`'s HEAD is the remote tip of `branch`.
+
+    No remote, or no remote-tracking ref, is not a match. Absence is not "the
+    same commit": a checkout we could not compare is not one to remove.
+    """
+    remote = remote_for(repo)
+    if not remote:
+        return False
+    local = _git(worktree, "rev-parse", "HEAD").strip()
+    remote_sha = _git(
+        repo, "rev-parse", "--verify", "--quiet",
+        f"refs/remotes/{remote}/{branch}", check=False,
+    ).strip()
+    if not local or not remote_sha:
+        return False
+    return local == remote_sha
+
+
+def remove_worktree(repo: Path | str, path: Path) -> None:
+    """Remove a linked worktree. A dirty tree is refused; never `--force`."""
+    _git(repo, "worktree", "remove", str(path))
 
 
 def remote_for(repo: Path | str) -> str:
@@ -864,7 +980,7 @@ def registered_worktrees(repo: Path) -> set[Path]:
     out = _git(repo, "worktree", "list", "--porcelain")
     prefix = "worktree "
     return {
-        Path(line[len(prefix):].strip()).resolve()
+        Path(worktree_key(line[len(prefix):])).resolve()
         for line in out.splitlines()
         if line.startswith(prefix)
     }
@@ -1182,10 +1298,7 @@ def _ensure_local_branch(repo: Path, branch: str) -> None:
         return
     remote = remote_for(repo)
     if remote:
-        subprocess.run(
-            ["git", "fetch", "--quiet", remote, branch],
-            cwd=str(repo), capture_output=True, text=True,
-        )
+        _bounded_git(["git", "fetch", "--quiet", remote, branch], repo)
         tracking = f"refs/remotes/{remote}/{branch}"
         if _git(repo, "rev-parse", "--verify", "--quiet", tracking, check=False).strip():
             _git(repo, "branch", branch, f"{remote}/{branch}")
@@ -1361,8 +1474,7 @@ def refresh_ref(repo: Path | str, remote: str, ref: str) -> bool:
     if not remote or not ref.startswith(f"{remote}/"):
         return False
     branch = ref.split("/", 1)[1]
-    proc = subprocess.run(["git", "fetch", "--quiet", remote, branch],
-                          cwd=str(repo), capture_output=True, text=True)
+    proc = _bounded_git(["git", "fetch", "--quiet", remote, branch], repo)
     return proc.returncode == 0
 
 
@@ -1383,10 +1495,7 @@ def resolve_base(repo: Path | str, remote: str, branch: str) -> str:
             f"--base {branch}: repository has no remote to resolve it against"
         )
     ref = f"{remote}/{branch}"
-    proc = subprocess.run(
-        ["git", "fetch", "--quiet", remote, branch],
-        cwd=str(repo), capture_output=True, text=True,
-    )
+    proc = _bounded_git(["git", "fetch", "--quiet", remote, branch], repo)
     if proc.returncode != 0:
         raise BaseBranchNotFound(
             f"--base {branch}: could not fetch {ref} from {remote} "
@@ -1524,7 +1633,7 @@ def _checkout_of(repo: Path | str, branch: str) -> Path | None:
     path: Path | None = None
     for line in out.splitlines():
         if line.startswith("worktree "):
-            path = Path(line[len("worktree "):].strip())
+            path = Path(worktree_key(line[len("worktree "):]))
         elif line.strip() == f"branch refs/heads/{branch}":
             return path
     return None

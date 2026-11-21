@@ -30,7 +30,7 @@ from app.models import (
 )
 from app.providers import llm_meter
 from app.security import authz
-from app.services import instance_update, items as items_svc, quotas
+from app.services import handles, instance_update, items as items_svc, quotas
 from app.services.fleet import presence_ttl_seconds
 
 RANGE_CHOICES = (7, 30, 90)
@@ -398,7 +398,7 @@ def aggregate(db: Session, user_id: str, range_days: int = 30) -> dict[str, Any]
         busiest.append({
             "id": row.api_key_id,
             "name": (key.name or key.prefix) if key else row.api_key_id,
-            "owner": (owner.handle or owner.name) if owner else "—",
+            "owner": (handles.project_handle(db, owner, key.project_id) or owner.name) if owner else "—",
             "calls": int(row.calls),
             "last_seen": row.last_call.isoformat() if row.last_call else None,
         })

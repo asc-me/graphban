@@ -39,6 +39,14 @@ failure, and the summary says what to install.
 Neither travels on argv. The key comes from the environment and the seats from a file,
 because argv is world-readable.
 
+A service drain whose PRD is closed, or that has had no open items for several cycles,
+says so in `gbfleet service status` (`PRD closed; not restarting`, or `no open items
+for N cycles; not restarting`) and unloads its unit so the machine supervisor does not
+start it again. A PRD that still has blocked items keeps its schedule. A one-off
+`until` reports the same reasons and does not unload anything. An idle cycle asks only
+whether that PRD still has open items; it does not re-check merges it has already
+recorded or rewrite a dependency hold whose text has not changed.
+
 **Seat mode is still the normal way to run a fleet**: paste a prompt into a terminal and the
 agent registers itself. The supervisor is the advanced path — it cuts a worktree per child and
 reaps them when the wave ends, which is worth it once you are running several at once and not
@@ -53,7 +61,7 @@ without stopping the other.
 | vendor | version seen | range | MCP config | prompt reaches the child by | seat inside the worktree? |
 |---|---|---|---|---|---|
 | `claude` | `2.1.233 (Claude Code)` | 2.0 – 3.0 | `--mcp-config <path>` | stdin | **no** — private temp file |
-| `gbagent` | `gbagent 0.18.21` | **exactly `0.18.21`** — a pin, not a range | `--mcp-config <path>` | `--instruction-file <path>` | **no** — private temp file |
+| `gbagent` | `gbagent 0.18.29` | **exactly `0.18.29`** — a pin, not a range | `--mcp-config <path>` | `--instruction-file <path>` | **no** — private temp file |
 | `cursor-agent` | `2026.04.17-787b533` | 2026.1 – 2027.1 | none; reads `.cursor/mcp.json` from the project dir | stdin | **yes** — forced |
 | `grok` | `grok 1.0.25 (f7e67d6988e2) [stable]` | 1.0 – 2.0 | project-scoped `<worktree>/.grok/config.toml` (**TOML**), needs `--trust` | `--prompt-file <path>` | yes — `.grok/config.toml`, see below |
 | `qwen-code` | `0.23.0` | 0.23 – 1.0 | `--mcp-config <path>` + `--allowed-mcp-server-names graphban`; the entry must be `httpUrl` | stdin | **no** — private temp file |
@@ -199,7 +207,7 @@ literal would refuse the next release the moment somebody bumped one file and no
 
 *Releasing bumps this table.* `verified_against` is the version the suite actually resolved,
 and for this row it is re-verified on every CI run rather than observed once on a laptop —
-`test_adapters.py` runs the real binary. When the package version changes, the `0.18.21` above
+`test_adapters.py` runs the real binary. When the package version changes, the `0.18.29` above
 changes with it, and a test says so rather than letting the matrix go quietly stale — which it
 has now done for 0.2.0 and again for 0.3.0. **Bumping `fleet/pyproject.toml` is not one edit,
 it is two**, and the second one is this table; the test is what stops the release shipping a

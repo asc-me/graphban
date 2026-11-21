@@ -58,6 +58,16 @@ NOT_KEYS = {"UTF-8", "SHA-1", "SHA-256", "AES-256", "RFC-2119", "ISO-8601", "BAS
 ATTESTS_LINE = re.compile(r"^[ \t]*Attests:[ \t]*(.*)$", re.IGNORECASE | re.MULTILINE)
 
 
+#: A closing reference in a PR BODY: `Fixes GRPH-1`, `Closes: GRPH-2`, `resolves GRPH-3`
+#: (GRPH-1541). The body is where a PR explains itself, so it names items it is NOT for —
+#: "GRPH-1536 has worked examples" attested GRPH-1536 from a docs PR on another branch, and
+#: that `suite_green` could satisfy `merge.done_predicates` for code that never ran. A body id
+#: binds only behind one of these verbs; a bare mention is a reference, not a claim.
+CLOSING_REF = re.compile(
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[ \t]*:?[ \t]*([A-Z]{2,10}-\d+)\b",
+    re.IGNORECASE)
+
+
 class OutOfScope(RuntimeError):
     """The item belongs to a project this key cannot write.
 
@@ -300,8 +310,14 @@ def _call(url: str, key: str, arguments: dict, *, timeout: float = 15.0) -> None
 
 
 def call_tool(url: str, key: str, name: str, arguments: dict, *,
-              timeout: float = 15.0) -> None:
-    """One MCP tool call. Raises on anything that is not a success."""
+              timeout: float = 15.0) -> dict | None:
+    """One MCP tool call. Raises on anything that is not a success.
+
+    Returns the tool's `structuredContent` when that is an object, else None. A
+    caller that only needed the raise can ignore it. `scan_ci` reads it back
+    after a timed-out `update_item`: the write can commit and the response
+    still never arrive (GRPH-1784).
+    """
     item_key = arguments.get("id", name)
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
         "name": name, "arguments": arguments,
@@ -325,6 +341,47 @@ def call_tool(url: str, key: str, name: str, arguments: dict, *,
             # foreign item from a key that is simply wrong, and this layer does not.
             raise OutOfScope(f"{item_key}: graphban refused the write: {detail}")
         raise RuntimeError(f"{item_key}: graphban refused the write: {detail}")
+    content = result.get("structuredContent")
+    return content if isinstance(content, dict) else None
+
+
+def closing_refs(text: str) -> list[str]:
+    """Ids a body names behind a closing verb, in first-seen order (GRPH-1541)."""
+    out: list[str] = []
+    for k in CLOSING_REF.findall(text or ""):
+        k = k.upper()
+        if k not in NOT_KEYS and k not in out:
+            out.append(k)
+    return out
+
+
+def bound_keys(*, title: str = "", body: str = "", branch: str = "",
+               text: str = "") -> tuple[list[str], list[str]]:
+    """`(bound, mentioned)`: the ids this run vouches for, and the body ids it does NOT.
+
+    GRPH-1541. What binds an item to a run:
+
+    - an `Attests:` line anywhere (title, body or legacy text) — it wins outright;
+    - an id in the PR TITLE (`GRPH-1: …`, `… (GRPH-1)`) — the title says what the PR is;
+    - an id in the head BRANCH name;
+    - a closing reference in the BODY (`Fixes GRPH-1`, `Closes GRPH-1`, `Resolves GRPH-1`).
+
+    `main` adds items whose recorded branch IS the head branch, which is how an item's own
+    PR still attaches when its body only mentions it. A bare body mention binds nothing: it
+    is returned in `mentioned` so the run can say what it declined.
+
+    `text` is the pre-GRPH-1541 single argument, which could not tell title from body. It
+    keeps its old meaning — every id in it binds — for callers that never split it.
+    """
+    named = declared(title, body, text, branch)
+    if named is not None:
+        return list(dict.fromkeys(named)), []
+    bound = item_keys(title, text, branch)
+    for k in closing_refs(body):
+        if k not in bound:
+            bound.append(k)
+    mentioned = [k for k in item_keys(body) if k not in bound]
+    return bound, mentioned
 
 
 def _search_items(url: str, key: str, **arguments) -> list[dict]:
@@ -343,7 +400,7 @@ def _search_items(url: str, key: str, **arguments) -> list[dict]:
     return [r for r in rows or [] if isinstance(r, dict)]
 
 
-def items_on_branch(url: str, key: str, branch: str, search=_search_items) -> list[str]:
+def items_on_branch(url: str, key: str, branch: str, search=None) -> list[str]:
     """Keys of items whose recorded `branch` is this run's head branch (GRPH-1409).
 
     Two items can share one branch and one PR, and a PR title names only one of them. The
@@ -352,6 +409,7 @@ def items_on_branch(url: str, key: str, branch: str, search=_search_items) -> li
     """
     if not branch:
         return []
+    search = search or _search_items  # looked up at call time, so a test can replace it
     found: list[str] = []
     for status in ("in_progress", "review", "done"):
         for row in search(url, key, status=status, fields="full", limit=10_000):
@@ -402,7 +460,12 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--commit", required=True)
     ap.add_argument("--branch", default="")
-    ap.add_argument("--text", default="", help="PR title/body/branch to scan for item keys")
+    ap.add_argument("--text", default="",
+                    help="legacy: text in which EVERY item key binds. Prefer --title/--body, "
+                         "which a bare body mention cannot attest through (GRPH-1541)")
+    ap.add_argument("--title", default="", help="PR title; every item key in it binds")
+    ap.add_argument("--body", default="",
+                    help="PR body; only `Attests:` and closing references (`Fixes GRPH-1`) bind")
     ap.add_argument("--run-url", default="")
     ap.add_argument("--run-attempt", default=os.environ.get("GITHUB_RUN_ATTEMPT", ""),
                     help="github.run_attempt; defaults to $GITHUB_RUN_ATTEMPT (GRPH-1113)")
@@ -432,21 +495,28 @@ def main(argv: list[str] | None = None) -> int:
               f"a reviewer signs them off or the secret is configured.")
         return 0
 
-    keys = item_keys(args.text, args.branch)
+    keys, mentioned = bound_keys(title=args.title, body=args.body, branch=args.branch,
+                                 text=args.text)
     # GRPH-1409: an `Attests:` line is a human's exact answer; without one, the items whose
     # recorded branch this is are attested too, and each one that the text did not name is
     # printed so it is never attested silently.
-    if declared(args.text, args.branch) is None:
+    if declared(args.title, args.body, args.text, args.branch) is None:
         for extra in items_on_branch(url, key, args.branch):
             if extra not in keys:
                 print(f"{extra}: recorded branch is {args.branch}, not named in the PR text; "
                       "attesting it too")
                 keys.append(extra)
+    # GRPH-1541: said out loud, so a PR that meant to claim one of these knows to write
+    # `Fixes <id>` or `Attests: <id>` rather than finding out at `done`.
+    for skipped in (k for k in mentioned if k not in keys):
+        print(f"{skipped}: only mentioned in the PR body, not attesting it (use `Fixes {skipped}` "
+              "or an `Attests:` line to claim it)")
     if not keys:
         print("no Graphban item key in the branch or PR text — nothing to attest")
         return 0
 
     commits = covered_commits(args.base, args.commit)
+    matched = matched_by(args.title, args.body, args.text)
     if args.mode == "failed":
         log = ""
         if args.log_file:
@@ -458,14 +528,14 @@ def main(argv: list[str] | None = None) -> int:
         receipt = failed_attestation(
             commit=args.commit, branch=args.branch, jobs=failing_jobs(args.needs_json),
             tests=failing_tests(log), run_url=args.run_url, run_attempt=args.run_attempt,
-            matched=matched_by(args.text), commits=commits)
+            matched=matched, commits=commits)
     elif args.mode == "started":
         receipt = started_attestation(commit=args.commit, branch=args.branch,
                                       run_url=args.run_url, run_attempt=args.run_attempt,
-                                      matched=matched_by(args.text))
+                                      matched=matched)
     else:
         receipt = attestation(commit=args.commit, branch=args.branch, run_url=args.run_url,
-                              run_attempt=args.run_attempt, matched=matched_by(args.text),
+                              run_attempt=args.run_attempt, matched=matched,
                               commits=commits)
     failures = []
     #: Ids this key was refused. Held rather than reported immediately, because whether they

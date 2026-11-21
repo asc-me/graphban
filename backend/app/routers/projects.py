@@ -13,7 +13,7 @@ from app.db import get_db
 from app.errors import Refused, Validation
 from app.models import Membership, Project, User
 from app.schemas import (
-    GitopsPatch, GitopsView, MemberOut, MemoryWriteModeWrite, ProjectCreate, ProjectOut, ProjectRetagIn,
+    GitopsPatch, GitopsView, MemberOut, MemoryWriteModeWrite, ProjectCreate, PublishToOrgWrite, ProjectOut, ProjectRetagIn,
     ProjectSummaryOut, ProjectUpdate, UserOut,
 )
 from app.security import authz
@@ -94,6 +94,7 @@ def create_project(
         project = projects_svc.create_project(
             db, name=body.name, owner_user_id=user.id, tag=body.tag,
             accent=body.accent, description=body.description, org_id=org_id,
+            accent2=body.accent2, pattern=body.pattern,
         )
     except ValueError as e:
         raise HTTPException(422, str(e))
@@ -114,6 +115,15 @@ def update_project(
     if project is None:
         raise HTTPException(404, "project not found")
     changed = body.model_dump(exclude_unset=True)
+    fill = {k: changed.pop(k) for k in ("accent", "accent2", "pattern") if k in changed}
+    if fill:
+        # Through the service so accent2 == accent is stored as null, on this path
+        # and on create. A setattr of the raw body would keep a second colour that
+        # matches the first and quietly render solid.
+        try:
+            projects_svc.apply_tile_fill(project, fill)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
     mode_reason = changed.pop("memory_write_mode_reason", None)
     if changed.get("memory_write_mode") is not None:
         # Through the service so the change lands in the rule's history (GRPH-1497).
@@ -143,7 +153,7 @@ def update_project(
     db.refresh(project)
     events_svc.record_user(db, user, action="update_project", target_type="project",
                            target_id=project_id, project_id=project_id,
-                           meta={"fields": sorted(changed.keys())})
+                           meta={"fields": sorted(set(changed) | set(fill))})
     return project
 
 
@@ -163,6 +173,27 @@ def set_memory_write_mode(
         memory_svc.set_write_mode(db, project, body.mode, actor=user, reason=body.reason)
     except Validation as e:
         raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
+    db.refresh(project)
+    return project
+
+
+@router.put("/{project_id}/publish-to-org", response_model=ProjectOut)
+def set_publish_to_org(
+    project_id: str,
+    body: PublishToOrgWrite,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Turn what a linked box publishes to the org on or off (GRPH-1674). Owner or admin."""
+    authz.require_writable(db, user.id, project_id)
+    if authz.project_role(db, user.id, project_id) not in ("owner", "admin"):
+        raise Refused(403, "changing publish to org requires the project owner or an admin",
+                      rule_id="sync.publish_to_org_needs_admin")
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "project not found")
+    flags = body.model_dump(exclude_none=True)
+    projects_svc.set_publish_to_org(db, project, flags, actor=user)
     db.refresh(project)
     return project
 

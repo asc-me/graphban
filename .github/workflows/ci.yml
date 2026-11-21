@@ -55,7 +55,8 @@ jobs:
             --commit "$HEAD_SHA" \
             --branch "$HEAD_REF" \
             --run-url "$RUN_URL" \
-            --text "$PR_TITLE $PR_BODY"
+            --title "$PR_TITLE" \
+            --body "$PR_BODY"
       - name: Is this only a release stamp?
         id: stamp
         env:
@@ -462,7 +463,8 @@ jobs:
             --head "$HEAD_SHA" \
             --branch "$HEAD_REF" \
             --run-url "$RUN_URL" \
-            --text "$PR_TITLE $PR_BODY"
+            --title "$PR_TITLE" \
+            --body "$PR_BODY"
 
   # A single required check, so branch protection has one name to point at whatever the
   # filters decided to run. Without it a skipped job reads as "pending" forever on a
@@ -531,7 +533,8 @@ jobs:
           python3 scripts/attest_ci.py --mode head \
             --commit "$HEAD_SHA" \
             --branch "$HEAD_REF" \
-            --text "$PR_TITLE $PR_BODY"
+            --title "$PR_TITLE" \
+            --body "$PR_BODY"
       # GRPH-1410: a RED run is an answer, and it must be recorded as one. Without this a
       # failing head and a head CI never reached read the same ("no CI run has reported"),
       # and reviewers wait instead of bouncing. `failure()` keeps this unreachable on a
@@ -561,7 +564,8 @@ jobs:
             --run-url "$RUN_URL" \
             --needs-json "$NEEDS_JSON" \
             --log-file failed.log \
-            --text "$PR_TITLE $PR_BODY"
+            --title "$PR_TITLE" \
+            --body "$PR_BODY"
       - name: Attest the items this green run vouches for
         # EVERY value crosses into this step through `env`, never through `${{ }}` inside
         # `run`. Actions substitutes an expression into the script TEXT before any shell
@@ -590,4 +594,5 @@ jobs:
             --base "$BASE_SHA" \
             --branch "$HEAD_REF" \
             --run-url "$RUN_URL" \
-            --text "$PR_TITLE $PR_BODY"
+            --title "$PR_TITLE" \
+            --body "$PR_BODY"

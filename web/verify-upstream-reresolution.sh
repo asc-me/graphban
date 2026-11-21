@@ -1,49 +1,26 @@
 #!/bin/sh
-# Prove that nginx follows the backend to a NEW address without being restarted (GRPH-523).
+# Prove that the web image follows the backend to a NEW address without being restarted
+# (GRPH-523, kept for Caddy in GRPH-1635).
 #
-# WHY THIS IS A SCRIPT AND NOT A PYTEST. The property is "nginx re-resolves DNS at request
-# time", and nothing smaller than a real nginx talking to a real backend over real container
-# DNS can observe it. A unit test would be reduced to grepping the config for the word
-# `resolver`, which passes even if `proxy_pass` still holds a literal and nothing re-resolves
-# — a spelling check wearing a behaviour test's clothes. So this needs Docker, takes ~90s,
-# and is run by hand when the proxy config changes.
+# The property is "the proxy re-resolves DNS at request time". Nothing smaller than the real
+# image talking to a real backend over real container DNS can observe it, so this needs Docker
+# and takes about a minute. Run it by hand when web/Caddyfile or web/Dockerfile changes:
 #
 #   ./web/verify-upstream-reresolution.sh
 #
-# It runs the SAME scenario against the committed template and against the pre-fix one from
-# git, and requires the old to FAIL and the new to PASS. A fix that cannot be shown to fail
-# without it has not been shown to do anything.
-#
-# THE FIXTURE'S LOAD-BEARING PART is that the replacement backend gets a DIFFERENT address.
-# The first version of this test removed the old container before starting the new one,
-# Docker recycled the freed IP, and the pre-fix config "passed" — the cached address still
-# happened to be right. The new backend is therefore started WHILE the old one still holds
-# its IP, and the two are compared before anything is asserted.
+# The fixture's load-bearing part: the replacement backend gets a DIFFERENT address. It is
+# started WHILE the old one still holds its IP, because Docker recycles a freed IP and a run
+# that removed the old container first would pass with a cached address. The check also asserts
+# the request path arrives unchanged (`/health`, `/api/items?x=1`): a path rewrite still follows
+# the move, so who=B alone would not catch it.
 set -eu
 
 NET=gbverify
-TMPL_NEW="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/nginx.conf.template"
-TMPL_OLD=$(mktemp)
-trap 'docker rm -f nginx-verify be-one be-two >/dev/null 2>&1 || true; docker network rm ${NET} >/dev/null 2>&1 || true; rm -f "${TMPL_OLD}" "${ECHO_PY}"' EXIT
-
-# THE BASELINE IS A PINNED SHA, NOT A RELATIVE REF. This read `origin/main~1` (falling back
-# to `HEAD~1`), which named the pre-fix template for exactly one commit and then rotted: by
-# 2026-08-27 `origin/main~1` was several merges past the fix, so BOTH sides of the comparison
-# contained the resolver and both passed. The script's own control caught it and printed
-# CONTROL BROKEN — it fails closed, which is why this is a repair and not an outage — but a
-# verification that can never pass is one nobody runs twice.
-#
-# fff8b76 is the parent of 10fd287, the commit that introduced the fix. That relationship
-# does not change, so neither does this line.
-PREFIX_SHA=fff8b76
-git -C "$(dirname -- "${TMPL_NEW}")/.." show "${PREFIX_SHA}:web/nginx.conf.template" > "${TMPL_OLD}"
-grep -q 'set \$api_upstream' "${TMPL_OLD}" && {
-    echo "BASELINE IS NOT PRE-FIX: ${PREFIX_SHA} already contains the resolver fix, so the" >&2
-    echo "control below compares the fix against itself and can only report a false pass." >&2
-    exit 1
-}
-
+IMG=gbverify-web
+HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 ECHO_PY=$(mktemp)
+trap 'docker rm -f web-verify be-one be-two >/dev/null 2>&1 || true; docker network rm ${NET} >/dev/null 2>&1 || true; rm -f "${ECHO_PY}"' EXIT
+
 cat > "${ECHO_PY}" <<'PY'
 import http.server, os, socketserver
 WHO = os.environ.get("WHO", "?")
@@ -63,45 +40,27 @@ backend() {  # $1 = name, $2 = WHO
     docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$1"
 }
 
-scenario() {  # $1 = template, $2 = label; echoes PASS or FAIL
-    docker rm -f nginx-verify be-one be-two >/dev/null 2>&1 || true
-    IP1=$(backend be-one A)
-    docker run -d --name nginx-verify --network ${NET} -p 18099:80 \
-        -e PORT=80 -e API_SCHEME=http -e API_UPSTREAM=upstream:8000 \
-        -e NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1 \
-        -e 'NGINX_ENVSUBST_FILTER=^(PORT|API_SCHEME|API_UPSTREAM|NGINX_LOCAL_RESOLVERS)$' \
-        -v "$1":/etc/nginx/templates/default.conf.template nginx:1.27-alpine >/dev/null
-    sleep 4
-    curl -sf --max-time 10 http://127.0.0.1:18099/health >/dev/null \
-        || { echo "  ${2}: baseline never worked — the scenario proves nothing" >&2; return 3; }
-
-    IP2=$(backend be-two B)          # started while be-one still holds IP1
-    docker rm -f be-one >/dev/null 2>&1
-    [ "${IP1}" != "${IP2}" ] || { echo "  ${2}: FIXTURE TOOTHLESS — B reused ${IP1}" >&2; return 3; }
-    echo "  ${2}: A=${IP1} B=${IP2} (nginx NOT restarted)" >&2
-    sleep 14
-    # who=B is re-resolution. uri: is routing — a URI part on proxy_pass still
-    # follows the move (who=B) while /health and /api/items?x=1 both arrive as
-    # uri:/ (GRPH-523 bounce).
-    health=$(curl -sf --max-time 12 http://127.0.0.1:18099/health 2>/dev/null || true)
-    items=$(curl -sf --max-time 12 "http://127.0.0.1:18099/api/items?x=1" 2>/dev/null || true)
-    echo "$health" | grep -q '"who":"B"' \
-        && echo "$health" | grep -q '"uri":"/health"' \
-        && echo "$items" | grep -q '"who":"B"' \
-        && echo "$items" | grep -q '"uri":"/api/items?x=1"' \
-        && echo "PASS" || echo "FAIL"
-}
-
 docker network rm ${NET} >/dev/null 2>&1 || true
 docker network create ${NET} >/dev/null
+docker build -q -t ${IMG} "${HERE}" >/dev/null
 
-echo "== pre-fix template (literal proxy_pass) =="
-OLD=$(scenario "${TMPL_OLD}" "old" | tail -1)
-echo "== committed template (resolver + variable) =="
-NEW=$(scenario "${TMPL_NEW}" "new" | tail -1)
+IP1=$(backend be-one A)
+docker run -d --name web-verify --network ${NET} -p 18099:80 \
+    -e API_SCHEME=http -e API_UPSTREAM=upstream:8000 ${IMG} >/dev/null
+sleep 4
+curl -sf --max-time 10 http://127.0.0.1:18099/health >/dev/null \
+    || { echo "baseline never worked — the scenario proves nothing" >&2; exit 3; }
 
-echo
-echo "old=${OLD}  new=${NEW}"
-[ "${OLD}" = "FAIL" ] || { echo "CONTROL BROKEN: the pre-fix config also followed the move, so this run does not show the fix is load-bearing. Most likely the replacement reused the address."; exit 1; }
-[ "${NEW}" = "PASS" ] || { echo "REGRESSION: the committed config did not follow the backend."; exit 1; }
-echo "OK — the fix is load-bearing: old config stops serving, new config follows."
+IP2=$(backend be-two B)          # started while be-one still holds IP1
+docker rm -f be-one >/dev/null 2>&1
+[ "${IP1}" != "${IP2}" ] || { echo "FIXTURE TOOTHLESS — B reused ${IP1}" >&2; exit 3; }
+echo "A=${IP1} B=${IP2} (web NOT restarted)" >&2
+sleep 5
+health=$(curl -sf --max-time 12 http://127.0.0.1:18099/health 2>/dev/null || true)
+items=$(curl -sf --max-time 12 "http://127.0.0.1:18099/api/items?x=1" 2>/dev/null || true)
+echo "$health" | grep -q '"who":"B"' \
+    && echo "$health" | grep -q '"uri":"/health"' \
+    && echo "$items" | grep -q '"who":"B"' \
+    && echo "$items" | grep -q '"uri":"/api/items?x=1"' \
+    || { echo "REGRESSION: the web image did not follow the backend to its new address."; exit 1; }
+echo "OK — the web image follows the backend to its new address, path unchanged."

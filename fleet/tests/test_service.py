@@ -336,6 +336,103 @@ def test_a_drain_between_cycles_is_idle_not_broken():
 def test_a_running_service_is_never_idle():
     live = service.Status(name="d", kind="systemd", installed=True, running=True, last_exit=0)
     assert not live.idle
+    assert "running" in live.line() and "stalled" not in live.line()
+
+
+def _running_unit(tmp_path: Path, monkeypatch, name: str):
+    unit = tmp_path / "unit.plist"
+    unit.write_bytes(b"x")
+    monkeypatch.setattr(service, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(service, "unit_path_for", lambda n, k: unit)
+    monkeypatch.setattr(service, "_running_launchd", lambda label: (True, "pid 1", 0))
+    monkeypatch.setattr(service, "linger", lambda: None)
+    return service.status(name, kind="launchd")
+
+
+def test_a_running_drain_that_logged_loop_silent_is_stalled(tmp_path: Path, monkeypatch):
+    """GRPH-1786. launchd still has a pid. The log says the loop stopped writing.
+    The line an operator reads must say stalled, and must not say running.
+
+    Sabotage: drop the `stalled` branch in `Status.line` and this still says running.
+    """
+    name = "drain-1786"
+    log = tmp_path / "logs" / f"{name}.log"
+    log.parent.mkdir()
+    log.write_text(
+        '{"event": "child", "pid": 9}\n'
+        '{"event": "loop_silent", "silent_for": 301, "polls": 300}\n',
+        encoding="utf-8",
+    )
+    state = _running_unit(tmp_path, monkeypatch, name)
+    assert state.stalled and state.running is True
+    line = state.line()
+    assert line == f"{name}: stalled (launchd, {state.unit_path})"
+    assert ": running" not in line
+
+
+def _stopped_unit(tmp_path: Path, monkeypatch, name: str, last_exit: int):
+    unit = tmp_path / "unit.plist"
+    unit.write_bytes(b"x")
+    monkeypatch.setattr(service, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(service, "unit_path_for", lambda n, k: unit)
+    monkeypatch.setattr(
+        service, "_running_launchd",
+        lambda label: (False, f"last exit {last_exit}", last_exit),
+    )
+    monkeypatch.setattr(service, "linger", lambda: None)
+    return service.status(name, kind="launchd")
+
+
+def test_a_stopped_drain_that_exited_stalled_names_the_refused_item(
+    tmp_path: Path, monkeypatch,
+):
+    """GRPH-1643. `until` exited non-zero because a ready item stayed refused.
+    `gbfleet service status` reads that summary. The line names the item and the
+    refusal, and it does not say idle.
+
+    Sabotage: in `status`, do not pass `stall` from `last_run` into `Status`.
+    The line no longer contains `GBC-125 bound_seat_refused (reach)`.
+    """
+    name = "drain"
+    log = tmp_path / "logs" / f"{name}.log"
+    log.parent.mkdir()
+    log.write_text(
+        '{"ok": false, "reason": "stalled", "exit": 1, "refused": '
+        '[{"item": "GBC-125", "reason": "bound_seat_refused (reach)"}]}\n',
+        encoding="utf-8",
+    )
+    state = _stopped_unit(tmp_path, monkeypatch, name, 1)
+    assert state.run_reason == "stalled"
+    assert not state.idle
+    line = state.line()
+    assert "stalled: GBC-125 bound_seat_refused (reach)" in line
+    assert "idle between runs" not in line
+
+
+def test_a_running_drain_with_a_live_log_still_says_running(tmp_path: Path, monkeypatch):
+    name = "drain-1786-live"
+    log = tmp_path / "logs" / f"{name}.log"
+    log.parent.mkdir()
+    log.write_text('{"event": "child", "pid": 9}\n', encoding="utf-8")
+    state = _running_unit(tmp_path, monkeypatch, name)
+    assert not state.stalled
+    assert "running" in state.line() and "stalled" not in state.line()
+
+
+def test_a_running_drain_with_no_log_yet_does_not_read_as_a_confirmed_log(tmp_path, monkeypatch):
+    state = _running_unit(tmp_path, monkeypatch, "drain-1786-absent")
+    assert state.log_state == "absent" and not state.stalled
+    assert "no log yet" in state.line()
+
+
+def test_a_running_drain_whose_log_cannot_be_read_says_so(tmp_path: Path, monkeypatch):
+    name = "drain-1786-unread"
+    log = tmp_path / "logs" / f"{name}.log"
+    log.parent.mkdir()
+    log.mkdir()
+    state = _running_unit(tmp_path, monkeypatch, name)
+    assert state.log_state == "unread" and not state.stalled
+    assert "log unread" in state.line()
 
 
 # --- finding a drain nobody remembered installing -----------------------------------
@@ -619,3 +716,87 @@ def test_install_refuses_a_utf16_task_that_embeds_the_key(git_repo: Path, monkey
     with pytest.raises(Refused, match="contains the API key"):
         service.install(plan, KEY)
     assert not plan.unit_path.exists()
+
+
+def _drain(**kw):
+    return service.Status(name="d", kind="launchd", installed=True, running=False,
+                          last_exit=0, unit_path=Path("/tmp/x"), **kw)
+
+
+def test_exit_zero_unready_is_not_idle_and_prints_count():
+    s = _drain(run_reason="unready", unready=2)
+    assert not s.idle and "unready" in s.line() and "2" in s.line()
+
+
+def test_exit_zero_empty_queue_is_idle():
+    s = _drain(run_reason="idle")
+    assert s.idle and "idle between runs" in s.line()
+
+
+def test_exit_zero_merge_pending_is_not_idle():
+    """GRPH-1818. ``until`` exits 0 with ``reason: merge-pending`` while a signed-off
+    pull request is still open. That record is not a drained queue.
+
+    Sabotage: drop ``merge-pending`` from ``_NOT_A_DRAINED_EXIT`` and this is idle
+    and says "idle between runs".
+    """
+    pending = _drain(run_reason="merge-pending")
+    assert not pending.idle
+    line = pending.line()
+    assert "merge-pending" in line
+    assert "idle between runs" not in line
+    assert "drained" not in line
+    # The other two exit-0 readings stay where they were.
+    assert not _drain(run_reason="unready", unready=1).idle
+    assert _drain(run_reason="idle").idle
+
+
+def test_status_reads_a_merge_pending_record_as_not_idle(tmp_path: Path, monkeypatch):
+    """The call, not the property: ``service.status`` reads the newest until JSON.
+
+    Sabotage: stop passing ``run_reason`` from ``last_run`` into ``Status`` and
+    this says "idle between runs".
+    """
+    name = "drain-1818"
+    log = tmp_path / "logs" / f"{name}.log"
+    log.parent.mkdir()
+    log.write_text(
+        '{"ok": false, "reason": "merge-pending", "exit": 0, '
+        '"waits": ["GRPH-1: MERGE PENDING"]}\n',
+        encoding="utf-8",
+    )
+    state = _stopped_unit(tmp_path, monkeypatch, name, 0)
+    assert state.run_reason == "merge-pending"
+    assert not state.idle
+    line = state.line()
+    assert "merge-pending" in line
+    assert "idle between runs" not in line
+    assert "drained" not in line
+
+
+def test_exit_zero_without_reason_is_unknown_not_idle():
+    s = _drain(run_reason="")
+    assert not s.idle and "reason unknown" in s.line()
+
+
+def test_last_run_reads_newest_json(tmp_path, monkeypatch):
+    monkeypatch.setattr(service, "CONFIG_DIR", tmp_path)
+    (tmp_path / "logs").mkdir()
+    log = tmp_path / "logs" / "d.log"
+    log.write_text('{"reason": "idle"}\nnoise\n{"reason": "unready", "unready": [{"id": "a"}]}\n')
+    assert service.last_run("d") == ("unready", 1, "")
+    log.write_text("no json here\n")
+    assert service.last_run("d") == ("", 0, "")
+
+
+def test_last_run_reads_a_newest_record_longer_than_the_window(tmp_path, monkeypatch):
+    """GRPH-1698: a newest JSON line over 64 KiB (large `resolutions`) must not fall back to
+    an older run's reason. Sabotage: drop the window widening and this reads ("", 0)."""
+    import json as _json
+
+    monkeypatch.setattr(service, "CONFIG_DIR", tmp_path)
+    (tmp_path / "logs").mkdir()
+    big = _json.dumps({"reason": "unready", "unready": [{"id": "a"}, {"id": "b"}],
+                       "resolutions": ["x" * 1000] * 200})
+    (tmp_path / "logs" / "d.log").write_text('{"reason": "idle"}\n' + big + "\n")
+    assert service.last_run("d") == ("unready", 2, "")

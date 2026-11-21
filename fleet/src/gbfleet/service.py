@@ -35,6 +35,7 @@ the wrong port. So the installing shell's PATH is recorded in the unit, and `sta
 """
 from __future__ import annotations
 
+import json
 import os
 import plistlib
 import shlex
@@ -97,6 +98,21 @@ CONFIG_DIR = Path.home() / ".config" / "gbfleet"
 #: ready work). Five minutes trades pickup latency for that, and `--every` moves it.
 RESTART_SEC = 300
 
+#: Consecutive cycles with nothing open before a service drain stops restarting
+#: (GRPH-1645). A closed PRD stops on the first cycle; this count is only the
+#: "still approved, but empty" case. Three matches `until`'s empty-tick patience
+#: without being a setting.
+QUIET_CYCLES = 3
+REASON_PRD_CLOSED = "prd-closed"
+REASON_NO_OPEN = "no-open-items"
+#: Clean exits that are NOT "idle between runs". `prd-closed` and `no-open-items`
+#: would otherwise print as a healthy idle, and launchd would keep starting them
+#: (GRPH-1645). ``merge-pending`` is an exit 0 while a signed-off pull request is
+#: still open (GRPH-1818).
+_NOT_BETWEEN_RUNS = (
+    "", "unready", "stalled", "merge-pending", REASON_PRD_CLOSED, REASON_NO_OPEN,
+)
+
 #: How long `install` waits before asking whether the job survived. Not tuning: `until`
 #: reaches the repo lock, the server and its first refusal in well under a second, so an
 #: immediate read reports "running" for a service that is already gone.
@@ -130,6 +146,110 @@ def err_reason(name: str, *, limit: int = 400) -> str:
         return ""
     last = lines[-1]
     return last if len(last) <= limit else last[: limit - 1] + "…"
+
+def last_run(name: str) -> tuple[str, int, str]:
+    """`(reason, unready_count, stall_phrase)` from the newest `until` JSON (GRPH-1698).
+
+    Exit 0 alone is not the idle signal: a `--line` drain exits 0 with `reason: unready` when
+    fixes are filed but not claimable. `stall_phrase` is empty unless that reason is
+    `stalled`; it names the ready items under `refused` so status can say which one stayed
+    refused (GRPH-1643). `("", 0, "")` means the log held no readable reason.
+    """
+    path = CONFIG_DIR / "logs" / f"{name}.log"
+    window = 65536
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            while True:
+                start = max(0, size - window)
+                fh.seek(start)
+                lines = fh.read().decode("utf-8", "replace").splitlines()
+                if start > 0 and lines:
+                    # The first line may begin mid-record; only whole lines are read.
+                    lines = lines[1:]
+                found = _reason_in(lines)
+                if found is not None:
+                    return found
+                if start == 0:
+                    return "", 0, ""
+                # The newest record may be longer than the window (a large `resolutions`):
+                # widen rather than answer with an older run's reason.
+                window *= 4
+    except OSError:
+        return "", 0, ""
+
+
+def _drain_log(name: str) -> tuple[bool, str]:
+    """`(stalled, log_state)` from the service stdout log while the pid is alive.
+
+    `loop_silent` is the watchdog saying the loop has written nothing for longer than
+    its poll window (GRPH-1786). That is stalled. A file we could not read is `unread`,
+    which is not a clean running. A file that is not there yet is `absent`. Anything
+    else that was actually read is `live`.
+    """
+    path = CONFIG_DIR / "logs" / f"{name}.log"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return False, "absent"
+    except OSError:
+        return False, "unread"
+    if _last_json_event(text) == "loop_silent":
+        return True, "stalled"
+    return False, "live"
+
+
+def _last_json_event(text: str) -> str:
+    for ln in reversed(text.splitlines()):
+        ln = ln.strip()
+        if not ln.startswith("{"):
+            continue
+        try:
+            doc = json.loads(ln)
+        except ValueError:
+            continue
+        if isinstance(doc, dict) and "event" in doc:
+            return str(doc.get("event") or "")
+    return ""
+
+
+def _stall_phrase(refused: object) -> str:
+    """`GBC-125 bound_seat_refused (reach)` from a summary's `refused` list.
+
+    One clause per item, in the order the summary recorded them. A row that is
+    not an object is skipped: a bad element must not hide the ones that are real.
+    """
+    if not isinstance(refused, list):
+        return ""
+    parts: list[str] = []
+    for row in refused:
+        if not isinstance(row, dict):
+            continue
+        item = str(row.get("item") or "").strip()
+        reason = str(row.get("reason") or "").strip()
+        if item and reason:
+            parts.append(f"{item} {reason}")
+        elif item or reason:
+            parts.append(item or reason)
+    return "; ".join(parts)
+
+
+def _reason_in(lines: list[str]) -> tuple[str, int, str] | None:
+    for ln in reversed(lines):
+        ln = ln.strip()
+        if not ln.startswith("{"):
+            continue
+        try:
+            doc = json.loads(ln)
+        except ValueError:
+            continue
+        if isinstance(doc, dict) and isinstance(doc.get("reason"), str) and doc["reason"]:
+            un = doc.get("unready")
+            stall = _stall_phrase(doc.get("refused")) if doc["reason"] == "stalled" else ""
+            return doc["reason"], len(un) if isinstance(un, list) else 0, stall
+    return None
+
 
 #: What `until` is given if the operator passes nothing else. Nothing: an empty install is
 #: refused, because a service running `gbfleet until` with no server, project or repo is a
@@ -852,6 +972,79 @@ def install(plan: Plan, api_key: str) -> Installed:
                      state=state)
 
 
+def quiet_state_path(name: str) -> Path:
+    """Where a service drain remembers how many empty cycles it has already seen."""
+    return CONFIG_DIR / "quiet" / f"{name}.json"
+
+
+def note_quiet_cycle(name: str, prd: str) -> int:
+    """Count one more cycle in which `prd` had nothing open. A different PRD starts at 1.
+
+    Each launchd start is a fresh process, so the count has to live on disk. A
+    read that fails is cycle 1, not a silent zero that never reaches the stop.
+    """
+    path = quiet_state_path(name)
+    data: dict = {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            data = loaded
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    if data.get("prd") != prd:
+        data = {"prd": prd, "cycles": 0}
+    data["cycles"] = int(data.get("cycles") or 0) + 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return int(data["cycles"])
+
+
+def reset_quiet_cycle(name: str) -> None:
+    """The PRD has open items again. The empty-cycle count does not carry over."""
+    try:
+        quiet_state_path(name).unlink()
+    except OSError:
+        return
+
+
+def _launchd_gui_domain() -> str | None:
+    """`gui/<numeric uid>` for launchctl, or None where `os.getuid` does not exist.
+
+    Windows has no `os.getuid`. A test that forces `host()` to launchd still
+    runs this branch there, and `hostos.user_tag()` is a name on Windows.
+    launchctl's domain is `gui/<numeric uid>`, so a missing uid is not a name.
+    """
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        return None
+    return f"gui/{getuid()}"
+
+
+def stop_restarting(name: str) -> str:
+    """Unload this service so a clean exit is not started again (GRPH-1645).
+
+    The unit file keeps `KeepAlive` / `Restart=always`. An already-installed job
+    stops because this process boots it out, not because anybody re-renders the
+    plist. A one-off `until` does not call this. An unknown host is a no-op.
+    """
+    found = host()
+    if found.kind == "launchd":
+        domain = _launchd_gui_domain()
+        if domain is None:
+            return "launchd domain needs a numeric uid; os.getuid is absent"
+        _code, out = _run(["launchctl", "bootout", f"{domain}/{label_for(name)}"])
+        return out
+    if found.kind == "systemd":
+        _code, out = _run(["systemctl", "--user", "disable", "--now", unit_name(name)])
+        return out
+    if found.kind == "schtasks":
+        tn = task_name(name)
+        _run(["schtasks", "/End", "/TN", tn])
+        _code, out = _run(["schtasks", "/Change", "/TN", tn, "/DISABLE"])
+        return out
+    return found.why
+
+
 def _load_launchd(plan: Plan) -> str:
     domain = f"gui/{os.getuid()}"
     # Idempotent: a re-install replaces a running job rather than failing against it. The
@@ -889,6 +1082,15 @@ def _load_schtasks(plan: Plan) -> str:
     return (out + ("\n" + run_out if run_out else "")).strip() or f"registered {tn}"
 
 
+#: ``idle`` consults this set: ``_NOT_BETWEEN_RUNS``. ``""`` is "the log was read and
+#: named nothing" (GRPH-1698). ``stalled`` exits non-zero, so it is excluded from idle
+#: defensively and is not unsettled. ``merge-pending`` exits 0 while a signed-off pull
+#: request is still open (GRPH-1818): reading it as idle is how that PR was left behind.
+#: ``prd-closed`` and ``no-open-items`` are the same exclusion (GRPH-1645).
+_NOT_A_DRAINED_EXIT = frozenset(_NOT_BETWEEN_RUNS)
+_UNSETTLED_EXIT = frozenset({"", "unready", "merge-pending"})
+
+
 @dataclass(frozen=True)
 class Status:
     """Three answers about a service, never two.
@@ -917,11 +1119,46 @@ class Status:
     #: Why it died, from the err log's last line, when it is not running and last exited
     #: non-zero (GRPH-1312). Empty otherwise, and empty when the log is unreadable.
     reason: str = ""
+    #: The newest `until` run's JSON `reason` from the drain's log (GRPH-1698). None means the
+    #: log was not consulted; "" means it was and held no reason.
+    run_reason: str | None = None
+    unready: int = 0
+    #: `GBC-125 bound_seat_refused (reach)` when `run_reason` is `stalled` (GRPH-1643).
+    #: Empty when the log named the stall without a `refused` row.
+    stall: str = ""
+    #: The process is alive and the loop has logged `loop_silent` (GRPH-1786). A pid is
+    #: not a working drain: launchd kept the 2026-11-20 process as running for 50 minutes
+    #: after it stopped writing.
+    stalled: bool = False
+    #: "live", "stalled", "absent", "unread", or "" when status did not look at the log.
+    #: Empty is the constructed-Status default and still reads as running.
+    log_state: str = ""
 
     @property
     def idle(self) -> bool:
-        """Installed, not running, and last exited cleanly: the normal state between cycles."""
+        """Installed, not running, and last exited cleanly: the normal state between cycles.
+
+        A closed PRD and a PRD with nothing open for several cycles are clean exits
+        that must not read as "idle between runs" — that reading is what kept
+        launchd restarting them (GRPH-1645). A clean exit whose reason is
+        ``merge-pending`` is not this either (GRPH-1818): the pull request is still open.
+        """
+        return self._exited_clean and self.run_reason not in _NOT_A_DRAINED_EXIT
+
+    @property
+    def _exited_clean(self) -> bool:
         return bool(self.installed) and self.running is False and self.last_exit == 0
+
+    @property
+    def unsettled(self) -> bool:
+        """Exited 0 but NOT idle: `unready`, `merge-pending`, or no readable reason.
+
+        Not a crash either — the drain ran and exited cleanly — so install and doctor must not
+        report it as dead; they print `line()` instead. ``merge-pending`` (GRPH-1818) is a
+        signed-off pull request still open, the same shape as ``unready`` (GRPH-1698): exit 0,
+        queue not drained.
+        """
+        return self._exited_clean and self.run_reason in _UNSETTLED_EXIT
 
     def line(self) -> str:
         where = self.kind
@@ -934,10 +1171,33 @@ class Status:
         if self.running is None:
             return f"{self.name}: installed at {self.unit_path}, running unknown — {self.detail}"
         if self.running:
+            if self.stalled:
+                return f"{self.name}: stalled ({where}, {self.unit_path})"
+            if self.log_state == "unread":
+                return f"{self.name}: running, log unread ({where}, {self.unit_path})"
+            if self.log_state == "absent":
+                return f"{self.name}: running, no log yet ({where}, {self.unit_path})"
             return f"{self.name}: running ({where}, {self.unit_path})"
+        if self.run_reason == "stalled":
+            phrase = self.stall or "a ready item stayed refused"
+            return f"{self.name}: stalled: {phrase} ({where}, {self.unit_path})"
+        if self.run_reason == REASON_PRD_CLOSED:
+            return (f"{self.name}: PRD closed; not restarting "
+                    f"({where}, {self.unit_path})")
+        if self.run_reason == REASON_NO_OPEN:
+            return (f"{self.name}: no open items for {QUIET_CYCLES} cycles; not restarting "
+                    f"({where}, {self.unit_path})")
         if self.idle:
             return (f"{self.name}: idle between runs, last exit 0 ({where}, "
                     f"{self.unit_path})")
+        if self.unsettled:
+            if self.run_reason == "unready":
+                return (f"{self.name}: unready, last exit 0, {self.unready} line item(s) "
+                        f"filed but not claimable ({where}, {self.unit_path})")
+            if self.run_reason == "merge-pending":
+                return (f"{self.name}: merge-pending, last exit 0, a signed-off pull "
+                        f"request is still open ({where}, {self.unit_path})")
+            return (f"{self.name}: last exit 0, reason unknown ({where}, {self.unit_path})")
         exit_code = "unknown" if self.last_exit is None else str(self.last_exit)
         said = f" — {self.reason}" if self.reason else ""
         return (f"{self.name}: NOT running, last exit {exit_code} ({where}, "
@@ -962,10 +1222,20 @@ def status(name: str = DEFAULT_NAME, *, kind: str = "") -> Status:
     else:
         alive, detail, last_exit = _running_systemd(name)
     died = alive is False and last_exit not in (None, 0)
+    # Read the summary whenever the process has exited, not only on exit 0. A stall
+    # exits non-zero (GRPH-1643); looking only at exit 0 left that log unread and
+    # status said "NOT running" with no item.
+    if alive is False and last_exit is not None:
+        run_reason, unready, stall = last_run(name)
+    else:
+        run_reason, unready, stall = None, 0, ""
+    stalled, log_state = _drain_log(name) if alive else (False, "")
     return Status(name=name, kind=kind, installed=True, running=alive, unit_path=unit,
                   detail=detail, linger=linger(), path_env=_path_in(unit, kind),
                   last_exit=last_exit, logon_policy=policy,
-                  reason=err_reason(name) if died else "")
+                  reason=err_reason(name) if died else "",
+                  run_reason=run_reason, unready=unready, stall=stall,
+                  stalled=stalled, log_state=log_state)
 
 
 def _path_in(unit: Path, kind: str) -> str:

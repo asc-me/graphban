@@ -91,8 +91,13 @@ export function AdminGitopsLink({ className }: { className?: string }) {
 
 /** The org's display name for a linked row: the sync link's `org`, else the id the view carries. */
 export function useOrgName(view: GitopsView | undefined): string {
+  return useOrgNameOrNull(view) ?? "your org";
+}
+
+/** The org's real name, or null when the project has no org: never a placeholder (GRPH-1725). */
+export function useOrgNameOrNull(view: GitopsView | undefined): string | null {
   const { data: sync } = useSyncStatus();
-  return sync?.org || view?.org_id || "your org";
+  return sync?.org || view?.org_id || null;
 }
 
 /** Replaces the plain value box of a gitops row; `fallback` is that box, used until the view loads. */

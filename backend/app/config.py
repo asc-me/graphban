@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # The insecure fallback secret. Anyone knowing it can mint tokens for any user, so
@@ -86,6 +86,12 @@ class Settings(BaseSettings):
     # verify inbound GitHub webhook HMAC when set; trust X-Forwarded-For only behind a
     # known proxy; refuse to start on a weak/default JWT secret when required.
     github_webhook_secret: str = ""
+    # Optional token for the box's update check (GRPH-1663). Unauthenticated GitHub REST
+    # calls share 60/hour per public IP; a token raises that to 5000. Sent as a Bearer
+    # header to api.github.com only — never to the release-asset download. Empty is the
+    # unauthenticated default.
+    github_token: str = Field(
+        default="", validation_alias=AliasChoices("GITHUB_TOKEN", "GRAPHBAN_GITHUB_TOKEN"))
     # Where newer rule packs are discovered (GRPH-1334): a GitHub releases feed (JSON list)
     # whose releases are tagged `pack-v<version>` with `graphban-rules-<version>.tar` and
     # `.tar.sig` assets. Self-hosters can mirror it; tests point it at a fixture.
@@ -246,6 +252,10 @@ class Settings(BaseSettings):
     # Anthropic auth is read from ANTHROPIC_API_KEY by the SDK.
     anthropic_model: str = "claude-opus-4-8"
 
+    # The published HTTPS port of the box (compose maps ${WEB_HTTPS_PORT:-8443}); reported
+    # in the /api/https status as part of `https_url`.
+    web_https_port: int = 8443
+
     # Public embeddable feedback form (Phase 2).
     public_submit_enabled: bool = True
 
@@ -280,6 +290,14 @@ class Settings(BaseSettings):
     # (hourly while none is valid). 0 disables the timer; the startup fetch is the timer's
     # first pass, so it is off too.
     plan_grant_check_seconds: int = 300
+
+    # Project-sync flush (GRPH-1735, P89 D11). The budget is per box, not per project.
+    # Defaults are the D11 ceilings: 256 KB of compressed body per minute and 30 requests
+    # per minute. `0` on the interval disables the loop — what the test suite runs at,
+    # because the tests drive `flush_once` on a fake clock instead of waiting for a timer.
+    sync_flush_seconds: int = 5
+    sync_flush_bytes_per_min: int = 256 * 1024
+    sync_flush_requests_per_min: int = 30
 
     # Drive sync: base directory the filesystem backend syncs into. Mount this at a
     # Google Drive Desktop folder to reach Drive with no OAuth.
@@ -340,6 +358,21 @@ class Settings(BaseSettings):
     vapid_public_key: str = ""
     vapid_private_key: str = ""
     vapid_subject: str = "mailto:admin@localhost"
+
+    # The box's own certificate authority (GRPH-1634). `tls_dir` is where the current leaf
+    # (`box.crt`) and key (`box.key`) are written for the front end; empty writes nothing.
+    # `tls_reload_url`, when set, is POSTed to after a write so the front end reloads.
+    tls_dir: str = ""
+    tls_reload_url: str = ""
+    tls_reissue_debounce_seconds: int = 300
+    # How often the leader re-checks the leaf (renewal, debounced names); `0` disables.
+    tls_sync_seconds: int = 300
+
+    # How often the leader wakes to pull cloud proposals (GRPH-1737). The wake
+    # is a tick; the per-project interval (60s, or 10s while a decision is
+    # open) is computed, not configured. `0` disables the loop — the value the
+    # test suite runs at, which drives `project_sync_proposals.run_due` itself.
+    proposal_poll_seconds: int = 1
 
     # LLM call spans (GRPH-225). How long `llm_call_spans` rows live; 0 or negative
     # keeps everything. The table is telemetry, not the ledger — unbounded growth of

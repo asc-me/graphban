@@ -122,6 +122,16 @@ def test_sign_off_still_passes_the_gate_after_a_third_party_write(client, auth):
     _ok(client, key, "update_item",
         {"id": item_id, "status": "review", "agent_id": worker["agent_id"],
          "evidence": [SABOTAGE]})
+    # GRPH-1730 withholds a branch with no PR. The column releases that gate
+    # without adding a row the evidence assertions would have to ignore.
+    from app.db import SessionLocal
+    from app.models import Item
+    s = SessionLocal()
+    try:
+        s.get(Item, item_id).github_url = "https://github.com/o/r/pull/1"
+        s.commit()
+    finally:
+        s.close()
 
     # A third agent leaves an unrelated note — the drive-by that used to be destructive.
     _ok(client, key, "update_item", {"id": item_id, "evidence": [

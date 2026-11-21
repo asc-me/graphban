@@ -18,8 +18,17 @@ from app.models import FleetProfile, Project, utcnow
 
 AXES: tuple[str, ...] = ("cost", "quality", "latency", "locality")
 POLICY_KEYS: tuple[str, ...] = ("local_only", "reviewer_cross_vendor", "allowed_harnesses", "caps",
-                                 "cluster_ceiling", "ladder", "routing_mode", "subscription_order")
+                                 "cluster_ceiling", "ladder", "routing_mode", "rung_preference",
+                                 "subscription_order", "tie_break", "when_exhausted")
 ROUTING_MODES: tuple[str, ...] = ("next_available", "custom_hierarchy")
+#: GRPH-1505: the router's LAST sort key. Availability, the ladder rung and the subscription
+#: order still decide first; this only breaks what they leave tied. `soonest_reset` is S4's.
+TIE_BREAKS: tuple[str, ...] = ("soonest_reset", "most_headroom", "cheapest")
+DEFAULT_TIE_BREAK = "soonest_reset"
+#: GRPH-1505: when nothing on the ladder's top rung has headroom, fall to the next rung (S4) or
+#: hold the item until a stated reset.
+WHEN_EXHAUSTED: tuple[str, ...] = ("fall_through", "hold_until_reset")
+DEFAULT_WHEN_EXHAUSTED = "fall_through"
 #: Capacity-routing rungs (PRD-62 D6), in the default order: a subscription with headroom, then
 #: an org API key within its stated budget, then a local model. `cloud` entitlements ride the
 #: `api_key` rung (both are metered by a handle the runner resolves).
@@ -107,6 +116,11 @@ def _mix(value: Any, *, defaults: list[str], excludes: list[str]) -> dict[str, f
         if not isinstance(key, str) or not key.strip():
             raise ProfileInvalid("mix keys must be non-empty harness names")
         name = key.strip()
+        if ":" in name:
+            # Launch counts are per harness, so a model key would name a share nothing can
+            # measure. Refused rather than read as its harness (GRPH-977).
+            raise ProfileInvalid(f"mix is per harness; {name!r} names a model — "
+                                 f"use {name.split(':')[0]!r}")
         if isinstance(raw, bool) or not isinstance(raw, (int, float)):
             raise ProfileInvalid(f"mix {name} must be a number")
         share = float(raw)
@@ -125,7 +139,8 @@ def _mix(value: Any, *, defaults: list[str], excludes: list[str]) -> dict[str, f
     if blocked:
         raise ProfileInvalid(f"{blocked} are in mix and excludes")
     if defaults:
-        outside = sorted(set(out) - set(defaults))
+        # A `harness:model` default admits its harness to the mix (GRPH-977).
+        outside = sorted(set(out) - {d.split(":")[0] for d in defaults})
         if outside:
             raise ProfileInvalid(f"mix names {outside} which are not in defaults")
     return out
@@ -178,8 +193,14 @@ def normalise_policy(raw: Any) -> dict | None:
     ladder = _ladder(raw.get("ladder"))
     routing_mode = _routing_mode(raw.get("routing_mode"))
     subscription_order = _subscription_order(raw.get("subscription_order"))
+    rung_preference = _rung_preference(raw.get("rung_preference"),
+                                       keep_order=routing_mode == "custom_hierarchy")
+    tie_break = _choice(raw.get("tie_break"), "tie_break", TIE_BREAKS, DEFAULT_TIE_BREAK)
+    when_exhausted = _choice(raw.get("when_exhausted"), "when_exhausted", WHEN_EXHAUSTED,
+                             DEFAULT_WHEN_EXHAUSTED)
     if (not local_only and not cross and not allowed and not caps and not ceiling and not ladder
-            and routing_mode == "next_available" and not subscription_order):
+            and routing_mode == "next_available" and not subscription_order
+            and not rung_preference and tie_break == DEFAULT_TIE_BREAK and when_exhausted == DEFAULT_WHEN_EXHAUSTED):
         return None
     out = {"local_only": local_only, "reviewer_cross_vendor": cross, "allowed_harnesses": allowed}
     if caps:
@@ -192,7 +213,114 @@ def normalise_policy(raw: Any) -> dict | None:
         out["routing_mode"] = routing_mode
         if subscription_order:
             out["subscription_order"] = subscription_order
+    if rung_preference:
+        out["rung_preference"] = rung_preference
+    # Defaults are not stored, like `routing_mode`: a policy that never chose reads as today's.
+    if tie_break != DEFAULT_TIE_BREAK:
+        out["tie_break"] = tie_break
+    if when_exhausted != DEFAULT_WHEN_EXHAUSTED:
+        out["when_exhausted"] = when_exhausted
     return out
+
+
+def _choice(value: Any, key: str, allowed: tuple[str, ...], default: str) -> str:
+    if value is None or value == "":
+        return default
+    if value not in allowed:
+        raise ProfileInvalid(f"{key} must be one of {list(allowed)}")
+    return value
+
+
+def tie_break_of(db: Session, project_id: str | None) -> str:
+    policy = policy_of(db, project_id) or {}
+    value = policy.get("tie_break") if isinstance(policy, dict) else None
+    return value if value in TIE_BREAKS else DEFAULT_TIE_BREAK
+
+
+def rung_tie_breaks_of(db: Session, project_id: str | None) -> dict[str, str]:
+    """GRPH-1713: the tie-break in force on each ladder rung — the rung's own from
+    `rung_preference`, else the project's `tie_break`, else the default."""
+    policy = policy_of(db, project_id) or {}
+    pref = policy.get("rung_preference") if isinstance(policy, dict) else None
+    base = tie_break_of(db, project_id)
+    out = {}
+    for rung in LADDER_RUNGS:
+        own = (pref or {}).get(rung, {}).get("tie_break") if isinstance(pref, dict) else None
+        out[rung] = own if own in TIE_BREAKS else base
+    return out
+
+
+def rung_orders_of(db: Session, project_id: str | None) -> dict[str, list[str]]:
+    """GRPH-1713: the explicit order in force within each rung, only under custom hierarchy:
+    the subscription rung's is `subscription_order`, the api_key and local rungs' are
+    `rung_preference.<rung>.order`. A rung with no order is absent. The ladder itself is never
+    reordered here: an order ranks entitlements among that rung's candidates only."""
+    if not project_id or routing_mode_of(db, project_id) != "custom_hierarchy":
+        return {}
+    policy = policy_of(db, project_id) or {}
+    out: dict[str, list[str]] = {}
+    sub = policy.get("subscription_order")
+    if isinstance(sub, list) and sub:
+        out["subscription"] = [str(e) for e in sub]
+    pref = policy.get("rung_preference")
+    for rung in ORDERABLE_RUNGS:
+        order = (pref or {}).get(rung, {}).get("order") if isinstance(pref, dict) else None
+        if isinstance(order, list) and order:
+            out[rung] = [str(e) for e in order]
+    return out
+
+
+#: Rungs whose order lives in `rung_preference`; the subscription rung's is `subscription_order`.
+ORDERABLE_RUNGS: tuple[str, ...] = ("api_key", "local")
+
+
+def _rung_preference(value: Any, *, keep_order: bool) -> dict | None:
+    """GRPH-1713: `{rung: {"order": [entitlement ids], "tie_break": ...}}` — a preference WITHIN
+    each ladder rung. It never moves a rung: the ladder order stays the ladder's. An order is
+    kept only under custom hierarchy (as `subscription_order` is); the subscription rung's order
+    is `subscription_order`, so `rung_preference.subscription.order` is refused, not merged."""
+    if value is None or value == {}:
+        return None
+    if not isinstance(value, dict):
+        raise ProfileInvalid("rung_preference must be an object keyed by ladder rung")
+    out: dict[str, dict] = {}
+    for rung, pref in value.items():
+        if rung not in LADDER_RUNGS:
+            raise ProfileInvalid(f"unknown rung_preference rung {rung!r}; rungs are "
+                                 f"{list(LADDER_RUNGS)}")
+        if pref is None:
+            continue
+        if not isinstance(pref, dict):
+            raise ProfileInvalid(f"rung_preference.{rung} must be an object")
+        for k in pref:
+            if k not in ("order", "tie_break"):
+                raise ProfileInvalid(f"unknown rung_preference.{rung} key {k!r}; keys are "
+                                     "['order', 'tie_break']")
+        entry: dict = {}
+        order = pref.get("order")
+        if order not in (None, "", []):
+            if rung == "subscription":
+                raise ProfileInvalid("the subscription rung's order is subscription_order, not "
+                                     "rung_preference.subscription.order")
+            if not isinstance(order, list):
+                raise ProfileInvalid(f"rung_preference.{rung}.order must be a list of "
+                                     "entitlement ids")
+            names = _names(order, f"rung_preference.{rung}.order")
+            if keep_order and names:
+                entry["order"] = names
+        tie = pref.get("tie_break")
+        if tie not in (None, ""):
+            entry["tie_break"] = _choice(tie, f"rung_preference.{rung}.tie_break", TIE_BREAKS,
+                                         DEFAULT_TIE_BREAK)
+        if entry:
+            out[rung] = entry
+    return out or None
+
+
+def when_exhausted_of(db: Session, project_id: str | None) -> str:
+    policy = policy_of(db, project_id) or {}
+    value = policy.get("when_exhausted") if isinstance(policy, dict) else None
+    return value if value in WHEN_EXHAUSTED else DEFAULT_WHEN_EXHAUSTED
 
 
 def _routing_mode(value: Any) -> str:

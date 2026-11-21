@@ -589,3 +589,40 @@ def test_an_idle_drain_passes_the_doctor(monkeypatch):
     finding = _service_finding(report)
     assert finding.status == PASS
     assert "idle between runs" in finding.detail
+
+
+@pytest.mark.parametrize("reason,unready,says", [
+    ("unready", 2, "2 line item(s)"),
+    ("", 0, "reason unknown"),
+])
+def test_an_unsettled_exit_0_is_unknown_not_a_crash(monkeypatch, reason, unready, says):
+    """GRPH-1698: exit 0 with `reason: unready` or no reason is not idle, and not dead.
+
+    Sabotage: drop the `unsettled` branch in `_one_service` and this reads FAIL
+    "installed and NOT running".
+    """
+    _pretend(monkeypatch, _state(running=False, last_exit=0, run_reason=reason,
+                                 unready=unready))
+    report = Report()
+    doctor.check_service(report)
+    finding = _service_finding(report)
+    assert finding.status == UNKNOWN
+    assert says in finding.detail and "NOT running" not in finding.detail
+
+
+def test_a_merge_pending_exit_0_is_not_a_drained_queue(monkeypatch):
+    """GRPH-1818. Doctor must not PASS an exit-0 merge-pending drain as idle.
+
+    Sabotage: drop the ``unsettled`` branch in ``_one_service`` and this reads FAIL
+    "installed and NOT running", with no merge-pending in the detail.
+    """
+    _pretend(monkeypatch, _state(running=False, last_exit=0, run_reason="merge-pending"))
+    report = Report()
+    doctor.check_service(report)
+    finding = _service_finding(report)
+    assert finding.status == UNKNOWN
+    assert "merge-pending" in finding.detail
+    assert "idle between runs" not in finding.detail
+    assert "NOT running" not in finding.detail
+    assert "drained" not in finding.detail
+    assert "until --line" not in finding.remedy

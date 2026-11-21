@@ -10,6 +10,7 @@ import { CHECK_COLOR, PR_STATE_COLOR } from "@/lib/meta";
 import { useItem, useItems, useLinks, useShards, useUpdateItem } from "@/lib/queries";
 import type { Fidelity, Item, Reach, Status } from "@/lib/types";
 
+import { lineNeeds, SecurityChip } from "./LineBadges";
 import { StatusMenu } from "./StatusMenu";
 
 export function ItemDetailPanel({
@@ -44,6 +45,9 @@ export function ItemDetailPanel({
   const deps = depLinks.map((l) => l.b);
   const dependents = links.filter((l) => l.type === "dependency" && l.b === item.id).map((l) => l.a);
   const blockedBy = depLinks.filter((l) => statusOf(l) !== "done").map((l) => l.b);
+  const foundDuring = detail?.found_during ?? null;
+  // Readiness is read only once the description is here: before that, acceptance is unknown.
+  const needs = detail ? lineNeeds(item, detail.description) : [];
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
@@ -62,10 +66,41 @@ export function ItemDetailPanel({
 
           <h2 className="text-[17px] font-semibold leading-snug text-fg">{item.title}</h2>
 
-          {item.prd_id && (
-            <div className="font-mono text-small text-purple-2">
-              Implements {item.prd_id}
-              {item.prd_section ? ` · ${item.prd_section}` : ""}
+          {/* Where the item belongs (GRPH-1744): a PRD, the maintenance line, or neither. */}
+          <div className="flex flex-wrap items-center gap-2" data-testid="item-scope">
+            {item.line_id ? (
+              <span className="font-mono text-[12px] text-fg-2">Maintenance · {item.line_id}</span>
+            ) : item.prd_id ? (
+              <span className="font-mono text-small text-purple-2">
+                Implements {item.prd_id}
+                {item.prd_section ? ` · ${item.prd_section}` : ""}
+              </span>
+            ) : (
+              <span className="font-mono text-[12px] text-[#e0b34a]">No PRD, no line</span>
+            )}
+            {item.severity === "security" && <SecurityChip />}
+          </div>
+
+          {/* A fix's provenance; "not recorded" is a real value and always shows. */}
+          {item.kind === "fix" && detail && (
+            <div className={`text-body ${foundDuring ? "text-fg-2" : "text-muted-2"}`} data-testid="found-during">
+              {foundDuring ? `Found during ${foundDuring}` : "Found during: not recorded"}
+            </div>
+          )}
+
+          {needs.length > 0 && (
+            <div
+              data-testid="sheet-needs"
+              className="flex flex-col gap-1 rounded-[9px] border border-line-2 bg-surface-2 px-3 py-2.5"
+            >
+              {needs.map((n) => (
+                <span key={n} className="text-body text-fg-2">
+                  {n}
+                </span>
+              ))}
+              <span className="mt-0.5 text-[12px] leading-normal text-muted">
+                The line drain will not claim this until both exist.
+              </span>
             </div>
           )}
 
@@ -151,6 +186,22 @@ export function ItemDetailPanel({
             </div>
           )}
 
+          {item.resolution && (
+            <div
+              data-testid="item-resolution"
+              className="rounded-[10px] border border-line-2 bg-surface-2 px-3 py-2.5 text-body text-fg-2"
+            >
+              <span className="font-mono text-[10px] uppercase tracking-wide">
+                {item.resolution.kind === "duplicate" ? "Duplicate of " : "Superseded by "}
+              </span>
+              <span className="font-mono">{item.resolution.of}</span>
+              {item.resolution.reason ? ` · ${item.resolution.reason}` : ""}
+              <span className="block text-small text-muted">
+                Closed by {item.resolution.by}. Nothing was delivered here.
+              </span>
+            </div>
+          )}
+
           {detail?.bounce_reason && (
             <div className="rounded-[10px] border border-[rgba(224,179,74,0.3)] bg-[rgba(224,179,74,0.07)] px-3 py-2.5 text-body text-[#e0b34a]">
               <span className="font-mono text-[10px] uppercase tracking-wide">Bounced · </span>
@@ -214,7 +265,8 @@ export function ItemDetailPanel({
               )}
               {dependents.length > 0 && (
                 <p className="text-[12px] text-accent">
-                  Unblocks {dependents.length} item{dependents.length > 1 ? "s" : ""} when done.
+                  Unblocks {dependents.length} item{dependents.length > 1 ? "s" : ""} when done
+                  {item.kind === "fix" ? ` · blocks ${dependents.join(", ")}` : ""}.
                 </p>
               )}
             </Section>

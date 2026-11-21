@@ -213,6 +213,10 @@ def test_a_pinned_item_reads_taken_with_the_pin_holder(client, key, db):
     reg = _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", "label": "child", "enrolment_code": out["enrolment_code"]}))
     assert reg["assigned"]["state"] == "taken"
     assert reg["assigned"]["reason"] == "pinned" and reg["assigned"]["held_by"] == author
+    # The supervisor never sees that reply. It reads the roster (GRPH-1292).
+    rows = {a["id"]: a for a in _ok(_mcp(client, key, "fleet_status", {}))["agents"]}
+    assert rows[reg["agent_id"]]["assigned"] == {
+        "item": item, "state": "taken", "reason": "pinned", "held_by": author}
 
 
 def test_delegate_during_a_pin_is_refused_unless_the_author_is_your_child(client, key, db):
@@ -319,6 +323,10 @@ def _delegated_and_in_review(client, key, db, planner, title="work"):
                                                     "capabilities": {"instance": f"c-{title}"}}))
     child = reg["agent_id"]
     _ok(_mcp(client, key, "update_item", {"id": item, "status": "review", "agent_id": child}))
+    # GRPH-1730 withholds a branch with no PR. The column releases that gate.
+    db.expire_all()
+    db.get(Item, item).github_url = "https://github.com/o/r/pull/1"
+    db.commit()
     return item, child
 
 
@@ -365,7 +373,8 @@ def test_the_roster_reads_assigned_from_the_seat_and_the_item(client, key, proj,
     reg = _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", "label": "child", "enrolment_code": out["enrolment_code"]}))
     child = reg["agent_id"]
     rows = {a["id"]: a for a in _ok(_mcp(client, key, "fleet_status", {}))["agents"]}
-    assert rows[child]["assigned"] == {"item": item, "state": "claimed", "held_by": None}
+    assert rows[child]["assigned"] == {
+        "item": item, "state": "claimed", "reason": None, "held_by": None}
     assert rows[planner]["assigned"] is None
     # The lease lapses and a stranger takes the item: the same row now reads taken.
     stored = _stored(db, item)
@@ -376,7 +385,8 @@ def test_the_roster_reads_assigned_from_the_seat_and_the_item(client, key, proj,
     stranger = _agent(client, key, "stranger")
     assert items_svc.claim_item(db, item, stranger) is not None
     rows = {a["id"]: a for a in _ok(_mcp(client, key, "fleet_status", {}))["agents"]}
-    assert rows[child]["assigned"] == {"item": item, "state": "taken", "held_by": stranger}
+    assert rows[child]["assigned"] == {
+        "item": item, "state": "taken", "reason": "held", "held_by": stranger}
 
 
 # ---- the seat names its project (found by the criterion-18 check) ------------------------------

@@ -75,6 +75,7 @@ def test_mix_round_trips_over_rest_and_empty_object_stores_null(client, auth):
     ({"mix": {"grok": 1}, "defaults": ["gbagent", "claude"], "excludes": ["grok"]},
      "mix and excludes"),
     ({"mix": {"cursor-agent": 1}, "defaults": ["gbagent", "claude"]}, "not in defaults"),
+    ({"mix": {"claude:opus": 1}, "defaults": ["claude:opus"]}, "mix is per harness"),
 ])
 def test_mix_that_says_something_it_may_not_is_refused(client, auth, bad, msg):
     r = client.put("/api/fleet/profile", json={"defaults": bad.get("defaults", ["gbagent"]),
@@ -82,6 +83,16 @@ def test_mix_that_says_something_it_may_not_is_refused(client, auth, bad, msg):
                                                "mix": bad["mix"]}, headers=auth)
     assert r.status_code == 422, r.text
     assert msg in r.json()["detail"]
+
+
+def test_a_harness_model_default_admits_its_harness_to_the_mix(client, auth):
+    """GRPH-977: `claude:opus` in defaults is claude in the mix — counts are per harness."""
+    put = client.put("/api/fleet/profile", json={
+        "defaults": ["claude:opus", "gbagent"], "weights": {}, "excludes": [],
+        "mix": {"claude": 0.5, "gbagent": 0.5},
+    }, headers=auth)
+    assert put.status_code == 200, put.text
+    assert put.json()["defaults"] == ["claude:opus", "gbagent"]
 
 
 def test_mix_must_be_an_object():

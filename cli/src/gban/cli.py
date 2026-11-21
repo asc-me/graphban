@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from gban import config, doctor as doctor_mod, machine as machine_mod, playbooks, setup as setup_mod, stackmap, swamp as swamp_mod
+from gban import codemap, codemap_service, config, doctor as doctor_mod, machine as machine_mod, playbooks, setup as setup_mod, stackmap, swamp as swamp_mod
 from gban.client import (EXIT_NO_SESSION, EXIT_NO_SUPERVISOR, EXIT_REFUSED, EXIT_UNREACHABLE,
                        Client, NoSession,
                        Refused, Unreachable, authenticated, login, pair_poll,
@@ -122,6 +122,43 @@ def _parser() -> argparse.ArgumentParser:
                            help="print the record and do not post it")
     stack_map.add_argument("--repo", default=None,
                            help="repository to map (default: the git checkout of the current directory)")
+
+    code_cmd = sub.add_parser(
+        "code", help="build or refresh the code graph from this repo",
+        description=("Posts every tracked non-binary file at HEAD as a code-graph node "
+                     "(revision=HEAD) with its import edges. Existing summaries are kept; "
+                     "files gone since the last run are marked stale."))
+    code_do = code_cmd.add_subparsers(dest="act")
+    code_map = code_do.add_parser(
+        "map", help="describe the repo into the code graph",
+        description=("Needs a project-write API key, like `stack map`. --dry-run reads the "
+                     "graph and prints the counts, and writes nothing."))
+    code_map.add_argument("--dry-run", action="store_true",
+                          help="print HEAD and the counts; write nothing")
+    code_map.add_argument("--since", action="store_true",
+                          help="incremental: diff the map's pinned revision against origin's default "
+                               "branch (after a fetch) and describe only what changed")
+    code_map.add_argument("--repo", default=None,
+                          help="repository to map (default: the git checkout of the current directory)")
+
+    map_sub = code_map.add_subparsers(dest="map_sub")
+    svc = map_sub.add_parser(
+        "service", help="keep the graph current: hourly refresh + nightly reconcile",
+        description=("One user-level unit per repo (launchd on macOS, a systemd user timer on "
+                     "Linux). Hourly: `code map --since`. Nightly: a full reconcile. The API "
+                     "key goes in an owner-only file the unit references."))
+    svc_do = svc.add_subparsers(dest="svc_act", required=True)
+    for name, text in (("install", "write and load the unit"),
+                       ("status", "last run, outcome, sha mapped, how far behind origin"),
+                       ("uninstall", "remove the unit and the key file"),
+                       ("run", "one scheduled run (what the unit executes)")):
+        sp = svc_do.add_parser(name, help=text)
+        sp.add_argument("--repo", default=None, help="repository (default: the current checkout)")
+        if name in ("install", "run"):
+            sp.add_argument("--hourly-at", default=None, metavar=":MM",
+                            help=f"minute of each hour for the incremental refresh (default :{codemap_service.DEFAULT_HOURLY_MINUTE:02d})")
+            sp.add_argument("--nightly-at", default=None, metavar="HH:MM",
+                            help="local time of the full reconcile (default 03:00)")
 
     fleet = sub.add_parser(
         "fleet", help="hand off to gbfleet (the supervisor)",
@@ -482,6 +519,135 @@ def cmd_swamp(args) -> int:
     return code
 
 
+def cmd_code(args) -> int:
+    """Build or refresh the code graph from HEAD (GRPH-1706)."""
+    if args.act != "map":
+        print(f"{PROG}: usage: {PROG} code map [--dry-run] [--repo DIR]", file=sys.stderr)
+        return EXIT_REFUSED
+    start = Path(args.repo).expanduser() if args.repo else Path.cwd()
+    project = (config.resolve(args.project, config.PROJECT_ENV, "project") or "").strip()
+    url = config.resolve(args.server, config.URL_ENV, "url")
+    if getattr(args, "map_sub", None) == "service":
+        return _code_map_service(args, start, url, project)
+    if not url:
+        print(f"{PROG}: no server. Pass --server, set ${config.URL_ENV}, or run `{PROG} login "
+              f"--server …` once.", file=sys.stderr)
+        return EXIT_REFUSED
+    key = (os.environ.get(doctor_mod.SUPERVISOR_KEY_ENV) or "").strip()
+    if not key:
+        key = doctor_mod.resolve_supervisor_key(project, start)
+    if not key:
+        print(f"{PROG}: no project-write API key. Set ${doctor_mod.SUPERVISOR_KEY_ENV} or "
+              f"${config.API_KEY_ENV}, or run `{PROG} setup`.", file=sys.stderr)
+        return EXIT_REFUSED
+    if args.since:
+        return _code_map_since(args, start, url, key, project)
+    try:
+        built = codemap.build(start)
+        call = codemap.mcp_caller(Client(url, api_key=key), project)
+        planned = codemap.plan(built, codemap.existing_map(call))
+        print(f"{PROG}: HEAD {built['revision']}")
+        print(f"{PROG}: {built['tracked']} tracked, {len(planned['nodes'])} to describe, "
+              f"{planned['existing']} existing nodes, {planned['new']} new, "
+              f"{planned['kept']} kept, "
+              f"{len(planned['gone'])} gone, {len(planned['edges'])} edges")
+        if args.dry_run:
+            print(f"{PROG}: dry run, nothing written")
+            return 0
+        done = codemap.apply(call, built, planned)
+    except codemap.MapError as exc:
+        print(f"{PROG}: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+    print(f"{PROG}: described {done['nodes']} nodes and {done['edges']} edges at "
+          f"{built['revision'][:12]}; marked {done['marked_stale']} stale")
+    return 0
+
+
+def _code_map_service(args, start: Path, url: str, project: str) -> int:
+    """`code map service install|status|uninstall|run` (GRPH-1821)."""
+    svc = codemap_service
+    try:
+        if args.svc_act == "status":
+            print("\n".join(svc.status_lines(start)))
+            return 0
+        if args.svc_act == "uninstall":
+            top = svc.repo_toplevel(start)
+            removed = svc.uninstall(svc.service_id(top))
+            print(f"{PROG}: removed {', '.join(removed) if removed else 'nothing (not installed)'}")
+            return 0
+        key = (os.environ.get(doctor_mod.SUPERVISOR_KEY_ENV) or "").strip()
+        if not key:
+            key = doctor_mod.resolve_supervisor_key(project, start)
+        if args.svc_act == "install":
+            kind = svc.host_kind()
+            top = svc.repo_toplevel(start)
+            if svc.installed(svc.service_id(top), kind):
+                print(f"{PROG}: already installed for this repo; not adding another unit")
+                print("\n".join(svc.status_lines(start, kind)))
+                return 0
+            plan = svc.make_plan(start, url=url, project=project, hourly=args.hourly_at,
+                                 nightly=args.nightly_at, kind=kind)
+            for warning in svc.install(plan, key):
+                print(f"{PROG}: warning: {warning}", file=sys.stderr)
+            print(f"{PROG}: installed {plan.units[0]} (hourly at :{plan.hourly:02d}, nightly at "
+                  f"{plan.nightly[0]:02d}:{plan.nightly[1]:02d}); key in {plan.env_file}")
+            return 0
+        # run: what the unit executes. A failed run is a recorded outcome and exit 1.
+        if not (url and key):
+            print(f"{PROG}: code map service run: no server or API key", file=sys.stderr)
+            return EXIT_REFUSED
+        top = svc.repo_toplevel(start)
+        nightly = svc.parse_nightly(args.nightly_at)
+        call = codemap.mcp_caller(Client(url, api_key=key), project)
+        rec = svc.record_run(svc.service_id(top), top, call, nightly)
+        print(json.dumps(rec, sort_keys=True))
+        return 0 if rec["outcome"] == "ok" else 1
+    except svc.Refused as exc:
+        print(f"{PROG}: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+
+
+def _code_map_since(args, start: Path, url: str, key: str, project: str) -> int:
+    """`code map --since`: refresh from the pinned revision to origin's default branch (GRPH-1820)."""
+    try:
+        ref, target = codemap.default_target(start)
+        call = codemap.mcp_caller(Client(url, api_key=key), project)
+        current = call("get_code_map", {"limit": 0})
+        existing = {n["path"]: n for n in current.get("nodes", [])}
+        pinned, why = codemap.pinned_revision(current)
+        if pinned == target:
+            print(f"{PROG}: current at {target}")
+            return 0
+        reason = codemap.fallback_reason(start, pinned, why, target)
+        if reason:
+            print(f"{PROG}: {reason}; falling back to a full scan of {ref} {target}")
+            built = codemap.build(start, target)
+            planned = codemap.plan(built, existing)
+            print(f"{PROG}: target {target}: {built['tracked']} tracked, {len(planned['nodes'])} to describe, "
+                  f"{len(planned['gone'])} gone, {len(planned['edges'])} edges")
+            if args.dry_run:
+                print(f"{PROG}: dry run, nothing written")
+                return 0
+            done = codemap.apply(call, built, planned)
+        else:
+            planned = codemap.plan_since(start, pinned, target, existing)
+            c = planned["counts"]
+            print(f"{PROG}: target {target} (since {pinned[:12]}): {c['added']} added, "
+                  f"{c['modified']} modified, {c['renamed']} renamed, {c['deleted']} deleted, "
+                  f"{planned['skipped']} skipped (binary), {planned['restamped']} re-stamped, "
+                  f"{len(planned['gone'])} gone, {len(planned['edges'])} edges")
+            if args.dry_run:
+                print(f"{PROG}: dry run, nothing written")
+                return 0
+            done = codemap.apply(call, {"revision": target}, planned)
+    except codemap.MapError as exc:
+        print(f"{PROG}: code map --since failed: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+    print(f"{PROG}: described {done['nodes']} nodes and {done['edges']} edges at "
+          f"{target[:12]}; marked {done['marked_stale']} stale")
+    return 0
+
+
 def cmd_stack(args) -> int:
     """Build the app-topology record and, unless --dry-run, post it (GRPH-P55 §3)."""
     if args.act != "map":
@@ -551,6 +717,30 @@ def cmd_stack(args) -> int:
     return 0
 
 
+ADAPTER_ENV = "GBAN_ADAPTER"
+
+
+def _until_with_adapter(rest: list[str]) -> list[str] | None:
+    """`gbfleet until` requires --adapter; Triage's drain note shows the command without it.
+
+    Fill it from the flag (already there), $GBAN_ADAPTER, the settings file's `adapter`, or
+    `claude` when that binary is on PATH. Otherwise say which value is missing and how to set
+    it, rather than letting argparse print usage. Only args before a `--` are ours to read.
+    """
+    own = rest[:rest.index("--")] if "--" in rest else rest
+    if any(a == "--adapter" or a.startswith("--adapter=") for a in own):
+        return rest
+    adapter = (os.environ.get(ADAPTER_ENV) or config.settings().get("adapter") or "").strip()
+    if not adapter and shutil.which("claude"):
+        adapter = "claude"
+    if not adapter:
+        print(f"{PROG}: `{PROG} fleet until` needs --adapter (the agent vendor to run, e.g. "
+              f"claude) and none is configured. Pass --adapter <vendor>, set ${ADAPTER_ENV}, "
+              f"or add \"adapter\" to {config.home() / config.SETTINGS_FILE}.", file=sys.stderr)
+        return None
+    return [rest[0], "--adapter", adapter, *rest[1:]]
+
+
 def cmd_fleet(args) -> int:
     """A subprocess, never an import (D5).
 
@@ -576,11 +766,25 @@ def cmd_fleet(args) -> int:
     rest = list(args.rest)
     if rest[:1] == ["--"]:
         rest = rest[1:]
+    if rest[:1] == ["until"]:
+        rest = _until_with_adapter(rest)
+        if rest is None:
+            return EXIT_REFUSED
     argv = [binary, *rest]
     url = config.resolve(args.server, config.URL_ENV, "url")
     if url and "--server" not in argv:
         argv += ["--server", url]
-    project = config.resolve(args.project, config.PROJECT_ENV, "project")
+    named = _named_project(args, rest)
+    project = named or config.resolve(args.project, config.PROJECT_ENV, "project")
+    if rest[:1] == ["until"] and not named and "--prd" in rest:
+        # No project was named, so the login default would be used. The PRD belongs to the
+        # project the directory resolves to, which `setup` and `whoami` already agree on
+        # (GRPH-1660): prefer it, and say so.
+        here = _cwd_project(args, project)
+        if here and here != project:
+            print(f"{PROG}: using project {here!r} (this directory), not {project!r} "
+                  f"(the login default). Pass --project to choose.", file=sys.stderr)
+            project = here
     if project and "--project" not in argv:
         argv += ["--project", project]
     # Its exit code, unchanged. `gban` adds nothing and explains nothing: the supervisor's
@@ -592,6 +796,28 @@ def cmd_fleet(args) -> int:
     # session — a doctor PASS that does not predict `gban fleet` is the original lie.
     return subprocess.run(argv, env=doctor_mod.child_environment(
         doctor_mod.resolve_supervisor_key(project))).returncode
+
+
+def _named_project(args, rest: list[str]) -> str:
+    """A project the caller named: `--project` (before or after `fleet`) or the environment."""
+    for i, a in enumerate(rest):
+        if a == "--":
+            break
+        if a == "--project" and i + 1 < len(rest):
+            return rest[i + 1]
+        if a.startswith("--project="):
+            return a.split("=", 1)[1]
+    return (args.project or os.environ.get(config.PROJECT_ENV) or "").strip()
+
+
+def _cwd_project(args, configured: str) -> str:
+    """The project the cwd resolves to, or "" when it cannot be told (never fatal)."""
+    try:
+        client = authenticated(_server(args))
+        found, _ = setup_mod.resolve_project(client, Path.cwd(), "", configured)
+        return found
+    except (SystemExit, Exception):
+        return ""
 
 
 def _project(args, act: str) -> str:
@@ -714,7 +940,7 @@ def cmd_update(args) -> int:
 
 COMMANDS = {"update": cmd_update, "login": cmd_login, "logout": cmd_logout, "whoami": cmd_whoami,
             "doctor": cmd_doctor, "setup": cmd_setup, "fleet": cmd_fleet, "seats": cmd_seats,
-            "agents": cmd_agents, "keys": cmd_keys, "swamp": cmd_swamp, "stack": cmd_stack}
+            "agents": cmd_agents, "keys": cmd_keys, "swamp": cmd_swamp, "stack": cmd_stack, "code": cmd_code}
 
 
 def _poll(args) -> None:

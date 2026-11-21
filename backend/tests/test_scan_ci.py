@@ -681,3 +681,18 @@ def test_the_job_scans_the_head_with_full_history_and_cancels_older_runs():
     assert step["env"]["HEAD_SHA"] == "${{ github.event.pull_request.head.sha }}"
     assert step["env"]["BASE_SHA"] == "${{ github.event.pull_request.base.sha }}"
     assert "graphban-ledger" in job["runs-on"]
+
+
+def test_a_bare_body_mention_gets_no_scans_clean(repo, fakes, foreign_ledger, monkeypatch,
+                                                 capsys):
+    """GRPH-1541: #1597 attached `scans_clean` to GRPH-1536 from a body mention on another
+    branch. Only the title, the branch, a closing reference or `Attests:` binds."""
+    calls, _ = foreign_ledger
+    monkeypatch.setattr(attest_ci, "_search_items", lambda *a, **k: [])
+    head = _pr(repo, {"backend/app/x.py": "x = 2\n"})
+    rc = scan_ci.main(["--repo", str(repo), "--base", repo.base, "--head", head,
+                       "--branch", "docs/standing-decisions", "--title", "Docs only",
+                       "--body", "GRPH-1536 has worked examples. Fixes GRPH-1110."])
+    assert rc == 0
+    assert [a["id"] for a in _receipts(calls)] == ["GRPH-1110"]
+    assert "GRPH-1536: only mentioned in the PR body" in capsys.readouterr().out

@@ -47,7 +47,30 @@ def _install(monkeypatch):
     monkeypatch.setattr(box_push.rule_measure, "project_counts", project_counts)
     monkeypatch.setattr(box_push.rule_measure, "project_effect", project_effect)
     monkeypatch.setattr(box_push.rule_measure, "project_profile", lambda *a, **k: None)
+    _console(monkeypatch, {"hosted_mode": True, "signup_mode": "invite"})
     box_push.reset_refusal()
+
+
+class _Config:
+    status_code = 200
+
+    def __init__(self, body):
+        self.body = body
+
+    def json(self):
+        return self.body
+
+
+def _console(monkeypatch, config):
+    """What the console's `/api/config` says. The default is an older console."""
+    probes = []
+
+    def get(url, headers=None, timeout=None):
+        probes.append(url)
+        return _Config(config)
+
+    monkeypatch.setattr(box_push.httpx, "get", get)
+    return probes
 
 
 def _projects(db):
@@ -193,4 +216,157 @@ def test_a_refusal_is_logged_and_not_retried_until_the_payload_changes(client, m
     assert third["refused"] is True and third.get("repeated") is not True
     assert len(sent) == 2
     assert "Later" in [p["project"] for p in sent[1]["projects"]]
+    db.close()
+
+
+# ---- GRPH-1675: counts and publish flags, only for a console that advertises them ----------
+
+_COUNT_KEYS = {"items", "open_claims", "active_agents"}
+_STATUS_KEYS = {"backlog", "next", "in_progress", "review", "done", "blocked"}
+
+
+def _tracker(db):
+    """North: 2 backlog, 1 next, 1 in_progress (live lease), 1 review (live review lease),
+    1 in_progress whose lease expired, 1 done. One live agent, one offline, one dismissed."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import Agent, Item
+
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(days=1)
+    rows = [("backlog", None, None, None, None), ("backlog", None, None, None, None),
+            ("next", None, None, None, None), ("in_progress", "a-live", now, None, None),
+            ("review", None, None, "a-live", now), ("in_progress", "a-gone", old, None, None),
+            ("done", None, None, None, None)]
+    for n, (status, by, at, rby, rat) in enumerate(rows, start=1):
+        db.add(Item(id=f"north-{n}", project_id="north", number=n, title=_SECRET,
+                    status=status, claimed_by=by, claimed_at=at,
+                    review_claimed_by=rby, review_claimed_at=rat))
+    db.add(Agent(id="a-live", project_id="north", number=1, label="SECRET AGENT LABEL",
+                 last_seen_at=now))
+    db.add(Agent(id="a-gone", project_id="north", number=2, label="gone", last_seen_at=old))
+    db.add(Agent(id="a-dismissed", project_id="north", number=3, label="d", last_seen_at=now,
+                 dismissed_at=now))
+    south = db.get(Project, "south")
+    south.publish_specs = False
+    db.commit()
+
+
+def _push(monkeypatch, db, config):
+    sent = []
+
+    def post(url, json=None, headers=None, timeout=None):
+        sent.append(json)
+        return _Ok()
+
+    monkeypatch.setattr(box_push.httpx, "post", post)
+    probes = _console(monkeypatch, config)
+    out = box_push.push_box_view(db, cloud_url="https://console.example/", api_key="k")
+    assert out["pushed"] is True and len(sent) == 1
+    return sent[0], probes
+
+
+def test_a_console_advertising_counts_gets_the_trackers_numbers(client, monkeypatch):
+    db = _db()
+    _projects(db)
+    _install(monkeypatch)
+    _tracker(db)
+    body, probes = _push(monkeypatch, db, {"features": ["box_push_counts"]})
+    assert probes == ["https://console.example/api/config"]
+    by_name = {p["project"]: p for p in body["projects"]}
+    north = by_name["North"]
+    assert set(north["counts"]) == _COUNT_KEYS
+    assert north["counts"]["items"] == {"backlog": 2, "next": 1, "in_progress": 2,
+                                        "review": 1, "done": 1, "blocked": 0}
+    assert north["counts"]["open_claims"] == 2
+    assert north["counts"]["active_agents"] == 1
+    assert north["publishing"] == {"specs": True, "item_digests": True}
+    assert by_name["South"]["publishing"] == {"specs": False, "item_digests": True}
+    assert by_name["South"]["counts"]["items"] == dict.fromkeys(_STATUS_KEYS, 0)
+    for entry in body["projects"]:
+        counts = entry["counts"]
+        values = list(counts["items"].values()) + [counts["open_claims"], counts["active_agents"]]
+        assert all(type(v) is int and v >= 0 for v in values)
+        assert all(type(v) is bool for v in entry["publishing"].values())
+    dumped = str(body)
+    for leak in (_SECRET, "SECRET AGENT LABEL", "north-", "a-live", "a-gone"):
+        assert leak not in dumped
+    db.close()
+
+
+@pytest.mark.parametrize("config", [
+    {"features": {"box_push_counts": True}},
+    {"capabilities": ["box_push_counts"]},
+    {"box_push_counts": True},
+])
+def test_each_advertisement_shape_turns_counts_on(client, monkeypatch, config):
+    db = _db()
+    _projects(db)
+    _install(monkeypatch)
+    body, _ = _push(monkeypatch, db, config)
+    assert all("counts" in p and "publishing" in p for p in body["projects"])
+    db.close()
+
+
+class _StrictOldConsole:
+    """A console that predates GRPH-1675: it refuses any project field it does not know."""
+    status_code = 200
+
+    def __init__(self, body):
+        known = {"project", "rules"}
+        extra = sorted({k for p in body["projects"] for k in p} - known)
+        if extra:
+            self.status_code = 422
+            self.failures = [{"field": f, "detail": "unknown field"} for f in extra]
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return {"failures": getattr(self, "failures", [])}
+
+
+@pytest.mark.parametrize("config", [
+    {"hosted_mode": True, "signup_mode": "invite"},
+    {"features": ["something_else"]},
+    {"features": {"box_push_counts": False}},
+    None,
+])
+def test_an_older_console_gets_the_push_without_the_new_fields(client, monkeypatch, config):
+    db = _db()
+    _projects(db)
+    _install(monkeypatch)
+    _tracker(db)
+    sent = []
+
+    def post(url, json=None, headers=None, timeout=None):
+        sent.append(json)
+        return _StrictOldConsole(json)
+
+    monkeypatch.setattr(box_push.httpx, "post", post)
+    if config is None:
+        def get(*a, **k):
+            raise httpx.ConnectError("config unreadable")
+        monkeypatch.setattr(box_push.httpx, "get", get)
+    else:
+        _console(monkeypatch, config)
+    out = box_push.push_box_view(db, cloud_url="https://c", api_key="k")
+    assert out["pushed"] is True, out
+    assert all(set(p) == {"project", "rules"} for p in sent[0]["projects"])
+    db.close()
+
+
+def test_a_console_config_that_is_not_200_means_the_old_shape(client, monkeypatch):
+    db = _db()
+    _projects(db)
+    _install(monkeypatch)
+
+    class NotFound:
+        status_code = 404
+
+        def json(self):
+            return {"features": ["box_push_counts"]}
+
+    monkeypatch.setattr(box_push.httpx, "get", lambda *a, **k: NotFound())
+    assert box_push.console_accepts_counts("https://c") is False
     db.close()

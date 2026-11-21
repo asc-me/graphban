@@ -32,6 +32,10 @@ const api = vi.hoisted(() => ({
   syncCloudProjects: vi.fn(),
   syncSaveProjectMap: vi.fn(),
   syncPushAll: vi.fn(),
+  putProjectSync: vi.fn(),
+  syncBudget: vi.fn(),
+  putSyncBudget: vi.fn(),
+  retryParked: vi.fn(),
   syncOrg: vi.fn(),
   syncUnlink: vi.fn(),
   syncSetGraph: vi.fn(),
@@ -247,9 +251,10 @@ describe("SyncLinkPanel", () => {
     const user = userEvent.setup();
     api.syncCloudProjects.mockResolvedValue({ status: "ok", projects: [{ id: "c-1", tag: "CORE", name: "Core" }], mapping: [] });
     api.syncSaveProjectMap.mockResolvedValue({ mapping: [] });
+    api.putProjectSync.mockResolvedValue({});
     api.syncStatus.mockResolvedValue(signedIn(false, false));
     const { unmount } = renderPanel();
-    await screen.findByRole("combobox");
+    await user.selectOptions(await screen.findByRole("combobox"), "Local only");
     await user.click(screen.getByRole("button", { name: "Next →" }));
     expect(await screen.findByText("Nothing to push. Every project is local only.")).toBeInTheDocument();
     const wiz = within(screen.getByTestId("link-wizard"));

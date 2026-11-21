@@ -177,14 +177,23 @@ def next_cluster(
     for rel in related_items(db, seed, project_id):
         if len(batch) >= max_items:
             break
+        # GRPH-1530. claim_item only refuses a stale in_progress reclaim. A fresh
+        # neighbour whose dependency is still open is not one, and claim_next never
+        # saw it — this loop is the handout. Skip it; the seed stays claimed.
+        if items_svc.unfinished_dependency_ids(db, rel["item"]):
+            continue
         try:
             claimed = items_svc.claim_item(db, rel["item"].id, agent_id, lease_seconds=lease)
-        except (items_svc.OutOfScope, items_svc.ReachesOutsideTheRepo):
+        except (items_svc.OutOfScope, items_svc.ReachesOutsideTheRepo,
+                items_svc.TierBelowNeeds):
             # A neighbour outside the seat's scope (GRPH-827). Skipped rather than fatal: the
             # seed was claimable and IS the work, and a related item in another PRD is exactly
             # what a scoped wave should decline to drag in. The seed cannot hit this — it came
             # through `claim_next`, which filters. GRPH-832 rides the same path for the same
             # reason: a neighbour that acts on a running system is dragged in by nothing.
+            # GRPH-1647 rides it too: a neighbour whose bounce named a higher tier must not
+            # fail the seed's claim. The empty-seed reply names `needs_tier` at the MCP
+            # boundary, from the same list `claim_next` attaches.
             continue
         if claimed is not None:
             batch.append({"item": claimed, "shared": rel["shared"], "link_types": rel["link_types"], "seed": False})

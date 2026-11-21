@@ -2,25 +2,28 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Check, Copy, Github, HardDrive, KeyRound, RefreshCw, ShieldCheck } from "lucide-react";
 import * as React from "react";
 
+import { ProjectThemePicker, themeFromProject, themePatch, type ProjectThemeValue } from "@/components/ProjectThemePicker";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { McpToolsView } from "@/features/mcp/McpToolsView";
 import { MachinesPanel } from "@/features/settings/MachinesPanel";
 import { CredentialsPanel } from "@/features/settings/CredentialsPanel";
+import { HttpsPanel } from "@/features/settings/HttpsPanel";
 import { GitopsPanel } from "@/features/settings/GitopsPanel";
 import { LogExportPanel } from "@/features/settings/LogExportPanel";
 import { UpdatesPanel } from "@/features/settings/UpdatesPanel";
 import { ApiKeysPanel } from "@/features/settings/ApiKeysPanel";
 import { CloudOrgLinkPanel } from "@/features/settings/CloudOrgLinkPanel";
 import { SyncLinkPanel } from "@/features/settings/SyncLinkPanel";
+import { PublishToOrgPanel } from "@/features/settings/PublishToOrgPanel";
 import { CloudTag } from "@/components/shell/CloudTag";
 import { useProjectCtx } from "@/features/ProjectContext";
+import { prefersReducedMotion } from "@/features/onboarding/WizardGraphic";
 import { copyText } from "@/lib/clipboard";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { errorDetail } from "@/lib/errors";
-import { keys, useConfig, useMembers, useMintIngestToken, usePlatform } from "@/lib/queries";
+import { keys, useConfig, useMembers, useMintIngestToken, usePlatform, useUpdateProject } from "@/lib/queries";
 import { adminPath, settingsPath } from "@/lib/routes";
 import type { PlatformConfig, Project } from "@/lib/types";
 import { Link, NavLink, Navigate, useLocation } from "react-router-dom";
@@ -42,6 +45,7 @@ const SELF_HOST_NAV: { group: string; items: { to: string; label: string; end?: 
     items: [
       { to: settingsPath("deployment/providers"), label: "AI providers" },
       { to: settingsPath("deployment/sync"), label: "Cloud / Sync" },
+      { to: settingsPath("deployment/https"), label: "HTTPS" },
       { to: settingsPath("deployment/gitops"), label: "Gitops" },
       { to: settingsPath("deployment/updates"), label: "Updates" },
       // Log export is here and NOT under "This project": one collector endpoint, one exporter
@@ -101,19 +105,6 @@ function SelfHostSettings() {
               ))}
             </div>
           ))}
-          <div className="mt-auto border-t border-line pt-2">
-            <NavLink
-              to={settingsPath("account")}
-              className={({ isActive }) =>
-                cn(
-                  "block rounded-[9px] px-3 py-2 text-[13px] transition-colors",
-                  isActive ? "bg-surface-3 text-fg" : "text-muted hover:bg-surface-3 hover:text-fg-2",
-                )
-              }
-            >
-              Account
-            </NavLink>
-          </div>
         </div>
         <div className="min-h-0 overflow-y-auto p-6">
           <SelfHostPane pathname={pathname} />
@@ -132,6 +123,7 @@ function SelfHostPane({ pathname }: { pathname: string }) {
       </>
     );
   }
+  if (pathname.startsWith(settingsPath("deployment/https"))) return <HttpsPanel />;
   if (pathname.startsWith(settingsPath("deployment/updates"))) return <UpdatesPanel />;
   if (pathname.startsWith(settingsPath("deployment/log-export"))) return <LogExportPanel />;
   if (pathname.startsWith(settingsPath("deployment/sync"))) return <SyncLinkPanel />;
@@ -149,7 +141,8 @@ function SelfHostPane({ pathname }: { pathname: string }) {
     return <ProjectPanel />;
   }
   if (pathname.startsWith(settingsPath("account/machines"))) return <MachinesPanel />;
-  if (pathname.startsWith(settingsPath("account"))) return <AccountPanel />;
+  // Account moved to the profile page (GRPH-1792); Password lives there now.
+  if (pathname.startsWith(settingsPath("account"))) return <Navigate to="/profile" replace />;
   return <CredentialsPanel />;
 }
 
@@ -190,7 +183,6 @@ const HOSTED_NAV: { to: string; label: string; end?: boolean }[] = [
   { to: settingsPath("project/members"), label: "Members" },
   { to: settingsPath("project/api-keys"), label: "API keys" },
   { to: settingsPath("account/machines"), label: "Machines" },
-  { to: settingsPath("account"), label: "Account" },
   { to: settingsPath("deployment/updates"), label: "Updates" },
 ];
 
@@ -260,7 +252,8 @@ function HostedPane({ pathname }: { pathname: string }) {
     return <ProjectPanel />;
   }
   if (pathname.startsWith(settingsPath("account/machines"))) return <MachinesPanel />;
-  if (pathname.startsWith(settingsPath("account"))) return <AccountPanel />;
+  // Account moved to the profile page (GRPH-1792); Password lives there now.
+  if (pathname.startsWith(settingsPath("account"))) return <Navigate to="/profile" replace />;
   return <CredentialsPanel />;
 }
 
@@ -703,18 +696,25 @@ function RetagRow() {
 
 function ProjectPanel() {
   const { active } = useProjectCtx();
-  const qc = useQueryClient();
+  const update = useUpdateProject();
   const [form, setForm] = React.useState<Partial<Project>>({});
+  const [theme, setTheme] = React.useState<ProjectThemeValue | null>(null);
   const [saved, setSaved] = React.useState(false);
+  const [still] = React.useState(prefersReducedMotion);
   React.useEffect(() => {
-    if (active) setForm({ name: active.name, description: active.description, share_global_memory: active.share_global_memory, auto_extract: active.auto_extract, mcp_enabled: active.mcp_enabled, memory_write_mode: active.memory_write_mode, memory_auto_reject: active.memory_auto_reject, memory_llm_judge: active.memory_llm_judge, agent_adjudication: active.agent_adjudication, allow_self_review: active.allow_self_review });
+    if (active) {
+      setForm({ name: active.name, description: active.description, share_global_memory: active.share_global_memory, auto_extract: active.auto_extract, mcp_enabled: active.mcp_enabled, memory_write_mode: active.memory_write_mode, memory_auto_reject: active.memory_auto_reject, memory_llm_judge: active.memory_llm_judge, agent_adjudication: active.agent_adjudication, allow_self_review: active.allow_self_review });
+      setTheme(themeFromProject(active));
+    }
   }, [active?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!active) return null;
 
   async function save() {
-    await api.updateProject(active!.id, form);
-    qc.invalidateQueries({ queryKey: keys.projects });
+    // Theme fields ride the same PATCH. Only the ones that changed are included:
+    // solid sends accent2 null, and "None" sends pattern "none".
+    const patch = theme ? themePatch(active!, theme) : {};
+    await update.mutateAsync({ id: active!.id, body: { ...form, ...patch } });
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
   }
@@ -750,7 +750,14 @@ function ProjectPanel() {
       <div className="mb-3"><Label>Name</Label><Input value={form.name ?? ""} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} className="max-w-sm" /></div>
       <RetagRow />
       <div className="mb-3"><CloudTag projectId={active.id} /></div>
+      <PublishToOrgPanel />
       <div className="mb-4"><Label>Description</Label><Textarea rows={2} value={form.description ?? ""} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} /></div>
+      {theme && (
+        <div className="mb-4">
+          <Label>Theme</Label>
+          <ProjectThemePicker value={theme} onChange={setTheme} tag={active.tag} still={still} />
+        </div>
+      )}
       <div className="mb-4 space-y-2">
         {flags.map((fl) => (
           <label key={fl.key} className="flex cursor-pointer items-center gap-2.5 text-body text-fg-2">
@@ -816,81 +823,6 @@ function MembersPanel() {
           </div>
         ))}
       </div>
-    </Section>
-  );
-}
-
-/**
- * Changing your own password. There was no way to do this at all until GRPH-219 — an
- * operator provisioned by `bootstrap-hosted` was handed a generated password and no means
- * of rotating it, which is exactly the credential most likely to have been pasted somewhere
- * it shouldn't live.
- */
-function AccountPanel() {
-  const [current, setCurrent] = React.useState("");
-  const [next, setNext] = React.useState("");
-  const [confirm, setConfirm] = React.useState("");
-  const [busy, setBusy] = React.useState(false);
-  const [done, setDone] = React.useState(false);
-  const [error, setError] = React.useState("");
-
-  const mismatch = confirm.length > 0 && next !== confirm;
-  const tooShort = next.length > 0 && next.length < 8;
-  const ready = current.length > 0 && next.length >= 8 && next === confirm && !busy;
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError("");
-    setDone(false);
-    try {
-      await api.changePassword(current, next);
-      setCurrent("");
-      setNext("");
-      setConfirm("");
-      setDone(true);
-    } catch (err) {
-      setError(errorDetail(err, "could not change the password"));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Section
-      title="Password"
-      desc="Changing it signs out every other device — that is the point, not a side effect."
-    >
-      <form onSubmit={submit} className="max-w-[380px] space-y-3">
-        <Input
-          type="password"
-          autoComplete="current-password"
-          placeholder="Current password"
-          value={current}
-          onChange={(e) => setCurrent(e.target.value)}
-        />
-        <Input
-          type="password"
-          autoComplete="new-password"
-          placeholder="New password"
-          value={next}
-          onChange={(e) => setNext(e.target.value)}
-        />
-        <Input
-          type="password"
-          autoComplete="new-password"
-          placeholder="Confirm new password"
-          value={confirm}
-          onChange={(e) => setConfirm(e.target.value)}
-        />
-        {tooShort && <p className="text-[12px] text-muted">At least 8 characters.</p>}
-        {mismatch && <p className="text-[12px] text-muted">Those two don’t match.</p>}
-        {error && <p className="text-[12px] text-red-400">{error}</p>}
-        {done && <p className="text-[12px] text-emerald-400">Password changed. Other devices are signed out.</p>}
-        <Button type="submit" disabled={!ready}>
-          {busy ? "Changing…" : "Change password"}
-        </Button>
-      </form>
     </Section>
   );
 }

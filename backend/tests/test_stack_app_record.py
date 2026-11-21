@@ -483,7 +483,32 @@ def test_alembic_stays_single_head_with_0140_in_the_chain():
     # on 0146 (GRPH-1137, decision waits) on 0145 (GRPH-1134, item done_at)
     # on 0144 (GRPH-1133, per-user UI preferences) on 0143
     # (GRPH-1127, scan finding grain); linear through 0140.
-    assert script.get_heads() == ["0200"]
+    assert script.get_heads() == ["0225"]
+    assert script.get_revision("0225").down_revision == "0224"  # GRPH-1808, org dismissal of a rule proposal
+    assert script.get_revision("0224").down_revision == "0223"  # GRPH-1762, publish credential
+    assert script.get_revision("0223").down_revision == "0222"  # GRPH-1798, default fix line
+    assert script.get_revision("0222").down_revision == "0221"  # GRPH-1787, org-scoped handles
+    assert script.get_revision("0221").down_revision == "0220"  # GRPH-1746, project tile fill
+    assert script.get_revision("0220").down_revision == "0219"  # GRPH-1777, rule observations
+    assert script.get_revision("0219").down_revision == "0218"  # GRPH-1780, rule guidance
+    assert script.get_revision("0218").down_revision == "0217"  # GRPH-1775, rule proposals
+    assert script.get_revision("0217").down_revision == "0216"  # GRPH-1774, custom rules
+    assert script.get_revision("0216").down_revision == "0215"  # GRPH-1738, sync pending purge
+    assert script.get_revision("0215").down_revision == "0214"  # GRPH-1761, publish destination
+    assert script.get_revision("0214").down_revision == "0213"  # GRPH-1692, external design artifact
+    assert script.get_revision("0213").down_revision == "0212"  # GRPH-1768, manifest bigint
+    assert script.get_revision("0212").down_revision == "0211"  # GRPH-1737, proposal receipts
+    assert script.get_revision("0211").down_revision == "0210"  # GRPH-1733, sync outbox
+    assert script.get_revision("0210").down_revision == "0209"  # GRPH-1677, remote specs
+    assert script.get_revision("0209").down_revision == "0208"  # GRPH-1712, routing candidates
+    assert script.get_revision("0208").down_revision == "0207"  # GRPH-1685, seat line_id
+    assert script.get_revision("0207").down_revision == "0206"  # GRPH-1683, item severity
+    assert script.get_revision("0206").down_revision == "0205"  # GRPH-1681, maintenance line
+    assert script.get_revision("0205").down_revision == "0204"  # GRPH-1676, spec publish
+    assert script.get_revision("0204").down_revision == "0203"  # GRPH-1674, publish to org
+    assert script.get_revision("0203").down_revision == "0202"  # GRPH-1671, item resolution
+    assert script.get_revision("0202").down_revision == "0201"  # GRPH-1637, tls_custom
+    assert script.get_revision("0201").down_revision == "0200"  # GRPH-1634, tls_authority
     assert script.get_revision("0200").down_revision == "0199"  # GRPH-1582, vapid_keys
     assert script.get_revision("0199").down_revision == "0198"
     assert script.get_revision("0198").down_revision == "0197"

@@ -23,6 +23,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     event,
+    select,
     false,
     true,
 )
@@ -73,9 +74,17 @@ class User(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[str] = mapped_column(String)
-    handle: Mapped[str] = mapped_column(String, unique=True)
+    # The account handle. Not globally unique (GRPH-1787): a handle is unique per org via
+    # `OrgMembership.handle`; on a self-hosted box (no orgs) `services/handles.py` keeps it
+    # unique on the box.
+    handle: Mapped[str] = mapped_column(String)
     email: Mapped[str] = mapped_column(String, unique=True)
     avatar: Mapped[str] = mapped_column(String, default="#a78bfa")
+    # The dot reuses the project tile's shape: `avatar` is the solid colour, `avatar2` the
+    # ombre second colour (null = solid, null when equal to `avatar`), `avatar_pattern` one of
+    # `services.projects.TILE_PATTERNS`.
+    avatar2: Mapped[str | None] = mapped_column(String, nullable=True)
+    avatar_pattern: Mapped[str] = mapped_column(String, default="none", server_default="none")
     initials: Mapped[str] = mapped_column(String, default="")
     password_hash: Mapped[str] = mapped_column(String)
     # Bumped on logout / password change to revoke every outstanding token: it's
@@ -130,7 +139,7 @@ def _key_of(owner, stored_id: str | None, kind: str) -> str | None:
     session = object_session(owner)
     if session is None:
         return stored_id
-    row = session.get({"item": Item, "request": Request, "prd": Prd}[kind], stored_id)
+    row = session.get({"item": Item, "request": Request, "prd": Prd, "line": Line}[kind], stored_id)
     return row.key if row is not None else stored_id
 
 
@@ -144,7 +153,19 @@ class Project(Base):
     # uniqueness on both engines. Changing it is one UPDATE: keys are rendered, never
     # stored, so no other row in the database moves. See app/tagging.py.
     tag: Mapped[str] = mapped_column(String, unique=True)
+    # The ONE solid colour used wherever a single colour is needed: chips, graph
+    # nodes, borders, text. The tile's second colour and its pattern are
+    # `accent2` and `pattern`; they never stand in for this.
     accent: Mapped[str] = mapped_column(String, default="#c6f24e")
+    # Ombre's second colour. Null means the tile is solid. A value equal to
+    # `accent` is stored as null, so an ombre never quietly renders solid.
+    # Only shapes the tile fill.
+    accent2: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Pattern laid over the tile fill. One of services.projects.TILE_PATTERNS;
+    # `none` is unpatterned. Only shapes the tile fill, same as `accent2`.
+    pattern: Mapped[str] = mapped_column(
+        String, nullable=False, default="none", server_default="none"
+    )
     # Package names this project publishes — `@acme/core`, `acme-core` (PRD-21 D3). The
     # registry a sibling's manifest dependency resolves against. A monorepo is ONE project
     # that provides several names: the galaxy's resolution is the checkout, not the
@@ -162,6 +183,19 @@ class Project(Base):
     # normalize_repo_url). `gban setup` matches a checkout's git remote against it before it falls
     # back to the name match. NULL = never set — not "no repository".
     repo_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Publish to org (GRPH-1674): what a linked box sends the console for this project.
+    # Both on by default, for new projects and (via the migration's server_default) existing
+    # ones. An unlinked box publishes nothing whatever these say (box_push.publish_enabled).
+    publish_specs: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true(), nullable=False
+    )
+    publish_item_digests: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true(), nullable=False
+    )
+
+    @property
+    def publish_to_org(self) -> dict:
+        return {"specs": bool(self.publish_specs), "item_digests": bool(self.publish_item_digests)}
 
     # The credential this project uses for chat, overriding the deployment default (PRD-25).
     # S1 creates the column and never writes it: the resolver honours it so the ordering is
@@ -332,6 +366,13 @@ class Organization(Base):
     feedback_default_on: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false(), nullable=False
     )
+    # Publish destination the org admin saves (GRPH-1761). The console stores these two
+    # strings and never reaches into a box. Empty is unconfigured — there is no default
+    # remote or branch. A box pulls them; it does not invent `main`.
+    publish_repo_url: Mapped[str] = mapped_column(
+        String(1024), default="", server_default="", nullable=False)
+    publish_branch: Mapped[str] = mapped_column(
+        String(255), default="", server_default="", nullable=False)
 
 
 class SlugRedirect(Base):
@@ -364,9 +405,37 @@ class OrgMembership(Base):
     org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     role: Mapped[str] = mapped_column(String, default="member")  # owner | admin | member
+    # The handle this user goes by inside this org (GRPH-1787); backfilled from the account
+    # handle. A `before_insert` hook fills it from the user when a caller leaves it unset.
+    handle: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
-    __table_args__ = (UniqueConstraint("org_id", "user_id", name="uq_org_membership"),)
+    __table_args__ = (
+        UniqueConstraint("org_id", "user_id", name="uq_org_membership"),
+        UniqueConstraint("org_id", "handle", name="uq_org_membership_handle"),
+    )
+
+
+@event.listens_for(OrgMembership, "before_insert")
+def _default_membership_handle(mapper, connection, target) -> None:
+    if not target.handle:
+        target.handle = connection.execute(
+            select(User.__table__.c.handle).where(User.__table__.c.id == target.user_id)
+        ).scalar_one()
+
+
+class HandleHold(Base):
+    """A released handle reserved in one org for 30 days (GRPH-1787), cloud only."""
+
+    __tablename__ = "handle_holds"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"))
+    handle: Mapped[str] = mapped_column(String)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (Index("ix_handle_holds_org_handle", "org_id", "handle"),)
 
 
 class OrgRequest(Base):
@@ -704,6 +773,12 @@ class Item(Base):
     bounce_reason: Mapped[str] = mapped_column(String, default="")
     # Spec traceability (feature D): the PRD + section this item implements.
     prd_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The project's maintenance line this item belongs to (GRPH-1681). Holds the line's
+    # FROZEN id, never a rendering, like `prd_id`. Mutually exclusive with `prd_id`, and only
+    # a `fix` may carry it: `services/items.py:check_line`.
+    line_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # `security` or empty (GRPH-1683); only a fix carries it.
+    severity: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
     prd_section: Mapped[str] = mapped_column(String, default="")
     # The section text AS IT WAS when this item was decomposed out of it (GRPH-360).
     #
@@ -772,8 +847,22 @@ class Item(Base):
     # on a `wait:decision` item. NULL on every other item. `answer` is written once by
     # `waits.answer_wait`; `notify` names the live holders to tell, `notified` those told.
     decision: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Closed WITHOUT delivering anything (GRPH-1671): `{kind, of, reason, by, at}`, where
+    # `kind` is `duplicate` or `superseded` and `of` is the item (or, for superseded, the PRD)
+    # that carries the work instead. NULL on every item that was not closed this way. Written
+    # only by `items.resolve_item`, cleared when the item leaves `done`. A resolved item is
+    # `done` but never `delivered` — see the property below.
+    resolution: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Hide this blocker from triage until then (GRPH-1137). NULL = not snoozed.
     snoozed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    @property
+    def delivered(self) -> bool:
+        """`done` AND carrying work (GRPH-1671). An item closed as a duplicate or as
+        superseded is `done` so it leaves the board, but it delivered nothing: the item its
+        `resolution` points at carries the delivery. Every count of what a PRD section has
+        delivered reads this, never `status == "done"` alone."""
+        return self.status == "done" and not self.resolution
 
     # The backstop for the mint path (services/items.py): even if minting is bypassed
     # or two agents race, the database refuses a duplicate number within a project.
@@ -800,6 +889,10 @@ class Item(Base):
     @property
     def prd_key(self) -> str | None:
         return _key_of(self, self.prd_id, "prd")
+
+    @property
+    def line_key(self) -> str | None:
+        return _key_of(self, self.line_id, "line")
 
 
 @event.listens_for(Item.status, "set", active_history=True)
@@ -1010,6 +1103,9 @@ class Enrolment(Base):
     #: on its own. Not a ForeignKey, for the reason `Item.prd_id` is not — it holds another
     #: entity's frozen id, and a delete there must not reach into a credential's history.
     prd_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: The maintenance line this seat was minted for (GRPH-1685). Same role as `prd_id` and
+    #: exclusive with it: a seat has at most one scope. NULL is not line-scoped.
+    line_id: Mapped[str | None] = mapped_column(String, nullable=True)
     delegation_id: Mapped[str | None] = mapped_column(String, nullable=True)
     #: A REVIEW-ONLY seat (GRPH-988): may hold review work, may never take build work. Not a
     #: role — `reviewer` merged into `worker` in S3 (PRD-39) and a worker both builds and
@@ -1361,6 +1457,34 @@ class Request(Base):
     @property
     def linked_to_key(self) -> str | None:
         return _key_of(self, self.linked_to, "item")
+
+
+class Line(Base):
+    """A project's maintenance line (GRPH-1681): at most one per project.
+
+    Identity only — a frozen id, a per-project number and a title. It deliberately has no
+    body, status, version, grill, baseline or close, so nothing that reads a PRD can read it.
+    The key renders with its own kind letter (`<TAG>-L<number>`), which is what stops a line
+    id resolving as a PRD. `project_id` is unique: the one-line rule is the schema's, not
+    only the service's.
+    """
+
+    __tablename__ = "lines"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # frozen; see Item.id
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), unique=True)
+    number: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(String, default="Maintenance")
+    created_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    project: Mapped["Project"] = relationship()
+
+    __table_args__ = (UniqueConstraint("project_id", "number", name="uq_line_project_number"),)
+
+    @property
+    def key(self) -> str:
+        return tagging.render(self.project.tag, "line", self.number)
 
 
 class Prd(Base):
@@ -2255,6 +2379,38 @@ class SyncStorageConfig(Base):
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
                                                  onupdate=utcnow)
+    # Publish destination on this box (GRPH-1761). One pair for the deployment, beside the
+    # folder path. `destination_source` is `` (unset) | local | org. `previous_path` is the
+    # path a link replaced; it is shown and never used as the next publish target. Empty
+    # pull state means this box has not pulled, which is not the same as a pull that got
+    # no answer (`unknown`).
+    repo_path: Mapped[str] = mapped_column(String(1024), default="", server_default="",
+                                           nullable=False)
+    repo_branch: Mapped[str] = mapped_column(String(255), default="", server_default="",
+                                             nullable=False)
+    previous_path: Mapped[str] = mapped_column(String(1024), default="", server_default="",
+                                               nullable=False)
+    received_url: Mapped[str] = mapped_column(String(1024), default="", server_default="",
+                                              nullable=False)
+    received_branch: Mapped[str] = mapped_column(String(255), default="", server_default="",
+                                                 nullable=False)
+    destination_source: Mapped[str] = mapped_column(String(16), default="", server_default="",
+                                                    nullable=False)
+    publish_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False)
+    destination_pull_state: Mapped[str] = mapped_column(
+        String(16), default="", server_default="", nullable=False)
+    destination_pull_reason: Mapped[str] = mapped_column(
+        String(400), default="", server_default="", nullable=False)
+    # Publish credential (GRPH-1762). `credential_mode` is `` (not set) | file | git. `git`
+    # means the box uses whatever credential its git installation already has for the remote;
+    # `file` names a file on this box. The path and the bytes never leave the box: no
+    # response, console push, repo file or publish error carries them. A destination change
+    # that turns publishing off leaves both columns as they are.
+    credential_mode: Mapped[str] = mapped_column(String(8), default="", server_default="",
+                                                 nullable=False)
+    credential_path: Mapped[str] = mapped_column(String(1024), default="", server_default="",
+                                                 nullable=False)
 
 
 class CodeSyncState(Base):
@@ -2267,6 +2423,42 @@ class CodeSyncState(Base):
     project_id: Mapped[str] = mapped_column(String, primary_key=True)
     manifest: Mapped[dict] = mapped_column(JSON, default=dict)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SpecPublish(Base):
+    """The version of each PRD this box last published to the console (GRPH-1676).
+
+    One row per published PRD: the `base_hash` the console confirmed. A PRD whose current
+    hash differs is published on the next sync; a row whose PRD is gone, or whose project
+    stopped publishing specs, is purged from the console and then dropped here. The project
+    name rides on the row because a purge must still name the project after it is deleted."""
+
+    __tablename__ = "spec_publish"
+
+    prd_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String, index=True)
+    project_name: Mapped[str] = mapped_column(String, default="", server_default="")
+    base_hash: Mapped[str] = mapped_column(String, default="", server_default="")
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RemoteSpec(Base):
+    """A spec whose home is ANOTHER deployment, as last read from the console (GRPH-1677).
+
+    Read-only on this box: never a `Prd` row, so nothing here can be edited, approved or
+    decomposed. `home` names the deployment that owns it and `base_hash` is the version it
+    published. Replaced whole on each pull; a spec the console stops serving is dropped."""
+
+    __tablename__ = "remote_spec"
+
+    prd_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String, index=True)
+    project_name: Mapped[str] = mapped_column(String, default="", server_default="")
+    title: Mapped[str] = mapped_column(String, default="", server_default="")
+    home: Mapped[str] = mapped_column(String, default="", server_default="")
+    base_hash: Mapped[str] = mapped_column(String, default="", server_default="")
+    body: Mapped[str] = mapped_column(Text, default="", server_default="")
+    pulled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class SyncProject(Base):
@@ -2284,9 +2476,113 @@ class SyncProject(Base):
     #: mapped and refreshed on every projects read; "" (or null) until known, shown `☁ ?`.
     cloud_project_tag: Mapped[str | None] = mapped_column(
         String, default="", server_default="", nullable=True)
+    #: `digests` (today's push; the default, including every row that predates GRPH-1733)
+    #: or `sync` (full replica, D2). Local-only is the absence of a row, not a third value.
+    sync_level: Mapped[str] = mapped_column(
+        String, default="digests", server_default="digests", nullable=False)
+    #: What the cloud may propose back: `read_only`, `comments` (default, D4), `proposals`.
+    cloud_permission: Mapped[str] = mapped_column(
+        String, default="comments", server_default="comments", nullable=False)
+    #: Who turned full sync on, and when (D8). Sync keeps running after that person leaves;
+    #: these columns are the audit, not a grant. Null on a row that was never opted in.
+    enabled_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: A purge the console has not confirmed (GRPH-1738). ``digests`` or ``local`` is the
+    #: level waiting on ``DELETE`` 200. Null means no purge is owed — a different fact
+    #: from a purge that succeeded, which clears this and the manifest together.
+    pending_purge: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: Exclusive cursor for `GET /api/sync/proposals`. Empty until the first page.
+    #: A 304 does not clear it: the console sends no cursor on an idle poll.
+    proposal_cursor: Mapped[str] = mapped_column(
+        String, default="", server_default="", nullable=False)
+    #: `ETag` from the last proposal page. Sent back as `If-None-Match`.
+    proposal_etag: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: When this box last attempted a proposal pull. The next poll is this plus
+    #: the interval `poll_interval` computes (60s, or 10s while a decision is open).
+    proposal_polled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    #: Set by `after_push` so the next pass pulls immediately. Cleared when a
+    #: pull is attempted, including one the console did not answer.
+    proposal_pull_now: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False)
     last_push_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_push_result: Mapped[str | None] = mapped_column(String, nullable=True)
     last_push_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=True)
+
+
+class SyncOutbox(Base):
+    """One dirty entity waiting to be pushed (GRPH-1733, P89 D11).
+
+    The primary key is the entity, so a later change updates this row instead of inserting
+    another. That collapse is what keeps the outbox inside its 100 MB cap: the table holds
+    at most one row per entity, however many times the entity changes before the flush.
+
+    `change_class` is the best pending change (`status`, `new`, `edit`, `history`). It is
+    not in the column list the slice named, and it has to be stored anyway: once several
+    changes have collapsed into this row, the class is no longer recoverable from the
+    version and the hash, and `due()` orders by it.
+    """
+
+    __tablename__ = "sync_outbox"
+
+    project_id: Mapped[str] = mapped_column(String, primary_key=True)
+    entity_type: Mapped[str] = mapped_column(String, primary_key=True)
+    entity_id: Mapped[str] = mapped_column(String, primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    dirty_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    first_dirty_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    parked_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    parked_contract: Mapped[str | None] = mapped_column(String, nullable=True)
+    change_class: Mapped[str] = mapped_column(
+        String, nullable=False, default="edit", server_default="edit")
+
+
+class SyncManifest(Base):
+    """What the console has confirmed for one entity (GRPH-1733).
+
+    The flush writes this after a batch is accepted. Capture does not. A missing row means
+    the entity has never been confirmed, which is a different fact from an empty hash.
+    """
+
+    __tablename__ = "sync_manifest"
+
+    project_id: Mapped[str] = mapped_column(String, primary_key=True)
+    entity_type: Mapped[str] = mapped_column(String, primary_key=True)
+    entity_id: Mapped[str] = mapped_column(String, primary_key=True)
+    # The wire version confirmed by the console: a counter in 0..2^53-1
+    # (GRPH-1815). BIGINT because this column once held the 63-bit hash
+    # version_of() returned, and INTEGER overflowed on confirm (GRPH-1768).
+    # sync_outbox.version stays the capture counter, not this value.
+    version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    hash: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SyncProposal(Base):
+    """One cloud proposal this box has already decided (GRPH-1737, P89 D10).
+
+    The id is the console's proposal id. The row is written in the same
+    transaction as the apply, so a re-delivery finds it and does not apply
+    again. `reported` stays false until `POST /api/sync/proposals/outcomes`
+    accepts this status. A failed report is retried from this row; the apply
+    is not.
+    """
+
+    __tablename__ = "sync_proposal"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The item's wire version when the proposal conflicted. BIGINT so a row
+    # written while versions were 63-bit hashes still loads (GRPH-1768).
+    current_version: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reported: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=True)
 
@@ -2485,6 +2781,59 @@ class VapidKey(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     public_key: Mapped[str] = mapped_column(String)
     private_key: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TlsAuthority(Base):
+    """The box's own certificate authority and its current server leaf (GRPH-1634, P83 D2).
+    One row under the fixed id `box`, so workers starting at once race to one winner. Both
+    private keys are stored through `security.secrets.encrypt`; no API returns either."""
+
+    __tablename__ = "tls_authority"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    ca_cert: Mapped[str] = mapped_column(Text)
+    ca_key: Mapped[str] = mapped_column(Text)
+    ca_not_after: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    leaf_cert: Mapped[str] = mapped_column(Text, default="")
+    leaf_key: Mapped[str] = mapped_column(Text, default="")
+    leaf_names: Mapped[str] = mapped_column(Text, default="[]")  # JSON list the leaf covers
+    leaf_not_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    leaf_issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TlsName(Base):
+    """A name the box's certificate covers and Caddy may ask for (GRPH-1634). `source` is
+    auto|operator; `origin` is hostname | network address | seen as Host | operator."""
+
+    __tablename__ = "tls_names"
+
+    name: Mapped[str] = mapped_column(String, primary_key=True)
+    source: Mapped[str] = mapped_column(String)
+    origin: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TlsCustom(Base):
+    """Tier 2/3 certificate (GRPH-1637, P83 D3): an uploaded chain + key, or a Let's Encrypt
+    request. One row under the fixed id `box`. The uploaded key goes through
+    `security.secrets.encrypt`; no API returns it. `state` is active | expired | pending |
+    failed. `redirect_on` is the http->https switch, meaningful only while a tier 2/3 is active."""
+
+    __tablename__ = "tls_custom"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String)  # upload | letsencrypt
+    state: Mapped[str] = mapped_column(String)
+    box_address: Mapped[str] = mapped_column(String)
+    cert_chain: Mapped[str] = mapped_column(Text, default="")
+    cert_key: Mapped[str] = mapped_column(Text, default="")
+    subject: Mapped[str] = mapped_column(String, default="")
+    not_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    warnings: Mapped[str] = mapped_column(Text, default="[]")  # JSON list of codes
+    redirect_on: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -3746,6 +4095,11 @@ class RoutingDecision(Base):
     agent_model: Mapped[str] = mapped_column(String, default="", server_default="")
     #: Did the claimant hold the entitlement the decision named? NULL until someone claims.
     matched: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    #: GRPH-1712: the ranked candidate set at decision time — the policy in force, the claimant's
+    #: declared entitlements and every org entitlement with its rung, headroom state, stated
+    #: reset and tie-break inputs — so a replay re-ranks THEN, not now. NULL on rows written
+    #: before the column existed: those are not replayable, never "would not have moved".
+    candidates: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -3768,6 +4122,9 @@ class RuleToggle(Base):
     on: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     params: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     locked: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    #: GRPH-1777 (P91 D5): a project row's rule is `observing` while this is set — on, measured,
+    #: not enforced. Promotion clears it; any other write to the row clears it too.
+    observing_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
                                                  onupdate=utcnow)
@@ -3780,6 +4137,134 @@ class RuleToggle(Base):
         UniqueConstraint("rule_id", "org_id", name="uq_rule_toggles_org"),
         UniqueConstraint("rule_id", "project_id", name="uq_rule_toggles_project"),
     )
+
+
+class RuleObservation(Base):
+    """One outcome an observing rule WOULD have had (GRPH-1777 / P91 D5): `would_hold` or
+    `would_refuse`. Rule history, kept for the life of the project: promotion or removal never
+    purges it, and it is attributed to the rule, never to whoever proposed or adopted it."""
+
+    __tablename__ = "rule_observations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    rule_id: Mapped[str] = mapped_column(String, index=True)
+    outcome: Mapped[str] = mapped_column(String)
+    item_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    commit: Mapped[str | None] = mapped_column(String, nullable=True)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CustomRule(Base):
+    """A rule a person wrote from a library primitive (GRPH-1774 / P91 D1).
+
+    Scoped to a project (`project_id`) or, from S7, an org (`org_id`): exactly one. `rule_id` is
+    `custom.<slug>`, unique per scope. `stage` is the primitive's, copied from the contract at
+    write time; `primitive_api` is the primitive API the draft was validated against, so a
+    later major break reads as UNMEASURED rather than half-enforced. `state` is `observing`
+    (measured, not enforced) or `active`.
+    """
+
+    __tablename__ = "custom_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    rule_id: Mapped[str] = mapped_column(String, index=True)
+    org_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id"), nullable=True)
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
+    primitive: Mapped[str] = mapped_column(String)
+    primitive_api: Mapped[str] = mapped_column(String)
+    stage: Mapped[str] = mapped_column(String)
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    title: Mapped[str] = mapped_column(String)
+    why: Mapped[str] = mapped_column(Text)
+    claims: Mapped[str] = mapped_column(String)
+    state: Mapped[str] = mapped_column(String, default="active")
+    author_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        CheckConstraint("(org_id IS NULL) <> (project_id IS NULL)",
+                        name="ck_custom_rules_one_scope"),
+        UniqueConstraint("rule_id", "org_id", name="uq_custom_rules_org"),
+        UniqueConstraint("rule_id", "project_id", name="uq_custom_rules_project"),
+    )
+
+
+class RuleProposal(Base):
+    """A suggested rule change, cited and direction-checked (GRPH-1775 / P91 D2).
+
+    `kind` is `new_rule` | `turn_on` | `tighten`; turning a rule off is never a proposal. `rule_id`
+    is the rule it targets (`custom.<slug>` for a new one). `direction` and `loosens` are computed
+    by `rule_pack.direction` against the rule's resolved value, never taken from the proposer.
+    `proposer_kind` is `agent` | `person` | `import`. `status` is `open` | `adopted` |
+    `dismissed` | `superseded`; no MCP tool moves it off `open` (`rules.person_adopts`).
+    """
+
+    __tablename__ = "rule_proposals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    kind: Mapped[str] = mapped_column(String)
+    rule_id: Mapped[str] = mapped_column(String)
+    primitive: Mapped[str] = mapped_column(String)
+    draft: Mapped[dict] = mapped_column(JSON, default=dict)
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+    citations: Mapped[list] = mapped_column(JSON, default=list)
+    proposer: Mapped[str] = mapped_column(String)
+    proposer_kind: Mapped[str] = mapped_column(String)
+    direction: Mapped[str] = mapped_column(String)
+    loosens: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    status: Mapped[str] = mapped_column(String, default="open", server_default="open")
+    decided_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    decided_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # GRPH-1808: an org dismissal is recorded here and leaves `status` (the project's) alone.
+    org_dismissed_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    org_dismissed_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    org_dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RuleGuidance(Base):
+    """Advisory text for a requirement no primitive expresses (GRPH-1780 / P91 D8).
+
+    Filed with a citation, `open` until a person adopts it (`rules.person_adopts`); adopted
+    guidance rides in the delegation brief of an item in its `stage`. Never enforced.
+    """
+
+    __tablename__ = "rule_guidance"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    stage: Mapped[str] = mapped_column(String)
+    label: Mapped[str] = mapped_column(String)
+    text: Mapped[str] = mapped_column(Text)
+    citations: Mapped[list] = mapped_column(JSON, default=list)
+    proposer: Mapped[str] = mapped_column(String)
+    proposer_kind: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="open", server_default="open")
+    decided_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PrimitiveGapCount(Base):
+    """How often a requirement of this stage and short label had no primitive (GRPH-1780).
+
+    Stage, label and a count. Never the guidance text. Stays on the box unless the box's counts
+    opt-in (`box_push`) is on.
+    """
+
+    __tablename__ = "primitive_gap_counts"
+    __table_args__ = (UniqueConstraint("project_id", "stage", "label"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    stage: Mapped[str] = mapped_column(String)
+    label: Mapped[str] = mapped_column(String)
+    count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class InstalledRulePack(Base):
@@ -4022,6 +4507,11 @@ class DesignSet(Base):
         Boolean, default=False, server_default=false(), nullable=False)
     # The PRD section headings the set gates.
     sections: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Pages that live in an external artifact, not a compiled screen (GRPH-1692).
+    # {"url": "https://...", "pages": {"Section": ["Page"]}}. This is a reference,
+    # not a gate: `sections` is what blocks a build, and an unaccepted gate would
+    # block the item this reference exists to inform.
+    external_artifact: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_by: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

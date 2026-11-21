@@ -254,6 +254,9 @@ def poll(db: Session) -> dict:
     if was_legacy:
         fill_legacy_projects(db, answer["legacy_project_id"])
     db.commit()
+    # The link itself turns publishing off. The destination is copied on the next pull.
+    from app.services import sync_storage
+    sync_storage.note_link(db)
     return {"status": "approved", "org": answer["org"], "email": answer["email"]}
 
 
@@ -270,7 +273,13 @@ def fill_legacy_projects(db: Session, cloud_project_id: str) -> None:
 
 def clear(db: Session) -> None:
     """Unlink's half of the deployment link: delete the token, the sign-in in flight, the
-    legacy key and every mapping, so each project is local only again."""
+    legacy key and every mapping, so each project is local only again.
+
+    Pushes and pulls stop because the credential is gone. ``sync_manifest`` stays.
+    A relink resumes from those confirmed hashes and sends only entities that
+    changed while the box was unlinked (GRPH-1738). Deleting the manifest here
+    would make that relink a full re-backfill of every entity.
+    """
     link = _link(db)
     if link is not None:
         # Clearing, not a credential: an empty string is "no token held".
@@ -279,6 +288,8 @@ def clear(db: Session) -> None:
         link.linked_email = link.console_url = ""
     db.execute(delete(SyncProject))
     db.commit()
+    from app.services import sync_storage
+    sync_storage.note_unlink(db)
 
 
 def mappings(db: Session) -> dict[str, SyncProject]:

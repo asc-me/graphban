@@ -127,6 +127,18 @@ async def lifespan(app: FastAPI):
     finally:
         db.close()
 
+    # The box's own certificate authority and leaf (GRPH-1634). Never fatal.
+    db = SessionLocal()
+    try:
+        from app.services import tls_ca
+
+        tls_ca.ensure_ca(db)
+        tls_ca.sync_leaf(db)
+    except Exception:  # noqa: BLE001
+        logger.error("box certificate authority ensure failed", exc_info=True)
+    finally:
+        db.close()
+
     # LLM span retention (GRPH-225), once before serving and never fatal: janitorial
     # work on telemetry does not justify taking the box down, and a boot that dies on
     # a DELETE is exactly the "unhandled error takes down every self-host install"
@@ -263,10 +275,30 @@ async def lifespan(app: FastAPI):
     if is_leader and settings.question_sweep_seconds > 0:
         sweep_task = asyncio.create_task(_question_sweep_loop())
 
+    # Box certificate re-sync (GRPH-1634): renews the leaf and covers names that were debounced.
+    # Leader-only, `0` disables.
+    tls_task = None
+    if is_leader and settings.tls_sync_seconds > 0:
+        tls_task = asyncio.create_task(_tls_sync_loop())
+
+    # Project-sync flush (GRPH-1735): leader-only, `0` disables. Each pass opens and closes
+    # its own session. Backoff and the per-minute budget live on the flusher, so a pass that
+    # wakes early still sends nothing while `Retry-After` is in force.
+    flush_task = None
+    if is_leader and settings.sync_flush_seconds > 0:
+        flush_task = asyncio.create_task(_project_sync_flush_loop())
+
+    # Cloud proposal pull (GRPH-1737): leader-only, `0` disables. The tick is
+    # not the poll interval; `run_due` decides 60s versus 10s per project.
+    proposal_task = None
+    if is_leader and settings.proposal_poll_seconds > 0:
+        proposal_task = asyncio.create_task(_proposal_poll_loop())
+
     try:
         yield
     finally:
-        for task in (retry_task, export_task, judge_task, update_task, grant_task, sweep_task):
+        for task in (retry_task, export_task, judge_task, update_task, grant_task, sweep_task,
+                     tls_task, flush_task, proposal_task):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -329,6 +361,81 @@ async def _question_sweep_loop() -> None:
         except Exception:  # noqa: BLE001
             logger.warning("question sweep pass failed", exc_info=True)
         await asyncio.sleep(settings.question_sweep_seconds)
+
+
+def _tls_sync_pass() -> None:
+    from app.services import tls_ca
+
+    db = SessionLocal()
+    try:
+        tls_ca.sync_leaf(db)
+    finally:
+        db.close()
+
+
+async def _tls_sync_loop() -> None:
+    """Re-check the box certificate on a timer. Same properties as `_plan_grant_loop`."""
+    while True:
+        await asyncio.sleep(settings.tls_sync_seconds)
+        try:
+            await asyncio.to_thread(_tls_sync_pass)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.warning("box certificate sync pass failed", exc_info=True)
+
+
+def _project_sync_flush_pass() -> int:
+    """One outbox drain, session included. Runs inside a worker thread (GRPH-535)."""
+    from datetime import datetime, timezone
+
+    from app.services import project_sync_flush as flush
+
+    db = SessionLocal()
+    try:
+        return flush.flush_once(db, now=datetime.now(timezone.utc))
+    finally:
+        db.close()
+
+
+def _proposal_poll_pass() -> None:
+    from datetime import datetime, timezone
+
+    from app.services import project_sync_proposals as proposals
+
+    db = SessionLocal()
+    try:
+        proposals.run_due(db, datetime.now(timezone.utc))
+    finally:
+        db.close()
+
+
+async def _project_sync_flush_loop() -> None:
+    """Drain the project-sync outbox. Same three properties as `_plan_grant_loop`."""
+    while True:
+        try:
+            sent = await asyncio.to_thread(_project_sync_flush_pass)
+            if sent:
+                logger.info("project sync flush: %d batch(es)", sent)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — silence here is the failure
+            logger.warning("project sync flush pass failed", exc_info=True)
+        await asyncio.sleep(settings.sync_flush_seconds)
+
+
+async def _proposal_poll_loop() -> None:
+    """Pull due cloud proposals. Same properties as `_tls_sync_loop`: own session
+    per pass, broad `except` inside, cancel re-raised. Sleeps first so boot
+    does not wait on the console."""
+    while True:
+        await asyncio.sleep(settings.proposal_poll_seconds)
+        try:
+            await asyncio.to_thread(_proposal_poll_pass)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.warning("proposal poll pass failed", exc_info=True)
 
 
 async def _plan_grant_loop() -> None:
@@ -553,6 +660,33 @@ app.add_middleware(
 # every downstream log line carries it (AL-56).
 app.add_middleware(RequestIdMiddleware)
 
+
+_seen_hosts: set[str] = set()
+
+
+@app.middleware("http")
+async def box_cert_host_middleware(request, call_next):
+    """The first time a Host is seen, offer it to the box certificate's name allowlist
+    (GRPH-1634). Later requests with the same Host cost one set lookup."""
+    host = request.headers.get("host", "")
+    if host and host not in _seen_hosts and len(_seen_hosts) < 256:
+        _seen_hosts.add(host)
+        from starlette.concurrency import run_in_threadpool
+
+        def _offer() -> None:
+            from app.services import tls_ca
+
+            db = SessionLocal()
+            try:
+                tls_ca.see_host(db, host)
+            except Exception:  # noqa: BLE001
+                logger.warning("seen-host offer failed", exc_info=True)
+            finally:
+                db.close()
+
+        await run_in_threadpool(_offer)
+    return await call_next(request)
+
 # REST API under /api; MCP endpoint at /api/mcp.
 API = "/api"
 app.include_router(auth.router, prefix=API)
@@ -565,8 +699,12 @@ from app.routers import machines as machines_routes  # noqa: E402
 app.include_router(machines_routes.router, prefix=API)
 from app.routers import me_alerts as me_alerts_routes  # noqa: E402
 app.include_router(me_alerts_routes.router, prefix=API)
+from app.routers import https as https_routes  # noqa: E402
+app.include_router(https_routes.router, prefix=API)
 app.include_router(projects.router, prefix=API)
 app.include_router(items.router, prefix=API)
+from app.routers import lines as lines_routes  # noqa: E402
+app.include_router(lines_routes.router, prefix=API)
 app.include_router(requests.router, prefix=API)
 app.include_router(memory.router, prefix=API)
 app.include_router(artifacts.router, prefix=API)

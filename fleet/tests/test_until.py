@@ -13,6 +13,7 @@ from gbfleet.cli import make_launch_factory
 from gbfleet.client import ALLOWED_TOOLS, Graphban
 from gbfleet.seat import Seat
 from gbfleet.supervisor import Limits
+from gbfleet.worktree import porcelain_lists_worktree, worktree_key
 from gbfleet.until import PLANNER_TOOLS, Report, run
 
 from tests.test_supervisor import KEY, _factory, _seats
@@ -69,8 +70,9 @@ def _clients(
     delegate_fails: str | None = None,
     calls: list | None = None,
     bound_seats: bool = False,
-    bound_refused: bool = False,
+    bound_refused: bool | str = False,
     pinned_ticks: int = 0,
+    pin_message: str | None = None,
     sticky_clusters: bool = False,
     gitops: dict | None = None,
     drop_delegated: bool = False,
@@ -80,6 +82,15 @@ def _clients(
     observation_posts: list | None = None,
     agent_holdings: list | None = None,
     brief_tier: dict | None = None,
+    maintenance_line: dict | None = None,
+    backlog: list | None = None,
+    item_rows: list | None = None,
+    updates: list | None = None,
+    item_details: dict | None = None,
+    roster_assigned: dict | None = None,
+    roster_timeout: str | None = None,
+    roster_status: int | None = None,
+    clusters_timeout: str | None = None,
 ):
     """Planner + supervisor clients sharing one mock Graphban.
 
@@ -156,7 +167,8 @@ def _clients(
             # is what the real server answers for a project that has measured no git
             # process — so every other test here exercises the unmeasured path whether it
             # knows it or not.
-            return _mcp({"project_id": "core", "gitops": dict(gitops or {})}, rid)
+            return _mcp({"project_id": "core", "gitops": dict(gitops or {}),
+                         "maintenance_line": maintenance_line}, rid)
         if tool == "get_rule_toggles":
             # GRPH-1273. None: a server that has never heard of the rule's library.
             toggles = [] if staff_every_row is None else [{
@@ -171,22 +183,29 @@ def _clients(
                 return _error("not_found", f"prd not found: {asked}", rid)
             return _mcp({"id": prds[asked], "project_id": "core"}, rid)
         if tool == "get_item_details":
-            return _mcp({"id": args.get("id"), "title": "seed", "status": "next", "brief": {
+            item_id = args.get("id")
+            payload = {"id": item_id, "title": "seed", "status": "next", "brief": {
                 "lane": {"value": "backend", "basis": ["backend/app/x.py"]},
                 "tier": brief_tier or {"value": "cheap", "basis": "none"},
                 "text": "Item seed",
-            }}, rid)
+            }}
+            # A caller that names this id's row wins field-by-field. Tests that
+            # never pass `item_details` keep the seed above.
+            payload.update((item_details or {}).get(item_id) or {})
+            return _mcp(payload, rid)
         if tool == "delegate":
             taken.add(str(args.get("id")))
             if delegate_fails:
                 return _error(delegate_fails, f"refused ({delegate_fails})", rid)
             if bound_refused and args.get("seat"):
-                return _error("conflict", "areas are reserved by GRPH-A9", rid)
+                return _error("conflict", bound_refused if isinstance(bound_refused, str)
+                              else "areas are reserved by GRPH-A9", rid)
             if pinned_left[0] > 0 and args.get("seat"):
                 pinned_left[0] -= 1
-                return _error("conflict", "GRPH-7 is pinned to its author GRPH-A1 after a bounce "
-                              "(pinned_to=GRPH-A1; pinned_until=2026-11-05T13:54:16+00:00; "
-                              "reserved_until=2026-11-05T13:54:16+00:00)", rid)
+                return _error("conflict", pin_message or (
+                    "GRPH-7 is pinned to its author GRPH-A1 after a bounce "
+                    "(pinned_to=GRPH-A1; pinned_until=2026-11-05T13:54:16+00:00; "
+                    "reserved_until=2026-11-05T13:54:16+00:00)"), rid)
             if delegations is not None:
                 delegations.append(dict(args))
             return _mcp({"delegation_id": f"dlg_{len(delegations or [])}", "state": "open",
@@ -200,6 +219,8 @@ def _clients(
                 "eligible_roles": ["planner"],
                 "tools_off_limits": list(off_limits or []),
             }, rid)
+        if tool == "collision_clusters" and clusters_timeout is not None:
+            raise httpx.ReadTimeout(clusters_timeout)
         if tool == "collision_clusters":
             total = clusters if sticky_clusters else (0 if seen_agents["yes"] else clusters)
             rows = [{"items": list(cluster_items[i]) if cluster_items and i < len(cluster_items) else []}
@@ -239,30 +260,48 @@ def _clients(
                 tag = (args.get("tags") or [""])[0]
                 rows = [w for w in (waits or []) if tag in (w.get("tags") or [])]
                 return _mcp({"results": rows}, rid)
+            if args.get("status") in ("backlog", "next"):
+                return _mcp({"results": [r for r in (backlog or [])
+                                         if r.get("status") == args.get("status")]}, rid)
+            # `item_status` asks with no status and no query. A hold search also has
+            # no status, and answering it with these rows would adopt a hold the
+            # fixture never wrote.
+            if item_rows is not None and not args.get("status") and not args.get("query"):
+                return _mcp({"results": list(item_rows)}, rid)
             return _mcp({"results": []}, rid)
+        if tool == "update_item" and updates is not None:
+            updates.append(dict(args))
+            return _mcp({"id": args.get("id"), "status": args.get("status") or "next"}, rid)
         if tool == "retire_wave":
             return _mcp({"seats_revoked": 0, "agents": 0}, rid)
+        if tool == "fleet_status" and roster_timeout is not None:
+            raise httpx.ReadTimeout(roster_timeout)
+        if tool == "fleet_status" and roster_status is not None:
+            return httpx.Response(roster_status, text="unavailable")
         trees = sorted(p for p in workspace.glob("*") if p.is_dir() and p.name != "logs")
         if trees:
             seen_agents["yes"] = True
-        return _mcp({
-            "agents": [
-                {
-                    "id": f"GRPH-A{i + 1}",
-                    "worktree": str(p),
-                    "state": "idle",
-                    "enrolled": True,
-                    "enrolment_id": f"seat-{i + 1}",
-                    # `shim` is a PATH directory this process creates beside the
-                    # worktrees (GRPH-1401). It is not an agent that claimed
-                    # anything. Copying `agent_holdings` onto it left a build
-                    # lease on the roster after the child was gone, and the
-                    # idle check waited on that directory forever.
-                    "holdings": ([] if p.name == "shim" else list(agent_holdings or [])),
-                }
-                for i, p in enumerate(trees)
-            ]
-        }, rid)
+        agents = []
+        for i, p in enumerate(trees):
+            row = {
+                "id": f"GRPH-A{i + 1}",
+                "worktree": str(p),
+                "state": "idle",
+                "enrolled": True,
+                "enrolment_id": f"seat-{i + 1}",
+                # `shim` is a PATH directory this process creates beside the
+                # worktrees (GRPH-1401). It is not an agent that claimed
+                # anything. Copying `agent_holdings` onto it left a build
+                # lease on the roster after the child was gone, and the
+                # idle check waited on that directory forever.
+                "holdings": ([] if p.name == "shim" else list(agent_holdings or [])),
+            }
+            # Only the child. The shim is not a seat, and a missing `assigned`
+            # is what every fixture from before GRPH-1292 still sends.
+            if roster_assigned is not None and p.name != "shim":
+                row["assigned"] = dict(roster_assigned)
+            agents.append(row)
+        return _mcp({"agents": agents}, rid)
 
     transport = httpx.MockTransport(handler)
     planner = Graphban("http://gb.invalid", KEY, allowed=PLANNER_TOOLS, transport=transport)
@@ -515,6 +554,9 @@ def test_idle_when_there_is_no_work_no_review_and_no_lease(
     assert result.ok is True
     assert result.spawned == 0
     assert result.as_json()["reason"] == "idle"
+    # Empty means the refusal list was written, not skipped. A missing key would
+    # read the same as this, which is the idle exit GRPH-1643 closes.
+    assert result.as_json()["refused"] == []
 
 
 def test_the_merger_carries_the_planner_that_registered(
@@ -658,6 +700,93 @@ def test_max_children_is_the_total_for_the_wave(
     assert result.spawned == 2
     assert result.reason == "cap" and result.exit == 1
     assert "max_children 2" in result.detail
+
+
+def _run_until_roster_dead(git_repo, tmp_path, scripts, state, **client_kw):
+    """A free cluster, and `fleet_status` failing on every call. No child starts."""
+    workspace = tmp_path / "ws"
+    sleeps: list[float] = []
+
+    def sleep(_seconds):
+        sleeps.append(1)
+        if len(sleeps) > 3:
+            raise AssertionError("until kept polling an unreadable roster")
+
+    planner, supervisor = _clients(workspace, clusters=1, workers=0, **client_kw)
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=sleep, empty_ticks=3,
+        limits=Limits(max_workers=1, max_children=4),
+    )
+    return result, sleeps
+
+
+def test_a_roster_timeout_in_wanted_workers_is_not_the_spawn_cap(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1813. `fleet_status` raises a timeout on every call while a cluster is
+    free. Nothing is spawned, so the exit is not `cap`. It names the unread roster
+    and carries the timeout text.
+
+    Control: `test_max_children_is_the_total_for_the_wave` still exits `cap` once
+    spawned equals the cap.
+
+    Sabotage: put the `CapError("cap", "server unreachable with no live children")`
+    fallthrough back for a `fleet_status` failure. This assertion on `reason` goes red.
+    """
+    result, sleeps = _run_until_roster_dead(
+        git_repo, tmp_path, scripts, state, roster_timeout="timed out",
+    )
+    assert result.spawned == 0 and result.minted == 0
+    assert result.reason == "roster_unreadable", result.as_json()
+    assert result.reason != "cap"
+    assert result.exit == 1 and result.ok is False
+    assert "timed out" in result.detail
+    assert sleeps == []
+
+
+def test_a_roster_server_error_in_wanted_workers_is_not_the_spawn_cap(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1813. An HTTP 500 from `fleet_status` is the server failing to answer.
+    Same exit as a timeout: the roster was unreadable, and the status is in the detail.
+
+    Sabotage: the same fallthrough as the timeout test. This goes red with it.
+    """
+    result, _sleeps = _run_until_roster_dead(
+        git_repo, tmp_path, scripts, state, roster_status=500,
+    )
+    assert result.spawned == 0
+    assert result.reason == "roster_unreadable", result.as_json()
+    assert result.reason != "cap"
+    assert "500" in result.detail
+
+
+def test_a_clusters_timeout_in_wanted_workers_is_not_the_spawn_cap(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1813. `_wanted_workers` calls `collision_clusters` before `fleet_status`.
+    A timeout there, with nothing spawned, is not the spawn cap. The exit names the
+    call and carries the timeout text.
+
+    Control: `test_max_children_is_the_total_for_the_wave` still exits `cap` once
+    spawned equals the cap.
+
+    Sabotage: restore `CapError("cap", "server unreachable with no live children")`
+    for a `ServerUnreachable` whose tool is not `fleet_status`. This assertion on
+    `reason` goes red.
+    """
+    result, sleeps = _run_until_roster_dead(
+        git_repo, tmp_path, scripts, state, clusters_timeout="timed out",
+    )
+    assert result.spawned == 0 and result.minted == 0
+    assert result.reason == "server_unreachable", result.as_json()
+    assert result.reason != "cap"
+    assert result.exit == 1 and result.ok is False
+    assert "collision_clusters" in result.detail
+    assert "timed out" in result.detail
+    assert sleeps == []
 
 
 def test_a_quota_mint_is_config_not_idle(
@@ -867,6 +996,36 @@ def test_until_spawns_for_a_review_row_whose_holder_has_lapsed(
     assert roles, "a lapsed hold must get a reviewer spawned for it"
     assert all(r == "worker" for r in roles), roles
     assert result.reason == "review-unsigned"
+
+
+def test_until_does_not_idle_on_a_prd_review_row_nobody_holds(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1290. The server now sends a lapsed hold as unheld (`review_claimed_by` empty)
+    plus `review_claim_lapse`. A `--prd` drain starts a reviewer for that row. Exiting
+    `idle` with the row still listed is the defect.
+
+    Sabotage: make `review_held` return True whenever `review_claim_lapse` is set and
+    this run exits idle with nothing spawned."""
+    workspace = tmp_path / "ws"
+    roles: list[str] = []
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-1287", "status": "review", "claimed_by": "GRPH-A1",
+                 "review_claimed_by": None, "review_claim_lapse": "age",
+                 "prd_id": "GRPH-P63"}],
+        minted_roles=roles,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        prd="GRPH-P63",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert roles, "an unheld PRD review row must get a reviewer"
+    assert result.reason != "idle", result.as_json()
+    assert result.review == ["GRPH-1287"]
 
 
 def test_review_held_reads_the_servers_lapse_and_tolerates_an_older_server():
@@ -1424,6 +1583,78 @@ def test_a_refused_bound_seat_does_not_fall_back_to_unbound(
     # available, and the next tick will retry after the pin lapses or the holder releases.
     assert result.spawned == 0, "a refused bound seat should not spawn an unbound child"
     assert "mint_enrolment" not in calls, "no unbound fallback means no mint_enrolment"
+    # GRPH-1643. The refusal is not a reach signal, and it is still a stall: the
+    # item stayed ready. `reason` is not idle and the exit is not 0.
+    payload = result.as_json()
+    assert payload["reason"] == "stalled", payload
+    assert payload["exit"] != 0 and payload["ok"] is False
+    assert payload["refused"][0]["item"] == "GRPH-7"
+    assert payload["refused"][0]["reason"].startswith("bound_seat_refused")
+
+
+def test_an_idle_run_names_the_ready_item_whose_delegation_was_refused(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1336. The GRPH-P63 drain had one ready item, the server refused its delegation
+    on reach every cycle, and the run ended `idle` with `spawned: 0` — the refusal only in
+    the observe log. Idle must not read as "nothing to do": the summary's `gated` names the
+    item and the server's reason.
+
+    Sabotage: drop the `_note_refused` call in `run` and `gated` is empty.
+    """
+    workspace = tmp_path / "ws"
+    why = ("GRPH-7 has reach=repo but its text reads like work on a deployed system "
+           "(platform-command)")
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7"]],
+        bound_seats=True, bound_refused=why,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=2,
+    )
+    payload = result.as_json()
+    assert payload["spawned"] == 0
+    refused = [g for g in payload["gated"] if g.startswith("GRPH-7:")]
+    assert len(refused) == 1, payload["gated"]
+    assert "delegation refused" in refused[0] and "platform-command" in refused[0]
+
+
+def test_a_ready_item_whose_delegation_stays_refused_on_reach_is_a_stall(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1643. The only ready item is refused because its text reads like a
+    deployed system. The summary names it under `refused`, `reason` is `stalled`,
+    and the process exits non-zero. Idle with exit 0 is the defect.
+
+    Sabotage: in `_finish`, do not replace idle with stalled when
+    `delegate_refused` is set. This exits idle with exit 0 and `ok` true.
+    """
+    workspace = tmp_path / "ws"
+    why = (
+        "GRPH-7 is declared `reach=repo`, and reads like work on a deployed system:\n"
+        "  · rotate the credential   [platform-command: a hosted secret]\n"
+        "If this work really is confined to the worktree, pass `acknowledge_reach=true`"
+    )
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7"]],
+        bound_seats=True, bound_refused=why,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=2,
+    )
+    payload = result.as_json()
+    assert payload["spawned"] == 0
+    assert payload["reason"] == "stalled", payload
+    assert payload["reason"] != "idle"
+    assert payload["exit"] != 0
+    assert payload["ok"] is False
+    assert payload["refused"] == [
+        {"item": "GRPH-7", "reason": "bound_seat_refused (reach)"},
+    ], payload["refused"]
 
 
 def test_a_pinned_item_spawns_nothing_until_the_server_stops_reporting_the_pin(
@@ -1444,6 +1675,158 @@ def test_a_pinned_item_spawns_nothing_until_the_server_stops_reporting_the_pin(
     )
     assert [d["id"] for d in delegations] == ["GRPH-7"], "delegated once, after the pin lapsed"
     assert result.spawned == 1, result.detail
+
+
+def test_a_bound_seat_that_cannot_claim_is_logged_and_not_reported_delegated(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch,
+):
+    """GRPH-1292. Delegate succeeds and the child registers, but the roster says the
+    seat did not claim the item (bounce pin). The summary names that refusal. The
+    success `delegated` event is not emitted, and the child is stopped.
+
+    Sabotage: drop the `_bound_claim_detail` check in `failover`. This emits
+    `delegated` and `gated` has no bound-claim line.
+    """
+    from gbfleet.spawn import Reason
+
+    workspace = tmp_path / "ws"
+    events: list[tuple] = []
+    monkeypatch.setattr(
+        "gbfleet.until.observe.emit", lambda ev, **kw: events.append((ev, kw)),
+    )
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7"]],
+        bound_seats=True, drop_delegated=True,
+        roster_assigned={
+            "item": "GRPH-7", "state": "taken", "reason": "pinned",
+            "held_by": "GRPH-A1",
+        },
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=2,
+    )
+    payload = result.as_json()
+    refused = [g for g in payload["gated"] if "bound seat did not claim" in g]
+    assert len(refused) == 1, payload["gated"]
+    assert "GRPH-7" in refused[0] and "pinned" in refused[0] and "GRPH-A1" in refused[0]
+    assert not any(ev == "delegated" for ev, _kw in events), events
+    assert any(ev == "bound_claim_refused" for ev, _kw in events)
+    assert result.wave is not None and result.wave.spawned
+    assert result.wave.spawned[0].stopped_because == Reason.ASKED
+
+
+def test_a_bound_seat_that_claims_is_still_reported_delegated(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch,
+):
+    """The control. `assigned.state == claimed` is the child holding the item."""
+    workspace = tmp_path / "ws"
+    events: list[tuple] = []
+    monkeypatch.setattr(
+        "gbfleet.until.observe.emit", lambda ev, **kw: events.append((ev, kw)),
+    )
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7"]],
+        bound_seats=True,
+        roster_assigned={"item": "GRPH-7", "state": "claimed", "reason": None, "held_by": None},
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+    )
+    assert result.spawned == 1, result.detail
+    assert any(ev == "delegated" for ev, _kw in events)
+    assert not any(ev == "bound_claim_refused" for ev, _kw in events)
+
+
+def test_the_bound_claim_check_is_in_failover():
+    """Sabotage the CALL. Deleting the check in `failover` leaves the runtime test green
+    only if this string is gone too — keep both."""
+    src = Path(until.__file__).read_text(encoding="utf-8")
+    assert "_bound_claim_detail(" in src
+    assert 'observe.emit(\n                            "bound_claim_refused"' in src or (
+        "bound_claim_refused" in src and "return \"unstaffed\"" in src)
+
+
+
+
+#: The refusal the 2026-11-05 drain logged, before `reserved_until=` existed. The author's
+#: child had already exited. Matching only `reserved_until=` recorded `bound_seat_refused`
+#: and the run exited idle (GRPH-1324).
+_DEAD_AUTHOR_PIN = (
+    "GRPH-7 is pinned to its author GRPH-A11 after a bounce "
+    "(pinned_to=GRPH-A11; pinned_until=2026-11-05T05:36:57+00:00) "
+    "(wait for the pin to lapse, or let the author retry)"
+)
+
+
+def test_a_pinned_bounce_with_a_dead_author_waits_then_redelegates(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1324. The only ready work is pinned to an author whose child has already
+    exited (this wave has no live child). The refusal is the incident wording: it
+    names `pinned_until` and says to wait for the pin, and it does not say
+    `reserved_until=`. until waits and re-delegates once the server stops reporting
+    the pin. It does not exit idle with nothing spawned.
+
+    Sabotage: in `_delegate_next`, ignore `_bounce_pin_stamp` and fall through
+    to the bound-seat refusal. The run exits `idle` with spawned 0.
+    """
+    workspace = tmp_path / "ws"
+    delegations: list = []
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7"]], delegations=delegations,
+        bound_seats=True, pinned_ticks=3, pin_message=_DEAD_AUTHOR_PIN,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+    )
+    assert [d["id"] for d in delegations] == ["GRPH-7"], result.as_json()
+    assert result.spawned == 1, result.as_json()
+    assert not any("delegation refused" in g and "GRPH-7" in g for g in result.as_json()["gated"]), (
+        result.as_json()["gated"])
+    # The pin was over before the run ended, so the summary does not still list it.
+    assert not any("pinned until" in w for w in result.as_json()["waits"]), result.as_json()["waits"]
+
+
+def test_an_exit_while_a_dead_authors_pin_holds_names_the_pin(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1324, the exit clause. The server keeps the pin and the run stops anyway
+    (here, a stall raised from the pin wait). `reason` is not `idle`, and `waits`
+    names the item and its `pinned_until`.
+
+    Sabotage: drop the pin lines off the stall report. `waits` is empty.
+    """
+    from gbfleet import watchdog
+
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7"]],
+        bound_seats=True, pinned_ticks=100, pin_message=_DEAD_AUTHOR_PIN,
+    )
+
+    def _stop_on_the_pin_wait(_seconds: float) -> None:
+        raise watchdog.Stalled("stopped while the pin still holds")
+
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=_stop_on_the_pin_wait, empty_ticks=1,
+    )
+    payload = result.as_json()
+    assert result.spawned == 0, payload
+    assert payload["reason"] != "idle", payload
+    named = [w for w in payload["waits"]
+             if "GRPH-7" in w and "2026-11-05T05:36:57+00:00" in w]
+    assert named, payload["waits"]
+
+
+
 
 
 def test_a_stale_hold_is_not_a_holding():
@@ -1826,6 +2209,45 @@ def test_report_collided_carries_the_actual_overlap():
     assert payload["collided"]["fleet/src/gbfleet/supervisor.py"] == ["gb/w-1", "gb/w-2"]
 
 
+def test_the_wave_report_counts_what_it_held_as_already_in_base():
+    """GRPH-1024. The JSON report always names how many items were not re-delegated
+    because their work is already in the base, and why. Zero is present: a missing
+    key is the idle exit that hid a queue of remainders for weeks.
+
+    Sabotage: drop `held_in_base` or `in_base` from `as_json`, or stop printing
+    `HELD IN BASE` from `cli.report`. This fails.
+    """
+    import io
+
+    from gbfleet.cli import report
+    from gbfleet.supervisor import Wave
+
+    empty = Report(ok=True, reason="idle", exit=0, wave=Wave()).as_json()
+    assert empty["held_in_base"] == 0
+    assert empty["in_base"] == {}
+    assert Report(ok=True, reason="idle", exit=0).as_json()["held_in_base"] == 0
+    assert Report(ok=True, reason="idle", exit=0).as_json()["in_base"] == {}
+
+    why = ("branch gb/x reaches origin/main; "
+           "believed pr https://example/pull/1 says work existed")
+    wave = Wave()
+    wave.in_base = {"GRPH-890": why}
+    payload = Report(ok=True, reason="idle", exit=0, spawned=0, wave=wave).as_json()
+    assert payload["held_in_base"] == 1
+    assert payload["in_base"] == {"GRPH-890": why}
+    assert payload["reason"] == "idle" and payload["spawned"] == 0
+
+    out = io.StringIO()
+    report(wave, out=out)
+    text = out.getvalue()
+    assert "HELD IN BASE 1" in text
+    assert f"GRPH-890: {why}" in text
+
+    quiet = io.StringIO()
+    report(Wave(), out=quiet)
+    assert "HELD IN BASE 0" in quiet.getvalue()
+
+
 class _SeedPlanner:
     """Enough of Graphban.call for `_delegate_next` (GRPH-886)."""
 
@@ -1956,6 +2378,238 @@ def test_a_refused_review_offer_falls_back_to_the_hold(tmp_path: Path, monkeypat
     assert "MERGED" not in seen
 
 
+def _bounced_and_sibling(monkeypatch, *, bounce: str):
+    """MERGED's branch is in the base. SIB shares one of its files. `bounce` is MERGED's
+    bounce_reason — empty means the control, a sentence means a remainder."""
+    from gbfleet import worktree as wt
+
+    monkeypatch.setattr(wt, "reaches", lambda repo, base, ref: ref == "gb/merged")
+    brief = {"lane": {"value": "backend"}, "tier": {"value": "cheap"}, "blocked_by": []}
+    shared = "fleet/src/gbfleet/until.py"
+    return {
+        "MERGED": {"id": "MERGED", "status": "next", "branch": "gb/merged",
+                   "pr": "https://github.com/o/r/pull/1", "brief": brief, "evidence": [],
+                   "bounce_reason": bounce, "touchpoints": [shared, "fleet/tests/test_until.py"]},
+        "SIB": {"id": "SIB", "status": "next", "branch": "gb/sib", "brief": brief,
+                "evidence": [], "bounce_reason": "", "touchpoints": [shared]},
+    }
+
+
+def test_a_bounced_item_whose_first_half_merged_is_delegated(tmp_path: Path, monkeypatch, caplog):
+    """GRPH-1024. An item in `next` with a bounce, whose earlier work is in the base, is
+    delegated. It is not offered for review of the merged half, and it is not recorded
+    as held.
+
+    Sabotage: `if why and bounced` -> `if why and False`. This fails: seed is None.
+    """
+    import logging
+
+    from gbfleet.until import _delegate_next
+
+    planner = _SeedPlanner(
+        [{"items": ["MERGED"]}],
+        {"MERGED": _bounced_and_sibling(monkeypatch, bounce="clause 4 is still unpinned")["MERGED"]},
+    )
+    held_map: dict[str, str] = {}
+    with caplog.at_level(logging.INFO, logger="gbfleet"):
+        seed, code, _want = _delegate_next(
+            planner, "GRPH-A1", "w", set(), None, repo=tmp_path, base="origin/main",
+            in_base=held_map,
+        )
+    assert seed == "MERGED" and code == "WORKER-X"
+    assert planner.delegated == ["MERGED"]
+    assert planner.updates == []
+    assert held_map == {}
+    remainder = [r for r in caplog.records if r.message == "delegate_remainder"]
+    assert len(remainder) == 1
+    detail = remainder[0].gbfleet["detail"]
+    assert "bounce asks for the remainder" in detail
+    assert "branch gb/merged reaches origin/main" in detail
+    assert "pr https://github.com/o/r/pull/1" in detail
+    assert "believed" in detail
+
+
+def test_an_unbounced_item_already_in_base_is_still_held_and_counted(
+        tmp_path: Path, monkeypatch, caplog):
+    """GRPH-1024 control, and GRPH-930 / GRPH-983 still hold. No bounce: the item
+    occupies its files, the sibling that shares one is not the seed, and `in_base`
+    names the signal. GRPH-1408 still offers the unsigned item for review. When that
+    offer is refused, the hold line carries the same signal.
+
+    Sabotage: treat the unbounced item as a remainder. This fails: seed is SIB and
+    `in_base` is empty.
+    """
+    import logging
+
+    from gbfleet.until import _delegate_next
+
+    details = _bounced_and_sibling(monkeypatch, bounce="")
+    held_map: dict[str, str] = {}
+    planner = _SeedPlanner([{"items": ["SIB", "MERGED"]}], details)
+    seed, _code, _want = _delegate_next(
+        planner, "GRPH-A1", "w", set(), None, repo=tmp_path, base="origin/main",
+        in_base=held_map,
+    )
+    assert seed is None and planner.delegated == []
+    assert [(u["id"], u["status"]) for u in planner.updates] == [("MERGED", "review")]
+    reason = held_map["MERGED"]
+    assert reason.startswith("branch gb/merged reaches origin/main")
+    assert "believed pr https://github.com/o/r/pull/1 says work existed" in reason
+
+    refused = _SeedPlanner([{"items": ["SIB", "MERGED"]}], details, refuse_update=True)
+    refused_map: dict[str, str] = {}
+    with caplog.at_level(logging.INFO, logger="gbfleet"):
+        seed, _code, _want = _delegate_next(
+            refused, "GRPH-A1", "w", set(), None, repo=tmp_path, base="origin/main",
+            in_base=refused_map,
+        )
+    assert seed is None and refused.delegated == [] and refused.updates == []
+    assert refused_map["MERGED"] == reason
+    held = [r for r in caplog.records
+            if r.message == "delegate_held" and r.gbfleet.get("item") == "MERGED"]
+    assert len(held) == 1 and reason in held[0].gbfleet["detail"]
+    assert "fleet/src/gbfleet/until.py" in held[0].gbfleet["detail"]
+
+
+def test_a_bounced_item_in_base_does_not_block_its_files_siblings(
+        tmp_path: Path, monkeypatch):
+    """GRPH-1024 cascade. The bounced item shares `until.py` with SIB. SIB is still
+    the seed: one remainder must not make its file's other items unclaimable.
+
+    SIB is listed first, so a wrong occupier removes SIB before the bounced item
+    could be chosen. Sabotage: `if why and bounced` -> `if why and False`. This
+    fails: seed is None.
+    """
+    from gbfleet.until import _delegate_next
+
+    planner = _SeedPlanner(
+        [{"items": ["SIB", "MERGED"]}],
+        _bounced_and_sibling(monkeypatch, bounce="the documenting half did not merge"),
+    )
+    held_map: dict[str, str] = {}
+    seed, code, _want = _delegate_next(
+        planner, "GRPH-A1", "w", set(), None, repo=tmp_path, base="origin/main",
+        in_base=held_map,
+    )
+    assert seed == "SIB" and code == "WORKER-X"
+    assert planner.delegated == ["SIB"]
+    assert "MERGED" not in held_map
+    assert planner.updates == []
+
+
+def test_the_loop_reports_the_hold_it_recorded(tmp_path: Path, monkeypatch, scripts, state: Path):
+    """GRPH-1024. The wave-end count is what `_loop` recorded, not a map a test handed
+    to `_delegate_next` and not a `wave.in_base` the test assigned.
+
+    GRPH-893 is `next`, unsigned, and its branch is already in the base. The loop
+    holds it, offers it for review, and the report says 1. `run` is the only caller
+    here. It does not pass its own map and it does not write `wave.in_base`.
+
+    Sabotage: delete `in_base=wave.in_base` from the `_loop` call, the only
+    production caller. This fails: `held_in_base` is 0 and the JSON `in_base` is
+    empty, while the review offer still happens.
+    """
+    import io
+
+    from gbfleet import worktree as wt
+    from gbfleet.cli import report
+
+    repo = _repo_with_remote(tmp_path)
+    real = wt.reaches
+
+    def reaches(path, base, ref):
+        if ref == "gb/merged":
+            return True
+        return real(path, base, ref)
+
+    monkeypatch.setattr(wt, "reaches", reaches)
+    why = ("branch gb/merged reaches origin/main; "
+           "believed pr https://github.com/o/r/pull/806 says work existed")
+    updates: list[dict] = []
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(
+        workspace, clusters=1, workers=0, updates=updates,
+        cluster_items=[["GRPH-893"]],
+        item_details={"GRPH-893": {
+            "id": "GRPH-893",
+            "status": "next",
+            "branch": "gb/merged",
+            "pr": "https://github.com/o/r/pull/806",
+            "bounce_reason": "",
+            "evidence": [],
+            "touchpoints": ["backend/app/services/fleet.py"],
+            "brief": {"lane": {"value": "backend"}, "tier": {"value": "cheap"},
+                      "blocked_by": []},
+        }},
+    )
+    result = run(
+        repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+        base_branch="main",
+    )
+    assert result.reason == "idle", result.detail
+    assert result.spawned == 0
+    assert [(u.get("id"), u.get("status")) for u in updates] == [("GRPH-893", "review")]
+    payload = result.as_json()
+    assert payload["held_in_base"] == 1
+    assert payload["in_base"] == {"GRPH-893": why}
+    assert result.wave is not None and result.wave.in_base == {"GRPH-893": why}
+
+    out = io.StringIO()
+    report(result.wave, out=out)
+    text = out.getvalue()
+    assert "HELD IN BASE 1" in text
+    assert f"GRPH-893: {why}" in text
+
+
+def test_in_base_reason_names_each_signal(tmp_path: Path, monkeypatch):
+    """The three signals read as three sentences. One shared 'already in base' would
+    leave an operator unable to tell a branch receipt from a squash."""
+    from gbfleet import propose as propose_mod
+    from gbfleet import worktree as wt
+    from gbfleet.until import _already_in_base, _in_base_reason
+
+    def reaches(repo, base, ref):
+        return ref in {"gb/merged", "abc123"}
+
+    monkeypatch.setattr(wt, "reaches", reaches)
+    branch_reason = _in_base_reason(
+        {"branch": "gb/merged", "pr": "https://github.com/o/r/pull/1", "evidence": []},
+        tmp_path, "origin/main")
+    assert branch_reason == (
+        "branch gb/merged reaches origin/main; "
+        "believed pr https://github.com/o/r/pull/1 says work existed")
+    assert _already_in_base(
+        {"branch": "gb/merged", "pr": "https://github.com/o/r/pull/1"},
+        tmp_path, "origin/main") is True
+
+    commit_reason = _in_base_reason(
+        {"branch": "gb/ahead", "evidence": [{"kind": "test", "commit": "abc123"}]},
+        tmp_path, "origin/main")
+    assert commit_reason == (
+        "commit abc123 reaches origin/main; believed a test receipt about gb/ahead")
+    assert "branch gb/ahead reaches" not in commit_reason
+
+    monkeypatch.setattr(propose_mod, "view", lambda *a, **kw: (
+        {"state": "MERGED", "number": 42, "mergeCommit": {"oid": "c" * 40}}, ""))
+    squash = {
+        "branch": "feature",
+        "evidence": [{"commit": "pre-squash", "kind": "sabotage"}],
+        "pr": "https://github.com/o/r/pull/42",
+    }
+    # `feature` and `pre-squash` are not ancestors. The forge is the signal.
+    squash_reason = _in_base_reason(squash, tmp_path, "origin/main")
+    # Carrier and sha are GRPH-1023's `_merged_pr_of`. "believed the forge" is the
+    # GRPH-1024 signal name, so this sentence is not an ancestry hold.
+    assert squash_reason == (
+        f"PR #42 (the item's pr) is MERGED at {'c' * 40}; believed the forge, "
+        "because ancestry did not find the work in origin/main")
+    assert _already_in_base(squash, tmp_path, "origin/main") is True
+    assert "branch feature reaches" not in squash_reason
+
+
 def test_a_blocked_items0_is_not_the_seed(tmp_path: Path):
     """GRPH-886. items[0] still names an unfinished dependency; the next ready member is the seed.
 
@@ -2013,7 +2667,7 @@ def test_already_in_base_recognises_squash_merged_pr(tmp_path, monkeypatch):
     """A squash-merged item's pre-squash SHA is not ancestral to main, but the forge says
     the PR is MERGED. The work IS in base — the squash SHA carries it (GRPH-930)."""
     from gbfleet import propose as propose_mod
-    from gbfleet.until import _already_in_base
+    from gbfleet.until import _already_in_base, _in_base_reason
 
     repo = _git_repo(tmp_path)
     pre_squash = _branch_and_commit(repo, "feature")
@@ -2027,6 +2681,10 @@ def test_already_in_base_recognises_squash_merged_pr(tmp_path, monkeypatch):
         "pr": "https://github.com/o/r/pull/42",
     }
     assert _already_in_base(details, repo, "main") is True
+    reason = _in_base_reason(details, repo, "main")
+    assert "is MERGED" in reason
+    assert "believed the forge" in reason
+    assert "branch feature reaches" not in reason
 
 
 def test_already_in_base_open_pr_is_not_in_base(tmp_path, monkeypatch):
@@ -2082,6 +2740,300 @@ def test_already_in_base_no_pr_with_unmerged_sha_is_not_in_base(tmp_path, monkey
         "evidence": [{"commit": pre_squash}],
     }
     assert _already_in_base(details, repo, "main") is False
+
+
+# --- GRPH-1023: a sibling's PR url, and a sibling PR on this branch, are not this merge ---
+
+_SIBLING_URL = "https://github.com/asc-me/graphban/pull/803"
+_OWN_URL = "https://github.com/o/r/pull/900"
+_OWN_SHA = "c0ffee000000"
+_SIBLING_SHA = "b74e2af7" + "ab" * 16
+_BRANCH_SHA = "f4bf35b51d1ddf4048426ebcd43652f164f99a4d"
+
+
+def _ahead(repo: Path, name: str) -> None:
+    """One commit on `name`, left checked out on main. `name` may contain slashes."""
+    run = lambda *a: _sp.run(["git", *a], cwd=repo, capture_output=True, text=True)
+    run("checkout", "-q", "-b", name)
+    (repo / "work.txt").write_text(name + "\n")
+    run("add", "-A")
+    run("commit", "-qm", name)
+    run("checkout", "-q", "main")
+
+
+def _grph890(repo: Path) -> dict:
+    """GRPH-890's shape: branch ahead of main, one url receipt that names another item."""
+    _ahead(repo, "gb/p45-followups")
+    return {
+        "id": "GRPH-890",
+        "status": "next",
+        "branch": "gb/p45-followups",
+        "touchpoints": ["docs/prd-44-pstack.md"],
+        "evidence": [{
+            "kind": "url",
+            "url": _SIBLING_URL,
+            "detail": "WALK-A9 opened PR #803 for GRPH-891 (squash-aware release notes)",
+        }],
+    }
+
+
+def _view_by_url(answers: dict):
+    """`propose.view` that answers per selector. Anything else is "no PR", not MERGED."""
+
+    def view(_repo, selector, **_kw):
+        for needle, pr in answers.items():
+            if needle in str(selector):
+                return pr, ""
+        return None, f"no PR for {selector}"
+
+    return view
+
+
+def _own_merged_pr() -> dict:
+    return {
+        "state": "MERGED", "number": 900, "headRefName": "gb/p45-followups",
+        "title": "GRPH-900: the work", "body": "draft for gb/p45-followups",
+        "mergeCommit": {"oid": _OWN_SHA},
+    }
+
+
+def _sibling_merged_pr() -> dict:
+    return {
+        "state": "MERGED", "number": 803, "headRefName": "fix/release-notes-squash",
+        "title": "Release notes read squash landings, not only merges (GRPH-891)",
+        "body": "",
+        "mergeCommit": {"oid": _SIBLING_SHA},
+    }
+
+
+def _shared_branch_merged_pr() -> dict:
+    """PR #920: MERGED, head is this item's branch, and it names other items."""
+    return {
+        "state": "MERGED", "number": 920, "headRefName": "gb/p45-followups",
+        "title": "GRPH-990: follow-ups",
+        "body": (
+            "Opened by `gbfleet` after reaping `gb/p45-followups`.\n\n"
+            "Items: GRPH-990, GRPH-995, GRPH-996\n"
+        ),
+        "mergeCommit": {"oid": _BRANCH_SHA},
+    }
+
+
+def _grph890_view():
+    """The measured forge. #803 is the sibling url; #920 is what the branch resolves to.
+
+    A stub that answers only `/pull/803` never resolves the branch candidate, so a
+    check that believes every merged PR the branch names stays green.
+    """
+    return _view_by_url({
+        "/pull/803": _sibling_merged_pr(),
+        "gb/p45-followups": _shared_branch_merged_pr(),
+    })
+
+
+def test_a_siblings_merged_pr_url_does_not_make_an_item_read_as_merged(tmp_path, monkeypatch):
+    """GRPH-890's measured reading. The url receipt names GRPH-891 and PR #803 is MERGED
+    on `fix/release-notes-squash`. The branch `gb/p45-followups` resolves to MERGED PR
+    #920, whose title and body name GRPH-990/995/996 and not GRPH-890. Neither is this
+    item's merge.
+
+    Sabotage: `_merged_pr_of`, `if not ours and not (branch and head == branch)` ->
+    `if False` (believe every url receipt). This goes True on #803.
+
+    Sabotage: `_merged_pr_of`, `if carrier == "the item's branch" and not
+    _pr_text_names_item(pr, item_id)` -> `if False` (believe every PR the branch names).
+    This goes True on #920.
+    """
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import _already_in_base, _in_base_reason
+
+    repo = _git_repo(tmp_path)
+    monkeypatch.setattr(propose_mod, "view", _grph890_view())
+    item = _grph890(repo)
+
+    assert _in_base_reason(item, repo, "main") == ""
+    assert _already_in_base(item, repo, "main") is False
+
+
+def test_the_siblings_url_does_not_stop_the_item_being_delegated(tmp_path, monkeypatch):
+    """THE CALL. `_already_in_base` False is not enough: `_delegate_next` is what refuses
+    the item and leaves the wave idle. GRPH-890's shape, with the branch resolving to
+    #920, is still the seed. Both ignored PRs are named.
+
+    Sabotage: either `if False` in `_merged_pr_of`. This delegates nothing.
+    """
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import _delegate_next
+
+    repo = _git_repo(tmp_path)
+    monkeypatch.setattr(propose_mod, "view", _grph890_view())
+    events: list[tuple] = []
+    monkeypatch.setattr(
+        "gbfleet.until.observe.emit", lambda ev, **kw: events.append((ev, kw)),
+    )
+    brief = {"lane": {"value": "backend"}, "tier": {"value": "cheap"}, "blocked_by": []}
+    item = {**_grph890(repo), "brief": brief}
+    planner = _SeedPlanner([{"items": ["GRPH-890"]}], {"GRPH-890": item})
+
+    seed, code, _want = _delegate_next(
+        planner, "GRPH-A1", "w", set(), None, repo=repo, base="main",
+    )
+
+    assert seed == "GRPH-890" and code == "WORKER-X"
+    assert planner.delegated == ["GRPH-890"]
+    ignored = [kw["detail"] for ev, kw in events if ev == "in_base_ignored"]
+    assert any("PR #803" in line and _SIBLING_SHA in line for line in ignored)
+    assert any("PR #920" in line and _BRANCH_SHA in line and "the item's branch" in line
+               for line in ignored)
+    assert not any(ev == "delegate_held" for ev, _kw in events)
+
+
+def test_an_items_own_merged_pr_receipt_still_holds_it(tmp_path, monkeypatch):
+    """The control for GRPH-930. The item's OWN merged url is still a hold, and the
+    reason names the carrier and the sha. A refused review offer is the path that
+    emits `delegate_held`; the reason is on that line.
+
+    Sabotage: drop the url from the candidates. The reason is empty and the item is delegated.
+    """
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import _already_in_base, _delegate_next, _in_base_reason
+
+    repo = _git_repo(tmp_path)
+    monkeypatch.setattr(propose_mod, "view", _view_by_url({"/pull/900": _own_merged_pr()}))
+    events: list[tuple] = []
+    monkeypatch.setattr(
+        "gbfleet.until.observe.emit", lambda ev, **kw: events.append((ev, kw)),
+    )
+    brief = {"lane": {"value": "backend"}, "tier": {"value": "cheap"}, "blocked_by": []}
+    item = {
+        "id": "GRPH-900",
+        "status": "next",
+        "branch": "gb/p45-followups",
+        "touchpoints": ["docs/prd-44-pstack.md"],
+        "brief": brief,
+        "evidence": [{
+            "kind": "url",
+            "url": _OWN_URL,
+            "detail": "draft PR opened by gbfleet for gb/p45-followups",
+        }],
+    }
+    _ahead(repo, "gb/p45-followups")
+
+    reason = _in_base_reason(item, repo, "main")
+    assert "PR #900" in reason
+    assert "url receipt" in reason
+    assert _OWN_SHA in reason
+    assert _already_in_base(item, repo, "main") is True
+
+    planner = _SeedPlanner(
+        [{"items": ["GRPH-900"]}], {"GRPH-900": item}, refuse_update=True,
+    )
+    seed, _code, _want = _delegate_next(
+        planner, "GRPH-A1", "w", set(), None, repo=repo, base="main",
+    )
+    assert seed is None and planner.delegated == []
+    held = [kw for ev, kw in events if ev == "delegate_held"]
+    assert len(held) == 1
+    assert "PR #900" in held[0]["detail"]
+    assert "url receipt" in held[0]["detail"]
+    assert _OWN_SHA in held[0]["detail"]
+
+
+def test_a_receipt_naming_nothing_is_believed_when_the_forge_says_its_head_is_ours(
+        tmp_path, monkeypatch):
+    """A url receipt with no item key and no branch is still this item's PR when the
+    forge's `headRefName` is the item's branch. Refusing every nameless receipt would
+    drop the ones written before the supervisor started naming the branch."""
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import _already_in_base, _in_base_reason
+
+    repo = _git_repo(tmp_path)
+    _ahead(repo, "gb/p45-followups")
+    monkeypatch.setattr(propose_mod, "view", _view_by_url({"/pull/900": _own_merged_pr()}))
+    item = {
+        "id": "GRPH-900",
+        "branch": "gb/p45-followups",
+        "evidence": [{
+            "kind": "url",
+            "url": _OWN_URL,
+            "detail": "opened a pull request",
+        }],
+    }
+
+    reason = _in_base_reason(item, repo, "main")
+    assert _already_in_base(item, repo, "main") is True
+    assert "PR #900" in reason and "url receipt" in reason and _OWN_SHA in reason
+
+
+def test_a_siblings_receipt_written_first_does_not_hide_the_items_own(tmp_path, monkeypatch):
+    """Evidence only appends, and the sibling url was written first. Skipping it has to
+    keep looking: the item's own merged PR is the hold, named as #900, not #803.
+
+    Sabotage: the url `if False` in `_merged_pr_of`. The reason names #803, and the
+    ignored event never fires.
+    """
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import _in_base_reason
+
+    repo = _git_repo(tmp_path)
+    _ahead(repo, "gb/p45-followups")
+    monkeypatch.setattr(propose_mod, "view", _view_by_url({
+        "/pull/803": _sibling_merged_pr(),
+        "/pull/900": _own_merged_pr(),
+    }))
+    events: list[tuple] = []
+    monkeypatch.setattr(
+        "gbfleet.until.observe.emit", lambda ev, **kw: events.append((ev, kw)),
+    )
+    item = {
+        "id": "GRPH-890",
+        "branch": "gb/p45-followups",
+        "evidence": [
+            {
+                "kind": "url",
+                "url": _SIBLING_URL,
+                "detail": "WALK-A9 opened PR #803 for GRPH-891 (squash-aware release notes)",
+            },
+            {
+                "kind": "url",
+                "url": _OWN_URL,
+                "detail": "draft PR opened by gbfleet for gb/p45-followups",
+            },
+        ],
+    }
+
+    reason = _in_base_reason(item, repo, "main")
+    assert "PR #900" in reason and "url receipt" in reason and _OWN_SHA in reason
+    assert "PR #803" not in reason
+    ignored = [kw for ev, kw in events if ev == "in_base_ignored"]
+    assert ignored and "PR #803" in ignored[0]["detail"] and _SIBLING_SHA in ignored[0]["detail"]
+
+
+def test_a_branch_pr_that_names_this_item_still_holds(tmp_path, monkeypatch):
+    """The branch fallback still holds a squash merge when the PR the branch resolves
+    to names this item. Refusing every branch lookup would re-open GRPH-930 for an
+    item whose only selector is its branch."""
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import _already_in_base, _in_base_reason
+
+    repo = _git_repo(tmp_path)
+    _ahead(repo, "gb/p45-followups")
+    pr = _shared_branch_merged_pr()
+    pr["number"] = 921
+    pr["title"] = "GRPH-890: the pstack doc"
+    pr["body"] = "Opened by `gbfleet` after reaping `gb/p45-followups`.\n\nItems: GRPH-890\n"
+    pr["mergeCommit"] = {"oid": _OWN_SHA}
+    monkeypatch.setattr(propose_mod, "view", _view_by_url({"gb/p45-followups": pr}))
+    item = {
+        "id": "GRPH-890",
+        "status": "next",
+        "branch": "gb/p45-followups",
+        "touchpoints": ["docs/prd-44-pstack.md"],
+    }
+
+    reason = _in_base_reason(item, repo, "main")
+    assert _already_in_base(item, repo, "main") is True
+    assert "PR #921" in reason and "the item's branch" in reason and _OWN_SHA in reason
 
 
 # ---- GRPH-988, bounce 1: the two unpinned `_take_seat` call sites -------------------------
@@ -2357,16 +3309,16 @@ def test_the_loop_spawns_beside_a_live_child_for_a_free_cluster(
     first child's leaves the read, as on the real server, so one free cluster remains.
     Spawning twice is not enough — the bug spawned the second once the first was reaped —
     so the second launch must land inside the first child's wall clock."""
-    import time
-
     workspace = tmp_path / "ws"
     planner, supervisor = _clients(workspace, clusters=2, workers=1, sticky_clusters=True,
                                    drop_delegated=True)
     inner = _factory(scripts, "sleeper")
-    launched: list[float] = []
+    # GRPH-1715: ordering, not a wall-clock window. Each launch records how many children
+    # were alive at that moment; the second must see the first still running.
+    alive_at_launch: list[int] = []
 
     def factory(*args, **kwargs):
-        launched.append(time.monotonic())
+        alive_at_launch.append(len(_running_pids(git_repo, state)))
         return inner(*args, **kwargs)
 
     wall = 4.0
@@ -2377,7 +3329,7 @@ def test_the_loop_spawns_beside_a_live_child_for_a_free_cluster(
         limits=Limits(max_workers=3, max_children=2, child_wall_clock=wall),
     )
     assert result.spawned == 2, result.detail
-    assert launched[1] - launched[0] < wall / 2, "the second child waited out the first"
+    assert alive_at_launch[1] >= 1, "the second child waited out the first"
 
 
 def _staffing_run(git_repo, tmp_path, scripts, state, *, staff_every_row):
@@ -3059,3 +4011,763 @@ def test_a_row_whose_ci_run_is_in_progress_gets_no_reviewer_and_waits(
         )
     assert roles == []
     assert len(ticks) > 3  # waited past empty_ticks instead of exiting
+
+
+# ---- GRPH-1770: the review gate reads the recorded PR's head, not only item.branch ----
+
+
+_PR_URL = "https://github.com/asc-me/graphban/pull/1878"
+
+
+class _CiPlanner:
+    def call(self, tool, /, **args):
+        return {}
+
+
+def _sha_from(repo: Path, branch: str, parent: str) -> str:
+    run = lambda *a: subprocess.run(
+        ["git", *a], cwd=repo, check=True, capture_output=True, text=True)
+    run("checkout", "-q", "-B", branch, parent)
+    (repo / branch.replace("/", "_")).write_text(branch + "\n")
+    run("add", "-A")
+    run("commit", "-qm", branch)
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
+                         check=True, capture_output=True, text=True).stdout.strip()
+    run("checkout", "-q", "main")
+    return sha
+
+
+def _pr_row(branch: str) -> dict:
+    return {
+        "id": "GRPH-1715",
+        "status": "review",
+        "branch": branch,
+        "pr": _PR_URL,
+        "evidence": [{"kind": "url", "url": _PR_URL,
+                      "detail": "draft PR opened by gbfleet for gb/line-12"}],
+    }
+
+
+def test_a_green_pr_head_that_descends_from_a_red_item_branch_is_reviewable(
+    tmp_path, monkeypatch,
+):
+    """GRPH-1770. item.branch is red. The recorded PR is on another branch, green, and
+    that head descends from item.branch. The review gate reads the PR head, so the row
+    is reviewable.
+
+    Sabotage: pass `row['branch']` to `ci_verdict` again and this fails — the row is
+    bounced for the red branch instead of left ready.
+    """
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import _ci_attested
+
+    repo = _git_repo(tmp_path)
+    red = _sha_from(repo, "gb/line-17", "main")
+    green = _sha_from(repo, "gb/line-12", "gb/line-17")
+    asked: list[str] = []
+
+    def verdict(_repo, branch):
+        asked.append(branch)
+        if branch == "gb/line-12":
+            return ("green", green, "")
+        if branch == "gb/line-17":
+            return ("red", red, "backend-postgres")
+        return ("unknown", "", "")
+
+    events: list[tuple] = []
+    monkeypatch.setattr(propose_mod, "view", lambda *_a, **_k: (
+        {"headRefName": "gb/line-12", "headRefOid": green}, ""))
+    monkeypatch.setattr(until, "ci_verdict", verdict)
+    monkeypatch.setattr(until.observe, "emit", lambda ev, **kw: events.append((ev, kw)))
+    row = _pr_row("gb/line-17")
+    ready, waiting, blocked = _ci_attested(
+        [row], repo, set(), planner=_CiPlanner(), agent_id="GRPH-P1")
+    assert ready == [row] and waiting == [] and blocked == []
+    assert asked == ["gb/line-12"]
+    assert not any(ev == "review_branch_mismatch" for ev, _ in events)
+
+
+def test_a_pr_head_that_does_not_descend_is_named_not_skipped(tmp_path, monkeypatch):
+    """The other half of GRPH-1770. The PR's branch is not a descendant of item.branch,
+    so the gate does not treat that green head as this item's CI. It emits one
+    `review_branch_mismatch` naming both branches and both heads, and still judges
+    item.branch.
+
+    Sabotage: drop `_note_branch_mismatch` and this fails — the row is bounced with
+    no event, which is the silent skip.
+    """
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import _ci_attested
+
+    repo = _git_repo(tmp_path)
+    red = _sha_from(repo, "gb/line-17", "main")
+    other = _sha_from(repo, "gb/line-12", "main")
+    asked: list[str] = []
+
+    def verdict(_repo, branch):
+        asked.append(branch)
+        if branch == "gb/line-12":
+            return ("green", other, "")
+        return ("red", red, "backend-postgres")
+
+    events: list[tuple] = []
+    monkeypatch.setattr(propose_mod, "view", lambda *_a, **_k: (
+        {"headRefName": "gb/line-12", "headRefOid": other}, ""))
+    monkeypatch.setattr(until, "ci_verdict", verdict)
+    monkeypatch.setattr(until, "failed_test_summary", lambda *_a: "")
+    monkeypatch.setattr(until, "transport_flake_jobs", lambda *_a: [])
+    monkeypatch.setattr(until.observe, "emit", lambda ev, **kw: events.append((ev, kw)))
+    row = _pr_row("gb/line-17")
+    ready, _waiting, blocked = _ci_attested(
+        [row], repo, set(), planner=_CiPlanner(), agent_id="GRPH-P1")
+    assert ready == [] and blocked == [row]
+    assert asked == ["gb/line-17"]
+    mismatches = [kw for ev, kw in events if ev == "review_branch_mismatch"]
+    assert len(mismatches) == 1
+    kw = mismatches[0]
+    assert kw["branch"] == "gb/line-17" and kw["pr_branch"] == "gb/line-12"
+    assert kw["commit"].startswith(red[:12]) and kw["pr_head"].startswith(other[:12])
+    assert "gb/line-17" in kw["detail"] and "gb/line-12" in kw["detail"]
+    assert red[:12] in kw["detail"] and other[:12] in kw["detail"]
+    # Once per pair of heads, not once per poll.
+    again, _, _ = _ci_attested([row], repo, {("review_branch_mismatch", "GRPH-1715",
+                                              f"gb/line-17@{red}|gb/line-12@{other}")},
+                               planner=_CiPlanner(), agent_id="GRPH-P1")
+    assert again == []
+    assert len([ev for ev, _ in events if ev == "review_branch_mismatch"]) == 1
+
+
+def test_the_reviewer_ci_check_reads_a_run_at_the_pr_head(tmp_path, monkeypatch):
+    """GRPH-1770. The reviewer's CI check (`ci_run_in_progress`) lists runs on the PR
+    branch and counts a run at the PR head, not only the commit the refusal named on
+    item.branch.
+
+    Sabotage: list `item.branch` again and this fails — the in-progress run is on the
+    PR branch, so the check answers "" and the drain does not wait.
+    """
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import ci_run_in_progress
+
+    repo = _git_repo(tmp_path)
+    red = _sha_from(repo, "gb/line-17", "main")
+    green = _sha_from(repo, "gb/line-12", "gb/line-17")
+    asked: list[str] = []
+
+    real_run = subprocess.run
+
+    def fake_run(cmd, **k):
+        # review_ci_branch resolves the PR head with git before the gh run list.
+        if not cmd or cmd[0] != "gh":
+            return real_run(cmd, **k)
+        branch = cmd[cmd.index("--branch") + 1]
+        asked.append(branch)
+        payload = []
+        if branch == "gb/line-12":
+            payload = [{"databaseId": 9, "status": "in_progress", "name": "CI",
+                        "headSha": green}]
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(propose_mod, "view", lambda *_a, **_k: (
+        {"headRefName": "gb/line-12", "headRefOid": green}, ""))
+    monkeypatch.setattr(until.subprocess, "run", fake_run)
+    row = _pr_row("gb/line-17")
+    row["evidence"] = [
+        {"kind": "note", "detail": "refused at `done` (pr_ci_not_green): cooldown over, "
+         f"no suite_green at commit {red}"},
+        row["evidence"][0],
+    ]
+    assert "9" in ci_run_in_progress(repo, row, set())
+    assert asked == ["gb/line-12"]
+
+
+def test_negative_subagents_exits_before_any_seat(monkeypatch, capsys):
+    from gbfleet.cli import main
+    monkeypatch.setenv("GBFLEET_API_KEY", "k")
+    assert main(["until", "--server", "http://x", "--project", "p", "--adapter", "claude", "--subagents", "-1"]) == 2
+    assert "--subagents must be 0 or more" in capsys.readouterr().err
+
+
+# ---- GRPH-1785: a stale worktree holding the bounced branch ---------------------------
+
+
+def _clone_with_held_branch(tmp_path: Path, *, dirty: bool) -> tuple[Path, Path]:
+    """A clone whose `gb/line-104` is checked out in a linked worktree.
+
+    The branch is pushed and matches `origin`. `gb/line-44` exists at `main` and
+    is not checked out: that is the unrelated branch a failed resume started a
+    child on. Returns `(repo, stale_worktree)`.
+    """
+    bare = tmp_path / "remote.git"
+    bare.mkdir()
+    subprocess.run(["git", "init", "--bare", "-q", str(bare)], check=True)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def g(*args: str, cwd: Path = repo) -> None:
+        subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
+
+    g("init", "-q", "-b", "main")
+    g("config", "user.email", "t@t.t")
+    g("config", "user.name", "t")
+    g("remote", "add", "origin", str(bare))
+    (repo / "README.md").write_text("x\n")
+    g("add", "-A")
+    g("commit", "-qm", "first")
+    g("push", "-q", "-u", "origin", "main")
+    g("checkout", "-q", "-b", "gb/line-104")
+    (repo / "kept.py").write_text("round-1\n")
+    g("add", "-A")
+    g("commit", "-qm", "round 1")
+    g("push", "-q", "-u", "origin", "gb/line-104")
+    g("checkout", "-q", "main")
+    g("branch", "gb/line-44")
+    stale = tmp_path / "line-104"
+    g("worktree", "add", "-q", str(stale), "gb/line-104")
+    if dirty:
+        (stale / "dirty.txt").write_text("unpushed\n")
+    return repo, stale
+
+
+def _assert_slash_spellings_match(path: Path) -> None:
+    """`C:/...` in porcelain and `C:\\...` from `str(Path)` are one checkout.
+
+    Both reclaim tests call this, so a raw `str(path) in listed` check fails
+    here on every OS, not only on Windows.
+    """
+    from pathlib import PureWindowsPath
+
+    forward = "worktree " + worktree_key(path) + "\n"
+    assert porcelain_lists_worktree(forward, PureWindowsPath(worktree_key(path)))
+
+
+def _capture_emit(monkeypatch):
+    from gbfleet import observe
+
+    events: list[tuple[str, dict]] = []
+    real = observe.emit
+
+    def capture(event, **fields):
+        events.append((event, dict(fields)))
+        return real(event, **fields)
+
+    monkeypatch.setattr(observe, "emit", capture)
+    return events
+
+
+_HELD = {
+    "id": "GRPH-1690",
+    "status": "next",
+    "claimed_by": "",
+    "branch": "gb/line-104",
+    "bounce_reason": "tests failed",
+    "touchpoints": ["fleet/src/gbfleet/until.py"],
+}
+
+
+def test_a_clean_pushed_worktree_holding_the_branch_is_removed_and_resumed(
+    tmp_path: Path, scripts, state: Path, monkeypatch,
+):
+    """GRPH-1785. The previous builder's worktree is clean, pushed, and owned by
+    no live child. Resume removes it and starts on `gb/line-104`, the item's branch.
+
+    Sabotage: skip the reclaim and fall through to a fresh `gb/wave-*` cut. This
+    child's branch is no longer `gb/line-104`, and `kept.py` is not on it.
+    """
+    repo, stale = _clone_with_held_branch(tmp_path, dirty=False)
+    workspace = tmp_path / "ws"
+    events = _capture_emit(monkeypatch)
+    planner, supervisor = _clients(
+        workspace, clusters=1, workers=0, bound_seats=True,
+        cluster_items=[["GRPH-1690"]],
+        item_rows=[dict(_HELD)],
+    )
+    result = run(
+        repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+        limits=Limits(max_workers=1, max_children=1),
+        base_branch="main",
+    )
+    assert result.spawned == 1, result.as_json()
+    child = result.wave.spawned[0]
+    assert child.branch == "gb/line-104", [c.branch for c in result.wave.spawned]
+    show = subprocess.run(
+        ["git", "show", "gb/line-104:kept.py"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    assert show == "round-1\n"
+    listed = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    # Git prints `C:/...`; `str(stale)` is `C:\...` on Windows. A substring
+    # check passes while the checkout is still listed (GRPH-1785).
+    assert not porcelain_lists_worktree(listed, stale)
+    _assert_slash_spellings_match(stale)
+    assert not stale.exists()
+    assert any(name == "resume_reclaimed" and fields.get("item") == "GRPH-1690"
+               and fields.get("branch") == "gb/line-104" for name, fields in events)
+    assert not any(name == "resume_blocked" for name, _fields in events)
+
+
+def test_a_dirty_holder_does_not_start_the_child_on_another_branch(
+    tmp_path: Path, scripts, state: Path, monkeypatch,
+):
+    """GRPH-1785. The branch is still checked out and this drain will not take the
+    worktree. No child starts, on `gb/line-44` or on a fresh `gb/wave-*`. The drain
+    emits `resume_blocked` naming the item and the blocking worktree, withdraws the
+    delegation, and does not mark the item blocked.
+
+    Sabotage: delete the `ResumeBlocked` raise in `_start` so the `while tree is
+    None` fresh cut runs. A child is spawned and `gb/wave-` appears.
+    """
+    repo, stale = _clone_with_held_branch(tmp_path, dirty=True)
+    workspace = tmp_path / "ws"
+    events = _capture_emit(monkeypatch)
+    delegations: list[dict] = []
+    updates: list[dict] = []
+    planner, supervisor = _clients(
+        workspace, clusters=1, workers=0, bound_seats=True,
+        cluster_items=[["GRPH-1690"]],
+        item_rows=[dict(_HELD)],
+        delegations=delegations,
+        updates=updates,
+    )
+    result = run(
+        repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+        limits=Limits(max_workers=1, max_children=1),
+        base_branch="main",
+    )
+    assert result.spawned == 0, result.as_json()
+    assert result.wave.spawned == []
+    assert result.reason == "spawn_failed", result.as_json()
+    blocked = [fields for name, fields in events if name == "resume_blocked"]
+    assert len(blocked) == 1, events
+    assert blocked[0]["item"] == "GRPH-1690"
+    assert blocked[0]["branch"] == "gb/line-104"
+    assert Path(blocked[0]["worktree"]).resolve() == stale.resolve()
+    assert any(d.get("id") == "GRPH-1690" and d.get("withdraw") is True for d in delegations)
+    assert not any(u.get("status") == "blocked" for u in updates)
+    assert (stale / "dirty.txt").is_file()
+    branches = subprocess.run(
+        ["git", "branch", "--list", "gb/wave-*"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    assert branches.strip() == ""
+
+
+def test_a_live_child_keeps_the_worktree_that_holds_the_branch(tmp_path: Path):
+    """GRPH-1785. A running child owns the checkout, so resume does not remove it.
+
+    Sabotage: drop the live-child check in `_reclaim_idle_worktree`. This returns
+    True and `line-104` is gone.
+    """
+    from types import SimpleNamespace
+
+    from gbfleet.supervisor import _reclaim_idle_worktree
+
+    repo, stale = _clone_with_held_branch(tmp_path, dirty=False)
+    child = SimpleNamespace(running=True, worktree=stale)
+    assert _reclaim_idle_worktree(repo, "gb/line-104", stale, [child]) is False
+    assert stale.exists()
+    listed = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    assert porcelain_lists_worktree(listed, stale)
+    _assert_slash_spellings_match(stale)
+
+
+def test_porcelain_lists_a_windows_checkout_printed_with_forward_slashes():
+    """GRPH-1785. Git's porcelain line is `worktree C:/Users/...`. `str(Path)`
+    on Windows is `C:\\Users\\...`. Those are the same checkout.
+
+    Sabotage: make `porcelain_lists_worktree` a raw `str(path) in text` check.
+    This fails, because the backslash spelling is not a substring of the
+    forward-slash line.
+    """
+    from pathlib import PureWindowsPath
+
+    listed = (
+        "worktree C:/Users/runner/AppData/Local/Temp/line-104\n"
+        "HEAD abcdef\n"
+        "branch refs/heads/gb/line-104\n"
+    )
+    stale = PureWindowsPath(r"C:\Users\runner\AppData\Local\Temp\line-104")
+    assert porcelain_lists_worktree(listed, stale)
+    assert not porcelain_lists_worktree(
+        listed, PureWindowsPath(r"C:\Users\runner\AppData\Local\Temp\other"),
+    )
+
+
+def test_a_server_that_accepts_and_never_replies_does_not_stall_the_loop(tmp_path, git_repo):
+    """GRPH-1786. The loop's first read is fleet_status. A peer that accepts and
+    sends nothing must be logged and left behind inside the deadline.
+
+    This socket read is bounded twice: httpx's phase timeout and `_wait_bounded`.
+    Either one returns this thread inside the join, so removing only the caller
+    deadline does not hang it. The read that httpx cannot unblock, and the
+    sabotage that does hang, is the next test.
+    """
+    import io
+    import socket
+    import threading
+
+    from gbfleet import observe
+    from gbfleet.client import ServerUnreachable
+    from gbfleet.until import Limits, Wave, _loop
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)
+    stop = threading.Event()
+    held: list[socket.socket] = []
+
+    def serve():
+        while not stop.is_set():
+            try:
+                listener.settimeout(0.2)
+                conn, _ = listener.accept()
+            except OSError:
+                continue
+            held.append(conn)
+
+    threading.Thread(target=serve, daemon=True).start()
+    port = listener.getsockname()[1]
+    buf = io.StringIO()
+    observe.configure(tmp_path, stream=buf)
+    supervisor = Graphban(
+        base_url=f"http://127.0.0.1:{port}", api_key="k", deadline=0.4, timeout=30.0,
+    )
+
+    class _Down:
+        allowed = frozenset({"fleet_status", "search_items", "get_context"})
+
+        def fleet_status(self, **kw):
+            return self.call("fleet_status", **kw)
+
+        def call(self, tool, /, **kw):
+            raise ServerUnreachable(f"down during {tool}", tool=tool)
+
+        def post_attempt(self, **kw):
+            return None
+
+    moved: dict = {}
+
+    def sleep(seconds):
+        moved["slept"] = seconds
+        raise RuntimeError("moved on")
+
+    def go():
+        try:
+            _loop(
+                Wave(), [], set(), lambda: None, git_repo, tmp_path / "ws", "w", "k",
+                f"http://127.0.0.1:{port}",
+                lambda *a, **k: None, _Down(), supervisor, {"agent_id": "A-1"}, [],
+                Limits(), 1.0, sleep, False,
+                empty_ticks=1, mint_tries=1, mint_budget=1.0, minted_start=0,
+            )
+        except RuntimeError as exc:
+            moved["exc"] = str(exc)
+        except Exception as exc:  # noqa: BLE001 - the assertion is that the thread ended
+            moved["exc"] = f"{type(exc).__name__}: {exc}"
+
+    th = threading.Thread(target=go, daemon=True)
+    started = time.monotonic()
+    th.start()
+    th.join(3.0)
+    elapsed = time.monotonic() - started
+    stop.set()
+    listener.close()
+    for conn in held:
+        conn.close()
+    supervisor.close()
+    assert not th.is_alive(), "timed out: until loop still blocked on a server that never replies"
+    assert elapsed < 2.5, elapsed
+    names = [
+        json.loads(line)["event"]
+        for line in buf.getvalue().splitlines() if line.startswith("{")
+    ]
+    assert held, "the server never accepted; this did not reach a hung read"
+    assert "preferences" in names, names
+    assert any(name in names for name in ("call_timeout", "retry")), names
+    assert moved.get("exc"), moved
+
+
+def test_a_read_the_socket_timeout_cannot_unblock_still_returns_the_loop(tmp_path, git_repo):
+    """GRPH-1786. `close()` does not wake a blocked read. The caller-side deadline
+    has to return anyway, and the loop has to log that and keep going.
+
+    Sabotage: make `_wait_bounded` wait until the worker sets `done` and this
+    thread is still alive at the join bound.
+    """
+    import io
+    import threading
+
+    from gbfleet import observe
+    from gbfleet.client import ServerUnreachable
+    from gbfleet.until import Limits, Wave, _loop
+
+    class _Stuck(httpx.BaseTransport):
+        def handle_request(self, request):
+            time.sleep(30)
+            raise httpx.ReadTimeout("stuck", request=request)
+
+        def close(self):
+            pass
+
+    buf = io.StringIO()
+    observe.configure(tmp_path, stream=buf)
+    supervisor = Graphban(
+        base_url="http://127.0.0.1:9", api_key="k", deadline=0.4, timeout=30.0,
+        transport=_Stuck(),
+    )
+
+    class _Down:
+        allowed = frozenset({"fleet_status", "search_items"})
+
+        def call(self, tool, /, **kw):
+            raise ServerUnreachable(f"down during {tool}", tool=tool)
+
+        def post_attempt(self, **kw):
+            return None
+
+        def fleet_status(self, **kw):
+            return self.call("fleet_status", **kw)
+
+    moved: dict = {}
+
+    def sleep(seconds):
+        moved["slept"] = seconds
+        raise RuntimeError("moved on")
+
+    def go():
+        try:
+            _loop(
+                Wave(), [], set(), lambda: None, git_repo, tmp_path / "ws", "w", "k",
+                "http://127.0.0.1:9",
+                lambda *a, **k: None, _Down(), supervisor, {"agent_id": "A-1"}, [],
+                Limits(), 1.0, sleep, False,
+                empty_ticks=1, mint_tries=1, mint_budget=1.0, minted_start=0,
+            )
+        except RuntimeError as exc:
+            moved["exc"] = str(exc)
+        except Exception as exc:  # noqa: BLE001
+            moved["exc"] = f"{type(exc).__name__}: {exc}"
+
+    th = threading.Thread(target=go, daemon=True)
+    started = time.monotonic()
+    th.start()
+    th.join(3.0)
+    elapsed = time.monotonic() - started
+    supervisor.close()
+    assert not th.is_alive(), "timed out: until loop still waiting on a read that never returns"
+    assert elapsed < 2.5, elapsed
+    names = [
+        json.loads(line)["event"]
+        for line in buf.getvalue().splitlines() if line.startswith("{")
+    ]
+    assert "call_timeout" in names, names
+    assert "preferences" in names, names
+    assert moved.get("exc"), moved
+
+
+def test_a_fetch_that_does_not_return_is_logged_and_not_success(tmp_path, monkeypatch):
+    """GRPH-1786. `refresh_ref` is the until loop's fetch of the base. No timeout used
+    to be a waitpid with no log line.
+
+    Sabotage: drop `timeout=` from `_bounded_git` and this raises AssertionError.
+    """
+    import io
+    import subprocess
+
+    from gbfleet import observe
+    from gbfleet import worktree as wt
+
+    buf = io.StringIO()
+    observe.configure(tmp_path, stream=buf)
+
+    def boom(args, **k):
+        if "timeout" not in k:
+            raise AssertionError("git fetch has no timeout")
+        raise subprocess.TimeoutExpired(args, k["timeout"])
+
+    monkeypatch.setattr(wt.subprocess, "run", boom)
+    assert wt.refresh_ref(tmp_path, "origin", "origin/main") is False
+    names = [
+        json.loads(line)["event"]
+        for line in buf.getvalue().splitlines() if line.startswith("{")
+    ]
+    assert "git_timeout" in names, names
+
+
+# ---- GRPH-1311: --acknowledge-reach on until and the dry run ---------------------------------
+
+
+def test_until_help_lists_acknowledge_reach(capsys):
+    """`gbfleet until --help` lists the flag. Sabotage: delete the argument."""
+    from gbfleet.cli import main
+
+    with pytest.raises(SystemExit) as raised:
+        main(["until", "--help"])
+    assert raised.value.code == 0
+    text = capsys.readouterr().out
+    assert "--acknowledge-reach" in text
+    assert "ITEM[,ITEM]" in text
+
+
+def test_an_empty_acknowledge_reach_is_refused(monkeypatch, git_repo: Path, capsys):
+    """A flag that names nothing is the same as omitting it, so it is an error instead."""
+    from gbfleet import cli
+
+    def fail_run(*_a, **_k):
+        raise AssertionError("run_until must not be called")
+
+    monkeypatch.setenv("GBFLEET_API_KEY", KEY)
+    monkeypatch.setattr(cli, "run_until", fail_run)
+    code = cli.main([
+        "until", "--repo", str(git_repo), "--server", "http://gb.invalid",
+        "--adapter", "gbagent", "--acknowledge-reach", " , ",
+    ])
+    assert code == 2
+    assert "one or more item ids" in capsys.readouterr().err
+
+
+def test_main_passes_acknowledge_reach_only_when_the_flag_names_items(monkeypatch, git_repo: Path):
+    """THE CALL from the command. parse_args is not it: a flag that never reaches `run`
+    acknowledges nothing. Sabotage: drop `acknowledge_reach=acknowledge` from the
+    `run_until` call in `_until` — this reads None on the flagged invocation."""
+    from gbfleet import cli
+    from gbfleet.until import Report
+
+    seen: dict = {}
+
+    class FakeGB:
+        def __init__(self, base_url, api_key, allowed=None, **_kw):
+            self.allowed = allowed
+
+        def close(self):
+            pass
+
+    def fake_run(*_a, **kw):
+        seen["ack"] = kw.get("acknowledge_reach")
+        return Report(ok=True, reason="idle", exit=0)
+
+    monkeypatch.setenv("GBFLEET_API_KEY", KEY)
+    monkeypatch.setattr(cli, "Graphban", FakeGB)
+    monkeypatch.setattr(cli, "run_until", fake_run)
+    monkeypatch.setattr(cli, "make_adapter_factory", lambda *_a, **_k: object())
+
+    base = ["until", "--repo", str(git_repo), "--server", "http://gb.invalid",
+            "--adapter", "gbagent"]
+    assert cli.main(base) == 0
+    assert seen["ack"] is None
+    assert cli.main(base + ["--acknowledge-reach", "GRPH-X, GRPH-Y"]) == 0
+    assert seen["ack"] == {"GRPH-X", "GRPH-Y"}
+
+
+def test_the_dry_run_lists_the_named_ids_and_still_does_not_delegate():
+    """GRPH-1311. The dry run takes the same flag and prints the operator's list.
+    It does not call delegate. A name no cluster has is still printed: an empty
+    list would read as "nothing to acknowledge" when the operator mistyped the id.
+
+    Sabotage: stop passing `acknowledge_reach` into `plan`. The flagged plan then
+    has no such key, same as a run that never asked.
+    """
+    class Planner:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def call(self, tool, **_kw):
+            self.calls.append(tool)
+            if tool == "collision_clusters":
+                return {"clusters": [{"items": ["GRPH-X"]}, {"items": ["GRPH-Y"]}], "total": 2}
+            if tool == "search_items":
+                return {"results": []}
+            raise AssertionError(tool)
+
+    bare_planner = Planner()
+    bare = until.plan(bare_planner, None, 4)
+    assert "acknowledge_reach" not in bare
+    assert "delegate" not in bare_planner.calls
+
+    named_planner = Planner()
+    named = until.plan(named_planner, None, 4, acknowledge_reach={"GRPH-Z", "GRPH-X"})
+    assert named["acknowledge_reach"] == ["GRPH-X", "GRPH-Z"]
+    assert named["would_delegate"] == ["GRPH-X", "GRPH-Y"]
+    assert "delegate" not in named_planner.calls
+
+
+def test_dry_run_main_forwards_the_flag(monkeypatch, git_repo: Path, capsys):
+    """The dry-run command, not only `plan`. Sabotage: the real `run_until` path
+    forwards the flag and this one does not — the printed plan has no key."""
+    from gbfleet import cli
+    from gbfleet import until as until_mod
+
+    def fake_plan(*_a, **kw):
+        return {
+            "would_delegate": ["GRPH-X"],
+            "clusters_held": 0,
+            "clusters_free": 1,
+            "dependency_holds": [],
+            "capped_by_max_workers": False,
+            "acknowledge_reach": sorted(kw.get("acknowledge_reach") or []),
+        }
+
+    monkeypatch.setenv("GBFLEET_API_KEY", KEY)
+    monkeypatch.setattr(cli, "make_adapter_factory", lambda *_a, **_k: object())
+    monkeypatch.setattr(until_mod, "plan", fake_plan)
+    code = cli.main([
+        "until", "--repo", str(git_repo), "--server", "http://gb.invalid",
+        "--adapter", "gbagent", "--dry-run", "--acknowledge-reach", "GRPH-X",
+    ])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["acknowledge_reach"] == ["GRPH-X"]
+
+
+def _delegations_for(git_repo, tmp_path, scripts, state, *, acknowledge_reach):
+    """One run, two free clusters. The first child exits; the second is then delegated."""
+    workspace = tmp_path / "ws"
+    delegations: list[dict] = []
+    planner, supervisor = _clients(
+        workspace, clusters=2, cluster_items=[["GRPH-X"], ["GRPH-Y"]],
+        delegations=delegations, sticky_clusters=True, drop_delegated=True,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=2,
+        limits=Limits(max_workers=1, max_children=2),
+        acknowledge_reach=acknowledge_reach,
+    )
+    return result, delegations
+
+
+def test_acknowledge_reach_is_sent_for_the_named_item_and_not_the_other(
+        git_repo: Path, tmp_path: Path, scripts, state: Path):
+    """GRPH-1311. One run of `until --acknowledge-reach GRPH-X` delegates two items.
+    GRPH-X's delegate call carries acknowledge_reach=true. GRPH-Y's does not.
+
+    Sabotage: pass the argument on every delegate call, or on none. Either fails.
+    """
+    result, delegations = _delegations_for(
+        git_repo, tmp_path, scripts, state, acknowledge_reach={"GRPH-X"})
+    assert result.reason == "idle", result.detail
+    by_id = {d["id"]: d for d in delegations}
+    assert set(by_id) == {"GRPH-X", "GRPH-Y"}, [d["id"] for d in delegations]
+    assert by_id["GRPH-X"]["acknowledge_reach"] is True
+    assert "acknowledge_reach" not in by_id["GRPH-Y"]
+
+
+def test_a_run_without_the_flag_sends_no_acknowledge_reach(
+        git_repo: Path, tmp_path: Path, scripts, state: Path):
+    """Existing behaviour. Omitting the flag leaves the argument off every delegate
+    call in the run. Sabotage: default the argument to True — this fails."""
+    result, delegations = _delegations_for(
+        git_repo, tmp_path, scripts, state, acknowledge_reach=None)
+    assert result.reason == "idle", result.detail
+    assert delegations, "the run delegated nothing, so the absence is not evidence"
+    assert all("acknowledge_reach" not in d for d in delegations)

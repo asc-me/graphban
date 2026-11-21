@@ -66,6 +66,18 @@ def test_current_major_fixture_loads_every_template():
     assert "standard" in pack.profiles and pack.mappings[0]["weight"] == 2
 
 
+def test_shipped_spec_stage_human_clause_loads_with_no_refusal():
+    """Pack 0.6.0 places accept.human_clause_blocks in Spec. Review alone refuses it."""
+    pack = P.load(*build(FIX / "api1"), trusted_keys=TRUST)
+    rule_id = "accept.human_clause_blocks"
+    assert rule_id not in pack.refused
+    template = pack.templates[rule_id]
+    assert template["stage"] == "Spec"
+    drawn = P._library_rule(rule_id, template, pack.refused.get(rule_id, ""))
+    assert drawn.unmeasured_reason == ""
+    assert drawn.enforcement == "enforced"
+
+
 def test_previous_major_fixture_is_drawn_unmeasured_not_half_enforced():
     pack = P.load(*build(FIX / "api0"), trusted_keys=TRUST)
     assert set(pack.refused) == set(pack.templates)
@@ -217,8 +229,8 @@ def test_contract_publishes_ids_levels_and_params():
     by = {p["id"]: p for p in c["primitives"]}
     assert by["sabotage_receipt"]["level"] == "enforced"
     assert by["sabotage_receipt"]["params"] == [
-        {"name": "min_effort", "type": "int", "required": False},
-        {"name": "min_tests_failed", "type": "int", "required": False}]
+        {"name": "min_effort", "type": "int", "required": False, "comparator": "greater_tightens"},
+        {"name": "min_tests_failed", "type": "int", "required": False, "comparator": "greater_tightens"}]
 
 
 def test_refused_template_reason_reaches_the_rules_flow(client):

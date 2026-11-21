@@ -1,5 +1,5 @@
 import { api, type AnswerWaitResult } from "@/lib/api";
-import type { DrainNote as DrainNoteData, TriageFeedRow, TriageTab } from "@/lib/types";
+import type { DrainNote as DrainNoteData, MaintenanceLine, TriageFeedRow, TriageTab } from "@/lib/types";
 
 /** Reverses one action. Resolves once the server has restored the row. */
 export type Undo = () => Promise<unknown>;
@@ -12,10 +12,18 @@ export interface TriageAction {
   primary?: boolean;
   /** One of an agent's answer options: rendered full-width in the options list, never primary. */
   option?: boolean;
+  /** Answers a decision wait (an option or own words): the row comes back as its answered receipt, so it stays selected. */
+  answers?: boolean;
   /** Override and Merge only: the actions Undo does not reverse cleanly ask first. */
   confirm?: string;
-  run: () => Promise<{ result: string; undo: Undo; command?: string; drain?: DrainNoteData }>;
+  /** Create-the-line: the request stays `new`, so the row is not processed and not hidden. */
+  stays?: boolean;
+  run: () => Promise<{ result: string; undo: Undo; command?: string; drain?: DrainNoteData; itemId?: string }>;
 }
+
+/** After a bug is accepted onto the line (GRPH-1700): it is a fix with no clause or touchpoint yet. */
+export const UNREADY_COPY =
+  "It needs an acceptance clause and a touchpoint before a drain can claim it.";
 
 export const TABS: { id: TriageTab; label: string; key: string; dot: string | null }[] = [
   { id: "all", label: "All", key: "1", dot: null },
@@ -79,7 +87,7 @@ const OPTION_KEYS = "abdfgh";
 export function answerTextAction(row: TriageFeedRow, text: string): TriageAction {
   const owner = row.kind === "blocker" ? (row.owner ?? "the agent") : "the agent";
   return {
-    key: "", label: "Send answer",
+    key: "", label: "Send answer", answers: true,
     run: async () => {
       const a = await api.answerBlockerText(row.id, text);
       return {
@@ -92,7 +100,14 @@ export function answerTextAction(row: TriageFeedRow, text: string): TriageAction
   };
 }
 
-export function actionsFor(row: TriageFeedRow, projectId: string): TriageAction[] {
+/**
+ * `line` is the project's maintenance line: `undefined` while it loads, `null` when there is none,
+ * `"unread"` when the read failed. A bug request lands on it and is never offered a PRD (GRPH-1700).
+ * An unread line still offers accept: the server lands the bug on the line or refuses with its reason.
+ */
+export function actionsFor(
+  row: TriageFeedRow, projectId: string, line?: MaintenanceLine | null | "unread",
+): TriageAction[] {
   // Already answered: nothing to act on, the row only says who answered and what happens next.
   if (row.kind === "answered") return [];
   if (row.kind === "blocker") {
@@ -115,7 +130,7 @@ export function actionsFor(row: TriageFeedRow, projectId: string): TriageAction[
       // No option is primary: ↵ must not answer a human decision on the agent's behalf.
       // Options past the sixth have no key, but are never dropped.
       const options = row.decision.options.map<TriageAction>((o, i) => ({
-        key: OPTION_KEYS[i] ?? "", label: o, option: true,
+        key: OPTION_KEYS[i] ?? "", label: o, option: true, answers: true,
         run: async () => {
           const a = await api.answerBlocker(row.id, o);
           return {
@@ -186,9 +201,18 @@ export function actionsFor(row: TriageFeedRow, projectId: string): TriageAction[
         ? api.undoRequestAction(row.id, actionId)
         : Promise.reject(new Error("the server returned no action id to undo with"));
   };
+  const isBug = row.kind === "bug";
   const accept = (status: "backlog" | "next", label: string, key: string, primary: boolean): TriageAction => ({
     key, label, primary,
     run: async () => {
+      if (isBug) {
+        const r = await api.acceptRequestTo(row.id, status);
+        return {
+          result: `Accepted → ${status === "next" ? "Next" : "Backlog"} as ${r.item.id} on ${line && line !== "unread" ? line.title : "the maintenance"} line. ${UNREADY_COPY}`,
+          undo: undoBy(r.action_id),
+          itemId: r.item.id,
+        };
+      }
       const r = await api.acceptRequestTo(row.id, status, row.suggested_prd?.id);
       const linked = row.suggested_prd ? ` · linked ${row.suggested_prd.id}` : "";
       return {
@@ -197,9 +221,27 @@ export function actionsFor(row: TriageFeedRow, projectId: string): TriageAction[
       };
     },
   });
+  const createLine: TriageAction = {
+    key: "l", label: "Create the maintenance line", primary: true, stays: true,
+    run: async () => {
+      const l = await api.createLine(projectId);
+      return {
+        result: `Created the ${l.title} line — the bug is still new; accept it now`,
+        undo: () => Promise.resolve(),
+      };
+    },
+  };
+  // A bug needs the line: with none, accept is replaced; while it loads, accept waits.
+  const acceptActions: TriageAction[] = isBug && line === null
+    ? [createLine]
+    : isBug && line === undefined
+      ? []
+      : [
+        accept("backlog", row.duplicate ? "Accept as new" : "Accept to Backlog", "a", !row.duplicate),
+        accept("next", "Accept to Next", "n", false),
+      ];
   const rest: TriageAction[] = [
-    accept("backlog", row.duplicate ? "Accept as new" : "Accept to Backlog", "a", !row.duplicate),
-    accept("next", "Accept to Next", "n", false),
+    ...acceptActions,
     {
       key: "d", label: "Decline",
       run: async () => {

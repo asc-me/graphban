@@ -87,7 +87,7 @@ _MERGE_HELP = (
     "finish the merge for items whose fleet.sign_off attestation names a commit — the "
     "reviewer's sign-off is the handoff, not the moment this process watched the item "
     "leave review. Only when the PR head is the reviewed commit, CI attested suite_green "
-    "on it, and the forge reports it MERGEABLE/CLEAN. Scoped to --prd when given; hold "
+    "on it, and the forge reports it MERGEABLE/CLEAN. Scoped to --prd or --line when given; hold "
     "deps bypass the scope. Default off (GRPH-846, GRPH-880)")
 
 
@@ -349,6 +349,11 @@ def build_parser() -> argparse.ArgumentParser:
     until.add_argument("--wave", default="wave", help="wave name, used in branch names")
     until.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     until.add_argument(
+        "--subagents", type=int, default=None, metavar="N",
+        help="tell each child it may start at most N vendor subagents (0 = none). Written "
+             "into the instruction only; omitted leaves the instruction unchanged",
+    )
+    until.add_argument(
         "--request", choices=["cheap", "frontier"], default=None,
         help="tier to REQUEST on each delegation this loop writes (PRD-35/36); default follows "
              "the brief's suggestion. Observational: the child declares what it actually is",
@@ -363,6 +368,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="scope the wave to ONE PRD's items. Without it the loop drains every ready item "
              "in the project, and `backlog` is no defence — backlog is claimable by design "
              "(GRPH-397). Needs a credential with the `fleet` tool tier to be advertised")
+    until.add_argument(
+        "--line", nargs="?", const="", default=None, metavar="LINE",
+        help="drain the project's maintenance line (GRPH-1697): claims, reviews and exits on "
+             "line items only. Bare `--line` is the project's line; a line id names it. "
+             "Exclusive with --prd. Runs in its own clone: one supervisor lock per checkout, "
+             "so do not start it on a checkout a --prd drain holds")
     until.add_argument(
         "--mcp-server", action="append", default=[], metavar="NAME",
         help="share one of YOUR MCP servers with each child, by exact name (e.g. context7). "
@@ -386,6 +397,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="print what this wave WOULD delegate and exit, without minting a seat or cutting "
              "a worktree. The scoping bug existed for exactly as long as nobody could see the "
              "plan")
+    until.add_argument(
+        "--acknowledge-reach", default=None, metavar="ITEM[,ITEM]",
+        help="pass acknowledge_reach=true on the delegate call for these items only "
+             "(comma-separated). A repo-only item whose text names credential UI is refused "
+             "until the delegator says it read those lines; items not named are unchanged, "
+             "and a run without this flag sends no acknowledge_reach (GRPH-1311). The dry "
+             "run lists the same ids and does not delegate")
     until.add_argument(
         "--entitlement", action="append", default=[], metavar="ADAPTER=ID",
         help="an entitlement id the adapter runs on (PRD-62); repeatable. The wave declares it "
@@ -451,7 +469,11 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Lists files this checkout changed since the trunk that no declared touchpoint covers\n"
             "(the supervisor withholds the PR for those) and prints the update_item call that\n"
-            "declares them. Exit 1 when any are outside; 0 when the gate would pass."
+            "declares them. A file the project's build.generated_files rule ignores is not\n"
+            "listed; while that rule is observing, the built-in list is used, matching the\n"
+            "supervisor. With no seat to read the rule from, the built-in list is used and\n"
+            "the output says the project's rule was not read. Exit 1 when any are outside;\n"
+            "0 when the gate would pass."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -634,6 +656,11 @@ def report(wave: Wave, out=None) -> None:
     for taken in wave.remote_taken:
         print(f"BRANCH TAKEN {taken}", file=out)
     print(f"spawned {len(wave.spawned)}", file=out)
+    # GRPH-1024. Always, zero included. `spawned 0` beside `HELD IN BASE 0` is nothing
+    # to do. `spawned 0` beside a count is the queue that used to exit idle with no line.
+    print(f"HELD IN BASE {len(wave.in_base)}", file=out)
+    for item_id, why in sorted(wave.in_base.items()):
+        print(f"  {item_id}: {why}", file=out)
     for child in wave.spawned:
         latency = (
             f"{child.registration_latency:.1f}s"
@@ -751,6 +778,21 @@ def report(wave: Wave, out=None) -> None:
                   file=out)
 
 
+def _acknowledge_reach(text: str | None) -> set[str] | None:
+    """`--acknowledge-reach ITEM[,ITEM]` as a set of item ids (GRPH-1311).
+
+    None when the flag was not given, which is what keeps the delegate call unchanged.
+    A flag that names nothing is an error: it would otherwise be indistinguishable from
+    omitting the flag.
+    """
+    if text is None:
+        return None
+    ids = {part.strip() for part in str(text).split(",") if part.strip()}
+    if not ids:
+        raise ValueError("--acknowledge-reach needs one or more item ids")
+    return ids
+
+
 def _until(args) -> int:
     """Planner loop. Two clients, one key: minting never goes through ALLOWED_TOOLS."""
     api_key = os.environ.get(API_KEY_ENV)
@@ -758,6 +800,17 @@ def _until(args) -> int:
         print(f"gbfleet until: ${API_KEY_ENV} is not set", file=sys.stderr)
         return 2
 
+    if args.line is not None and args.prd:
+        print("gbfleet until: --prd and --line cannot be combined", file=sys.stderr)
+        return 2
+    if args.subagents is not None and args.subagents < 0:
+        print("gbfleet until: --subagents must be 0 or more", file=sys.stderr)
+        return 2
+    try:
+        acknowledge = _acknowledge_reach(args.acknowledge_reach)
+    except ValueError as exc:
+        print(f"gbfleet until: {exc}", file=sys.stderr)
+        return 2
     template = [a for a in (args.argv or []) if a != "--"]
     try:
         factory = (
@@ -799,6 +852,10 @@ def _until(args) -> int:
         # wave runs is exactly who needs to ask.
         from . import until as until_mod
 
+        # GRPH-1348. A real run refuses this key in `_preflight_observations`. A dry run
+        # used to say nothing, so `service install` stored a key that cannot record a cut.
+        # The warning does not change the exit: the plan is still the answer.
+        _print_observations_warning(until_mod.observations_role_warning(supervisor))
         try:
             # GRPH-950: the base the loop would measure dependencies against, resolved the way
             # the loop resolves it but without the fetch — a dry run changes nothing, refs too.
@@ -814,7 +871,11 @@ def _until(args) -> int:
             elif remote:
                 dry_base = default_ref(repo, remote)
             got = until_mod.plan(planner, args.prd or None, args.max_workers,
-                                 repo=repo, base=dry_base)
+                                 repo=repo, base=dry_base, line=args.line,
+                                 acknowledge_reach=acknowledge)
+        except until_mod.ConfigError as exc:
+            print(f"gbfleet until --dry-run: {exc}", file=sys.stderr)
+            return 2
         except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
             print(f"gbfleet until --dry-run: {exc}", file=sys.stderr)
             return 2
@@ -848,11 +909,13 @@ def _until(args) -> int:
                 child_wall_clock=args.child_wall_clock,
                 quiet_after=args.quiet_after,
                 registration_window=args.registration_window,
+                subagents=args.subagents,
             ),
             workspace=Path(args.workspace) if args.workspace else None,
             debug=args.debug,
             request=args.request,
             prd=args.prd or None,
+            line=args.line,
             budget=args.budget or None,
             shared=_shared_servers(args),
             tiers=tiers,
@@ -863,6 +926,7 @@ def _until(args) -> int:
             base_branch=args.base,
             entitlements=entitlements,
             stall_after=args.stall_after,
+            acknowledge_reach=acknowledge,
         )
     except RepoLocked as exc:
         print(f"gbfleet until: {exc}", file=sys.stderr)
@@ -1129,6 +1193,7 @@ def _service(args) -> int:
         return 2
 
     if args.dry_run:
+        _print_observations_warning(_observations_warning_for_plan(plan))
         print(f"# would write {plan.unit_path}")
         print(f"# and {plan.env_path} (owner-only, ${service_mod.API_KEY_ENV})")
         print(service_mod.render(plan).decode("utf-8", "replace"))
@@ -1139,6 +1204,9 @@ def _service(args) -> int:
     except service_mod.Refused as exc:
         print(f"gbfleet service: {exc}", file=sys.stderr)
         return 2
+    role = _observations_warning_for_plan(plan)
+    if role:
+        done.warnings.append(role)
 
     print(f"runs  {plan.binary} until {' '.join(plan.until_args)}")
     print(f"every {plan.every}s (one planner registration per cycle)")
@@ -1162,6 +1230,11 @@ def _service(args) -> int:
         print(f"{plan.name}: ran and exited 0 — that is what `until` does when there is no "
               f"ready work. Next run in {plan.every}s")
         return 0
+    if done.state is not None and done.state.unsettled:
+        # GRPH-1698: exited 0 but not idle — unready line work, or no reason in the log yet.
+        # Not idle, and not a crash either: say which, and do not fail the install.
+        print(f"{done.state.line()}. Next run in {plan.every}s")
+        return 0
     code = "unknown" if done.state is None or done.state.last_exit is None \
         else done.state.last_exit
     # GRPH-1312: the err log's last line is the drain's own reason; the loader's output
@@ -1172,6 +1245,29 @@ def _service(args) -> int:
     print(f"{plan.name}: NOT running, last exit {code} — {why}", file=sys.stderr)
     print(f"        {plan.err_path} is where it said why", file=sys.stderr)
     return 1
+
+
+def _print_observations_warning(text: str) -> None:
+    if text:
+        print(f"WARNING {text}", file=sys.stderr)
+
+
+def _observations_warning_for_plan(plan) -> str:
+    """Warn when the key this unit would store cannot record observations (GRPH-1348).
+
+    No server or no key is "", not a warning: the probe cannot be asked, and a warning
+    for a flag the operator did not pass would be a guess. The probe stays out of
+    `service.install` so a unit test that writes a plan does not dial the network.
+    """
+    from .until import observations_role_warning
+
+    server = service_mod._value_of(plan.until_args, "--server")
+    key = os.environ.get(API_KEY_ENV, "")
+    if not server or not key:
+        return ""
+    project = service_mod._value_of(plan.until_args, "--project")
+    client = Graphban(base_url=server, api_key=key, project_id=project or "")
+    return observations_role_warning(client)
 
 
 def _service_status(state) -> None:
@@ -1216,6 +1312,148 @@ def _surface(args) -> int:
         return 1
     print(f"\nstored for {args.project} from {surface_mod.host_name()}")
     return 0
+
+
+#: GRPH-1823. Printed when check-touchpoints could not read `build.generated_files`
+#: and fell back to the built-in list. The supervisor logs the same fact; this command
+#: is the only place the child looks, so a missing sentence would read as "the project
+#: allows exactly these files".
+RULE_UNREAD = "the project's generated-files rule was not read"
+
+#: Seat files that carry the graphban URL and key inside the checkout. Claude's seat
+#: is a temp file outside the tree; with neither URL nor key here the command says
+#: the rule was not read rather than guessing a server.
+_SEAT_SPECS = (
+    (".grok/config.toml", "toml"),
+    (".cursor/mcp.json", "json"),
+    (".grok/mcp.json", "json"),
+    (".agents/mcp_config.json", "json"),
+)
+
+
+def _base_of_mcp(url: str) -> str:
+    """The Graphban base URL. A seat stores the MCP endpoint, which already ends in `/api/mcp`."""
+    url = url.strip().rstrip("/")
+    suffix = "/api/mcp"
+    if url.endswith(suffix):
+        url = url[: -len(suffix)].rstrip("/")
+    return url
+
+
+def _header_key(headers: object) -> str:
+    if not isinstance(headers, dict):
+        return ""
+    for name, value in headers.items():
+        if str(name).lower() == "x-api-key" and isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _pair_from_spec(spec: object) -> tuple[str, str] | None:
+    if not isinstance(spec, dict):
+        return None
+    # Antigravity's seat (`.agents/mcp_config.json`) writes `serverUrl` and the
+    # binary refuses `url` / `httpUrl`. Skipping `serverUrl` returns no pair for
+    # that file, and check-touchpoints then holds a generated file the supervisor
+    # lets through.
+    raw = spec.get("serverUrl") or spec.get("url") or spec.get("httpUrl") or ""
+    if not isinstance(raw, str) or not raw.strip().startswith(("http://", "https://")):
+        return None
+    key = _header_key(spec.get("headers"))
+    base = _base_of_mcp(raw)
+    if not key or not base:
+        return None
+    return base, key
+
+
+def _credentials_in(doc: object, *, toml: bool) -> tuple[str, str] | None:
+    if not isinstance(doc, dict):
+        return None
+    servers = doc.get("mcp_servers") if toml else (doc.get("mcpServers") or doc.get("mcp_servers"))
+    if not isinstance(servers, dict):
+        return None
+    # The seat's own entry. A shared server can also send an API-key header, and
+    # using that would read some other project's rule — or none.
+    return _pair_from_spec(servers.get("graphban"))
+
+
+def seat_credentials(checkout: Path) -> tuple[str, str] | None:
+    """`(base URL, api key)` from a seat file in `checkout`, or None.
+
+    The child is told to run check-touchpoints with no server flag. The seat the
+    supervisor wrote into the worktree is the pair it already uses to reach the
+    ledger. A key with no server, or a file that does not parse, is not that pair.
+    """
+    import tomllib
+
+    root = Path(checkout)
+    for rel, kind in _SEAT_SPECS:
+        path = root / rel
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+            doc = tomllib.loads(text) if kind == "toml" else json.loads(text)
+        except (OSError, UnicodeError, ValueError):
+            continue
+        found = _credentials_in(doc, toml=kind == "toml")
+        if found:
+            return found
+    return None
+
+
+def _generated_decision(client) -> tuple[tuple[str, ...], str]:
+    """Paths the hold ignores, and why the project's rule was not read (or "").
+
+    The same split `_note_touchpoints` makes. An observing rule was read and still
+    ignores only the built-in list. `generated_paths` is not this split: it returns
+    the configured list even while the rule is observing, which would let a file
+    through that the supervisor still holds.
+    """
+    from .supervisor import DEFAULT_GENERATED, _generated_rule
+
+    configured, observing, why = _generated_rule(client)
+    # Same line as `_note_touchpoints`. An unread rule already came back as the
+    # built-in list; an observing one still has to be swapped for it here.
+    allowed = DEFAULT_GENERATED if observing else configured
+    return allowed, why
+
+
+def _check_touchpoints(args) -> int:
+    from . import touchpoints as tp_mod
+    from .supervisor import is_generated
+
+    try:
+        measured = tp_mod.measure_checkout(args.path)
+    except ValueError as exc:
+        print(f"gbfleet check-touchpoints: {exc}", file=sys.stderr)
+        return 2
+
+    client = None
+    try:
+        creds = seat_credentials(Path(args.path))
+        if creds is not None:
+            base, key = creds
+            # The default allowlist is the supervisor's two reads and does not include
+            # this one. Passing it is what makes the read happen; omitting it falls
+            # back to the built-in list and says so.
+            client = Graphban(
+                base_url=base, api_key=key, allowed=frozenset({"get_rule_toggles"}),
+            )
+        allowed, why = _generated_decision(client)
+    finally:
+        if client is not None:
+            client.close()
+
+    missing = tp_mod.gate_missing(
+        measured, args.declared, ignore=lambda path, paths=allowed: is_generated(path, paths),
+    )
+    said = gate_report(missing, item_id=args.item)
+    text = said or "touchpoint gate: every changed file is covered by a declared touchpoint"
+    if why:
+        text = f"{text}\n{RULE_UNREAD} ({why})"
+    print(text)
+    return 1 if said else 0
 
 
 def gate_report(missing: list[str], *, item_id: str = "") -> str:
@@ -1324,17 +1562,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _gc()
 
     if args.command == "check-touchpoints":
-        from . import touchpoints as tp_mod
-        from .supervisor import is_generated
-        try:
-            measured = tp_mod.measure_checkout(args.path)
-        except ValueError as exc:
-            print(f"gbfleet check-touchpoints: {exc}", file=sys.stderr)
-            return 2
-        said = gate_report(tp_mod.gate_missing(measured, args.declared, ignore=is_generated),
-                           item_id=args.item)
-        print(said or "touchpoint gate: every changed file is covered by a declared touchpoint")
-        return 1 if said else 0
+        return _check_touchpoints(args)
 
     if args.command == "entitlement":
         return _entitlement(args)

@@ -69,9 +69,19 @@ def _agent(client, key, label) -> str:
 def _item_in_review(client, key, proj, builder) -> str:
     made = _ok(_mcp(client, key, "create_item",
                     {"project_id": proj, "title": "something to review", "effort": 3}))
-    for status in ("in_progress", "review"):
-        _ok(_mcp(client, key, "update_item",
-                 {"project_id": proj, "id": made["id"], "status": status, "agent_id": builder}))
+    _ok(_mcp(client, key, "update_item",
+             {"project_id": proj, "id": made["id"], "status": "in_progress", "agent_id": builder}))
+    _ok(_mcp(client, key, "update_item",
+             {"project_id": proj, "id": made["id"], "status": "review", "agent_id": builder}))
+    # GRPH-1730 withholds a branch with no PR. The column releases that gate.
+    from app.db import SessionLocal
+    from app.models import Item
+    s = SessionLocal()
+    try:
+        s.get(Item, made["id"]).github_url = "https://github.com/o/r/pull/1"
+        s.commit()
+    finally:
+        s.close()
     return made["id"]
 
 
@@ -92,8 +102,13 @@ def _stop_heartbeating(db, agent_id: str) -> None:
 
 def test_a_dead_holders_row_says_the_hold_has_lapsed(client, key, proj, db):
     """THE DEFECT. The hold is young, so only presence can lapse it, which is exactly the
-    P62 case. Sabotage: drop the `review_claim_lapse` block from `items.item_dict` and the row
-    goes back to naming a dead reviewer with nothing to say it is dead."""
+    P62 case. `get_item_details` is the read a planner uses (GRPH-1290): a lapsed hold is
+    not a live holder. The lapse reason is still on the row, so "nobody" and "lapsed" are
+    not the same answer.
+
+    Sabotage: in `items.item_dict`, put back `review_claimed_by: item.review_claimed_by`
+    (the raw column) and drop the `review_hold_read` overwrite. This row names the dead
+    reviewer again and the assertion fails."""
     builder = _agent(client, key, "builder")
     dead = _agent(client, key, "the reviewer that died")
     item_id = _item_in_review(client, key, proj, builder)
@@ -102,8 +117,15 @@ def test_a_dead_holders_row_says_the_hold_has_lapsed(client, key, proj, db):
     _stop_heartbeating(db, dead)
 
     row = _review_row(client, key, proj, item_id)
-    assert row["review_claimed_by"] == dead, "the raw column must still say who held it"
+    assert row["review_claimed_by"] != dead
+    assert not row.get("review_claimed_by"), row
     assert row["review_claim_lapse"] == "offline"
+    # The same renderer. A planner reading the item, not the listing, is who concluded
+    # the claim would never lapse.
+    details = _ok(_mcp(client, key, "get_item_details", {"id": item_id}))
+    assert details["review_claimed_by"] != dead
+    assert not details.get("review_claimed_by"), details
+    assert details["review_claim_lapse"] == "offline"
 
 
 def test_a_live_holders_row_carries_no_lapse(client, key, proj, db):

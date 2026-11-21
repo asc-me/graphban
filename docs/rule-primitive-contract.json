@@ -1,165 +1,237 @@
 {
-  "api_version": "1.9.0",
+  "api_version": "1.11.0",
   "primitives": [
     {
       "id": "done_predicates",
       "level": "enforced",
+      "on_direction": "tighten",
       "params": [
         {
+          "comparator": "superset_tightens",
           "name": "predicates",
           "required": false,
           "type": "list"
         }
-      ]
+      ],
+      "stage": "Merge"
     },
     {
       "id": "evidence_attached",
       "level": "checked",
+      "on_direction": "tighten",
       "params": [
         {
+          "comparator": null,
           "name": "kinds",
           "required": false,
           "type": "str"
         }
-      ]
+      ],
+      "stage": "Review"
     },
     {
       "id": "evidence_required",
       "level": "enforced",
+      "on_direction": "tighten",
       "params": [
         {
+          "comparator": null,
           "name": "engine",
           "required": false,
           "type": "str"
         },
         {
+          "comparator": null,
           "name": "path",
           "required": false,
           "type": "str"
         }
-      ]
+      ],
+      "stage": "Build"
     },
     {
       "id": "exclusive_areas",
       "level": "enforced",
+      "on_direction": "tighten",
       "params": [
         {
+          "comparator": "superset_tightens",
           "name": "paths",
           "required": false,
           "type": "list"
         }
-      ]
+      ],
+      "stage": "Plan"
+    },
+    {
+      "id": "found_bug",
+      "level": "enforced",
+      "on_direction": "tighten",
+      "params": [
+        {
+          "comparator": null,
+          "name": "mode",
+          "required": false,
+          "type": "str"
+        }
+      ],
+      "stage": "Build"
     },
     {
       "id": "gap_followup_link",
       "level": "enforced",
-      "params": []
+      "on_direction": "tighten",
+      "params": [],
+      "stage": "Review"
     },
     {
       "id": "generated_files",
       "level": "checked",
+      "on_direction": "loosen",
       "params": [
         {
+          "comparator": "superset_loosens",
           "name": "paths",
           "required": false,
           "type": "list"
         }
-      ]
+      ],
+      "stage": "Build"
     },
     {
       "id": "human_only_clause",
       "level": "enforced",
-      "params": []
+      "on_direction": "tighten",
+      "params": [],
+      "stage": "Spec"
+    },
+    {
+      "id": "memory_write_mode",
+      "level": "enforced",
+      "on_direction": "tighten",
+      "params": [
+        {
+          "comparator": null,
+          "name": "mode",
+          "required": false,
+          "type": "str"
+        }
+      ],
+      "stage": "Learn"
     },
     {
       "id": "path_classes",
       "level": "checked",
+      "on_direction": "tighten",
       "params": [
         {
+          "comparator": null,
           "name": "docs",
           "required": false,
           "type": "list"
         },
         {
+          "comparator": null,
           "name": "frontend",
           "required": false,
           "type": "list"
         },
         {
+          "comparator": null,
           "name": "mcp_tool",
           "required": false,
           "type": "list"
         },
         {
+          "comparator": null,
           "name": "migration",
           "required": false,
           "type": "list"
         }
-      ]
+      ],
+      "stage": "Plan"
     },
     {
       "id": "reopen_on_red",
       "level": "enforced",
-      "params": []
+      "on_direction": "tighten",
+      "params": [],
+      "stage": "Merge"
     },
     {
       "id": "reviewer_property",
       "level": "enforced",
+      "on_direction": "tighten",
       "params": [
         {
+          "comparator": null,
           "name": "property",
           "required": false,
           "type": "str"
         }
-      ]
+      ],
+      "stage": "Review"
     },
     {
       "id": "sabotage_receipt",
       "level": "enforced",
+      "on_direction": "tighten",
       "params": [
         {
+          "comparator": "greater_tightens",
           "name": "min_effort",
           "required": false,
           "type": "int"
         },
         {
+          "comparator": "greater_tightens",
           "name": "min_tests_failed",
           "required": false,
           "type": "int"
         }
-      ]
+      ],
+      "stage": "Review"
     },
     {
       "id": "staffing_scope",
       "level": "checked",
-      "params": []
+      "on_direction": "tighten",
+      "params": [],
+      "stage": "Review"
     },
     {
       "id": "test_scope",
       "level": "checked",
+      "on_direction": "tighten",
       "params": [
         {
+          "comparator": "superset_tightens",
           "name": "engines",
           "required": false,
           "type": "list"
         },
         {
+          "comparator": null,
           "name": "mode",
           "required": false,
           "type": "str"
         }
-      ]
+      ],
+      "stage": "Build"
     },
     {
       "id": "undeclared_files",
       "level": "checked",
+      "on_direction": "tighten",
       "params": [
         {
+          "comparator": null,
           "name": "mode",
           "required": false,
           "type": "str"
         }
-      ]
+      ],
+      "stage": "Build"
     }
   ]
 }

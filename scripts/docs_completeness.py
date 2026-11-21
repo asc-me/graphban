@@ -103,7 +103,7 @@ def live_tables() -> set[str]:
 
 def mentioned_routes(text: str) -> set[str]:
     return {re.sub(r"\{[^}]+\}", "{}", m.rstrip("/"))
-            for m in re.findall(r"`(/[A-Za-z0-9_\-/{}]+)`", text)}
+            for m in re.findall(r"`(/[A-Za-z0-9_.\-/{}]+)`", text)}  # `.`: /api/https/ca.crt
 
 
 def mentioned_settings(text: str) -> set[str]:

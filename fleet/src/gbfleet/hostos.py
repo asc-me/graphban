@@ -180,6 +180,9 @@ def restrict_to_owner(path: Path) -> bool:
     still readable by them. The GHA runner keeps those extras as explicit ACEs, which
     is why `/inheritance:r` alone left `is_owner_only` false there (GRPH-855).
 
+    **A directory's Windows grant is inheritable** (`(OI)(CI)(F)`), or stripping its
+    inheritance strips every child that only had inherited entries too (GRPH-1662).
+
     **A directory gets `0o700`, not `0o600`.** Windows never had this problem, because
     `(F)` is full control and includes traverse; POSIX does, and getting it wrong makes
     the directory unusable by the owner too. That is not a hypothetical — it broke the
@@ -203,9 +206,20 @@ def restrict_to_owner(path: Path) -> bool:
     user = os.environ.get("USERNAME") or _fallback_user()
     if not user:
         return False
+    # A directory's grant is INHERITABLE, `(OI)(CI)(F)`. `/inheritance:r` re-propagates
+    # the directory's ACL to everything already under it, and a child whose only entries
+    # were inherited keeps only what the parent now hands down. A bare `(F)` hands down
+    # nothing, so a log that existed under `CONFIG_DIR` before `service install` ended with
+    # no entry its owner could read, and `err_reason` came back "" (GRPH-1662). With the
+    # flags the owner is still the only principal — `is_owner_only` holds for the
+    # directory — and every child inherits exactly that one entry.
+    try:
+        rights = "(OI)(CI)(F)" if path.is_dir() else "(F)"
+    except OSError:
+        return False
     try:
         done = subprocess.run(
-            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:(F)"],
+            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:{rights}"],
             capture_output=True, text=True, timeout=30,
         )
     except (OSError, subprocess.SubprocessError):

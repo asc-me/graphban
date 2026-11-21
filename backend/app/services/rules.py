@@ -103,6 +103,10 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
     Rule("gate.decompose_requires_approval", "plan", "Decompose needs approval",
          "Tasks are filed from a PRD only once it has earned approval.",
          "enforced", _src("app/services/prds.py", "DecomposeRequiresApproval"), "code"),
+    Rule("spec.remote_is_read_only", "plan", "Another deployment's spec is read-only",
+         "A spec whose home is another deployment is shown here but cannot be decomposed; "
+         "the refusal names its home box.",
+         "enforced", _src("app/services/spec_pull.py", "RemoteSpecRefused"), "code"),
     Rule("gitops.observe_answer_required", "build", "Observe before the plan",
          "A gitops plan's Observe step needs a named answer before it, or the plan, can move on.",
          "enforced", _src("app/services/gitops.py", "refuse_observe_progress"), "code"),
@@ -116,6 +120,20 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
          "Linking, re-pointing or unlinking this deployment's cloud org is done by the box's "
          "operator or an owner/admin of one of their projects, not by any member.",
          "enforced", _src("app/routers/sync.py", "refuse_unless_box_admin"), "code", scope="org"),
+    Rule("sync.destination_owned_by_org", "build", "The org owns a linked box's destination",
+         "On a linked deployment the publish URL and branch are set by the org admin; a local "
+         "path and branch saved on the box are refused and the stored pair is left as it is.",
+         "enforced", _src("app/routers/sync.py", "put_box_destination"), "code", scope="org"),
+    Rule("sync.publishing_needs_box_admin", "build", "Publishing needs a box admin",
+         "Turning this deployment's git publishing on or off, and setting its credential, is "
+         "done by an admin of the box. An org admin and a non-admin on the box see the switch "
+         "and cannot change it; the org never turns publishing on for a machine.",
+         "enforced", _src("app/routers/platform.py", "_refuse_unless_box_admin"), "code",
+         scope="org"),
+    Rule("sync.publish_to_org_needs_admin", "build", "Publish to org needs a project admin",
+         "Turning a project's publish-to-org switches (specs, item digests) off or on is done by "
+         "its owner or an admin, not by any member.",
+         "enforced", _src("app/routers/projects.py", "set_publish_to_org"), "code"),
     Rule("setup.posture_needs_instance_admin", "build", "The instance posture needs an instance admin",
          "Whether this box's secrets and signup are safe to expose is read only by its operator "
          "(hosted) or an owner of one of its projects (self-host); anyone else learns nothing.",
@@ -130,6 +148,11 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
     Rule("reach.acknowledge_signals", "plan", "Reach signals need an acknowledgement",
          "Work whose text suggests a running system needs acknowledge_reach=true to delegate.",
          "enforced", _src("app/services/delegation.py", "Refused"), "code"),
+    Rule("close.resolution_points_at_the_work", "review", "A duplicate points at finished work",
+         "An item closed as a duplicate or superseded skips the attestation only because it "
+         "names the work that replaced it: a duplicate's target must be done, in the same "
+         "project, and the agent holding the item cannot close it this way.",
+         "enforced", _src("app/services/items.py", "ResolutionRefused"), "code"),
     Rule("review.not_own_work", "review", "Not your own work",
          "The agent that built an item cannot sign it off.",
          "enforced", _src("app/services/fleet.py", "SelfReview"), "code"),
@@ -152,6 +175,10 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
     Rule("review.acceptance_covered", "review", "Every acceptance clause is tested",
          "Sign-off names a test for each clause under ## Acceptance.",
          "enforced", _src("app/services/fleet.py", "MissingAcceptanceCoverage"), "code"),
+    Rule("review.dependencies_done", "review", "Open dependencies are not signed off",
+         "Sign-off refuses an item while a dependency link points at work that is not done. "
+         "A planner can waive it on the record with a reason.",
+         "enforced", _src("app/services/fleet.py", "DependenciesOpen"), "code"),
     Rule("memory.independent_adjudication", "learn", "Agents do not publish their own memory",
          "An agent may discard its candidate shard; only an independent judge publishes one.",
          "advisory", _src("app/services/memory.py", "agent_publish"), "code", channel="doc"),
@@ -196,6 +223,19 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
     Rule("rules.toggle_needs_admin", "learn", "Toggles need a project admin",
          "A project's library rule toggles are set by its owner or an admin.",
          "enforced", _src("app/services/rule_toggles.py", "Refused"), "code"),
+    Rule("rules.proposal_cited", "learn", "A rule proposal is cited and checkable",
+         "A rule proposal needs a citation that resolves (an item, observation or lesson of the "
+         "project, a file present at the cited commit, or a url), a valid draft and a "
+         "computable direction; a citation that could not be checked is a refusal.",
+         "enforced", _src("app/services/rule_proposals.py", "Refused"), "code"),
+    Rule("line.one_per_project", "plan", "One maintenance line per project",
+         "A project has at most one maintenance line; a second create_line is refused and "
+         "names the existing line.",
+         "enforced", _src("app/services/lines.py", "Refused"), "code"),
+    Rule("org.only_owner_cannot_leave", "build", "The only owner cannot leave",
+         "A member may leave an organization, but its only owner is refused until somebody "
+         "else is made an owner.",
+         "enforced", _src("app/services/orgs.py", "leave_org"), "code", scope="org"),
     Rule("agents.operating_loop", "build", "Operating loop",
          "Agents follow the operating loop and invariants in AGENTS.md.",
          "advisory", Enforcer("doc", "AGENTS.md"), "repo_file", channel="doc"),
@@ -208,7 +248,7 @@ RULES_BY_ID = {r.id: r for r in RULES}
 #: draw each twice — so a refusal citing one is valid without being in `RULES_BY_ID`.
 LIBRARY_BOUND_RULE_IDS = frozenset({"review.sabotage_required", "review.gap_blocks_sign_off",
                                     "review.distinct_vendor", "build.engine_evidence",
-                                    "accept.human_clause_blocks"})
+                                    "accept.human_clause_blocks", "build.found_bug"})
 
 #: Package data written by the build of what ships — `graphban_pack.py` runs
 #: `scripts/refusal_ratchet.py publish`, which writes nothing for a failing tree (GRPH-1185).
@@ -338,11 +378,8 @@ ADJUDICATION = "memory.independent_adjudication"
 
 
 def _write_mode(db: Session, project_id: str | None) -> str:
-    from app.models import Project
-    from app.services import memory
-    p = db.get(Project, project_id) if project_id else None
-    mode = p.memory_write_mode if p else "review"
-    return mode if mode in memory.WRITE_MODES else "review"
+    from app.services import rule_toggles
+    return rule_toggles.memory_write_mode(db, project_id)
 
 
 def _budget_cap_value(db: Session, project_id: str | None) -> dict:
@@ -359,8 +396,13 @@ def registry(db: Session, project_id: str | None, view=None) -> list[dict]:
     a linked box each resolve is an org fetch and two of them can disagree (GRPH-1196)."""
     if view is None:
         view = gitops.resolve(db, project_id)
+    from app.services import rule_toggles
     out = []
     for r in RULES:
+        if r.id in rule_toggles.LIBRARY:
+            # GRPH-1603: a static rule the pack now carries (`memory.write_mode`) is drawn once,
+            # from the library, where its value and source resolve.
+            continue
         d = {
             "id": r.id, "stage": r.stage, "title": r.title, "summary": r.summary,
             "enforcement": r.enforcement, "channel": r.channel,
@@ -389,8 +431,12 @@ def _library_entries(db: Session, project_id: str | None) -> list[dict]:
     PRIMITIVE provides; a rule that is off stays in the list and `rule_used` draws it not used."""
     from app.services import rule_toggles
     out = []
+    from app.services import custom_rules
     for t in rule_toggles.effective(db, project_id):
-        lib = rule_toggles.LIBRARY[t["rule_id"]]
+        if custom_rules.is_custom(t["rule_id"]):
+            lib = custom_rules.library_rule(custom_rules.get(db, t["rule_id"], project_id))
+        else:
+            lib = rule_toggles.LIBRARY[t["rule_id"]]
         out.append({
             "id": lib.id, "stage": lib.stage, "title": lib.title, "summary": lib.summary,
             "enforcement": lib.enforcement, "channel": None,

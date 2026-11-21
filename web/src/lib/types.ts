@@ -1,6 +1,25 @@
 export type Status = "backlog" | "next" | "in_progress" | "review" | "done" | "blocked";
 export type Fidelity = "low" | "high";
 /** What kind of change an item is (GRPH-1358); `""` = not recorded, NOT "not a feature". */
+export type Severity = "" | "security";
+
+/** The project's maintenance line (GRPH-1681). */
+export interface MaintenanceLine {
+  id: string;
+  title: string;
+}
+
+/** `GET /projects/{id}/line/unscoped_fixes` (GRPH-1686): `count` is present, and 0 when none. */
+export interface UnscopedFixes {
+  ids: string[];
+  count: number;
+}
+
+/** POST /items body for a fix (GRPH-1683): scope is `line_id` or `prd_id` + `blocks`. */
+export interface ItemCreateBody extends Partial<ItemDetail> {
+  blocks?: string;
+}
+
 export type ItemKind = "feature" | "fix" | "chore" | "";
 /**
  * Where an item's work lands (GRPH-832). `repo` changes files in a worktree; `deploy` acts on
@@ -16,15 +35,55 @@ export interface User {
   handle: string;
   email: string;
   avatar: string;
+  /** Second colour of an ombre dot; absent or null is a solid dot. */
+  avatar2?: string | null;
+  /** Tile pattern id; absent is `none`. */
+  avatar_pattern?: ProjectPattern | null;
   initials: string;
+  /** `GET /auth/me` only. */
+  api_keys?: { count: number; projects: string[] };
 }
+
+/** `PATCH /auth/me` body: every field optional, all-or-nothing. */
+export interface ProfilePatch {
+  name?: string;
+  handle?: string;
+  initials?: string;
+  avatar?: string;
+  avatar2?: string | null;
+  avatar_pattern?: ProjectPattern;
+}
+
+/** `GET /auth/me/handle-check`. */
+export interface HandleCheck {
+  handle: string;
+  available: boolean;
+  code: string | null;
+  org: string | null;
+}
+
+/** Tile pattern laid over a project's fill. `none` is unpatterned. */
+export type ProjectPattern =
+  | "none"
+  | "speckled"
+  | "crosshatch"
+  | "chevron"
+  | "herringbone"
+  | "stripes"
+  | "paisley"
+  | "bubbles";
 
 export interface Project {
   id: string;
   name: string;
   /** Short key prefix: item/request/PRD keys render as <TAG>-<n> / -R<n> / -P<n> (PRD-13). */
   tag: string;
+  /** The one solid colour for chips, graph nodes, borders and text. Not the tile's second colour. */
   accent: string;
+  /** Ombre's second colour. Null = solid. Only shapes the tile fill. */
+  accent2?: string | null;
+  /** Pattern over the tile fill. Only shapes the tile fill. */
+  pattern?: ProjectPattern;
   visibility: string;
   description: string;
   share_global_memory: boolean;
@@ -33,6 +92,8 @@ export interface Project {
   embed_model: string;
   /** Normalized repository (`github.com/acme/app`); null = never set (GRPH-1365). */
   repo_url?: string | null;
+  /** What a linked box publishes to the org for this project (GRPH-1674); both default on. */
+  publish_to_org?: { specs: boolean; item_digests: boolean };
   // Memory auto-triage toggles (AL-227).
   memory_auto_reject: boolean;
   memory_write_mode: string;
@@ -541,6 +602,20 @@ export interface Org {
   name: string;
   plan: string;
   role: OrgRole;
+  /** Your org-only handle, present only where it differs from your account handle. */
+  handle?: string | null;
+}
+
+/** A pending invitation addressed to the caller (`GET /me/invites`). */
+export interface MyInvite {
+  id: string;
+  token: string;
+  org_id: string;
+  org_name: string;
+  role: OrgRole;
+  invited_by: string;
+  created_at: string;
+  expires_at?: string | null;
 }
 
 export interface OrgProjectAccess {
@@ -768,6 +843,12 @@ export interface Item {
   fidelity: Fidelity;
   /** Always sent by the server; optional only so fixtures predating it still type-check. */
   kind?: ItemKind;
+  /** The maintenance line a fix is filed on (GRPH-1681); null/absent for every other item. */
+  line_id?: string | null;
+  /** GRPH-1683: `""` = not recorded, `security` = a security fix. */
+  severity?: Severity;
+  /** GRPH-1695: a fix's provenance. Sent on fixes only; null = "not recorded". */
+  found_during?: string | null;
   /** Where this item's work lands (GRPH-832). `deploy` is refused to every spawned agent. */
   reach: Reach;
   created_at: string;
@@ -776,6 +857,17 @@ export interface Item {
   done_at: string | null;
   /** Absent unless an open decision wait, or a ticket blocked on one. */
   question_state?: QuestionState | null;
+  /** Closed as a duplicate or superseded (GRPH-1671): done, but delivered nothing. */
+  resolution?: ItemResolution | null;
+}
+
+export interface ItemResolution {
+  kind: "duplicate" | "superseded";
+  /** The item (or, for superseded, the PRD) that carries the work instead. */
+  of: string;
+  reason: string;
+  by: string;
+  at: string;
 }
 
 /** The full record: `GET /items/{id}`, or the list with `?fields=full`. The project list
@@ -1169,6 +1261,8 @@ export interface TriageAnsweredRow extends TriageFeedBase {
   /** "answered by <person>" or "answered from <source> by <agent>". */
   answered_by: string;
   drain: DrainNote;
+  /** The ticket the answered question blocked, so an alert's ticket key still finds the row (GRPH-1655). */
+  blocks?: { id: string; title: string };
 }
 
 export type TriageFeedRow =
@@ -1408,11 +1502,52 @@ export interface SyncMappingRow {
   last_push_reason: string | null;
 }
 
+/** One local project's sync state from `GET /api/sync/projects` `local` (GRPH-1739). */
+export interface SyncBackfill {
+  total: number;
+  confirmed: number;
+  parked: number;
+  state: "running" | "done" | "parked" | "refused";
+}
+
+export interface LocalSyncProject {
+  project_id: string;
+  /** No mapping row is `local`. It is not reported as digests. */
+  sync_level: "sync" | "digests" | "local";
+  cloud_permission: "read_only" | "comments" | "proposals" | null;
+  backfill: SyncBackfill;
+  queued: number;
+  parked: { count: number; reasons: string[] };
+  backlog_bytes: number;
+  /**
+   * The outbox table is at its 100 MB cap. `false` means that table was measured
+   * and is under the cap. `null` means this read did not measure it — not "fine".
+   */
+  backlog_full: boolean | null;
+  /** Why the queue is not moving. Null means it is not held. */
+  held_by: "budget" | "retry_after" | "contract" | null;
+  last_push_at: string | null;
+  /** `unknown` is a real result. It is not a success. */
+  last_push_result: "ok" | "refused" | "unknown" | null;
+}
+
+export interface SyncBudget {
+  bytes_per_min: number;
+  requests_per_min: number;
+}
+
+export interface ProjectSyncResult {
+  project: LocalSyncProject;
+  backfill: (SyncBackfill & { seeded?: number; skipped?: number; reason?: string | null; owner_label?: string | null }) | null;
+}
+
 export interface CloudProjectsResult {
   status: "ok" | "refused" | "unknown";
   projects?: CloudProject[];
   reason?: string;
   mapping: SyncMappingRow[];
+  /** Absent means this response was not the project-sync read. An empty list means none exist. */
+  local?: LocalSyncProject[];
 }
 
 export interface ProjectPushResult {
@@ -1833,7 +1968,10 @@ export interface PrdCoverageSection {
   /** False for framing prose (Problem, Goals, Non-goals, …) — never counted as a gap. */
   implementable: boolean;
   item_count: number;
+  /** Delivered items — excludes ones closed as duplicate/superseded (GRPH-1672). */
   done: number;
+  /** Closed as duplicate or superseded: `done` on the board, delivered nothing. */
+  resolved: number;
   by_status: Record<string, number>;
   gap: boolean;
   /** Heading with no substance (placeholder / blank). Not a task gap. */
@@ -1885,6 +2023,8 @@ export interface PrdCoverage {
   empty_sections: string[];
   total_items: number;
   done_items: number;
+  /** Closed as duplicate/superseded — not in `done_items` nor the `percent_done` denominator. */
+  resolved_items: number;
   percent_done: number;
   open_high_fidelity: number;
 }
@@ -2587,6 +2727,14 @@ export interface FleetPolicyCaps {
   period?: "day" | "week" | "month" | null;
 }
 
+export type LadderRungId = "subscription" | "api_key" | "local";
+export type TieBreakId = "soonest_reset" | "most_headroom" | "cheapest";
+
+export interface RungPreference {
+  order?: string[] | null;
+  tie_break?: TieBreakId | null;
+}
+
 export interface FleetPolicy {
   local_only: boolean;
   reviewer_cross_vendor: boolean;
@@ -2599,6 +2747,16 @@ export interface FleetPolicy {
   /** GRPH-P76: next available (S4) or stack-ranked subscriptions on the policy. */
   routing_mode?: "next_available" | "custom_hierarchy" | null;
   subscription_order?: string[] | null;
+  /**
+   * GRPH-1713: a preference WITHIN each ladder rung — an explicit order (api_key and local; the
+   * subscription rung's is `subscription_order`; kept only under custom hierarchy) and the
+   * rung's own tie-break. The ladder order itself is fixed.
+   */
+  rung_preference?: Partial<Record<LadderRungId, RungPreference>> | null;
+  /** GRPH-1505: the router's LAST sort key. Absent = soonest reset (the default, not stored). */
+  tie_break?: "soonest_reset" | "most_headroom" | "cheapest" | null;
+  /** GRPH-1505: when the ladder's top rung has no headroom. Absent = fall through. */
+  when_exhausted?: "fall_through" | "hold_until_reset" | null;
 }
 
 export interface FleetProfileRead {
@@ -3412,17 +3570,94 @@ export interface RuleToggle {
   params: RuleToggleValue<Record<string, RuleParamValue>>;
   /** Per field, what a Reset would inherit (GRPH-1631). */
   inherits?: { on: RuleToggleInherits; params: RuleToggleInherits };
+  /** Per field, the VALUE a Reset would land on: the org row's, else the library default (GRPH-1727). */
+  inherited?: { on: boolean; params: Record<string, RuleParamValue> };
   locked: boolean;
   /** The org id holding the lock; null when unlocked. */
   locked_by: string | null;
   /** Only on `merge.done_predicates`: each predicate `done` needs and where it came from. */
   effective_predicates?: EffectivePredicate[];
+  /** GRPH-1777: `observing` (on, measured, not enforced) or `active`. */
+  state?: string | null;
+  /** Present while `state` is `observing`; null/absent reads UNMEASURED, never 0. */
+  observation?: RuleObservationSummary | null;
+}
+
+/** What an observing rule has recorded since it began observing (GRPH-1777). */
+export interface RuleObservationSummary {
+  since: string | null;
+  would_hold: number | null;
+  would_refuse: number | null;
+  would_allow?: number | null;
+  would_have: number | null;
+  decision_due: boolean;
+  decision_due_reason: string | null;
+  /** Who measures the would-have (GRPH-1809). Absent from an older server: read as "server". */
+  measured_by?: "server" | "supervisor" | "brief";
+  /** Server rules: checks that ran since adoption (sign-offs checked). */
+  checks?: number | null;
+  /** What a check is ("sign-offs"); null when the server does not count this rule's checks. */
+  checks_noun?: string | null;
+  /** Supervisor rules: when the fleet supervisor last reported; null = not yet. */
+  last_supervisor_report?: string | null;
+}
+
+/** One would-have outcome row; the rule's own history, kept across promotion. */
+export interface RuleObservation {
+  id: number;
+  rule_id: string;
+  outcome: "would_hold" | "would_refuse";
+  item_id: string | null;
+  commit: string | null;
+  detail: Record<string, unknown>;
+  at: string;
+}
+
+/** Adopted or open guidance for a stage: ADVISORY text with its citations (GRPH-1780). */
+export interface RuleGuidance {
+  id: number;
+  project_id: string;
+  kind: string;
+  stage: string;
+  label: string;
+  text: string;
+  citations: RuleProposalCitation[];
+  proposer: string;
+  proposer_kind: string;
+  status: string;
+  created_at: string;
 }
 
 export interface EffectivePredicate {
   name: string;
   source: "deployment" | "project";
   when?: string;
+}
+
+/** A measured value from `GET /rules/effect`: never a bare 0 when `status` is not `measured`. */
+export interface RuleMeasured {
+  status: "measured" | "insufficient" | "unavailable";
+  value: number | null;
+  n: number | null;
+  min_n: number;
+  reason: string | null;
+}
+
+export interface RuleEffectRule {
+  rule_id: string;
+  /** Earliest recorded off→on in this scope; null when the rule was never adopted or its time is unknown. */
+  adopted_at?: string | null;
+  /** The server's caveat on the escape windows (observational, no cause claimed). */
+  escape_note?: string | null;
+  caught: RuleMeasured & { items?: string[] };
+  cost: { overridden: RuleMeasured; held_seconds: RuleMeasured };
+  escape_rate: { before: RuleMeasured; after: RuleMeasured };
+}
+
+/** `GET /rules/effect` for one project (GRPH-1265). */
+export interface RuleEffect {
+  scope: string;
+  rules: RuleEffectRule[];
 }
 
 export interface RuleToggles {
@@ -3669,8 +3904,49 @@ export interface HarnessRoutingReason {
   at: string | null;
 }
 
+/** GRPH-1712: one decision a draft policy would have moved, re-ranked from its stored candidates. */
+export interface RoutingReplayMove {
+  item_key: string;
+  at: string;
+  from: { verdict: string; entitlement_id: string | null };
+  to: { verdict: string; entitlement_id: string | null };
+}
+
+/** GRPH-1712: GET /harness/capacity/replay — the routing decisions of the window re-ranked under a
+ *  draft policy. `moved`/`held` are null when nothing in the window is replayable (unknown, not 0). */
+export interface RoutingReplay {
+  project_id: string;
+  days: number;
+  window_start: string;
+  window_end: string;
+  decisions: number;
+  replayable: number;
+  not_replayable: number;
+  moved: number | null;
+  held: number | null;
+  examples: RoutingReplayMove[];
+  reason: string | null;
+}
+
+/** The draft a replay re-ranks under; an absent key keeps what each decision recorded. */
+export interface RoutingReplayProposal {
+  tie_break?: string;
+  when_exhausted?: string;
+  ladder?: string[];
+  routing_mode?: string;
+  subscription_order?: string[] | null;
+  /** GRPH-1713: api_key and local orders (sent only with a routing_mode). */
+  rung_order?: Partial<Record<"api_key" | "local", string[]>> | null;
+  /** GRPH-1713: a rung's own tie-break. */
+  rung_tie_break?: Partial<Record<LadderRungId, string>> | null;
+  days?: number;
+}
+
 /** GRPH-1405: where the test suites run — the `build.test_scope` rule's `mode` param. */
 export type TestScopeMode = "agent_full" | "agent_and_pr" | "agent_targeted";
+
+/** GRPH-1703: what a builder does with a bug it finds — the `build.found_bug` rule's `mode` param. */
+export type FoundBugMode = "fix_in_build" | "file_ticket";
 
 /** One row of the bell's panel (GRPH-1527). */
 export interface AlertRow {
@@ -3705,4 +3981,90 @@ export interface PushStatus {
 export interface AlertsFeed {
   unread: number;
   alerts: AlertRow[];
+}
+
+/** A blocking fix on a PRD (GRPH-1684): `blocks` are the keys of the items it holds. */
+export interface BlockingFix { id: string; status: string; blocks: string[] }
+
+/** `/prds/{id}/completeness`. `blocking_fixes` is absent when the server did not compute it. */
+export interface PrdCompleteness { blocking_fixes?: BlockingFix[] }
+
+/** A cited file span, an item, an observation, a lesson or a url (GRPH-1775). */
+export type RuleProposalCitation =
+  | { kind: "file"; ref: { path: string; commit: string; lines: string } }
+  | { kind: "item" | "observation" | "lesson" | "url"; ref: string };
+
+/** A rule proposal (GRPH-1775 / P91 D2). `loosens` is the server's own direction verdict. */
+export interface RuleProposal {
+  id: number;
+  project_id: string;
+  kind: string;
+  rule_id: string;
+  primitive: string;
+  draft: Record<string, unknown>;
+  params: Record<string, unknown>;
+  citations: RuleProposalCitation[];
+  proposer: string;
+  proposer_kind: string;
+  direction: string;
+  loosens: boolean;
+  status: string;
+  folded: boolean;
+  created_at: string;
+  decided_by?: string | null;
+  decided_reason?: string | null;
+}
+
+/** Who decided a proposal, when and why, read from its audit event (GRPH-1807). */
+export interface ProposalDecision {
+  by: string;
+  at: string | null;
+  reason: string | null;
+}
+
+/** The rule-primitive contract as served by the API (GRPH-1773 / GRPH-1810). */
+export interface RulePrimitiveParam {
+  name: string;
+  type: string;
+  required: boolean;
+  comparator: string | null;
+}
+
+export interface RulePrimitive {
+  id: string;
+  stage: string;
+  level: string;
+  params: RulePrimitiveParam[];
+}
+
+export interface RulePrimitiveContract {
+  api_version: string;
+  primitives: RulePrimitive[];
+}
+
+export interface CustomRuleWrite {
+  slug: string;
+  primitive: string;
+  title: string;
+  why: string;
+  reason: string;
+  params: Record<string, unknown>;
+}
+
+/** A custom rule with its author and why (GRPH-1774 / P91 D1). */
+export interface CustomRule {
+  rule_id: string;
+  primitive: string;
+  stage: string;
+  title: string;
+  why: string;
+  claims: string;
+  params: Record<string, unknown>;
+  state: string;
+  author: string | null;
+  reason: string;
+  created_at: string;
+  on: boolean;
+  source: string;
+  unmeasured_reason?: string | null;
 }

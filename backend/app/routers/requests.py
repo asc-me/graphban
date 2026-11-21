@@ -22,6 +22,7 @@ from app.schemas import ItemOut
 from app.security import authz
 from app.security.deps import get_current_user
 from app.services import duplicates as dup_svc
+from app.services import handles
 from app.services import keys
 from app.services import requests as req_svc
 
@@ -166,11 +167,11 @@ def accept(
     item instead of minting a second, so a double-click cannot fork one report into two
     pieces of work.
     """
-    _writable(db, user, request_id)
+    existing_req = _writable(db, user, request_id)
     body = body or RequestAcceptIn()
     try:
         result = req_svc.accept_request(
-            db, request_id, reporter={"name": user.name, "handle": user.handle, "avatar": user.avatar},
+            db, request_id, reporter={"name": user.name, "handle": handles.project_handle(db, user, existing_req.project_id), "avatar": user.avatar},
             status=body.status, prd_id=body.prd_id, actor=user,
         )
     except ValueError as e:

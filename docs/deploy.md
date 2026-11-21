@@ -17,7 +17,7 @@ step here has been run in anger.
   already runs another Postgres and had `:8000` busy — the **server's** `.env`
   sets `DB_PORT=5433`, `API_PORT=8001`, `WEB_PORT=8080`
   (`CORS_ORIGINS=http://192.168.50.81:8080,...`, stub providers).
-- **Services:** `docker compose` — `db` (pgvector), `api`, `web` (nginx SPA).
+- **Services:** `docker compose` — `db` (pgvector), `api`, `web` (Caddy: the SPA, the `/api` proxy, and the box's HTTPS listener).
   Each runs with `restart: unless-stopped`, so the stack comes back after a host
   reboot; a container you `docker compose stop` stays stopped.
 - **Schema:** Alembic migrations run automatically on API startup (Postgres); the
@@ -64,9 +64,9 @@ numeric queue depth while the two workers ran, and `not_running` / `None` after 
 
 ### Rate limits and `TRUSTED_HOPS` (GRPH-439, GRPH-553)
 
-The compose stack puts **nginx in front of uvicorn** — the same topology as the hosted
+The compose stack puts **Caddy in front of uvicorn** — the same topology as the hosted
 deployment. `TRUSTED_PROXY` was documented for that one and never carried here, and the cost
-was quiet: `security/net.client_ip` fell back to the socket peer, which behind nginx is the
+was quiet: `security/net.client_ip` fell back to the socket peer, which behind Caddy is the
 container address for every caller. The per-IP sliding window on `/api/public/*` and on login
 became a **per-deployment** one. Nothing failed; the limits fired on the wrong population.
 
@@ -74,21 +74,21 @@ became a **per-deployment** one. Nothing failed; the limits fired on the wrong p
 are traps:
 
 - Setting `TRUSTED_PROXY=true` here reads the **first** `X-Forwarded-For` hop, and
-  `nginx.conf.template` uses `$proxy_add_x_forwarded_for`, which *appends* to whatever the
+  `web/Caddyfile` *appends* (`trusted_proxies`, the equivalent of nginx's `$proxy_add_x_forwarded_for`) to whatever the
   client sent. `X-Forwarded-For: 9.9.9.9` from a browser arrives as `9.9.9.9, 172.20.0.1`, so
   the flag hands every caller its own bucket key — a rate-limit **bypass**, worse than the
   shared bucket it replaces.
-- Making nginx authoritative with `X-Forwarded-For $remote_addr` fixes compose and **breaks
+- Making the proxy authoritative (overwriting `X-Forwarded-For` with the peer address) fixes compose and **breaks
   Railway**, where the same template runs behind an edge and `$remote_addr` *is* the edge, so
   overwriting collapses every hosted caller into one bucket.
 
-So nginx is unchanged — one template, appending everywhere — and the app counts hops from the
+So the proxy appends — one Caddyfile, appending everywhere — and the app counts hops from the
 **right**, which only ever reads what a proxy actually observed:
 
 | Where | Chain | `TRUSTED_HOPS` | The app reads |
 |---|---|---|---|
-| compose self-host | client → nginx → app | `1` (set in `docker-compose.yml`) | the last hop: the peer nginx saw, i.e. the client |
-| Railway (the owner's deployment) | client → edge → nginx → app | `2` | the second-from-last: what the edge saw |
+| compose self-host | client → Caddy → app | `1` (set in `docker-compose.yml`) | the last hop: the peer Caddy saw, i.e. the client |
+| Railway (the owner's deployment) | client → edge → Caddy → app | `2` | the second-from-last: what the edge saw |
 
 Set it to the number of proxies in front of the app. Too high and it fails **closed** — the
 header is shorter than the chain, so it falls back to the socket peer and logs that either the
@@ -505,3 +505,36 @@ toggle (`sync_graph=false`) skips that project's code graph only. The box still
 posts its org view — rule state, counts, adoption, and effect — for every project
 on the box. The push respects the same server-side tenant boundary as the API —
 the cloud stamps `org_id` from the credential, never the payload.
+
+
+## HTTPS port and the Caddy front end (GRPH-1635)
+
+See [https.md](https.md) for the tiers, device trust and the redirect rule.
+
+The `web` image runs **Caddy**, not nginx. It carries over what the nginx front end did: the SPA
+with history fallback, the `/api` and `/health` proxy to `API_UPSTREAM` (re-resolved on each
+connection, so a redeployed backend is followed), `/version.txt`, and `X-Forwarded-For` appended
+so `TRUSTED_HOPS=1` still reads the real client.
+
+- **HTTP is unchanged.** It stays on `${WEB_PORT:-8080}`; an existing install upgraded to this
+  image still answers on its old URL with the same SPA, `/api` and `/version.txt`.
+- **HTTPS** listens on its own port, `${WEB_HTTPS_PORT:-8443}`. It serves the box certificate the
+  API's certificate authority writes (`TLS_DIR`, the shared `box_tls` volume) and asks the API's
+  `/api/https/ask` before issuing for any other name. Until the certificate exists the container
+  serves HTTP only; when `box.crt`/`box.key` appear or change the entrypoint reloads Caddy through
+  its admin API, with no container restart.
+- The Caddy **admin API** listens on `localhost:2019` inside the container and is not published.
+- **HTTP is redirected to HTTPS only when the API says so**: set `REDIRECT_CHECK_URI` to an API
+  path that answers 2xx to serve over http, or a 3xx to the box address (never the request's
+  Host). The default is `/api/https/redirect-check` (GRPH-1637): the API redirects only while an
+  uploaded or Let's Encrypt certificate is active and the operator's redirect switch is on. Set
+  `REDIRECT_CHECK_URI=` (empty) to never redirect.
+- **Bring your own certificate / Let's Encrypt** (GRPH-1637): an uploaded chain and key are
+  written to `box.crt`/`box.key` and served after a Caddy reload, no restart; the key is stored
+  encrypted and never returned. A Let's Encrypt request writes `acme/le.caddy` into the TLS
+  directory, which the Caddyfile imports; Caddy's ACME issues and renews it, so the domain must
+  reach this box on ports 80/443 for the challenge (publish them on the web container).
+- **Hosted** (`HOSTED_MODE=true`, Railway) keeps HTTP-only behind the platform's TLS: no HTTPS
+  listener and no redirect. `PORT` and `API_UPSTREAM` behave as before.
+
+`web/verify-upstream-reresolution.sh` rebuilds the image and proves the re-resolution claim.
