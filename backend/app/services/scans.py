@@ -1137,6 +1137,10 @@ def _attach_offers(
 def component_health(db: Session, project_id: str, *, head_sha: str = "") -> dict:
     """Stack overlay payload: one entry per scan cell from the posted app topology."""
     head = (head_sha or "").strip()
+    if not head:
+        from app.services import stack as stack_svc
+
+        head = stack_svc.project_head_sha(db, project_id) or ""
     filed = _filed_items(db, project_id)
     mapping, cells = topo_svc.scan_cells(db, project_id)
     components = []

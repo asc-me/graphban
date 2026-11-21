@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from app.config import settings
 
 SHA = "a" * 40
 SHA2 = "b" * 40
@@ -25,8 +24,10 @@ def _key(client, auth, name="app-topology"):
 
 
 def _head(monkeypatch, sha, railway=""):
-    monkeypatch.setattr(settings, "git_sha", sha)
-    monkeypatch.setattr(settings, "railway_git_commit_sha", railway)
+    """Pin the project's head (its code-graph revision; see test_stack_project_head.py)."""
+    from app.services import stack as stack_svc
+
+    monkeypatch.setattr(stack_svc, "project_head_sha", lambda db, project_id: None if sha in ("", "unknown") else sha)
 
 
 def _body(**over):
@@ -348,6 +349,10 @@ def test_a_record_with_no_head_is_freshness_unknown(client, auth, monkeypatch):
     key = _key(client, auth)
     assert _post(client, key, _body()).status_code == 200
     _head(monkeypatch, "unknown")
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "git_sha", "unknown")
+    monkeypatch.setattr(settings, "railway_git_commit_sha", "")
     body = _get(client, auth)
     assert body["identity"]["api_git_sha"] == "unknown"
     assert body["mapping"]["state"] == "freshness_unknown"

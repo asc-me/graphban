@@ -454,15 +454,13 @@ def stack_health(project_id: str = "core", db: Session = Depends(get_db),
     """Per-deployable code-health overlay for Stack (GRPH-1035 / PRD-P51 §3).
 
     Three-state honesty: clean_at_sha / has_findings / never_scanned (plus stale).
-    Never fabricates a single health score. Head sha comes from the running API
-    identity so stale can be told apart from clean.
+    Never fabricates a single health score. Head sha is the project's code-graph
+    revision (not the box build sha) so stale can be told apart from clean.
     """
     from app.services import scans as scans_svc
 
     authz.require_readable(db, user.id, project_id)
-    topo = stack_svc.topology(db, project_id)
-    head = (topo.get("identity") or {}).get("api_git_sha") or ""
-    return scans_svc.component_health(db, project_id, head_sha=str(head or ""))
+    return scans_svc.component_health(db, project_id)
 
 
 class StackScanIn(BaseModel):

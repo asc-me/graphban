@@ -78,7 +78,9 @@ def mapping_for_scans(db: Session, project_id: str) -> dict[str, Any]:
     from app.services import stack as stack_svc
 
     record, unreadable = stack_svc._load_app_record(db, project_id)
-    return stack_svc._mapping_block(record, unreadable)
+    return stack_svc._mapping_block(
+        record, unreadable, stack_svc.project_head_sha(db, project_id)
+    )
 
 
 def scan_cells(db: Session, project_id: str) -> tuple[dict[str, Any], list[ScanCell]]:

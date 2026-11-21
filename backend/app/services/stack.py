@@ -936,7 +936,7 @@ def topology(db: Session, project_id: str) -> dict[str, Any]:
         # collapses Graphban for it, and says why, rather than drawing it as ours.
         "graphban_source": _graphban_source(owner),
         # Always present. Omitting it when nothing was posted would read as "no services".
-        "mapping": _mapping_block(record, record_unreadable),
+        "mapping": _mapping_block(record, record_unreadable, project_head_sha(db, project_id)),
         "app": None if record is None else _record_public(record),
     }
 
@@ -992,18 +992,25 @@ _FORBIDDEN_KEYS = frozenset({
 _GROUPS = ("components", "infrastructure", "external", "unresolved")
 
 
-def project_head_sha() -> str | None:
-    """The revision scans compare against, or None when this process has none.
+def project_head_sha(db: Session, project_id: str) -> str | None:
+    """The revision a project's map and scans compare against, or None.
 
-    Same source as the Stack identity (`instance_update.running`). `unknown` is the
-    sentinel that source returns when nothing was baked in (GRPH-426). A map compared
-    to that sentinel would read as current. No head is `freshness_unknown`.
+    That is the project's code-graph map revision (`code_graph.map_revision`) when every
+    node agrees on one. No nodes or mixed/unknown revisions is None, which reads as
+    `freshness_unknown`. It is NOT the box's own build sha: that identifies Graphban, not
+    the project's code.
     """
-    running = instance_update.running()
-    raw = (running.get("git_sha") or settings.resolved_git_sha or "").strip()
-    if raw in _NO_HEAD:
+    from app.services import code_graph
+
+    try:
+        rev = code_graph.map_revision(code_graph.list_nodes(db, project_id)).get("revision")
+    except Exception:  # noqa: BLE001 — an unreadable graph is no head, not a crash
+        logger.debug("code graph revision unreadable", exc_info=True)
         return None
-    return raw
+    rev = (rev or "").strip()
+    if not rev or rev in _NO_HEAD:
+        return None
+    return rev
 
 
 def _looks_like_secret(value: str) -> bool:
@@ -1043,7 +1050,7 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat()
 
 
-def _mapping_block(record, unreadable: bool) -> dict[str, Any]:
+def _mapping_block(record, unreadable: bool, head: str | None = None) -> dict[str, Any]:
     """`mapped | stale | unmapped | freshness_unknown`.
 
     No record is `unmapped` even when the head is known — that is "nobody posted",
@@ -1052,7 +1059,6 @@ def _mapping_block(record, unreadable: bool) -> dict[str, Any]:
     is not a match. An unreadable record is the same state with empty fields, so
     a failed read cannot pass for a project that was never mapped.
     """
-    head = project_head_sha()
     empty = {
         "state": "freshness_unknown" if unreadable else "unmapped",
         "mapped_sha": None,

@@ -30,6 +30,7 @@ See the boxes that make up this deployment, whether each is reachable, and its c
 - Liveness is three-state: reachable, unreachable, or **unknown**. There is no healthy default.
   A box that is configured but not adjudicating reads uncalibrated.
 - Map freshness is likewise: mapped (current), stale (mapped at an older commit than head), unmapped, or unknown.
+- "Stale" is compared against the project's code-graph revision (the one commit every node was described at), not the Graphban box's build sha. A graph with no nodes or mixed revisions has no revision, so map and scan freshness read unknown; an explicit `head_sha` overrides it. The instance identity rows still show the build sha.
 - "No facts reported" and "No edges" mean none were reported, not that none exist.
 - "No findings reported" is not a pass if the scan matrix shows never-scanned cells.
 - Empty states name what is missing (no fleet, no sync).
