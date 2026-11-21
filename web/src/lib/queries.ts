@@ -855,6 +855,26 @@ export function useCustomRules(projectId: string) {
   });
 }
 
+export function useRulePrimitiveContract() {
+  return useQuery({
+    queryKey: ["rule-primitive-contract"],
+    queryFn: () => api.rulePrimitiveContract(),
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
+export function useCreateCustomRule(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: import("@/lib/types").CustomRuleWrite) => api.createCustomRule(projectId, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["custom-rules"] });
+      invalidateRuleToggles(qc);
+    },
+  });
+}
+
 function invalidateProposals(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ["rule-proposals"] });
   qc.invalidateQueries({ queryKey: ["custom-rules"] });

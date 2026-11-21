@@ -17,6 +17,7 @@ import { useGitops, useRuleToggles, useSetRuleToggles, useUpdateGitops } from "@
 import type { GitopsPatch, RuleFlowRule, RuleStage, RuleToggleBatchEntry } from "@/lib/types";
 
 import { stageRules } from "./levels";
+import { NewCustomRule } from "./NewCustomRule";
 import { cleanParams, useCanWriteRules } from "./LibraryRuleControls";
 import {
   currentValue,
@@ -324,6 +325,8 @@ export function StageEditor({
           </div>
         );
       })}
+
+      <NewCustomRule projectId={activeId} stage={stage} canWrite={canWrite === true} />
 
       {sheetOpen && (
         <RuleReviewSheet
