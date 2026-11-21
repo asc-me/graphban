@@ -10,6 +10,7 @@ import pytest
 
 from gban import codemap, config, scan
 from gban.cli import main
+from gban.client import TIMEOUT, Client, TimedOut
 from test_codemap import _git
 
 
@@ -28,9 +29,15 @@ class Server:
         self.paths = paths
         self.refuse = set(refuse)  # scanner ids whose record the server refuses
         self.records: list[dict] = []
+        self.timeouts: list[tuple] = []
+        self.due_timeouts = 0
 
-    def __call__(self, tool, args):
+    def __call__(self, tool, args, timeout=None):
+        self.timeouts.append((tool, timeout))
         if tool == "scans_due":
+            if self.due_timeouts:
+                self.due_timeouts -= 1
+                raise TimedOut("could not reach: timed out", 120.0)
             return {"due": [{"component": "pkg", "path": p, "category": "security"} for p in self.paths]}
         assert tool == "record_scan"
         # Same rule as backend/app/services/scans.py _EMPTY_INCOMPLETE.
@@ -245,3 +252,53 @@ def test_pip_audit_failed_export_is_incomplete_not_clean(tmp_path, monkeypatch):
 
 def test_pnpm_audit_uses_ci_scanner_id():
     assert any(s.id == "npm-audit" and s.category == "security" for s in scan.SCANNERS)
+
+
+def test_server_calls_use_long_timeouts(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _installed(monkeypatch, {"vulture"})
+    srv = Server()
+    scan.run_scan(repo, codemap.head(repo), srv, run=_runner({"vulture": (0, "", "")}))
+    due = [t for tool, t in srv.timeouts if tool == "scans_due"]
+    assert due and all(t >= 120 for t in due)
+    assert all(t is not None for _, t in srv.timeouts)
+
+
+def test_scans_due_timeout_is_retried_once(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _installed(monkeypatch, {"vulture"})
+    srv = Server()
+    srv.due_timeouts = 1
+    counts = scan.run_scan(repo, codemap.head(repo), srv, run=_runner({"vulture": (0, "", "")}))
+    assert counts["recorded"] > 0 and srv.records
+    assert [t for t, _ in srv.timeouts].count("scans_due") == 2
+
+
+def test_two_scans_due_timeouts_fail_naming_the_call(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    srv = Server()
+    srv.due_timeouts = 2
+    with pytest.raises(scan.ScanError, match=r"scans_due timed out after 120s"):
+        scan.run_scan(repo, codemap.head(repo), srv)
+    assert srv.records == []
+
+
+def test_client_default_timeout_is_30_and_override_is_per_call(monkeypatch):
+    seen = []
+
+    class R:
+        status = 200
+        def read(self): return b"{}"
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake(request, timeout):
+        seen.append(timeout)
+        return R()
+
+    monkeypatch.setattr("gban.client.urllib.request.urlopen", fake)
+    c = Client("http://x")
+    c.call("GET", "/a")
+    c.call("GET", "/b", timeout=120.0)
+    c.call("GET", "/c")
+    assert TIMEOUT == 30.0 and seen == [30.0, 120.0, 30.0]

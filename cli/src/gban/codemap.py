@@ -284,13 +284,13 @@ def mcp_caller(client, project: str):
     """A `call(tool, args)` over POST /api/mcp (tools/call), returning structuredContent."""
     counter = [0]
 
-    def call(tool: str, args: dict) -> dict:
+    def call(tool: str, args: dict, timeout: float | None = None) -> dict:
         counter[0] += 1
         if project:
             args = {**args, "project_id": project}
         reply = client.call("POST", "/api/mcp", {
             "jsonrpc": "2.0", "id": counter[0], "method": "tools/call",
-            "params": {"name": tool, "arguments": args}})
+            "params": {"name": tool, "arguments": args}}, timeout=timeout)
         if "error" in reply:
             raise MapError(f"{tool}: {reply['error'].get('message', reply['error'])}")
         result = reply.get("result", {})
