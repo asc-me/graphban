@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from gban import config, doctor as doctor_mod, machine as machine_mod, playbooks, setup as setup_mod, stackmap, swamp as swamp_mod
+from gban import codemap, config, doctor as doctor_mod, machine as machine_mod, playbooks, setup as setup_mod, stackmap, swamp as swamp_mod
 from gban.client import (EXIT_NO_SESSION, EXIT_NO_SUPERVISOR, EXIT_REFUSED, EXIT_UNREACHABLE,
                        Client, NoSession,
                        Refused, Unreachable, authenticated, login, pair_poll,
@@ -122,6 +122,21 @@ def _parser() -> argparse.ArgumentParser:
                            help="print the record and do not post it")
     stack_map.add_argument("--repo", default=None,
                            help="repository to map (default: the git checkout of the current directory)")
+
+    code_cmd = sub.add_parser(
+        "code", help="build or refresh the code graph from this repo",
+        description=("Posts every tracked non-binary file at HEAD as a code-graph node "
+                     "(revision=HEAD) with its import edges. Existing summaries are kept; "
+                     "files gone since the last run are marked stale."))
+    code_do = code_cmd.add_subparsers(dest="act")
+    code_map = code_do.add_parser(
+        "map", help="describe the repo into the code graph",
+        description=("Needs a project-write API key, like `stack map`. --dry-run reads the "
+                     "graph and prints the counts, and writes nothing."))
+    code_map.add_argument("--dry-run", action="store_true",
+                          help="print HEAD and the counts; write nothing")
+    code_map.add_argument("--repo", default=None,
+                          help="repository to map (default: the git checkout of the current directory)")
 
     fleet = sub.add_parser(
         "fleet", help="hand off to gbfleet (the supervisor)",
@@ -482,6 +497,46 @@ def cmd_swamp(args) -> int:
     return code
 
 
+def cmd_code(args) -> int:
+    """Build or refresh the code graph from HEAD (GRPH-1706)."""
+    if args.act != "map":
+        print(f"{PROG}: usage: {PROG} code map [--dry-run] [--repo DIR]", file=sys.stderr)
+        return EXIT_REFUSED
+    start = Path(args.repo).expanduser() if args.repo else Path.cwd()
+    project = (config.resolve(args.project, config.PROJECT_ENV, "project") or "").strip()
+    url = config.resolve(args.server, config.URL_ENV, "url")
+    if not url:
+        print(f"{PROG}: no server. Pass --server, set ${config.URL_ENV}, or run `{PROG} login "
+              f"--server …` once.", file=sys.stderr)
+        return EXIT_REFUSED
+    key = (os.environ.get(doctor_mod.SUPERVISOR_KEY_ENV) or "").strip()
+    if not key:
+        key = doctor_mod.resolve_supervisor_key(project, start)
+    if not key:
+        print(f"{PROG}: no project-write API key. Set ${doctor_mod.SUPERVISOR_KEY_ENV} or "
+              f"${config.API_KEY_ENV}, or run `{PROG} setup`.", file=sys.stderr)
+        return EXIT_REFUSED
+    try:
+        built = codemap.build(start)
+        call = codemap.mcp_caller(Client(url, api_key=key), project)
+        planned = codemap.plan(built, codemap.existing_map(call))
+        print(f"{PROG}: HEAD {built['revision']}")
+        print(f"{PROG}: {built['tracked']} tracked, {len(planned['nodes'])} to describe, "
+              f"{planned['existing']} existing nodes, {planned['new']} new, "
+              f"{planned['kept']} kept, "
+              f"{len(planned['gone'])} gone, {len(planned['edges'])} edges")
+        if args.dry_run:
+            print(f"{PROG}: dry run, nothing written")
+            return 0
+        done = codemap.apply(call, built, planned)
+    except codemap.MapError as exc:
+        print(f"{PROG}: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+    print(f"{PROG}: described {done['nodes']} nodes and {done['edges']} edges at "
+          f"{built['revision'][:12]}; marked {done['marked_stale']} stale")
+    return 0
+
+
 def cmd_stack(args) -> int:
     """Build the app-topology record and, unless --dry-run, post it (GRPH-P55 §3)."""
     if args.act != "map":
@@ -774,7 +829,7 @@ def cmd_update(args) -> int:
 
 COMMANDS = {"update": cmd_update, "login": cmd_login, "logout": cmd_logout, "whoami": cmd_whoami,
             "doctor": cmd_doctor, "setup": cmd_setup, "fleet": cmd_fleet, "seats": cmd_seats,
-            "agents": cmd_agents, "keys": cmd_keys, "swamp": cmd_swamp, "stack": cmd_stack}
+            "agents": cmd_agents, "keys": cmd_keys, "swamp": cmd_swamp, "stack": cmd_stack, "code": cmd_code}
 
 
 def _poll(args) -> None:
