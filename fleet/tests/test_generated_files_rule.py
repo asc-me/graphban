@@ -147,6 +147,27 @@ def _seat_json(repo: Path) -> None:
     }), encoding="utf-8")
 
 
+def _seat_agy(repo: Path) -> None:
+    """The Antigravity seat, as `Agy.seat_config` writes it: `serverUrl`, never `url`.
+
+    A helper that only reads `url` / `httpUrl` finds no pair in this file. check-touchpoints
+    then uses the built-in list and holds `client/generated/admin.py` while the supervisor,
+    which already has the client, lets it through.
+    """
+    from gbfleet.adapters.agy import Agy
+    from gbfleet.seat import Seat
+
+    config = Agy().seat_config(
+        Seat(code="WORKER-AGY1", server_url="http://ledger.test", api_key="gb_sk_test")
+    )
+    stanza = config["mcpServers"]["graphban"]
+    assert stanza.get("serverUrl") == "http://ledger.test/api/mcp"
+    assert "url" not in stanza and "httpUrl" not in stanza
+    path = repo / ".agents" / "mcp_config.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(config), encoding="utf-8")
+
+
 def _held_names(out: str) -> list[str]:
     marker = "this branch: "
     if marker not in out:
@@ -217,11 +238,15 @@ def _run_both(git_repo, monkeypatch, capsys, toggles, seat, exc=None):
     return code, out, _held_names(out), sup_held, built
 
 
-@pytest.mark.parametrize("seat", [_seat_toml, _seat_json])
+@pytest.mark.parametrize("seat", [_seat_toml, _seat_json, _seat_agy])
 def test_check_touchpoints_agrees_with_the_supervisor_when_the_rule_adds_a_prefix(
         git_repo, monkeypatch, capsys, seat):
     """An adopted `client/generated/` lets admin.py through on both sides, and still holds
     a file the rule does not name.
+
+    `_seat_agy` is the file the command lists and used to skip: `serverUrl` only.
+    Dropping that field from `_pair_from_spec` leaves the toml and cursor seats green
+    and turns this case red — admin.py is named, and the two sides disagree.
 
     Sabotage: make check-touchpoints pass `ignore=is_generated` with no paths — the
     built-in list only. admin.py is named, the two sides disagree, and this goes red.

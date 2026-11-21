@@ -1352,7 +1352,11 @@ def _header_key(headers: object) -> str:
 def _pair_from_spec(spec: object) -> tuple[str, str] | None:
     if not isinstance(spec, dict):
         return None
-    raw = spec.get("url") or spec.get("httpUrl") or ""
+    # Antigravity's seat (`.agents/mcp_config.json`) writes `serverUrl` and the
+    # binary refuses `url` / `httpUrl`. Skipping `serverUrl` returns no pair for
+    # that file, and check-touchpoints then holds a generated file the supervisor
+    # lets through.
+    raw = spec.get("serverUrl") or spec.get("url") or spec.get("httpUrl") or ""
     if not isinstance(raw, str) or not raw.strip().startswith(("http://", "https://")):
         return None
     key = _header_key(spec.get("headers"))
