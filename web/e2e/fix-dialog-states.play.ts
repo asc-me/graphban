@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { COMPILE } from "./compile-wait";
+
 /**
  * GRPH-1699: each Fix Dialog state, in a real browser against the real dialog and CSS
  * (harness: `e2e/fix-dialog/`). Every state is asserted, then captured to the test's
@@ -7,10 +9,16 @@ import { expect, test, type Page } from "@playwright/test";
  */
 const HARNESS = "http://127.0.0.1:5198/e2e/fix-dialog/";
 
+// The first open pays for the Vite compile (GRPH-1812). The cap has to outlast COMPILE.
+test.describe.configure({ timeout: 180_000 });
+
 async function openFix(page: Page, lineExists: boolean) {
   await page.setViewportSize({ width: 900, height: 1000 });
   await page.goto(HARNESS + (lineExists ? "?line=1" : ""));
-  await page.getByRole("button", { name: /New item/ }).click();
+  const open = page.getByRole("button", { name: /New item/ });
+  // The button is the landmark. A harness that never paints it fails here.
+  await expect(open).toBeVisible(COMPILE);
+  await open.click();
   await page.getByPlaceholder("Title").fill("Webhook retries drop the signature header");
   await page.getByLabel("Kind").selectOption("fix");
 }
