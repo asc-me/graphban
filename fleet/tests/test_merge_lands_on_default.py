@@ -347,6 +347,24 @@ def test_dry_run_is_silent_when_observations_accept_the_key(monkeypatch, git_rep
     assert "WARNING" not in capsys.readouterr().err
 
 
+def _stub_service_host(monkeypatch) -> None:
+    """`make_plan` asks launchctl or systemctl before it will build a plan.
+
+    Linux CI has `systemctl` and no user bus, so the probe exits 2 with
+    "`systemctl --user` is not usable here" and the observations warning is
+    never reached. macOS finds `launchctl` and the same tests pass. The warning
+    does not depend on which supervisor answered, so the host is a stub.
+    """
+    from gbfleet import service as service_mod
+
+    def refuse_scheduler(cmd, timeout=20.0):
+        raise AssertionError(f"service probe ran for real: {' '.join(cmd)}")
+
+    monkeypatch.setattr(service_mod, "host", lambda: service_mod.Host("systemd"))
+    # A path that still shells out must fail the test, not install a unit.
+    monkeypatch.setattr(service_mod, "_run", refuse_scheduler)
+
+
 def test_service_install_warns_when_the_key_lacks_the_observations_role(
         monkeypatch, git_repo, capsys):
     from gbfleet import cli
@@ -362,6 +380,7 @@ def test_service_install_warns_when_the_key_lacks_the_observations_role(
     monkeypatch.setenv(cli.API_KEY_ENV, "k")
     monkeypatch.setattr(Graphban, "post_observation", refuse)
     monkeypatch.setattr(service_mod, "install", fake_install)
+    _stub_service_host(monkeypatch)
 
     code = cli.main([
         "service", "install", "--",
@@ -383,6 +402,7 @@ def test_service_install_dry_run_warns_the_same_way(monkeypatch, git_repo, capsy
 
     monkeypatch.setenv(cli.API_KEY_ENV, "k")
     monkeypatch.setattr(Graphban, "post_observation", refuse)
+    _stub_service_host(monkeypatch)
 
     code = cli.main([
         "service", "install", "--dry-run", "--",
