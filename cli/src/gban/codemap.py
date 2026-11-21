@@ -59,13 +59,13 @@ def _git(repo: Path, *args: str, stdin: bytes | None = None) -> bytes:
     return proc.stdout
 
 
-def head(repo: Path) -> str:
-    return _git(repo, "rev-parse", "HEAD").decode().strip()
+def head(repo: Path, rev: str = "HEAD") -> str:
+    return _git(repo, "rev-parse", rev).decode().strip()
 
 
-def tracked(repo: Path) -> list[tuple[str, str]]:
+def tracked(repo: Path, rev: str = "HEAD") -> list[tuple[str, str]]:
     """(path, blob sha) for every regular file at HEAD. Symlinks and submodules are skipped."""
-    out = _git(repo, "ls-tree", "-r", "-z", "HEAD").decode("utf-8", "replace")
+    out = _git(repo, "ls-tree", "-r", "-z", rev).decode("utf-8", "replace")
     rows = []
     for entry in out.split("\0"):
         if not entry:
@@ -194,10 +194,10 @@ def ts_edges(path: str, text: str, known: set[str]) -> set[str]:
     return found
 
 
-def build(repo: Path) -> dict:
+def build(repo: Path, rev: str = "HEAD") -> dict:
     """Everything the command needs, read at HEAD."""
-    rev = head(repo)
-    rows = tracked(repo)
+    rev = head(repo, rev)
+    rows = tracked(repo, rev)
     wanted = [(p, s) for p, s in rows if not skipped(p)]
     blobs = read_blobs(repo, [s for _, s in wanted])
     texts: dict[str, str] = {}
@@ -299,3 +299,139 @@ def mcp_caller(client, project: str):
         return result.get("structuredContent") or {}
 
     return call
+
+
+# --- `gban code map --since` (GRPH-1820): the incremental path ------------------------------
+
+class FetchError(MapError):
+    """`git fetch` failed: the run is recorded as failed and posts nothing."""
+
+
+def default_target(repo: Path) -> tuple[str, str]:
+    """(ref, sha) of `origin/<default branch>` after a `git fetch`. Never the working tree."""
+    try:
+        _git(repo, "fetch", "--quiet", "origin")
+    except MapError as exc:
+        raise FetchError(str(exc)) from exc
+    ref = ""
+    try:
+        ref = _git(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").decode().strip()
+    except MapError:
+        for cand in ("origin/main", "origin/master"):
+            try:
+                _git(repo, "rev-parse", "--verify", "--quiet", cand)
+                ref = cand
+                break
+            except MapError:
+                continue
+    if not ref:
+        raise MapError("cannot find origin's default branch (no origin/HEAD, origin/main or origin/master)")
+    return ref, _git(repo, "rev-parse", ref).decode().strip()
+
+
+def pinned_revision(result: dict) -> tuple[str | None, str]:
+    """(pinned sha or None, why it is None) from a `get_code_map limit:0` reply. None means:
+    no single revision to diff from."""
+    rev = result.get("revision")
+    if rev:
+        return rev, ""
+    nodes = result.get("nodes", [])
+    if not nodes:
+        return None, "the map is empty"
+    # The server's `revision` counts stale nodes, and a retired path keeps the revision it was
+    # last described at, so one deletion would read as "mixed" forever. A stale node says
+    # nothing about what the live map describes: judge the fresh ones.
+    live = [n for n in nodes if n.get("fresh", True)]
+    seen = {n.get("revision") or "" for n in live}
+    if len(seen) == 1 and "" not in seen:
+        return next(iter(seen)), ""
+    known = sorted(r for r in seen if r)
+    if len(known) > 1:
+        return None, f"the map is mixed ({len(known)} revisions)"
+    return None, "the map has no pinned revision"
+
+
+def fallback_reason(repo: Path, pinned: str | None, why: str, target: str) -> str:
+    """Why `--since` must fall back to a full scan, or '' when the diff can run."""
+    if not pinned:
+        return why
+    try:
+        _git(repo, "cat-file", "-e", f"{pinned}^{{commit}}")
+    except MapError:
+        return f"pinned revision {pinned[:12]} is missing or unreachable"
+    try:
+        _git(repo, "merge-base", "--is-ancestor", pinned, target)
+    except MapError:
+        return f"pinned revision {pinned[:12]} is not an ancestor of {target[:12]}"
+    return ""
+
+
+def name_status(repo: Path, pinned: str, target: str) -> list[tuple[str, str, str]]:
+    """(status letter, path, old path) from `git diff --name-status -M`. old is '' unless renamed."""
+    out = _git(repo, "diff", "--name-status", "-M", "-z", f"{pinned}..{target}").decode("utf-8", "replace")
+    parts = out.split("\0")
+    rows, i = [], 0
+    while i < len(parts) and parts[i]:
+        status = parts[i][0]
+        if status in "RC":
+            rows.append((status, parts[i + 2], parts[i + 1]))
+            i += 3
+        else:
+            rows.append((status, parts[i + 1], ""))
+            i += 2
+    return rows
+
+
+def plan_since(repo: Path, pinned: str, target: str, existing: dict[str, dict]) -> dict:
+    """The incremental plan: changed files re-described, deleted and renamed-from paths stale,
+    every other fresh node re-stamped (hash only) so the whole map ends pinned at `target`."""
+    rows = tracked(repo, target)
+    shas = dict(rows)
+    known = {p for p, _ in rows if not skipped(p)}
+    roots = package_roots(sorted(known))
+    changes = name_status(repo, pinned, target)
+    want = [p for st, p, _ in changes if st != "D" and p in shas and not skipped(p)]
+    blobs = read_blobs(repo, [shas[p] for p in want])
+    nodes: dict[str, dict] = {}
+    edges: list[dict] = []
+    gone: list[str] = []
+    n_skipped = 0
+    counts = {"added": 0, "modified": 0, "renamed": 0, "deleted": 0}
+    for st, path, old_path in changes:
+        if st == "D":
+            counts["deleted"] += 1
+            if path in existing and "::" not in path:
+                gone.append(path)
+            continue
+        counts["renamed" if old_path else "added" if st == "A" else "modified"] += 1
+        text = decode(blobs[shas[path]]) if shas.get(path) in blobs else None
+        if old_path and old_path in existing:
+            gone.append(old_path)
+        if text is None:
+            n_skipped += 1
+            continue
+        old = existing.get(path)
+        src = existing.get(old_path) if old_path else None
+        node = node_for(path, text, keep_summary=bool(old and (old.get("summary") or "").strip()))
+        if src and not old:
+            if (src.get("summary") or "").strip():
+                node["summary"] = src["summary"]
+            if src.get("name"):
+                node["name"] = src["name"]
+        nodes[path] = node
+        suffix = posixpath.splitext(path)[1].lower()
+        if suffix == ".py":
+            dsts = python_edges(path, text, roots, known)
+        elif suffix in _TS_SUFFIXES:
+            dsts = ts_edges(path, text, known)
+        else:
+            dsts = set()
+        edges.extend({"src": path, "dst": d, "type": "imports"} for d in sorted(dsts))
+    gone_set = set(gone)
+    restamp = [{"path": p, "kind": n.get("kind", "file"), "lang": n.get("lang", ""),
+                "content_hash": n.get("content_hash", "")}
+               for p, n in sorted(existing.items())
+               if p not in nodes and p not in gone_set and n.get("fresh", True)]
+    return {"nodes": restamp + [nodes[p] for p in sorted(nodes)], "edges": edges,
+            "gone": sorted(gone_set), "changed": len(nodes), "restamped": len(restamp),
+            "skipped": n_skipped, "counts": counts, "revision": target}
