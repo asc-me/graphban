@@ -965,6 +965,57 @@ def test_doctor_fails_a_stored_key_without_planner_or_scope(home, monkeypatch):
     assert worker not in json.dumps(lines) and unscoped not in json.dumps(lines)
 
 
+def test_supervisor_verdict_matches_the_observations_gate():
+    """PASS only for a project key with planner, or a fleet-wave key with planner.
+    An unscoped key that can write fails with the route's sentence. A get_context
+    that omits the fields is UNKNOWN, not a pass.
+
+    Sabotage: return PASS when `eligible_roles` is missing. The last assertion goes red.
+    """
+    unscoped = {"eligible_roles": ["planner", "worker"], "key_project_id": None,
+                "fleet_wave": None, "writable_projects": ["rules"]}
+    status, why = doctor.supervisor_verdict(unscoped, "rules")
+    assert status == "FAIL"
+    assert "spans several projects" in why
+    assert why.endswith(doctor.OBSERVATIONS_REFUSAL)
+
+    wave = {"eligible_roles": ["planner"], "key_project_id": None, "fleet_wave": "wave-1"}
+    assert doctor.supervisor_verdict(wave, "rules")[0] == "PASS"
+
+    scoped = {"eligible_roles": ["planner", "worker"], "key_project_id": "rules",
+              "fleet_wave": None}
+    assert doctor.supervisor_verdict(scoped, "rules")[0] == "PASS"
+
+    worker = {"eligible_roles": ["worker"], "key_project_id": "rules", "fleet_wave": None}
+    assert doctor.supervisor_verdict(worker, "rules")[0] == "FAIL"
+
+    missing = {"key_project_id": "rules", "writable_projects": ["rules"]}
+    assert doctor.supervisor_verdict(missing, "rules")[0] == "UNKNOWN"
+
+
+def test_doctor_passes_a_fleet_wave_key_and_quotes_the_refusal_for_an_unscoped_one(
+        home, monkeypatch):
+    """GRPH-1300. Doctor used to FAIL every unscoped key, including a fleet-wave key the
+    observations route accepts, and the refusal was a paraphrase. The unscoped key fails
+    with the route's sentence; the wave key passes. Neither key is printed."""
+    wave, bare = "gb_sk_wavekey", "gb_sk_barekey"
+    lines = _with_stored(
+        monkeypatch, home, stored={"rules": wave, "core": bare},
+        contexts={
+            wave: {"key_project_id": None, "eligible_roles": ["planner", "worker"],
+                   "fleet_wave": "wave-1"},
+            bare: {"key_project_id": None, "eligible_roles": ["planner", "worker"],
+                   "fleet_wave": None},
+        },
+        repo_project="rules")
+    by = {l["detail"].split(" ")[0]: l for l in lines}
+    assert by["rules"]["status"] == "PASS", by["rules"]
+    assert "fleet-wave" in by["rules"]["detail"]
+    assert by["core"]["status"] == "FAIL"
+    assert doctor.OBSERVATIONS_REFUSAL in by["core"]["detail"]
+    assert wave not in json.dumps(lines) and bare not in json.dumps(lines)
+
+
 def test_doctor_says_when_the_repositorys_project_has_no_stored_key(home, monkeypatch):
     lines = _with_stored(monkeypatch, home, stored={}, contexts={}, repo_project="rules")
     [line] = lines

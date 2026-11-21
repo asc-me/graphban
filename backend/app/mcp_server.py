@@ -3140,6 +3140,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # supervisor's observations route requires, and `gban doctor`/`gban setup` read
             # it here rather than learning it from a 403 mid-wave.
             "eligible_roles": list(fleet_svc.eligible_roles(key)),
+            # GRPH-1300. `gban setup` reuses a key only when `fleet._supervisor_wave_key`
+            # would. That predicate admits a fleet-wave key with planner even when the
+            # key has no project, and `key_project_id` alone cannot tell those apart
+            # from the unscoped key the drain 403s. Empty is null, not omitted: an
+            # omitted field would read as "not a wave" and also as "the server did
+            # not say", which are different answers.
+            "fleet_wave": (key.fleet_wave or "").strip() or None,
             "scopes": key.scopes,
             "readable_projects": readable,
             "writable_projects": authz.key_writable_ids(db, key),

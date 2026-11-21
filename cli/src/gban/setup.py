@@ -497,24 +497,15 @@ def verify(url: str, key: str, project: str) -> list[dict]:
                      f"{project} is writable" if project in writable else
                      f"the key cannot write {project} — you can read it but not write it, so "
                      "an agent on this key can claim nothing"))
-    if "key_project_id" in ctx and ctx["key_project_id"] != project:
-        # Writes and sees `delegate`, and still cannot supervise the seats it mints: the
-        # supervisor's routes want a key pinned to this project (GRPH-1653). Reusing it
-        # would write the defect back in on every run.
-        # `gbfleet until` also refuses such a key (GRPH-1658).
-        why = ("the key is unscoped — it spans several projects"
-               if ctx["key_project_id"] is None else
-               f"the key is pinned to {ctx['key_project_id']}, not {project}")
-        out.append(_line("ledger", FAIL, "scope",
-                         f"{why}, and `gban fleet until` refuses it"))
-    if "eligible_roles" in ctx and "planner" not in (ctx.get("eligible_roles") or []):
-        # GRPH-1317. The observations route wants planner. A key found in a harness file
-        # that lacks it passed every check above, was stored as the supervisor key, and
-        # `gbfleet until` then recorded no base, lease or PR. Failing here means it is
-        # replaced by a fresh mint, which holds planner, rather than reused.
-        out.append(_line("ledger", FAIL, "roles",
-                         "the key does not hold planner, so it cannot supervise the seats "
-                         "it mints; `gban fleet until` would record nothing with it"))
+    # GRPH-1300. Write access and a fleet manifest are not a supervisor key. The
+    # observations route — `fleet._supervisor_wave_key` — wants planner, and either a
+    # fleet wave or a key scoped to this project. An unscoped key that can write the
+    # project used to pass every check above and be reused; the drain then 403'd on
+    # every base and every lease. UNKNOWN (the server did not say) is not a pass, so
+    # it is not reused either. A fresh mint is project-scoped and holds planner.
+    status, why = doctor_mod.supervisor_verdict(ctx, project)
+    if status != PASS:
+        out.append(_line("ledger", status, "supervisor", why))
     missing = {_tier_id(t) for t in (ctx.get("missing_tiers") or [])}
     out.append(_line("ledger", PASS if "fleet" not in missing else FAIL, "fleet tools",
                      "delegate and mint_enrolment are in the manifest" if "fleet" not in missing
@@ -674,21 +665,12 @@ def effective_lines(url: str, project: str, repo: Path, home: Path | None = None
         lines.append(_line("claude", FAIL, "effective scope",
                            f"{LEDGER_SERVER}'s key {fingerprint(ledger.key)} from "
                            f"{ledger.source()} is unusable: {why}"))
-    elif "key_project_id" not in ctx:
-        lines.append(_line("claude", UNKNOWN, "effective scope",
-                           "the server's get_context does not say which project the key is "
-                           "pinned to, so whether it can supervise its own seats is unchecked"))
-    elif ctx["key_project_id"] != project:
-        what = ("unscoped — it spans several projects" if ctx["key_project_id"] is None
-                else f"pinned to {ctx['key_project_id']}, not {project}")
-        lines.append(_line("claude", FAIL, "effective scope",
-                           f"{LEDGER_SERVER}'s key {fingerprint(ledger.key)} from "
-                           f"{ledger.source()} is {what}, so the supervisor cannot observe "
-                           "the seats it mints (403 \"not a supervisor key\"). `gban setup` "
-                           "writes a project-scoped key into the local project entry"))
     else:
-        lines.append(_line("claude", PASS, "effective scope",
-                           f"{LEDGER_SERVER}'s key is scoped to {project}"))
+        status, why = doctor_mod.supervisor_verdict(ctx, project)
+        lines.append(_line(
+            "claude", status, "effective scope",
+            f"{LEDGER_SERVER}'s key {fingerprint(ledger.key)} from "
+            f"{ledger.source()}: {why}"))
     return lines
 
 
@@ -732,12 +714,16 @@ def run(client: Client, url: str, project: str, repo: Path, *, scope: str = "use
             break
     if seen and not reused:
         # A key that cannot do the job is replaced, never patched: `tool_tiers` are fixed at
-        # mint and there is no route that changes them.
+        # mint and there is no route that changes them. The observations refusal, when that
+        # is why, is printed in the route's own words (GRPH-1300) rather than only "no
+        # longer works" — that shorter line is what read as a pass.
+        refused = [c for c in checks if c["name"] == "supervisor" and c["status"] != PASS]
+        because = f" {refused[-1]['detail']}" if refused else ""
         lines.append(_line("config", UNKNOWN, "credential",
                            "the configured credential no longer works (revoked, cannot "
                            "delegate, or not scoped to this project), so a project-scoped "
                            "one is being minted; if the old one still works, remove it in "
-                           "Settings → API keys"))
+                           f"Settings → API keys.{because}"))
     if not key:
         try:
             minted = mint(client, project)

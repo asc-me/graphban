@@ -60,12 +60,18 @@ class Server:
     """Mints, and answers `get_context` as the deployed one does."""
 
     def __init__(self, *, writable=("core",), missing=(), refuse=None, issued=(),
-                 missing_for=None, scope_for=None, unscoped=()):
+                 missing_for=None, scope_for=None, unscoped=(), roles_for=None,
+                 wave_for=None):
         self.scope_for = dict(scope_for or {})
         self.writable, self.missing, self.refuse = list(writable), list(missing), refuse
         self.missing_for = dict(missing_for or {})
         #: Keys minted with no project — `key_project_id: None`, as a global key answers.
         self.unscoped = set(unscoped)
+        #: Per-key ceiling. The live server always sends `eligible_roles`; an empty stored
+        #: list resolves to planner and worker, which is what a setup mint stores.
+        self.roles_for = dict(roles_for or {})
+        #: Per-key `fleet_wave`. Absent means the field is sent as null: not a wave key.
+        self.wave_for = dict(wave_for or {})
         self.minted = []
         #: Every key this deployment knows. Anything else 401s, as a real one does.
         self.issued = set(issued)
@@ -98,6 +104,9 @@ def _context(server):
         ctx = {"project_id": "core", "writable_projects": server.writable,
                "key_project_id": None if self.api_key in server.unscoped
                                  else server.scope_for.get(self.api_key, "core"),
+               "eligible_roles": server.roles_for.get(
+                   self.api_key, ["planner", "worker"]),
+               "fleet_wave": server.wave_for.get(self.api_key),
                "missing_tiers": [{"tier": t} for t in missing]}
         return {"result": {"content": [{"text": json.dumps(ctx)}]}}
     return call
@@ -1655,6 +1664,63 @@ def test_project_scoped_configured_key_is_still_reused(tmp_path, wired):
     lines, code, made = _run(server, repo, home, wired=wired)
     assert code == 0, lines
     assert server.minted == [] and made.get("reused")
+
+
+def test_an_unscoped_key_that_can_write_is_minted_over_every_harness(
+        tmp_path, wired, no_grok_config):
+    """GRPH-1300. The key writes `core` and sees `fleet`, which is all verify used to
+    ask, so setup printed PASS "already configured … and it works" and the drain 403'd.
+    An unscoped key is not a supervisor key. Setup mints a project key and writes it
+    into every harness dest.
+
+    Sabotage: drop the supervisor verdict in `verify` (reuse when write and fleet tools
+    pass). This goes red — nothing is minted, and both files keep `gb_sk_global`.
+    """
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    home.write_text(json.dumps({"projects": {str(repo.resolve()): {"mcpServers": {
+        "graphban": _ledger_entry("gb_sk_global"),
+        "gbfleet": _fleet_entry("gb_sk_global")}}}}))
+    _grok_pointing_at(no_grok_config, str(repo), "core", key="gb_sk_global")
+    server = Server(issued={"gb_sk_global"}, unscoped={"gb_sk_global"})
+
+    lines, code, made = _run(server, repo, home, wired=wired)
+
+    assert code == 0, lines
+    assert made.get("reused") is not True
+    assert len(server.minted) == 1 and server.minted[0]["project_id"] == "core"
+    assert not any(l["status"] == "PASS" and "already configured" in l["detail"]
+                   for l in lines)
+    said = " ".join(l["detail"] for l in lines if l["name"] == "credential")
+    assert doctor_mod.OBSERVATIONS_REFUSAL in said
+    fresh = json.loads(home.read_text())["projects"][str(repo.resolve())]["mcpServers"]
+    new_key = fresh["graphban"]["headers"]["X-API-Key"]
+    assert new_key != "gb_sk_global" and new_key.startswith("gb_sk_")
+    grok = tomllib.loads(no_grok_config.read_text())
+    assert grok["mcp_servers"]["graphban"]["headers"]["X-API-Key"] == new_key
+    assert fresh["gbfleet"]["env"][doctor_mod.SUPERVISOR_KEY_ENV] == new_key
+    assert config.stored_supervisor_key("core") == new_key
+
+
+def test_a_fleet_wave_key_with_planner_is_reused_even_when_unscoped(tmp_path, wired):
+    """`_supervisor_wave_key` admits a fleet-wave key that holds planner, including one
+    with no project. Setup reuses it rather than minting a key the wave is not on.
+
+    Sabotage: ignore `fleet_wave` in `supervisor_verdict`. This goes red — a project
+    key is minted over the wave key.
+    """
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    home.write_text(json.dumps({"projects": {str(repo.resolve()): {"mcpServers": {
+        "graphban": _ledger_entry("gb_sk_wave")}}}}))
+    server = Server(issued={"gb_sk_wave"}, unscoped={"gb_sk_wave"},
+                    wave_for={"gb_sk_wave": "wave-1"})
+
+    lines, code, made = _run(server, repo, home, wired=wired)
+
+    assert code == 0, lines
+    assert server.minted == [] and made.get("reused") is True
+    assert any("already configured" in l["detail"] and l["status"] == "PASS" for l in lines)
 
 
 # ---- scope boundaries (GRPH-1661) ------------------------------------------------------------
