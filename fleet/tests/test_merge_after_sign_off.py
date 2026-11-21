@@ -27,7 +27,7 @@ from gbfleet.client import ALLOWED_TOOLS, Graphban, NotPermitted, ServerUnreacha
 from gbfleet.supervisor import MERGE_RECHECK_S, Merger, Wave
 from gbfleet.until import PLANNER_TOOLS, run
 
-from tests.test_propose import MERGE_OID, REVIEWED, _Forge, _att, gh  # noqa: F401
+from tests.test_propose import MERGE_OID, REVIEWED, _Forge, _Forges, _att, gh  # noqa: F401
 from tests.test_supervisor import KEY, _factory
 from tests.test_until import _error, _mcp
 
@@ -924,3 +924,108 @@ def test_the_same_pr_merges_when_the_other_item_is_signed_off_at_that_head(gh):
 
 def test_a_pr_inside_the_items_touchpoints_merges(gh):
     assert _merge_files(gh, A_FILES).ok
+
+
+# ---- GRPH-1412: a signed-off commit that was never pushed ------------------------------------
+
+def _remote_branch(tmp_path: Path, *, child: bool) -> tuple[Path, str, str]:
+    """`(repo, head, reviewed)`. Remote `gb/w-1` is at `head`. `reviewed` is only local:
+    a child of `head` when `child`, otherwise a side commit that does not descend from it."""
+    origin = tmp_path / "origin.git"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    repo = tmp_path / "repo"
+    _git(tmp_path, "init", "-q", "-b", "main", str(repo))
+    _git(repo, "config", "user.email", "t@t.t")
+    _git(repo, "config", "user.name", "t")
+    (repo / "README.md").write_text("x\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "first")
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "push", "-q", "-u", "origin", "main")
+    _git(repo, "checkout", "-q", "-b", "gb/w-1")
+    (repo / "item.py").write_text("head\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "PR head")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "push", "-q", "-u", "origin", "gb/w-1")
+    if child:
+        (repo / "item.py").write_text("reviewed\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "reviewed, local only")
+        reviewed = _git(repo, "rev-parse", "HEAD")
+    else:
+        _git(repo, "checkout", "-q", "main")
+        (repo / "item.py").write_text("side\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "reviewed, not a descendant")
+        reviewed = _git(repo, "rev-parse", "HEAD")
+    return repo, head, reviewed
+
+
+def test_an_unpushed_descendant_is_pushed_and_merged_once_ci_attests(forge, tmp_path):
+    """GRPH-1412. PR head H is on the remote; reviewed R is a child of H and only in this
+    clone. The merge pass pushes R, and because CI has attested R it merges.
+
+    Sabotage: skip the push in `_push_unpushed_descendant` (return ``"skip", None`` before
+    it runs). This fails — the head is still H, so the pass refuses instead of merging,
+    and the remote stays at H.
+    """
+    repo, head, reviewed = _remote_branch(tmp_path, child=True)
+    fake = forge(_Forge(draft=False, head=head, files=["item.py"]))
+
+    got = propose_mod.merge(repo, "GRPH-1412", "gb/w-1", reviewed=reviewed,
+                            green={reviewed}, paths=["item.py"])
+
+    assert got.ok and got.commit == MERGE_OID, got.reason
+    assert "pushed-reviewed" in got.checked
+    assert "ci=suite_green" in got.checked
+    assert _git(repo, "rev-parse", "origin/gb/w-1") == reviewed
+    assert "pr merge" in fake.verbs()
+
+
+def test_an_unpushed_descendant_is_pushed_when_no_sibling_is_at_it(forge, tmp_path):
+    """The reported hold named every other PR and stopped. None of them was at the
+    reviewed commit; the commit was in this clone, one ahead of the PR head."""
+    repo, head, reviewed = _remote_branch(tmp_path, child=True)
+    selected = "https://github.com/o/r/pull/9"
+    other = "https://github.com/o/r/pull/8"
+    forge(_Forges({selected: head, other: "c" * 40}))
+
+    got = propose_mod.merge(repo, "GRPH-1412", selected, reviewed=reviewed,
+                            green={reviewed}, paths=["item.py"], siblings=(selected, other))
+
+    assert got.ok and got.commit == MERGE_OID, got.reason
+    assert "pushed-reviewed" in got.checked
+    assert _git(repo, "rev-parse", "origin/gb/w-1") == reviewed
+
+
+def test_a_reviewed_commit_that_is_not_a_descendant_is_refused_naming_both(forge, tmp_path):
+    """R is in this clone and missing from the PR head, and H is not its ancestor.
+    Refused, naming both commits. Nothing is pushed."""
+    repo, head, reviewed = _remote_branch(tmp_path, child=False)
+    fake = forge(_Forge(draft=False, head=head, files=["item.py"]))
+
+    got = propose_mod.merge(repo, "GRPH-1412", "gb/w-1", reviewed=reviewed,
+                            green={reviewed}, paths=["item.py"])
+
+    assert not got.ok and not got.skipped and got.rereview, got.reason
+    assert head[:12] in got.reason and reviewed[:12] in got.reason
+    assert "not a descendant" in got.reason
+    assert _git(repo, "rev-parse", "origin/gb/w-1") == head
+    assert "pr merge" not in fake.verbs()
+
+
+def test_an_unpushed_descendant_waits_for_ci_after_the_push(forge, tmp_path):
+    """The push is not the merge. Until CI attests R the pass stops, and it does not
+    bounce a commit it just published."""
+    repo, head, reviewed = _remote_branch(tmp_path, child=True)
+    fake = forge(_Forge(draft=False, head=head, files=["item.py"]))
+
+    got = propose_mod.merge(repo, "GRPH-1412", "gb/w-1", reviewed=reviewed,
+                            green=set(), paths=["item.py"])
+
+    assert not got.ok and not got.rereview and not got.skipped, got.reason
+    assert "suite_green" in got.reason and reviewed[:12] in got.reason
+    assert "pushed-reviewed" in got.checked
+    assert _git(repo, "rev-parse", "origin/gb/w-1") == reviewed
+    assert "pr merge" not in fake.verbs()
