@@ -61,6 +61,7 @@ from app.services import entitlements as entitlements_svc
 from app.services import events as events_svc
 from app.services import galaxy as galaxy_svc
 from app.services import gitops
+from app.services import handles as handles_svc
 from app.services import orgs as orgs_svc
 from app.services import platform as platform_svc
 from app.services import sync_storage as sync_storage_svc
@@ -508,7 +509,7 @@ def preview_invite(token: str, db: Session = Depends(get_db)):
     the invitee has logged in. A used/expired/unknown token 404s identically."""
     invite = orgs_svc._validate_pending(orgs_svc.invite_by_token(db, token))
     inviter = db.get(User, invite.invited_by)
-    invited_by = (inviter.name or inviter.handle) if inviter else ""
+    invited_by = (inviter.name or handles_svc.org_handle(db, inviter, invite.org_id)) if inviter else ""
     if invite.kind == "platform":
         # No org yet — the accept page renders the "create your account, then found
         # your organization" flow instead of a join-this-org prompt (AL-91).
