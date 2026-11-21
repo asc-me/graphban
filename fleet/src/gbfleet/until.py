@@ -194,6 +194,11 @@ class Report:
             # number. Null means the host could not be asked and the gate never bound, which
             # is the reading that would otherwise pass for a roomy machine.
             "gated": list(self.wave.gated) if self.wave else [],
+            # GRPH-1643. Always present. Empty means no ready item's delegation was
+            # refused. A missing key reads the same way, which is how a drain exited
+            # `idle` for hours with the refusal only in the observe log.
+            "refused": [dict(row) for row in (
+                self.wave.delegate_refused if self.wave else [])],
             "headroom_bytes": self.wave.headroom_at_start if self.wave else None,
             # PRD-41 D21 / criterion 24: every stage of every resolution. Always present;
             # empty means this run resolved nothing, not that the record was not kept.
@@ -1113,12 +1118,14 @@ def _loop(
                             # it as delegated left the item next with nobody on it.
                             observe.emit("bound_claim_refused", item=seed, detail=detail)
                             _note_refused(wave, seed, detail)
+                            _remember_refused(wave, seed, detail, "bound_claim_refused")
                             stop(child, Reason.ASKED)
                             _withdraw_spawn(seed, want or "cheap")
                             if _bound_refusal_retries(child.assigned):
                                 delegated.discard(seed)
                             return "unstaffed"
                         owners[seed] = child
+                        _forget_refused(wave, seed)
                         observe.emit(
                             "delegated", item=seed, tier=want or "",
                             bound=bool(seat.item),
@@ -1397,6 +1404,7 @@ def _loop(
                                               acknowledge_reach=acknowledge_reach)
             for refused_item, why in flags.get("refused", ()):
                 _note_refused(wave, refused_item, why)
+                _remember_refused(wave, refused_item, why, "bound_seat_refused")
             for pin_line in flags.get("pin_waits") or []:
                 if pin_line not in wave.pin_waits:
                     wave.pin_waits.append(pin_line)
@@ -1795,6 +1803,12 @@ def _finish(
     # GRPH-1324. An exit while a bounce pin is still the only ready work must not
     # read as idle, and the summary names the item and its pinned_until.
     reason, waits = _named_pin_exit(reason, list(waits), list(wave.pin_waits))
+    # GRPH-1643. A ready item whose delegation stayed refused is a stall. `idle`
+    # (and `idle-with-waits`, which is still exit 0) is how that item sat unseen
+    # for hours. Any other reason was already not idle, so it is kept.
+    if reason in ("idle", "idle-with-waits") and wave.delegate_refused:
+        reason = "stalled"
+        exit_code = 1
     wave.reason = reason
     if review is None:
         try:
@@ -3272,6 +3286,33 @@ def _bound_refusal_retries(assigned: dict | None) -> bool:
     if reason_s in {"pinned", "held", "ghost"} or reason_s.startswith("reservation failed"):
         return True
     return not reason_s and bool(assigned.get("held_by"))
+
+
+def _refusal_label(message: str, event: str) -> str:
+    """A short reason for the summary and for `service status` (GRPH-1643).
+
+    A reach refusal is the one an operator clears with `--acknowledge-reach`, so
+    it is named `reach` rather than quoted in full. Anything else keeps the
+    server's sentence, clipped, so the list is not only an event name.
+    """
+    low = message.lower()
+    if "reach=" in low or "acknowledge_reach" in low:
+        return f"{event} (reach)"
+    clip = " ".join(message.split())
+    if len(clip) > 160:
+        clip = clip[:159] + "…"
+    return f"{event}: {clip}" if clip else event
+
+
+def _remember_refused(wave: Wave, item: str, message: str, event: str) -> None:
+    """One row per item still refused. A later hand-off of the same item drops it."""
+    label = _refusal_label(message, event)
+    wave.delegate_refused = [row for row in wave.delegate_refused if row.get("item") != item]
+    wave.delegate_refused.append({"item": item, "reason": label})
+
+
+def _forget_refused(wave: Wave, item: str) -> None:
+    wave.delegate_refused = [row for row in wave.delegate_refused if row.get("item") != item]
 
 
 def _note_refused(wave: Wave, item: str, reason: str) -> None:
