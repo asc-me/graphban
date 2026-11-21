@@ -4779,7 +4779,16 @@ def review_hold_read(item: Item, *, now: datetime | None = None,
 
     One read. `review_claim_holder` and `review_claim_lapse` stay the definitions;
     this only packages them so item reads and cluster holds cannot disagree.
+
+    A collision stand-in can sit in `review` without the claim columns. The exclusive-prefix
+    pool is one (`test_review_hold_keeps_the_prefix_and_frees_the_unrelated`): `_occupy_review_globs`
+    asks this read for every review member, and `review_claim_lapse` then touches
+    `review_claimed_by` as a row attribute. That raised AttributeError on both engines.
+    A member that does not carry the column has no claim — the same answer as a null column,
+    not a live holder and not a crash.
     """
+    if not hasattr(item, "review_claimed_by"):
+        return {"holder": None, "lapse": None, "lapses_in": None}
     lapse = review_claim_lapse(item, now=now, lease_seconds=lease_seconds)
     holder = None if lapse is not None else item.review_claimed_by
     lapses_in = None
