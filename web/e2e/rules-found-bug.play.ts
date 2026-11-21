@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { COMPILE } from "./compile-wait";
+
 /**
  * GRPH-1703: `build.found_bug` on the real Rules page, in a real browser (harness:
  * `e2e/rules-found-bug/`). Each state is asserted, then the inspector is captured to the
@@ -7,10 +9,16 @@ import { expect, test, type Page } from "@playwright/test";
  */
 const HARNESS = "http://127.0.0.1:5198/e2e/rules-found-bug/";
 
+// The first navigation pays for the Vite compile (GRPH-1812). The cap has to outlast COMPILE.
+test.describe.configure({ timeout: 180_000 });
+
 async function open(page: Page, state: "on" | "off" | "absent") {
   await page.setViewportSize({ width: 1400, height: 1000 });
   await page.goto(`${HARNESS}?state=${state}`);
-  return page.getByTestId("rules-inspector");
+  const ins = page.getByTestId("rules-inspector");
+  // The inspector is the landmark. A harness that never paints it fails here.
+  await expect(ins).toBeVisible(COMPILE);
+  return ins;
 }
 
 const shot = (page: Page, name: string) =>
@@ -18,19 +26,19 @@ const shot = (page: Page, name: string) =>
 
 test("found-bug: on — the effective mode is shown", async ({ page }) => {
   const ins = await open(page, "on");
-  await expect(ins.getByTestId("rules-found-bug-effective")).toHaveText("Effective mode: File a ticket.");
+  await expect(ins.getByTestId("rules-found-bug-effective")).toHaveText("Effective mode: File a ticket.", COMPILE);
   await shot(page, "1-on");
 });
 
 test("found-bug: off — the default fix_in_build is in force", async ({ page }) => {
   const ins = await open(page, "off");
-  await expect(ins.getByTestId("rules-found-bug-effective")).toHaveText("Off: the default, fix_in_build, is in force.");
+  await expect(ins.getByTestId("rules-found-bug-effective")).toHaveText("Off: the default, fix_in_build, is in force.", COMPILE);
   await shot(page, "2-off");
 });
 
 test("found-bug: absent from the pack — the default is in force, the rule is not hidden", async ({ page }) => {
   const ins = await open(page, "absent");
-  await expect(ins.getByTestId("rules-found-bug-absent")).toContainText("the default, fix_in_build, is in force");
+  await expect(ins.getByTestId("rules-found-bug-absent")).toContainText("the default, fix_in_build, is in force", COMPILE);
   await shot(page, "3-absent");
 });
 
@@ -47,7 +55,7 @@ test("dock: layout C at 1440×900 and 800 wide — the map strip shows the stage
   for (const [w, h] of [[1440, 900], [800, 900]] as const) {
     await page.setViewportSize({ width: w, height: h });
     await page.goto(`${HARNESS}?state=on`);
-    await expect(page.getByTestId("rules-dock-form")).toBeVisible();
+    await expect(page.getByTestId("rules-dock-form")).toBeVisible(COMPILE);
     await expect(page.getByTestId("rules-legend")).toHaveCount(0);
     if (w > 900) {
       // The strip draws the opened stage readable (at least .6 of its 208px card), not at the old 20%.
@@ -68,7 +76,9 @@ test("strip: at 1512×792 every stage card's content fits and the selected card'
   await page.setViewportSize({ width: 1512, height: 792 });
   for (const [label, pct] of [["half", "46"], ["tall", "34"], ["full", "18"]] as const) {
     await page.goto(`${HARNESS}?state=on&flow=p74`);
-    await page.getByTestId(`rules-dock-height-${label}`).click();
+    const height = page.getByTestId(`rules-dock-height-${label}`);
+    await expect(height).toBeVisible(COMPILE);
+    await height.click();
     await expect(page.getByTestId("rules-map-area")).toHaveAttribute("data-map-pct", pct);
     await page.waitForTimeout(300); // the camera's 220ms ease
     const m = await page.evaluate(() => {
