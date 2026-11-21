@@ -37,11 +37,14 @@ def test_empty_project_flags_pending_and_get_context_empty(client, auth):
 def test_checklist_reflects_progress_resumably(client, auth):
     proj = client.post("/api/projects", json={"name": "Grows"}, headers=auth).json()
     key = _key(client, auth, proj["id"])
-    _sc(client, key, "describe_code", {"nodes": [{"path": "x.py", "summary": "x"}]})
+    # One node pinned to one revision is the whole graph: most nodes carry it, so the step is done.
+    _sc(client, key, "describe_code", {
+        "nodes": [{"path": "x.py", "summary": "x"}], "revision": "abc123"})
     setup = _sc(client, key, "setup_project")
     assert setup["empty"] is False
     graph = next(s for s in setup["steps"] if s["name"] == "Build the code graph")
     assert graph["status"] == "done"  # re-run reflects the new state
+    assert graph["detail"] == "1 node, 1 at revision abc123."
 
 
 def test_setup_project_is_read_only_and_in_a_read_key_manifest(client, auth):
@@ -100,7 +103,8 @@ def _assert_shared_steps_agree(client, auth, key, pid):
 def _ratchet_project(client, auth, name):
     pid = client.post("/api/projects", json={"name": name}, headers=auth).json()["id"]
     key = _key(client, auth, pid)
-    _sc(client, key, "describe_code", {"nodes": [{"path": "x.py", "summary": "x"}]})
+    _sc(client, key, "describe_code", {
+        "nodes": [{"path": "x.py", "summary": "x"}], "revision": "abc123"})
     client.post(f"/api/projects/{pid}/setup/confirm", json={"decision": "workspace"}, headers=auth)
     return pid, key
 
@@ -228,3 +232,85 @@ def test_build_the_code_graph_step_names_gban_code_map(client, auth):
     assert "gban code map" in step["how"]
     assert "gban code map --dry-run" in step["how"]
     assert "LOCAL-FIRST" in step["how"] and "AL-134" in step["how"]
+
+
+def _graph_step(client, auth, pid):
+    key = _key(client, auth, pid)
+    agent = next(s for s in _sc(client, key, "setup_project")["steps"]
+                 if s["name"] == "Build the code graph")
+    dialog = next(s for s in _api_steps(client, auth, pid)["steps"] if s["step"] == 2)
+    return agent, dialog
+
+
+def _seed_nodes(db, pid, n, *, revision="", updated_at=None, prefix="n"):
+    from app.models import CodeNode
+    for i in range(n):
+        db.add(CodeNode(
+            id=f"cn_{prefix}_{i:04d}", project_id=pid, path=f"{prefix}/{i}.py", kind="file",
+            revision=revision, **({"updated_at": updated_at} if updated_at is not None else {}),
+        ))
+    db.commit()
+
+
+def test_unrevisioned_nodes_do_not_read_as_a_built_graph(client, auth, db):
+    """GRPH-1707: 211 described nodes and no pinned revision is a start, not a finished graph.
+
+    The detail names that coverage. Restoring the count>0 check marks the step done and
+    this test fails — on setup_project and on the dialog checklist, which share the step.
+    """
+    pid = client.post("/api/projects", json={"name": "Unrevisioned"}, headers=auth).json()["id"]
+    _seed_nodes(db, pid, 211, prefix="unrev")
+    agent, dialog = _graph_step(client, auth, pid)
+    assert agent["status"] == "pending" and dialog["status"] == "pending"
+    assert agent["detail"] == "211 nodes, 0 at a revision."
+    assert dialog["detail"] == agent["detail"]
+    assert "gban code map" in agent["how"]
+
+
+def test_fewer_than_most_nodes_at_the_latest_revision_is_not_done(client, auth, db):
+    """A newer revision on a minority of nodes is a partial refresh, not coverage."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.services.setup import CODE_GRAPH_MOST
+
+    pid = client.post("/api/projects", json={"name": "Minority"}, headers=auth).json()["id"]
+    old = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    new = old + timedelta(days=1)
+    _seed_nodes(db, pid, 4, revision="aaa111", updated_at=old, prefix="old")
+    _seed_nodes(db, pid, 1, revision="bbb222", updated_at=new, prefix="new")
+    assert 1 / 5 <= CODE_GRAPH_MOST
+    agent, dialog = _graph_step(client, auth, pid)
+    assert agent["status"] == "pending" and dialog["status"] == "pending"
+    assert agent["detail"] == "5 nodes, 1 at revision bbb222."
+
+
+def test_exactly_half_the_nodes_at_the_latest_revision_is_not_most(client, auth, db):
+    from datetime import datetime, timedelta, timezone
+
+    from app.services.setup import CODE_GRAPH_MOST
+
+    pid = client.post("/api/projects", json={"name": "Half"}, headers=auth).json()["id"]
+    old = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    new = old + timedelta(days=1)
+    _seed_nodes(db, pid, 1, revision="aaa111", updated_at=old, prefix="old")
+    _seed_nodes(db, pid, 1, revision="bbb222", updated_at=new, prefix="new")
+    assert 1 / 2 <= CODE_GRAPH_MOST  # "most" is strictly more than the named threshold
+    agent, _dialog = _graph_step(client, auth, pid)
+    assert agent["status"] == "pending"
+    assert agent["detail"] == "2 nodes, 1 at revision bbb222."
+
+
+def test_most_nodes_at_the_latest_revision_is_done(client, auth, db):
+    from datetime import datetime, timedelta, timezone
+
+    from app.services.setup import CODE_GRAPH_MOST
+
+    pid = client.post("/api/projects", json={"name": "Majority"}, headers=auth).json()["id"]
+    old = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    new = old + timedelta(days=1)
+    _seed_nodes(db, pid, 1, revision="aaa111", updated_at=old, prefix="old")
+    _seed_nodes(db, pid, 3, revision="bbb222", updated_at=new, prefix="new")
+    assert 3 / 4 > CODE_GRAPH_MOST
+    agent, dialog = _graph_step(client, auth, pid)
+    assert agent["status"] == "done" and dialog["status"] == "done"
+    assert agent["detail"] == "4 nodes, 3 at revision bbb222."

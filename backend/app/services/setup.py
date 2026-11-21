@@ -22,6 +22,12 @@ from app.models import ApiKey, CodeNode, Item, Membership, MemoryShard, Project,
 _MEMORY_SOURCES = ["AGENTS.md", "CLAUDE.md", "docs/"]
 _ITEM_SOURCES = ["TODO/FIXME comments", "PLAN.md", "ROADMAP.md"]
 
+# "Most" is more than half. A count above zero only shows that someone started the graph:
+# 211 described nodes out of ~1,750, none of them pinned to a revision, still read as done
+# (GRPH-1707). The server cannot list the repo's files, so coverage is nodes at the latest
+# pinned revision over the node count — not a tracked-file total it does not have.
+CODE_GRAPH_MOST = 0.5
+
 
 def counts(db: Session, project_id: str) -> tuple[int, int, int]:
     """(code nodes, items, memory shards) for a project — the bootstrap progress signal."""
@@ -85,6 +91,61 @@ def _count_step(step: int, name: str, how: str, run, label: str, **extra) -> dic
             "detail": f"{n} {label}.", "how": how, **extra}
 
 
+_CODE_GRAPH_HOW = (
+    "Run `gban code map` from the repo root (`gban code map --dry-run` first to see the "
+    "new/kept/gone counts) to build or refresh the graph at HEAD; it posts describe_code "
+    "in batches and keeps existing summaries. link_code bridges items↔paths. LOCAL-FIRST: run "
+    "on the local instance so the pass never hits the hosted call quota (AL-134); "
+    "cloud-only, request a dry-run size/cost estimate + a budget first."
+)
+
+
+def _latest_revision_coverage(db: Session, project_id: str) -> tuple[int, str | None]:
+    """(nodes carrying the latest pinned revision, that revision).
+
+    Latest is the non-empty revision on the most recently updated node that has one.
+    None when every node is unrevisioned: the graph was started and nothing is pinned.
+    """
+    latest = db.scalar(
+        select(CodeNode.revision)
+        .where(CodeNode.project_id == project_id, CodeNode.revision != "")
+        .order_by(CodeNode.updated_at.desc().nulls_last())
+        .limit(1)
+    )
+    if not latest:
+        return 0, None
+    at = db.scalar(
+        select(func.count()).select_from(CodeNode).where(
+            CodeNode.project_id == project_id, CodeNode.revision == latest,
+        )
+    ) or 0
+    return at, latest
+
+
+def _code_graph_step(db: Session, project_id: str) -> dict:
+    """Step ②. Done only when a revision is pinned and most nodes carry the latest one.
+
+    A bare count reads a partial, unrevisioned graph as finished. The detail names the
+    coverage that was measured so a pending step cannot be mistaken for an empty one.
+    """
+    try:
+        total = _n(db, CodeNode, project_id)
+        at_latest, latest = _latest_revision_coverage(db, project_id)
+    except Exception as e:  # noqa: BLE001 — a failed check is not evidence the graph exists
+        return {"step": 2, "name": "Build the code graph", "status": "unknown",
+                "detail": f"could not check: {type(e).__name__}", "reason": str(e)[:200],
+                "how": _CODE_GRAPH_HOW}
+    unit = "node" if total == 1 else "nodes"
+    if latest is None:
+        detail = f"{total} {unit}, 0 at a revision."
+        done = False
+    else:
+        detail = f"{total} {unit}, {at_latest} at revision {latest}."
+        done = at_latest > CODE_GRAPH_MOST * total
+    return {"step": 2, "name": "Build the code graph",
+            "status": "done" if done else "pending", "detail": detail, "how": _CODE_GRAPH_HOW}
+
+
 def checklist(db: Session, project_id: str, user_id: str | None = None) -> dict:
     """Steps ⓪–④. ✓ comes from server state (counts, stored human decisions), never from UI
     progress. `steps` holds all five; `setup_project` projects ①–④ via `agent_view`."""
@@ -104,13 +165,7 @@ def checklist(db: Session, project_id: str, user_id: str | None = None) -> dict:
                 "This holds even when an agent created the project itself (AL-284): being able to "
                 "CREATE a workspace is not the same as knowing it's the one that was wanted, so "
                 "the step stays a human confirmation rather than degrading to a notification."},
-        _count_step(2, "Build the code graph",
-                    "Run `gban code map` from the repo root (`gban code map --dry-run` first to see the "
-                    "new/kept/gone counts) to build or refresh the graph at HEAD; it posts describe_code "
-                    "in batches and keeps existing summaries. link_code bridges items↔paths. LOCAL-FIRST: run "
-                    "on the local instance so the pass never hits the hosted call quota (AL-134); "
-                    "cloud-only, request a dry-run size/cost estimate + a budget first.",
-                    lambda: _n(db, CodeNode, project_id), "code node(s) described"),
+        _code_graph_step(db, project_id),
         _count_step(3, "Load memories",
                     "Read the convention files and add_memory each durable fact as a CANDIDATE "
                     "(human-reviewed, never auto-published).",
