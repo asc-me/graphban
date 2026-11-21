@@ -660,6 +660,45 @@ def register_agent(db: Session, *, project_id: str, api_key, label: str = "",
     return agent
 
 
+def bound_claim_refusal(
+    db: Session, agent: Agent, item: Item, seat: "Enrolment | None", *,
+    lease_seconds: int = DEFAULT_LEASE_SECONDS, now: datetime | None = None,
+) -> tuple[str, str | None] | None:
+    """Why `agent` must not be handed `item`, or None when `claim_item` may try.
+
+    None means the claim write may run. Returning `held` for an item that is still
+    claimable would stop registration from ever claiming it. Scope, reach and
+    review-only are named here too, so the roster can say the same refusal the
+    registration reply already returns (GRPH-1292): the supervisor reads the roster,
+    not that reply. A bound seat is a spawned child, so `reach=deploy` is refused
+    whenever the seat row is in hand.
+    """
+    now = now or datetime.now(timezone.utc)
+    if item.blocker:
+        return "blocked", item.claimed_by or None
+    if not items_svc.claimable(item, lease_seconds=lease_seconds, now=now):
+        holder = item.claimed_by or None
+        if holder:
+            holder_agent = db.get(Agent, holder)
+            if (holder_agent is None or presence_state(
+                    holder_agent, lease_seconds=lease_seconds, now=now) == "offline"):
+                return "ghost", holder
+            return "held", holder
+        return f"status:{item.status}", None
+    pin = bounce_pin_holder(item, now=now)
+    if pin is not None and pin != agent.id:
+        return "pinned", pin
+    if seat is not None and seat.review_only:
+        return "review-only", None
+    if seat is not None and (item.reach or "repo") == "deploy":
+        return "reaches-outside-the-repo", None
+    scope = ((seat.prd_id or seat.line_id or "") if seat is not None
+             else items_svc.seat_scope(db, agent.id))
+    if not items_svc.in_scope(item, scope):
+        return "out-of-scope", None
+    return None
+
+
 def _claim_bound_seat(db: Session, agent: Agent, seat: "Enrolment | None", *,
                       lease_seconds: int = DEFAULT_LEASE_SECONDS) -> dict:
     """Claim a bound seat's item for the agent that just registered on it (PRD-36 D3).
@@ -682,29 +721,14 @@ def _claim_bound_seat(db: Session, agent: Agent, seat: "Enrolment | None", *,
         return {"item": seat.item_id, "state": "taken", "reason": "missing", "held_by": None}
     out = {"item": item.key, "state": "taken", "reason": None, "held_by": None}
     now = datetime.now(timezone.utc)
-    if item.blocker:
-        out["reason"] = "blocked"
-        return out
-    if not items_svc.claimable(item, lease_seconds=lease_seconds, now=now):
-        holder = item.claimed_by if item.claimed_by else None
-        if holder:
-            # GRPH-931: a holder that exists in the row but is offline (no heartbeat within
-            # presence TTL) is a ghost lease. Name it so the child can say "ghost lease, no
-            # live holder" instead of exiting silently. The holder id stays set so fleet_status
-            # and release_item can point at it.
-            holder_agent = db.get(Agent, holder)
-            if holder_agent is None or presence_state(holder_agent, lease_seconds=lease_seconds, now=now) == "offline":
-                out["reason"] = "ghost"
-            else:
-                out["reason"] = "held"
-        else:
-            out["reason"] = f"status:{item.status}"
-        out["held_by"] = holder
-        return out
-    pin = bounce_pin_holder(item, now=now)
-    if pin is not None and pin != agent.id:
-        out["reason"] = "pinned"
-        out["held_by"] = pin
+    # GRPH-931: a holder that exists in the row but is offline (no heartbeat within
+    # presence TTL) is a ghost lease. `bound_claim_refusal` names it so the child can
+    # say "ghost lease, no live holder" instead of exiting silently. The holder id
+    # stays set so fleet_status and release_item can point at it.
+    refused = bound_claim_refusal(
+        db, agent, item, seat, lease_seconds=lease_seconds, now=now)
+    if refused is not None:
+        out["reason"], out["held_by"] = refused
         return out
     try:
         claimed = items_svc.claim_item(db, item.id, agent.id, lease_seconds=lease_seconds)
@@ -1083,9 +1107,15 @@ def roster_view(payload: dict, view: str) -> dict:
 
 
 def _assigned_for(db: Session, agents: list[Agent]) -> dict[str, dict]:
-    """`{agent_id: {item, state, held_by}}` for every agent on a bound seat. Two queries per
-    `_batches` slice of the roster (GRPH-1668). `claimed` when the agent holds the seat's item; `taken` with
-    the holder otherwise — the same word the registration reply used."""
+    """`{agent_id: {item, state, reason, held_by}}` for every agent on a bound seat.
+
+    Two queries per `_batches` slice of the roster (GRPH-1668), plus one holder lookup
+    when a taken row still names a claimant (ghost versus a live hold). `claimed` when
+    the agent holds the seat's item. `taken` otherwise, with the same `reason` the
+    registration reply uses — the supervisor reads this roster, not that reply
+    (GRPH-1292). A claimable item this agent does not hold is `held`: the claim was
+    refused after the pre-checks (a lost reservation) or has not landed.
+    """
     seat_ids = [a.enrolment_id for a in agents if a.enrolment_id]
     if not seat_ids:
         return {}
@@ -1095,6 +1125,7 @@ def _assigned_for(db: Session, agents: list[Agent]) -> dict[str, dict]:
         return {}
     items = {i.id: i for batch in _batches(sorted({s.item_id for s in seats.values()}))
              for i in db.scalars(select(Item).where(Item.id.in_(batch))).all()}
+    now = datetime.now(timezone.utc)
     out: dict[str, dict] = {}
     for a in agents:
         seat = seats.get(a.enrolment_id) if a.enrolment_id else None
@@ -1102,11 +1133,18 @@ def _assigned_for(db: Session, agents: list[Agent]) -> dict[str, dict]:
             continue
         item = items.get(seat.item_id)
         if item is None:
-            out[a.id] = {"item": seat.item_id, "state": "taken", "held_by": None}
+            out[a.id] = {"item": seat.item_id, "state": "taken", "reason": "missing",
+                         "held_by": None}
         elif item.claimed_by == a.id:
-            out[a.id] = {"item": item.key, "state": "claimed", "held_by": None}
+            out[a.id] = {"item": item.key, "state": "claimed", "reason": None, "held_by": None}
         else:
-            out[a.id] = {"item": item.key, "state": "taken", "held_by": item.claimed_by}
+            refused = bound_claim_refusal(db, a, item, seat, now=now)
+            if refused is None:
+                reason, held_by = "held", item.claimed_by
+            else:
+                reason, held_by = refused
+            out[a.id] = {"item": item.key, "state": "taken", "reason": reason,
+                         "held_by": held_by}
     return out
 
 
@@ -2317,6 +2355,28 @@ WITHHELD_NOTHING_TO_READ = "nothing_to_read"
 WITHHELD_OUT_OF_SCOPE = "outside_seat_scope"
 WITHHELD_CAPABILITY = "missing_capability"
 WITHHELD_PR_UNLINKED = "pr_unlinked"
+WITHHELD_DEPENDENCY = "dependencies_open"
+
+
+def unfinished_dependencies(db: Session, item: Item) -> list[str]:
+    """Keys of `dependency` targets that are not done (GRPH-1292).
+
+    The same read as `prioritization.blocked_by`: a target that is not an item is
+    omitted, so a dangling link does not refuse a sign-off that `claim_cluster` would
+    still hand out. A link from the item to itself is omitted.
+    """
+    from app.services import prioritization as prio
+
+    ctx = prio.context(db, item.project_id)
+    names: list[str] = []
+    for dep_id in prio.blocked_by(ctx, item):
+        dep = ctx.item(dep_id)
+        if dep is None or dep.id == item.id:
+            continue
+        label = dep.key or dep.id
+        if label not in names:
+            names.append(label)
+    return names
 
 
 def _review_pr_unlinked(it: Item) -> bool:
@@ -2415,6 +2475,17 @@ def review_withholding(db: Session, it: Item, *, agent_id: str, me: Agent | None
         return WITHHELD_CAPABILITY, (
             "an acceptance clause needs " + ", ".join(f"`{n}`" for n in sorted(missing))
             + ", which you did not declare")
+    # GRPH-1292. claim_cluster already withholds an item whose dependency is not done.
+    # claim_review did not, so a reviewer was handed a walk whose brief still listed the
+    # blocker, and sign_off then marked it done. Withheld here — the one filter
+    # claim_review uses. An unclaimed row can still be signed off, which is how a
+    # planner records waive={"dependencies_done": "<why>"}.
+    open_deps = unfinished_dependencies(db, it)
+    if open_deps:
+        return WITHHELD_DEPENDENCY, (
+            "still depends on work that is not done: " + ", ".join(open_deps)
+            + ". sign_off refuses until those are done, or a planner waives it on the "
+            'record with waive={"dependencies_done": "<why>"}')
     return None
 
 
@@ -2682,6 +2753,10 @@ class ClauseCapability(Exception):
     refuse that, or the routing skip in `claim_review` is a suggestion a direct `sign_off`
     walks past.
     """
+
+
+class DependenciesOpen(Exception):
+    """sign_off refused: a dependency link still points at work that is not done (GRPH-1292)."""
 
 
 class MissingAcceptanceCoverage(Exception):
@@ -4240,7 +4315,31 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # A waiver is only ever honoured on a predicate whose check COULD NOT RUN — never on one
     # that ran and failed. Waiving a real failure would launder it, which is the opposite of
     # what the override exists for (GRPH-1007).
+    #
+    # `dependencies_done` is the exception that acceptance names (GRPH-1292). The check DID
+    # run, the dependency is still open, and the planner records why that is accepted. The
+    # predicate is stored passed, with the reason, so the waiver is on the receipt rather
+    # than a bypass of a failed comparison. A blank reason is not a waiver.
     waived = _waiver(waive)
+    open_deps = unfinished_dependencies(db, item)
+    dep_why = str(waived.get("dependencies_done") or "").strip()
+    if open_deps and not dep_why:
+        raise DependenciesOpen(
+            f"{item.key} still depends on work that is not done: {', '.join(open_deps)}. "
+            "Finish those items, or waive the check on the record with "
+            'waive={"dependencies_done": "<why>"}.'
+        )
+    if open_deps:
+        # The note is the record when this sign-off names no commit: the attestation
+        # below exists only when one was passed, and a waiver that lives only there
+        # would vanish on the path most sign-offs take.
+        note = items_svc.normalize_evidence([{
+            "kind": "note",
+            "detail": (
+                f"dependencies_done waived ({dep_why}). Still open: {', '.join(open_deps)}"
+            ),
+        }])
+        fresh, merged = fresh + note, merged + note
 
     reviewer = declared_capabilities(db, agent_id)
     builder = declared_capabilities(db, item.built_by)
@@ -4336,6 +4435,16 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
                             else "description states no acceptance clauses; nothing to check")},
             ],
         }])
+        if open_deps:
+            attestation[0]["predicates"].append({
+                "name": "dependencies_done",
+                "passed": True,
+                "waived": dep_why,
+                "detail": (
+                    f"still open: {', '.join(open_deps)}; accepted on the record "
+                    f"because {dep_why}"
+                ),
+            })
         fresh, merged = fresh + attestation, merged + attestation
     if external_ci:
         # GRPH-1619: the deliverable is in a repo whose CI does not report to Graphban, so the

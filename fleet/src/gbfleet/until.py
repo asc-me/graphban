@@ -1094,7 +1094,24 @@ def _loop(
                         base=base, ledger=planner,
                     )
                     if seed and len(children) > before:
-                        owners[seed] = children[-1]
+                        child = children[-1]
+                        detail = _bound_claim_detail(child, seed, seat)
+                        if detail:
+                            # GRPH-1292. Delegate succeeded and the child registered, but
+                            # the seat did not claim the item (pin, hold, scope). Logging
+                            # it as delegated left the item next with nobody on it.
+                            observe.emit("bound_claim_refused", item=seed, detail=detail)
+                            _note_refused(wave, seed, detail)
+                            stop(child, Reason.ASKED)
+                            _withdraw_spawn(seed, want or "cheap")
+                            if _bound_refusal_retries(child.assigned):
+                                delegated.discard(seed)
+                            return "unstaffed"
+                        owners[seed] = child
+                        observe.emit(
+                            "delegated", item=seed, tier=want or "",
+                            bound=bool(seat.item),
+                        )
                     if chosen[0] and chosen[0] not in wave.vendors_launched:
                         wave.vendors_launched.append(chosen[0])
                     return "spawned"
@@ -1450,7 +1467,7 @@ def _loop(
                 if chosen[0]:
                     seat = replace(seat, declare=matrix_mod.declaration(chosen[0], chosen[1], want or None, matrix))
                 _cap_children(wave, limits, item=seed)
-                if failover(seat, seed, want, factory, chosen) == "failed":
+                if failover(seat, seed, want, factory, chosen) in ("failed", "unstaffed"):
                     continue
                 fail_rounds = 0
                 wd.progress(f"spawned for {seed}")
@@ -1510,7 +1527,7 @@ def _loop(
                 if chosen[0]:
                     seat = replace(seat, declare=matrix_mod.declaration(chosen[0], chosen[1], want or None, matrix))
                 _cap_children(wave, limits, item=seed)
-                if failover(seat, seed, want, factory, chosen) == "failed":
+                if failover(seat, seed, want, factory, chosen) in ("failed", "unstaffed"):
                     continue
                 fail_rounds = 0
                 wd.progress(f"spawned for {seed}")
@@ -3035,8 +3052,11 @@ def _delegate_next(
                 observe.emit("delegate_refused", item=candidate, detail=str(exc))
                 continue
             seed = candidate
+            # Marked delegated before the child exists so two ticks cannot mint two
+            # seats for it. The "delegated" event waits until the child has actually
+            # claimed: a bound seat that registers and is told `taken` is not staffed
+            # (GRPH-1292). `failover` emits it, or logs the refusal and returns.
             delegated.add(seed)
-            observe.emit("delegated", item=seed, lane=lane, tier=want, bound=bool(code))
             return seed, code, want
     # No cluster was delegable
     return None, None, None
@@ -3046,6 +3066,50 @@ def _delegate_next(
 #: poll for as long as it lasts, and the JSON summary is not a log — the observe stream has
 #: every one of them.
 GATED_MAX = 20
+
+
+def _bound_claim_detail(child: Child, seed: str, seat: Seat) -> str | None:
+    """Why a bound seat's child did not claim `seed`, or None when that is not a refusal.
+
+    Missing `assigned` is not a refusal: fixtures and unbound children register without
+    one, and treating that as taken would stop every spawn the roster has not described.
+    `claimed` and `none` mean the child holds the item, or the seat was not bound.
+    """
+    if not seed or not seat.item:
+        return None
+    assigned = getattr(child, "assigned", None)
+    if not isinstance(assigned, dict) or assigned.get("state") != "taken":
+        return None
+    reason = assigned.get("reason")
+    held_by = assigned.get("held_by")
+    item = str(assigned.get("item") or seed)
+    reason_s = str(reason).strip() if isinstance(reason, str) else ""
+    held_s = str(held_by).strip() if isinstance(held_by, str) else ""
+    if reason_s and held_s:
+        why = f"{reason_s}, held by {held_s}"
+    elif reason_s:
+        why = reason_s
+    elif held_s:
+        why = f"held by {held_s}"
+    else:
+        why = "not claimed"
+    return f"{item}: bound seat did not claim it ({why})"
+
+
+def _bound_refusal_retries(assigned: dict | None) -> bool:
+    """A pin, a live hold, a ghost, or a reservation that did not stick — try again.
+
+    Scope, review-only, reach, a blocker and a status the seat cannot claim do not
+    change on the next tick. Discarding `delegated` for those mints another seat
+    every poll.
+    """
+    if not isinstance(assigned, dict):
+        return False
+    reason = assigned.get("reason")
+    reason_s = str(reason).strip() if isinstance(reason, str) else ""
+    if reason_s in {"pinned", "held", "ghost"} or reason_s.startswith("reservation failed"):
+        return True
+    return not reason_s and bool(assigned.get("held_by"))
 
 
 def _note_refused(wave: Wave, item: str, reason: str) -> None:

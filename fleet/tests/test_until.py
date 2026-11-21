@@ -86,6 +86,7 @@ def _clients(
     item_rows: list | None = None,
     updates: list | None = None,
     item_details: dict | None = None,
+    roster_assigned: dict | None = None,
 ):
     """Planner + supervisor clients sharing one mock Graphban.
 
@@ -269,24 +270,27 @@ def _clients(
         trees = sorted(p for p in workspace.glob("*") if p.is_dir() and p.name != "logs")
         if trees:
             seen_agents["yes"] = True
-        return _mcp({
-            "agents": [
-                {
-                    "id": f"GRPH-A{i + 1}",
-                    "worktree": str(p),
-                    "state": "idle",
-                    "enrolled": True,
-                    "enrolment_id": f"seat-{i + 1}",
-                    # `shim` is a PATH directory this process creates beside the
-                    # worktrees (GRPH-1401). It is not an agent that claimed
-                    # anything. Copying `agent_holdings` onto it left a build
-                    # lease on the roster after the child was gone, and the
-                    # idle check waited on that directory forever.
-                    "holdings": ([] if p.name == "shim" else list(agent_holdings or [])),
-                }
-                for i, p in enumerate(trees)
-            ]
-        }, rid)
+        agents = []
+        for i, p in enumerate(trees):
+            row = {
+                "id": f"GRPH-A{i + 1}",
+                "worktree": str(p),
+                "state": "idle",
+                "enrolled": True,
+                "enrolment_id": f"seat-{i + 1}",
+                # `shim` is a PATH directory this process creates beside the
+                # worktrees (GRPH-1401). It is not an agent that claimed
+                # anything. Copying `agent_holdings` onto it left a build
+                # lease on the roster after the child was gone, and the
+                # idle check waited on that directory forever.
+                "holdings": ([] if p.name == "shim" else list(agent_holdings or [])),
+            }
+            # Only the child. The shim is not a seat, and a missing `assigned`
+            # is what every fixture from before GRPH-1292 still sends.
+            if roster_assigned is not None and p.name != "shim":
+                row["assigned"] = dict(roster_assigned)
+            agents.append(row)
+        return _mcp({"agents": agents}, rid)
 
     transport = httpx.MockTransport(handler)
     planner = Graphban("http://gb.invalid", KEY, allowed=PLANNER_TOOLS, transport=transport)
@@ -1497,6 +1501,79 @@ def test_a_pinned_item_spawns_nothing_until_the_server_stops_reporting_the_pin(
     )
     assert [d["id"] for d in delegations] == ["GRPH-7"], "delegated once, after the pin lapsed"
     assert result.spawned == 1, result.detail
+
+
+def test_a_bound_seat_that_cannot_claim_is_logged_and_not_reported_delegated(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch,
+):
+    """GRPH-1292. Delegate succeeds and the child registers, but the roster says the
+    seat did not claim the item (bounce pin). The summary names that refusal. The
+    success `delegated` event is not emitted, and the child is stopped.
+
+    Sabotage: drop the `_bound_claim_detail` check in `failover`. This emits
+    `delegated` and `gated` has no bound-claim line.
+    """
+    from gbfleet.spawn import Reason
+
+    workspace = tmp_path / "ws"
+    events: list[tuple] = []
+    monkeypatch.setattr(
+        "gbfleet.until.observe.emit", lambda ev, **kw: events.append((ev, kw)),
+    )
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7"]],
+        bound_seats=True, drop_delegated=True,
+        roster_assigned={
+            "item": "GRPH-7", "state": "taken", "reason": "pinned",
+            "held_by": "GRPH-A1",
+        },
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=2,
+    )
+    payload = result.as_json()
+    refused = [g for g in payload["gated"] if "bound seat did not claim" in g]
+    assert len(refused) == 1, payload["gated"]
+    assert "GRPH-7" in refused[0] and "pinned" in refused[0] and "GRPH-A1" in refused[0]
+    assert not any(ev == "delegated" for ev, _kw in events), events
+    assert any(ev == "bound_claim_refused" for ev, _kw in events)
+    assert result.wave is not None and result.wave.spawned
+    assert result.wave.spawned[0].stopped_because == Reason.ASKED
+
+
+def test_a_bound_seat_that_claims_is_still_reported_delegated(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch,
+):
+    """The control. `assigned.state == claimed` is the child holding the item."""
+    workspace = tmp_path / "ws"
+    events: list[tuple] = []
+    monkeypatch.setattr(
+        "gbfleet.until.observe.emit", lambda ev, **kw: events.append((ev, kw)),
+    )
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7"]],
+        bound_seats=True,
+        roster_assigned={"item": "GRPH-7", "state": "claimed", "reason": None, "held_by": None},
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+    )
+    assert result.spawned == 1, result.detail
+    assert any(ev == "delegated" for ev, _kw in events)
+    assert not any(ev == "bound_claim_refused" for ev, _kw in events)
+
+
+def test_the_bound_claim_check_is_in_failover():
+    """Sabotage the CALL. Deleting the check in `failover` leaves the runtime test green
+    only if this string is gone too — keep both."""
+    src = Path(until.__file__).read_text(encoding="utf-8")
+    assert "_bound_claim_detail(" in src
+    assert 'observe.emit(\n                            "bound_claim_refused"' in src or (
+        "bound_claim_refused" in src and "return \"unstaffed\"" in src)
 
 
 def test_a_stale_hold_is_not_a_holding():

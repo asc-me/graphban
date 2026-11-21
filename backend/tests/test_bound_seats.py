@@ -369,7 +369,8 @@ def test_the_roster_reads_assigned_from_the_seat_and_the_item(client, key, proj,
     reg = _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", "label": "child", "enrolment_code": out["enrolment_code"]}))
     child = reg["agent_id"]
     rows = {a["id"]: a for a in _ok(_mcp(client, key, "fleet_status", {}))["agents"]}
-    assert rows[child]["assigned"] == {"item": item, "state": "claimed", "held_by": None}
+    assert rows[child]["assigned"] == {
+        "item": item, "state": "claimed", "reason": None, "held_by": None}
     assert rows[planner]["assigned"] is None
     # The lease lapses and a stranger takes the item: the same row now reads taken.
     stored = _stored(db, item)
@@ -380,7 +381,8 @@ def test_the_roster_reads_assigned_from_the_seat_and_the_item(client, key, proj,
     stranger = _agent(client, key, "stranger")
     assert items_svc.claim_item(db, item, stranger) is not None
     rows = {a["id"]: a for a in _ok(_mcp(client, key, "fleet_status", {}))["agents"]}
-    assert rows[child]["assigned"] == {"item": item, "state": "taken", "held_by": stranger}
+    assert rows[child]["assigned"] == {
+        "item": item, "state": "taken", "reason": "held", "held_by": stranger}
 
 
 # ---- the seat names its project (found by the criterion-18 check) ------------------------------

@@ -3848,6 +3848,14 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                     "attest the head of the branch you reviewed — `git rev-parse HEAD` in the "
                     "worktree, the full SHA — not a commit typed from memory"),
             ) from e
+        except fleet_svc.DependenciesOpen as e:
+            # GRPH-1292. The caller may sign this off once the blocker is done, or by
+            # recording why it is not. 409: this is unfinished work, not a permission.
+            raise errors.Refused(
+                409, str(e), rule_id="review.dependencies_done", meta=_who, hint=(
+                    "finish the blocking item, or waive it on the record with "
+                    'waive={"dependencies_done": "<why>"}'),
+            ) from e
         except fleet_svc.UncomparedPredicate as e:
             # The caller may sign this off, the receipt simply would not stand behind it.
             raise errors.Refused(
