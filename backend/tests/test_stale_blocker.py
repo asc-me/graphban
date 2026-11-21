@@ -1,0 +1,149 @@
+"""A blocker that names a dependency clears when that dependency is done (GRPH-1530).
+
+A free-text blocker used to gate readiness forever, including after the item it
+named reached done. The drain then sat idle. A person or a decision is not that
+case, and a claim does not hand out an item whose dependency is still open.
+"""
+import ast
+import inspect
+from datetime import timedelta
+
+from app.db import SessionLocal
+from app.models import Agent, Link, utcnow
+from app.services import fleet as fleet_svc
+from app.services import items as items_svc
+from tests import attest
+
+
+def _project(client, auth, name: str) -> str:
+    created = client.post("/api/projects", json={"name": name}, headers=auth)
+    assert created.status_code == 201, created.text
+    return created.json()["id"]
+
+
+def _item(db, project, title, **fields):
+    return items_svc.create_item(db, title=title, project_id=project, **fields)
+
+
+def test_a_blocker_clears_when_its_named_dependency_is_done(client, auth):
+    """Dropping release_when_named_blockers_done leaves this item blocked."""
+    project = _project(client, auth, "Stall 1530")
+    with SessionLocal() as db:
+        dep = _item(db, project, "device code")
+        waiting = _item(db, project, "uses the token", status="blocked")
+        items_svc.update_item(db, waiting.id, blocker=f"needs {dep.key}")
+        db.refresh(waiting)
+        assert dep.key in (waiting.blocker or "")
+        link = db.query(Link).filter(
+            Link.a == waiting.id, Link.b == dep.id, Link.type == "dependency").one()
+        assert link.reason == items_svc.BLOCKER_DEP_REASON
+
+        attest.complete(db, dep.id)
+        db.refresh(waiting)
+        assert waiting.status == "next"
+        assert waiting.blocker == ""
+        assert any(
+            (e.get("detail") or "").startswith(f"blocker cleared: {dep.key} done")
+            for e in (waiting.evidence or [])
+        )
+
+
+def test_a_blocker_stays_until_every_named_item_is_done(client, auth):
+    project = _project(client, auth, "Stall 1530 two")
+    with SessionLocal() as db:
+        first = _item(db, project, "first")
+        second = _item(db, project, "second")
+        waiting = _item(db, project, "waits on both", status="next")
+        items_svc.update_item(
+            db, waiting.id, blocker=f"needs {first.key} and {second.key}")
+        attest.complete(db, first.id)
+        db.refresh(waiting)
+        assert waiting.blocker
+        assert first.key in waiting.blocker
+        attest.complete(db, second.id)
+        db.refresh(waiting)
+        assert waiting.status == "next"
+        assert waiting.blocker == ""
+
+
+def test_a_person_or_a_decision_is_not_auto_cleared(client, auth):
+    project = _project(client, auth, "Stall 1530 human")
+    with SessionLocal() as db:
+        person_dep = _item(db, project, "unrelated")
+        person = _item(db, project, "asks a person", status="blocked")
+        items_svc.update_item(
+            db, person.id, blocker=f"needs a person to look at {person_dep.key}")
+        from app.services import links as links_svc
+        links_svc.create_link(
+            db, a=person.id, b=person_dep.id, type_="dependency",
+            project_id=project, reason="see also")
+
+        decision_dep = _item(db, project, "the option")
+        decision = _item(db, project, "asks a decision", status="blocked",
+                         tags=["wait:decision"])
+        items_svc.update_item(db, decision.id, blocker=f"needs {decision_dep.key}")
+
+        attest.complete(db, person_dep.id)
+        attest.complete(db, decision_dep.id)
+        db.refresh(person)
+        db.refresh(decision)
+        assert person.status == "blocked"
+        assert person.blocker == f"needs a person to look at {person_dep.key}"
+        assert decision.status == "blocked"
+        assert decision_dep.key in (decision.blocker or "")
+
+
+def test_claim_refuses_an_item_while_its_dependency_is_open(client, auth):
+    """claim_next filters the sweep; claim_item is the write claim_cluster uses."""
+    project = _project(client, auth, "Stall 1530 claim")
+    with SessionLocal() as db:
+        dep = _item(db, project, "still open", status="backlog")
+        waiting = _item(db, project, "not yet", status="next")
+        from app.services import links as links_svc
+        links_svc.create_link(
+            db, a=waiting.id, b=dep.id, type_="dependency", project_id=project)
+
+        assert items_svc.claim_item(db, waiting.id, "stall-agent") is None
+        claimed = items_svc.claim_next(db, "stall-agent", project_id=project)
+        assert claimed is not None and claimed.id == dep.id
+        assert items_svc.claim_item(db, waiting.id, "stall-agent-2") is None
+
+        # A stale in_progress row is in the cluster pool even when its dependency
+        # is open. claim_item has to refuse it or claim_cluster hands it out.
+        held = _item(db, project, "held open", status="blocked")
+        items_svc.update_item(db, held.id, blocker="needs a person")
+        stale = _item(db, project, "abandoned mid-build", status="in_progress")
+        stale.claimed_by = "gone"
+        stale.claimed_at = utcnow() - timedelta(seconds=10_000)
+        db.commit()
+        links_svc.create_link(
+            db, a=stale.id, b=held.id, type_="dependency", project_id=project)
+        db.add(Agent(
+            id="stall-cluster", project_id=project, number=1, label="w",
+            active_role="worker"))
+        db.commit()
+
+        assert items_svc.claim_item(db, stale.id, "stall-cluster") is None
+        # The backlog dep above is already claimed. Nothing else is ready: the
+        # stale row's dependency is still blocked.
+        again = items_svc.claim_next(db, "stall-other", project_id=project)
+        assert again is None or again.id != stale.id
+        got = fleet_svc.claim_cluster(db, agent_id="stall-cluster", project_id=project)
+        claimed_ids = {row["stored_id"] for row in got["items"]}
+        assert stale.id not in claimed_ids
+        assert got["claimed"] is False
+
+
+def test_sign_off_calls_the_same_release():
+    """sign_off writes done itself. Dropping this call leaves the blocker set."""
+    tree = ast.parse(inspect.getsource(fleet_svc.sign_off))
+    found = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        name = fn.attr if isinstance(fn, ast.Attribute) else (
+            fn.id if isinstance(fn, ast.Name) else "")
+        if name == "release_when_named_blockers_done":
+            found = True
+    assert found

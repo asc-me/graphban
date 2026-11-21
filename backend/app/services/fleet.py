@@ -4555,6 +4555,8 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # GRPH-1772. This path writes `done` itself, so `update_item`'s release does not run.
     from app.services.waits import release_when_blocking_fix_done
     release_when_blocking_fix_done(db, item)
+    # GRPH-1530. Same reason: a named dependency blocker clears on this writer too.
+    items_svc.release_when_named_blockers_done(db, item)
     from app.services import observations as observations_svc
     observations_svc.on_sign_off(db, item, fresh)
     observations_svc.on_rules_passed(db, item, SIGN_OFF_RULES)
