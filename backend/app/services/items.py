@@ -4042,10 +4042,21 @@ def claim_item(db: Session, item_id: str, agent_id: str, lease_seconds: int = DE
     it = db.get(Item, keys.resolve_item(db, item_id) or item_id)
     if it is None or not _is_claimable(it, cutoff) or pinned_elsewhere(it, agent_id):
         return None
-    # GRPH-1530. `claim_cluster` claims through here, and the cluster pool used to keep
-    # an in_progress row even when a dependency was still open. None, like the other
-    # "not claimable" answers: the cluster loop tries the next member.
-    if unfinished_dependency_ids(db, it):
+    # GRPH-1530. The cluster pool keeps a stale in_progress row even when a dependency
+    # is still open (collision.clusters_for_project includes every claimable
+    # in_progress item, ready or not). None, like the other "not claimable" answers:
+    # the cluster loop tries the next member and still reserves the area from the one
+    # it does claim. A fresh backlog/next row is not this case — claim_next and that
+    # pool's ready() filter already withhold it, and refusing it here also refuses an
+    # explicit claim of a named item. The seed's AL-12 depends on AL-08, which is not
+    # done, and a lease test that claims it by id is not a handout.
+    stale_reclaim = (
+        it.status == "in_progress"
+        and it.claimed_by is not None
+        and it.claimed_at is not None
+        and _aware(it.claimed_at) < cutoff
+    )
+    if stale_reclaim and unfinished_dependency_ids(db, it):
         return None
     # GRPH-988, and first among the seat checks: the seat's KIND is the one fact here that no
     # wait, release or retry can change, so it is the one worth answering before anything that

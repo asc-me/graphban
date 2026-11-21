@@ -94,7 +94,8 @@ def test_a_person_or_a_decision_is_not_auto_cleared(client, auth):
 
 
 def test_claim_refuses_an_item_while_its_dependency_is_open(client, auth):
-    """claim_next filters the sweep; claim_item is the write claim_cluster uses."""
+    """claim_next filters the sweep. A stale in_progress row stays in the cluster
+    pool, so claim_item — the write claim_cluster uses — refuses that reclaim."""
     project = _project(client, auth, "Stall 1530 claim")
     with SessionLocal() as db:
         dep = _item(db, project, "still open", status="backlog")
@@ -103,10 +104,11 @@ def test_claim_refuses_an_item_while_its_dependency_is_open(client, auth):
         links_svc.create_link(
             db, a=waiting.id, b=dep.id, type_="dependency", project_id=project)
 
-        assert items_svc.claim_item(db, waiting.id, "stall-agent") is None
         claimed = items_svc.claim_next(db, "stall-agent", project_id=project)
         assert claimed is not None and claimed.id == dep.id
-        assert items_svc.claim_item(db, waiting.id, "stall-agent-2") is None
+        # A second sweep still does not hand the dependent out.
+        other = items_svc.claim_next(db, "stall-agent-2", project_id=project)
+        assert other is None or other.id != waiting.id
 
         # A stale in_progress row is in the cluster pool even when its dependency
         # is open. claim_item has to refuse it or claim_cluster hands it out.
@@ -132,6 +134,29 @@ def test_claim_refuses_an_item_while_its_dependency_is_open(client, auth):
         claimed_ids = {row["stored_id"] for row in got["items"]}
         assert stale.id not in claimed_ids
         assert got["claimed"] is False
+
+
+def test_next_cluster_skips_a_neighbour_with_an_open_dependency(client, auth):
+    """next_cluster claims neighbours through claim_item. A fresh row is not a
+    stale reclaim, so dropping the skip here hands the neighbour out."""
+    project = _project(client, auth, "Stall 1530 neighbour")
+    with SessionLocal() as db:
+        dep = _item(db, project, "still open", status="backlog")
+        seed = _item(
+            db, project, "the seed", status="next",
+            touchpoints=["backend/app/services/items.py"])
+        neighbour = _item(
+            db, project, "rides along", status="next",
+            touchpoints=["backend/app/services/items.py"])
+        from app.services import clustering as cluster_svc
+        from app.services import links as links_svc
+        links_svc.create_link(
+            db, a=neighbour.id, b=dep.id, type_="dependency", project_id=project)
+        batch = cluster_svc.next_cluster(
+            db, "stall-neighbour", project_id=project, max_items=3)
+        ids = {row["item"].id for row in batch}
+        assert seed.id in ids
+        assert neighbour.id not in ids
 
 
 def test_sign_off_calls_the_same_release():

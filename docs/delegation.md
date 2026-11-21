@@ -332,8 +332,10 @@ work, no unsigned review, and no live lease — rather than merely on the last c
 There is no LLM inside it. Fanning the same wave out by hand keeps a frontier context awake
 for its entire length, polling and adjudicating bounces.
 
-`claim_next` and `claim_cluster` do not hand out an item that still has an unfinished
-`dependency` link. A worker that stops because a dependency is not built names that item's
+`claim_next`, `claim_cluster`, and `next_cluster` do not hand out an item that still has
+an unfinished `dependency` link. `claim_item` refuses that only for a stale `in_progress`
+reclaim — the row the cluster pool still offers. An explicit claim of a fresh item the
+caller named still takes it. A worker that stops because a dependency is not built names that item's
 id in the blocker (`needs GRPH-1685`). The server records those ids as dependency links,
 not only as the sentence. When every named item is `done`, the blocker clears itself, the
 item is ready again, and a note on the item says which ids finished.
