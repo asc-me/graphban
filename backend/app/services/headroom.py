@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from app.errors import NotFound, Validation
 from app.models import (Agent, Entitlement, EntitlementEvent, OrgUtilizationReport, Organization,
                         Project, User, utcnow)
+from app.services import handles
 from app.services import quotas
 
 EVENTS: tuple[str, ...] = ("spawn_start", "registered", "limit_hit", "spawn_failed", "spend")
@@ -270,7 +271,7 @@ def _runner_label(db: Session, row: Entitlement) -> dict:
     labels = [a.label for a in _declarers(db, row) if a.label]
     label = row.runner or (", ".join(labels) if labels else None)
     owner = db.get(User, row.owner_user_id) if row.owner_user_id else None
-    return {"label": label, "owner": (owner.name or owner.handle) if owner else None}
+    return {"label": label, "owner": (owner.name or handles.org_handle(db, owner, row.org_id)) if owner else None}
 
 
 def forecast(db: Session, row: Entitlement, *, now: datetime | None = None) -> dict:

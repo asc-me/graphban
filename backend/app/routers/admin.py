@@ -36,6 +36,7 @@ from app.schemas import (
 )
 from app.security.deps import get_current_user
 from app.services import events as events_svc
+from app.services import handles
 from app.services import orgs as orgs_svc
 from app.services import quotas
 
@@ -59,7 +60,7 @@ def _invite_out(db: Session, invite: OrgInvite) -> AdminInviteOut:
     out.accept_url = f"{settings.app_base_url.rstrip('/')}/invite/{invite.token}"
     out.expired = orgs_svc.invite_is_expired(invite)
     inviter = db.get(User, invite.invited_by) if invite.invited_by else None
-    out.invited_by_handle = (inviter.handle or inviter.name) if inviter else ""
+    out.invited_by_handle = (handles.org_handle(db, inviter, invite.org_id) or inviter.name) if inviter else ""
     org = orgs_svc.org_founded_from(db, invite)
     if org is not None:
         out.redeemed_org_id, out.redeemed_org_name = org.id, org.name
@@ -183,7 +184,7 @@ def list_orgs(db: Session = Depends(get_db)):
     for org in db.scalars(select(Organization).order_by(Organization.created_at)):
         members = [
             AdminOrgMemberOut(
-                handle=user.handle, name=user.name, role=membership.role,
+                handle=membership.handle, name=user.name, role=membership.role,
                 joined_at=membership.created_at,
             )
             for membership, user in db.execute(
@@ -210,8 +211,8 @@ def list_orgs(db: Session = Depends(get_db)):
         out.append(AdminOrgOut(
             id=org.id, name=org.name, plan=org.plan, created_at=org.created_at,
             owner_email=owner.email if owner else None,
-            owner_name=(owner.name or owner.handle) if owner else "",
-            owner_handle=owner.handle if owner else "",
+            owner_name=(owner.name or handles.org_handle(db, owner, org.id)) if owner else "",
+            owner_handle=handles.org_handle(db, owner, org.id) if owner else "",
             usage=UsageOut(**quotas.usage(db, org.id)),
             limits=PlanLimitsOut(
                 max_projects=plan.max_projects, max_seats=plan.max_seats,

@@ -49,6 +49,7 @@ from app.services import clustering as cluster_svc
 from app.services import code_graph as code_svc
 from app.services import design_sets as design_sets_svc
 from app.services import documents as documents_svc
+from app.services import handles
 from app.services import scans as scans_svc
 from app.services import touchpoint_check
 from app.services import events as events_svc
@@ -5044,7 +5045,8 @@ async def mcp_endpoint(
             meta = dict(e.meta)
             owner = db.get(User, key.user_id) if key.user_id else None
             if owner is not None:  # the human behind the key, as `record_key` stamps it
-                meta["principal"] = {"id": owner.id, "label": owner.handle or owner.name}
+                meta["principal"] = {"id": owner.id, "label": handles.project_handle(
+                    db, owner, key.project_id) or owner.name}
             events_svc.record_refusal(
                 db, rule_id=e.rule_id, surface="mcp", where=name, status=e.status_code,
                 detail=str(e.detail), actor=("apikey", key.id, key.name or key.id),
