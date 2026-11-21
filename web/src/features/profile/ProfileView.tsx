@@ -166,7 +166,7 @@ function ProfileForm({ user }: { user: User }) {
         <div className="flex items-center gap-2">
           <Avatar initials={draft.initials} color={draft.avatar} color2={draft.avatar2 || null} pattern={draft.pattern} size={20} />
           <span className="text-[12px] text-fg-2">{draft.name || "Your name"}</span>
-          <span className="font-mono text-[11px] text-muted">@{draft.handle}</span>
+          <span className="font-mono text-small text-muted">@{draft.handle}</span>
         </div>
         <div className="flex items-center gap-2">
           <Avatar initials={draft.initials} color={draft.avatar} color2={draft.avatar2 || null} pattern={draft.pattern} size={44} />
