@@ -105,7 +105,9 @@ def checklist(db: Session, project_id: str, user_id: str | None = None) -> dict:
                 "CREATE a workspace is not the same as knowing it's the one that was wanted, so "
                 "the step stays a human confirmation rather than degrading to a notification."},
         _count_step(2, "Build the code graph",
-                    "describe_code across the repo (link_code to bridge items↔paths). LOCAL-FIRST: run "
+                    "Run `gban code map` from the repo root (`gban code map --dry-run` first to see the "
+                    "new/kept/gone counts) to build or refresh the graph at HEAD; it posts describe_code "
+                    "in batches and keeps existing summaries. link_code bridges items↔paths. LOCAL-FIRST: run "
                     "on the local instance so the pass never hits the hosted call quota (AL-134); "
                     "cloud-only, request a dry-run size/cost estimate + a budget first.",
                     lambda: _n(db, CodeNode, project_id), "code node(s) described"),
