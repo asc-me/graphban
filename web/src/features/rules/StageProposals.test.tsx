@@ -1,6 +1,6 @@
-/** Proposals inbox and custom rules (GRPH-1781). */
+/** Stage count row and custom rules (GRPH-1781, GRPH-1807). */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -9,9 +9,7 @@ import type { CustomRule, RuleProposal } from "@/lib/types";
 
 import { StageProposals } from "./StageProposals";
 
-vi.mock("@/lib/api", () => ({
-  api: { ruleProposals: vi.fn(), customRules: vi.fn(), adoptRuleProposals: vi.fn(), dismissRuleProposal: vi.fn() },
-}));
+vi.mock("@/lib/api", () => ({ api: { ruleProposals: vi.fn(), customRules: vi.fn() } }));
 vi.mock("@/features/ProjectContext", () => ({
   useProjectCtx: () => ({ activeId: "core", active: { id: "core" }, projects: [], setActiveId: () => {} }),
 }));
@@ -19,8 +17,8 @@ vi.mock("@/features/ProjectContext", () => ({
 function prop(over: Partial<RuleProposal> & { id: number }): RuleProposal {
   return {
     project_id: "core", kind: "new_rule", rule_id: `custom.r${over.id}`, primitive: "p", draft: { stage: "plan", title: `Rule ${over.id}` },
-    params: {}, citations: [{ kind: "file", ref: { path: "a/b.py", commit: "abcdef1234567890", lines: "3-9" } }, { kind: "item", ref: "GRPH-5" }],
-    proposer: "alex", proposer_kind: "person", direction: "tighten", loosens: false, status: "open", folded: false,
+    params: {}, citations: [{ kind: "item", ref: "GRPH-5" }],
+    proposer: "agent-7", proposer_kind: "agent", direction: "tighten", loosens: false, status: "open", folded: false,
     created_at: "2026-01-01T00:00:00Z", ...over,
   };
 }
@@ -29,83 +27,66 @@ const custom: CustomRule = {
   state: "active", author: "sam", reason: "", created_at: "2026-01-01T00:00:00Z", on: true, source: "custom",
 };
 
-function view() {
-  return render(
+function view(onReview = vi.fn()) {
+  render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <StageProposals stageId="plan" ruleIds={[]} />
+      <StageProposals stageId="plan" ruleIds={[]} onReview={onReview} />
     </QueryClientProvider>,
   );
+  return onReview;
 }
 
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(api.customRules).mockResolvedValue([]);
-  vi.mocked(api.ruleProposals).mockResolvedValue([prop({ id: 1 }), prop({ id: 2 }), prop({ id: 3, loosens: true })]);
+  vi.mocked(api.ruleProposals).mockResolvedValue([prop({ id: 1 }), prop({ id: 2 })]);
 });
 
 describe("StageProposals", () => {
-  it("renders an open proposal with its citations", async () => {
-    view();
-    const row = await screen.findByTestId("proposal-1");
-    expect(row).toHaveTextContent("Rule 1");
-    expect(row).toHaveTextContent("a/b.py:3-9 @ abcdef123456");
-    expect(row).toHaveTextContent("item GRPH-5");
-    expect(screen.getByTestId("loosens-flag")).toBeInTheDocument();
+  it("shows a count row and no Adopt or Dismiss; the link opens the strip for the stage", async () => {
+    const onReview = view();
+    expect(await screen.findByText(/2 proposed/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Adopt|Dismiss/ })).toBeNull();
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Review in proposals" }));
+    expect(onReview).toHaveBeenCalledWith("plan");
   });
 
-  it("batch adopt sends one reason; loosens checkbox is disabled with an explanation", async () => {
-    vi.mocked(api.adoptRuleProposals).mockResolvedValue([]);
-    view();
-    await screen.findByTestId("proposal-1");
-    const loose = screen.getByLabelText("Select proposal 3");
-    expect(loose).toBeDisabled();
-    expect(screen.getByTestId("proposal-3")).toHaveTextContent("can't join a batch");
-    await userEvent.click(screen.getByLabelText("Select proposal 1"));
-    await userEvent.click(screen.getByLabelText("Select proposal 2"));
-    await userEvent.type(screen.getByLabelText("Batch reason"), "ok");
-    await userEvent.click(screen.getByRole("button", { name: /Adopt selected \(2\)/ }));
-    await waitFor(() => expect(api.adoptRuleProposals).toHaveBeenCalledWith("core", [1, 2], "ok"));
-    expect(api.adoptRuleProposals).toHaveBeenCalledTimes(1);
-  });
-
-  it("dismiss requires a reason", async () => {
-    vi.mocked(api.dismissRuleProposal).mockResolvedValue(prop({ id: 1 }));
-    view();
-    const row = await screen.findByTestId("proposal-1");
-    const btn = row.querySelector("button") as HTMLButtonElement;
-    expect(btn).toHaveTextContent("Dismiss");
-    expect(btn).toBeDisabled();
-    await userEvent.type(screen.getByLabelText("Reason for proposal 1"), "noise");
-    await userEvent.click(btn);
-    await waitFor(() => expect(api.dismissRuleProposal).toHaveBeenCalledWith("core", 1, "noise"));
-  });
-
-  it("shows a refusal verbatim on a loosening Adopt", async () => {
-    vi.mocked(api.adoptRuleProposals).mockRejectedValue(new Error(JSON.stringify({ detail: "refused: rules.person_adopts" })));
-    view();
-    await screen.findByTestId("proposal-3");
-    await userEvent.type(screen.getByLabelText("Reason for proposal 3"), "because");
-    await userEvent.click(screen.getByTestId("proposal-3").querySelectorAll("button")[0]);
-    expect(await screen.findByTestId("proposal-error-3")).toHaveTextContent("refused: rules.person_adopts");
-    expect(api.adoptRuleProposals).toHaveBeenCalledWith("core", [3], "because");
-  });
-
-  it("draws a custom rule with Custom badge, author and why", async () => {
+  it("says No proposals at zero", async () => {
     vi.mocked(api.ruleProposals).mockResolvedValue([]);
-    vi.mocked(api.customRules).mockResolvedValue([custom]);
+    view();
+    expect(await screen.findByText("No proposals")).toBeInTheDocument();
+  });
+
+  it("shows — and Retry when proposals cannot load, never 0", async () => {
+    vi.mocked(api.ruleProposals).mockRejectedValue(new Error("boom"));
+    view();
+    expect(await screen.findByText(/Proposals could not be loaded/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.getByTestId("stage-proposals-count")).toHaveTextContent("—");
+    expect(screen.getByTestId("stage-proposals-count")).not.toHaveTextContent("0");
+  });
+
+  it("reads 'by <person>' for an adopted custom rule, never the proposing agent", async () => {
+    vi.mocked(api.customRules).mockResolvedValue([{ ...custom, author: "agent-7" }]);
+    vi.mocked(api.ruleProposals).mockImplementation(async (_p, status) =>
+      status === "adopted" ? [prop({ id: 9, rule_id: "custom.x", status: "adopted", decided_by: "Alex" })] : [],
+    );
     view();
     const row = await screen.findByTestId("custom-rule-custom.x");
-    expect(row).toHaveTextContent("Custom");
-    expect(row).toHaveTextContent("No Friday merges");
-    expect(row).toHaveTextContent("sam");
+    await vi.waitFor(() => expect(row).toHaveTextContent("by Alex"));
+    expect(row).not.toHaveTextContent("agent-7");
     expect(row).toHaveTextContent("Why: outages");
   });
 
-  it("matches the API's capitalised stage against the lowercase stage id", async () => {
-    vi.mocked(api.ruleProposals).mockResolvedValue([prop({ id: 7, draft: { stage: "Plan", title: "Rule 7" } })]);
-    vi.mocked(api.customRules).mockResolvedValue([{ ...custom, stage: "Plan" }]);
+  it("does not name an agent author when no person is known", async () => {
+    vi.mocked(api.customRules).mockResolvedValue([{ ...custom, author: "agent-7" }]);
+    vi.mocked(api.ruleProposals).mockImplementation(async (_p, status) =>
+      status === "adopted" ? [prop({ id: 9, rule_id: "custom.x", status: "adopted", decided_by: null })] : [],
+    );
     view();
-    expect(await screen.findByTestId("proposal-7")).toHaveTextContent("Rule 7");
-    expect(screen.getByTestId("custom-rule-custom.x")).toHaveTextContent("Custom");
+    const row = await screen.findByTestId("custom-rule-custom.x");
+    await vi.waitFor(() => expect(row).toHaveTextContent("by unknown"));
+    expect(row).not.toHaveTextContent("agent-7");
   });
 });

@@ -785,6 +785,15 @@ export function useAdoptedProposals(projectId: string) {
   });
 }
 
+export function useDismissedProposals(projectId: string) {
+  return useQuery({
+    queryKey: ["rule-proposals", projectId, "dismissed"],
+    queryFn: () => api.ruleProposals(projectId, "dismissed"),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
 export function useRuleObservations(projectId: string, ruleId: string, enabled = true) {
   return useQuery({
     queryKey: ["rule-observations", projectId, ruleId],
