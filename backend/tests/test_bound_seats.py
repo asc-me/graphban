@@ -213,6 +213,10 @@ def test_a_pinned_item_reads_taken_with_the_pin_holder(client, key, db):
     reg = _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", "label": "child", "enrolment_code": out["enrolment_code"]}))
     assert reg["assigned"]["state"] == "taken"
     assert reg["assigned"]["reason"] == "pinned" and reg["assigned"]["held_by"] == author
+    # The supervisor never sees that reply. It reads the roster (GRPH-1292).
+    rows = {a["id"]: a for a in _ok(_mcp(client, key, "fleet_status", {}))["agents"]}
+    assert rows[reg["agent_id"]]["assigned"] == {
+        "item": item, "state": "taken", "reason": "pinned", "held_by": author}
 
 
 def test_delegate_during_a_pin_is_refused_unless_the_author_is_your_child(client, key, db):
