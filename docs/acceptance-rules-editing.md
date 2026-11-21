@@ -3,7 +3,7 @@
 Walked on the real box: `ubuntu-srv:8080`, project `p74-walk` (P74W), rule pack 0.6.0 (profiles v0.3.0).
 
 - **Releases:** steps 1 and 3 ran on 2026.11.39–11.45. Steps 2, 3b and 4 ran on 2026.11.46 (`d851f9e6`), checked against `/health`.
-- **How the rules were changed:** only on the Rules page. Readback used `get_rule_toggles` (read-only) and the page's own History panel.
+- **How the rules were changed:** only on the Rules page. Readback used `get_rule_toggles` (read-only), the page's own History panel, and the Activity page.
 - **Who drove the page:**
   - The person drove step 1 and the first Quick configure applies.
   - At the person's request, a planner session drove their signed-in browser for the step 3 drift change, step 2 and step 4. It used the same page with no API calls.
@@ -14,7 +14,7 @@ Walked on the real box: `ubuntu-srv:8080`, project `p74-walk` (P74W), rule pack 
 |---|---|---|
 | 1 | Resume GRPH-1431: reset the API-set rules and set them again on the page | **pass**, after fixes GRPH-1727 and GRPH-1742; see [acceptance-prd74.md](acceptance-prd74.md) for the drain and done gate |
 | 2 | Set the test-scope mode only; engines survive | **pass** |
-| 3a | Quick configure: apply Regulated with one exception | **pass on 11.46**, after fixes GRPH-1756 (exception control) and GRPH-1803 (11.45 regression) |
+| 3a | Quick configure: apply Regulated with one exception; show the chip, the per-rule history and one `apply_rule_profile` event | **pass**: one event, `exceptions: review.distinct_vendor`; GRPH-1756 (exception control) and GRPH-1803 (11.45 false drift) fixed along the way |
 | 3b | Change a rule by hand and show drift | **pass**; found GRPH-1806 |
 | 4a | Wizard: Next through every step changes nothing | **pass** |
 | 4b | Wizard: set two rules and show both saved with their reasons | **pass, with one deviation**: one shared reason, not one per rule |
@@ -48,18 +48,21 @@ On p74-walk (Build → "Where the test suites run"):
 
 **Apply.** Regulated v0.3.0 was applied with one exception, `review.distinct_vendor` (Reviewer is a different vendor).
 
-**Per-rule history** (rule dock → HISTORY):
+**The `apply_rule_profile` events** (Activity page, P74W, 24h range; read 2026-11-21, oldest first). Every row is attributed to alex, on surface `rest`:
 
-| Rule | Change | Reason | Value after |
+| Apply | Reason | `written` | `exceptions` |
 |---|---|---|---|
-| `merge.done_predicates` | stage editor, 7d before | "p74-walk: done also needs clean scans" | `suite_green, scans_clean` |
-| `merge.done_predicates` | Standard apply | "losening review standard" | none |
-| `merge.done_predicates` | Regulated apply | "regulated but 1 expc" | `suite_green, scans_clean` |
-| `review.distinct_vendor` | earlier Regulated apply | "test" | on |
-| `review.distinct_vendor` | Standard apply | "set to standard" | off |
-| `review.distinct_vendor` | last Regulated apply | — (not written) | off |
+| Standard 0.3.0 | "applying Standard 0.3.0: losening review standard" | `merge.done_predicates`, `review.sabotage_required` | `review.distinct_vendor` |
+| Standard 0.3.0 | "applying Standard 0.3.0: set to standard" | `review.distinct_vendor` | none |
+| **Regulated 0.3.0** | "applying Regulated 0.3.0: regulated but 1 expc" | `merge.done_predicates`, `review.sabotage_required` | **`review.distinct_vendor`** |
 
-The last Regulated apply wrote done predicates and left `distinct_vendor` alone, so `distinct_vendor` is the recorded exception. The person had meant to keep done predicates as the exception. Done predicates was not left out: the Standard apply had cleared it, and Regulated wrote it back. The server records the exception list in the `apply_rule_profile` event's `meta.exceptions`, and the chip reads it from there.
+- **One event for the Regulated apply.** It is a single `apply_rule_profile` row: `profile: regulated · profile_version: 0.3.0 · pack_version: 0.6.0`. It lists the 10 rules it names, and its `exceptions` is `review.distinct_vendor`.
+- **Only the differing rules were written.** That apply wrote two rules, and each has its own `set_rule_toggle` row carrying the same reason:
+  - `merge.done_predicates`: none → `suite_green, scans_clean`;
+  - `review.sabotage_required`: `min_tests_failed` 1 → 2.
+- **The exception was not written.** `distinct_vendor` got no row from this apply, and stayed off as the second Standard apply had left it.
+- **Per-rule history matches** (rule dock → HISTORY). For done predicates: "p74-walk: done also needs clean scans" → cleared by "losening review standard" → back to `suite_green, scans_clean` by "regulated but 1 expc".
+- **What the person intended:** they had meant to keep done predicates as the exception. It was not kept: Standard had cleared it, and Regulated wrote it back.
 
 **Found during this step:**
 - **GRPH-1756:** the only way to set an exception was a faint "Drop" link in the review sheet. Quick configure now has a "Keep current (exception)" control on each changing row, with Restore.
@@ -103,8 +106,9 @@ The engines survived this write too.
 - **One reason, not one per rule.** GRPH-P82's wizard section says the review takes "a reason per rule". The sheet asks for one reason that "covers every rule above". This matches the PRD's stage-editor decision, but not the wizard text. It is recorded here and not filed. The PRD contradicts itself, so which one is right is the PRD owner's call.
 - **No visible highlight.** After Apply, the changed rules sat inside "+N more" on their stage cards, and no highlight was visible on the map.
 
+The hand change and the wizard's two saves appear on the same Activity page as `set_rule_toggle` rows, with their reasons and before → after params. The wizard's two rows share one reason.
+
 ## Open after the walk
 
-- **GRPH-1806:** re-applying the applied level drops its exceptions.
-- **GRPH-1804:** an unmeasured rule is labelled "CHANGED BY HAND".
+- **GRPH-1806** (re-applying the applied level drops its exceptions) and **GRPH-1804** (an unmeasured rule labelled "CHANGED BY HAND") were found on this walk and merged to main afterwards, as #2034 and #2019. Neither is in 2026.11.46, so neither was seen on the box.
 - **The two P74 gaps:** CI attestation from a LAN box, and a check of an undeclared generated file. See [acceptance-prd74.md](acceptance-prd74.md).
