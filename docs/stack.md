@@ -23,6 +23,7 @@ See the boxes that make up this deployment, whether each is reachable, and its c
 - **Print / PDF** exports the current theme at 1:1.
 - A banner shows whether the app topology is mapped. If not, run `gban stack map`.
 - The code graph is built by `gban code map`, not by this page: it posts one node per tracked non-binary file at HEAD plus import edges, keeps hand-written summaries, and marks files gone since the last run stale.
+- The graph is refreshed hourly from origin's default branch (`gban code map --since`) with a nightly full reconcile at 03:00 local, by a user-level launchd/systemd unit. Install it with `gban code map service install [--repo .] [--hourly-at :MM] [--nightly-at HH:MM]`; `gban code map service status` prints the last run, its outcome, the sha mapped and how far behind origin it is; `uninstall` removes the unit and the key file.
 
 ## Reading what you see
 
