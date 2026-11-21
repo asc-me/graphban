@@ -1085,12 +1085,25 @@ def test_get_context_reports_the_roles_the_observations_route_decides_on(client,
     the setup key reads planner and its project, and its observations probe passes the
     credential gate (404 for an item nobody has); a worker-only key reads no planner, and the
     route refuses it (403)."""
-    proj, _hand, _planner = _project(client, auth)
+    proj, _hand, planner = _project(client, auth)
     setup, key_id = _setup_key(client, auth, proj)
     _assert_setup_shape(db, key_id)
     ctx = _ok(client, setup, "get_context", {"project_id": proj})
     assert ctx["key_project_id"] == proj
     assert "planner" in ctx["eligible_roles"]
+    # Null, not absent. Setup treats a missing `fleet_wave` as "the server did not
+    # say" and will not reuse; a setup key is not a wave key and must say so.
+    # Sabotage: drop `fleet_wave` from the get_context return and this is a KeyError.
+    assert ctx["fleet_wave"] is None
+    wave_ctx = _ok(client, planner, "get_context", {"project_id": proj})
+    assert wave_ctx["fleet_wave"] == "wave-1"
+    assert "planner" in wave_ctx["eligible_roles"]
+    unscoped = client.post(
+        "/api/api-keys", json={"name": "global", "tool_tiers": ["fleet", "prd"]},
+        headers=auth).json()
+    bare = _ok(client, unscoped["plaintext"], "get_context", {"project_id": proj})
+    assert bare["key_project_id"] is None
+    assert bare["fleet_wave"] is None
     probe = _post(client, setup, item_id="__gbfleet_probe_no_such_item__", kind="cut_from")
     assert probe.status_code == 404, probe.text
 

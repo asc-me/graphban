@@ -534,15 +534,71 @@ def key_context(url: str, key: str, project: str) -> dict | str:
     return ctx if isinstance(ctx, dict) else "get_context answered in a shape this version cannot read"
 
 
+# The 403 `record_observation` raises. Quoted, not paraphrased: setup used to say the
+# key "works" while the drain printed this sentence on every base and every lease
+# (GRPH-1300). `fleet._supervisor_wave_key` is the predicate; these are its words.
+OBSERVATIONS_REFUSAL = (
+    "this credential is not a supervisor key: recording a cut needs planner "
+    "among its roles, and either a fleet wave or a project-scoped key (the "
+    "credential gban setup mints). A worker-only key and an unscoped key are "
+    "refused here"
+)
+
+
+def supervisor_verdict(ctx: dict, project: str) -> tuple[str, str]:
+    """Whether `/api/fleet/observations` would accept `ctx` for `project`.
+
+    The same rule as `fleet._supervisor_wave_key`: planner in the ceiling, and either
+    a fleet-wave tag or a key scoped to this project. PASS only when that holds. FAIL
+    carries the route's own sentence. UNKNOWN when get_context omitted a field the
+    rule needs — a missing field is not a pass, which is how an unscoped key that can
+    write the project was reused.
+
+    `fleet_wave` of `None` (the field was sent, and it is empty) is "not a wave". A
+    missing field is "the server did not say", which is a different fact.
+    """
+    if not isinstance(ctx, dict) or not project:
+        return UNKNOWN, "get_context answered in a shape this version cannot read"
+    if "eligible_roles" not in ctx or not isinstance(ctx.get("eligible_roles"), list):
+        return UNKNOWN, (
+            "get_context does not say whether this key holds planner, so whether "
+            "/api/fleet/observations would accept it is unchecked")
+    planner = "planner" in [str(r) for r in ctx["eligible_roles"]]
+    if "fleet_wave" in ctx:
+        raw = ctx.get("fleet_wave")
+        wave = raw.strip() if isinstance(raw, str) else ""
+    else:
+        wave = None
+    if planner and wave:
+        return PASS, "a fleet-wave key with planner; the observations route accepts it"
+    if not planner:
+        return FAIL, f"the key does not hold planner. {OBSERVATIONS_REFUSAL}"
+    if "key_project_id" not in ctx:
+        return UNKNOWN, (
+            "get_context does not say which project this key is scoped to, so whether "
+            "/api/fleet/observations would accept it is unchecked")
+    scoped = ctx.get("key_project_id")
+    if scoped == project:
+        return PASS, (
+            f"scoped to {project} and holds planner; the observations route accepts it")
+    if scoped is None:
+        which = "the key is unscoped — it spans several projects"
+    else:
+        which = f"the key is pinned to {scoped}, not {project}"
+    return FAIL, f"{which}. {OBSERVATIONS_REFUSAL}"
+
+
 def stored_key_lines(url: str, project: str, repo: Path) -> list[dict]:
     """What the key `gban setup` stored is FOR: its project and whether it holds planner
     (GRPH-1317). Never the key itself.
 
     `gbfleet until` hands this key to the observations route, which wants planner and a
-    project scope. A key that lacked either cost a wave its base, lease and PR records, and
-    nothing here could say which. Reported for this repository's project — the one its
-    `gbfleet` entry names — as well as the login default, because the two differ in every
-    repository but the one `gban login` was run in.
+    project scope or a fleet wave — `supervisor_verdict`, the same rule as
+    `fleet._supervisor_wave_key` (GRPH-1300). A key that lacked either cost a wave its
+    base, lease and PR records, and nothing here could say which. Reported for this
+    repository's project — the one its `gbfleet` entry names — as well as the login
+    default, because the two differ in every repository but the one `gban login` was
+    run in.
     """
     here = repo_projects(repo)
     wanted = list(dict.fromkeys([*here, *([project] if project else [])]))
@@ -564,29 +620,22 @@ def stored_key_lines(url: str, project: str, repo: Path) -> list[dict]:
         if isinstance(ctx, str):
             out.append(_line("local", UNKNOWN, "stored key", f"{name} ({where}): {ctx}"))
             continue
-        scoped = ctx.get("key_project_id")
-        scope_ok = scoped == name
-        scope_text = (f"scoped to {scoped}" if scoped else "unscoped (spans several projects)")
-        if "eligible_roles" in ctx:
+        if "key_project_id" not in ctx:
+            scope_text = "scope unreported"
+        elif ctx.get("key_project_id"):
+            scope_text = f"scoped to {ctx.get('key_project_id')}"
+        else:
+            scope_text = "unscoped (spans several projects)"
+        if "eligible_roles" in ctx and isinstance(ctx.get("eligible_roles"), list):
             roles = [str(r) for r in ctx.get("eligible_roles") or []]
             planner = "planner" in roles
             role_text = (f"roles {', '.join(roles) or 'none'}; "
                          f"planner {'yes' if planner else 'NO'}")
         else:
-            planner = None
             role_text = "planner unknown (this server does not report a key's roles)"
-        if scope_ok and planner:
-            status = PASS
-        elif not scope_ok or planner is False:
-            status = FAIL
-        else:
-            status = UNKNOWN
-        why = ""
-        if status == FAIL:
-            why = (" — the observations route refuses it, so `gban fleet until` records no "
-                   f"base, lease or PR; `gban setup --project {name}` mints one that works")
+        status, why = supervisor_verdict(ctx, name)
         out.append(_line("local", status, "stored key",
-                         f"{name} ({where}): {scope_text}; {role_text}{why}"))
+                         f"{name} ({where}): {scope_text}; {role_text} — {why}"))
     return out
 
 
