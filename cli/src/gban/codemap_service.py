@@ -430,14 +430,15 @@ def refresh(repo: Path, call, mode: str, stack_post=None, project: str = "", sca
         rec.update(outcome="ok", nodes=total)
         if stack_post is not None:
             rec.update(stack_step(repo, target, project, stack_post))
-        if scan is not None and mode == "full":
-            rec.update(scan_step(target, scan))
     except codemap.MapError as exc:
         _failed(rec, "map", str(exc), state["done"], total)
     except (_client.Unreachable, _client.Refused, _client.NoSession) as exc:
         # The server is down, refused the key, or there is no session: still one log line,
         # recorded as failed (or partial), so status never reads the previous run as current.
         _failed(rec, "server", f"{type(exc).__name__}: {exc}", state["done"], total)
+    # Nightly only, and after the map whatever it did: only a fetch failure stops the run.
+    if scan is not None and mode == "full":
+        rec.update(scan_step(target, scan))
     return rec
 
 

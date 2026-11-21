@@ -273,8 +273,11 @@ def test_full_run_scans_at_target_since_run_does_not(tmp_path, home):
     assert shas == [target]  # sabotage: scanning local HEAD fails this
     assert f"scans: ok, 3 recorded, 1 tool_missing at {target[:12]}" in svc.status_lines(
         work, "systemd")
+    _git(work, "push", "origin", "main")  # origin moves, so the since run maps a real diff
     rec = svc.record_run(sid, work, graph, (3, 0), datetime(2026, 1, 1, 11, 0), scan=scan)
-    assert rec["mode"] == "since" and "scans" not in rec
+    assert rec["mode"] == "since" and rec["outcome"] == "ok" and "note" not in rec
+    assert rec["sha"] == codemap.head(work) and rec["nodes"] > 0
+    assert "scans" not in rec
     assert shas == [target]  # sabotage: scanning on hourly runs fails this
 
 
@@ -289,3 +292,19 @@ def test_scan_failure_is_recorded_and_outcome_stays_ok(tmp_path, home):
     assert rec["outcome"] == "ok" and rec["scans"] == "failed"
     assert rec["scans_stage"] == "scan" and "scanner exploded" in rec["scans_reason"]
     assert any(ln.startswith("scans: failed: ") for ln in svc.status_lines(work, "systemd"))
+
+
+def test_map_failure_still_scans_nightly(tmp_path, home, monkeypatch):
+    work = _origin(tmp_path)
+    target = codemap.head(work)
+
+    def broken(*a, **k):
+        raise codemap.MapError("build broke")
+
+    monkeypatch.setattr(codemap, "build", broken)
+    shas = []
+    sid = svc.service_id(work.resolve())
+    rec = svc.record_run(sid, work, PinnedGraph(), (3, 0), datetime(2026, 1, 1, 10, 0),
+                         scan=lambda sha: shas.append(sha) or {"recorded": 1, "tool_missing": 0})
+    assert rec["outcome"] == "failed" and rec["stage"] == "map"
+    assert rec["scans"] == "ok" and shas == [target]
