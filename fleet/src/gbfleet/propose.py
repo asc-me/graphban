@@ -1538,8 +1538,11 @@ def _via_sibling(repo: Path, item_id: str, selector: str, pr: dict, *, reviewed:
     got = _merge(repo, item_id, sibling, reviewed=reviewed, green=green, paths=paths,
                  covering=covering, local_full=local_full, red=red,
                  release=release, scans=scans, method=method)
-    why = (f"sibling={sibling} (selected {_pr_ref(pr, selector)} head {head[:12] or '?'} "
-           "is not the reviewed commit)")
+    # The selected PR is the one we are leaving. Say so whether its head moved or it is
+    # simply closed: a closed PR at the reviewed commit still yields to the open sibling.
+    why = (f"sibling={sibling} (selected {_pr_ref(pr, selector)} head {head[:12] or '?'}"
+           + (" is closed)" if same_commit(head, reviewed)
+              else " is not the reviewed commit)"))
     return replace(got, checked=tuple(checked) + (why,) + got.checked)
 
 
@@ -1676,9 +1679,12 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
     if state != "OPEN":
         not_open = Merged(item=item_id, selector=selector, url=url, skipped=True,
                           reason=f"PR is {state or 'in an unknown state'}, not open")
-        if siblings and not same_commit(str(pr.get("headRefOid") or ""), reviewed):
-            # GRPH-1219: a closed selection may be the superseded PR; the sibling at the
-            # reviewed commit is still the one to merge. Without one, the skip stands.
+        # GRPH-1219, GRPH-1577. A closed selection is the superseded PR — the first URL in
+        # the evidence, or a `pr` field left on an abandoned branch — even when that closed
+        # head happens to equal the reviewed commit and an open sibling is the one still to
+        # merge. The first URL is never the merge target by itself. Without a sibling at the
+        # reviewed commit, the skip stands (`miss`).
+        if siblings:
             return _via_sibling(repo, item_id, selector, pr, reviewed=reviewed, green=green,
                                 paths=paths, release=release, scans=scans, method=method,
                                 siblings=siblings, covering=covering, checked=checked, miss=not_open,

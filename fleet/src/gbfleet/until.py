@@ -530,6 +530,14 @@ def run(
         return Report(ok=False, reason="server_error", exit=1, detail=str(exc), wave=wave,
                       minted=minted, spawned=len(wave.spawned))
     except watchdog_mod.Stalled as exc:
+        # GRPH-1577. A stall while a signed-off merge is still outstanding is not a
+        # drained queue. Name the items; `idle` is how the open PR was left behind.
+        if wave.merge_pending:
+            lines = list(wave.merge_pending)
+            wave.reason = "merge-pending"
+            return Report(ok=False, reason="merge-pending", exit=0,
+                          detail="; ".join(lines), wave=wave,
+                          minted=minted, spawned=len(wave.spawned), waits=lines)
         # GRPH-1324. A stall while a dead author's pin is the only ready work is an
         # exit, and an exit must name the pin. `idle` would read as a drained queue.
         reason, pin_lines = _named_pin_exit("stall", [], list(wave.pin_waits))
@@ -1676,6 +1684,18 @@ def _loop(
             sleep(poll)
             continue
 
+        pending_merges = _merge_pending(merger, wave)
+        if pending_merges:
+            # GRPH-1577. A signed-off item whose merge can still clear is not an empty
+            # board. Counting these polls toward idle is how the drain exited `idle`
+            # and left the PR open when CI attested a few minutes later.
+            wave.merge_pending = pending_merges
+            empty = 0
+            wd.progress("merge-pending")
+            sleep(poll)
+            continue
+        wave.merge_pending = []
+
         empty += 1
         if empty >= empty_ticks:
             if ci_stuck and not rows:
@@ -1708,6 +1728,23 @@ def _loop(
             wave.reason = "idle"
             return _leave("idle", 0, review=reviews, outside=outside)
         sleep(poll)
+
+
+def _merge_pending(merger, wave: Wave) -> list[str]:
+    """Signed-off items this drain is still trying to merge (GRPH-1577).
+
+    A refusal that can clear — CI not yet attested, a cooldown, auto-merge armed —
+    stays in `watching`. A skip and a bounce have already left it. One line per item,
+    so a stop can name them. Empty means nothing is waiting on a merge.
+    """
+    if not getattr(merger, "enabled", False):
+        return []
+    lines: list[str] = []
+    for item_id in list(getattr(merger, "watching", {}) or {}):
+        got = wave.merged.get(item_id)
+        reason = (got.reason if got is not None else "") or "merge not finished"
+        lines.append(f"{item_id}: {reason}")
+    return lines
 
 
 def _stamp_service_exit(planner: Graphban, wave: Wave) -> None:

@@ -507,6 +507,10 @@ class Wave:
     #: (GRPH-1324). Cleared when that item is delegated. An exit while any remain names
     #: them under `waits` and is not `idle`.
     pin_waits: list[str] = field(default_factory=list)
+    #: "{item}: {reason}" for a signed-off merge this drain is still trying (GRPH-1577).
+    #: Set by `until` while `Merger.watching` is non-empty. A stop in that state is
+    #: `merge-pending`, never `idle`: the item is unmerged and the miss can still clear.
+    merge_pending: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -3893,6 +3897,19 @@ class Merger:
             self.watching.pop(item_id, None)
         except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
             wave.failures.append(f"{item_id}: {got.reason} (could not bounce: {exc})")
+            return
+        # GRPH-1577. `bounce` stores `bounce_reason` and sets `next`. That field is not
+        # evidence: the next builder reads the item's notes. The reason already names the
+        # conflicting files, or the commits when the head moved. A refused note leaves the
+        # bounce standing — the item is already `next`.
+        try:
+            self.client.call("update_item", id=item_id, evidence=[{
+                "kind": "note",
+                "detail": f"gbfleet: reopened to next — {got.reason}",
+            }])
+        except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
+            wave.failures.append(
+                f"{item_id}: reopened to next but the note was not recorded ({exc})")
 
     def _covering(self, item_id: str, item: dict) -> list[str]:
         """Touchpoints of the OTHER done items on this item's branch whose sign-off names the
