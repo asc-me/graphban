@@ -132,11 +132,13 @@ def err_reason(name: str, *, limit: int = 400) -> str:
     last = lines[-1]
     return last if len(last) <= limit else last[: limit - 1] + "…"
 
-def last_run(name: str) -> tuple[str, int]:
-    """`(reason, unready_count)` from the newest `until` JSON in `<name>.log` (GRPH-1698).
+def last_run(name: str) -> tuple[str, int, str]:
+    """`(reason, unready_count, stall_phrase)` from the newest `until` JSON (GRPH-1698).
 
     Exit 0 alone is not the idle signal: a `--line` drain exits 0 with `reason: unready` when
-    fixes are filed but not claimable. `("", 0)` means the log held no readable reason.
+    fixes are filed but not claimable. `stall_phrase` is empty unless that reason is
+    `stalled`; it names the ready items under `refused` so status can say which one stayed
+    refused (GRPH-1643). `("", 0, "")` means the log held no readable reason.
     """
     path = CONFIG_DIR / "logs" / f"{name}.log"
     window = 65536
@@ -155,12 +157,12 @@ def last_run(name: str) -> tuple[str, int]:
                 if found is not None:
                     return found
                 if start == 0:
-                    return "", 0
+                    return "", 0, ""
                 # The newest record may be longer than the window (a large `resolutions`):
                 # widen rather than answer with an older run's reason.
                 window *= 4
     except OSError:
-        return "", 0
+        return "", 0, ""
 
 
 def _drain_log(name: str) -> tuple[bool, str]:
@@ -197,7 +199,28 @@ def _last_json_event(text: str) -> str:
     return ""
 
 
-def _reason_in(lines: list[str]) -> tuple[str, int] | None:
+def _stall_phrase(refused: object) -> str:
+    """`GBC-125 bound_seat_refused (reach)` from a summary's `refused` list.
+
+    One clause per item, in the order the summary recorded them. A row that is
+    not an object is skipped: a bad element must not hide the ones that are real.
+    """
+    if not isinstance(refused, list):
+        return ""
+    parts: list[str] = []
+    for row in refused:
+        if not isinstance(row, dict):
+            continue
+        item = str(row.get("item") or "").strip()
+        reason = str(row.get("reason") or "").strip()
+        if item and reason:
+            parts.append(f"{item} {reason}")
+        elif item or reason:
+            parts.append(item or reason)
+    return "; ".join(parts)
+
+
+def _reason_in(lines: list[str]) -> tuple[str, int, str] | None:
     for ln in reversed(lines):
         ln = ln.strip()
         if not ln.startswith("{"):
@@ -208,7 +231,8 @@ def _reason_in(lines: list[str]) -> tuple[str, int] | None:
             continue
         if isinstance(doc, dict) and isinstance(doc.get("reason"), str) and doc["reason"]:
             un = doc.get("unready")
-            return doc["reason"], len(un) if isinstance(un, list) else 0
+            stall = _stall_phrase(doc.get("refused")) if doc["reason"] == "stalled" else ""
+            return doc["reason"], len(un) if isinstance(un, list) else 0, stall
     return None
 
 
@@ -1002,6 +1026,9 @@ class Status:
     #: log was not consulted; "" means it was and held no reason.
     run_reason: str | None = None
     unready: int = 0
+    #: `GBC-125 bound_seat_refused (reach)` when `run_reason` is `stalled` (GRPH-1643).
+    #: Empty when the log named the stall without a `refused` row.
+    stall: str = ""
     #: The process is alive and the loop has logged `loop_silent` (GRPH-1786). A pid is
     #: not a working drain: launchd kept the 2026-11-20 process as running for 50 minutes
     #: after it stopped writing.
@@ -1013,7 +1040,7 @@ class Status:
     @property
     def idle(self) -> bool:
         """Installed, not running, and last exited cleanly: the normal state between cycles."""
-        return self._exited_clean and self.run_reason not in ("", "unready")
+        return self._exited_clean and self.run_reason not in ("", "unready", "stalled")
 
     @property
     def _exited_clean(self) -> bool:
@@ -1046,6 +1073,9 @@ class Status:
             if self.log_state == "absent":
                 return f"{self.name}: running, no log yet ({where}, {self.unit_path})"
             return f"{self.name}: running ({where}, {self.unit_path})"
+        if self.run_reason == "stalled":
+            phrase = self.stall or "a ready item stayed refused"
+            return f"{self.name}: stalled: {phrase} ({where}, {self.unit_path})"
         if self.idle:
             return (f"{self.name}: idle between runs, last exit 0 ({where}, "
                     f"{self.unit_path})")
@@ -1078,13 +1108,19 @@ def status(name: str = DEFAULT_NAME, *, kind: str = "") -> Status:
     else:
         alive, detail, last_exit = _running_systemd(name)
     died = alive is False and last_exit not in (None, 0)
-    run_reason, unready = last_run(name) if alive is False and last_exit == 0 else (None, 0)
+    # Read the summary whenever the process has exited, not only on exit 0. A stall
+    # exits non-zero (GRPH-1643); looking only at exit 0 left that log unread and
+    # status said "NOT running" with no item.
+    if alive is False and last_exit is not None:
+        run_reason, unready, stall = last_run(name)
+    else:
+        run_reason, unready, stall = None, 0, ""
     stalled, log_state = _drain_log(name) if alive else (False, "")
     return Status(name=name, kind=kind, installed=True, running=alive, unit_path=unit,
                   detail=detail, linger=linger(), path_env=_path_in(unit, kind),
                   last_exit=last_exit, logon_policy=policy,
                   reason=err_reason(name) if died else "",
-                  run_reason=run_reason, unready=unready,
+                  run_reason=run_reason, unready=unready, stall=stall,
                   stalled=stalled, log_state=log_state)
 
 

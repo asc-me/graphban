@@ -512,6 +512,11 @@ class Wave:
     #: Set by `until` while `Merger.watching` is non-empty. A stop in that state is
     #: `merge-pending`, never `idle`: the item is unmerged and the miss can still clear.
     merge_pending: list[str] = field(default_factory=list)
+    #: `{item, reason}` for a ready item whose delegation this wave refused and did not
+    #: later hand off (GRPH-1643). An exit while any remain is `stalled`, not `idle`:
+    #: the item is still ready. Empty means none were refused. A missing list would
+    #: read the same way, which is how a drain exited idle for hours.
+    delegate_refused: list[dict] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:

@@ -545,6 +545,9 @@ def test_idle_when_there_is_no_work_no_review_and_no_lease(
     assert result.ok is True
     assert result.spawned == 0
     assert result.as_json()["reason"] == "idle"
+    # Empty means the refusal list was written, not skipped. A missing key would
+    # read the same as this, which is the idle exit GRPH-1643 closes.
+    assert result.as_json()["refused"] == []
 
 
 def test_the_merger_carries_the_planner_that_registered(
@@ -1484,6 +1487,13 @@ def test_a_refused_bound_seat_does_not_fall_back_to_unbound(
     # available, and the next tick will retry after the pin lapses or the holder releases.
     assert result.spawned == 0, "a refused bound seat should not spawn an unbound child"
     assert "mint_enrolment" not in calls, "no unbound fallback means no mint_enrolment"
+    # GRPH-1643. The refusal is not a reach signal, and it is still a stall: the
+    # item stayed ready. `reason` is not idle and the exit is not 0.
+    payload = result.as_json()
+    assert payload["reason"] == "stalled", payload
+    assert payload["exit"] != 0 and payload["ok"] is False
+    assert payload["refused"][0]["item"] == "GRPH-7"
+    assert payload["refused"][0]["reason"].startswith("bound_seat_refused")
 
 
 def test_an_idle_run_names_the_ready_item_whose_delegation_was_refused(
@@ -1513,6 +1523,42 @@ def test_an_idle_run_names_the_ready_item_whose_delegation_was_refused(
     refused = [g for g in payload["gated"] if g.startswith("GRPH-7:")]
     assert len(refused) == 1, payload["gated"]
     assert "delegation refused" in refused[0] and "platform-command" in refused[0]
+
+
+def test_a_ready_item_whose_delegation_stays_refused_on_reach_is_a_stall(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1643. The only ready item is refused because its text reads like a
+    deployed system. The summary names it under `refused`, `reason` is `stalled`,
+    and the process exits non-zero. Idle with exit 0 is the defect.
+
+    Sabotage: in `_finish`, do not replace idle with stalled when
+    `delegate_refused` is set. This exits idle with exit 0 and `ok` true.
+    """
+    workspace = tmp_path / "ws"
+    why = (
+        "GRPH-7 is declared `reach=repo`, and reads like work on a deployed system:\n"
+        "  · rotate the credential   [platform-command: a hosted secret]\n"
+        "If this work really is confined to the worktree, pass `acknowledge_reach=true`"
+    )
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7"]],
+        bound_seats=True, bound_refused=why,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=2,
+    )
+    payload = result.as_json()
+    assert payload["spawned"] == 0
+    assert payload["reason"] == "stalled", payload
+    assert payload["reason"] != "idle"
+    assert payload["exit"] != 0
+    assert payload["ok"] is False
+    assert payload["refused"] == [
+        {"item": "GRPH-7", "reason": "bound_seat_refused (reach)"},
+    ], payload["refused"]
 
 
 def test_a_pinned_item_spawns_nothing_until_the_server_stops_reporting_the_pin(

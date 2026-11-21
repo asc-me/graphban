@@ -370,6 +370,45 @@ def test_a_running_drain_that_logged_loop_silent_is_stalled(tmp_path: Path, monk
     assert ": running" not in line
 
 
+def _stopped_unit(tmp_path: Path, monkeypatch, name: str, last_exit: int):
+    unit = tmp_path / "unit.plist"
+    unit.write_bytes(b"x")
+    monkeypatch.setattr(service, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(service, "unit_path_for", lambda n, k: unit)
+    monkeypatch.setattr(
+        service, "_running_launchd",
+        lambda label: (False, f"last exit {last_exit}", last_exit),
+    )
+    monkeypatch.setattr(service, "linger", lambda: None)
+    return service.status(name, kind="launchd")
+
+
+def test_a_stopped_drain_that_exited_stalled_names_the_refused_item(
+    tmp_path: Path, monkeypatch,
+):
+    """GRPH-1643. `until` exited non-zero because a ready item stayed refused.
+    `gbfleet service status` reads that summary. The line names the item and the
+    refusal, and it does not say idle.
+
+    Sabotage: in `status`, do not pass `stall` from `last_run` into `Status`.
+    The line no longer contains `GBC-125 bound_seat_refused (reach)`.
+    """
+    name = "drain"
+    log = tmp_path / "logs" / f"{name}.log"
+    log.parent.mkdir()
+    log.write_text(
+        '{"ok": false, "reason": "stalled", "exit": 1, "refused": '
+        '[{"item": "GBC-125", "reason": "bound_seat_refused (reach)"}]}\n',
+        encoding="utf-8",
+    )
+    state = _stopped_unit(tmp_path, monkeypatch, name, 1)
+    assert state.run_reason == "stalled"
+    assert not state.idle
+    line = state.line()
+    assert "stalled: GBC-125 bound_seat_refused (reach)" in line
+    assert "idle between runs" not in line
+
+
 def test_a_running_drain_with_a_live_log_still_says_running(tmp_path: Path, monkeypatch):
     name = "drain-1786-live"
     log = tmp_path / "logs" / f"{name}.log"
@@ -704,9 +743,9 @@ def test_last_run_reads_newest_json(tmp_path, monkeypatch):
     (tmp_path / "logs").mkdir()
     log = tmp_path / "logs" / "d.log"
     log.write_text('{"reason": "idle"}\nnoise\n{"reason": "unready", "unready": [{"id": "a"}]}\n')
-    assert service.last_run("d") == ("unready", 1)
+    assert service.last_run("d") == ("unready", 1, "")
     log.write_text("no json here\n")
-    assert service.last_run("d") == ("", 0)
+    assert service.last_run("d") == ("", 0, "")
 
 
 def test_last_run_reads_a_newest_record_longer_than_the_window(tmp_path, monkeypatch):
@@ -719,4 +758,4 @@ def test_last_run_reads_a_newest_record_longer_than_the_window(tmp_path, monkeyp
     big = _json.dumps({"reason": "unready", "unready": [{"id": "a"}, {"id": "b"}],
                        "resolutions": ["x" * 1000] * 200})
     (tmp_path / "logs" / "d.log").write_text('{"reason": "idle"}\n' + big + "\n")
-    assert service.last_run("d") == ("unready", 2)
+    assert service.last_run("d") == ("unready", 2, "")
