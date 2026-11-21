@@ -212,6 +212,16 @@ describe("Project home", () => {
   // the affordance for what actually happened, and the absence of the reassuring claim
   // that used to stand in for it.
 
+  it("groups jump tiles into Work and Agents and memory (PRD-47 S17)", async () => {
+    renderHome();
+    await screen.findByText("1 in flight");
+    const jump = screen.getByRole("region", { name: "Jump to" });
+    expect(within(jump).getByRole("heading", { name: "Work" })).toBeInTheDocument();
+    expect(within(jump).getByRole("heading", { name: "Agents and memory" })).toBeInTheDocument();
+    expect(within(jump).getByText(/The stream, the specs/)).toBeInTheDocument();
+    expect(within(jump).getByText(/What agents write back/)).toBeInTheDocument();
+  });
+
   it("jumps to the eight surfaces with live meta, on project paths", async () => {
     renderHome();
 

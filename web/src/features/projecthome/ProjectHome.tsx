@@ -476,14 +476,19 @@ function metaText(value: number | null | undefined, phrase: (n: number) => strin
   return phrase(value);
 }
 
+type JumpTile = { sub: string; label: string; icon: ReactNode; meta: ReactNode; live: boolean };
+
+const WORK_SURFACES = ["tracker", "triage", "prds", "code"] as const;
+const AGENTS_SURFACES = ["memory", "lessons", "fleet", "live"] as const;
+
 function JumpTo({
   to, pending, inFlight, triageNew, prds, nodes, review, lessons, online,
 }: JumpProps) {
-  const tiles: { sub: string; label: string; icon: ReactNode; meta: ReactNode; live: boolean }[] = [
-    { sub: "tracker", icon: <ListChecks size={14} />, label: "Tracker", meta: metaText(inFlight ?? null, (n) => `${n} in flight`), live: isLive(inFlight) },
-    { sub: "triage", icon: <Radar size={14} />, label: "Triage", meta: metaText(triageNew ?? null, (n) => `${n} new`), live: isLive(triageNew) },
-    { sub: "prds", icon: <BarChart3 size={14} />, label: "PRDs", meta: metaText(prds ?? null, (n) => `${n} docs`), live: isLive(prds) },
-    {
+  const bySub = new Map<string, JumpTile>([
+    ["tracker", { sub: "tracker", icon: <ListChecks size={14} />, label: "Tracker", meta: metaText(inFlight ?? null, (n) => `${n} in flight`), live: isLive(inFlight) }],
+    ["triage", { sub: "triage", icon: <Radar size={14} />, label: "Triage", meta: metaText(triageNew ?? null, (n) => `${n} new`), live: isLive(triageNew) }],
+    ["prds", { sub: "prds", icon: <BarChart3 size={14} />, label: "PRDs", meta: metaText(prds ?? null, (n) => `${n} docs`), live: isLive(prds) }],
+    ["code", {
       sub: "code",
       icon: <Network size={14} />,
       label: "Code graph",
@@ -491,17 +496,64 @@ function JumpTo({
         ? <span className="text-st-review">not pushed</span>
         : metaText(nodes ?? null, (n) => `${n} nodes`),
       live: isLive(nodes),
+    }],
+    ["memory", { sub: "memory", icon: <Inbox size={14} />, label: "Memory", meta: metaText(review ?? null, (n) => `${n} to review`), live: isLive(review) }],
+    ["lessons", { sub: "lessons", icon: <BookMarked size={14} />, label: "Lessons", meta: metaText(lessons ?? null, (n) => `${n} published`), live: isLive(lessons) }],
+  ]);
+  // One server integer. Filtering `agents` here would be a list length (GRPH-431).
+  bySub.set("fleet", { sub: "fleet", icon: <Users size={14} />, label: "Fleet", meta: metaText(online ?? null, (n) => `${n} online`), live: isLive(online) });
+  bySub.set("live", { sub: "live", icon: <Activity size={14} />, label: "Live", meta: metaText(online ?? null, (n) => `${n} on now`), live: isLive(online) });
+
+  const groups: { heading: string; hint: string; subs: readonly string[] }[] = [
+    {
+      heading: "Work",
+      hint: "The stream, the specs, what came in, and the structure it touches.",
+      subs: WORK_SURFACES,
     },
-    { sub: "memory", icon: <Inbox size={14} />, label: "Memory", meta: metaText(review ?? null, (n) => `${n} to review`), live: isLive(review) },
-    { sub: "lessons", icon: <BookMarked size={14} />, label: "Lessons", meta: metaText(lessons ?? null, (n) => `${n} published`), live: isLive(lessons) },
-    // One server integer. Filtering `agents` here would be a list length (GRPH-431).
-    { sub: "fleet", icon: <Users size={14} />, label: "Fleet", meta: metaText(online ?? null, (n) => `${n} online`), live: isLive(online) },
-    { sub: "live", icon: <Activity size={14} />, label: "Live", meta: metaText(online ?? null, (n) => `${n} on now`), live: isLive(online) },
+    {
+      heading: "Agents and memory",
+      hint: "What agents write back — candidates, lessons, and who is running now.",
+      subs: AGENTS_SURFACES,
+    },
   ];
+
   return (
     <section className="mt-6" aria-label="Jump to">
       <SectionHead title="Jump to" subtitle="Live counts from each surface." />
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+      <div className="space-y-5">
+        {groups.map((group) => (
+          <SurfaceGroup
+            key={group.heading}
+            heading={group.heading}
+            hint={group.hint}
+            tiles={group.subs.map((sub) => bySub.get(sub)!)}
+            to={to}
+            pending={pending}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function SurfaceGroup({
+  heading,
+  hint,
+  tiles,
+  to,
+  pending,
+}: {
+  heading: string;
+  hint: string;
+  tiles: JumpTile[];
+  to: (sub: string) => string;
+  pending?: boolean;
+}) {
+  return (
+    <div>
+      <h3 className="text-[13px] font-semibold tracking-[-0.2px]">{heading}</h3>
+      <p className="mt-0.5 text-[11.5px] leading-relaxed text-muted">{hint}</p>
+      <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
         {tiles.map((tile) => (
           <Link
             key={tile.sub}
@@ -516,7 +568,7 @@ function JumpTo({
           </Link>
         ))}
       </div>
-    </section>
+    </div>
   );
 }
 
