@@ -24,6 +24,8 @@ List reads stay on the default `fields=lean`. `search_items` and `get_backlog` r
 
 `get_code_map` takes a `kind` and a small `limit`. With neither, the reply is up to 200 nodes. Check `truncated` when you do call it.
 
+Build or refresh the graph with `gban code map` (`--dry-run` first). It describes every tracked file at HEAD, keeps existing summaries, and marks gone files stale.
+
 Looking around uses the reads above. `describe_code`, `link_code`, and `unlink_code` write the graph.
 
 A spec question is `graphban-prd`. `get_prd` is for editing a spec, not for finding a file.
