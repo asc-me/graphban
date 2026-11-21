@@ -321,3 +321,7 @@ def test_a_bound_seat_pointed_outside_its_own_scope_reports_rather_than_raises(
     assert out["assigned"]["state"] == "taken"
     assert out["assigned"]["reason"] == "out-of-scope"
     assert seat.prd_id == mine["id"]
+    # GRPH-1292. `until` logs this reason off the roster, not off the reply above.
+    rows = {a["id"]: a for a in _ok(_mcp(client, key, "fleet_status", {}))["agents"]}
+    assert rows[out["agent_id"]]["assigned"]["state"] == "taken"
+    assert rows[out["agent_id"]]["assigned"]["reason"] == "out-of-scope"

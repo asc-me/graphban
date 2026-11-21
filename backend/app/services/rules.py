@@ -175,6 +175,10 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
     Rule("review.acceptance_covered", "review", "Every acceptance clause is tested",
          "Sign-off names a test for each clause under ## Acceptance.",
          "enforced", _src("app/services/fleet.py", "MissingAcceptanceCoverage"), "code"),
+    Rule("review.dependencies_done", "review", "Open dependencies are not signed off",
+         "Sign-off refuses an item while a dependency link points at work that is not done. "
+         "A planner can waive it on the record with a reason.",
+         "enforced", _src("app/services/fleet.py", "DependenciesOpen"), "code"),
     Rule("memory.independent_adjudication", "learn", "Agents do not publish their own memory",
          "An agent may discard its candidate shard; only an independent judge publishes one.",
          "advisory", _src("app/services/memory.py", "agent_publish"), "code", channel="doc"),

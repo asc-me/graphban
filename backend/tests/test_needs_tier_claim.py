@@ -230,6 +230,9 @@ def test_a_cheap_bound_seat_does_not_claim_at_registration(client, key, db):
     assert reg["assigned"]["state"] == "taken"
     assert "needs_tier=frontier" in reg["assigned"]["reason"]
     assert reg["assigned"]["item"] == item
+    # The supervisor reads the roster, not this reply (GRPH-1292).
+    rows = {a["id"]: a for a in _ok(_mcp(client, key, "fleet_status", {}))["agents"]}
+    assert "needs_tier=frontier" in rows[reg["agent_id"]]["assigned"]["reason"]
     stored = _stored(db, item)
     assert stored.status == "next" and stored.claimed_by is None
 
