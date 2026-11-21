@@ -165,3 +165,15 @@ def test_same_minute_refused(tmp_path, home):
     work = _origin(tmp_path)
     with pytest.raises(svc.Refused, match="at once"):
         _plan(work, "systemd", hourly=":00", nightly="03:00")
+
+
+def test_launchd_install_needs_no_getuid(tmp_path, home, monkeypatch):
+    """Windows has no os.getuid; building a launchd plan there must not raise."""
+    import os
+    monkeypatch.delattr(os, "getuid", raising=False)
+    work = _origin(tmp_path)
+    plan = _plan(work, "launchd")
+    assert svc.install(plan, KEY) == []
+    assert ["launchctl", "bootstrap", "gui/0", str(plan.units[0])] in home[1]
+    svc.uninstall(plan.sid, "launchd")
+    assert not plan.units[0].exists()

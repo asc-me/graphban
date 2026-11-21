@@ -271,7 +271,7 @@ def install(plan: Plan, api_key: str) -> list[str]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
     if plan.kind == "launchd":
-        domain = f"gui/{os.getuid()}"
+        domain = _gui_domain()
         label = f"{LABEL_PREFIX}.{plan.sid}"
         _run(["launchctl", "bootout", f"{domain}/{label}"])
         code, out = _run(["launchctl", "bootstrap", domain, str(plan.units[0])])
@@ -286,10 +286,17 @@ def install(plan: Plan, api_key: str) -> list[str]:
     return warnings
 
 
+def _gui_domain() -> str:
+    """launchd's per-user GUI domain. `os.getuid` is POSIX-only; a launchd plan
+    can be built and asserted on any host, so it must not raise elsewhere."""
+    getuid = getattr(os, "getuid", None)
+    return f"gui/{getuid() if getuid else 0}"
+
+
 def uninstall(sid: str, kind: str = "") -> list[str]:
     kind = kind or host_kind()
     if kind == "launchd":
-        _run(["launchctl", "bootout", f"gui/{os.getuid()}/{LABEL_PREFIX}.{sid}"])
+        _run(["launchctl", "bootout", f"{_gui_domain()}/{LABEL_PREFIX}.{sid}"])
     else:
         _run(["systemctl", "--user", "disable", "--now", f"{UNIT_PREFIX}{sid}.timer"])
     removed = []
