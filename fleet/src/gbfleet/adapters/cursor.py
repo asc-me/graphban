@@ -29,6 +29,7 @@ from .cursor_stream import touched as stream_touched_paths
 
 class CursorAgent(Adapter):
     name = "cursor-agent"
+    vendor = "cursor"
     binary = "cursor-agent"
     support = Support(minimum=(2026, 1), maximum=(2027, 1), verified_against="2026.04.17-787b533")
     notes = (

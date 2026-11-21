@@ -98,6 +98,9 @@ def test_the_same_vendor_and_model_is_named_as_such(client, key):
     assert "SAME vendor" in pred["detail"]
     assert "same model" in pred["detail"]
     # Both sides legible without a second lookup — the whole point of the ticket.
+    # The receipt quotes the stored spelling. Registration keeps `qwen-code`
+    # (GRPH-1090): that string is the harness row key, and folding it to
+    # `alibaba` here empties the recommendation cards.
     assert pred["detail"].count("qwen-code:qwen3") == 2
     assert "tier cheap" in pred["detail"]
 
@@ -222,6 +225,95 @@ def test_a_model_id_used_as_the_vendor_is_the_same_company():
     differs, detail = fleet_svc.review_diversity(reviewer, builder, built_by="GRPH-A1")
     assert differs is False
     assert "SAME vendor" in detail
+
+
+@pytest.mark.parametrize("adapter, company", [
+    ("claude", "anthropic"),
+    ("agy", "google"),
+    ("qwen-code", "alibaba"),
+    ("dsh", "deepseek"),
+    ("cursor-agent", "cursor"),
+    ("codex", "openai"),
+    ("gbagent", "gbagent"),
+])
+def test_an_adapter_name_and_its_company_are_one_vendor_and_model(adapter, company):
+    """GRPH-1090. Old rows keep the spelling they were stored with. The comparison
+    folds them, or `claude` reviewing `anthropic` on the same model still reads as
+    two vendors. Removing the fold makes this assert "different vendors"."""
+    builder = {"vendor": adapter, "model": "same-model", "tier": "cheap"}
+    reviewer = {"vendor": company, "model": "same-model", "tier": "frontier"}
+
+    differs, detail = fleet_svc.review_diversity(reviewer, builder, built_by="GRPH-A1")
+
+    assert differs is False
+    assert "SAME vendor" in detail
+    assert "same model" in detail
+    assert "different vendors" not in detail
+
+
+def test_a_registered_claude_and_a_registered_anthropic_are_one_vendor(client, key):
+    """GRPH-1090, through registration. The two spellings are stored as declared
+    — that string is the harness row key — and the receipt still says they are
+    the same vendor and the same model. grok is stored as xai; claude is not
+    stored as anthropic."""
+    pred = _signed(
+        client, key,
+        builder_caps={"instance": "w", "vendor": "claude", "model": "opus", "tier": "frontier"},
+        reviewer_caps={"instance": "r", "vendor": "anthropic", "model": "opus", "tier": "frontier"},
+    )
+
+    assert pred["passed"] is True
+    assert "SAME vendor" in pred["detail"]
+    assert "same model" in pred["detail"]
+    assert "different vendors" not in pred["detail"]
+    assert "claude:opus" in pred["detail"] and "anthropic:opus" in pred["detail"]
+    assert "anthropic and claude are one vendor" in pred["detail"]
+
+
+def test_the_same_company_on_a_different_model_is_not_the_same_model():
+    builder = {"vendor": "claude", "model": "haiku", "tier": "cheap"}
+    reviewer = {"vendor": "anthropic", "model": "opus", "tier": "frontier"}
+
+    differs, detail = fleet_svc.review_diversity(reviewer, builder, built_by="GRPH-A1")
+
+    assert differs is False
+    assert "SAME vendor" in detail
+    assert "different model" in detail
+    assert "same model" not in detail
+    assert "anthropic and claude are one vendor" in detail
+
+
+def test_an_unknown_vendor_string_is_not_mapped(client, key):
+    """A spelling the map has not seen twice stays itself. A model id that merely
+    starts with another vendor's name is not that vendor — agy's frontier row is
+    `claude-opus-4-6-thinking` and it is Google."""
+    assert fleet_svc.canonical_vendor("acme-labs") == "acme-labs"
+    assert fleet_svc.canonical_vendor("claude-opus-4-6-thinking") == "claude-opus-4-6-thinking"
+    assert fleet_svc.canonical_vendor("deepseek-flash") == "deepseek-flash"
+    assert fleet_svc.canonical_vendor("") == ""
+    assert fleet_svc.canonical_vendor("undeclared") == "undeclared"
+
+    pred = _signed(
+        client, key,
+        builder_caps={"instance": "w", "vendor": "acme-labs", "model": "one", "tier": "cheap"},
+        reviewer_caps={"instance": "r", "vendor": "claude", "model": "opus", "tier": "frontier"},
+    )
+    assert "different vendors" in pred["detail"]
+    assert "acme-labs:one" in pred["detail"]
+    assert "claude:opus" in pred["detail"]
+
+
+def test_claude_reviewing_grok_is_still_different_vendors(client, key):
+    """The fold is per company. Claude reviewing grok is still two vendors, on
+    either spelling of either side."""
+    pred = _signed(
+        client, key,
+        builder_caps={"instance": "w", "vendor": "grok", "model": "grok-4.7", "tier": "frontier"},
+        reviewer_caps={"instance": "r", "vendor": "claude", "model": "opus", "tier": "frontier"},
+    )
+    assert "different vendors" in pred["detail"]
+    assert "SAME vendor" not in pred["detail"]
+    assert "xai:grok-4.7" in pred["detail"] and "claude:opus" in pred["detail"]
 
 
 def test_anthropic_and_xai_are_still_different_vendors(client, key):
