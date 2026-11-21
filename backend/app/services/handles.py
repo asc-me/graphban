@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import HandleHold, OrgMembership, User, utcnow
+from app.models import HandleHold, OrgMembership, Project, User, utcnow
 from app.services.projects import normalize_hex, normalize_pattern, normalize_second_colour
 
 HOLD_DAYS = 30
@@ -74,6 +74,17 @@ def org_handle(db: Session, user: User, org_id: str | None) -> str:
         if found:
             return found
     return user.handle
+
+
+def project_handle(db: Session, user: User, project_id: str | None) -> str:
+    """`org_handle` for the org that owns `project_id` (account handle when it has none)."""
+    if not project_id:
+        return user.handle
+    # One query: this runs on every authenticated request that names a project (deps.py).
+    found = db.scalar(select(OrgMembership.handle).join(
+        Project, Project.org_id == OrgMembership.org_id).where(
+        Project.id == project_id, OrgMembership.user_id == user.id))
+    return found or user.handle
 
 
 def write_holds(

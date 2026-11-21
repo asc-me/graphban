@@ -16,6 +16,7 @@ from app.security import authz
 from app.security.deps import get_current_user
 from app.services import collision as collision_svc
 from app.services import items as items_svc
+from app.services import handles
 from app.services import touchpoint_check
 from app.services import waits as waits_svc
 
@@ -55,7 +56,7 @@ def create_item(
     writable = authz.writable_project_ids(db, user.id)
     pid = body.project_id or (writable[0] if writable else None)
     authz.require_writable(db, user.id, pid)
-    reporter = {"name": user.name, "handle": user.handle, "avatar": user.avatar}
+    reporter = {"name": user.name, "handle": handles.project_handle(db, user, pid), "avatar": user.avatar}
     try:
         created = items_svc.create_item(
             db,
@@ -260,7 +261,7 @@ def owner_close(
     if existing is None:
         raise HTTPException(404, "item not found")
     authz.require_project_owner(db, user.id, existing.project_id)
-    closer = {"id": user.id, "handle": user.handle, "name": user.name}
+    closer = {"id": user.id, "handle": handles.project_handle(db, user, existing.project_id), "name": user.name}
     try:
         item = items_svc.owner_close(
             db, item_id, closer=closer, commit=body.commit, pr_url=body.pr_url,
@@ -295,7 +296,7 @@ def resolve_item(
     try:
         item = items_svc.resolve_item(
             db, item_id, kind=body.kind, of=body.of, reason=body.reason,
-            actor=str(user.handle or user.name or user.id), defer=background.add_task)
+            actor=str(handles.project_handle(db, user, existing.project_id) or user.name or user.id), defer=background.add_task)
     except items_svc.ResolutionRefused as e:
         raise errors.Refused(409, str(e), rule_id=items_svc.RESOLUTION_RULE,
                              meta={"reason": e.reason}, target=("item", existing.id))
