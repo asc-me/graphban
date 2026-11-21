@@ -522,6 +522,11 @@ MUST_NOT_FIRE = {
     # A possessive is not an invocation. The matcher wants whitespace after
     # the platform name, and `'` is not whitespace.
     "a possessive, not an invocation": "Railway's dashboard shows the stack",
+    # GRPH-1814. `render` plus an adjective that ends the clause is a UI
+    # sentence, not Render's CLI. The predicative span is what keeps it
+    # quiet. Delete that scrub and this fires. `render deploy` stays must-fire.
+    "a tile that renders solid": (
+        "Missing `avatar2` or `avatar_pattern` render solid."),
 }
 
 
@@ -597,6 +602,29 @@ def test_a_ui_assertion_that_says_render_nothing_is_not_a_command():
     fired = reach_svc.signals("Run `railway up` to redeploy")
     assert [s["rule"] for s in fired] == ["platform-command"]
     assert reach_svc.signals("render deploy"), "a real subcommand must still fire"
+
+
+def test_a_clause_final_complement_after_render_is_ui_prose():
+    """GRPH-1814. GRPH-1792 was refused on `delegate` because "render solid"
+    read as the Render CLI plus a subcommand. `solid` ends the clause, the
+    same pair as `blank`, `empty` and `twice`. The exemption is
+    `_PREDICATIVE_SPAN`, not another line of `_NOT_SUBCOMMANDS` and not a verb
+    allowlist: `render dashed` is an adjective the set does not name, and it
+    fires. So does `render deploy`.
+
+    Sabotage: drop `_PREDICATIVE_SPAN` from the platform-command scrub and the
+    quoted line fires.
+    """
+    quoted = "Missing `avatar2` or `avatar_pattern` render solid."
+    assert reach_svc.signals(quoted) == []
+    for phrase in ("render blank", "render empty", "render twice",
+                   "the swatch should render solid"):
+        assert not reach_svc.signals(phrase), phrase
+
+    for command in ("render deploy", "render services create",
+                    "render deploys create", "render dashed", "render dashed."):
+        found = reach_svc.signals(command)
+        assert found and any(s["rule"] == "platform-command" for s in found), command
 
 
 def test_a_capitalised_word_after_a_platform_name_is_not_a_subcommand():
@@ -1020,6 +1048,7 @@ _DESCRIPTIVE = (
     "a migration that adds a column",
     "migrate, said as prose",
     "a possessive, not an invocation",
+    "a tile that renders solid",
 )
 _COMMANDS = (
     "railway up with a flag",
