@@ -218,3 +218,13 @@ def test_migration_backfills_existing_users_as_finished():
 
     run(mod.downgrade)
     assert "onboarding" not in {c["name"] for c in inspect(engine).get_columns("users")}
+
+
+def test_build_the_code_graph_step_names_gban_code_map(client, auth):
+    """GRPH-1706: step ② names the CLI that builds and refreshes the graph, dry-run first,
+    and keeps the LOCAL-FIRST / quota guidance."""
+    step = next(s for s in _sc(client, _key(client, auth, "core"), "setup_project")["steps"]
+                if s["name"] == "Build the code graph")
+    assert "gban code map" in step["how"]
+    assert "gban code map --dry-run" in step["how"]
+    assert "LOCAL-FIRST" in step["how"] and "AL-134" in step["how"]

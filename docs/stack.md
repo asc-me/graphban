@@ -22,6 +22,7 @@ See the boxes that make up this deployment, whether each is reachable, and its c
   external services are not scanned and show "Code health · N/A", liveness only.
 - **Print / PDF** exports the current theme at 1:1.
 - A banner shows whether the app topology is mapped. If not, run `gban stack map`.
+- The code graph is built by `gban code map`, not by this page: it posts one node per tracked non-binary file at HEAD plus import edges, keeps hand-written summaries, and marks files gone since the last run stale.
 
 ## Reading what you see
 
