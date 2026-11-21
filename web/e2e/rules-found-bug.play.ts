@@ -24,6 +24,65 @@ async function open(page: Page, state: "on" | "off" | "absent") {
 const shot = (page: Page, name: string) =>
   page.getByTestId("rules-inspector").screenshot({ path: test.info().outputPath(`${name}.png`) });
 
+/**
+ * GRPH-1816. The strip camera eases `transform` for 220ms, and ResizeObserver
+ * starts that ease only after `data-map-pct` is already set. A 300ms sleep from
+ * the attribute reads the in-flight box: around 220ms the glow is still ~2px
+ * past the map (268.4 vs 266.75) under six workers, and the same check passes
+ * alone once the ease has finished. The settled box is inside by ~4px.
+ *
+ * Wait until the painted transform matches the attribute. The glow assertion
+ * below runs once, after that — this is not a retry of it. Five seconds is the
+ * cap on that real ease plus the refit, not a budget the assertion spends.
+ */
+async function cameraSettled(page: Page, fitsBefore: string | null) {
+  const result = await page.evaluate(async (fitsBefore) => {
+    const canvas = document.querySelector<HTMLElement>('[data-testid="rules-canvas"]');
+    const area = document.querySelector<HTMLElement>('[data-testid="rules-map-area"]');
+    const svg = canvas?.querySelector("svg");
+    const g = svg?.querySelector("g");
+    if (!canvas || !area || !svg || !g) return "missing";
+    const start = performance.now();
+    let sizeWasWrong = false;
+    let lastH = -1;
+    let frames = 0;
+    return await new Promise<string>((resolve) => {
+      const tick = () => {
+        frames += 1;
+        const h = area.clientHeight;
+        if (lastH !== -1 && h !== lastH) sizeWasWrong = true;
+        lastH = h;
+        const vb = svg.viewBox.baseVal;
+        const sizeOk = Math.abs(vb.height - h) <= 1 && Math.abs(vb.width - area.clientWidth) <= 1;
+        if (!sizeOk) sizeWasWrong = true;
+        // The viewBox updates a frame before the refit commits its transform.
+        // Accepting that frame measures the previous camera. A height that never
+        // changed has no refit, so the pose it already has is the settled one.
+        const refitOk = !sizeWasWrong || canvas.getAttribute("data-fits") !== fitsBefore;
+        const running = g.getAnimations().some((a) => a.playState === "running");
+        const attr = g.getAttribute("transform") ?? "";
+        const parsed = /translate\(\s*([-\d.eE+]+)[,\s]+([-\d.eE+]+)\s*\)\s*scale\(\s*([-\d.eE+]+)\s*\)/.exec(attr);
+        const ctm = g.getCTM();
+        const poseOk = !!parsed && !!ctm
+          && Math.abs(ctm.e - Number(parsed[1])) <= 0.5
+          && Math.abs(ctm.f - Number(parsed[2])) <= 0.5
+          && Math.abs(ctm.a - Number(parsed[3])) <= 0.002;
+        if (frames >= 2 && sizeOk && refitOk && !running && poseOk) {
+          resolve("settled");
+          return;
+        }
+        if (performance.now() - start > 5_000) {
+          resolve(`unsettled size=${sizeOk} refit=${refitOk} running=${running} pose=${poseOk} fits=${canvas.getAttribute("data-fits")}`);
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+  }, fitsBefore);
+  expect(result, "camera ease").toBe("settled");
+}
+
 test("found-bug: on — the effective mode is shown", async ({ page }) => {
   const ins = await open(page, "on");
   await expect(ins.getByTestId("rules-found-bug-effective")).toHaveText("Effective mode: File a ticket.", COMPILE);
@@ -78,9 +137,10 @@ test("strip: at 1512×792 every stage card's content fits and the selected card'
     await page.goto(`${HARNESS}?state=on&flow=p74`);
     const height = page.getByTestId(`rules-dock-height-${label}`);
     await expect(height).toBeVisible(COMPILE);
+    const fitsBefore = await page.getByTestId("rules-canvas").getAttribute("data-fits");
     await height.click();
     await expect(page.getByTestId("rules-map-area")).toHaveAttribute("data-map-pct", pct);
-    await page.waitForTimeout(300); // the camera's 220ms ease
+    await cameraSettled(page, fitsBefore);
     const m = await page.evaluate(() => {
       const area = document.querySelector('[data-testid="rules-map-area"]')!.getBoundingClientRect();
       const k = Number(document.querySelector('[data-testid="rules-canvas"]')!.getAttribute("data-zoom"));
