@@ -2333,6 +2333,13 @@ _FLEET_ONLY_ARGS = {
         "type": "string", "enum": ["cheap", "frontier"],
         "description": "The author's tier cannot do this: no pin; re-seated at this tier.",
     }},
+    # GRPH-1645. Fleet-only for the reason every entry here is: the ceiling is measured
+    # on the base manifest, and only a drain sends this. The dispatcher still filters,
+    # so an old client that omits it is unchanged. A key the caller sends is resolved
+    # to the stored id before the SQL comparison.
+    "search_items": {
+        "prd_id": {"type": "string", "description": "Only this PRD's items."},
+    },
     # GRPH-1031. Planner/supervisor retarget after a bounce. Fleet-only for the reason
     # every entry here is: the ceiling is measured on the base manifest, and a worker
     # must not be told it can rewrite identity. Empty is not a write.
@@ -3370,9 +3377,14 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 out["touchpoint_warnings"] = tw
         return out
     if name == "search_items":
+        asked_prd = args.get("prd_id")
+        stored_prd = (
+            _prd_ref(db, pid, str(asked_prd))
+            if isinstance(asked_prd, str) and asked_prd.strip() else None
+        )
         rows = items_svc.search_items(
             db, args.get("query", ""), status=args.get("status"), project_id=pid,
-            tags=args.get("tags"), limit=10_000,
+            tags=args.get("tags"), limit=10_000, prd_id=stored_prd,
         )
         lean = not _full(args)
         # GRPH-1182: the full row carries `blocker`, the field this search matches on. Without

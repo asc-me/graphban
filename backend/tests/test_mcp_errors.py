@@ -180,6 +180,7 @@ def test_a_filter_read_refuses_an_unknown_argument_and_an_identity_read_does_not
     # The caller, and a fleet-only filter, are known even when the base schema omits them.
     _validate_args("get_backlog", {"agent_id": "GRPH-A1"})
     _validate_args("collision_clusters", {"holds": True, "prd_id": "GRPH-P1"})
+    _validate_args("search_items", {"prd_id": "GRPH-P1", "status": "done"})
     _validate_args("fleet_status", {"view": "lean"})
     _validate_args("get_item_details", {"id": "GRPH-1", "line_id": "GRPH-L1"})
 

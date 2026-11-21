@@ -23,6 +23,7 @@ only one of them means stop.
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from dataclasses import dataclass, field, replace
@@ -1747,8 +1748,28 @@ def blocker_item_keys(text: str) -> list[str]:
     return found
 
 
+#: Same sentence `deps.HOLD_MARK` writes. Not imported: this module must not take
+#: a dependency on `deps` (the hold writer imports the supervisor). A dependency
+#: hold names the finished-but-unmerged item, so clearing it and the next cycle
+#: writing it back is the rewrite loop GRPH-1645 measured.
+_DEPENDENCY_HOLD = "[gbfleet dependency hold]"
+
+
+def _prd_arg_refused(exc: BaseException) -> bool:
+    """An old server that has not heard of `search_items.prd_id` (GRPH-1645)."""
+    text = f"{exc} {getattr(exc, 'hint', '')}".lower()
+    return "prd_id" in text or "does not take" in text
+
+
 def blocker_left_alone(text: str, tags: list | None) -> bool:
-    """A person, a decision, a typed wait, or a blocking-fix filing. Not auto-cleared."""
+    """A person, a decision, a typed wait, a blocking-fix filing, or a dependency hold.
+
+    A dependency hold is left alone even when every item it names is `done`: done
+    is not merged, and clearing the hold lets the next cycle write the same text
+    back (GRPH-1645).
+    """
+    if _DEPENDENCY_HOLD in (text or ""):
+        return True
     if _PERSON_OR_DECISION.search(text or ""):
         return True
     if (text or "").endswith(_BLOCKING_FIX_SUFFIX):
@@ -1756,14 +1777,45 @@ def blocker_left_alone(text: str, tags: list | None) -> bool:
     return any(str(tag).lower() in _WAIT_TAGS for tag in (tags or []))
 
 
-def _search_status(client: Graphban, status: str) -> list[dict]:
-    """Every full row in `status`. A short page is not the whole board."""
+def _in_prd(row: dict, prd: str | None) -> bool:
+    """Keep a row the server did not label, and drop one that names another PRD.
+
+    A page with no `prd_id` is an old full-row shape, not evidence the item is
+    outside the wave. A row that names a different PRD is the server ignoring
+    the filter.
+    """
+    if not prd:
+        return True
+    named = row.get("prd_id")
+    return named is None or str(named) == prd
+
+
+def _search_status(client: Graphban, status: str, *, prd: str | None = None) -> list[dict]:
+    """Every full row in `status`. A short page is not the whole board.
+
+    `prd` scopes the read (GRPH-1645). An old server that refuses the argument is
+    re-read without it and filtered here, so a drain keeps working during the
+    upgrade. The retry is one project-wide read, not one per item.
+    """
+    try:
+        return _search_status_pages(client, status, prd=prd)
+    except ToolFailed as exc:
+        if prd and _prd_arg_refused(exc):
+            rows = _search_status_pages(client, status, prd=None)
+            return [row for row in rows if _in_prd(row, prd)]
+        raise
+
+
+def _search_status_pages(client: Graphban, status: str, *,
+                         prd: str | None) -> list[dict]:
     rows: list[dict] = []
     offset = 0
     limit = 200
     while offset <= 5000:
-        got = client.call(
-            "search_items", status=status, fields="full", limit=limit, offset=offset)
+        args: dict = {"status": status, "fields": "full", "limit": limit, "offset": offset}
+        if prd:
+            args["prd_id"] = prd
+        got = client.call("search_items", **args)
         page = got.get("results") if isinstance(got, dict) else None
         if not isinstance(page, list):
             raise ToolFailed(
@@ -1788,12 +1840,13 @@ def _named_status(client: Graphban, key: str, cache: dict[str, str | None]) -> s
     return cache[key]
 
 
-def clear_stale_blockers(client: Graphban) -> list[str]:
+def clear_stale_blockers(client: Graphban, *, prd: str | None = None) -> list[str]:
     """Clear blockers that name only done items. Report is the caller's.
 
     A planner drain holds `update_item`. A supervisor allowlist does not, and
     this returns without reading: a client that cannot write must not look like
-    it checked. A blocker that names a person or a decision is left alone.
+    it checked. A blocker that names a person, a decision, or a dependency hold
+    is left alone. `prd` keeps the read inside the wave (GRPH-1645).
     """
     allowed = getattr(client, "allowed", ())
     if "update_item" not in allowed or "search_items" not in allowed:
@@ -1804,13 +1857,15 @@ def clear_stale_blockers(client: Graphban) -> list[str]:
     seen: set[str] = set()
     statuses: dict[str, str | None] = {}
     for status in _STALE_BLOCKER_STATUSES:
-        for row in _search_status(client, status):
+        for row in _search_status(client, status, prd=prd):
             item_id = str(row.get("id") or "")
             if not item_id or item_id in seen or "blocker" not in row:
                 continue
             seen.add(item_id)
             text = str(row.get("blocker") or "").strip()
             if not text or blocker_left_alone(text, row.get("tags")):
+                continue
+            if not _in_prd(row, prd):
                 continue
             keys = blocker_item_keys(text)
             if not keys:
@@ -1846,6 +1901,7 @@ def watch_tick(
     debug: bool = False,
     persist: Callable[[], None] | None = None,
     base_branch: str = "",
+    scope_prd: str | None = None,
 ) -> None:
     """One pass of the watch loop: keep the lease, then wall-clock, output, disowned.
 
@@ -1913,7 +1969,7 @@ def watch_tick(
     # only done items is cleared here, and one that names a person or a decision
     # is left. A client that cannot write skips the read.
     try:
-        clear_stale_blockers(client)
+        clear_stale_blockers(client, prd=scope_prd)
     except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
         observe.emit("blocker_clear_failed", detail=str(exc))
     if persist is not None:
@@ -3736,6 +3792,12 @@ class Merger:
     disabled_because: str = ""
     #: Item ids already discovered as candidates, so we do not re-scan them every tick.
     _seen: set[str] = field(default_factory=set, repr=False)
+    #: JSON of item id → merge receipt. A fresh process loads it so a merge already
+    #: verified is not said again (GRPH-1645). None keeps the first-sighting report
+    #: the in-process tests already pin.
+    verified_path: Path | None = None
+    _verified: dict[str, str] = field(default_factory=dict, repr=False)
+    _verified_loaded: bool = field(default=False, repr=False)
 
     def note_review(self, rows: list[dict]) -> None:
         """Rows currently in `review`. Kept for interface compatibility; candidacy is now
@@ -3805,13 +3867,24 @@ class Merger:
         """
         if not self.enabled or self.disabled_because:
             return
+        self._load_verified()
+        kwargs: dict = {"status": "done", "fields": "full", "limit": 10_000}
+        if self.prd_id:
+            kwargs["prd_id"] = self.prd_id
         try:
-            payload = self.client.call("search_items", status="done", fields="full",
-                                       limit=10_000)
+            payload = self.client.call("search_items", **kwargs)
         except NotPermitted as exc:
             self._disable(f"cannot read done items: {exc}")
             return
-        except (ToolFailed, ServerUnreachable):
+        except ToolFailed as exc:
+            if not (self.prd_id and _prd_arg_refused(exc)):
+                return
+            try:
+                payload = self.client.call(
+                    "search_items", status="done", fields="full", limit=10_000)
+            except (ToolFailed, ServerUnreachable, NotPermitted):
+                return
+        except ServerUnreachable:
             return
         rows = payload.get("results") if isinstance(payload, dict) else None
         if not isinstance(rows, list):
@@ -3837,12 +3910,20 @@ class Merger:
             if _merge_recorded(row):
                 self._seen.add(item_id)
                 self.watching.pop(item_id, None)
+                receipt = propose_mod.merge_receipt(row)
+                # GRPH-1645: a later process already said this receipt. Saying it
+                # again is the merge event an idle drain emitted per long-merged item.
+                if receipt and self._verified.get(item_id) == receipt:
+                    continue
                 # GRPH-1755: the skip is still a verdict the wave report names (GRPH-1709),
                 # read from the row already in hand — no `gh` call, no second receipt.
                 if wave is not None:
                     got = self._recorded_skip(item_id, row)
                     wave.merged[item_id] = got
                     self._say(item_id, got)
+                if receipt:
+                    self._verified[item_id] = receipt
+                    self._save_verified()
                 continue
             # Check for fleet.sign_off attestation naming a commit.
             if not propose_mod.reviewed_commit(row):
@@ -4090,6 +4171,30 @@ class Merger:
             wave.failures.append(f"{got.item}: merged as {got.commit[:12]} but not recorded "
                                  f"({exc})")
         return got
+
+    def _load_verified(self) -> None:
+        if self._verified_loaded:
+            return
+        self._verified_loaded = True
+        path = self.verified_path
+        if path is None:
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if isinstance(data, dict):
+            self._verified = {str(k): str(v) for k, v in data.items() if v}
+
+    def _save_verified(self) -> None:
+        path = self.verified_path
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(self._verified), encoding="utf-8")
+        except OSError:
+            return
 
     def _say(self, item_id: str, got: "propose_mod.Merged") -> None:
         key = f"{got.ok}|{got.pending}|{got.skipped}|{got.reason}|{got.release}"
