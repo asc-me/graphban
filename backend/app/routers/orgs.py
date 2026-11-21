@@ -515,7 +515,7 @@ def my_invites(db: Session = Depends(get_db), user: User = Depends(get_current_u
         inviter = db.get(User, i.invited_by)
         out.append(MyInviteOut(
             id=i.id, token=i.token, org_id=org.id, org_name=org.name, role=i.role,
-            invited_by=(inviter.name or inviter.handle) if inviter else "",
+            invited_by=(inviter.name or handles_svc.org_handle(db, inviter, org.id)) if inviter else "",
             created_at=i.created_at, expires_at=i.expires_at))
     return out
 
