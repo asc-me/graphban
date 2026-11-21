@@ -219,6 +219,8 @@ A real post needs a git commit (there is nothing to send for a repo with no HEAD
 
 `gban code map service` also keeps the stack map current: after a run that mapped something (not a `current` no-op) it builds the record from the run's target sha in a detached worktree (never local HEAD) and posts it to the same endpoint. The result is its own `stack` field in the run record and a `stack map:` line in `service status`; a stack failure never changes the code map outcome.
 
+The nightly (`full`) run also scans: after the code map and stack map steps it runs `gban scan` at the same target sha (never local HEAD). Hourly `since` runs never scan. The result is its own `scans` field in the run record and a `scans:` line in `service status` (`scans: ok, N recorded, M tool_missing at <sha>` or `scans: failed: <reason>`); a scan failure never changes the code map outcome.
+
 ## `gban scan`
 
 ```bash
