@@ -179,12 +179,16 @@ def next_cluster(
             break
         try:
             claimed = items_svc.claim_item(db, rel["item"].id, agent_id, lease_seconds=lease)
-        except (items_svc.OutOfScope, items_svc.ReachesOutsideTheRepo):
+        except (items_svc.OutOfScope, items_svc.ReachesOutsideTheRepo,
+                items_svc.TierBelowNeeds):
             # A neighbour outside the seat's scope (GRPH-827). Skipped rather than fatal: the
             # seed was claimable and IS the work, and a related item in another PRD is exactly
             # what a scoped wave should decline to drag in. The seed cannot hit this — it came
             # through `claim_next`, which filters. GRPH-832 rides the same path for the same
             # reason: a neighbour that acts on a running system is dragged in by nothing.
+            # GRPH-1647 rides it too: a neighbour whose bounce named a higher tier must not
+            # fail the seed's claim. The empty-seed reply names `needs_tier` at the MCP
+            # boundary, from the same list `claim_next` attaches.
             continue
         if claimed is not None:
             batch.append({"item": claimed, "shared": rel["shared"], "link_types": rel["link_types"], "seed": False})

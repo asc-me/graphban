@@ -3529,10 +3529,16 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "next_cluster":
         agent = fleet_svc.caller_identity(args.get("agent_id"), key)
         batch = cluster_svc.next_cluster(db, agent, project_id=pid, max_items=args.get("max_items", 3))
-        return {"claimed": len(batch), "cluster": [
+        out = {"claimed": len(batch), "cluster": [
             {**_item_dict(b["item"]), "seed": b["seed"], "shared": b["shared"], "link_types": b["link_types"]}
             for b in batch
         ]}
+        # GRPH-1647. The seed comes through `claim_next`, which skips a tier it is below.
+        # An empty batch must say so; a bare zero reads as an empty neighbourhood.
+        if not batch:
+            if blocked := items_svc.below_needs_tier(db, agent, project_id=pid):
+                out["needs_tier"] = blocked
+        return out
     if name == "link_items":
         cached = _idempotent_get(db, args, "link_items", Link)
         if cached is not None:
@@ -3589,6 +3595,12 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # cannot tell them apart is guessing at the one decision this response drives.
             if reserved := items_svc.reserved_elsewhere(db, agent, project_id=pid):
                 out["reserved"] = reserved
+            # GRPH-1647. Present only when the sweep skipped something for tier, same rule
+            # as `reserved`: an always-present key would make an empty board look held.
+            if blocked := items_svc.below_needs_tier(
+                    db, agent, project_id=pid,
+                    lease_seconds=args.get("lease_seconds", items_svc.DEFAULT_LEASE_SECONDS)):
+                out["needs_tier"] = blocked
         return out
     if name == "propose_allocation":
         return fleet_svc.propose_allocation(db, pid)
@@ -5155,6 +5167,14 @@ async def mcp_endpoint(
                          "nothing is wrong with the call and no item would have been the right "
                          "one: this seat may review and may not build. claim_review, then exit "
                          "when it answers claimed=false")
+        except items_svc.TierBelowNeeds as e:
+            # CONFLICT, not internal (GRPH-1647). A named claim — the bound seat's reclaim,
+            # `claim_item` from anywhere — raises, and the generic handler would call that
+            # "safe to retry". The tier will not change on a retry. The message names
+            # `needs_tier`. An undeclared tier does not raise.
+            return _fail("conflict", str(e),
+                         "this agent's declared tier is below the tier the last bounce named. "
+                         "A seat that declares that tier takes the item")
         except items_svc.BoundOnlySeat as e:
             # CONFLICT, same reason as ReviewOnlySeat (GRPH-1089). `claim_review` returns None
             # for an empty queue; this must not become that, and it must not become `internal`
