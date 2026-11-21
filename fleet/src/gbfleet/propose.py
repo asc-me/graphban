@@ -1390,7 +1390,8 @@ def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
           scans: list[ScanVerdict] | tuple[ScanVerdict, ...] = (),
           siblings: list[str] | tuple[str, ...] = (),
           covering=(), local_full: bool = False,
-          red: set[str] | frozenset[str] = frozenset()) -> Merged:
+          red: set[str] | frozenset[str] = frozenset(),
+          branch: str = "") -> Merged:
     """Finish one item's merge, or say exactly which precondition stopped it.
 
     `reviewed` is the commit the sign-off attestation names; `green` is every commit CI has
@@ -1432,13 +1433,17 @@ def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
     both (GRPH-1415). Then a MISSING `suite_green` no longer blocks the merge. `red` is every
     commit with a FAILING `suite_green`; one at the vouched commit blocks in every mode.
 
+    `branch` is the item's branch. When `selector` is a URL or number `view` cannot resolve,
+    the PR for `branch` is used instead of giving up (GRPH-1348). Empty, or equal to
+    `selector`, leaves the lookup `view` already does for a branch name.
+
     Never raises and never fails a wave. Every path returns a `Merged` that says what it did,
     and names the release ref it used.
     """
     got = _merge(repo, item_id, selector, reviewed=reviewed, green=green, paths=paths,
                  release=release, method=method, scans=scans, siblings=tuple(siblings or ()),
                  covering=covering if callable(covering) else tuple(covering or ()),
-                 local_full=local_full, red=frozenset(red))
+                 local_full=local_full, red=frozenset(red), branch=branch)
     if got.ok and siblings:
         got = replace(got, closed=_close_superseded(repo, got, siblings))
     return replace(got, release=release_phrase(release))
@@ -1627,7 +1632,7 @@ def _push_unpushed_descendant(repo: Path, item_id: str, selector: str, url: str,
 def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set[str],
            paths, release: str, scans, siblings: tuple[str, ...] = (),
            method: str = "squash", covering=(), local_full: bool = False,
-           red: frozenset[str] = frozenset()) -> Merged:
+           red: frozenset[str] = frozenset(), branch: str = "") -> Merged:
     checked: list[str] = []
     if not find():
         return Merged(item=item_id, selector=selector, skipped=True,
@@ -1641,6 +1646,17 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
                       reason="the item names no PR and no branch")
 
     pr, err = view(repo, selector)
+    # GRPH-1348. `view` retries a branch selector against `pr list`. A recorded URL that
+    # 404s does not: the item's `pr` field points at a PR that is gone while the branch
+    # still has one. Look the branch up before giving up. The selector stays the URL when
+    # the branch has nothing, so the reason still names what was asked.
+    if pr is None and branch and branch != selector:
+        found = existing_any(repo, branch)
+        url = str(found.get("url") or "")
+        if url:
+            pr, err = view(repo, url)
+            if pr is not None:
+                selector = url
     if pr is None:
         return Merged(item=item_id, selector=selector, skipped=True, reason=err)
     url = str(pr.get("url") or "")

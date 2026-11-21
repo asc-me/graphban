@@ -694,6 +694,29 @@ def _preflight_observations(supervisor: Graphban) -> None:
         ) from exc
 
 
+def observations_role_warning(client: Graphban) -> str:
+    """A warning when this key cannot POST /api/fleet/observations, else "" (GRPH-1348).
+
+    `until --dry-run` and `service install` print this. A real `until` run still refuses
+    through `_preflight_observations` (GRPH-1346) — this does not weaken that. A transport
+    failure is not a missing role, so it stays silent: warning on a down server would train
+    an operator to ignore the warning that means the key.
+    """
+    try:
+        client.post_observation(timeout=2.0, **OBSERVATION_PROBE)
+    except ObservationRefused as exc:
+        if exc.status in (401, 403):
+            return (
+                "the stored key cannot POST /api/fleet/observations, so a drain would lose "
+                "every base, lease and PR record. Recording a cut needs the planner role "
+                f"among the key's roles. Server said: {exc}"
+            )
+        return ""
+    except (NotPermitted, ServerUnreachable, OSError):
+        return ""
+    return ""
+
+
 def _item_brief(client, item_id: str | None) -> dict | None:
     """Capabilities, spend and mix counts for this item, when the planner can read it.
 
