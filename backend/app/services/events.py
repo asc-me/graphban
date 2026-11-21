@@ -14,6 +14,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import ApiKey, Event, User
+from app.services import handles
 
 logger = logging.getLogger("graphban.events")
 
@@ -72,7 +73,8 @@ def record_key(db: Session, key: ApiKey, *, action: str, target_type: str = "",
     owner = db.get(User, key.user_id) if key.user_id else None
     m = dict(meta or {})
     if owner is not None:
-        m["principal"] = {"id": owner.id, "label": owner.handle or owner.name}
+        m["principal"] = {"id": owner.id, "label": handles.project_handle(
+            db, owner, project_id or key.project_id) or owner.name}
     record(
         db, actor_type="apikey", actor_id=key.id, actor_label=key.name or key.id,
         surface="mcp", action=action, target_type=target_type, target_id=target_id,
@@ -84,7 +86,7 @@ def record_user(db: Session, user: User, *, action: str, target_type: str = "",
                 target_id: str = "", project_id: str | None = None, meta: dict | None = None) -> None:
     """Record a user action from a REST route, attributed to the logged-in user."""
     record(
-        db, actor_type="user", actor_id=user.id, actor_label=user.handle or user.name,
+        db, actor_type="user", actor_id=user.id, actor_label=handles.project_handle(db, user, project_id) or user.name,
         surface="rest", action=action, target_type=target_type, target_id=target_id,
         project_id=project_id, meta=meta,
     )

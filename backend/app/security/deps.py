@@ -7,6 +7,7 @@ from app.db import get_db
 from app.models import ApiKey, User
 from app.security.apikey import is_api_key, verify_api_key
 from app.security.jwt import decode_token
+from app.services import handles
 
 
 def get_current_user(
@@ -31,7 +32,8 @@ def get_current_user(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "token revoked")
     # So the one refusal handler can attribute a `Refused` to who asked (GRPH-1158).
     if request is not None:
-        request.state.actor = ("user", user.id, user.handle or user.name)
+        pid = request.path_params.get("project_id") if hasattr(request, "path_params") else None
+        request.state.actor = ("user", user.id, handles.project_handle(db, user, pid) or user.name)
     return user
 
 

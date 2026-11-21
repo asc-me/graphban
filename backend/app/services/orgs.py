@@ -387,14 +387,15 @@ def create_invite(db: Session, org: Organization, email: str, role: str, inviter
     db.commit()
     db.refresh(invite)
 
-    _send_invite_email(invite, org, inviter)
+    _send_invite_email(invite, org, inviter, handles_svc.org_handle(db, inviter, org.id))
     return invite
 
 
-def _send_invite_email(invite: OrgInvite, org: Organization, inviter: User) -> None:
+def _send_invite_email(invite: OrgInvite, org: Organization, inviter: User,
+                       inviter_handle: str = "") -> None:
     link = f"{settings.app_base_url.rstrip('/')}/invite/{invite.token}"
     subject = f"You're invited to join {org.name} on Graphban"
-    who = inviter.name or inviter.handle or "A teammate"
+    who = inviter.name or inviter_handle or "A teammate"
     text = (
         f"{who} invited you to join the “{org.name}” organization on Graphban "
         f"as {invite.role}.\n\n"
@@ -452,7 +453,7 @@ def create_platform_invite(db: Session, email: str, plan: str | None, inviter: U
 def _send_platform_invite_email(invite: OrgInvite, inviter: User) -> None:
     link = f"{settings.app_base_url.rstrip('/')}/invite/{invite.token}"
     subject = "You're invited to Graphban"
-    who = inviter.name or inviter.handle or "The Graphban team"
+    who = inviter.name or handles_svc.org_handle(None, inviter, None) or "The Graphban team"
     text = (
         f"{who} invited you to Graphban.\n\n"
         f"Create your account and set up your organization:\n{link}\n\n"

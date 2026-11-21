@@ -11,10 +11,11 @@ from datetime import datetime, timezone
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Agent, ApiKey, Item, User
+from app.models import Agent, ApiKey, Item, Project, User
 from app.services import agent_calls as calls_svc
 from app.services import delegation as delegation_svc
 from app.services import fleet as fleet_svc
+from app.services import handles
 from app.services import items as items_svc
 
 # D9: hard cap on agents in the payload. Census (`user_counts`) is still the
@@ -162,12 +163,12 @@ def _call_fields(summary: dict | None) -> dict:
     }
 
 
-def _user_meta(user: User | None) -> dict:
+def _user_meta(user: User | None, handle: str | None = None) -> dict:
     if user is None:
         return {"user_id": None, "label": "Unattributed", "initials": "", "color": None}
     return {
         "user_id": user.id,
-        "label": user.name or user.handle or user.id,
+        "label": user.name or handle or user.id,
         "initials": user.initials or "",
         "color": user.avatar,
     }
@@ -254,6 +255,10 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
 
     keys = {k.id: k for k in db.scalars(select(ApiKey)).all()}
     users = {u.id: u for u in db.scalars(select(User)).all()}
+    org_id = db.scalar(select(Project.org_id).where(Project.id == project_id))
+
+    def _handle(u: User | None) -> str | None:
+        return handles.org_handle(db, u, org_id) if u is not None else None
     agent_stmt = select(Agent).where(Agent.project_id == project_id)
     if census is not None:
         agent_stmt = agent_stmt.where(Agent.id.in_([a["id"] for a in live]))
@@ -334,7 +339,7 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
             **_call_fields(per_agent.get(a["id"])),
             **_status_fields(row, ttl=ttl),
             "delegations": delegations.get(a["id"]),
-            "_user": _user_meta(user),
+            "_user": _user_meta(user, _handle(user)),
             "_key_id": row.api_key_id if row is not None else None,
         })
 
@@ -363,7 +368,7 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
     for key_id, n in unattributed_by_key.items():
         key = keys.get(key_id)
         user = users.get(key.user_id) if key is not None and key.user_id else None
-        meta = _user_meta(user)
+        meta = _user_meta(user, _handle(user))
         uid = meta["user_id"]
         g = groups.get(uid)
         if g is None:
@@ -382,7 +387,7 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
         total_agents = online_agents = 0
         for user_id, role, off, n in census["rows"]:
             user = users.get(user_id) if user_id else None
-            meta = _user_meta(user)
+            meta = _user_meta(user, _handle(user))
             g = groups.get(meta["user_id"])
             if g is None:
                 g = {**meta, "online": 0, "total": 0, "agents": [],
