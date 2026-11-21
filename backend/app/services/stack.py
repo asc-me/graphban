@@ -996,14 +996,20 @@ def project_head_sha(db: Session, project_id: str) -> str | None:
     """The revision a project's map and scans compare against, or None.
 
     That is the project's code-graph map revision (`code_graph.map_revision`) when every
-    node agrees on one. No nodes or mixed/unknown revisions is None, which reads as
-    `freshness_unknown`. It is NOT the box's own build sha: that identifies Graphban, not
+    file-level node (file, module, doc, config) agrees on one. `symbol` nodes (`path::name`)
+    are hand-described annotations the map producer never maps, so they do not count: a
+    symbol with no or an old revision never makes the head unknown. No file-level nodes or
+    mixed/unknown revisions among them is None, which reads as `freshness_unknown`. It is NOT the box's own build sha: that identifies Graphban, not
     the project's code.
     """
     from app.services import code_graph
 
     try:
-        rev = code_graph.map_revision(code_graph.list_nodes(db, project_id)).get("revision")
+        nodes = [
+            n for n in code_graph.list_nodes(db, project_id)
+            if n.kind != "symbol" and "::" not in n.path
+        ]
+        rev = code_graph.map_revision(nodes).get("revision")
     except Exception:  # noqa: BLE001 — an unreadable graph is no head, not a crash
         logger.debug("code graph revision unreadable", exc_info=True)
         return None

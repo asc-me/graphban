@@ -137,3 +137,35 @@ def test_project_head_is_not_the_build_sha(db):
     _graph(db, R)
     assert stack_svc.project_head_sha(db, PID) == R
     assert stack_svc.project_head_sha(db, PID) != BUILD
+
+
+def _symbol(db, name, revision):
+    code_graph.describe_code(
+        db, project_id=PID, nodes=[{"path": f"src/f0.py::{name}", "kind": "symbol"}],
+        revision=revision,
+    )
+
+
+def test_symbol_nodes_do_not_unpin_the_file_map(db):
+    _graph(db, R, R)
+    _symbol(db, "a", "")
+    _symbol(db, "b", R2)
+    assert stack_svc.project_head_sha(db, PID) == R
+    _topology(db, R)
+    m = _mapping(db)
+    assert m["head_sha"] == R
+    assert m["state"] == "mapped"
+    assert scans_svc.scans_due(db, PID)["head_sha"] == R
+
+
+def test_mixed_file_revisions_stay_unknown_whatever_symbols_say(db):
+    _graph(db, R, R2)
+    _symbol(db, "a", R)
+    assert stack_svc.project_head_sha(db, PID) is None
+    _topology(db, R)
+    assert _mapping(db)["state"] == "freshness_unknown"
+
+
+def test_file_node_without_revision_is_unknown(db):
+    _graph(db, R, "")
+    assert stack_svc.project_head_sha(db, PID) is None
