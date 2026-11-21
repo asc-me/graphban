@@ -26,12 +26,13 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from gban import client as _client
-from gban import codemap, config
+from gban import codemap, config, stackmap
 
 API_KEY_ENV = "GBFLEET_API_KEY"  # what `gban code map` reads (doctor.SUPERVISOR_KEY_ENV)
 DEFAULT_HOURLY_MINUTE = 17
@@ -354,7 +355,35 @@ def _counting(call, state: dict):
     return counted
 
 
-def refresh(repo: Path, call, mode: str) -> dict:
+def stack_step(repo: Path, target: str, project: str, post) -> dict:
+    """Build the stack record from `target` (a detached worktree of it, never local HEAD)
+    and post it. Returns {"stack": "ok"|"failed", ...}; never raises."""
+    tmp = tempfile.mkdtemp(prefix="gban-stack-")
+    work = Path(tmp) / "tree"
+    added = False
+    try:
+        try:
+            codemap._git(repo, "worktree", "add", "--detach", str(work), target)
+            added = True
+            record, _warnings, _coverage = stackmap.build_record(work, project_id=project)
+            if record.get("mapped_sha") != target:
+                return {"stack": "failed", "stack_reason": "record is not at the target sha"}
+            post(record)
+        except (codemap.MapError, stackmap.MapError) as exc:
+            return {"stack": "failed", "stack_reason": str(exc)}
+        except (_client.Unreachable, _client.Refused, _client.NoSession) as exc:
+            return {"stack": "failed", "stack_reason": f"{type(exc).__name__}: {exc}"}
+        return {"stack": "ok", "stack_sha": target}
+    finally:
+        if added:
+            try:
+                codemap._git(repo, "worktree", "remove", "--force", str(work))
+            except codemap.MapError:
+                pass
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def refresh(repo: Path, call, mode: str, stack_post=None, project: str = "") -> dict:
     """One run. Never raises for a map failure: the outcome says what happened."""
     rec: dict = {"mode": mode, "outcome": "failed"}
     try:
@@ -386,6 +415,8 @@ def refresh(repo: Path, call, mode: str) -> dict:
         total = len(planned["nodes"])
         codemap.apply(counted, built, planned)
         rec.update(outcome="ok", nodes=total)
+        if stack_post is not None:
+            rec.update(stack_step(repo, target, project, stack_post))
     except codemap.MapError as exc:
         _failed(rec, "map", str(exc), state["done"], total)
     except (_client.Unreachable, _client.Refused, _client.NoSession) as exc:
@@ -402,10 +433,10 @@ def _failed(rec: dict, stage: str, reason: str, done: int, total: int) -> None:
 
 
 def record_run(sid: str, repo: Path, call, nightly: tuple[int, int],
-               now: datetime | None = None) -> dict:
+               now: datetime | None = None, stack_post=None, project: str = "") -> dict:
     now = now or datetime.now()
     mode = choose_mode(now, nightly, read_log(sid))
-    rec = refresh(repo, call, mode)
+    rec = refresh(repo, call, mode, stack_post, project)
     rec["ts"] = now.timestamp()
     rec["at"] = now.isoformat(timespec="seconds")
     append_log(sid, rec)
@@ -480,4 +511,15 @@ def status_lines(repo: Path, kind: str = "") -> list[str]:
             lines.append(f"behind by {n} commits")
     else:
         lines.append("no run has completed; the map is not known to be current")
+    lines.extend(_stack_line(records))
     return [*lines, *head]
+
+
+def _stack_line(records: list[dict]) -> list[str]:
+    """The stack step's own state: the last run that ran it. Never "current" after a failure."""
+    for rec in reversed(records):
+        if rec.get("stack") == "ok":
+            return [f"stack map: ok at {str(rec.get('stack_sha', ''))[:12]}"]
+        if rec.get("stack") == "failed":
+            return [f"stack map: failed: {rec.get('stack_reason', '')}"]
+    return []

@@ -599,7 +599,9 @@ def _code_map_service(args, start: Path, url: str, project: str) -> int:
         top = svc.repo_toplevel(start)
         nightly = svc.parse_nightly(args.nightly_at)
         call = codemap.mcp_caller(Client(url, api_key=key), project)
-        rec = svc.record_run(svc.service_id(top), top, call, nightly)
+        rec = svc.record_run(svc.service_id(top), top, call, nightly,
+                             stack_post=lambda r: stackmap.post_record(url, key, r),
+                             project=project)
         print(json.dumps(rec, sort_keys=True))
         return 0 if rec["outcome"] == "ok" else 1
     except svc.Refused as exc:

@@ -217,6 +217,8 @@ Env values are never stored and never posted. A host taken from a URL is the bar
 
 A real post needs a git commit (there is nothing to send for a repo with no HEAD) and a project-write API key: `$GBFLEET_API_KEY`, then `$GRAPHBAN_API_KEY`, then the key `gban setup` stored for this project. The login session is a different credential and is not sent. Pass `--project` (or `$GRAPHBAN_PROJECT`) so the record names the project; without one, `--dry-run` still prints and a post is refused.
 
+`gban code map service` also keeps the stack map current: after a run that mapped something (not a `current` no-op) it builds the record from the run's target sha in a detached worktree (never local HEAD) and posts it to the same endpoint. The result is its own `stack` field in the run record and a `stack map:` line in `service status`; a stack failure never changes the code map outcome.
+
 ## `gban login` wants a real terminal
 
 It refuses without one, rather than prompting. `getpass` falls back to a plain **echoing**
