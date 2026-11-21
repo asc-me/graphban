@@ -24,6 +24,7 @@ from app.services import drive_sync
 from app.services import sync_storage as sync_storage_svc
 from app.services import events as events_svc
 from app.services import items as items_svc
+from app.services import handles
 from app.services import credential_retry
 from app.services import reindex
 from app.services import rule_pack as rule_pack_svc
@@ -593,7 +594,7 @@ def github_create_issue(
     cfg = platform_svc.get_config(db, project_id)
     item = items_svc.create_item(
         db, title=body.title, description=body.body, tags=["github", body.type],
-        project_id=project_id, reporter={"name": user.name, "handle": user.handle, "avatar": user.avatar},
+        project_id=project_id, reporter={"name": user.name, "handle": handles.project_handle(db, user, project_id), "avatar": user.avatar},
     )
     return {
         "item": {"id": item.id, "title": item.title},

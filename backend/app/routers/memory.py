@@ -23,6 +23,7 @@ from app.schemas import (
 from app.security import authz
 from app.security.deps import get_current_user
 from app.services import events as events_svc
+from app.services import handles
 from app.services import memory as mem_svc
 from app.services import quotas
 
@@ -327,7 +328,7 @@ def add_shard(body: ShardCreate, db: Session = Depends(get_db), user: User = Dep
         item_id=body.item_id,
         project_id=body.project_id,
         status="published",
-        origin=f"user:{user.handle or user.id}",
+        origin=f"user:{handles.project_handle(db, user, body.project_id) or user.id}",
         actor_user_id=user.id,
         attributed_project_id=body.project_id,
     )
