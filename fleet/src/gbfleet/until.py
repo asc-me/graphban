@@ -530,9 +530,12 @@ def run(
         return Report(ok=False, reason="server_error", exit=1, detail=str(exc), wave=wave,
                       minted=minted, spawned=len(wave.spawned))
     except watchdog_mod.Stalled as exc:
-        wave.reason = "stall"
-        return Report(ok=False, reason="stall", exit=1, detail=str(exc), wave=wave,
-                      minted=minted, spawned=len(wave.spawned))
+        # GRPH-1324. A stall while a dead author's pin is the only ready work is an
+        # exit, and an exit must name the pin. `idle` would read as a drained queue.
+        reason, pin_lines = _named_pin_exit("stall", [], list(wave.pin_waits))
+        wave.reason = reason
+        return Report(ok=False, reason=reason, exit=1, detail=str(exc), wave=wave,
+                      minted=minted, spawned=len(wave.spawned), waits=pin_lines)
     finally:
         silence.stop()
 
@@ -1369,6 +1372,13 @@ def _loop(
                                               acknowledge_reach=acknowledge_reach)
             for refused_item, why in flags.get("refused", ()):
                 _note_refused(wave, refused_item, why)
+            for pin_line in flags.get("pin_waits") or []:
+                if pin_line not in wave.pin_waits:
+                    wave.pin_waits.append(pin_line)
+            if seed is not None:
+                # The server accepted this item. Its pin, if any, is over.
+                prefix = f"{seed}: "
+                wave.pin_waits = [w for w in wave.pin_waits if not w.startswith(prefix)]
             if seed is None and cooled and not flags.get("pinned_until"):
                 # Every remaining candidate already failed this pass. A live child
                 # is not a failing pass — it may be the item we moved on to.
@@ -1386,10 +1396,14 @@ def _loop(
                 sleep(poll)
                 continue
             if seed is None and flags.get("pinned_until"):
-                # GRPH-1332. A bounced item is reserved for its live author: a wait, not
-                # idle. The pin ends with its expiry or the author going offline, so this is
-                # bounded; the item was not marked delegated, so the next tick offers it.
+                # GRPH-1332, GRPH-1324. A bounced item reserved for its author is a wait,
+                # not idle — including when that author's child has already exited and
+                # nobody can retry inside the pin. The pin ends when the server stops
+                # reporting it (expiry, or the author going offline). Not marked
+                # delegated, so the next tick offers it again. Progress, not a stall:
+                # waiting out the pin is the work of this tick.
                 empty = 0
+                wd.progress("pinned")
                 sleep(poll)
                 continue
             if seed is not None:
@@ -1724,6 +1738,10 @@ def _finish(
             waits = _wait_ids(planner)
         except (NotPermitted, ToolFailed, ServerUnreachable):
             waits = []
+    # GRPH-1324. An exit while a bounce pin is still the only ready work must not
+    # read as idle, and the summary names the item and its pinned_until.
+    reason, waits = _named_pin_exit(reason, list(waits), list(wave.pin_waits))
+    wave.reason = reason
     if review is None:
         try:
             inside, beyond = _split_by_prd(_review_rows(planner), prd, line)
@@ -3059,14 +3077,24 @@ def _delegate_next(
                 got_code = reply.get("enrolment_code") if isinstance(reply, dict) else None
                 code = str(got_code) if got_code else None
             except ToolFailed as exc:
-                if "reserved_until=" in str(exc):
-                    # GRPH-1332. Pinned to its author after a bounce: reported as a wait and
-                    # NOT marked delegated, so a later tick re-offers it once the pin lapses.
-                    stamp = str(exc).split("reserved_until=", 1)[1].split(")", 1)[0].strip()
+                stamp = _bounce_pin_stamp(exc)
+                if stamp is not None:
+                    # GRPH-1332, GRPH-1324. Pinned to its author after a bounce: a wait,
+                    # NOT marked delegated, so a later tick re-offers it once the pin
+                    # lapses. The incident refusal carried `pinned_until=` and the hint
+                    # "wait for the pin to lapse, or let the author retry", and did not
+                    # say `reserved_until=` — matching only that later token logged
+                    # `bound_seat_refused` and the drain exited idle.
                     observe.emit("delegate_pinned", item=candidate,
                                  detail=f"{candidate} is reserved for its author until {stamp}")
                     if bound_out is not None:
                         bound_out["pinned_until"] = stamp
+                        # Not `line`: that name is the wave's `--line` scope, and
+                        # rebinding it sent the next candidate to the wrong scope.
+                        pin_line = f"{candidate}: pinned until {stamp}"
+                        lines = bound_out.setdefault("pin_waits", [])
+                        if pin_line not in lines:
+                            lines.append(pin_line)
                     continue
                 observe.emit("bound_seat_refused", item=candidate, detail=str(exc))
                 # GRPH-1336. Marked delegated so the loop does not spin on it — which also
@@ -3086,6 +3114,57 @@ def _delegate_next(
             return seed, code, want
     # No cluster was delegable
     return None, None, None
+
+
+_PINNED_UNTIL_RE = re.compile(r"pinned_until=([^;)\s]+)")
+_RESERVED_UNTIL_RE = re.compile(r"reserved_until=([^;)\s]+)")
+
+
+def _bounce_pin_stamp(exc: BaseException) -> str | None:
+    """The bounce pin's `pinned_until`, or None when `exc` is not that refusal.
+
+    GRPH-1324. A dead author's child has already exited, and the server still pins
+    the item. The refusal the drain logged was `pinned to its author` plus
+    `pinned_until=`, with the hint "wait for the pin to lapse, or let the author
+    retry". It did not contain `reserved_until=` (that token arrived later, with
+    GRPH-1332). Matching only the later token treated the pin as a permanent
+    bound-seat refusal, marked the item delegated, and the run exited `idle`.
+
+    Prefer `pinned_until` — that is the clock the summary has to name. Fall back
+    to `reserved_until`, which is the earlier of that clock and the author going
+    offline. A pin sentence with neither stamp is still a pin (`unreadable`), so
+    it is a wait rather than a clean idle.
+    """
+    text = str(exc)
+    if ("pinned to its author" not in text and "pinned_until=" not in text
+            and "reserved_until=" not in text):
+        return None
+    for pattern in (_PINNED_UNTIL_RE, _RESERVED_UNTIL_RE):
+        match = pattern.search(text)
+        if match and match.group(1) not in {"None", "null", ""}:
+            return match.group(1)
+    if "pinned to its author" in text:
+        return "unreadable"
+    return None
+
+
+def _named_pin_exit(reason: str, waits: list[str], pin_waits: list[str]) -> tuple[str, list[str]]:
+    """An exit that still has a bounce pin outstanding (GRPH-1324).
+
+    The pin's item and its `pinned_until` go on `waits`. `idle` becomes
+    `idle-with-waits`: a person reading `idle` thinks the queue is drained, and
+    the only ready work is waiting out a pin whose author has already exited.
+    Any other reason is kept — it was already not `idle`.
+    """
+    if not pin_waits:
+        return reason, waits
+    merged = list(waits)
+    for line in pin_waits:
+        if line not in merged:
+            merged.append(line)
+    if reason == "idle":
+        reason = "idle-with-waits"
+    return reason, merged
 
 
 #: How many distinct gate refusals a wave records. `until` re-reads the condition every
