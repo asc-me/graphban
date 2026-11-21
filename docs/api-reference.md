@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 392 of the 392. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 393 of the 393. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -819,7 +819,8 @@ plan entitlement or an approved one-time request.
 | POST | `/api/orgs/{id}/invites` | JWT (org admin) | Invite an email into this org |
 | DELETE | `/api/orgs/{id}/invites/{invite_id}` | JWT (org admin) | Revoke a pending invite |
 | GET | `/api/invites/{token}/preview` | none | What a token invites, for the accept page before login. Used, expired, and unknown tokens 404 the same way |
-| POST | `/api/invites/accept` | JWT | Spend the token and take the seat |
+| POST | `/api/invites/accept` | JWT | Spend the token and take the seat. Body `{token, handle?}`. If the invitee's account handle is taken or held in the inviting org (only that org is read), `409` `handle_taken` with `{org_id, org_name, suggested}`; retry with a free `handle` to set the org-only `OrgMembership.handle`. A clash never blocks the join itself |
+| PATCH | `/api/orgs/{org_id}/me/handle` | JWT (org member) | Change your own org-only handle `{handle}`. Same rules and `409` `handle_taken` as accepting; the old handle is held in that org for 30 days (cloud). `404` for an org you are not in. `GET /api/orgs` returns `handle` where it differs from the account handle |
 
 ## Linear
 
