@@ -165,9 +165,9 @@ def upsert_node(
     project_id: str,
     path: str,
     kind: str = "file",
-    name: str = "",
+    name: str | None = None,
     lang: str = "",
-    summary: str = "",
+    summary: str | None = None,
     content_hash: str = "",
     fresh: bool = True,
     revision: str = "",
@@ -191,6 +191,14 @@ def upsert_node(
     node = db.scalars(
         select(CodeNode).where(CodeNode.project_id == project_id, CodeNode.path == path)
     ).first()
+    # None = "not supplied": an existing node keeps its stored value, a new node starts empty.
+    # An explicit "" still clears (GRPH-1819).
+    if node is not None:
+        name = node.name if name is None else name
+        summary = node.summary if summary is None else summary
+    else:
+        name = name or ""
+        summary = summary or ""
     new_embed_input = _embed_input(path=path, name=name, summary=summary)
 
     if node is None:
@@ -294,6 +302,7 @@ def describe_code(
     edges: list[dict] | None = None,
     prune: bool = False,
     revision: str = "",
+    stale: list[str] | None = None,
 ) -> dict:
     """Upsert a batch of nodes and edges the agent has described. Idempotent by
     (project_id, path) for nodes and (project_id, src, dst, type) for edges.
@@ -301,6 +310,9 @@ def describe_code(
     `prune=True` marks any *existing* node in this project that wasn't in this batch as
     stale (`fresh=False`) — the invalidation half of the staleness handle. It never
     deletes; a later describe re-freshens whatever is still real.
+
+    An ABSENT `summary`/`name` key on a node keeps the stored value; an explicit "" clears it.
+    `stale` is a list of paths marked stale (never deleted), independent of `prune`.
 
     `revision` is the commit this batch was described at, stamped on every node it upserts
     (GRPH-54). One value per call rather than one per node: a describe pass runs against a
@@ -325,9 +337,9 @@ def describe_code(
             project_id=project_id,
             path=path,
             kind=asked,
-            name=str(n.get("name", "")),
+            name=None if n.get("name") is None else str(n["name"]),
             lang=str(n.get("lang", "")),
-            summary=str(n.get("summary", "")),
+            summary=None if n.get("summary") is None else str(n["summary"]),
             content_hash=str(n.get("content_hash", "")),
             revision=revision,
             retained_unspecified=retained,
@@ -365,6 +377,17 @@ def describe_code(
         for node in stale:
             node.fresh = False
             stale_paths.append(node.path)
+
+    if stale:
+        explicit = [str(p).strip() for p in stale if str(p).strip()]
+        rows = db.scalars(
+            select(CodeNode).where(CodeNode.project_id == project_id, CodeNode.path.in_(explicit))
+        ).all()
+        for node in rows:
+            if node.fresh:
+                node.fresh = False
+            if node.path not in stale_paths:
+                stale_paths.append(node.path)
 
     db.commit()
     # Echo the paths touched so the agent can verify the effect without a full

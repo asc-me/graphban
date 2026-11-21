@@ -992,11 +992,10 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "describe_code",
         "description": (
-            "Upsert the codebase's structure as a graph of `nodes` and `edges`; you have the repo, so "
-            "you are the source of truth. Idempotent per path — re-describe a changed file with its new "
+            "Upsert the codebase's structure as a graph of `nodes` and `edges`; you are the source of truth. Idempotent per path — re-describe a changed file with its new "
             "`content_hash`. `revision` lets a reader tell whether the map is current. `prune=true` "
-            "after a whole subtree marks unseen nodes stale. A `kind` contradicting its path is "
-            "corrected in `kind_corrections`."
+            "after a whole subtree marks unseen nodes stale. An omitted "
+            "`summary`/`name` is kept; `\"\"` clears. A contradicting `kind` is corrected in `kind_corrections`."
         ),
         "inputSchema": {
             "type": "object",
@@ -1012,8 +1011,8 @@ TOOLS: list[dict[str, Any]] = [
                                      "description": "package | file | `path::name` | prose | settings. Include docs and config."},
                             "name": {"type": "string", "description": "Short label."},
                             "lang": {"type": "string", "description": "python | ts | ... (optional)."},
-                            "summary": {"type": "string", "description": "One paragraph: what it is and owns."},
-                            "content_hash": {"type": "string", "description": "`sha256:<hex>` of rstripped contents."},
+                            "summary": {"type": "string", "description": "What it is and owns."},
+                            "content_hash": {"type": "string", "description": "`sha256:<hex>` of contents."},
                         },
                         "required": ["path"],
                     },
@@ -1027,7 +1026,7 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "edges": {
                     "type": "array",
-                    "description": "Directed, typed relations between paths. A dst need not be a described node yet.",
+                    "description": "Typed relations between paths; a dst need not be described yet.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -1038,7 +1037,8 @@ TOOLS: list[dict[str, Any]] = [
                         "required": ["src", "dst"],
                     },
                 },
-                "prune": {"type": "boolean", "description": "Mark project nodes absent from this batch as stale (default false)."},
+                "prune": {"type": "boolean", "description": "Mark nodes absent from this batch stale."},
+                "stale": {"type": "array", "items": {"type": "string"}, "description": "Gone paths to mark stale."},
             },
         },
     },
@@ -4460,6 +4460,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             edges=args.get("edges", []),
             prune=bool(args.get("prune", False)),
             revision=str(args.get("revision", "")),
+            stale=[str(x) for x in (args.get("stale") or [])],
         )
     if name == "get_code_map":
         # Bounded BY DEFAULT (GRPH-146). An agent that omits `limit` gets a page rather than
