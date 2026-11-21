@@ -202,7 +202,7 @@ def propose(db: Session, *, project_id: str, proposer_kind: str, proposer: str, 
         if not primitive or not slug:
             raise Validation("a `new_rule` needs `slug` and `primitive`")
         if not custom_rules.SLUG.match(slug):
-            raise Validation("`slug` must be lower-case letters, digits, `-` or `_`, 1-64 long")
+            raise Validation(custom_rules.SLUG_WORDS)
         prim = rule_pack.PRIMITIVES.get(primitive)
         if prim is None:
             raise Validation(f"primitive {primitive!r} does not exist in primitive API "

@@ -147,3 +147,25 @@ def test_service_refuses_a_non_person(client, two):
         assert e.value.rule_id == T.PERSON_RULE
     finally:
         db.close()
+
+
+def test_underscore_slug_refused_naming_the_hyphen_rule(client, two):
+    r = _post(client, two, two["a"], {**BODY, "slug": "no_clash"})
+    assert r.status_code == 422 and "hyphens only" in r.text
+    assert _post(client, two, two["a"], {**BODY, "slug": "no-clash"}).status_code == 201
+
+
+def test_slug_regex_is_hyphen_only_and_preexisting_underscore_rule_still_renders(client, two):
+    assert not C.SLUG.match("a_b") and C.SLUG.match("a-b")
+    db = _db()
+    try:
+        row = C.CustomRule(rule_id="custom.old_rule", project_id=two["a"], primitive="exclusive_areas",
+                           primitive_api=rp.PRIMITIVE_API, stage="Plan", params={"paths": ["x"]},
+                           title="Old", why="w", claims="enforced", state="active",
+                           author_id=None, reason="r")
+        db.add(row)
+        db.commit()
+    finally:
+        db.close()
+    listed = client.get(f"/api/projects/{two['a']}/rules/custom", headers=two["h"]).json()
+    assert "custom.old_rule" in [x["rule_id"] for x in listed]

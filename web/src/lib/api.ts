@@ -1342,6 +1342,14 @@ export const api = {
     ),
   customRules: (projectId: string) =>
     request<import("@/lib/types").CustomRule[]>(`/projects/${encodeURIComponent(projectId)}/rules/custom`),
+  /** The rule primitive contract (GRPH-1773): the primitives, their stage and params. */
+  rulePrimitiveContract: () => request<import("@/lib/types").RulePrimitiveContract>(`/rules/contract`),
+  /** A project admin writes a custom rule; it holds at once (GRPH-1774). Refusals are the server's words. */
+  createCustomRule: (projectId: string, body: import("@/lib/types").CustomRuleWrite) =>
+    request<import("@/lib/types").CustomRule>(`/projects/${encodeURIComponent(projectId)}/rules/custom`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   /** Several of a project's own values under one reason, all-or-nothing (GRPH-1594). A refusal
    *  names the rule it refused (`<rule_id>: ...`) and nothing was saved. */
   setRuleToggles: (projectId: string, body: RuleToggleBatchWrite) =>

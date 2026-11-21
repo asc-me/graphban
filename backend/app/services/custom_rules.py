@@ -36,7 +36,9 @@ from app.services import rule_toggles as T
 
 PREFIX = "custom."
 STATES = ("observing", "active")
-SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+# Hyphens only for new rules (GRPH-1810); rows saved with `_` before still load.
+SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+SLUG_WORDS = "`slug` must be lower-case letters, digits and hyphens only (no `_`), 1-64 long"
 SOURCE = "custom"
 
 
@@ -209,7 +211,7 @@ def list_for_project(db: Session, project_id: str) -> list[dict]:
 def _validated(slug: str, primitive: str, title: str, why: str, params: dict | None,
                claims: str | None) -> tuple[str, dict, object]:
     if not SLUG.match(slug or ""):
-        raise Validation("`slug` must be lower-case letters, digits, `-` or `_`, 1-64 long")
+        raise Validation(SLUG_WORDS)
     if not (title or "").strip() or not (why or "").strip():
         raise Validation("a custom rule needs a `title` and a `why`")
     prim = rule_pack.PRIMITIVES.get(primitive)
