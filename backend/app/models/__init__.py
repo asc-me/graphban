@@ -4218,6 +4218,10 @@ class RuleProposal(Base):
     decided_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # GRPH-1808: an org dismissal is recorded here and leaves `status` (the project's) alone.
+    org_dismissed_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    org_dismissed_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    org_dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class RuleGuidance(Base):
