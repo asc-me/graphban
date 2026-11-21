@@ -545,7 +545,6 @@ describe("Gitops Settings page", () => {
       "Project",
       "Members",
       "API keys",
-      "Account",
       "Updates",
     ]) {
       await user.click(screen.getByRole("link", { name: tab }));

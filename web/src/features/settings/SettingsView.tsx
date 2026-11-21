@@ -23,7 +23,6 @@ import { prefersReducedMotion } from "@/features/onboarding/WizardGraphic";
 import { copyText } from "@/lib/clipboard";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { errorDetail } from "@/lib/errors";
 import { keys, useConfig, useMembers, useMintIngestToken, usePlatform, useUpdateProject } from "@/lib/queries";
 import { adminPath, settingsPath } from "@/lib/routes";
 import type { PlatformConfig, Project } from "@/lib/types";
@@ -106,19 +105,6 @@ function SelfHostSettings() {
               ))}
             </div>
           ))}
-          <div className="mt-auto border-t border-line pt-2">
-            <NavLink
-              to={settingsPath("account")}
-              className={({ isActive }) =>
-                cn(
-                  "block rounded-[9px] px-3 py-2 text-[13px] transition-colors",
-                  isActive ? "bg-surface-3 text-fg" : "text-muted hover:bg-surface-3 hover:text-fg-2",
-                )
-              }
-            >
-              Account
-            </NavLink>
-          </div>
         </div>
         <div className="min-h-0 overflow-y-auto p-6">
           <SelfHostPane pathname={pathname} />
@@ -155,7 +141,8 @@ function SelfHostPane({ pathname }: { pathname: string }) {
     return <ProjectPanel />;
   }
   if (pathname.startsWith(settingsPath("account/machines"))) return <MachinesPanel />;
-  if (pathname.startsWith(settingsPath("account"))) return <AccountPanel />;
+  // Account moved to the profile page (GRPH-1792); Password lives there now.
+  if (pathname.startsWith(settingsPath("account"))) return <Navigate to="/profile" replace />;
   return <CredentialsPanel />;
 }
 
@@ -196,7 +183,6 @@ const HOSTED_NAV: { to: string; label: string; end?: boolean }[] = [
   { to: settingsPath("project/members"), label: "Members" },
   { to: settingsPath("project/api-keys"), label: "API keys" },
   { to: settingsPath("account/machines"), label: "Machines" },
-  { to: settingsPath("account"), label: "Account" },
   { to: settingsPath("deployment/updates"), label: "Updates" },
 ];
 
@@ -266,7 +252,8 @@ function HostedPane({ pathname }: { pathname: string }) {
     return <ProjectPanel />;
   }
   if (pathname.startsWith(settingsPath("account/machines"))) return <MachinesPanel />;
-  if (pathname.startsWith(settingsPath("account"))) return <AccountPanel />;
+  // Account moved to the profile page (GRPH-1792); Password lives there now.
+  if (pathname.startsWith(settingsPath("account"))) return <Navigate to="/profile" replace />;
   return <CredentialsPanel />;
 }
 
@@ -836,81 +823,6 @@ function MembersPanel() {
           </div>
         ))}
       </div>
-    </Section>
-  );
-}
-
-/**
- * Changing your own password. There was no way to do this at all until GRPH-219 — an
- * operator provisioned by `bootstrap-hosted` was handed a generated password and no means
- * of rotating it, which is exactly the credential most likely to have been pasted somewhere
- * it shouldn't live.
- */
-function AccountPanel() {
-  const [current, setCurrent] = React.useState("");
-  const [next, setNext] = React.useState("");
-  const [confirm, setConfirm] = React.useState("");
-  const [busy, setBusy] = React.useState(false);
-  const [done, setDone] = React.useState(false);
-  const [error, setError] = React.useState("");
-
-  const mismatch = confirm.length > 0 && next !== confirm;
-  const tooShort = next.length > 0 && next.length < 8;
-  const ready = current.length > 0 && next.length >= 8 && next === confirm && !busy;
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError("");
-    setDone(false);
-    try {
-      await api.changePassword(current, next);
-      setCurrent("");
-      setNext("");
-      setConfirm("");
-      setDone(true);
-    } catch (err) {
-      setError(errorDetail(err, "could not change the password"));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Section
-      title="Password"
-      desc="Changing it signs out every other device — that is the point, not a side effect."
-    >
-      <form onSubmit={submit} className="max-w-[380px] space-y-3">
-        <Input
-          type="password"
-          autoComplete="current-password"
-          placeholder="Current password"
-          value={current}
-          onChange={(e) => setCurrent(e.target.value)}
-        />
-        <Input
-          type="password"
-          autoComplete="new-password"
-          placeholder="New password"
-          value={next}
-          onChange={(e) => setNext(e.target.value)}
-        />
-        <Input
-          type="password"
-          autoComplete="new-password"
-          placeholder="Confirm new password"
-          value={confirm}
-          onChange={(e) => setConfirm(e.target.value)}
-        />
-        {tooShort && <p className="text-[12px] text-muted">At least 8 characters.</p>}
-        {mismatch && <p className="text-[12px] text-muted">Those two don’t match.</p>}
-        {error && <p className="text-[12px] text-red-400">{error}</p>}
-        {done && <p className="text-[12px] text-emerald-400">Password changed. Other devices are signed out.</p>}
-        <Button type="submit" disabled={!ready}>
-          {busy ? "Changing…" : "Change password"}
-        </Button>
-      </form>
     </Section>
   );
 }

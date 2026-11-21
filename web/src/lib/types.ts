@@ -35,7 +35,31 @@ export interface User {
   handle: string;
   email: string;
   avatar: string;
+  /** Second colour of an ombre dot; absent or null is a solid dot. */
+  avatar2?: string | null;
+  /** Tile pattern id; absent is `none`. */
+  avatar_pattern?: ProjectPattern | null;
   initials: string;
+  /** `GET /auth/me` only. */
+  api_keys?: { count: number; projects: string[] };
+}
+
+/** `PATCH /auth/me` body: every field optional, all-or-nothing. */
+export interface ProfilePatch {
+  name?: string;
+  handle?: string;
+  initials?: string;
+  avatar?: string;
+  avatar2?: string | null;
+  avatar_pattern?: ProjectPattern;
+}
+
+/** `GET /auth/me/handle-check`. */
+export interface HandleCheck {
+  handle: string;
+  available: boolean;
+  code: string | null;
+  org: string | null;
 }
 
 /** Tile pattern laid over a project's fill. `none` is unpatterned. */
