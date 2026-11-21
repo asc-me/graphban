@@ -141,6 +141,27 @@ _LEGEND_SPAN = re.compile(
     re.I | re.M,
 )
 
+#: A clause-final complement after the English verb `render` (GRPH-1814).
+#: `render` is Render.com's CLI and the verb a UI item uses for drawing, so
+#: "Missing `avatar2` or `avatar_pattern` render solid." is that verb plus an
+#: adjective. `render blank`, `render empty` and `render twice` are the same
+#: pair. `render deploy` is the same two-word skeleton, so the exemption
+#: cannot be positional: any word that ends the clause, any adjective, or a
+#: subject in front of the name is the shape that went quiet on a real
+#: command. The complement is this set, only after `render`, and only when
+#: the word ends the clause.
+#:
+#: It is not a line of `_NOT_SUBCOMMANDS`. That list is grammar and reading
+#: verbs. An adjective there is a blanket: it exempts `kubectl solid` and
+#: every later UI word appended under it. A word this set does not name still
+#: fires, including an adjective it does not name (`render dashed`) and every
+#: real Render shape (`render deploy`, `render services create`). Delete the
+#: scrub in `signals` and the quoted line fires.
+_PREDICATIVE = "solid|blank|empty|twice"
+_PREDICATIVE_SPAN = re.compile(
+    rf"\b(?i:render)\s+(?:{_PREDICATIVE})\b(?={_CLAUSE_END})"
+)
+
 #: There is no sentence-subject exemption. "The Railway project will deploy"
 #: and "The Railway project will be ready" are a platform name followed by a
 #: word, which is the base matcher. Seven rounds of scrubbing that shape went
@@ -275,10 +296,12 @@ def signals(text: str | None) -> list[dict]:
                 # fired — which is the one that would have changed the reader's mind.
                 continue
             # The legend span is variable width, so it cannot be a lookaround
-            # on the pattern. Scrub it, then search. Other rules see the
-            # original line: scrubbing must not hide them.
+            # on the pattern. The predicative complement is only the English
+            # verb `render`, so it is scrubbed before the search rather than
+            # added to the grammar list every platform shares. Other rules
+            # see the original line: scrubbing must not hide them.
             if name == "platform-command":
-                haystack = _LEGEND_SPAN.sub(" ", stripped)
+                haystack = _PREDICATIVE_SPAN.sub(" ", _LEGEND_SPAN.sub(" ", stripped))
             else:
                 haystack = stripped
             if pattern.search(haystack):
