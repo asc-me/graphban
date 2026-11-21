@@ -606,6 +606,18 @@ export interface Org {
   handle?: string | null;
 }
 
+/** A pending invitation addressed to the caller (`GET /me/invites`). */
+export interface MyInvite {
+  id: string;
+  token: string;
+  org_id: string;
+  org_name: string;
+  role: OrgRole;
+  invited_by: string;
+  created_at: string;
+  expires_at?: string | null;
+}
+
 export interface OrgProjectAccess {
   project_id: string;
   tag: string;

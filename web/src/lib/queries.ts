@@ -3,7 +3,7 @@ import * as React from "react";
 
 import { api } from "./api";
 import { httpsAddress, probeTrust } from "@/lib/https";
-import type { OnboardingMark, ProposalDecision, SetupConfirm } from "./types";
+import type { MyInvite, OnboardingMark, ProposalDecision, SetupConfirm } from "./types";
 import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, RoutingReplayProposal, Item, ItemCreateBody, ItemDetail, LessonFilters, LogExportPatch, Project, RequestItem, RuleProfileApplyWrite, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
 
 export const keys = {
@@ -14,6 +14,7 @@ export const keys = {
   projects: ["projects"] as const,
   projectSummaries: ["projects", "summaries"] as const,
   orgs: ["orgs"] as const,
+  myInvites: ["my-invites"] as const,
   orgMembers: (id: string) => ["org-members", id] as const,
   invites: (id: string) => ["org-invites", id] as const,
   items: ["items"] as const,
@@ -158,6 +159,32 @@ export function useSetOrgHandle() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (v: { orgId: string; handle: string }) => api.setOrgHandle(v.orgId, v.handle),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.orgs }),
+  });
+}
+
+/** Invitations addressed to you that are still pending. */
+export function useMyInvites(enabled = true) {
+  return useQuery({ queryKey: keys.myInvites, queryFn: () => api.myInvites(), enabled });
+}
+
+/** Turn an invitation down; drops it from your list. */
+export function useDeclineInvite() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (inviteId: string) => api.declineMyInvite(inviteId),
+    onSuccess: (_r, inviteId) => {
+      qc.setQueryData<MyInvite[]>(keys.myInvites, (prev) => prev?.filter((i) => i.id !== inviteId));
+      return qc.invalidateQueries({ queryKey: keys.myInvites });
+    },
+  });
+}
+
+/** Leave an org; refreshes the org list. */
+export function useLeaveOrg() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (orgId: string) => api.leaveOrg(orgId),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.orgs }),
   });
 }
