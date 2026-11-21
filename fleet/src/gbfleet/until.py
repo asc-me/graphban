@@ -301,6 +301,7 @@ def run(
     records: "list[ent_mod.Entitlement] | None" = None,
     stall_after: float = watchdog_mod.STALL_AFTER_S,
     clock: Callable[[], float] = time.monotonic,
+    acknowledge_reach: set[str] | None = None,
 ) -> Report:
     """Hold the repo lock and run until idle, a cap, or a config refusal.
 
@@ -468,6 +469,7 @@ def run(
                 adapter=adapter,
                 merge=merge,
                 wave_base=chosen_base,
+                acknowledge_reach=acknowledge_reach,
               )
             except ToolFailed as exc:
                 # GRPH-1669. A roster read (`fleet_status`) answered with a tool error.
@@ -919,6 +921,7 @@ def _loop(
     adapter: str = "",
     merge: bool = False,
     wave_base: "WaveBase | None" = None,
+    acknowledge_reach: set[str] | None = None,
 ) -> Report:
     from .mcp import _runner_up, read_preferences
     profile, policy, pref_note, measured, cap_measured, tier_map = read_preferences(supervisor)
@@ -1362,7 +1365,8 @@ def _loop(
                                               request, prd, repo, base, line=line, held=held,
                                               merger=merger, bound_out=flags,
                                               live=live, owners=owners, skip=cooled,
-                                              in_base=wave.in_base)
+                                              in_base=wave.in_base,
+                                              acknowledge_reach=acknowledge_reach)
             for refused_item, why in flags.get("refused", ()):
                 _note_refused(wave, refused_item, why)
             if seed is None and cooled and not flags.get("pinned_until"):
@@ -2078,7 +2082,8 @@ def _joined(cluster: dict) -> list[str]:
 
 
 def plan(planner: Graphban, prd: str | None, max_workers: int,
-         repo: Path | None = None, base: str = "", line: str | None = None) -> dict:
+         repo: Path | None = None, base: str = "", line: str | None = None,
+         acknowledge_reach: set[str] | None = None) -> dict:
     """What this wave WOULD delegate, without delegating it (GRPH-819).
 
     Reported after a real wave: "you cannot ask what a wave would delegate before it does —
@@ -2133,6 +2138,13 @@ def plan(planner: Graphban, prd: str | None, max_workers: int,
         # and a base to measure against, which is the one case the check cannot run.
         "dependency_holds": _dependency_holds(planner, free, repo, base),
         "capped_by_max_workers": len(free) > max_workers,
+        # GRPH-1311. Absent when the flag was not passed, so a dry run without it
+        # prints the same plan it printed before. Present, it is the operator's list
+        # — including a name no cluster has — so a typo is not an empty acknowledgement.
+        **({} if acknowledge_reach is None else {
+            "acknowledge_reach": sorted(
+                {str(i).strip() for i in acknowledge_reach if str(i).strip()}),
+        }),
     }
 
 
@@ -2821,6 +2833,7 @@ def _delegate_next(
     owners: dict[str, object] | None = None,
     skip: set[str] | None = None,
     in_base: dict[str, str] | None = None,
+    acknowledge_reach: set[str] | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """Write the delegation for the seed of the next free cluster, before its seat is minted.
 
@@ -2978,15 +2991,23 @@ def _delegate_next(
                 want = str(suggested["value"])
             note = f"gbfleet until, wave {wave_name}"
             code: str | None = None
+            # GRPH-1311. `acknowledge_reach=true` is recorded on the delegation the same
+            # way the MCP argument is. Only the items named on `--acknowledge-reach` get
+            # it; every other call stays the call it was, with the argument absent.
+            delegate_args: dict = dict(
+                id=candidate, lane=lane, tier=want, agent_id=agent_id,
+                note=note, seat=True, wave=wave_name,
+                **_delegate_scope(prd, line),
+            )
+            if acknowledge_reach and candidate in acknowledge_reach:
+                delegate_args["acknowledge_reach"] = True
             try:
                 # PRD-36 D9: a BOUND seat. The server refuses one when the seed's areas are held
                 # by someone else (D13). GRPH-885: do not fall back to an unbound delegate.
                 # GRPH-1089: do not pass bound_only. A wave's finished bound workers review
                 # each other; the flag is opt-in for a caller that wants the child to exit.
                 # A `--line` wave is that caller (GRPH-1697, `_delegate_scope`).
-                reply = planner.call("delegate", id=candidate, lane=lane, tier=want, agent_id=agent_id,
-                                     note=note, seat=True, wave=wave_name,
-                                     **_delegate_scope(prd, line))
+                reply = planner.call("delegate", **delegate_args)
                 if bound_out is not None and isinstance(reply, dict):
                     bound_out["bound_only"] = bool(reply.get("bound_only"))
                 got_code = reply.get("enrolment_code") if isinstance(reply, dict) else None

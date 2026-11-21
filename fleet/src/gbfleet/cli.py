@@ -398,6 +398,13 @@ def build_parser() -> argparse.ArgumentParser:
              "a worktree. The scoping bug existed for exactly as long as nobody could see the "
              "plan")
     until.add_argument(
+        "--acknowledge-reach", default=None, metavar="ITEM[,ITEM]",
+        help="pass acknowledge_reach=true on the delegate call for these items only "
+             "(comma-separated). A repo-only item whose text names credential UI is refused "
+             "until the delegator says it read those lines; items not named are unchanged, "
+             "and a run without this flag sends no acknowledge_reach (GRPH-1311). The dry "
+             "run lists the same ids and does not delegate")
+    until.add_argument(
         "--entitlement", action="append", default=[], metavar="ADAPTER=ID",
         help="an entitlement id the adapter runs on (PRD-62); repeatable. The wave declares it "
              "at register_agent and reports spawn_start, registered, limit_hit and spawn_failed "
@@ -767,6 +774,21 @@ def report(wave: Wave, out=None) -> None:
                   file=out)
 
 
+def _acknowledge_reach(text: str | None) -> set[str] | None:
+    """`--acknowledge-reach ITEM[,ITEM]` as a set of item ids (GRPH-1311).
+
+    None when the flag was not given, which is what keeps the delegate call unchanged.
+    A flag that names nothing is an error: it would otherwise be indistinguishable from
+    omitting the flag.
+    """
+    if text is None:
+        return None
+    ids = {part.strip() for part in str(text).split(",") if part.strip()}
+    if not ids:
+        raise ValueError("--acknowledge-reach needs one or more item ids")
+    return ids
+
+
 def _until(args) -> int:
     """Planner loop. Two clients, one key: minting never goes through ALLOWED_TOOLS."""
     api_key = os.environ.get(API_KEY_ENV)
@@ -779,6 +801,11 @@ def _until(args) -> int:
         return 2
     if args.subagents is not None and args.subagents < 0:
         print("gbfleet until: --subagents must be 0 or more", file=sys.stderr)
+        return 2
+    try:
+        acknowledge = _acknowledge_reach(args.acknowledge_reach)
+    except ValueError as exc:
+        print(f"gbfleet until: {exc}", file=sys.stderr)
         return 2
     template = [a for a in (args.argv or []) if a != "--"]
     try:
@@ -836,7 +863,8 @@ def _until(args) -> int:
             elif remote:
                 dry_base = default_ref(repo, remote)
             got = until_mod.plan(planner, args.prd or None, args.max_workers,
-                                 repo=repo, base=dry_base, line=args.line)
+                                 repo=repo, base=dry_base, line=args.line,
+                                 acknowledge_reach=acknowledge)
         except until_mod.ConfigError as exc:
             print(f"gbfleet until --dry-run: {exc}", file=sys.stderr)
             return 2
@@ -890,6 +918,7 @@ def _until(args) -> int:
             base_branch=args.base,
             entitlements=entitlements,
             stall_after=args.stall_after,
+            acknowledge_reach=acknowledge,
         )
     except RepoLocked as exc:
         print(f"gbfleet until: {exc}", file=sys.stderr)
