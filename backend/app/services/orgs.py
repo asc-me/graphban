@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.errors import Refused
 from app.models import (
     Membership,
     OrgInvite,
@@ -682,10 +683,11 @@ def leave_org(db: Session, org_id: str, user: User) -> dict:
             ).with_for_update()
         ))
         if len(owners) <= 1:
-            raise HTTPException(
+            raise Refused(
                 409,
                 "you are the only owner of this organization — make somebody else an "
                 "owner before you leave",
+                rule_id="org.only_owner_cannot_leave",
             )
     _refuse_if_last_administrator(db, org_id, seat)
     project_ids = [p.id for p in db.scalars(select(Project).where(Project.org_id == org_id))]

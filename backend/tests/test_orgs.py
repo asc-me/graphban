@@ -390,6 +390,7 @@ def test_member_can_leave_and_only_owner_cannot(client, hosted):
     assert r.status_code == 200, r.text
     r = client.delete(f"/api/orgs/{org['id']}/me", headers=alex)
     assert r.status_code == 409 and "only owner" in r.json()["detail"]
+    assert r.json()["rule_id"] == "org.only_owner_cannot_leave"
     assert client.delete(f"/api/orgs/{org['id']}/me", headers=dana).status_code == 200
     assert client.delete(f"/api/orgs/{org['id']}/me", headers=dana).status_code == 404
     assert org["id"] not in [o["id"] for o in client.get("/api/orgs", headers=dana).json()]
