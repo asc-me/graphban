@@ -4022,6 +4022,35 @@ export interface ProposalDecision {
   reason: string | null;
 }
 
+/** The rule-primitive contract as served by the API (GRPH-1773 / GRPH-1810). */
+export interface RulePrimitiveParam {
+  name: string;
+  type: string;
+  required: boolean;
+  comparator: string | null;
+}
+
+export interface RulePrimitive {
+  id: string;
+  stage: string;
+  level: string;
+  params: RulePrimitiveParam[];
+}
+
+export interface RulePrimitiveContract {
+  api_version: string;
+  primitives: RulePrimitive[];
+}
+
+export interface CustomRuleWrite {
+  slug: string;
+  primitive: string;
+  title: string;
+  why: string;
+  reason: string;
+  params: Record<string, unknown>;
+}
+
 /** A custom rule with its author and why (GRPH-1774 / P91 D1). */
 export interface CustomRule {
   rule_id: string;
