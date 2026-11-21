@@ -139,6 +139,37 @@ def test_windows_pytest_is_not_an_interactive_shell_wrapper():
         )
 
 
+def test_the_canvas_bench_does_not_apt_install():
+    """GRPH-1514: the bench step must not ask apt for Chromium's libraries.
+
+    From 2026-11-11 the frontend job's `playwright install --with-deps chromium`
+    failed on every PR. GitHub's ubuntu-26.04 image (ubuntu26/20261101.186)
+    could not resolve archive.ubuntu.com or security.ubuntu.com, and the
+    install exited 100 (run 43047053446, attempt 1). The libraries are
+    installed once on the graphban-ci hosts, so the step only fetches the
+    browser. Putting `--with-deps` back, or moving this job to ubuntu-latest,
+    is the failure.
+    """
+    job = _workflow()["jobs"]["frontend"]
+    runs_on = job["runs-on"]
+    if isinstance(runs_on, str):
+        runs_on = [runs_on]
+    assert "graphban-ci" in runs_on, (
+        f"frontend runs-on {runs_on!r} — ubuntu-latest is the image whose apt "
+        "mirrors the bench could not resolve"
+    )
+    assert "ubuntu-latest" not in runs_on
+    step = next(
+        (s for s in job["steps"] if s.get("name") == "Canvas perf bench"),
+        None,
+    )
+    assert step is not None, "frontend job has no Canvas perf bench step"
+    script = step["run"]
+    assert "pnpm exec playwright install chromium" in script, script
+    assert "--with-deps" not in script, script
+    assert "pnpm bench" in script, script
+
+
 def test_no_ci_step_pushes():
     """CI checks; it does not write to the repo (GRPH-1185).
 
