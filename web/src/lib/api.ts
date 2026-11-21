@@ -135,6 +135,8 @@ import type {
   SyncOrgOverview,
   SyncStatus,
   User,
+  ProfilePatch,
+  HandleCheck,
 } from "./types";
 
 const REFRESH_KEY = "al_refresh";
@@ -521,6 +523,11 @@ export const api = {
   /** Request an org (GRPH-1364): relayed to the operator, then `org_requested_at` is stored. */
   requestOrg: (body: { name: string; email: string; note?: string }) =>
     request<{ onboarding: Onboarding }>("/auth/me/org-request", { method: "POST", body: JSON.stringify(body) }),
+  /** Edit the caller's profile, all or nothing (GRPH-1788). */
+  updateMe: (patch: ProfilePatch) =>
+    request<User>("/auth/me", { method: "PATCH", body: JSON.stringify(patch) }),
+  handleCheck: (handle: string) =>
+    request<HandleCheck>(`/auth/me/handle-check?handle=${encodeURIComponent(handle)}`),
   myMemberships: () =>
     request<{ project_id: string; project_name: string; accent: string; role: string; access: string }[]>(
       "/auth/me/memberships",

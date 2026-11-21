@@ -17,6 +17,8 @@ interface AuthState {
   ) => Promise<void>;
   completePasswordReset: (token: string, newPassword: string) => Promise<void>;
   logout: () => void;
+  /** Replace the signed-in user after a profile save, so every dot and name updates at once. */
+  setUser: (u: User) => void;
 }
 
 const AuthContext = React.createContext<AuthState | null>(null);
@@ -74,7 +76,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [qc]);
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout, completePasswordReset }}>
+    <AuthContext.Provider value={{ user, loading, login, register, logout, completePasswordReset, setUser }}>
       {children}
     </AuthContext.Provider>
   );
