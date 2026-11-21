@@ -453,7 +453,7 @@ def create_platform_invite(db: Session, email: str, plan: str | None, inviter: U
 def _send_platform_invite_email(invite: OrgInvite, inviter: User) -> None:
     link = f"{settings.app_base_url.rstrip('/')}/invite/{invite.token}"
     subject = "You're invited to Graphban"
-    who = inviter.name or handles_svc.org_handle(None, inviter, None) or "The Graphban team"
+    who = inviter.name or inviter.handle or "The Graphban team"
     text = (
         f"{who} invited you to Graphban.\n\n"
         f"Create your account and set up your organization:\n{link}\n\n"

@@ -78,8 +78,13 @@ def org_handle(db: Session, user: User, org_id: str | None) -> str:
 
 def project_handle(db: Session, user: User, project_id: str | None) -> str:
     """`org_handle` for the org that owns `project_id` (account handle when it has none)."""
-    org_id = db.scalar(select(Project.org_id).where(Project.id == project_id)) if project_id else None
-    return org_handle(db, user, org_id)
+    if not project_id:
+        return user.handle
+    # One query: this runs on every authenticated request that names a project (deps.py).
+    found = db.scalar(select(OrgMembership.handle).join(
+        Project, Project.org_id == OrgMembership.org_id).where(
+        Project.id == project_id, OrgMembership.user_id == user.id))
+    return found or user.handle
 
 
 def write_holds(
