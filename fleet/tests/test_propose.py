@@ -904,6 +904,61 @@ def test_a_closed_selection_still_merges_the_sibling_at_the_reviewed_commit(gh):
     assert got.closed == ()
 
 
+def test_the_first_url_is_not_merged_when_the_signed_off_pr_is_the_later_one(gh):
+    """GRPH-1577. The item's `pr` is the closed PR on branch A (the first URL the ledger
+    stored). Evidence then names the open PR on branch B. Signed off at B's head, the
+    merge command targets B.
+
+    Sabotage: return the closed selection without trying siblings — `pr merge` is PR_A,
+    or the attempt is skipped, and this fails."""
+    item = {
+        "pr": PR_A,
+        "branch": "gb/b",
+        "evidence": [_opened(8, "gb/a"), _opened(9, "gb/b"),
+                     _att("fleet.sign_off", REVIEWED, ("independent_review", True)),
+                     _att("github-actions", REVIEWED, ("suite_green", True))],
+    }
+    selector = propose_mod.pr_selector(item)
+    siblings = propose_mod.pr_receipts(item)
+    assert selector == PR_A, "the stale field is what the merge step has to look past"
+    assert siblings[0] == PR_A and PR_B in siblings
+
+    forges = _Forges({PR_A: MOVED, PR_B: REVIEWED})
+    forges.prs[PR_A].pr["state"] = "CLOSED"
+    forges.prs[PR_A].pr["headRefName"] = "gb/a"
+    forges.prs[PR_B].pr["headRefName"] = "gb/b"
+
+    got = _merge_siblings(forges, gh, selector, siblings)
+
+    assert got.ok and got.selector == PR_B and got.commit == MERGE_OID, got.reason
+    merges = [c for c in forges.calls if c[1:3] == ["pr", "merge"]]
+    assert len(merges) == 1 and merges[0][3] == PR_B
+    assert not any(c[1:3] == ["pr", "merge"] and c[3] == PR_A for c in forges.calls)
+
+
+def test_a_closed_pr_at_the_reviewed_commit_yields_to_the_open_sibling(gh):
+    """The closed PR's head IS the signed-off commit, and so is the open sibling's.
+    Stopping because the closed head matches leaves the open PR unmerged (GRPH-1577)."""
+    forges = _Forges({PR_A: REVIEWED, PR_B: REVIEWED})
+    forges.prs[PR_A].pr["state"] = "CLOSED"
+
+    got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B])
+
+    assert got.ok and got.selector == PR_B, got.reason
+    merges = [c for c in forges.calls if c[1:3] == ["pr", "merge"]]
+    assert len(merges) == 1 and merges[0][3] == PR_B
+
+
+def test_a_closed_pr_at_the_reviewed_commit_with_no_matching_sibling_stays_skipped(gh):
+    forges = _Forges({PR_A: REVIEWED, PR_B: MOVED})
+    forges.prs[PR_A].pr["state"] = "CLOSED"
+
+    got = _merge_siblings(forges, gh, PR_A, [PR_A, PR_B])
+
+    assert got.skipped and not got.ok and "CLOSED, not open" in got.reason
+    assert not any(c[1:3] in (["pr", "merge"], ["pr", "close"]) for c in forges.calls)
+
+
 def test_a_closed_selection_without_a_sibling_at_the_reviewed_commit_stays_skipped(gh):
     forges = _Forges({PR_A: MOVED, PR_B: "d" * 40})
     forges.prs[PR_A].pr["state"] = "CLOSED"

@@ -208,7 +208,10 @@ def test_a_moved_head_is_bounced_with_the_planner_agent_id(forge):
     bounces = ledger.wrote("bounce")
     assert len(bounces) == 1
     assert bounces[0]["id"] == "SA-417" and bounces[0]["agent_id"] == "GRPH-PLANNER"
-    assert ledger.wrote("update_item") == []
+    notes = ledger.wrote("update_item")
+    assert len(notes) == 1 and notes[0]["evidence"][0]["kind"] == "note"
+    assert "reopened to next" in notes[0]["evidence"][0]["detail"]
+    assert "reviewed commit" in notes[0]["evidence"][0]["detail"]
     assert "SA-417" not in merger.watching
 
 

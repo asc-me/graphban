@@ -149,6 +149,7 @@ class _BounceLedger:
                                       "detail": f"draft PR opened by gbfleet for {self.item['branch']}"})
         self.bounce_raises = bounce_raises
         self.bounces: list[dict] = []
+        self.notes: list[dict] = []
 
     def call(self, tool, **kw):
         if tool == "fleet_status":
@@ -174,6 +175,10 @@ class _BounceLedger:
             self.bounces.append(kw)
             self.item["status"] = "next"
             return {"id": kw["id"], "status": "next"}
+        if tool == "update_item":
+            self.notes.append(kw)
+            self.item.setdefault("evidence", []).extend(kw.get("evidence") or [])
+            return {"id": kw["id"]}
         raise AssertionError(f"unexpected call {tool}")
 
 
@@ -195,6 +200,10 @@ def test_THE_CALL_the_merger_bounces_a_rebase_conflict_naming_the_files(gh, monk
     assert ledger.bounces[0]["agent_id"] == "GRPH-A1"
     reason = ledger.bounces[0]["reason"]
     assert "a.txt" in reason and "b.txt" in reason
+    assert ledger.item["status"] == "next"
+    notes = [e for e in ledger.item["evidence"] if e.get("kind") == "note"]
+    assert notes, "the reopen has no note — bounce_reason is not what the next builder reads"
+    assert "a.txt" in notes[-1]["detail"] and "b.txt" in notes[-1]["detail"]
     assert "SA-1389" not in merger.watching
     assert not wave.failures
 
@@ -219,6 +228,8 @@ def test_a_head_that_moved_after_sign_off_is_bounced_with_the_planner(gh):
     assert ledger.bounces[0]["agent_id"] == "GRPH-A1"
     assert "reviewed commit" in ledger.bounces[0]["reason"]
     assert ledger.item["status"] == "next"
+    notes = [e for e in ledger.item["evidence"] if e.get("kind") == "note"]
+    assert notes and "reviewed commit" in notes[-1]["detail"]
     assert "SA-1505" not in merger.watching
     assert not wave.failures
 
