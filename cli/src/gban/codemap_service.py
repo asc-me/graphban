@@ -383,7 +383,20 @@ def stack_step(repo: Path, target: str, project: str, post) -> dict:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def refresh(repo: Path, call, mode: str, stack_post=None, project: str = "") -> dict:
+def scan_step(target: str, scan) -> dict:
+    """Run the scan step at `target` (the run's sha, never local HEAD). Never raises."""
+    try:
+        counts = scan(target)
+    except Exception as exc:  # a scan failure is recorded; it never changes the map outcome
+        stage = "server" if isinstance(exc, (_client.Unreachable, _client.Refused,
+                                             _client.NoSession)) else "scan"
+        return {"scans": "failed", "scans_stage": stage,
+                "scans_reason": f"{type(exc).__name__}: {exc}"}
+    return {"scans": "ok", "scans_sha": target, "scans_recorded": counts.get("recorded", 0),
+            "scans_tool_missing": counts.get("tool_missing", 0)}
+
+
+def refresh(repo: Path, call, mode: str, stack_post=None, project: str = "", scan=None) -> dict:
     """One run. Never raises for a map failure: the outcome says what happened."""
     rec: dict = {"mode": mode, "outcome": "failed"}
     try:
@@ -417,6 +430,8 @@ def refresh(repo: Path, call, mode: str, stack_post=None, project: str = "") -> 
         rec.update(outcome="ok", nodes=total)
         if stack_post is not None:
             rec.update(stack_step(repo, target, project, stack_post))
+        if scan is not None and mode == "full":
+            rec.update(scan_step(target, scan))
     except codemap.MapError as exc:
         _failed(rec, "map", str(exc), state["done"], total)
     except (_client.Unreachable, _client.Refused, _client.NoSession) as exc:
@@ -433,10 +448,10 @@ def _failed(rec: dict, stage: str, reason: str, done: int, total: int) -> None:
 
 
 def record_run(sid: str, repo: Path, call, nightly: tuple[int, int],
-               now: datetime | None = None, stack_post=None, project: str = "") -> dict:
+               now: datetime | None = None, stack_post=None, project: str = "", scan=None) -> dict:
     now = now or datetime.now()
     mode = choose_mode(now, nightly, read_log(sid))
-    rec = refresh(repo, call, mode, stack_post, project)
+    rec = refresh(repo, call, mode, stack_post, project, scan)
     rec["ts"] = now.timestamp()
     rec["at"] = now.isoformat(timespec="seconds")
     append_log(sid, rec)
@@ -512,6 +527,7 @@ def status_lines(repo: Path, kind: str = "") -> list[str]:
     else:
         lines.append("no run has completed; the map is not known to be current")
     lines.extend(_stack_line(records))
+    lines.extend(_scans_line(records))
     return [*lines, *head]
 
 
@@ -522,4 +538,16 @@ def _stack_line(records: list[dict]) -> list[str]:
             return [f"stack map: ok at {str(rec.get('stack_sha', ''))[:12]}"]
         if rec.get("stack") == "failed":
             return [f"stack map: failed: {rec.get('stack_reason', '')}"]
+    return []
+
+
+def _scans_line(records: list[dict]) -> list[str]:
+    """The scan step's own state: the last run that ran it."""
+    for rec in reversed(records):
+        if rec.get("scans") == "ok":
+            return [f"scans: ok, {rec.get('scans_recorded', 0)} recorded, "
+                    f"{rec.get('scans_tool_missing', 0)} tool_missing at "
+                    f"{str(rec.get('scans_sha', ''))[:12]}"]
+        if rec.get("scans") == "failed":
+            return [f"scans: failed: {rec.get('scans_reason', '')}"]
     return []
