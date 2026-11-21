@@ -23,6 +23,7 @@ only one of them means stop.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -1715,6 +1716,122 @@ def _logs(workspace: Path, slot: str) -> Path:
     return workspace / "logs" / slot
 
 
+# Same key grammar and the same person/decision words as items.record_blocker_dependencies
+# (GRPH-1530). The server clears a blocker when the named item reaches done; this pass
+# clears one whose items were already done, which that transition will not see again.
+_BLOCKER_KEY = re.compile(
+    r"(?<![\w/.-])([A-Za-z][A-Za-z0-9]{1,3}-[RrPpAaLl]?\d+)(?![\w/.-])"
+)
+_PERSON_OR_DECISION = re.compile(r"\b(?:person|human|decision)\b", re.IGNORECASE)
+_BLOCKING_FIX_SUFFIX = ": blocking fix filed on this item"
+_WAIT_TAGS = frozenset({
+    "wait:merge", "wait:decision", "wait:secret", "wait:access", "wait:deploy",
+})
+_STALE_BLOCKER_STATUSES = ("blocked", "next")
+
+
+def blocker_item_keys(text: str) -> list[str]:
+    """Item-key tokens in a blocker, in order, without duplicates."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for match in _BLOCKER_KEY.finditer(text or ""):
+        key = match.group(1)
+        if key not in seen:
+            seen.add(key)
+            found.append(key)
+    return found
+
+
+def blocker_left_alone(text: str, tags: list | None) -> bool:
+    """A person, a decision, a typed wait, or a blocking-fix filing. Not auto-cleared."""
+    if _PERSON_OR_DECISION.search(text or ""):
+        return True
+    if (text or "").endswith(_BLOCKING_FIX_SUFFIX):
+        return True
+    return any(str(tag).lower() in _WAIT_TAGS for tag in (tags or []))
+
+
+def _search_status(client: Graphban, status: str) -> list[dict]:
+    """Every full row in `status`. A short page is not the whole board."""
+    rows: list[dict] = []
+    offset = 0
+    limit = 200
+    while offset <= 5000:
+        got = client.call(
+            "search_items", status=status, fields="full", limit=limit, offset=offset)
+        page = got.get("results") if isinstance(got, dict) else None
+        if not isinstance(page, list):
+            raise ToolFailed(
+                "search_items", "error", f"{status} listing carried no results list")
+        rows.extend(row for row in page if isinstance(row, dict))
+        if not (isinstance(got, dict) and got.get("has_more")):
+            break
+        offset += limit
+    return rows
+
+
+def _named_status(client: Graphban, key: str, cache: dict[str, str | None]) -> str | None:
+    if key in cache:
+        return cache[key]
+    try:
+        got = client.call("get_item_details", id=key) or {}
+    except (ToolFailed, NotPermitted, ServerUnreachable):
+        cache[key] = None
+        return None
+    status = str(got.get("status") or "") if isinstance(got, dict) else ""
+    cache[key] = status or None
+    return cache[key]
+
+
+def clear_stale_blockers(client: Graphban) -> list[str]:
+    """Clear blockers that name only done items. Report is the caller's.
+
+    A planner drain holds `update_item`. A supervisor allowlist does not, and
+    this returns without reading: a client that cannot write must not look like
+    it checked. A blocker that names a person or a decision is left alone.
+    """
+    allowed = getattr(client, "allowed", ())
+    if "update_item" not in allowed or "search_items" not in allowed:
+        return []
+    if "get_item_details" not in allowed:
+        return []
+    cleared: list[str] = []
+    seen: set[str] = set()
+    statuses: dict[str, str | None] = {}
+    for status in _STALE_BLOCKER_STATUSES:
+        for row in _search_status(client, status):
+            item_id = str(row.get("id") or "")
+            if not item_id or item_id in seen or "blocker" not in row:
+                continue
+            seen.add(item_id)
+            text = str(row.get("blocker") or "").strip()
+            if not text or blocker_left_alone(text, row.get("tags")):
+                continue
+            keys = blocker_item_keys(text)
+            if not keys:
+                continue
+            named = [_named_status(client, key, statuses) for key in keys]
+            if any(state != "done" for state in named):
+                continue
+            fields: dict = {
+                "id": item_id,
+                "blocker": "",
+                "evidence": [{
+                    "kind": "note",
+                    "detail": f"blocker cleared: {', '.join(keys)} done",
+                }],
+            }
+            if str(row.get("status") or status) == "blocked":
+                fields["status"] = "next"
+            client.call("update_item", **fields)
+            cleared.append(item_id)
+            observe.emit(
+                "blocker_cleared", item=item_id,
+                detail=f"{item_id}: blocker cleared, {', '.join(keys)} done",
+            )
+    return cleared
+
+
 def watch_tick(
     wave: Wave,
     children: list[Child],
@@ -1787,6 +1904,13 @@ def watch_tick(
     # during this tick belongs to the reap.
     _publish_in_review(wave, children, client)
     _report_exits(children, client, wave)
+    # GRPH-1530. Each drain pass, not a separate command: a blocker that names
+    # only done items is cleared here, and one that names a person or a decision
+    # is left. A client that cannot write skips the read.
+    try:
+        clear_stale_blockers(client)
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("blocker_clear_failed", detail=str(exc))
     if persist is not None:
         persist()
 

@@ -177,6 +177,11 @@ def next_cluster(
     for rel in related_items(db, seed, project_id):
         if len(batch) >= max_items:
             break
+        # GRPH-1530. claim_item only refuses a stale in_progress reclaim. A fresh
+        # neighbour whose dependency is still open is not one, and claim_next never
+        # saw it — this loop is the handout. Skip it; the seed stays claimed.
+        if items_svc.unfinished_dependency_ids(db, rel["item"]):
+            continue
         try:
             claimed = items_svc.claim_item(db, rel["item"].id, agent_id, lease_seconds=lease)
         except (items_svc.OutOfScope, items_svc.ReachesOutsideTheRepo,

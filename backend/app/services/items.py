@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.errors import Refused
-from app.models import Agent, Enrolment, Item, Prd, Project, utcnow
+from app.models import Agent, Enrolment, Item, Link, Prd, Project, utcnow
 from app.services import keys
 from app.services import routing as routing_svc
 
@@ -48,6 +48,15 @@ SEVERITIES = ["security"]
 #: `release_when_blocking_fix_done` reads both. A manual blocker does not end with the suffix.
 BLOCKING_FIX_REASON = "blocking fix"
 BLOCKING_FIX_BLOCKER_SUFFIX = ": blocking fix filed on this item"
+
+#: Dependency reason written when a blocker text names the items it waits on (GRPH-1530).
+#: A manual note, a typed wait, and a blocking-fix filing do not use it. The fleet drain
+#: matches the same key grammar and the same person/decision words; keep them together.
+BLOCKER_DEP_REASON = "blocker"
+_BLOCKER_KEY = re.compile(
+    r"(?<![\w/.-])([A-Za-z][A-Za-z0-9]{1,3}-[RrPpAaLl]?\d+)(?![\w/.-])"
+)
+_PERSON_OR_DECISION = re.compile(r"\b(?:person|human|decision)\b", re.IGNORECASE)
 
 #: The three exits an agent that finds a defect has. Every fix refusal quotes them.
 FIX_EXITS = (
@@ -2527,6 +2536,10 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
                 "severity"):
         if key in fields and fields[key] is not None:
             setattr(item, key, fields[key])
+    if "blocker" in fields and (item.blocker or "").strip():
+        # GRPH-1530. The text is not the only record: item ids named in it become
+        # dependency links in this same commit, so a later `done` can clear the block.
+        record_blocker_dependencies(db, item)
     if "line_id" in fields:
         item.line_id = fields["line_id"]
     # GRPH-1671. Written only with the `done` it justifies (`resolve_item`), and dropped the
@@ -2635,6 +2648,11 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
     db.commit()
     db.refresh(item)
 
+    # GRPH-1530. A blocker set onto items that are already done does not wait for
+    # the next drain pass. Open dependencies leave it exactly as written.
+    if "blocker" in fields and (item.blocker or "").strip():
+        clear_satisfied_blocker(db, item)
+
     if pending_lesson_applies:
         _record_applied_lessons(db, item, pending_lesson_applies)
 
@@ -2675,6 +2693,8 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
             release_waiters(db, item)
         # GRPH-1772. `sign_off` writes `done` itself and calls this same helper.
         release_when_blocking_fix_done(db, item)
+        # GRPH-1530. A blocker that names this item, and nothing still open, clears.
+        release_when_named_blockers_done(db, item)
         # A stored `code` link to finished work is noise every read pays for (GRPH-1068);
         # `related_items` still finds it by live overlap.
         # Committed even when nothing matched: the DELETE alone opens a write transaction, and
@@ -3235,9 +3255,11 @@ def _ready_candidates(db: Session, project_id: str | None, lease_seconds: int) -
     for it in ctx.items:
         if not _is_claimable(it, cutoff):
             continue
-        # Fresh backlog/next must be dependency-ready; a stale in-progress reclaim is already
-        # underway, so we don't re-gate it on dependencies.
-        if it.status in ("backlog", "next") and not prio.ready(ctx, it):
+        # An unfinished dependency is not claimable on any status this sweep offers,
+        # including a stale in_progress reclaim (GRPH-1530). A status write back to
+        # `next` used to make the dependent look free while the dependency was still
+        # being built. A free-text blocker is already refused by `_is_claimable`.
+        if prio.blocked_by(ctx, it):
             continue
         out.append(it)
     out.sort(key=lambda it: (-prio.score(ctx, it), it.sort_order))
@@ -3633,6 +3655,171 @@ def live_claim(db: Session, agent_id: str, *, lease_seconds: int = DEFAULT_LEASE
     return None
 
 
+def keys_named_in(text: str) -> list[str]:
+    """Item-key tokens in `text`, in order, without duplicates.
+
+    The grammar is the rendered key (`GRPH-1685`, `GBC-77`), not a prefix of a
+    longer token. The fleet drain uses the same expression.
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+    for match in _BLOCKER_KEY.finditer(text or ""):
+        key = match.group(1)
+        if key not in seen:
+            seen.add(key)
+            found.append(key)
+    return found
+
+
+def blocker_names_person_or_decision(text: str) -> bool:
+    """A person or a decision, named in the blocker text. Those are left alone."""
+    return bool(_PERSON_OR_DECISION.search(text or ""))
+
+
+def unfinished_dependency_ids(db: Session, item: Item) -> list[str]:
+    """Dependency targets that exist and are not `done`. A missing row does not block."""
+    ids = db.scalars(select(Link.b).where(
+        Link.type == "dependency", Link.a == item.id)).all()
+    open_ids: list[str] = []
+    for dep_id in dict.fromkeys(ids):
+        dep = db.get(Item, dep_id)
+        if dep is not None and dep.status != "done":
+            open_ids.append(dep_id)
+    return open_ids
+
+
+def _hold_live(item: Item) -> bool:
+    if not item.claimed_by or item.claimed_at is None:
+        return False
+    cutoff = utcnow() - timedelta(seconds=DEFAULT_LEASE_SECONDS)
+    claimed = _aware(item.claimed_at)
+    return claimed is not None and claimed >= cutoff
+
+
+def record_blocker_dependencies(db: Session, item: Item) -> list[str]:
+    """Link this item to every item its blocker text names (GRPH-1530).
+
+    The free-text field is what a worker types; the link is what a later `done`
+    can see. A person, a decision, a typed wait, and a blocking-fix filing are
+    not this record — those already have their own release rules. Returns the
+    stored ids linked, including ones that already had a dependency edge.
+    """
+    text = (item.blocker or "").strip()
+    if (not text or blocker_names_person_or_decision(text)
+            or text.endswith(BLOCKING_FIX_BLOCKER_SUFFIX)):
+        return []
+    from app.services.waits import wait_tags_on
+    if wait_tags_on(item):
+        return []
+    linked: list[str] = []
+    for token in keys_named_in(text):
+        stored = keys.resolve_item(db, token)
+        if not stored or stored == item.id:
+            continue
+        other = db.get(Item, stored)
+        if other is None:
+            continue
+        existing = db.scalar(select(Link).where(
+            Link.type == "dependency", Link.a == item.id, Link.b == other.id))
+        if existing is None:
+            db.add(Link(
+                project_id=item.project_id, a=item.id, b=other.id,
+                type="dependency", reason=BLOCKER_DEP_REASON, confidence=1.0,
+            ))
+        elif not (existing.reason or "").strip():
+            existing.reason = BLOCKER_DEP_REASON
+        linked.append(other.id)
+    return linked
+
+
+def _satisfied_blocker_keys(db: Session, item: Item) -> list[str] | None:
+    """Keys this blocker waits on, when every one of them is `done`.
+
+    None means leave the blocker alone: it names a person or a decision, it is a
+    typed wait or a blocking-fix filing, a named token is not a done item, or it
+    names nothing this rule can see.
+    """
+    text = (item.blocker or "").strip()
+    if not text or item.status not in ("blocked", "next"):
+        return None
+    if blocker_names_person_or_decision(text) or text.endswith(BLOCKING_FIX_BLOCKER_SUFFIX):
+        return None
+    from app.services.waits import wait_tags_on
+    if wait_tags_on(item):
+        return None
+    targets: dict[str, Item] = {}
+    for token in keys_named_in(text):
+        stored = keys.resolve_item(db, token)
+        if not stored:
+            return None
+        other = db.get(Item, stored)
+        if other is None:
+            return None
+        targets[other.id] = other
+    link_ids = db.scalars(select(Link.b).where(
+        Link.type == "dependency", Link.a == item.id,
+        Link.reason == BLOCKER_DEP_REASON)).all()
+    for dep_id in dict.fromkeys(link_ids):
+        dep = db.get(Item, dep_id)
+        if dep is None:
+            return None
+        targets.setdefault(dep.id, dep)
+    if not targets or any(dep.status != "done" for dep in targets.values()):
+        return None
+    return [dep.key for dep in targets.values()]
+
+
+def clear_satisfied_blocker(db: Session, item: Item, *, commit: bool = True) -> bool:
+    """Clear a blocker whose named dependencies are all done, and say why.
+
+    `blocked` returns to `next` (or stays `in_progress` on a live lease). A
+    `next` item keeps its status; dropping the text is what makes it ready.
+    """
+    names = _satisfied_blocker_keys(db, item)
+    if not names:
+        return False
+    shown = ", ".join(names)
+    item.evidence = append_evidence(item.evidence, [{
+        "kind": "note",
+        "detail": f"blocker cleared: {shown} done",
+    }])
+    item.blocker = ""
+    if item.status == "blocked":
+        item.status = "in_progress" if _hold_live(item) else "next"
+    if commit:
+        db.commit()
+        db.refresh(item)
+    return True
+
+
+def release_when_named_blockers_done(db: Session, finished: Item) -> list[str]:
+    """After `finished` reaches `done`, clear blockers that named only done items.
+
+    Covers a dependency link and a blocker text that mentions the key. A person,
+    a decision, a typed wait, and a blocking-fix filing are left to their own
+    rules (GRPH-1530, GRPH-1772).
+    """
+    if finished.status != "done":
+        return []
+    candidate_ids = list(db.scalars(select(Link.a).where(
+        Link.type == "dependency", Link.b == finished.id)).all())
+    key = (finished.key or "").strip()
+    if key:
+        mentioned = db.scalars(select(Item.id).where(
+            Item.blocker.is_not(None), Item.blocker.contains(key))).all()
+        candidate_ids.extend(mentioned)
+    released: list[str] = []
+    for dep_id in dict.fromkeys(candidate_ids):
+        if dep_id == finished.id:
+            continue
+        item = db.get(Item, dep_id)
+        if item is None:
+            continue
+        if clear_satisfied_blocker(db, item):
+            released.append(item.id)
+    return released
+
+
 def claim_next(
     db: Session, agent_id: str, project_id: str | None = None,
     lease_seconds: int = DEFAULT_LEASE_SECONDS, skip: list[str] | None = None,
@@ -3854,6 +4041,22 @@ def claim_item(db: Session, item_id: str, agent_id: str, lease_seconds: int = DE
     cutoff = utcnow() - timedelta(seconds=lease_seconds)
     it = db.get(Item, keys.resolve_item(db, item_id) or item_id)
     if it is None or not _is_claimable(it, cutoff) or pinned_elsewhere(it, agent_id):
+        return None
+    # GRPH-1530. The cluster pool keeps a stale in_progress row even when a dependency
+    # is still open (collision.clusters_for_project includes every claimable
+    # in_progress item, ready or not). None, like the other "not claimable" answers:
+    # the cluster loop tries the next member and still reserves the area from the one
+    # it does claim. A fresh backlog/next row is not this case — claim_next and that
+    # pool's ready() filter already withhold it, and refusing it here also refuses an
+    # explicit claim of a named item. The seed's AL-12 depends on AL-08, which is not
+    # done, and a lease test that claims it by id is not a handout.
+    stale_reclaim = (
+        it.status == "in_progress"
+        and it.claimed_by is not None
+        and it.claimed_at is not None
+        and _aware(it.claimed_at) < cutoff
+    )
+    if stale_reclaim and unfinished_dependency_ids(db, it):
         return None
     # GRPH-988, and first among the seat checks: the seat's KIND is the one fact here that no
     # wait, release or retry can change, so it is the one worth answering before anything that
