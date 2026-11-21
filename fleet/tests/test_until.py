@@ -72,6 +72,7 @@ def _clients(
     bound_seats: bool = False,
     bound_refused: bool | str = False,
     pinned_ticks: int = 0,
+    pin_message: str | None = None,
     sticky_clusters: bool = False,
     gitops: dict | None = None,
     drop_delegated: bool = False,
@@ -197,9 +198,10 @@ def _clients(
                               else "areas are reserved by GRPH-A9", rid)
             if pinned_left[0] > 0 and args.get("seat"):
                 pinned_left[0] -= 1
-                return _error("conflict", "GRPH-7 is pinned to its author GRPH-A1 after a bounce "
-                              "(pinned_to=GRPH-A1; pinned_until=2026-11-05T13:54:16+00:00; "
-                              "reserved_until=2026-11-05T13:54:16+00:00)", rid)
+                return _error("conflict", pin_message or (
+                    "GRPH-7 is pinned to its author GRPH-A1 after a bounce "
+                    "(pinned_to=GRPH-A1; pinned_until=2026-11-05T13:54:16+00:00; "
+                    "reserved_until=2026-11-05T13:54:16+00:00)"), rid)
             if delegations is not None:
                 delegations.append(dict(args))
             return _mcp({"delegation_id": f"dlg_{len(delegations or [])}", "state": "open",
@@ -1527,6 +1529,80 @@ def test_a_pinned_item_spawns_nothing_until_the_server_stops_reporting_the_pin(
     )
     assert [d["id"] for d in delegations] == ["GRPH-7"], "delegated once, after the pin lapsed"
     assert result.spawned == 1, result.detail
+
+
+#: The refusal the 2026-11-05 drain logged, before `reserved_until=` existed. The author's
+#: child had already exited. Matching only `reserved_until=` recorded `bound_seat_refused`
+#: and the run exited idle (GRPH-1324).
+_DEAD_AUTHOR_PIN = (
+    "GRPH-7 is pinned to its author GRPH-A11 after a bounce "
+    "(pinned_to=GRPH-A11; pinned_until=2026-11-05T05:36:57+00:00) "
+    "(wait for the pin to lapse, or let the author retry)"
+)
+
+
+def test_a_pinned_bounce_with_a_dead_author_waits_then_redelegates(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1324. The only ready work is pinned to an author whose child has already
+    exited (this wave has no live child). The refusal is the incident wording: it
+    names `pinned_until` and says to wait for the pin, and it does not say
+    `reserved_until=`. until waits and re-delegates once the server stops reporting
+    the pin. It does not exit idle with nothing spawned.
+
+    Sabotage: in `_delegate_next`, ignore `_bounce_pin_stamp` and fall through
+    to the bound-seat refusal. The run exits `idle` with spawned 0.
+    """
+    workspace = tmp_path / "ws"
+    delegations: list = []
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7"]], delegations=delegations,
+        bound_seats=True, pinned_ticks=3, pin_message=_DEAD_AUTHOR_PIN,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+    )
+    assert [d["id"] for d in delegations] == ["GRPH-7"], result.as_json()
+    assert result.spawned == 1, result.as_json()
+    assert not any("delegation refused" in g and "GRPH-7" in g for g in result.as_json()["gated"]), (
+        result.as_json()["gated"])
+    # The pin was over before the run ended, so the summary does not still list it.
+    assert not any("pinned until" in w for w in result.as_json()["waits"]), result.as_json()["waits"]
+
+
+def test_an_exit_while_a_dead_authors_pin_holds_names_the_pin(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-1324, the exit clause. The server keeps the pin and the run stops anyway
+    (here, a stall raised from the pin wait). `reason` is not `idle`, and `waits`
+    names the item and its `pinned_until`.
+
+    Sabotage: drop the pin lines off the stall report. `waits` is empty.
+    """
+    from gbfleet import watchdog
+
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7"]],
+        bound_seats=True, pinned_ticks=100, pin_message=_DEAD_AUTHOR_PIN,
+    )
+
+    def _stop_on_the_pin_wait(_seconds: float) -> None:
+        raise watchdog.Stalled("stopped while the pin still holds")
+
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=_stop_on_the_pin_wait, empty_ticks=1,
+    )
+    payload = result.as_json()
+    assert result.spawned == 0, payload
+    assert payload["reason"] != "idle", payload
+    named = [w for w in payload["waits"]
+             if "GRPH-7" in w and "2026-11-05T05:36:57+00:00" in w]
+    assert named, payload["waits"]
 
 
 def test_a_stale_hold_is_not_a_holding():

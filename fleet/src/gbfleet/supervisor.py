@@ -503,6 +503,10 @@ class Wave:
     #: Original branch -> (side branch, why). A salvage or rework that must not move the
     #: ref a landed fix already uses (GRPH-1053).
     diverted: dict[str, tuple[str, str]] = field(default_factory=dict)
+    #: "{item}: pinned until {stamp}" for a bounce pin whose author has no live child
+    #: (GRPH-1324). Cleared when that item is delegated. An exit while any remain names
+    #: them under `waits` and is not `idle`.
+    pin_waits: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
