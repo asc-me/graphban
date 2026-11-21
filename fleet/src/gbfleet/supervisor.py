@@ -1724,11 +1724,12 @@ def watch_tick(
     PRD-22 four (wall-clock, never-registered, seat-gone, lease-lapsed), plus the
     planner's `stop`.
 
-    The keep-alive is first, before `_roster` (GRPH-1116). `fleet_status` requeues an
-    agent whose presence has lapsed, and a child blocked in a test suite does not
-    heartbeat itself. Posting `kind=lease` while the pid is alive is what keeps that
-    requeue from firing. Once the process has exited, nothing here posts, and the
-    server clock lapses the lease as before.
+    The keep-alive is first, before `_roster` (GRPH-1116, which is the fix GRPH-1069
+    asked for). `fleet_status` requeues an agent whose presence has lapsed, and a
+    child blocked in one tool call does not heartbeat itself. Posting `kind=lease`
+    while the pid is alive keeps that requeue from firing across a call longer than
+    the presence TTL, and it does not write a `released` attempt. Once the process
+    has exited, nothing here posts, and the server clock requeues within one TTL.
     """
     keep_leases(wave, children, client)
     roster = _roster(client, wave.partition)
