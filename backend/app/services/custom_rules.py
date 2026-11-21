@@ -311,6 +311,12 @@ def create_org(db: Session, actor: object, org_id: str, *, slug: str, primitive:
     return row
 
 
+def list_for_org(db: Session, org_id: str) -> list[dict]:
+    rows = db.scalars(select(CustomRule).where(CustomRule.org_id == org_id)
+                      .order_by(CustomRule.rule_id)).all()
+    return [view(db, r) for r in rows]
+
+
 def get_org(db: Session, org_id: str, rule_id: str) -> CustomRule:
     row = _org_row(db, rule_id, org_id)
     if row is None:
@@ -343,7 +349,11 @@ def set_org_toggle(db: Session, user: User, org_id: str, rule_id: str, changes: 
     unknown = sorted(set(changes) - {"locked"})
     if unknown or "locked" not in changes or not isinstance(changes["locked"], bool):
         raise Validation("an org custom rule toggle sets `locked` (true or false) only")
-    get_org(db, org_id, rule_id)
+    org_rule = get_org(db, org_id, rule_id)
+    if changes["locked"] and org_rule.state == "observing":
+        raise Validation(f"{rule_id} is observing and cannot be locked",
+                         hint="promote it first: a lock would retire project overrides for a rule "
+                              "that holds nothing")
     lock = _lock_row(db, rule_id, org_id)
     old = {"locked": bool(lock is not None and lock.locked)}
     if lock is None:

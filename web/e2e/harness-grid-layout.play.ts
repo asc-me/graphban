@@ -1,16 +1,22 @@
 import { expect, test } from "@playwright/test";
 
+import { COMPILE } from "./compile-wait";
+
 /**
  * GRPH-1232: at 1280px the harness × function grid scrolls inside its own container and the
  * page does not scroll horizontally, even with every catalog leaf as a column and the cell
  * panel open. jsdom has no layout, so this is measured in a real browser with the real CSS.
  */
+// The first navigation pays for the Vite compile (GRPH-1812). The cap has to outlast COMPILE.
+test.describe.configure({ timeout: 180_000 });
+
 test("harness grid scrolls inside its container, not the page, at 1280px", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 1000 });
   await page.goto("http://127.0.0.1:5198/e2e/layout/?view=harness-grid");
 
   // Families start collapsed at every width. The leaf strip is what a collapsed column shows.
-  await expect(page.getByTestId("harness-grid-col")).toHaveCount(5);
+  // Five columns is the landmark. A harness that never paints them fails here.
+  await expect(page.getByTestId("harness-grid-col")).toHaveCount(5, COMPILE);
   await expect(page.getByTestId("harness-leaf-strip").first()).toBeVisible();
   // Each family's button stays after expanding (it becomes collapse), so expand each one once:
   // the 5 family columns stay and their 25 functions slide in beside them.

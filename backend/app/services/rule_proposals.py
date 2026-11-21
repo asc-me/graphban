@@ -292,7 +292,13 @@ def view(row: RuleProposal, *, folded: bool = False) -> dict:
             "citations": row.citations, "proposer": row.proposer,
             "proposer_kind": row.proposer_kind, "direction": row.direction,
             "loosens": row.loosens, "status": row.status, "folded": folded,
-            "created_at": row.created_at.isoformat() if row.created_at else None}
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "decided_by": row.decided_by, "decided_reason": row.decided_reason,
+            "decided_at": row.decided_at.isoformat() if row.decided_at else None,
+            "org_dismissed_by": row.org_dismissed_by,
+            "org_dismissed_reason": row.org_dismissed_reason,
+            "org_dismissed_at": (row.org_dismissed_at.isoformat()
+                                 if row.org_dismissed_at else None)}
 
 
 def list_for_project(db: Session, project_id: str, status: str | None = None) -> list[dict]:
@@ -558,31 +564,85 @@ def gap_counts(db: Session, project_id: str) -> list[dict]:
 # org path (`quotas.require_org_rules`), including one a project dismissed: both acts stay in
 # history, the project's dismissal in its own event and the org's adoption in the org's.
 
-def adopt_org(db: Session, actor: object, org_id: str, proposal_id: int,
-              reason: str) -> RuleProposal:
-    """Adopt a project's proposal at org scope. A `new_rule` becomes the org's one rule,
-    `observing`; a `turn_on` / `tighten` of a library rule is the org's toggle write. A project
-    that already holds the same custom rule keeps it as an override. One audit event names the
-    projects the change reached."""
+def _org_proposal(db: Session, org_id: str, proposal_id: int) -> RuleProposal:
+    p = db.get(RuleProposal, proposal_id)
+    if p is None or T._org_of(db, p.project_id) != org_id:
+        raise NotFound(f"proposal {proposal_id!r} not found in this org")
+    return p
+
+
+def _overrides(db: Session, org_id: str, p: RuleProposal) -> list[dict]:
+    """The org's projects that already hold their own value for the proposal's rule, with that
+    value: the admin sees whose value wins before adopting (the project's own value does)."""
+    out = []
+    for pid in custom_rules._org_projects(db, org_id):
+        if custom_rules.is_custom(p.rule_id):
+            row = custom_rules._row(db, p.rule_id, pid)
+            if row is not None:
+                out.append({"project_id": pid, "on": row.state != "off", "params": row.params,
+                            "state": row.state})
+        else:
+            row = T._row(db, p.rule_id, project_id=pid)
+            if row is not None and (row.on is not None or row.params is not None):
+                out.append({"project_id": pid, "on": row.on, "params": row.params})
+    return out
+
+
+def _org_view(db: Session, org_id: str, p: RuleProposal) -> dict:
+    d = view(p)
+    d.update(decided_by=p.decided_by, decided_reason=p.decided_reason,
+             overrides=_overrides(db, org_id, p))
+    proj = db.get(Project, p.project_id)
+    d["project_name"] = proj.name if proj is not None else None
+    return d
+
+
+def _org_admin(db: Session, actor: object, org_id: str):
     from app.security import authz
     from app.services import quotas
     user = T._require_person(db, actor)
     authz.require_org_admin(db, user.id, org_id)
     quotas.require_org_rules(db, org_id)
-    why = T._reason(reason)
-    p = db.get(RuleProposal, proposal_id)
-    if p is None or T._org_of(db, p.project_id) != org_id:
-        raise NotFound(f"proposal {proposal_id!r} not found in this org")
+    return user
+
+
+def list_for_org(db: Session, actor: object, org_id: str, status: str | None = None) -> list[dict]:
+    """Proposals from every project in the org, each with its project. Default (`open`) is the
+    org's open list: open in its project and not dismissed for the org. `dismissed` is the org's
+    Dismissed: proposals an org admin dismissed at org scope (they may still be open in the
+    project). Any other status filters on the project's status."""
+    _org_admin(db, actor, org_id)
+    pids = custom_rules._org_projects(db, org_id)
+    q = select(RuleProposal).where(RuleProposal.project_id.in_(pids))
+    st = status or "open"
+    if st == "open":
+        q = q.where(RuleProposal.status == "open", RuleProposal.org_dismissed_at.is_(None))
+    elif st == "dismissed":
+        q = q.where(RuleProposal.org_dismissed_at.is_not(None))
+    else:
+        q = q.where(RuleProposal.status == st)
+    return [_org_view(db, org_id, p) for p in db.scalars(q.order_by(RuleProposal.id))]
+
+
+def _stage_org(db: Session, user, org_id: str, p: RuleProposal, why: str,
+               after: list, claimed: set[str]) -> dict:
+    """Apply one proposal at org scope to the session, uncommitted. Appends to `after` what
+    must run once the transaction has committed."""
     if p.status not in ("open", "dismissed"):
-        raise Validation(f"proposal {proposal_id} is {p.status}, not open or dismissed")
+        raise Validation(f"proposal {p.id} is {p.status}, not open or dismissed")
     prior = (f"dismissed by {p.decided_by}: {p.decided_reason}"
              if p.status == "dismissed" else None)
+    overrides = _overrides(db, org_id, p)
     effect: dict = {}
     if p.kind == "new_rule":
         d = p.draft or {}
         bad = rule_pack.validate_draft(d)
         if bad:
             raise Validation(f"the draft is no longer valid: {bad}")
+        if p.rule_id in claimed:
+            raise Validation(f"proposal {p.id} creates {p.rule_id}, which another proposal in "
+                             "this batch already creates", hint="adopt one of them, dismiss the other")
+        claimed.add(p.rule_id)
         custom_rules.stage_org_row(
             db, user, org_id, rule_id=p.rule_id, primitive=p.primitive, stage=d["stage"],
             params=p.params or {}, title=d["title"], why=d["summary"], claims=d["claims"],
@@ -598,26 +658,120 @@ def adopt_org(db: Session, actor: object, org_id: str, proposal_id: int,
         changes: dict = {"params": copy.deepcopy(p.params or {})}
         if p.kind == "turn_on":
             changes["on"] = True
-        out = T.set_org_toggle(db, org_id, p.rule_id, changes, actor=user, reason=why)
-        effect = {"projects_changed": out["projects_changed"], "overrides_kept": []}
+        out = T.set_org_toggle(db, org_id, p.rule_id, changes, actor=user, reason=why,
+                               stage=after)
+        effect = {"projects_changed": out["projects_changed"]}
         state = "on" if out["on"] else "off"
     p.status = "adopted"
     p.decided_by = user.handle or user.name
     p.decided_reason = why
     p.decided_at = _now()
-    db.commit()
-    if custom_rules.is_custom(p.rule_id):
-        effect = custom_rules.org_effect(db, org_id, p.rule_id)
+    db.flush()
     history = _history(p)
-    if prior:
-        history += f", {prior}, then adopted at org scope by {p.decided_by}"
-    else:
-        history += f", adopted at org scope by {p.decided_by}"
+    history += (f", {prior}, then adopted at org scope by {p.decided_by}" if prior
+                else f", adopted at org scope by {p.decided_by}")
+    return {"state": state, "effect": effect, "prior": prior, "history": history,
+            "overrides": overrides}
+
+
+def _org_effect(db: Session, org_id: str, p: RuleProposal, effect: dict) -> dict:
+    if custom_rules.is_custom(p.rule_id):
+        return custom_rules.org_effect(db, org_id, p.rule_id)
+    return {"projects_changed": effect.get("projects_changed", []), "overrides_kept": []}
+
+
+def _org_event(db: Session, user, org_id: str, p: RuleProposal, why: str, staged: dict,
+               batch: bool) -> None:
+    effect = _org_effect(db, org_id, p, staged["effect"])
     events_svc.record_user(
         db, user, action="adopt_rule_proposal", target_type="rule", target_id=p.rule_id,
         project_id=p.project_id,
         meta={"scope": "org", "org_id": org_id, "proposal_id": p.id, "kind": p.kind,
-              "state": state, "reason": why, "history": history, "previously": prior,
-              "proposer": p.proposer, "proposer_kind": p.proposer_kind,
-              "citations": p.citations, "adopted_by": p.decided_by, **effect})
-    return p
+              "state": staged["state"], "reason": why, "history": staged["history"],
+              "previously": staged["prior"], "proposer": p.proposer,
+              "proposer_kind": p.proposer_kind, "citations": p.citations,
+              "adopted_by": p.decided_by, "batch": batch, **effect})
+
+
+def adopt_org_batch(db: Session, actor: object, org_id: str, proposal_ids: list[int],
+                    reason: str, *, dry_run: bool = False) -> list[dict]:
+    """Adopt proposals from any of the org's projects at org scope, one reason, all-or-nothing in
+    one transaction. A `loosens` proposal is refused from a batch (adopt it alone). One audit
+    event names every project changed. Each result lists the projects that already override the
+    rule with their value. `dry_run` stages everything, reads it back and rolls it all back."""
+    user = _org_admin(db, actor, org_id)
+    why = T._reason(reason)
+    ids = list(dict.fromkeys(proposal_ids))
+    if not ids:
+        raise Validation("name at least one proposal to adopt")
+    batch = len(ids) > 1
+    after: list = []
+    try:
+        rows = [_org_proposal(db, org_id, i) for i in ids]
+        if batch:
+            loose = [p.id for p in rows if p.loosens]
+            if loose:
+                raise Validation(
+                    f"proposal {', '.join(map(str, loose))} loosens a rule and cannot be adopted "
+                    "in a batch", hint="adopt it alone, with its own reason")
+        claimed: set[str] = set()
+        staged = [_stage_org(db, user, org_id, p, why, after, claimed) for p in rows]
+        results = []
+        for p, st in zip(rows, staged):
+            eff = _org_effect(db, org_id, p, st["effect"])
+            results.append(dict(_org_view(db, org_id, p), overrides=st["overrides"],
+                                state=st["state"], projects_changed=eff["projects_changed"]))
+        if dry_run:
+            db.rollback()
+            return results
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+    for fn in after:
+        fn()
+    effects = [_org_effect(db, org_id, p, st["effect"]) for p, st in zip(rows, staged)]
+    for p, st in zip(rows, staged):
+        _org_event(db, user, org_id, p, why, st, batch)
+    if batch:
+        changed = sorted({pid for e in effects for pid in e["projects_changed"]})
+        events_svc.record_user(
+            db, user, action="adopt_rule_proposals", target_type="org", target_id=org_id,
+            meta={"scope": "org", "org_id": org_id, "proposal_ids": ids,
+                  "rule_ids": [p.rule_id for p in rows], "reason": why,
+                  "projects_changed": changed,
+                  "projects": sorted({p.project_id for p in rows})})
+    return results
+
+
+def adopt_org(db: Session, actor: object, org_id: str, proposal_id: int,
+              reason: str) -> RuleProposal:
+    """Adopt a project's proposal at org scope. A `new_rule` becomes the org's one rule,
+    `observing`; a `turn_on` / `tighten` of a library rule is the org's toggle write. A project
+    that already holds the same custom rule keeps it as an override. One audit event names the
+    projects the change reached."""
+    adopt_org_batch(db, actor, org_id, [proposal_id], reason)
+    return db.get(RuleProposal, proposal_id)
+
+
+def dismiss_org(db: Session, actor: object, org_id: str, proposal_id: int,
+                reason: str) -> dict:
+    """Dismiss for the org only: who, when and why go on the proposal, which leaves the org's
+    open list. Its project status is untouched, so the project can still adopt it."""
+    user = _org_admin(db, actor, org_id)
+    why = T._reason(reason)
+    p = _org_proposal(db, org_id, proposal_id)
+    if p.status != "open":
+        raise Validation(f"proposal {proposal_id} is {p.status}, not open")
+    if p.org_dismissed_at is not None:
+        raise Validation(f"proposal {proposal_id} is already dismissed for this org")
+    p.org_dismissed_by = user.handle or user.name
+    p.org_dismissed_reason = why
+    p.org_dismissed_at = _now()
+    events_svc.record_user(
+        db, user, action="dismiss_rule_proposal", target_type="rule", target_id=p.rule_id,
+        project_id=p.project_id,
+        meta={"scope": "org", "org_id": org_id, "proposal_id": p.id, "reason": why,
+              "history": _history(p)})
+    db.commit()
+    return _org_view(db, org_id, p)

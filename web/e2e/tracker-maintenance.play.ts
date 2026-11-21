@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { COMPILE } from "./compile-wait";
+
 /**
  * GRPH-1701: the Maintenance filter on the real tracker page, in a real browser (harness:
  * `e2e/tracker-maintenance/`). Each state is asserted, then captured to the test's output dir;
@@ -7,10 +9,14 @@ import { expect, test, type Page } from "@playwright/test";
  */
 const HARNESS = "http://127.0.0.1:5198/e2e/tracker-maintenance/";
 
+// The first navigation pays for the Vite compile (GRPH-1812). The cap has to outlast COMPILE.
+test.describe.configure({ timeout: 180_000 });
+
 async function openFiltered(page: Page, line: "none" | "empty" | "populated", layout: "list" | "board" = "list") {
   await page.setViewportSize({ width: 1400, height: 760 });
   await page.goto(`${HARNESS}?line=${line}&layout=${layout}`);
-  await expect(page.getByTestId("unscoped-count")).toHaveText("2 unscoped");
+  // "2 unscoped" is the landmark. A harness that never paints it fails here.
+  await expect(page.getByTestId("unscoped-count")).toHaveText("2 unscoped", COMPILE);
   await page.getByRole("button", { name: /^Maintenance filter/ }).click();
 }
 
@@ -54,7 +60,7 @@ test("maintenance: populated board", async ({ page }) => {
 test("blocked by a fix: the PRD item reads BLOCKED by the fix's key", async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 760 });
   await page.goto(`${HARNESS}?line=populated&layout=list`);
-  await expect(page.getByTestId("badge-blocked-by")).toHaveText("BLOCKED by CP-52");
+  await expect(page.getByTestId("badge-blocked-by")).toHaveText("BLOCKED by CP-52", COMPILE);
   await shot(page, "5-blocked-by-fix");
 });
 

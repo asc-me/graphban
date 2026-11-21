@@ -123,6 +123,64 @@ def _review_cluster(db):
     return r, b, c
 
 
+def test_a_review_cluster_names_the_live_reviewer_and_when_the_hold_lapses(db):
+    """GRPH-1290. The cluster occupation is the word "review" with no reservation clock.
+    The hold row has to say whether a live reviewer has it, and when that claim lapses,
+    or the contention line can only say "no expiry reported".
+
+    Sabotage: drop `live_holder` / `lapse` / `lapses_in` from the `held_because` append
+    in `_occupy_review_globs` and both arms fail."""
+    r = _item(db, "awaiting review", ["backend/app/services/fleet.py"])
+    items_svc.update_item(db, r.id, status="review")
+    from app.models import Item
+    row = db.get(Item, r.id)
+    row.review_claimed_by = "GRPH-A7831"
+    row.review_claimed_at = items_svc.utcnow()
+    db.commit()
+
+    reason = _review_reason(collision.clusters_for_project(db, "core"), r.id)
+    assert reason["live_holder"] == "GRPH-A7831"
+    assert reason["lapse"] is None
+    assert isinstance(reason["lapses_in"], int) and reason["lapses_in"] > 0
+
+    row = db.get(Item, r.id)
+    row.review_claimed_at = items_svc.utcnow() - timedelta(
+        seconds=items_svc.DEFAULT_LEASE_SECONDS + 30)
+    db.commit()
+    reason = _review_reason(collision.clusters_for_project(db, "core"), r.id)
+    assert reason["live_holder"] is None
+    assert reason["lapse"] == "age"
+    assert reason["lapses_in"] is None
+
+
+def test_a_review_stand_in_without_claim_columns_is_unclaimed():
+    """GRPH-1290. `_occupy_review_globs` asks `review_hold_read` for every review
+    member, including the exclusive-prefix stand-in that is in review and carries
+    no `review_claimed_by`. Reading that column as a row raised AttributeError on
+    both engines. Missing columns are unclaimed: no holder, and no lapse invented
+    for a claim that was never there.
+
+    Sabotage: delete the `hasattr` guard in `review_hold_read`. This raises
+    AttributeError."""
+    class _It:
+        def __init__(self, id, status):
+            self.id, self.key, self.status, self.touchpoints = id, id.upper(), status, []
+
+    pool = [_It("r", "review"), _It("s", "next")]
+    areas = {"r": ["a.py"], "s": ["a.py"]}
+    out = collision._occupy_review_globs([{"items": ["r", "s"]}], pool, areas, {}, None)
+    reason = _review_reason(out, "r")
+    assert reason["live_holder"] is None
+    assert reason["lapse"] is None
+    assert reason["lapses_in"] is None
+    assert "S" in reason["held"]
+
+
+def _review_reason(clusters, item_id):
+    held = _with(clusters, item_id)
+    return next(h for h in held["held_because"] if h["reserved"] == "review")
+
+
 def test_a_review_member_holds_only_its_own_files(db):
     r, b, c = _review_cluster(db)
 

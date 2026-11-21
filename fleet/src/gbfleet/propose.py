@@ -1401,6 +1401,12 @@ def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
     those paths byte-identical to `reviewed` — is not a new review (GRPH-1032). Empty `paths`
     cannot prove that, so the head must still match.
 
+    A reviewed commit that the remote branch does not contain, but this clone does, and
+    that fast-forwards the PR head, is pushed and then held for CI on that commit
+    (GRPH-1412). One that is present locally and is not a descendant of the PR head is
+    refused, naming both commits. A head that already contains the reviewed commit is
+    the older "branch moved after sign-off" refusal — pushing would rewind it.
+
     `release` is the project's release ref ("" when unset) and `scans` the item's
     `scans_clean` verdicts in ledger order, both read by the caller (GRPH-P57 D6). A PR
     whose base is the release ref also needs the latest verdict on the ACTUAL head to pass —
@@ -1563,6 +1569,58 @@ def _outside_files(repo: Path, selector: str, paths, covering) -> tuple[list[str
     return tp_mod.undeclared(outside, declared), ""
 
 
+def _commit_here(repo: Path, sha: str) -> bool:
+    """True when this clone can resolve `sha` to a commit. A missing object is not a
+    failed ancestry check — those two answers must not share a branch."""
+    if not (sha or "").strip() or not Path(repo).is_dir():
+        return False
+    from .worktree import _commit_sha
+
+    try:
+        return bool(_commit_sha(repo, sha))
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _push_unpushed_descendant(repo: Path, item_id: str, selector: str, url: str, pr: dict,
+                              head: str, reviewed: str) -> tuple[str, Merged | None]:
+    """`("pushed", None)` when `reviewed` was pushed onto the PR branch (GRPH-1412).
+
+    `("stop", merged)` when the commit is in this clone, missing from the PR head, and
+    either is not a fast-forward or the push did not land. `("skip", None)` when this
+    is not that case: the commit is not here, or the PR head already contains it.
+
+    The caller keeps going after a push and still requires CI on `reviewed`. Pushing
+    the signed-off commit is what makes that attestation possible; it is not one.
+    """
+    if not _commit_here(repo, reviewed) or not _commit_here(repo, head):
+        return "skip", None
+    from .worktree import is_ancestor, push_commit
+
+    # Already on the remote branch. Pushing `reviewed` would move the tip backwards
+    # when the head has moved past the sign-off, which is a new review, not a publish.
+    if is_ancestor(repo, reviewed, head):
+        return "skip", None
+    if not is_ancestor(repo, head, reviewed):
+        return "stop", Merged(
+            item=item_id, selector=selector, url=url, rereview=True,
+            reason=f"reviewed commit {reviewed[:12]} is not a descendant of PR head "
+                   f"{head[:12] or '?'} — not a fast-forward, so it was not pushed")
+    branch = str(pr.get("headRefName") or "").strip()
+    if not branch:
+        return "stop", Merged(
+            item=item_id, selector=selector, url=url,
+            reason=f"reviewed commit {reviewed[:12]} fast-forwards PR head {head[:12] or '?'} "
+                   "but the PR names no branch to push it to")
+    pushed = push_commit(repo, reviewed, branch)
+    if not pushed.ok:
+        return "stop", Merged(
+            item=item_id, selector=selector, url=url,
+            reason=f"reviewed commit {reviewed[:12]} fast-forwards PR head {head[:12] or '?'} "
+                   f"but was not pushed: {pushed.reason}")
+    return "pushed", None
+
+
 def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set[str],
            paths, release: str, scans, siblings: tuple[str, ...] = (),
            method: str = "squash", covering=(), local_full: bool = False,
@@ -1641,25 +1699,48 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
     # own files byte-identical. That is not a new review — the attested tree is still there.
     # A real edit of those paths still needs review again. Empty `paths` cannot prove the
     # first case, so it stays the refusal.
+    #
+    # GRPH-1412: a rebuild signed off at a commit this clone has and the remote branch
+    # does not. When that commit fast-forwards the PR head, push it and wait for CI on
+    # it. Refusing here is what left the PR open forever after the item was already done.
     head = str(pr.get("headRefOid") or "")
     if not same_commit(head, reviewed):
         if paths_unchanged(repo, reviewed, head, paths):
             checked.append("paths-unchanged")
-        elif siblings:
-            # GRPH-1219: the selector may have picked the item's other PR. One open sibling
-            # at the reviewed commit is the PR the sign-off vouches for; merge that one, and
-            # say which and why. The recursion gets no siblings, so it cannot loop.
-            return _via_sibling(repo, item_id, selector, pr, reviewed=reviewed, green=green,
-                                paths=paths, release=release, scans=scans, method=method,
-                                siblings=siblings, covering=covering, checked=checked,
-                                local_full=local_full, red=red)
         else:
-            return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
-                          rereview=True,
-                          reason=f"PR head {head[:12] or '?'} is not the reviewed commit "
-                                 f"{reviewed[:12]} — the branch moved after sign-off; it needs "
-                                 "review again, not a merge")
-    else:
+            # GRPH-1219 first. A sibling already at the reviewed commit is the PR the
+            # sign-off vouches for; publishing onto this branch would move a different ref.
+            # The recursion gets no siblings, so it cannot loop. "no other … PR" is the
+            # hold that means none of them is at the commit — the unpushed case.
+            sibling_hold = None
+            if siblings:
+                sibling_hold = _via_sibling(
+                    repo, item_id, selector, pr, reviewed=reviewed, green=green,
+                    paths=paths, release=release, scans=scans, method=method,
+                    siblings=siblings, covering=covering, checked=checked,
+                    local_full=local_full, red=red)
+                unmatched = (not sibling_hold.ok and not sibling_hold.pending
+                             and "no other open or merged PR" in sibling_hold.reason)
+                if not unmatched:
+                    return sibling_hold
+            kind, stopped = _push_unpushed_descendant(
+                repo, item_id, selector, url, pr, head, reviewed)
+            if kind == "pushed":
+                # The remote tip is the signed-off commit now. CI still has to attest
+                # it; the checks below are that wait, and the merge when it has.
+                head = reviewed
+                checked.append("pushed-reviewed")
+            elif stopped is not None:
+                return replace(stopped, checked=tuple(checked))
+            elif sibling_hold is not None:
+                return sibling_hold
+            else:
+                return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
+                              rereview=True,
+                              reason=f"PR head {head[:12] or '?'} is not the reviewed commit "
+                                     f"{reviewed[:12]} — the branch moved after sign-off; it needs "
+                                     "review again, not a merge")
+    if same_commit(head, reviewed):
         checked.append("head=reviewed")
     # CI runs on the commit the forge would merge. When the head is still the reviewed
     # commit, that is `reviewed`. When the head moved and this item's paths did not

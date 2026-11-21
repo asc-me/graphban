@@ -725,7 +725,8 @@ def set_project_toggles(db: Session, project_id: str, writes: list[dict], *,
 
 
 def set_org_toggle(db: Session, org_id: str, rule_id: str, changes: dict, *, actor: object,
-                   reason: str | None, dry_run: bool = False) -> dict:
+                   reason: str | None, dry_run: bool = False,
+                   stage: list | None = None) -> dict:
     """The org's value for a rule, and its lock. Applies to every project that inherits it —
     every project at all, when locked — recorded as ONE event naming the projects it changed.
 
@@ -778,16 +779,26 @@ def set_org_toggle(db: Session, org_id: str, rule_id: str, changes: dict, *, act
                     "projects_changed": changed}
         finally:
             db.rollback()
-    db.commit()
+    if stage is None:
+        db.commit()
+    else:  # GRPH-1808: a batch commits once; `stage` collects what runs after that commit
+        db.flush()
     changed = [pid for pid in project_ids if _value(resolve(db, rule_id, pid)) != before[pid]]
-    events_svc.record_user(
-        db, user, action="set_rule_toggle", target_type="rule", target_id=rule_id,
-        meta={"scope": "org", "org_id": org_id, "reason": why, "old": old,
-              "new": _snapshot(row), "projects_changed": changed})
-    _switched_off(db, rule_id, [pid for pid in changed if before[pid]["on"]
-                                and not resolve(db, rule_id, pid)["on"]["value"]], user)
-    from app.services import rules_org  # rules_org imports this module → keep lazy
-    rules_org.note_published(db, org_id)  # GRPH-1297: linked boxes measure "overdue" from here
+    out = {"rule_id": rule_id, "org_id": org_id, **_snapshot(row), "projects_changed": changed}
+
+    def _after() -> None:
+        events_svc.record_user(
+            db, user, action="set_rule_toggle", target_type="rule", target_id=rule_id,
+            meta={"scope": "org", "org_id": org_id, "reason": why, "old": old,
+                  "new": _snapshot(row), "projects_changed": changed})
+        _switched_off(db, rule_id, [pid for pid in changed if before[pid]["on"]
+                                    and not resolve(db, rule_id, pid)["on"]["value"]], user)
+        from app.services import rules_org  # rules_org imports this module → keep lazy
+        rules_org.note_published(db, org_id)  # GRPH-1297: linked boxes measure "overdue" from here
+    if stage is not None:
+        stage.append(_after)
+        return out
+    _after()
     return {"rule_id": rule_id, "org_id": org_id, **_snapshot(row), "projects_changed": changed}
 
 

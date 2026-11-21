@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { COMPILE } from "./compile-wait";
+
 /**
  * GRPH-1700: the bug pane on the real Triage page, in a real browser (harness:
  * `e2e/triage-bug-line/`). Each state is asserted, then the page is captured to the test's
@@ -7,10 +9,14 @@ import { expect, test, type Page } from "@playwright/test";
  */
 const HARNESS = "http://127.0.0.1:5198/e2e/triage-bug-line/";
 
+// The first navigation pays for the Vite compile (GRPH-1812). The cap has to outlast COMPILE.
+test.describe.configure({ timeout: 180_000 });
+
 async function open(page: Page, state: "line" | "none") {
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.goto(`${HARNESS}?state=${state}`);
-  await expect(page.getByRole("heading", { name: "Export to CSV drops the last row" })).toBeVisible();
+  // The bug heading is the landmark. A harness that never paints it fails here.
+  await expect(page.getByRole("heading", { name: "Export to CSV drops the last row" })).toBeVisible(COMPILE);
 }
 
 const shot = (page: Page, name: string) =>

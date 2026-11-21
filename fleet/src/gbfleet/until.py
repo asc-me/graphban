@@ -2023,12 +2023,58 @@ def _waiting(blocked: list[dict], *, repeat: int = 0) -> str:
     # a repeat the line says the wait is still live rather than leaving the reader to infer
     # it from a figure that went the wrong way.
     still = " — still held, the lease was renewed" if repeat else ""
+    review = _review_hold_clause(blocked)
+    # A review occupation is not a reservation, so `free_in` is empty and the old line
+    # said "no expiry reported" about a claim that has a clock (GRPH-1290). When the
+    # cluster is held only by review, that clause IS the clock. A reservation hold
+    # keeps "no expiry reported": silence there would read as "never frees".
+    if soonest is not None:
+        clock = f"; the earliest frees in {soonest}s"
+    elif review and set(holders) <= {"review"}:
+        clock = ""
+    else:
+        clock = "; no expiry reported"
     return (f"{len(blocked)} cluster(s) held by {', '.join(holders) or 'another agent'}{still}"
-            + (f"; the earliest frees in {soonest}s" if soonest is not None
-               else "; no expiry reported")
+            + clock
+            + review
             + _merged_on(blocked)
             + "".join(f"; {h}" for c in blocked for h in _held_files(c))
             + ". Not spawning into work that cannot be claimed")
+
+
+def _review_hold_clause(blocked: list[dict]) -> str:
+    """Whether a live reviewer holds a review cluster, and when that hold lapses (GRPH-1290).
+
+    The server writes `live_holder`, `lapse` and `lapses_in` on each review `held_because`
+    row (`review_hold_read`). A cluster that only says `held_by: ["review"]` — an older
+    server — is named as unreported, not as a wait with no end.
+    """
+    bits: list[str] = []
+    saw_review = False
+    for cluster in blocked:
+        if "review" in (cluster.get("held_by") or []):
+            saw_review = True
+        for h in cluster.get("held_because") or []:
+            if not isinstance(h, dict) or h.get("reserved") != "review":
+                continue
+            saw_review = True
+            who = str(h.get("by") or "an item")
+            live = h.get("live_holder")
+            lapse = h.get("lapse")
+            left = h.get("lapses_in")
+            if live:
+                when = (f", lapses in {left}s" if isinstance(left, int)
+                        else ", lapse time unreported")
+                bits.append(f"{who} held by live reviewer {live}{when}")
+            elif lapse:
+                bits.append(f"{who} held by no live reviewer, lapsed ({lapse})")
+            elif "live_holder" in h or "lapse" in h:
+                bits.append(f"{who} held by no live reviewer")
+    if not saw_review:
+        return ""
+    if not bits:
+        return "; no live reviewer reported"
+    return "; " + "; ".join(bits)
 
 
 def _soft_key(free: list[dict]) -> str:
@@ -4236,16 +4282,15 @@ def _apply_builder_ci_blockers(
 
 
 def review_held(row: dict) -> bool:
-    """Whether somebody is reviewing this row RIGHT NOW (GRPH-1254).
+    """Whether somebody is reviewing this row RIGHT NOW (GRPH-1254, GRPH-1290).
 
-    `review_claimed_by` is the raw column, and a reviewer that dies leaves it set for good: only
-    a verdict or the holder's own `release_item` clears it. Reading it as "held" kept a wave
-    idle for over an hour on GRPH-1248, logging `held by review; no expiry reported` while the
-    holder was offline and retired and the server would already have handed the item to the
-    next `claim_review`. The server says when a hold has lapsed (`review_claim_lapse`, present
-    only when it has), so liveness has one definition and it is the server's.
+    A current server puts a holder in `review_claimed_by` only while `review_claim_holder`
+    says the claim is live, and sends `review_claim_lapse` once it is not. Reading the raw
+    column as "held" kept a wave idle: `held by review; no expiry reported` while the holder
+    was already gone and `claim_review` would have handed the item on.
 
-    An older server never sends the field, and then this reads exactly as before.
+    An older server sends the raw column and no lapse field. That still reads as held — the
+    server has not said otherwise.
     """
     return bool(row.get("review_claimed_by")) and not row.get("review_claim_lapse")
 

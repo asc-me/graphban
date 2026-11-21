@@ -2992,16 +2992,16 @@ def item_dict(item: Item) -> dict:
         # usually blank.
         out["branch"] = item.branch
     if item.review_claimed_by:
-        # WHY the review hold above is no longer live, PRESENT ONLY WHEN IT HAS LAPSED
-        # (GRPH-1254). `review_claimed_by` is the raw column and stays set after its holder
-        # dies, so a supervisor reading it alone saw a dead reviewer as a live one and never
-        # spawned the reviewer that `claim_review` would already have let take the item over.
-        # The reason comes from `review_claim_lapse`, the one definition of a live hold, so no
-        # client re-derives presence. Reply-only, like `review_claimed_by`.
-        from app.services.fleet import review_claim_lapse
-        lapse = review_claim_lapse(item)
-        if lapse:
-            out["review_claim_lapse"] = lapse
+        # The column stays set after the holder dies (GRPH-1254). Printing it as the holder
+        # is how a planner, reading `get_item_details`, concluded a lapsed claim would never
+        # lapse (GRPH-1290). The field a reader sees is `review_claim_holder`: a live holder,
+        # or nobody. A lapsed hold carries `review_claim_lapse` and does not name a holder.
+        # Reply-only, like the column itself.
+        from app.services.fleet import review_hold_read
+        hold = review_hold_read(item)
+        out["review_claimed_by"] = hold["holder"]
+        if hold["lapse"]:
+            out["review_claim_lapse"] = hold["lapse"]
     if item.decision:
         # The agent's question and options, and the answer once given (GRPH-1137). Present
         # only on a decision wait; `notify` bookkeeping stays server-side. Reply-only.

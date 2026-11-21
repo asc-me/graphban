@@ -285,6 +285,7 @@ class OrgOut(BaseModel):
     name: str
     plan: str
     role: str  # the requesting user's role in this org
+    handle: str | None = None  # the caller's org-only handle, only where it differs from the account handle
 
 
 class OrgProjectAccessOut(BaseModel):
@@ -507,6 +508,11 @@ class InvitePreviewOut(BaseModel):
 
 class InviteAcceptIn(BaseModel):
     token: str
+    handle: str | None = None  # org-only handle, on a retry after `handle_taken`
+
+
+class OrgHandleIn(BaseModel):
+    handle: str
 
 
 # ---- Plans & quotas (hosted-only, AL-75) ----
@@ -2072,6 +2078,12 @@ class RuleProposalOut(BaseModel):
     status: str
     folded: bool = False
     created_at: datetime
+    decided_by: str | None = None
+    decided_reason: str | None = None
+    decided_at: datetime | None = None
+    org_dismissed_by: str | None = None
+    org_dismissed_reason: str | None = None
+    org_dismissed_at: datetime | None = None
 
 
 class RuleProposalAdopt(BaseModel):
@@ -2087,8 +2099,22 @@ class RuleProposalDismiss(BaseModel):
 
 
 class RuleProposalDecisionOut(RuleProposalOut):
-    decided_by: str | None = None
-    decided_reason: str | None = None
+    pass
+
+
+class OrgRuleProposalAdopt(BaseModel):
+    """Adopt proposals at org scope, for every project in the org (GRPH-1808)."""
+    model_config = {"extra": "forbid"}
+    ids: list[int]
+    reason: str
+    dry_run: bool = False
+
+
+class OrgRuleProposalOut(RuleProposalDecisionOut):
+    project_name: str | None = None
+    overrides: list[dict] = []
+    state: str | None = None
+    projects_changed: list[str] | None = None
 
 
 class RuleGuidanceOut(BaseModel):

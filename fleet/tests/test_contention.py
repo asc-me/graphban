@@ -76,6 +76,47 @@ def test_it_reports_the_soonest_not_the_last():
     assert "90s" in said and "600s" not in said
 
 
+def test_a_review_hold_names_the_live_reviewer_and_when_it_lapses():
+    """GRPH-1290. "held by review; no expiry reported" is the line a drain idled on.
+    A live reviewer is named, and so is the clock. Sabotage: drop `_review_hold_clause`
+    from `_waiting` and neither sentence is in the line."""
+    held = _cluster(["GRPH-1287"], held=["review"])
+    held["held_because"] = [{
+        "reserved": "review", "by": "GRPH-1287", "holds": ["backend/app/services/items.py"],
+        "live_holder": "GRPH-A7831", "lapse": None, "lapses_in": 240,
+    }]
+
+    said = _waiting([held])
+
+    assert "live reviewer GRPH-A7831" in said
+    assert "lapses in 240s" in said
+    assert "no expiry reported" not in said
+
+
+def test_a_lapsed_review_hold_names_no_live_reviewer():
+    """The other arm. A claim that already ended must not read as a wait with no clock."""
+    held = _cluster(["GRPH-1287"], held=["review"])
+    held["held_because"] = [{
+        "reserved": "review", "by": "GRPH-1287", "holds": ["backend/app/services/items.py"],
+        "live_holder": None, "lapse": "age", "lapses_in": None,
+    }]
+
+    said = _waiting([held])
+
+    assert "no live reviewer" in said
+    assert "lapsed (age)" in said
+    assert "no expiry reported" not in said
+
+
+def test_an_unannotated_review_hold_says_the_reviewer_is_unreported():
+    """An older server sends `held_by: ["review"]` and nothing else. Inventing a clock
+    would be the absence reading as a time. Saying nothing would be the old line."""
+    said = _waiting([_cluster(["GRPH-1287"], held=["review"])])
+
+    assert "no live reviewer reported" in said
+    assert "no expiry reported" not in said
+
+
 def test_a_missing_expiry_says_so_rather_than_implying_forever():
     """No expiry reported is not "never frees". Printing nothing would leave an operator
     reading an unbounded wait into a hold that may lapse in seconds."""
