@@ -2462,9 +2462,10 @@ def _note_touchpoints(wave: Wave, child: Child, client: Graphban | None = None) 
         wave.declared_unread[child.branch] = "; ".join(unread)
     if declared:
         missing = tp_mod.undeclared(measured, declared)
-        configured, observing = _generated_rule(client)
+        configured, observing, _unread = _generated_rule(client)
         # GRPH-1778: an observing loosening applies the pre-rule list, and says what the
-        # configured one would have let through.
+        # configured one would have let through. `_unread` is for check-touchpoints, which
+        # has to say the rule was not read; the hold already logged that inside the read.
         allowed = DEFAULT_GENERATED if observing else configured
         if observing:
             would = [f for f in missing if is_generated(f, configured)
@@ -2534,8 +2535,15 @@ def _post_would_have(wave: Wave, client: Graphban | None, items: list[str], rule
                  branch=child.branch, commit=commit or None, reason=reason)
 
 
-def _generated_rule(client: Graphban | None) -> tuple[tuple[str, ...], bool]:
-    """(configured paths, whether the rule is observing) — see `generated_paths`."""
+def _generated_rule(client: Graphban | None) -> tuple[tuple[str, ...], bool, str]:
+    """(configured paths, whether the rule is observing, why it was not read).
+
+    The third value is "" when the project's list was read. An observing rule was
+    read: the third value stays "" and the caller still applies the built-in list,
+    because the loosening is not adopted yet. `generated_paths` returns the first
+    value, which is the configured list even while observing — the hold must not
+    use that alone.
+    """
     why = ""
     allowed = getattr(client, "allowed", None)
     if client is None:
@@ -2555,13 +2563,13 @@ def _generated_rule(client: Graphban | None) -> tuple[tuple[str, ...], bool]:
                     params = params.get("value") if isinstance(params, dict) and "value" in params else params
                     paths = (params or {}).get("paths") if isinstance(params, dict) else None
                     if isinstance(paths, list) and all(isinstance(x, str) for x in paths):
-                        return tuple(paths), _is_observing(t)
+                        return tuple(paths), _is_observing(t), ""
                     why = f"{GENERATED_RULE} has no readable `paths`"
                     break
             else:
                 why = f"{GENERATED_RULE} is not in the server's rule toggles"
     observe.emit("generated_files_rule_unread", detail=f"{why}; using the built-in list")
-    return DEFAULT_GENERATED, False
+    return DEFAULT_GENERATED, False, why
 
 
 def is_generated(path: str, paths: tuple[str, ...] | list[str] | None = None) -> bool:

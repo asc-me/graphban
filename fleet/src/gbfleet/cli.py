@@ -469,7 +469,11 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Lists files this checkout changed since the trunk that no declared touchpoint covers\n"
             "(the supervisor withholds the PR for those) and prints the update_item call that\n"
-            "declares them. Exit 1 when any are outside; 0 when the gate would pass."
+            "declares them. A file the project's build.generated_files rule ignores is not\n"
+            "listed; while that rule is observing, the built-in list is used, matching the\n"
+            "supervisor. With no seat to read the rule from, the built-in list is used and\n"
+            "the output says the project's rule was not read. Exit 1 when any are outside;\n"
+            "0 when the gate would pass."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1310,6 +1314,144 @@ def _surface(args) -> int:
     return 0
 
 
+#: GRPH-1823. Printed when check-touchpoints could not read `build.generated_files`
+#: and fell back to the built-in list. The supervisor logs the same fact; this command
+#: is the only place the child looks, so a missing sentence would read as "the project
+#: allows exactly these files".
+RULE_UNREAD = "the project's generated-files rule was not read"
+
+#: Seat files that carry the graphban URL and key inside the checkout. Claude's seat
+#: is a temp file outside the tree; with neither URL nor key here the command says
+#: the rule was not read rather than guessing a server.
+_SEAT_SPECS = (
+    (".grok/config.toml", "toml"),
+    (".cursor/mcp.json", "json"),
+    (".grok/mcp.json", "json"),
+    (".agents/mcp_config.json", "json"),
+)
+
+
+def _base_of_mcp(url: str) -> str:
+    """The Graphban base URL. A seat stores the MCP endpoint, which already ends in `/api/mcp`."""
+    url = url.strip().rstrip("/")
+    suffix = "/api/mcp"
+    if url.endswith(suffix):
+        url = url[: -len(suffix)].rstrip("/")
+    return url
+
+
+def _header_key(headers: object) -> str:
+    if not isinstance(headers, dict):
+        return ""
+    for name, value in headers.items():
+        if str(name).lower() == "x-api-key" and isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _pair_from_spec(spec: object) -> tuple[str, str] | None:
+    if not isinstance(spec, dict):
+        return None
+    raw = spec.get("url") or spec.get("httpUrl") or ""
+    if not isinstance(raw, str) or not raw.strip().startswith(("http://", "https://")):
+        return None
+    key = _header_key(spec.get("headers"))
+    base = _base_of_mcp(raw)
+    if not key or not base:
+        return None
+    return base, key
+
+
+def _credentials_in(doc: object, *, toml: bool) -> tuple[str, str] | None:
+    if not isinstance(doc, dict):
+        return None
+    servers = doc.get("mcp_servers") if toml else (doc.get("mcpServers") or doc.get("mcp_servers"))
+    if not isinstance(servers, dict):
+        return None
+    # The seat's own entry. A shared server can also send an API-key header, and
+    # using that would read some other project's rule — or none.
+    return _pair_from_spec(servers.get("graphban"))
+
+
+def seat_credentials(checkout: Path) -> tuple[str, str] | None:
+    """`(base URL, api key)` from a seat file in `checkout`, or None.
+
+    The child is told to run check-touchpoints with no server flag. The seat the
+    supervisor wrote into the worktree is the pair it already uses to reach the
+    ledger. A key with no server, or a file that does not parse, is not that pair.
+    """
+    import tomllib
+
+    root = Path(checkout)
+    for rel, kind in _SEAT_SPECS:
+        path = root / rel
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+            doc = tomllib.loads(text) if kind == "toml" else json.loads(text)
+        except (OSError, UnicodeError, ValueError):
+            continue
+        found = _credentials_in(doc, toml=kind == "toml")
+        if found:
+            return found
+    return None
+
+
+def _generated_decision(client) -> tuple[tuple[str, ...], str]:
+    """Paths the hold ignores, and why the project's rule was not read (or "").
+
+    The same split `_note_touchpoints` makes. An observing rule was read and still
+    ignores only the built-in list. `generated_paths` is not this split: it returns
+    the configured list even while the rule is observing, which would let a file
+    through that the supervisor still holds.
+    """
+    from .supervisor import DEFAULT_GENERATED, _generated_rule
+
+    configured, observing, why = _generated_rule(client)
+    # Same line as `_note_touchpoints`. An unread rule already came back as the
+    # built-in list; an observing one still has to be swapped for it here.
+    allowed = DEFAULT_GENERATED if observing else configured
+    return allowed, why
+
+
+def _check_touchpoints(args) -> int:
+    from . import touchpoints as tp_mod
+    from .supervisor import is_generated
+
+    try:
+        measured = tp_mod.measure_checkout(args.path)
+    except ValueError as exc:
+        print(f"gbfleet check-touchpoints: {exc}", file=sys.stderr)
+        return 2
+
+    client = None
+    try:
+        creds = seat_credentials(Path(args.path))
+        if creds is not None:
+            base, key = creds
+            # The default allowlist is the supervisor's two reads and does not include
+            # this one. Passing it is what makes the read happen; omitting it falls
+            # back to the built-in list and says so.
+            client = Graphban(
+                base_url=base, api_key=key, allowed=frozenset({"get_rule_toggles"}),
+            )
+        allowed, why = _generated_decision(client)
+    finally:
+        if client is not None:
+            client.close()
+
+    missing = tp_mod.gate_missing(
+        measured, args.declared, ignore=lambda path, paths=allowed: is_generated(path, paths),
+    )
+    said = gate_report(missing, item_id=args.item)
+    text = said or "touchpoint gate: every changed file is covered by a declared touchpoint"
+    if why:
+        text = f"{text}\n{RULE_UNREAD} ({why})"
+    print(text)
+    return 1 if said else 0
+
+
 def gate_report(missing: list[str], *, item_id: str = "") -> str:
     """What to tell a child whose branch the touchpoint gate would refuse (GRPH-1393).
 
@@ -1416,17 +1558,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _gc()
 
     if args.command == "check-touchpoints":
-        from . import touchpoints as tp_mod
-        from .supervisor import is_generated
-        try:
-            measured = tp_mod.measure_checkout(args.path)
-        except ValueError as exc:
-            print(f"gbfleet check-touchpoints: {exc}", file=sys.stderr)
-            return 2
-        said = gate_report(tp_mod.gate_missing(measured, args.declared, ignore=is_generated),
-                           item_id=args.item)
-        print(said or "touchpoint gate: every changed file is covered by a declared touchpoint")
-        return 1 if said else 0
+        return _check_touchpoints(args)
 
     if args.command == "entitlement":
         return _entitlement(args)
