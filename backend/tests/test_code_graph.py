@@ -312,3 +312,36 @@ def test_code_tools_are_scoped_and_read_only_flags(client, auth):
         assert effective(by[ro])["readOnlyHint"] is True
     # project scoping is injected onto the input schema
     assert "project_id" in by["describe_code"]["inputSchema"]["properties"]
+
+
+def test_omitted_summary_and_name_keep_stored_values(client, auth, monkeypatch):
+    from app.services import code_graph as cg
+    key = _key(client, auth)
+    _mcp(client, key, "describe_code", {"nodes": [ITEMS_NODE]})
+    calls = []
+    real = cg.safe_embed
+    monkeypatch.setattr(cg, "safe_embed", lambda t: (calls.append(t), real(t))[1])
+    _mcp(client, key, "describe_code", {"nodes": [{"path": ITEMS_NODE["path"], "content_hash": "sha-new"}]})
+    node = next(n for n in _mcp(client, key, "get_code_map", {})["nodes"] if n["path"] == ITEMS_NODE["path"])
+    assert node["summary"] == ITEMS_NODE["summary"]
+    assert node["name"] == ITEMS_NODE["name"]
+    assert node["content_hash"] == "sha-new"
+    assert calls == []
+
+
+def test_explicit_empty_summary_clears(client, auth):
+    key = _key(client, auth)
+    _mcp(client, key, "describe_code", {"nodes": [ITEMS_NODE]})
+    _mcp(client, key, "describe_code", {"nodes": [{"path": ITEMS_NODE["path"], "summary": ""}]})
+    node = next(n for n in _mcp(client, key, "get_code_map", {})["nodes"] if n["path"] == ITEMS_NODE["path"])
+    assert node["summary"] == ""
+
+
+def test_stale_list_marks_only_named_paths(client, auth):
+    key = _key(client, auth)
+    _mcp(client, key, "describe_code", {"nodes": [ITEMS_NODE, MEM_NODE]})
+    res = _mcp(client, key, "describe_code", {"nodes": [], "stale": [MEM_NODE["path"]]})
+    assert res["marked_stale"] == 1
+    fresh = {n["path"]: n["fresh"] for n in _mcp(client, key, "get_code_map", {})["nodes"]}
+    assert fresh[MEM_NODE["path"]] is False
+    assert fresh[ITEMS_NODE["path"]] is True
