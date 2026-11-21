@@ -721,6 +721,12 @@ def _claim_bound_seat(db: Session, agent: Agent, seat: "Enrolment | None", *,
         # the delegation was written. The child says so and stops.
         out["reason"] = "reaches-outside-the-repo"
         return out
+    except items_svc.TierBelowNeeds as e:
+        # GRPH-1647. Registration has already committed, so this is a reason on `assigned`
+        # rather than a 500. The sentence names `needs_tier`. An undeclared tier does not
+        # raise, and claiming it is the decision the mismatch rule leaves open.
+        out["reason"] = str(e)
+        return out
     if claimed is None:
         db.refresh(item)
         out["reason"] = "held"
@@ -4520,6 +4526,42 @@ def bounce_needs_tier(item: Item) -> str | None:
     return tier or None
 
 
+def agent_declared_tier(db: Session, agent_id: str | None) -> str | None:
+    """The tier this agent declared, or None when it declared none (GRPH-1647).
+
+    None is the mismatch rule's `undeclared` (PRD-35 D8): a missing agent, a missing
+    field, a blank, or the literal `undeclared`. It is not a tier, so it is not below
+    one. Refusing it would decide an unknown, and an empty claim would do that silently.
+    """
+    if not agent_id:
+        return None
+    agent = db.get(Agent, agent_id)
+    if agent is None:
+        return None
+    tier = (agent.capabilities or {}).get("tier")
+    if not isinstance(tier, str):
+        return None
+    tier = tier.strip()
+    if not tier or tier == UNDECLARED:
+        return None
+    return tier
+
+
+def tier_is_below(declared: str | None, needs: str | None) -> bool:
+    """Whether `declared` is strictly below the tier a bounce named.
+
+    No named tier, or no declared tier: not below. A spelling outside the tier order is
+    not ordered either, so it is not below — the same decision `undeclared` gets.
+    """
+    if not needs or declared is None:
+        return False
+    from app.services.delegation import TIERS
+    try:
+        return TIERS.index(declared) < TIERS.index(needs)
+    except ValueError:
+        return False
+
+
 def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
            lease_seconds: int = DEFAULT_LEASE_SECONDS, needs_tier: str | None = None) -> Item:
     """Send an item back to `next`, pinned to its AUTHOR for one lease period (D-f).
@@ -5388,6 +5430,8 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     scope_prd = "" if scope_line else scope
     #: (mine, theirs) for the first collision of each refused cluster — the refusal names both.
     collided: list[tuple[str, str]] = []
+    #: Items skipped because the caller's declared tier is below the bounce (GRPH-1647).
+    tier_blocks: list[dict] = []
     hards = project_hard_areas(db, project_id)
     # GRPH-1777: the paths an OBSERVING `plan.exclusive_areas` would hold, else none.
     from app.services import rule_toggles as rule_toggles_mod
@@ -5422,12 +5466,23 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
                                                 hard_areas=hards)[:1])
             continue
         ids = (cluster.get("items") or [])[:_capped(db, project_id, cluster, max_items)]
-        claimed = [it for it in (items_svc.claim_item(db, i, agent_id, lease_seconds=lease_seconds)
-                                 for i in ids) if it is not None]
+        claimed = []
+        for i in ids:
+            try:
+                it = items_svc.claim_item(db, i, agent_id, lease_seconds=lease_seconds)
+            except items_svc.TierBelowNeeds as e:
+                # A member the caller's tier cannot take. Skipped, not fatal: the rest of
+                # the cluster may still be claimable, and a raise here is a 500 out of the
+                # loop. The empty reply names `needs_tier` rather than "nothing ready".
+                tier_blocks.append({"id": e.item_key, "needs_tier": e.needs_tier,
+                                    "declared_tier": e.declared_tier})
+                continue
+            if it is not None:
+                claimed.append(it)
         if not claimed:
-            # Lost the race for every item in this cluster — the optimistic guard in
-            # `_try_claim` resolved it against us. Try the next cluster rather than failing:
-            # a loser that gives up entirely turns a race into an idle agent.
+            # Lost the race, or every member was below this agent's tier. Try the next
+            # cluster. A tier skip stays on `tier_blocks` so the empty reply names
+            # `needs_tier` instead of "nothing ready".
             continue
         reserve_areas(db, agent_id=agent_id, item_id=claimed[0].id,
                       areas=cluster.get("areas") or [],
@@ -5464,6 +5519,13 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
                   + ", ".join(held)
                   + (f" ({describe_pairs(collided)})" if collided else "")
                   + (f" — the earliest frees in {free_in}s" if free_in is not None else ""))
+    elif tier_blocks and not held and not collided:
+        # The board is not empty. Every ready item this sweep could see asked for a tier
+        # above the one this agent declared. Saying "nothing ready" would send the worker
+        # home (GRPH-1647).
+        shown = ", ".join(f"needs_tier={t}" for t in sorted({b["needs_tier"] for b in tier_blocks}))
+        reason = (f"{shown}: this agent's declared tier is below the tier the last bounce "
+                  "named, so those items were skipped")
     else:
         # Two states, and the difference decides what the caller does next: an unscoped agent
         # with nothing to claim is done, a scoped one may be done only INSIDE its wave. Saying
@@ -5471,8 +5533,15 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
         reason = ("nothing ready to claim" if not scope else
                   f"nothing ready to claim inside {scope}, which is the scope this seat was "
                   f"minted for — the project may have other work, and this seat may not take it")
-    return {"claimed": False, "items": [], "areas": [], "predicted": False,
-            "held_by": held, "reason": reason, "scope": scope}
+        if tier_blocks:
+            shown = ", ".join(
+                f"needs_tier={t}" for t in sorted({b["needs_tier"] for b in tier_blocks}))
+            reason = f"{reason}; {shown}"
+    out = {"claimed": False, "items": [], "areas": [], "predicted": False,
+           "held_by": held, "reason": reason, "scope": scope}
+    if tier_blocks:
+        out["needs_tier"] = tier_blocks
+    return out
 
 
 def holds_reservation(db: Session, *, agent_id: str, item_id: str) -> bool:

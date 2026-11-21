@@ -2929,6 +2929,42 @@ def reserved_elsewhere(db: Session, agent_id: str, project_id: str | None = None
     return out
 
 
+def below_needs_tier(db: Session, agent_id: str, project_id: str | None = None,
+                     lease_seconds: int = DEFAULT_LEASE_SECONDS) -> list[dict]:
+    """Ready items this agent was skipped past because its declared tier is too low.
+
+    The same job as `reserved_elsewhere` (GRPH-1647). An empty `claim_next` is otherwise
+    byte-identical whether the board is empty or every ready item needs a higher tier, so
+    a cheap worker concludes the project is finished and the frontier item is never seated.
+    An agent that declared no tier is absent from this list: it is not below anything, and
+    listing it would be the silent refusal the mismatch rule forbids.
+    """
+    from app.services import fleet as fleet_svc
+
+    declared = fleet_svc.agent_declared_tier(db, agent_id)
+    if declared is None:
+        return []
+    scope = seat_scope(db, agent_id)
+    seated = held_by_a_seat(db, agent_id)
+    out = []
+    for cand in _ready_candidates(db, project_id, lease_seconds):
+        # The same filters as `claim_next`, in the same order. An item the sweep skipped
+        # for scope, deploy, a pin or headroom was not skipped for tier, and naming it
+        # here would point the caller at the wrong fact.
+        if not in_scope(cand, scope):
+            continue
+        if (cand.reach or "repo") == "deploy" and seated:
+            continue
+        if pinned_elsewhere(cand, agent_id):
+            continue
+        if routing_svc.held_back(db, cand, agent_id):
+            continue
+        needs = fleet_svc.bounce_needs_tier(cand)
+        if fleet_svc.tier_is_below(declared, needs):
+            out.append({"id": cand.key, "needs_tier": needs, "declared_tier": declared})
+    return out
+
+
 def _found_during_for(item: Item) -> str | None:
     from sqlalchemy.orm import object_session
     db = object_session(item)
@@ -3206,6 +3242,38 @@ def _ready_candidates(db: Session, project_id: str | None, lease_seconds: int) -
         out.append(it)
     out.sort(key=lambda it: (-prio.score(ctx, it), it.sort_order))
     return out
+
+
+class TierBelowNeeds(Exception):
+    """The claimant declared a tier below the one the last bounce named (GRPH-1647).
+
+    Not a subclass of `OutOfScope`. Those loops skip and carry on, which is right for one
+    neighbour and wrong for a named claim: `claim_item` has to say `needs_tier`. The sweep
+    paths catch this and skip, and an empty reply names the tier. A bare None would read
+    as an empty board.
+    """
+
+    def __init__(self, item_key: str, needs_tier: str, declared_tier: str):
+        self.item_key = item_key
+        self.needs_tier = needs_tier
+        self.declared_tier = declared_tier
+        super().__init__(
+            f"{item_key} needs_tier={needs_tier}; declared tier {declared_tier} is below it")
+
+
+def tier_block(db: Session, item: Item, agent_id: str) -> TierBelowNeeds | None:
+    """The refusal when `agent_id`'s declared tier is below this item's, else None.
+
+    An agent that declared no tier is not blocked: that is `undeclared`, and the mismatch
+    rule records it as a decision rather than a refusal (PRD-35 D8, GRPH-1647).
+    """
+    from app.services import fleet as fleet_svc
+
+    declared = fleet_svc.agent_declared_tier(db, agent_id)
+    needs = fleet_svc.bounce_needs_tier(item)
+    if declared is None or not fleet_svc.tier_is_below(declared, needs):
+        return None
+    return TierBelowNeeds(item.key, needs, declared)
 
 
 class ReachesOutsideTheRepo(Exception):
@@ -3579,6 +3647,10 @@ def claim_next(
     cold agent throws away precisely what cluster assignment exists to preserve. The pin
     LAPSES rather than binding forever — an author who never comes back is the common case,
     and a hard pin would strand the item.
+
+    Skips an item whose last bounce named a tier above the one this agent declared
+    (GRPH-1647). `gbfleet until` already re-seats that item; a claim that does not read the
+    tier puts a cheap worker back on it. An agent that declared no tier is not skipped.
     """
     # What the caller has already declined this call-round (GRPH-429). Releasing an item does
     # not advance the queue — the released item is top-scored again, so a claim/release loop
@@ -3632,6 +3704,10 @@ def claim_next(
     # property of the caller, and reading it inside the loop would be a query per item.
     scope = seat_scope(db, agent_id)
     seated = held_by_a_seat(db, agent_id)
+    # Resolved once: the tier is a property of the caller, and reading it per candidate
+    # would be a query per item for an answer that cannot change mid-sweep.
+    from app.services import fleet as fleet_svc
+    declared_tier = fleet_svc.agent_declared_tier(db, agent_id)
     for cand in _ready_candidates(db, project_id, lease_seconds):
         if cand.id in declined or cand.key in declined:
             continue
@@ -3649,6 +3725,12 @@ def claim_next(
         # PRD-62 S4: capacity routing. Skipped like the pin, for the same reason: the caller
         # asked for "whatever is next" and the next may be held for a runner with headroom.
         if routing_svc.held_back(db, cand, agent_id):
+            continue
+        # GRPH-1647. Skipped, like the pin: the caller asked for whatever is next, and the
+        # next item may not be the one a bounce held for a higher tier. The empty reply
+        # names what was skipped (`below_needs_tier`); a bare None would say the board
+        # was empty. An undeclared tier is not below, so it is not skipped.
+        if fleet_svc.tier_is_below(declared_tier, fleet_svc.bounce_needs_tier(cand)):
             continue
         claimed = _try_claim(db, cand, agent_id)
         if claimed is not None:
@@ -3819,6 +3901,11 @@ def claim_item(db: Session, item_id: str, agent_id: str, lease_seconds: int = DE
     # PRD-62 S4: held for a runner with headroom. None, like the pin above — not a lost race.
     if routing_svc.held_back(db, it, agent_id):
         return None
+    # GRPH-1647. Raised, not None: None is "lost the race" or "not claimable", and a
+    # caller that treats a tier refusal as one of those retries or reports the item held.
+    # The message names `needs_tier`. An undeclared tier does not raise — see `tier_block`.
+    if block := tier_block(db, it, agent_id):
+        raise block
     claimed = _try_claim(db, it, agent_id)
     if claimed is not None:
         routing_svc.record_claim(db, claimed, agent_id)
