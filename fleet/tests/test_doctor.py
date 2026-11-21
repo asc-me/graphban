@@ -608,3 +608,21 @@ def test_an_unsettled_exit_0_is_unknown_not_a_crash(monkeypatch, reason, unready
     finding = _service_finding(report)
     assert finding.status == UNKNOWN
     assert says in finding.detail and "NOT running" not in finding.detail
+
+
+def test_a_merge_pending_exit_0_is_not_a_drained_queue(monkeypatch):
+    """GRPH-1818. Doctor must not PASS an exit-0 merge-pending drain as idle.
+
+    Sabotage: drop the ``unsettled`` branch in ``_one_service`` and this reads FAIL
+    "installed and NOT running", with no merge-pending in the detail.
+    """
+    _pretend(monkeypatch, _state(running=False, last_exit=0, run_reason="merge-pending"))
+    report = Report()
+    doctor.check_service(report)
+    finding = _service_finding(report)
+    assert finding.status == UNKNOWN
+    assert "merge-pending" in finding.detail
+    assert "idle between runs" not in finding.detail
+    assert "NOT running" not in finding.detail
+    assert "drained" not in finding.detail
+    assert "until --line" not in finding.remedy
