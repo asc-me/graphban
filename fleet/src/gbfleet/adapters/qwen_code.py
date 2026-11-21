@@ -61,6 +61,7 @@ SERVER = "graphban"
 
 class QwenCode(Adapter):
     name = "qwen-code"
+    vendor = "alibaba"
     binary = "qwen"
     support = Support(minimum=(0, 23), maximum=(1, 0), verified_against="0.23.0")
     notes = (

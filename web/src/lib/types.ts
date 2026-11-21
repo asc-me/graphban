@@ -3968,6 +3968,13 @@ export interface RuleProposal {
   decided_reason?: string | null;
 }
 
+/** Who decided a proposal, when and why, read from its audit event (GRPH-1807). */
+export interface ProposalDecision {
+  by: string;
+  at: string | null;
+  reason: string | null;
+}
+
 /** A custom rule with its author and why (GRPH-1774 / P91 D1). */
 export interface CustomRule {
   rule_id: string;

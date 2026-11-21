@@ -972,6 +972,20 @@ def test_a_grok_declaration_carries_one_vendor_spelling():
     assert canonical_vendor("xai") == "xai"
     assert canonical_vendor("grok-4.7") == "xai"
     assert canonical_vendor("anthropic") == "anthropic"
+    # GRPH-1090: every adapter name folds onto the company its matrix row records.
+    # An unknown string, and a model id that only starts with another vendor's
+    # name, are returned as given.
+    assert canonical_vendor("claude") == "anthropic"
+    assert canonical_vendor("agy") == "google"
+    assert canonical_vendor("qwen-code") == "alibaba"
+    assert canonical_vendor("dsh") == "deepseek"
+    assert canonical_vendor("cursor-agent") == "cursor"
+    assert canonical_vendor("codex") == "openai"
+    assert canonical_vendor("gbagent") == "gbagent"
+    assert canonical_vendor("acme-labs") == "acme-labs"
+    assert canonical_vendor("claude-opus-4-6-thinking") == "claude-opus-4-6-thinking"
+    assert m.vendor_of("claude", _matrix()) == "anthropic", \
+        "no row: the harness name is still Anthropic"
     assert m.declaration("grok", "grok-4.7", "frontier")["vendor"] == "xai"
     stale = _matrix(_row("grok", "grok-4.7", vendor="grok", tier="frontier",
                          cost_class="frontier"))

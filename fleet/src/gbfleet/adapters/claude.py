@@ -39,6 +39,7 @@ REGISTRATION_WINDOW = 240.0
 
 class ClaudeCode(Adapter):
     name = "claude"
+    vendor = "anthropic"
     binary = "claude"
     support = Support(minimum=(2, 0), maximum=(3, 0), verified_against="2.1.233")
     notes = (
