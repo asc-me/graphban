@@ -5,9 +5,11 @@ that drains `due()` is a later slice. A project at `digests`, and a project with
 `sync_project` row, write nothing.
 
 Repeated changes to one entity update the same row. `version` counts the changes,
-`dirty_at` moves, `first_dirty_at` stays. The primary key is what makes a second row
-impossible, and that is what holds the outbox inside `CAP_BYTES` (D11): the table cannot
-grow by repetition.
+`dirty_at` moves, `first_dirty_at` stays. That counter is not the version on the wire:
+`wire_version` adds it to the last confirmed version so a new row, which starts again
+at 1, does not reuse a version the console already stored. The primary key is what
+makes a second row impossible, and that is what holds the outbox inside `CAP_BYTES`
+(D11): the table cannot grow by repetition.
 """
 from __future__ import annotations
 
@@ -49,6 +51,10 @@ _RANK = {name: i for i, name in enumerate(CHANGE_CLASSES)}
 #: actually stored. `backlog_full` compares that estimate to this cap. A read that did not
 #: measure the table reports null, not "under the cap".
 CAP_BYTES = 100 * 1024 * 1024
+
+#: ``Number.MAX_SAFE_INTEGER``. The console refuses a version outside ``0..`` this as
+#: ``invalid`` (``Number.isSafeInteger``). A 63-bit hash is above it almost every time.
+MAX_SAFE_VERSION = 2**53 - 1
 
 _STATUS_ACTIONS = frozenset({"claim_next", "release_item", "sign_off"})
 _ENTITY_TYPES = {
@@ -100,6 +106,33 @@ def classify(target_type: str, target_id: str, action: str,
     if _is_history(action, meta):
         return entity_type, entity_id, CHANGE_HISTORY
     return entity_type, entity_id, CHANGE_EDIT
+
+
+def version_in_range(version: object) -> bool:
+    """True when ``version`` is an integer the console will accept."""
+    return isinstance(version, int) and not isinstance(version, bool) and 0 <= version <= MAX_SAFE_VERSION
+
+
+def wire_version(confirmed: int, captures: int) -> int:
+    """The version to send for one entity.
+
+    ``confirmed`` is the last version the console accepted, or 0 when there is
+    no manifest. A stored value outside ``0..MAX_SAFE_VERSION`` was the old
+    hash: the console refused it, so it is not a high-water mark.
+
+    ``captures`` is this outbox row's change counter. The row is deleted on
+    confirm, and the next row starts again at 1. Adding the counter to the
+    confirmed version is what keeps a restart, a backfill, or a relink from
+    reusing or lowering a version the console already has. A hash of the body
+    is not ordered, so a later edit can sort before the one already stored.
+    """
+    base = confirmed if version_in_range(confirmed) else 0
+    step = captures if version_in_range(captures) and captures > 0 else 1
+    version = base + step
+    if version > MAX_SAFE_VERSION:
+        # The console will not take a larger one. This is the ceiling, not a wrap.
+        return MAX_SAFE_VERSION
+    return version
 
 
 def _keep_class(current: str, incoming: str) -> str:

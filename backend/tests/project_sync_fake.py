@@ -30,6 +30,15 @@ def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+#: ``Number.MAX_SAFE_INTEGER``. The console's ``classifyEntity`` requires
+#: ``Number.isSafeInteger(version) && version >= 0``, so ``2^53`` is already invalid.
+MAX_SAFE_VERSION = 2**53 - 1
+
+
+def _safe_version(value: object) -> bool:
+    return _is_int(value) and 0 <= value <= MAX_SAFE_VERSION
+
+
 def _canonical(entity: dict) -> bytes | None:
     try:
         return json.dumps(entity, separators=(",", ":"), sort_keys=True).encode()
@@ -286,14 +295,16 @@ class FakeConsole:
         if identity["type"] not in ENTITY_TYPES:
             return identity, "forbidden_type"
         digest = entity.get("hash")
-        if (not identity["id"] or not _is_int(entity.get("version"))
+        if (not identity["id"] or not _safe_version(entity.get("version"))
                 or not isinstance(digest, str) or not digest.startswith("sha256:")
                 or digest == "sha256:" or not isinstance(entity.get("body"), dict)):
             return identity, "invalid"
-        key = (identity["type"], identity["id"], identity["version"])
-        if key not in replica.entities:
-            # First write wins. A replay of the same version is a stored no-op,
-            # not a conflict and not a second row.
+        # One row per entity. A greater version replaces the body. An older or
+        # equal version is acknowledged and changes nothing (GBC-P19): the
+        # response still says stored, and the replica keeps the body it has.
+        key = (identity["type"], identity["id"])
+        current = replica.entities.get(key)
+        if current is None or identity["version"] > current.get("version", -1):
             replica.entities[key] = dict(entity)
         return identity, None
 

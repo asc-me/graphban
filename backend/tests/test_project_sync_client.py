@@ -132,7 +132,58 @@ def test_every_entity_push_sends_max_delay_and_the_contract(db, fake, linked):
         db, cloud_project_id=created.cloud_project_id,
         entities=[_entity("GRPH-1", version=2)], transport=_wire(fake))
     assert newer.stored == [{"type": "item", "id": "GRPH-1", "version": 2}]
-    assert len(fake.entities(created.cloud_project_id)) == 2
+    # One row per entity. A greater version replaces the body; it does not
+    # keep the previous version beside it.
+    stored = fake.entities(created.cloud_project_id)
+    assert len(stored) == 1 and stored[0]["version"] == 2
+
+
+def test_a_version_above_the_safe_integer_is_invalid_and_a_lower_one_keeps_the_body(
+        db, fake, linked):
+    """The console refuses a non-safe-integer version, and an older or equal
+    version is acknowledged without replacing the stored body.
+
+    Deleting the range check in ``_one_entity`` stores 2^53. Replacing the body
+    on a lower version fails the title assertion.
+    """
+    created = project_sync_client.register_project(
+        db, tag="GRPH", name="Graphban", transport=_wire(fake))
+    cloud = created.cloud_project_id
+    huge = _entity("GRPH-1", version=2**53, body={"title": "too big"})
+    refused = project_sync_client.push_entities(
+        db, cloud_project_id=cloud, entities=[huge], transport=_wire(fake))
+    assert refused.status == "ok"
+    assert refused.refused == [
+        {"type": "item", "id": "GRPH-1", "version": 2**53, "reason": "invalid"}]
+    assert refused.stored == []
+    assert fake.entities(cloud) == []
+
+    negative = _entity("GRPH-1", version=-1, body={"title": "negative"})
+    refused_neg = project_sync_client.push_entities(
+        db, cloud_project_id=cloud, entities=[negative], transport=_wire(fake))
+    assert refused_neg.refused[0]["reason"] == "invalid"
+    assert fake.entities(cloud) == []
+
+    top = _entity("GRPH-1", version=2**53 - 1, body={"title": "current"})
+    stored = project_sync_client.push_entities(
+        db, cloud_project_id=cloud, entities=[top], transport=_wire(fake))
+    assert stored.stored == [{"type": "item", "id": "GRPH-1", "version": 2**53 - 1}]
+
+    older = _entity("GRPH-1", version=2, body={"title": "stale"})
+    acknowledged = project_sync_client.push_entities(
+        db, cloud_project_id=cloud, entities=[older], transport=_wire(fake))
+    assert acknowledged.status == "ok" and acknowledged.refused == []
+    assert acknowledged.stored == [{"type": "item", "id": "GRPH-1", "version": 2}]
+    replica = fake.entities(cloud)
+    assert len(replica) == 1
+    assert replica[0]["version"] == 2**53 - 1
+    assert replica[0]["body"] == {"title": "current"}
+
+    same = _entity("GRPH-1", version=2**53 - 1, body={"title": "also stale"})
+    replay = project_sync_client.push_entities(
+        db, cloud_project_id=cloud, entities=[same], transport=_wire(fake))
+    assert replay.stored[0]["version"] == 2**53 - 1
+    assert fake.entities(cloud)[0]["body"] == {"title": "current"}
 
 
 def test_an_over_cap_entity_is_refused_and_the_rest_are_stored(db, fake, linked):

@@ -290,6 +290,45 @@ def test_a_restart_sends_no_entity_the_manifest_already_confirmed(db, monkeypatc
         restarted.close()
 
 
+def test_a_restart_edit_sends_a_version_above_the_last_confirmed_one(db):
+    """Backfill after a restart (manifest kept, outbox empty) must not reuse
+    the confirmed version. The console would acknowledge a lower one and keep
+    the old body.
+    """
+    project = _project(db)
+    item = _item(db, project.id, "stable")
+    fake = FakeConsole()
+    wire = _link(db, fake)
+    backfill.start_backfill(db, project.id, True, transport=wire, now=T0)
+    assert flush.flush_once(
+        db, now=DUE, transport=wire, state=flush.FlushState(), rng=lambda: 0,
+    ) == 1
+    manifest = db.get(SyncManifest, (project.id, "item", item.key))
+    assert manifest is not None
+    confirmed = manifest.version
+    assert db.get(SyncOutbox, (project.id, "item", item.key)) is None
+    item.title = "edited after restart"
+    db.commit()
+    again = backfill.start_backfill(db, project.id, False, now=DUE)
+    assert again["seeded"] == 1
+    assert flush.flush_once(
+        db, now=DUE + WINDOW, transport=wire, state=flush.FlushState(), rng=lambda: 0,
+    ) == 1
+    resent = db.get(SyncManifest, (project.id, "item", item.key))
+    assert resent.version > confirmed
+    assert 0 <= resent.version <= outbox.MAX_SAFE_VERSION
+    stored = [row for row in fake.entities(manifest_cloud(db, project.id)) if row["id"] == item.key]
+    assert len(stored) == 1
+    assert stored[0]["body"]["title"] == "edited after restart"
+    assert stored[0]["version"] == resent.version
+
+
+def manifest_cloud(db, project_id: str) -> str:
+    mapping = db.get(SyncProject, project_id)
+    assert mapping is not None and mapping.cloud_project_id
+    return mapping.cloud_project_id
+
+
 def test_a_confirmed_entity_whose_body_changed_is_seeded_again(db):
     project = _project(db)
     item = _item(db, project.id, "stable")

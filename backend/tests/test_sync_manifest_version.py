@@ -1,9 +1,11 @@
-"""GRPH-1768: sync_manifest.version holds version_of()'s signed 63-bit int.
+"""GRPH-1768: sync_manifest.version is BIGINT.
 
-INTEGER is int4 on Postgres. A confirmed payload such as 8226209643480881791
-raises NumericValueOutOfRange there, and SQLite stores it without complaint,
-which is why a green SQLite suite did not show this. sync_outbox.version is a
-capture counter and stays INTEGER.
+The column once held version_of()'s signed 63-bit hash. INTEGER is int4 on
+Postgres. A value such as 8226209643480881791 raises NumericValueOutOfRange
+there, and SQLite stores it without complaint, which is why a green SQLite
+suite did not show this. New wire versions fit in 2^53-1 (GRPH-1815). The
+column stays BIGINT so a row written under the hash still loads.
+sync_outbox.version is a capture counter and stays INTEGER.
 """
 from __future__ import annotations
 
@@ -21,7 +23,7 @@ from sqlalchemy.exc import DataError
 from app.db import SessionLocal, engine as app_engine
 from app.models import SyncManifest, SyncOutbox
 
-# version_of() masks to this. It is also the largest signed bigint.
+# Largest signed bigint. The column must still accept it (GRPH-1768).
 WIDE = 2**63 - 1
 _BACKEND = pathlib.Path(__file__).parents[1]
 _MIGRATION = _BACKEND / "alembic" / "versions" / "0213_sync_manifest_version_bigint.py"
