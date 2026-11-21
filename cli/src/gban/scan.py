@@ -20,8 +20,12 @@ from pathlib import Path
 from typing import Callable
 
 from gban import codemap
+from gban.client import TimedOut
 
 DEFAULT_TIMEOUT = 600
+#: Server-call timeouts, longer than the 30s interactive default: scans_due has been seen at 19s+.
+SCANS_DUE_TIMEOUT = 120.0
+RECORD_TIMEOUT = 60.0
 MAX_FINDINGS = 200
 
 # Runner: (argv, cwd, timeout) -> (returncode, stdout, stderr). Raises OSError / TimeoutExpired.
@@ -318,7 +322,14 @@ class Worktree:
 
 def components_from_server(call, sha: str) -> list[dict]:
     """Distinct Stack component paths, from the cells the server says it keys on."""
-    due = call("scans_due", {"head_sha": sha})
+    try:
+        due = call("scans_due", {"head_sha": sha}, timeout=SCANS_DUE_TIMEOUT)
+    except TimedOut:
+        # One retry: the first call warms the server's cells.
+        try:
+            due = call("scans_due", {"head_sha": sha}, timeout=SCANS_DUE_TIMEOUT)
+        except TimedOut as exc:
+            raise ScanError(f"scans_due timed out after {exc.timeout:g}s (retried once)") from exc
     seen: dict[str, dict] = {}
     for row in due.get("due", []):
         if row.get("path"):
@@ -340,7 +351,7 @@ def record(call, sha: str, row: dict, status: str, outcome: Outcome | None) -> N
                          "severity": "info"}]
         args["findings"] = findings
         args["note"] = outcome.note
-    call("record_scan", args)
+    call("record_scan", args, timeout=RECORD_TIMEOUT)
 
 
 def run_scan(repo: Path, sha: str | None, call, *, dry_run: bool = False, run: Runner = run_process,

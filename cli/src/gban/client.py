@@ -35,6 +35,14 @@ class Unreachable(Exception):
     """No HTTP response at all: the server, the network, or the URL."""
 
 
+class TimedOut(Unreachable):
+    """The server was reached but did not answer within the call's timeout."""
+
+    def __init__(self, msg: str, timeout: float) -> None:
+        super().__init__(msg)
+        self.timeout = timeout
+
+
 class NoSession(Exception):
     """No stored session, or one the server will not renew.
 
@@ -84,7 +92,9 @@ class Client:
         self.api_key = api_key
 
     # ---- transport ---------------------------------------------------------------------
-    def _open(self, method: str, path: str, body: dict | None, headers: dict) -> tuple[int, dict]:
+    def _open(self, method: str, path: str, body: dict | None, headers: dict,
+              timeout: float | None = None) -> tuple[int, dict]:
+        timeout = TIMEOUT if timeout is None else timeout
         if not self.url.startswith(("http://", "https://")):
             # urlopen would read `file:` and friends too, and send the credential with it.
             raise Unreachable(f"could not reach {self.url}: not an http(s) URL")
@@ -93,7 +103,7 @@ class Client:
                                          headers={"Content-Type": "application/json", **headers})
         try:
             # bandit B310: the scheme is checked to be http(s) above.
-            with urllib.request.urlopen(request, timeout=TIMEOUT) as response:  # nosec B310
+            with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
                 raw = response.read().decode() or "{}"
                 return response.status, (json.loads(raw) if raw.strip() else {})
         except urllib.error.HTTPError as exc:
@@ -104,17 +114,21 @@ class Client:
                 payload = {"detail": raw[:400]}
             return exc.code, payload if isinstance(payload, dict) else {"detail": str(payload)}
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            if isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError):
+                raise TimedOut(f"could not reach {self.url}: {exc}", timeout) from exc
             # No HTTP response at all. Structurally different from a refusal, and reported as
             # such — the client never reads a message to decide which failure it is in (D8).
             raise Unreachable(f"could not reach {self.url}: {exc}") from exc
 
-    def call(self, method: str, path: str, body: dict | None = None) -> dict:
+    def call(self, method: str, path: str, body: dict | None = None, *,
+             timeout: float | None = None) -> dict:
+        """`timeout` overrides the interactive default for this one call."""
         headers = {}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         elif self.api_key:
             headers["X-API-Key"] = self.api_key
-        status, payload = self._open(method, path, body, headers)
+        status, payload = self._open(method, path, body, headers, timeout)
         if status >= 400:
             detail = payload.get("detail") or payload.get("message") or f"HTTP {status}"
             if isinstance(detail, dict):
