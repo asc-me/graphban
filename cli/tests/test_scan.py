@@ -24,14 +24,20 @@ def _repo(tmp_path: Path) -> Path:
 
 
 class Server:
-    def __init__(self, paths=("pkg/",)):
+    def __init__(self, paths=("pkg/",), refuse=()):
         self.paths = paths
+        self.refuse = set(refuse)  # scanner ids whose record the server refuses
         self.records: list[dict] = []
 
     def __call__(self, tool, args):
         if tool == "scans_due":
             return {"due": [{"component": "pkg", "path": p, "category": "security"} for p in self.paths]}
         assert tool == "record_scan"
+        # Same rule as backend/app/services/scans.py _EMPTY_INCOMPLETE.
+        if args["result"] == "incomplete" and not args.get("findings"):
+            raise codemap.MapError("record_scan: result 'incomplete' requires findings; nothing was stored")
+        if args["scanner_id"] in self.refuse:
+            raise codemap.MapError("record_scan: refused")
         self.records.append(args)
         return {}
 
@@ -104,7 +110,22 @@ def test_crash_and_timeout_are_incomplete(tmp_path, monkeypatch):
     counts = scan.run_scan(repo, codemap.head(repo), srv, run=run)
     rec = _by(srv)
     assert {rec[k]["result"] for k in ("vulture", "radon", "bandit")} == {"incomplete"}
-    assert counts["incomplete"] == 3
+    assert counts["incomplete"] == 3 and counts["failed"] == 0
+    for k in ("vulture", "radon", "bandit"):
+        assert rec[k]["findings"] and k in rec[k]["findings"][0]["summary"]
+        assert rec[k]["note"] in rec[k]["findings"][0]["summary"]
+
+
+def test_refused_row_is_counted_and_the_run_carries_on(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _installed(monkeypatch, {"vulture", "radon", "bandit"})
+    srv = Server(refuse={"bandit"})
+    run = _runner({"vulture": (0, "", ""), "radon": (0, "{}", ""), "bandit": (0, '{"results": []}', "")})
+    lines = []
+    counts = scan.run_scan(repo, codemap.head(repo), srv, run=run, out=lines.append)
+    assert counts["failed"] == 1 and counts["recorded"] == 3
+    assert {r["scanner_id"] for r in srv.records} == {"vulture", "radon", "pip-audit"}
+    assert any("bandit" in ln and "failed" in ln for ln in lines)
 
 
 def test_later_failure_does_not_unrecord_earlier(tmp_path, monkeypatch):
@@ -164,7 +185,7 @@ def test_cli_summary_line(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("GBFLEET_API_KEY", "k")
     monkeypatch.setattr(codemap, "mcp_caller", lambda client, project: srv)
     assert main(["--project", "p", "scan", "--sha", codemap.head(repo), "--repo", str(repo)]) == 0
-    assert "4 tool_missing, 0 incomplete at " in capsys.readouterr().out
+    assert "4 tool_missing, 0 incomplete, 0 failed at " in capsys.readouterr().out
     assert os.environ["GBFLEET_API_KEY"] == "k"
 
 

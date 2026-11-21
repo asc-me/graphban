@@ -691,7 +691,7 @@ def cmd_scan(args) -> int:
         print(f"{PROG}: dry run, nothing recorded at {counts['sha']}")
         return 0
     print(f"scans: {counts['recorded']} recorded, {counts['tool_missing']} tool_missing, "
-          f"{counts['incomplete']} incomplete at {counts['sha']}")
+          f"{counts['incomplete']} incomplete, {counts.get('failed', 0)} failed at {counts['sha']}")
     return 0
 
 

@@ -333,14 +333,19 @@ def record(call, sha: str, row: dict, status: str, outcome: Outcome | None) -> N
     if status == "complete":
         args["findings"] = outcome.findings
     elif outcome is not None:
-        args["findings"] = outcome.findings
+        findings = list(outcome.findings)
+        if status == "incomplete" and not findings:
+            # The server refuses an incomplete record with no findings: name the failure in one.
+            findings = [{"summary": f"{sc.id} did not finish: {outcome.note or 'no reason given'}",
+                         "severity": "info"}]
+        args["findings"] = findings
         args["note"] = outcome.note
     call("record_scan", args)
 
 
 def run_scan(repo: Path, sha: str | None, call, *, dry_run: bool = False, run: Runner = run_process,
              timeout: int = DEFAULT_TIMEOUT, out: Callable[[str], None] = print) -> dict:
-    """Plan and run every scanner at `sha`. Returns counts; raises ScanError/MapError on step failure."""
+    """Plan and run every scanner at `sha`. Returns counts; raises ScanError/MapError when components or the worktree fail."""
     if sha:
         target = codemap.head(repo, sha)
     else:
@@ -349,7 +354,7 @@ def run_scan(repo: Path, sha: str | None, call, *, dry_run: bool = False, run: R
         components = components_from_server(call, target)
     except codemap.MapError as exc:
         raise ScanError(f"server: {exc}") from exc
-    counts = {"recorded": 0, "tool_missing": 0, "incomplete": 0, "sha": target}
+    counts = {"recorded": 0, "tool_missing": 0, "incomplete": 0, "failed": 0, "sha": target}
     with Worktree(repo, target) as root:
         rows = plan(root, components)
         if dry_run:
@@ -361,7 +366,10 @@ def run_scan(repo: Path, sha: str | None, call, *, dry_run: bool = False, run: R
             try:
                 record(call, target, r, status, outcome)
             except codemap.MapError as exc:
-                raise ScanError(f"server: {exc}") from exc
+                # One refused row never stops the rest: every row is independent.
+                counts["failed"] += 1
+                out(f"{r['path']}\t{r['scanner'].id}\trecord failed: {exc}")
+                continue
             counts["recorded"] += 1
             if status in ("tool_missing", "incomplete"):
                 counts[status] += 1
