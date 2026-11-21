@@ -1329,17 +1329,23 @@ def _loop(
         # observing departures. An item already `done` with a sign_off attestation is a
         # candidate on the first tick.
         if merger.tick(wave):
-            # The base moved. Whatever was held on a finished-but-unmerged dependency is
-            # offered again — the check re-runs against the freshly fetched ref and either
-            # lets it through or holds it on whatever is still missing.
+            # The base moved. A hold whose dependency is done is offered again — the
+            # check re-runs against the freshly fetched ref and either lets it through
+            # or holds it on whatever is still missing. A dependency that is not done
+            # stays held (GRPH-1605): reopen_on_red is not a merge.
             for item_id in list(held):
+                rework = _dependencies_not_done(planner, item_id)
+                if rework:
+                    _keep_for_rework(planner, item_id, rework)
+                    held[item_id] = [str(r.get("id") or "") for r in rework]
+                    continue
                 # The blocker goes too (GRPH-950), or the server keeps refusing an item this
                 # loop has stopped refusing. The re-check below writes it back if still missing.
                 _lift(planner, item_id)
+                held.pop(item_id, None)
                 delegated.discard(item_id)
                 observe.emit("hold_lifted", item=item_id,
                              detail=f"{item_id}: a merge landed; re-checking its dependencies")
-            held.clear()
         elif held and time.monotonic() - rechecked >= HOLD_RECHECK_SECONDS:
             # Merged by somebody other than this loop — a person, or a wave without `--merge`.
             rechecked = time.monotonic()
@@ -2856,13 +2862,85 @@ def _held_on_server(planner: Graphban) -> list[tuple[str, str]]:
     return out
 
 
+def _dependencies_not_done(planner: Graphban, item_id: str) -> list[dict]:
+    """Dependency rows whose status is not `done`.
+
+    `deps.check` only sees done rows: a done-but-unmerged dependency is the gap
+    `blocked_by` cannot see. When `merge.reopen_on_red` moves that row back to next,
+    in_progress or review, it drops out of `deps.check`, and an empty absent list is
+    not "in base" (GRPH-1605). A failed read is empty — not evidence the work is
+    unfinished. A row that does not say its status is not counted: absence is not
+    "not done".
+    """
+    try:
+        related = planner.call("related_work", id=item_id) or {}
+    except (ToolFailed, NotPermitted, ServerUnreachable):
+        return []
+    out: list[dict] = []
+    for row in (related.get("results") if isinstance(related, dict) else None) or []:
+        if not isinstance(row, dict):
+            continue
+        if "dependency" not in [str(t) for t in (row.get("link_types") or [])]:
+            continue
+        status = row.get("status")
+        if not isinstance(status, str) or not status or status == "done":
+            continue
+        out.append(row)
+    return out
+
+
+def _rework_line(item_id: str, rows: list[dict]) -> str:
+    ids = [str(r.get("id") or "") for r in rows if r.get("id")]
+    if len(ids) == 1:
+        who = f"{ids[0]}'s rework"
+    else:
+        who = " and ".join(f"{i}'s rework" for i in ids)
+    return f"{item_id}: waiting on {who}"
+
+
+def _keep_for_rework(planner: Graphban, item_id: str, rows: list[dict]) -> None:
+    """Keep a hold whose dependency left `done`, and say it is waiting on rework.
+
+    A blocker somebody else wrote is left alone. The text still carries the hold
+    mark, so a later merge can lift it and a person's blocker cannot be cleared
+    by mistake.
+    """
+    line = _rework_line(item_id, rows)
+    observe.emit("delegate_held", item=item_id, detail=line)
+    text = f"{line}. Do not copy that work in. {deps.HOLD_MARK}"
+    try:
+        got = planner.call("get_item_details", id=item_id) or {}
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("hold_unrecorded", item=item_id, detail=str(exc))
+        return
+    current = str(got.get("blocker") or "") if isinstance(got, dict) else ""
+    if current and not deps.is_hold(current):
+        return
+    if current == text:
+        return
+    try:
+        planner.call("update_item", id=item_id, blocker=text)
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("hold_unrecorded", item=item_id, detail=str(exc))
+
+
 def _recheck_holds(planner: Graphban, held: dict[str, list[str]], delegated: set[str],
                    repo: Path | None, base: str) -> None:
-    """Lift every hold whose dependency is now in `base` — merged by `--merge`, by a person,
-    or by a squash the forge reports (GRPH-950). Still missing stays held."""
+    """Lift a hold only when every dependency is done and in `base`.
+
+    Merged by `--merge`, by a person, or by a squash the forge reports (GRPH-950).
+    Still missing stays held. A dependency that is not done stays held too
+    (GRPH-1605): reopen_on_red drops it out of the done-but-unmerged set, and that
+    absence used to read as "in origin/main".
+    """
     if not base or repo is None:
         return
     for item_id in list(held):
+        rework = _dependencies_not_done(planner, item_id)
+        if rework:
+            _keep_for_rework(planner, item_id, rework)
+            held[item_id] = [str(r.get("id") or "") for r in rework]
+            continue
         absent, _ = deps.check(planner, item_id, repo, base)
         if absent:
             continue
