@@ -332,6 +332,17 @@ work, no unsigned review, and no live lease — rather than merely on the last c
 There is no LLM inside it. Fanning the same wave out by hand keeps a frontier context awake
 for its entire length, polling and adjudicating bounces.
 
+`claim_next` and `claim_cluster` do not hand out an item that still has an unfinished
+`dependency` link. A worker that stops because a dependency is not built names that item's
+id in the blocker (`needs GRPH-1685`). The server records those ids as dependency links,
+not only as the sentence. When every named item is `done`, the blocker clears itself, the
+item is ready again, and a note on the item says which ids finished.
+
+Each pass of a drain (`gbfleet until`, and `up` when that client may write) checks
+`blocked` items and `next` items that are not ready. A blocker that names only done items
+is cleared, and the pass reports that it did. A blocker that names a person or a decision
+— including a typed `wait:` — is left alone. That is the default. It does not need a flag.
+
 ---
 
 ## What this runbook cannot tell you
