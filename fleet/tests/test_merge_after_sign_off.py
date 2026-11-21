@@ -215,11 +215,14 @@ def test_a_moved_head_is_bounced_with_the_planner_agent_id(forge):
     assert "SA-417" not in merger.watching
 
 
-def test_a_non_conflict_miss_leaves_the_item_watched_and_is_re_asked_later(forge):
-    """A miss that is neither a conflict nor a moved head (no PR yet) is a hold: nothing is
-    bounced, the item stays watched, and it is not re-asked inside the recheck interval."""
-    gh = forge(_Forge(draft=True, has_pr=False))
-    ledger = _Ledger({"SA-417": _done_item("SA-417")})
+def test_a_ci_hold_leaves_the_item_watched_and_is_re_asked_later(forge):
+    """CI that has not attested is a hold: nothing is bounced, the item stays watched, and
+    it is not re-asked inside the recheck interval.
+
+    A missing PR is terminal (GRPH-1348) — that case leaves `done` and is not this hold.
+    Sabotage: treat "CI has not attested" as a leave-done marker and this bounces."""
+    gh = forge(_Forge(draft=False))
+    ledger = _Ledger({"SA-417": _done_item("SA-417", green="c" * 40)})
     merger = Merger(REPO, ledger, enabled=True, agent_id="GRPH-PLANNER")
     wave = Wave()
     clock = {"t": 1000.0}
@@ -279,7 +282,9 @@ def test_a_merge_refetches_the_base(forge, monkeypatch):
     merger.note_hold([{"id": "SA-417", "commits": [REVIEWED]}])
     merger.tick(Wave())
 
-    assert fetched == [("origin", "origin/main")]
+    # Once before the ancestor check, so a squash that just landed is in this clone, and
+    # once after the merge so the dependency read sees the new tip (GRPH-1348).
+    assert fetched == [("origin", "origin/main"), ("origin", "origin/main")]
 
 
 def test_a_client_without_the_tools_disables_the_merger_once(forge):

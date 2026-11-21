@@ -24,6 +24,7 @@ only one of them means stop.
 from __future__ import annotations
 
 import re
+import subprocess
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -3676,6 +3677,68 @@ def _merge_recorded(row: dict) -> bool:
     return False
 
 
+#: Reasons a finished merge attempt must take the item back out of `done` (GRPH-1348).
+#: A transient hold — CI not attested, auto-merge armed, "proposed; next tick" — is absent
+#: on purpose. Matching one of those would flap a good PR back to `next` every cycle.
+_LEAVE_DONE_MARKERS = (
+    "no PR for",
+    "names no PR",
+    "done without a PR",
+    "gh pr ready failed",
+    "not mergeable",
+    "branch protection blocks",
+    "not an ancestor of",
+    ", not open",
+    "gh pr merge failed",
+)
+
+
+def commit_on_default(repo: Path, commit: str, base: str) -> bool | None:
+    """Is `commit` an ancestor of `base`?
+
+    Three answers. `None` means this clone has no `base` ref to ask — a unit fixture, or a
+    base this process was not given. That is not "absent from the trunk". `False` means the
+    ref exists and the commit is not on it, including a commit this clone has never seen:
+    the object is not on the ref we have. `True` only when git says it is an ancestor. A
+    commit equal to the tip of `base` is an ancestor of itself.
+    """
+    commit = (commit or "").strip()
+    base = (base or "").strip()
+    if not commit or not base:
+        return None
+    try:
+        present = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"],
+            cwd=str(repo), capture_output=True, text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # Not a repository — a unit fixture, not evidence the commit is absent.
+        return None
+    if present.returncode != 0:
+        return None
+    try:
+        obj = subprocess.run(
+            ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+            cwd=str(repo), capture_output=True, text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if obj.returncode != 0:
+        return False
+    answer = wt_mod.reaches(repo, base, commit)
+    if answer is None:
+        return False
+    return answer
+
+
+def _should_leave_done(got: "propose_mod.Merged") -> bool:
+    """A terminal miss that must not remain `done` (GRPH-1348)."""
+    if got.ok or got.pending or got.conflicts or got.rereview:
+        return False
+    reason = got.reason or ""
+    return any(marker in reason for marker in _LEAVE_DONE_MARKERS)
+
+
 @dataclass
 class Merger:
     """Finishes the merge for items that reach `done` (GRPH-846, GRPH-880). Off unless asked.
@@ -3702,10 +3765,16 @@ class Merger:
     merge that happened.
 
     WHAT IT NEVER DOES. Decide that an unreviewed head may land. A head that moved after
-    sign-off, or a rebase conflict, is bounced back to its author — left `done`, that PR
-    stays mergeable and the next tick records whatever a person merged. Every other
-    precondition miss leaves the item alone and says which check failed. A merge the forge
-    refuses is `skipped`. Branch protection is the backstop and this does not go around it.
+    sign-off, or a rebase conflict, is bounced back to its author. A merge that did not
+    land — no PR, a draft that cannot be marked ready, a PR that is not mergeable, branch
+    protection, a closed PR, a failed `gh pr merge`, or a merge commit that is not an
+    ancestor of the default branch — does not stay `done` (GRPH-1348). It is bounced to
+    `next` when this fleet opened the PR, and blocked with the reason when the server
+    refuses that bounce. The drain log names the item and the reason. A commit is recorded
+    as merged only after it is an ancestor of the default branch, or when this clone has
+    no such ref to ask. CI that has not attested, an armed auto-merge, and a PR this tick
+    just proposed stay watched. Branch protection is the backstop and this does not go
+    around it.
     """
 
     repo: Path
@@ -3925,16 +3994,25 @@ class Merger:
             siblings=propose_mod.pr_receipts(item),
             # Lazy: only read when the PR has files outside this item's own touchpoints.
             covering=lambda: self._covering(item_id, item),
+            # A recorded URL that cannot be viewed is not "no PR": look the branch up
+            # before giving up (GRPH-1348). `view` already does this when the selector
+            # IS the branch.
+            branch=str(item.get("branch") or ""),
         )
         if got.skipped and got.reason.startswith("no PR for"):
-            # GRPH-1457: done with its work on a branch and no PR is a stuck state, not a
-            # skip. Propose it; if that cannot be done, say so and keep watching.
+            # GRPH-1457: commits on a branch with no PR are proposed here. A PR that opens
+            # stays watched for the next tick. One that cannot be opened is terminal; the
+            # caller takes the item out of done (GRPH-1348).
             got = self._propose_unproposed(item_id, item, got)
         got = propose_mod.close_after_merge(self.repo, got)
+        if got.ok and got.commit:
+            got = self._require_on_default(got)
         if got.ok and got.commit:
             got = self._record(wave, got)
         if got.conflicts or got.rereview:
             self._bounce(wave, item_id, got)
+        elif _should_leave_done(got):
+            self._leave_done(wave, item_id, got)
         return got
 
     def _propose_unproposed(self, item_id: str, item: dict,
@@ -3942,9 +4020,10 @@ class Merger:
         """GRPH-1457: a `done` item whose branch carries commits and has no PR gets one.
 
         The same path as a normal reap (`propose_mod.propose`). Never a silent skip: when it
-        cannot be opened, a `wait` naming the item is emitted and the item stays watched
-        (the returned outcome is neither `skipped` nor `ok`, so it is not final). Once the PR
-        exists the next tick merges it through the usual checks.
+        cannot be opened, a `wait` naming the item is emitted. The returned outcome is neither
+        `skipped` nor `ok`. The caller then takes the item out of `done` (GRPH-1348) — staying
+        `done` with no PR is the defect this used to leave behind. Once a PR exists the next
+        tick merges it through the usual checks, and that outcome stays watched.
         """
         branch = str(item.get("branch") or "").strip()
 
@@ -4063,6 +4142,66 @@ class Merger:
                 continue
             out.extend(str(p) for p in (row.get("touchpoints") or []))
         return out
+
+    def _require_on_default(self, got: "propose_mod.Merged") -> "propose_mod.Merged":
+        """Record a merge only when its commit is on the default branch (GRPH-1348).
+
+        `None` from `commit_on_default` — no base, or no such ref in this clone — keeps the
+        merge. The fixtures that merge against `/tmp/does-not-matter` have no ref, and a
+        check that failed closed there would refuse every one of them. `False` is a merge
+        commit the trunk does not contain: drop `ok` so `_record` does not write the receipt
+        that later ticks treat as landed.
+        """
+        base = (self.base or "").strip()
+        if not base or not got.commit:
+            return got
+        if self.remote:
+            # A squash SHA that just landed is not in this clone until the base is fetched.
+            # Skipping this reads a good merge as absent and takes the item back out of done.
+            wt_mod.refresh_ref(self.repo, self.remote, self.base)
+        verdict = commit_on_default(self.repo, got.commit, base)
+        if verdict is False:
+            return replace(
+                got, ok=False, skipped=True,
+                reason=f"merge commit {got.commit[:12]} is not an ancestor of {base}",
+            )
+        return got
+
+    def _leave_done(self, wave: Wave, item_id: str, got: "propose_mod.Merged") -> None:
+        """Take an item whose merge did not land back out of `done` (GRPH-1348).
+
+        Bounce to `next` when the server allows it (this fleet opened the PR and no merge
+        receipt is recorded). A signed-off item with no PR cannot be bounced — the server
+        says no merge is pending — so it is blocked with the reason instead. Either way the
+        drain log names the item and the reason. Both writes failing is a wave failure; the
+        item stays watched so the next tick can try again, unless the outcome is already
+        final and `tick` drops it.
+        """
+        reason = got.reason or "merge did not land"
+        observe.emit("merge_left_done", item=item_id, detail=f"{item_id}: {reason}")
+        try:
+            self.client.call("bounce", id=item_id, reason=reason, agent_id=self.agent_id)
+        except (NotPermitted, ToolFailed, ServerUnreachable):
+            try:
+                self.client.call("update_item", id=item_id, status="blocked", blocker=reason,
+                                 evidence=[{
+                                     "kind": "note",
+                                     "detail": f"gbfleet: blocked, merge did not land — {reason}",
+                                 }])
+            except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
+                wave.failures.append(f"{item_id}: {reason} (could not leave done: {exc})")
+                return
+            self.watching.pop(item_id, None)
+            return
+        self.watching.pop(item_id, None)
+        try:
+            self.client.call("update_item", id=item_id, evidence=[{
+                "kind": "note",
+                "detail": f"gbfleet: reopened to next — {reason}",
+            }])
+        except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
+            wave.failures.append(
+                f"{item_id}: reopened to next but the note was not recorded ({exc})")
 
     def _record(self, wave: Wave, got: "propose_mod.Merged") -> "propose_mod.Merged":
         """The receipt. `commit` is on the row so `deps._commits` reads the merge commit as
