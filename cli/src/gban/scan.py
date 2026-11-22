@@ -118,11 +118,15 @@ def parse_npm_audit(out: str, rc: int) -> list[dict]:
     for key, v in vulns.items():
         name = v.get("name") or key
         titles = [x.get("title") for x in v.get("via", []) if isinstance(x, dict) and x.get("title")]
+        # record_scan's `dependency` is direct|transitive, never a package name: the name
+        # lives in the summary.
         row = {"summary": f"{name}: {titles[0] if titles else 'vulnerable dependency'}",
-               "dependency": str(name),
+               "dependency": "direct" if v.get("isDirect") else "transitive",
                "severity": str(v.get("severity", "low")).lower()}
         fix = v.get("fixAvailable")
-        if isinstance(fix, dict) and fix.get("version"):
+        # fixAvailable can name a different package (the parent to bump); its version is
+        # only this package's fixed version when the names match.
+        if isinstance(fix, dict) and fix.get("version") and fix.get("name") == name:
             row["fixed_version"] = str(fix["version"])
         found.append(row)
     return _cap(found)

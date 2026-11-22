@@ -378,7 +378,7 @@ def test_requirements_python_still_plans_pip_audit(tmp_path):
 
 
 _NPM_HIT = json.dumps({"vulnerabilities": {"left-pad": {
-    "name": "left-pad", "severity": "high", "via": [{"title": "Bad thing"}],
+    "name": "left-pad", "severity": "high", "isDirect": True, "via": [{"title": "Bad thing"}],
     "fixAvailable": {"name": "left-pad", "version": "1.3.0"}}}})
 
 
@@ -408,6 +408,17 @@ def test_npm_audit_one_advisory_is_one_finding(tmp_path, monkeypatch):
     assert status == "complete" and len(out.findings) == 1
     f = out.findings[0]
     assert "left-pad" in f["summary"] and f["severity"] == "high"
+    assert f["dependency"] == "direct" and f["fixed_version"] == "1.3.0"
+
+
+def test_npm_audit_dependency_is_direct_or_transitive(tmp_path):
+    # record_scan refuses any other `dependency` value, so a package name there loses the finding.
+    out = json.dumps({"vulnerabilities": {"minimist": {
+        "name": "minimist", "severity": "moderate", "isDirect": False, "via": ["mkdirp"],
+        "fixAvailable": {"name": "mkdirp", "version": "1.0.4", "isSemVerMajor": True}}}})
+    (f,) = scan.parse_npm_audit(out, 1)
+    assert f["dependency"] == "transitive"
+    assert "fixed_version" not in f  # 1.0.4 is mkdirp's version, not minimist's
 
 
 def test_npm_audit_zero_vulns_is_complete_clean(tmp_path, monkeypatch):
