@@ -113,6 +113,18 @@ _NOT_BETWEEN_RUNS = (
     "", "unready", "stalled", "merge-pending", REASON_PRD_CLOSED, REASON_NO_OPEN,
 )
 
+#: Detail from `_running_launchd` / `_running_systemd` when the unit file is on disk
+#: and the supervisor has no job. Not a listed job whose exit code was unreadable:
+#: KeepAlive and Restart= never fire, so this must not read as "last exit unknown"
+#: (GRPH-1852).
+_NOT_LOADED = "not loaded"
+#: UnitFileState values that mean systemd will not start the unit. `enabled` and
+#: `static` are absent on purpose: a loaded, enabled unit that has exited is idle
+#: or dead, and that reading stays the exit line.
+_SYSTEMD_WILL_NOT_START = frozenset({
+    "disabled", "not-found", "masked", "masked-runtime", "bad", "invalid",
+})
+
 #: How long `install` waits before asking whether the job survived. Not tuning: `until`
 #: reaches the repo lock, the server and its first refusal in well under a second, so an
 #: immediate read reports "running" for a service that is already gone.
@@ -1133,6 +1145,10 @@ class Status:
     #: "live", "stalled", "absent", "unread", or "" when status did not look at the log.
     #: Empty is the constructed-Status default and still reads as running.
     log_state: str = ""
+    #: The unit file exists and the supervisor has no job, so it will not restart
+    #: (GRPH-1852). False is not "loaded": a listed job that has exited stays False
+    #: and keeps its exit line. Only True is the fault.
+    not_loaded: bool = False
 
     @property
     def idle(self) -> bool:
@@ -1142,7 +1158,10 @@ class Status:
         that must not read as "idle between runs" — that reading is what kept
         launchd restarting them (GRPH-1645). A clean exit whose reason is
         ``merge-pending`` is not this either (GRPH-1818): the pull request is still open.
+        A unit file with no job behind it is not idle either: nothing will start it.
         """
+        if self.not_loaded:
+            return False
         return self._exited_clean and self.run_reason not in _NOT_A_DRAINED_EXIT
 
     @property
@@ -1168,6 +1187,14 @@ class Status:
             return f"{self.name}: unknown — {self.detail}"
         if not self.installed:
             return f"{self.name}: not installed ({where})"
+        if self.not_loaded:
+            # Distinct from "last exit unknown": that one is a loaded job whose exit
+            # launchd would not say. This one will not be restarted (GRPH-1852).
+            return (
+                f"{self.name}: installed but not loaded, so it will not restart "
+                f"({where}, {self.unit_path}). "
+                f"Run `gbfleet service install --name {self.name}` again."
+            )
         if self.running is None:
             return f"{self.name}: installed at {self.unit_path}, running unknown — {self.detail}"
         if self.running:
@@ -1221,6 +1248,9 @@ def status(name: str = DEFAULT_NAME, *, kind: str = "") -> Status:
         alive, detail, last_exit = _running_schtasks(name)
     else:
         alive, detail, last_exit = _running_systemd(name)
+    # The runners say `_NOT_LOADED` only when they looked and the job was absent.
+    # A failed `launchctl` stays `running is None` and must not land here.
+    not_loaded = detail == _NOT_LOADED
     died = alive is False and last_exit not in (None, 0)
     # Read the summary whenever the process has exited, not only on exit 0. A stall
     # exits non-zero (GRPH-1643); looking only at exit 0 left that log unread and
@@ -1235,7 +1265,7 @@ def status(name: str = DEFAULT_NAME, *, kind: str = "") -> Status:
                   last_exit=last_exit, logon_policy=policy,
                   reason=err_reason(name) if died else "",
                   run_reason=run_reason, unready=unready, stall=stall,
-                  stalled=stalled, log_state=log_state)
+                  stalled=stalled, log_state=log_state, not_loaded=not_loaded)
 
 
 def _path_in(unit: Path, kind: str) -> str:
@@ -1271,8 +1301,42 @@ def _running_systemd(name: str) -> tuple[bool | None, str, int | None]:
     if out in ("active", "activating"):
         return True, out, None
     if out in ("inactive", "failed", "deactivating"):
+        # `inactive` is also what systemd prints for a unit file it has never
+        # loaded. The exit code of a job it does not have is the wrong story
+        # (GRPH-1852): Restart= will not fire. None from the probe is "could
+        # not ask", which stays the exit line rather than this alarm.
+        if _systemd_job_loaded(name) is False:
+            return False, _NOT_LOADED, None
         return False, out, _last_exit_systemd(name)
     return None, out or f"systemctl said nothing (exit {code})", None
+
+
+def _systemd_job_loaded(name: str) -> bool | None:
+    """Whether systemd has this unit loaded and will start it.
+
+    False when LoadState is not ``loaded``, or the unit file is disabled, masked,
+    or not-found: the file on disk is not a job. None when ``systemctl show``
+    will not say — that is not "not loaded".
+    """
+    code, out = _run(["systemctl", "--user", "show", unit_name(name),
+                      "--property=LoadState", "--property=UnitFileState"])
+    if code != 0 or "=" not in out:
+        return None
+    fields: dict[str, str] = {}
+    for line in out.splitlines():
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        fields[key.strip()] = value.strip()
+    load = fields.get("LoadState")
+    unit_file = fields.get("UnitFileState")
+    if load is None and unit_file is None:
+        return None
+    if load not in (None, "", "loaded"):
+        return False
+    if unit_file in _SYSTEMD_WILL_NOT_START:
+        return False
+    return True
 
 
 def _last_exit_systemd(name: str) -> int | None:
@@ -1311,7 +1375,9 @@ def _running_launchd(label: str) -> tuple[bool | None, str, int | None]:
             if parts[0] == "-":
                 return False, f"last exit {parts[1]}", last
             return True, f"pid {parts[0]}", last
-    return False, "not listed by launchd", None
+    # The plist can outlive the job. KeepAlive never restarts a label launchd
+    # does not have, which is not "we could not read the exit code" (GRPH-1852).
+    return False, _NOT_LOADED, None
 
 
 def _running_schtasks(name: str) -> tuple[bool | None, str, int | None]:

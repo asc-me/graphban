@@ -1169,9 +1169,16 @@ def _service(args) -> int:
         if not names:
             print(f"no drain installed ({found.kind})")
             return 0
+        code = 0
         for one in names:
-            _service_status(service_mod.status(one, kind=found.kind))
-        return 0
+            state = service_mod.status(one, kind=found.kind)
+            _service_status(state)
+            # A unit file with no job will not restart. Exit 0 here read as a
+            # drain between cycles (GRPH-1852). Any other not-running state
+            # still exits 0: last exit is the signal, and idle is success.
+            if state.not_loaded:
+                code = 1
+        return code
 
     if act == "uninstall":
         try:

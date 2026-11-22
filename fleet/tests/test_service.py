@@ -26,6 +26,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from gbfleet import service  # noqa: E402
+from gbfleet.cli import main  # noqa: E402
 from gbfleet.service import Refused  # noqa: E402
 
 KEY = "gbk_live_secret_value"
@@ -288,6 +289,160 @@ def test_launchctl_that_cannot_be_asked_answers_none(monkeypatch):
 def test_systemd_activity_has_three_answers(monkeypatch, out, expected):
     monkeypatch.setattr(service, "_run", lambda cmd, timeout=20.0: (0, out))
     assert service._running_systemd("gbfleet")[0] is expected
+
+
+def _unit_on_disk(tmp_path: Path, monkeypatch, name: str, kind: str) -> Path:
+    """A unit file the supervisor can see, and a host that is that supervisor."""
+    if kind == "launchd":
+        unit = tmp_path / f"{service.label_for(name)}.plist"
+        unit.write_bytes(plistlib.dumps({
+            "Label": service.label_for(name),
+            "EnvironmentVariables": {"PATH": "/usr/bin"},
+        }))
+    else:
+        unit = tmp_path / f"{service.unit_name(name)}"
+        unit.write_text("[Service]\nEnvironment=PATH=/usr/bin\n", encoding="utf-8")
+    monkeypatch.setattr(service, "host", lambda: service.Host(kind))
+    monkeypatch.setattr(service, "unit_path_for", lambda n, k: unit)
+    monkeypatch.setattr(service, "linger", lambda: True)
+    monkeypatch.setattr(service, "CONFIG_DIR", tmp_path)
+    return unit
+
+
+def _launchctl_list(text: str):
+    def fake(cmd, timeout=20.0):
+        return 0, text
+    return fake
+
+
+def test_a_launchd_unit_file_with_no_job_is_not_loaded(tmp_path: Path, monkeypatch, capsys):
+    """GRPH-1852. The plist is on disk and `launchctl list` has no row for it.
+
+    That used to print "NOT running, last exit unknown", which is a drain between
+    cycles. KeepAlive will not restart a job launchd does not have. Status names
+    the fix and exits non-zero.
+
+    Sabotage: in `status`, leave `not_loaded` false when the detail is
+    `_NOT_LOADED`. This line goes back to "last exit unknown" and the command
+    exits 0.
+    """
+    name = "p95"
+    _unit_on_disk(tmp_path, monkeypatch, name, "launchd")
+    monkeypatch.setattr(service, "_run", _launchctl_list("1\t0\tcom.apple.something"))
+    state = service.status(name, kind="launchd")
+    line = state.line()
+    assert state.not_loaded and not state.idle
+    assert "installed but not loaded, so it will not restart" in line
+    assert f"gbfleet service install --name {name}" in line
+    assert "last exit unknown" not in line
+    code = main(["service", "status", "--name", name])
+    out = capsys.readouterr()
+    assert code == 1
+    assert "installed but not loaded, so it will not restart" in out.out
+    assert f"gbfleet service install --name {name}" in out.out
+
+
+def test_a_loaded_launchd_job_that_exited_keeps_its_exit_line(
+        tmp_path: Path, monkeypatch, capsys):
+    """A `-` row is a job launchd still has. Its exit line stays, and status exits 0.
+
+    Sabotage of the not-loaded branch must not move this sentence.
+    """
+    name = "p95"
+    _unit_on_disk(tmp_path, monkeypatch, name, "launchd")
+    label = service.label_for(name)
+    monkeypatch.setattr(service, "_run", _launchctl_list(f"-\t3\t{label}"))
+    state = service.status(name, kind="launchd")
+    line = state.line()
+    assert not state.not_loaded
+    assert "NOT running, last exit 3" in line
+    assert "installed but not loaded" not in line
+    code = main(["service", "status", "--name", name])
+    out = capsys.readouterr()
+    assert code == 0, out.err
+    assert "NOT running, last exit 3" in out.out
+    assert "installed but not loaded" not in out.out
+
+
+def _systemctl(*, active: str, show: str, exit_code: str = "3"):
+    def fake(cmd, timeout=20.0):
+        if "is-active" in cmd:
+            return 0, active
+        if any(arg.startswith("--property=LoadState") for arg in cmd):
+            return 0, show
+        if any(arg.startswith("--property=ExecMainStatus") for arg in cmd):
+            return 0, f"ExecMainStatus={exit_code}"
+        return 1, ""
+    return fake
+
+
+@pytest.mark.parametrize("load,unit_file", [
+    ("not-found", "enabled"),
+    ("loaded", "disabled"),
+    ("not-found", "disabled"),
+    ("masked", "masked"),
+])
+def test_a_systemd_unit_file_that_is_not_loaded_or_enabled_says_so(
+        tmp_path: Path, monkeypatch, capsys, load, unit_file):
+    """The unit file exists and systemd will not start it. Same sentence as launchd.
+
+    `not-found` is the unloaded job; `disabled` is the unit that is not enabled.
+    Both used to read as "last exit unknown".
+    """
+    name = "p95"
+    _unit_on_disk(tmp_path, monkeypatch, name, "systemd")
+    monkeypatch.setattr(service, "_run", _systemctl(
+        active="inactive",
+        show=f"LoadState={load}\nUnitFileState={unit_file}",
+    ))
+    state = service.status(name, kind="systemd")
+    line = state.line()
+    assert state.not_loaded and not state.idle
+    assert "installed but not loaded, so it will not restart" in line
+    assert f"gbfleet service install --name {name}" in line
+    assert "last exit unknown" not in line
+    code = main(["service", "status", "--name", name])
+    out = capsys.readouterr()
+    assert code == 1
+    assert "installed but not loaded" in out.out
+
+
+def test_a_loaded_systemd_unit_that_exited_keeps_its_exit_line(
+        tmp_path: Path, monkeypatch, capsys):
+    """Enabled and loaded, inactive, last exit 3. That is still the exit line."""
+    name = "p95"
+    _unit_on_disk(tmp_path, monkeypatch, name, "systemd")
+    monkeypatch.setattr(service, "_run", _systemctl(
+        active="inactive",
+        show="LoadState=loaded\nUnitFileState=enabled",
+        exit_code="3",
+    ))
+    state = service.status(name, kind="systemd")
+    assert not state.not_loaded
+    assert "NOT running, last exit 3" in state.line()
+    assert "installed but not loaded" not in state.line()
+    code = main(["service", "status", "--name", name])
+    out = capsys.readouterr()
+    assert code == 0, out.err
+    assert "NOT running, last exit 3" in out.out
+
+
+def test_systemd_silence_about_load_state_is_not_called_not_loaded(
+        tmp_path: Path, monkeypatch):
+    """`systemctl show` saying nothing is not "not loaded". Absence is not the alarm."""
+    name = "p95"
+    _unit_on_disk(tmp_path, monkeypatch, name, "systemd")
+
+    def fake(cmd, timeout=20.0):
+        if "is-active" in cmd:
+            return 3, "inactive"
+        return 1, ""
+
+    monkeypatch.setattr(service, "_run", fake)
+    state = service.status(name, kind="systemd")
+    assert not state.not_loaded
+    assert "last exit unknown" in state.line()
+    assert "installed but not loaded" not in state.line()
 
 
 # --- uninstall ------------------------------------------------------------------------
