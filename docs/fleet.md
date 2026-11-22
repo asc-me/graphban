@@ -69,6 +69,26 @@ has no line filter, so the run filters the clusters to the line's items itself.
 - **Mix**: your share of recent spawns. Off means the scorer always picks the winner.
   Unregistered harnesses cannot take a share. Performance and rankings are on [harness.md](harness.md).
 
+## gbfleet bench
+
+A bench suite is a TOML manifest: a `[suite]` header (`id`, `version` as semver) and
+`[[task]]` rows. Each task has `id`, `kind` (`build` or `review`), `base_sha`, a `[task.brief]`
+(`title`, `description`, `acceptance`), `touchpoints`, `capabilities` (PRD-41 leaves, mirrored in
+`gbfleet.bench.suite.CAPABILITY_LEAVES`), and `size_band`.
+
+- **build**: `reference` (the reference solution's ref in the suite's repo, never copied into a
+  child's worktree) and `[task.check]` (`command`, `tests`).
+- **review**: `expect` (`bounce` or `sign_off`), `ref` (the planted-defect or clean ref) and a
+  `[task.check]`.
+
+The loader refuses a build task with no `base_sha` or `check`, a review task with no `expect`,
+and a capability that is not a leaf, naming the task id and the field.
+
+`gbfleet bench validate MANIFEST [--repo DIR]` runs each build task's check at `base_sha` (must
+fail; else `green_at_base`) and at the reference (must pass). A review task's planted-defect ref
+must make a check red and its clean ref must leave it green. One line per task; exit 1 if any
+task does not discriminate.
+
 ## Reading an empty result
 
 "No ready work to partition" means nothing is ready, not that everything is done. "Nothing
