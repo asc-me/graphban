@@ -108,6 +108,30 @@ def parse_pnpm_audit(out: str, rc: int) -> list[dict]:
     return _cap(found)
 
 
+def parse_npm_audit(out: str, rc: int) -> list[dict]:
+    """npm v7+ `npm audit --json`: a `vulnerabilities` object keyed by package name."""
+    data = _json(out)
+    vulns = data.get("vulnerabilities")
+    if not isinstance(vulns, dict):
+        raise Unreadable("no vulnerabilities object")
+    found = []
+    for key, v in vulns.items():
+        name = v.get("name") or key
+        titles = [x.get("title") for x in v.get("via", []) if isinstance(x, dict) and x.get("title")]
+        # record_scan's `dependency` is direct|transitive, never a package name: the name
+        # lives in the summary.
+        row = {"summary": f"{name}: {titles[0] if titles else 'vulnerable dependency'}",
+               "dependency": "direct" if v.get("isDirect") else "transitive",
+               "severity": str(v.get("severity", "low")).lower()}
+        fix = v.get("fixAvailable")
+        # fixAvailable can name a different package (the parent to bump); its version is
+        # only this package's fixed version when the names match.
+        if isinstance(fix, dict) and fix.get("version") and fix.get("name") == name:
+            row["fixed_version"] = str(fix["version"])
+        found.append(row)
+    return _cap(found)
+
+
 _VULTURE = re.compile(r"^(?P<file>.+?):(?P<line>\d+): (?P<what>.+?) \((?P<conf>\d+)% confidence\)\s*$")
 
 
@@ -190,7 +214,7 @@ def parse_lizard(out: str, rc: int) -> list[dict]:
 class Scanner:
     id: str
     category: str
-    kind: str  # python | pnpm | js
+    kind: str  # python | pydeps | pnpm | npm | js
     argv: tuple[str, ...]
     binary: str
     ok_codes: tuple[int, ...]
@@ -198,12 +222,15 @@ class Scanner:
 
 
 SCANNERS = (
-    Scanner("pip-audit", "security", "python", ("pip-audit", "-f", "json", "--progress-spinner", "off"),
+    # pydeps: only a component with a Python dependency manifest; pip-audit has nothing to read otherwise.
+    Scanner("pip-audit", "security", "pydeps", ("pip-audit", "-f", "json", "--progress-spinner", "off"),
             "pip-audit", (0, 1), parse_pip_audit),
     Scanner("bandit", "security", "python", ("bandit", "-r", ".", "-f", "json", "-q"),
             "bandit", (0, 1), parse_bandit),
     # Same id as scripts/scan_ci.py records for pnpm audit, so CI and nightly rows share a history.
     Scanner("npm-audit", "security", "pnpm", ("pnpm", "audit", "--json"), "pnpm", (0, 1), parse_pnpm_audit),
+    # package-lock.json components (no pnpm lockfile). Same id as the pnpm row: one history per component.
+    Scanner("npm-audit", "security", "npm", ("npm", "audit", "--json"), "npm", (0, 1), parse_npm_audit),
     Scanner("vulture", "deadcode", "python", ("vulture", ".", "--min-confidence", "80"),
             "vulture", (0, 3), parse_vulture),
     Scanner("knip", "deadcode", "js", ("knip", "--reporter", "json"), "knip", (0, 1), parse_knip),
@@ -222,13 +249,18 @@ def component_kinds(root: Path, path: str) -> set[str]:
     kinds: set[str] = set()
     if not comp.is_dir():
         return kinds
-    if (comp / "pyproject.toml").exists() or (comp / "setup.py").exists() \
-            or any(comp.glob("requirements*.txt")) or any(comp.rglob("*.py")):
+    has_manifest = any((comp / m).exists() for m in ("pyproject.toml", "setup.py", "uv.lock")) \
+        or any(comp.glob("requirements*.txt"))
+    if has_manifest or any(comp.rglob("*.py")):
         kinds.add("python")
+    if has_manifest:
+        kinds.add("pydeps")
     if (comp / "package.json").exists():
         kinds.add("js")
         if (comp / "pnpm-lock.yaml").exists() or (root / "pnpm-lock.yaml").exists():
             kinds.add("pnpm")
+        elif (comp / "package-lock.json").exists():
+            kinds.add("npm")
     return kinds
 
 

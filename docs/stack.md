@@ -33,6 +33,7 @@ See the boxes that make up this deployment, whether each is reachable, and its c
 - "Stale" is compared against the project's code-graph revision (the one commit every node was described at), not the Graphban box's build sha. A graph with no nodes or mixed revisions has no revision, so map and scan freshness read unknown; an explicit `head_sha` overrides it. The instance identity rows still show the build sha.
 - "No facts reported" and "No edges" mean none were reported, not that none exist.
 - Refactor (complexity) scans: `radon` for Python components and `lizard` (recorded as scanner id `complexity`, CCN > 10, `node_modules`/`dist` excluded) for JS/TS components; `gban scan --dry-run` lists which are installed. A missing lizard records `tool_missing`, never clean.
+- Security scanners by manifest (`gban scan`): `pip-audit` only for a component with a Python dependency manifest (`pyproject.toml`, `setup.py`, `requirements*.txt` or `uv.lock`); `bandit` for any component with `.py` files; `pnpm audit` when a `pnpm-lock.yaml` exists; `npm audit --json` when there is a `package-lock.json` and no pnpm lockfile (both recorded as scanner id `npm-audit`). A missing tool records `tool_missing`.
 - "No findings reported" is not a pass if the scan matrix shows never-scanned cells.
 - Empty states name what is missing (no fleet, no sync).
 
