@@ -502,6 +502,21 @@ def build_parser() -> argparse.ArgumentParser:
     ent_rm = ent_do.add_parser("remove", help="delete one record, leaving the others")
     ent_rm.add_argument("name")
 
+    bench = sub.add_parser("bench", help="bench suites: manifest checks (validate)")
+    bench_do = bench.add_subparsers(dest="act", metavar="ACT")
+    bench_val = bench_do.add_parser(
+        "validate",
+        help="check that every task in a suite manifest discriminates",
+        description=(
+            "Build task: the check must fail at base_sha and pass at the reference solution.\n"
+            "Review task: the planted-defect ref must make a check red, the clean ref green.\n"
+            "One line per task; exit 1 if any task does not discriminate."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    bench_val.add_argument("manifest", help="the suite manifest (TOML)")
+    bench_val.add_argument("--repo", default=".", help="the suite's git repository (default: here)")
+
     sub.add_parser(
         "gc",
         help="reap the child worktrees of repositories whose supervisor is gone",
@@ -1530,6 +1545,24 @@ def _entitlement(args) -> int:
     return 0
 
 
+def _bench(args: argparse.Namespace) -> int:
+    from .bench import suite as suite_mod
+    from .bench import validate as validate_mod
+
+    if args.act != "validate":
+        print("gbfleet bench: say what to do. Try `gbfleet bench validate MANIFEST`.", file=sys.stderr)
+        return 2
+    try:
+        loaded = suite_mod.load(args.manifest)
+    except suite_mod.SuiteError as exc:
+        print(f"gbfleet bench validate: {exc}", file=sys.stderr)
+        return 1
+    verdicts = validate_mod.validate(loaded, Path(args.repo))
+    for v in verdicts:
+        print(v.line())
+    return 0 if all(v.ok for v in verdicts) else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1573,6 +1606,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "entitlement":
         return _entitlement(args)
+
+    if args.command == "bench":
+        return _bench(args)
 
     if args.command == "teardown":
         return _teardown(args)
