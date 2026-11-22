@@ -31,6 +31,17 @@ on the same files. The graph is only what agents have described; it is not a sca
 Agents populate the graph by calling `describe_code` as they work. A node marked "not described"
 is referenced but has no summary yet. "No edges to rank" in Hubs means no edges are described.
 
+## Branch descriptions do not move the map's revision
+
+`gban code map` sends `producer: "gban-codemap/<version>"` on every `describe_code` batch and
+stamps each node with it. A later `describe_code` without that marker (an agent describing a
+file from its branch) cannot change the revision or content_hash of a producer-stamped node: the
+server keeps the producer's values, still updates summary, name and edges, and lists the paths
+in `kept_revision`. So the map stays pinned at one revision and the Stack head stays known. It
+can still create nodes the producer never stamped and describe symbol nodes (`path::name`). A
+producer batch always wins, so the next since-run or full run restamps to its target. Batches
+without the marker behave as before on nodes the producer never stamped.
+
 ## Related
 
 [links-graph.md](links-graph.md), [stack.md](stack.md), [fleet.md](fleet.md).
