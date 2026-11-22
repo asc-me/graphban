@@ -13,6 +13,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -267,9 +268,13 @@ def component_kinds(root: Path, path: str) -> set[str]:
 def resolve_argv(scanner: Scanner, comp: Path) -> list[str] | None:
     """The command to run, or None when the scanner is not installed."""
     if scanner.id == "knip":
-        local = comp / "node_modules" / ".bin" / "knip"
-        if local.exists():
-            return [str(local), *scanner.argv[1:]]
+        bin_dir = comp / "node_modules" / ".bin"
+        # On Windows the runnable shim is knip.cmd; the bare `knip` is a sh script.
+        names = ("knip.cmd", "knip") if os.name == "nt" else ("knip",)
+        for name in names:
+            local = bin_dir / name
+            if local.exists():
+                return [str(local), *scanner.argv[1:]]
         return None  # needs node_modules; absent -> tool_missing
     if shutil.which(scanner.binary) is None:
         return None
@@ -385,7 +390,13 @@ class Worktree:
         try:
             dst.symlink_to(src.resolve(), target_is_directory=True)
         except OSError:
-            return False
+            if os.name != "nt":
+                return False
+            try:  # unprivileged Windows cannot symlink; a directory junction needs no privilege
+                import _winapi
+                _winapi.CreateJunction(str(src.resolve()), str(dst))
+            except (ImportError, OSError):
+                return False
         self.links.append(dst)
         return True
 
@@ -397,7 +408,10 @@ class Worktree:
             try:
                 link.unlink()
             except OSError:
-                pass
+                try:  # a Windows directory symlink or junction is removed as a directory entry
+                    os.rmdir(link)
+                except OSError:
+                    pass
         self.links = []
         try:
             codemap._git(self.repo, "worktree", "remove", "--force", str(self.path))
