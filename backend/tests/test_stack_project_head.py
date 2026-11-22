@@ -39,7 +39,7 @@ def db(client, monkeypatch):
 def _graph(db, *revisions):
     for i, rev in enumerate(revisions):
         code_graph.describe_code(
-            db, project_id=PID, nodes=[{"path": f"src/f{i}.py", "kind": "file"}],
+            db, project_id=PID, nodes=[{"path": f"src/f{i}.py", "kind": "file", "content_hash": f"sha256:{i:064x}"}],
             revision=rev,
         )
 
@@ -169,3 +169,24 @@ def test_mixed_file_revisions_stay_unknown_whatever_symbols_say(db):
 def test_file_node_without_revision_is_unknown(db):
     _graph(db, R, "")
     assert stack_svc.project_head_sha(db, PID) is None
+
+
+def test_retired_nodes_do_not_unpin_the_map(db):
+    _graph(db, R, R)
+    code_graph.describe_code(
+        db, project_id=PID, nodes=[{"path": "src/old.py", "kind": "file",
+                                    "content_hash": "sha256:" + "9" * 64}],
+        revision=R2,
+    )
+    code_graph.describe_code(db, project_id=PID, stale=["src/old.py"], revision=R)
+    old = db.query(CodeNode).filter_by(project_id=PID, path="src/old.py").one()
+    assert not old.fresh and old.revision == R2
+    assert stack_svc.project_head_sha(db, PID) == R
+
+
+def test_directory_nodes_without_content_do_not_unpin_the_map(db):
+    _graph(db, R, R)
+    code_graph.describe_code(db, project_id=PID, nodes=[{"path": "src", "kind": "module"}])
+    d = db.query(CodeNode).filter_by(project_id=PID, path="src").one()
+    assert not d.content_hash and not d.revision
+    assert stack_svc.project_head_sha(db, PID) == R
