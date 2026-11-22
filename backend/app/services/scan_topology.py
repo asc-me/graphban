@@ -136,7 +136,7 @@ def scan_cells(db: Session, project_id: str) -> tuple[dict[str, Any], list[ScanC
         cells.append(ScanCell(
             id=cid,
             path=path,
-            categories=frozenset({"refactor", "stub", "deadcode", "tests", "work"}),
+            categories=frozenset({"refactor", "stub", "deadcode", "tests", "work", "security"}),
             exact_path=False,
         ))
 

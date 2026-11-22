@@ -812,6 +812,10 @@ def scan_status(
     """
     head = (head_sha or "").strip()
     if path:
+        if not head:
+            from app.services import stack as stack_svc
+
+            head = stack_svc.project_head_sha(db, project_id) or ""
         path_n = _norm_path(path)
         q = select(CodeScan).where(
             CodeScan.project_id == project_id,
@@ -1152,8 +1156,18 @@ def component_health(db: Session, project_id: str, *, head_sha: str = "") -> dic
             else _scans_for_prefix(db, project_id, prefix)
         )
         cats: dict[str, dict] = {}
+        security_scans = scans
+        if "security" in cell.categories and not cell.exact_path:
+            # Directory cell: security rows at this directory's exact path only.
+            security_scans = _scans_for_exact_path(db, project_id, prefix) + (
+                _scans_for_exact_path(db, project_id, prefix.rstrip("/"))
+                if prefix.rstrip("/") != prefix else []
+            )
         for cat in cell.categories:
-            if cat == "coverage":
+            if cat == "security" and not cell.exact_path:
+                cats[cat] = _merge_category_scans(
+                    db, security_scans, cat, head, prefix=prefix)
+            elif cat == "coverage":
                 if cell.id == "_coverage:not_computable":
                     cats[cat] = _coverage_not_computable()
                 else:

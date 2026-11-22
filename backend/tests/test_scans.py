@@ -827,6 +827,12 @@ def _report_every_topology_cell(db, *, findings, head_sha="h1"):
             findings=[{"severity": "crit", "summary": "bad", "path": path}] if findings else [],
         )
     for prefix in _SOURCE_DIRS:
+        # Directory cells carry security too (GRPH-1837): rows at the directory path.
+        scans_svc.record_scan(
+            db, project_id="core", scanner_id="pip-audit", category="security", path=prefix,
+            scanned_sha=head_sha, result="complete",
+            findings=[{"severity": "crit", "summary": "bad", "path": prefix}] if findings else [],
+        )
         for sid in ("radon", "stubscan", "vulture", "pytest"):
             kw = {"tests": counts} if sid == "pytest" else {}
             scans_svc.record_scan(
