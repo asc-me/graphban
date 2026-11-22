@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -56,7 +58,7 @@ def test_refuses_unknown_capability():
 
 def test_leaves_match_backend_source():
     src = (Path(__file__).resolve().parents[2] / "backend/app/services/harness.py").read_text()
-    block = re.search(r"CAPABILITY_LEAVES[^=]*=\s*\((.*?)\)", src, re.S).group(1)
+    block = re.search(r"CAPABILITY_LEAVES[^=]*=\s*\((.*?)\)", src, re.DOTALL).group(1)
     assert tuple(re.findall(r'"([A-Z]\d)"', block)) == CAPABILITY_LEAVES
 
 
@@ -82,12 +84,16 @@ def repo(tmp_path: Path):
     return r, base, git(r, "rev-parse", "HEAD")
 
 
-def manifest(tmp_path: Path, repo_info, *, base_is_green=False) -> Path:
-    r, base, fixed = repo_info
+PYTEST = f"{shlex.quote(sys.executable)} -m pytest -q -p no:cacheprovider"
+
+
+def manifest(tmp_path: Path, repo_info, *, base_is_green=False, command=PYTEST) -> Path:
+    _, base, fixed = repo_info
     sha = fixed if base_is_green else base
     p = tmp_path / "suite.toml"
+    # sys.executable, not a bare `python`: the host PATH may carry no python at all.
     p.write_text(HEAD + build_task(base_sha=sha, reference=fixed).replace(
-        "python -m pytest -q", "python -m pytest -q -p no:cacheprovider"))
+        "python -m pytest -q", command))
     return p
 
 
@@ -111,3 +117,10 @@ def test_sabotage_skipping_base_run_is_caught(tmp_path, repo):
     assert all(v.ok for v in sabotaged)  # the sabotage hides the defect...
     honest = validate_mod.validate(s, repo[0])
     assert [v.status for v in honest] == ["green_at_base"]  # ...which the real run reports
+
+
+def test_unrunnable_check_is_not_discriminating(tmp_path, repo, capsys):
+    """A command that cannot start is its own status, never a red check at base."""
+    p = manifest(tmp_path, repo, command="gbfleet-no-such-binary-xyz")
+    assert main(["bench", "validate", str(p), "--repo", str(repo[0])]) == 1
+    assert "t1: check_unrunnable" in capsys.readouterr().out

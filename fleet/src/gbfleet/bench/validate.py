@@ -37,8 +37,13 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["git", "-C", str(repo), *args], check=False, capture_output=True, text=True)
 
 
-def run_check(repo: Path, ref: str, check: Check, overlay: str = "") -> tuple[bool | None, str]:
-    """True when the check passes at `ref`, False when it fails, None when `ref` is unusable.
+PASS, FAIL, BAD_REF, UNRUNNABLE = "pass", "fail", "bad_ref", "check_unrunnable"
+
+
+def run_check(repo: Path, ref: str, check: Check, overlay: str = "") -> tuple[str, str]:
+    """PASS or FAIL for the check at `ref`; BAD_REF when `ref` cannot be checked out;
+    UNRUNNABLE when the command cannot start (a missing binary is not a red check, so
+    it must never count as discriminating).
 
     `overlay`, a second ref, supplies the check's test files on top of `ref`: a test that
     only exists in the reference commit must still be run against the base.
@@ -47,7 +52,7 @@ def run_check(repo: Path, ref: str, check: Check, overlay: str = "") -> tuple[bo
         tree = Path(tmp) / "tree"
         added = _git(repo, "worktree", "add", "--detach", str(tree), ref)
         if added.returncode != 0:
-            return None, f"cannot check out {ref}: {added.stderr.strip()}"
+            return BAD_REF, f"cannot check out {ref}: {added.stderr.strip()}"
         try:
             if overlay and check.tests:
                 _git(tree, "checkout", overlay, "--", *check.tests)
@@ -57,10 +62,10 @@ def run_check(repo: Path, ref: str, check: Check, overlay: str = "") -> tuple[bo
                 done = subprocess.run(argv, check=False, cwd=tree, capture_output=True,
                                       text=True, timeout=CHECK_TIMEOUT_S)
             except FileNotFoundError as exc:
-                return False, f"cannot run check: {exc}"
+                return UNRUNNABLE, f"cannot run check: {exc}"
             except subprocess.TimeoutExpired:
-                return False, "timed out"
-            return done.returncode == 0, ""
+                return FAIL, "timed out"
+            return (PASS if done.returncode == 0 else FAIL), ""
         finally:
             _git(repo, "worktree", "remove", "--force", str(tree))
 
@@ -70,14 +75,14 @@ def _build(repo: Path, task: Task, *, skip_base: bool = False) -> Verdict:
         return Verdict(task.id, "no_check", "a build task needs a check")
     if not skip_base:
         at_base, why = run_check(repo, task.base_sha, task.check, overlay=task.reference)
-        if at_base is None:
-            return Verdict(task.id, "bad_ref", why)
-        if at_base:
+        if at_base in (BAD_REF, UNRUNNABLE):
+            return Verdict(task.id, at_base, why)
+        if at_base == PASS:
             return Verdict(task.id, "green_at_base", "the check passes before the work")
     at_ref, why = run_check(repo, task.reference, task.check)
-    if at_ref is None:
-        return Verdict(task.id, "bad_ref", why)
-    if not at_ref:
+    if at_ref in (BAD_REF, UNRUNNABLE):
+        return Verdict(task.id, at_ref, why)
+    if at_ref == FAIL:
         return Verdict(task.id, "red_at_reference", "the check fails on the reference solution")
     return Verdict(task.id, "ok")
 
@@ -85,9 +90,10 @@ def _build(repo: Path, task: Task, *, skip_base: bool = False) -> Verdict:
 def _review(repo: Path, task: Task) -> Verdict:
     if task.check is None:
         return Verdict(task.id, "no_check", "a review task needs a check to discriminate")
-    passed, why = run_check(repo, task.ref, task.check)
-    if passed is None:
-        return Verdict(task.id, "bad_ref", why)
+    outcome, why = run_check(repo, task.ref, task.check)
+    if outcome in (BAD_REF, UNRUNNABLE):
+        return Verdict(task.id, outcome, why)
+    passed = outcome == PASS
     if task.expect == "bounce" and passed:
         return Verdict(task.id, "green_at_defect", "the planted defect leaves every check green")
     if task.expect == "sign_off" and not passed:
