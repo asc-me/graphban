@@ -275,17 +275,32 @@ def plan(built: dict, existing: dict[str, dict]) -> dict:
     return {"nodes": nodes, "existing": len(existing), "new": new, "kept": kept, "gone": gone, "edges": built["edges"]}
 
 
+def producer_marker() -> str:
+    """`gban-codemap/<version>`: tells the server these batches are the map producer's, so a
+    describe from a branch cannot move the revision of a node stamped here (GRPH-1845)."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+        try:
+            v = version("graphban-cli")
+        except PackageNotFoundError:
+            v = "0"
+    except ImportError:  # pragma: no cover
+        v = "0"
+    return f"gban-codemap/{v}"
+
+
 def apply(call, built: dict, planned: dict, batch: int = BATCH) -> dict:
     """Post nodes then edges in batches (no prune), then retire the gone paths."""
     rev = built["revision"]
+    prod = producer_marker()
     nodes, edges = planned["nodes"], planned["edges"]
     for i in range(0, len(nodes), batch):
-        call("describe_code", {"nodes": nodes[i:i + batch], "revision": rev})
+        call("describe_code", {"nodes": nodes[i:i + batch], "revision": rev, "producer": prod})
     for i in range(0, len(edges), batch * 4):
-        call("describe_code", {"edges": edges[i:i + batch * 4], "revision": rev})
+        call("describe_code", {"edges": edges[i:i + batch * 4], "revision": rev, "producer": prod})
     marked = 0
     if planned["gone"]:
-        reply = call("describe_code", {"stale": planned["gone"], "revision": rev})
+        reply = call("describe_code", {"stale": planned["gone"], "revision": rev, "producer": prod})
         marked = reply.get("marked_stale", len(planned["gone"]))
     return {"nodes": len(nodes), "edges": len(edges), "marked_stale": marked}
 

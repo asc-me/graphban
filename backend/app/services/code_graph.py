@@ -172,6 +172,8 @@ def upsert_node(
     fresh: bool = True,
     revision: str = "",
     retained_unspecified: list | None = None,
+    producer: str = "",
+    kept_revision: list | None = None,
 ) -> CodeNode:
     """Create or update the node at (project_id, path). Re-embeds only when the embed
     input actually changed, so an unchanged re-describe is cheap."""
@@ -213,6 +215,7 @@ def upsert_node(
             content_hash=content_hash,
             fresh=fresh,
             revision=revision,
+            producer=producer,
             embedding=safe_embed(new_embed_input),
         )
         db.add(node)
@@ -222,25 +225,38 @@ def upsert_node(
         node.name = name
         node.lang = lang or node.lang
         node.summary = summary
-        # A hash whose rule is unknown never overwrites one whose rule is known
-        # (GRPH-406). `upsert` used to take whatever arrived, so an agent that had not
-        # adopted the spec destroyed the provenance an agent that had just established —
-        # and `code_sync.compute_diff` then re-pushed every path it touched, which is the
-        # churn this exists to stop. PRD-17 made several agents describing one project the
-        # normal case, so that collision is the common one rather than a corner.
-        #
-        # Monotone on purpose: provenance can improve and never degrade. The server cannot
-        # compute the hash — it never sees the file — so retaining the better of the two is
-        # the whole of what it CAN do, and it needs no migration and breaks no caller.
-        if content_hash and hashing.comparable(node.content_hash) and not hashing.comparable(content_hash):
-            if retained_unspecified is not None:
-                retained_unspecified.append(path)
+        # GRPH-1845: a node the code map producer stamped keeps its revision and content_hash
+        # against a describe that is not the producer's (a fleet child describing from its
+        # branch). Summary, name and edges still update. A producer batch always wins.
+        keep = bool(node.producer) and not producer and (
+            (revision and revision != node.revision)
+            or (content_hash and content_hash != node.content_hash)
+        )
+        if keep:
+            if kept_revision is not None:
+                kept_revision.append(path)
         else:
-            node.content_hash = content_hash or node.content_hash
-        # `or node.revision`, matching content_hash: a describe that omits the revision is
-        # saying "I do not know", not "forget what you knew". Overwriting a recorded sha
-        # with "" would let one legacy caller silently un-pin a whole map.
-        node.revision = revision or node.revision
+            # A hash whose rule is unknown never overwrites one whose rule is known
+            # (GRPH-406). `upsert` used to take whatever arrived, so an agent that had not
+            # adopted the spec destroyed the provenance an agent that had just established —
+            # and `code_sync.compute_diff` then re-pushed every path it touched, which is the
+            # churn this exists to stop. PRD-17 made several agents describing one project the
+            # normal case, so that collision is the common one rather than a corner.
+            #
+            # Monotone on purpose: provenance can improve and never degrade. The server cannot
+            # compute the hash — it never sees the file — so retaining the better of the two is
+            # the whole of what it CAN do, and it needs no migration and breaks no caller.
+            if content_hash and hashing.comparable(node.content_hash) and not hashing.comparable(content_hash):
+                if retained_unspecified is not None:
+                    retained_unspecified.append(path)
+            else:
+                node.content_hash = content_hash or node.content_hash
+            # `or node.revision`, matching content_hash: a describe that omits the revision is
+            # saying "I do not know", not "forget what you knew". Overwriting a recorded sha
+            # with "" would let one legacy caller silently un-pin a whole map.
+            node.revision = revision or node.revision
+            if producer:
+                node.producer = producer
         node.fresh = fresh
         if new_embed_input != old_embed_input:
             node.embedding = safe_embed(new_embed_input)
@@ -303,6 +319,7 @@ def describe_code(
     prune: bool = False,
     revision: str = "",
     stale: list[str] | None = None,
+    producer: str = "",
 ) -> dict:
     """Upsert a batch of nodes and edges the agent has described. Idempotent by
     (project_id, path) for nodes and (project_id, src, dst, type) for edges.
@@ -319,6 +336,10 @@ def describe_code(
     single checkout, so a per-node revision would invite a caller to report a mixture that
     cannot physically have been observed in one pass. Omitting it leaves the nodes at the
     unknown revision, which `map_revision` refuses to treat as agreement.
+
+    `producer` marks the batch as the code map producer's (`gban-codemap/<version>`). It stamps
+    each node it upserts; a later batch WITHOUT it cannot change the revision or content_hash of
+    a stamped node (GRPH-1845), and the paths kept are reported as `kept_revision`.
     """
     nodes = nodes or []
     edges = edges or []
@@ -327,6 +348,7 @@ def describe_code(
     n_up = 0
     corrected: list[dict] = []
     retained: list[str] = []
+    kept_rev: list[str] = []
     for n in nodes:
         path = str(n.get("path", "")).strip()
         if not path:
@@ -343,6 +365,8 @@ def describe_code(
             content_hash=str(n.get("content_hash", "")),
             revision=revision,
             retained_unspecified=retained,
+            producer=producer,
+            kept_revision=kept_rev,
         )
         # Reported, not silent (GRPH-382). Coercing without saying so is how the live graph
         # became 97% one value with nobody noticing; a caller that learns it mislabelled can
@@ -409,6 +433,9 @@ def describe_code(
         # hashes are being refused can adopt `sha256:<hex>` of rstripped contents; one that
         # is never told cannot.
         "hash_retained": sorted(set(retained)),
+        # Paths whose revision/content_hash were kept because the code map producer stamped
+        # them and this batch carried no producer marker (GRPH-1845).
+        "kept_revision": sorted(set(kept_rev)),
     }
 
 

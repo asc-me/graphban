@@ -419,7 +419,8 @@ CORE_TOKENS = 9161  # GRPH-1799: -17, get_backlog description trimmed to pay for
 # CORE_TOKENS and MEASURED_TOKENS do not move.
 # codegraph 1795 -> 1808 (GRPH-1819): describe_code gains `stale` and the omitted-summary rule.
 # Same +13 as MEASURED_TOKENS 18141 -> 18154; CORE_TOKENS does not move.
-TIER_TOKENS = {"prd": 3863, "codegraph": 1808, "fleet": 1733, "misc": 1585}
+# codegraph 1808 -> 1811 (GRPH-1845): describe_code gains `producer`; its description is trimmed.
+TIER_TOKENS = {"prd": 3863, "codegraph": 1811, "fleet": 1733, "misc": 1585}
 # misc 1577 -> 1586 (GRPH-1780, P91 S8): `propose_rule` names the guidance draft.
 # misc 1463 -> 1577 (GRPH-1775, P91 S3): `propose_rule`. The whole bill is this tier.
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.
