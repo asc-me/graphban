@@ -34,7 +34,7 @@ class Verdict:
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    return subprocess.run(["git", "-C", str(repo), *args], check=False, capture_output=True, text=True)
 
 
 def run_check(repo: Path, ref: str, check: Check, overlay: str = "") -> tuple[bool | None, str]:
@@ -54,7 +54,7 @@ def run_check(repo: Path, ref: str, check: Check, overlay: str = "") -> tuple[bo
             # argv, not a shell: the command is split like a shell would, with no expansion.
             argv = [*shlex.split(check.command), *check.tests]
             try:
-                done = subprocess.run(argv, cwd=tree, capture_output=True,
+                done = subprocess.run(argv, check=False, cwd=tree, capture_output=True,
                                       text=True, timeout=CHECK_TIMEOUT_S)
             except FileNotFoundError as exc:
                 return False, f"cannot run check: {exc}"
