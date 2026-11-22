@@ -302,3 +302,56 @@ def test_client_default_timeout_is_30_and_override_is_per_call(monkeypatch):
     c.call("GET", "/b", timeout=120.0)
     c.call("GET", "/c")
     assert TIMEOUT == 30.0 and seen == [30.0, 120.0, 30.0]
+
+
+def _js_repo(tmp_path: Path) -> Path:
+    (tmp_path / "web").mkdir()
+    (tmp_path / "web/package.json").write_text("{}\n")
+    (tmp_path / "web/a.ts").write_text("export const x = 1\n")
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+    return tmp_path
+
+
+_LIZARD_HIT = '"30","12","200","2","35","big@5-40@./src/a.ts","./src/a.ts","big","big(a)","5","40"\n'
+_LIZARD_LOW = '"3","2","20","0","3","ok@1-3@./src/a.ts","./src/a.ts","ok","ok()","1","3"\n'
+
+
+def _js_scan(tmp_path, monkeypatch, installed, outputs):
+    repo = _js_repo(tmp_path)
+    _installed(monkeypatch, installed)
+    srv = Server(paths=("web/",))
+    scan.run_scan(repo, codemap.head(repo), srv, run=_runner(outputs))
+    return srv
+
+
+def test_js_component_gets_complexity_finding(tmp_path, monkeypatch):
+    srv = _js_scan(tmp_path, monkeypatch, {"lizard"}, {"lizard": (0, _LIZARD_HIT + _LIZARD_LOW, "")})
+    r = _by(srv)["complexity"]
+    assert r["category"] == "refactor" and r["path"] == "web/" and r["result"] == "complete"
+    assert len(r["findings"]) == 1 and r["findings"][0]["path"] == "./src/a.ts:5"
+
+
+def test_js_complexity_no_findings_is_clean(tmp_path, monkeypatch):
+    srv = _js_scan(tmp_path, monkeypatch, {"lizard"}, {"lizard": (0, _LIZARD_LOW, "")})
+    r = _by(srv)["complexity"]
+    assert r["result"] == "complete" and r["findings"] == []
+
+
+def test_js_complexity_missing_lizard_is_tool_missing(tmp_path, monkeypatch):
+    srv = _js_scan(tmp_path, monkeypatch, set(), {})
+    assert _by(srv)["complexity"]["result"] == "tool_missing"
+
+
+@pytest.mark.parametrize("res", [(2, "", "boom"), (0, "garbage not csv\n", "")])
+def test_js_complexity_bad_run_is_incomplete(tmp_path, monkeypatch, res):
+    srv = _js_scan(tmp_path, monkeypatch, {"lizard"}, {"lizard": res})
+    assert _by(srv)["complexity"]["result"] == "incomplete"
+
+
+def test_dry_run_lists_complexity(tmp_path, monkeypatch, capsys):
+    repo = _js_repo(tmp_path)
+    _installed(monkeypatch, set())
+    scan.run_scan(repo, codemap.head(repo), Server(paths=("web/",)), dry_run=True)
+    assert "complexity\tnot installed" in capsys.readouterr().out
