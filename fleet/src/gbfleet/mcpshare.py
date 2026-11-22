@@ -23,17 +23,36 @@ exact name per line and unions with `--mcp-server`, through the same `select` an
 refusals. It exists because a Harness rate compares vendors as if they had been handed the same
 build tools, and a grant that depends on someone remembering a flag is not that. Names only —
 credentials stay in the source file.
+
+**The file is the harness's, not always Claude's** (GRPH-1038). `--adapter grok` reads
+`~/.grok/config.toml` (`[mcp_servers.<name>]`); `claude`, and any adapter with no known
+user-level file, read `~/.claude.json`. The refusal names whichever file was opened.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import tomllib
 from pathlib import Path
 
-#: Where Claude Code keeps its servers. Named as a DEFAULT rather than hardcoded, because the
+#: Where Claude Code keeps its servers. The default for an adapter whose own user-level
+#: file this module does not know. Named as a DEFAULT rather than hardcoded, because the
 #: point of this module is that the operator says what is shared, and that includes from where.
 DEFAULT_SOURCE = "~/.claude.json"
+
+#: The file the child harness actually reads (GRPH-1038). A grok wave used to check
+#: Claude's file and refuse servers `~/.grok/config.toml` already defined. An adapter
+#: missing from this map keeps DEFAULT_SOURCE, and the refusal still names that file.
+ADAPTER_SOURCES = {
+    "claude": "~/.claude.json",
+    "grok": "~/.grok/config.toml",
+}
+
+#: Keys the seat writer will emit for a child. grok's user file also stores `enabled`,
+#: which the writer sets itself; copying it onto the grant makes the child's seat
+#: unrenderable, so the wave dies after the check that was meant to let it start.
+_GRANTABLE = ("type", "url", "headers", "command", "args", "env")
 
 #: Never shareable, whatever the operator types. `graphban` is written by the seat itself with
 #: the child's OWN credential; copying the operator's would hand a child a key with different
@@ -50,23 +69,28 @@ class ShareRefused(RuntimeError):
     """A named server could not be shared, and the wave should not start without it."""
 
 
+def source_for(adapter: str = "") -> str:
+    """The user-level MCP file for `adapter`. Unknown adapters stay on Claude's."""
+    return ADAPTER_SOURCES.get((adapter or "").strip(), DEFAULT_SOURCE)
+
+
 def source_path(source: str = "") -> Path:
     return Path(os.path.expanduser(source or DEFAULT_SOURCE))
 
 
-def available(source: str = "") -> dict[str, dict]:
-    """Every server the source declares, global and per-project merged.
+def _toml_servers(blob: dict) -> dict[str, dict]:
+    """`[mcp_servers.<name>]` tables, in the shape the seat writer already accepts."""
+    raw = blob.get("mcp_servers") or {}
+    if not isinstance(raw, dict):
+        return {}
+    found = {}
+    for name, spec in raw.items():
+        if isinstance(spec, dict):
+            found[name] = {k: spec[k] for k in _GRANTABLE if k in spec}
+    return found
 
-    Reading the whole file to pick one entry out of it is deliberate and is the reason
-    `select` refuses patterns: the file is opened, but only exact names leave it.
-    """
-    path = source_path(source)
-    try:
-        blob = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise ShareRefused(f"could not read {path}: {exc}") from exc
-    if not isinstance(blob, dict):
-        raise ShareRefused(f"{path} is not a JSON object")
+
+def _json_servers(blob: dict) -> dict[str, dict]:
     found: dict[str, dict] = {}
     for entry in (blob.get("mcpServers") or {}).items():
         found[entry[0]] = entry[1]
@@ -75,6 +99,32 @@ def available(source: str = "") -> dict[str, dict]:
             for name, server in (project.get("mcpServers") or {}).items():
                 found.setdefault(name, server)
     return {k: v for k, v in found.items() if isinstance(v, dict)}
+
+
+def available(source: str = "") -> dict[str, dict]:
+    """Every server the source declares, global and per-project merged.
+
+    Reading the whole file to pick one entry out of it is deliberate and is the reason
+    `select` refuses patterns: the file is opened, but only exact names leave it.
+
+    A `.toml` source is grok's user config (`[mcp_servers.<name>]`). Anything else is
+    Claude's JSON, including the per-project `projects` map. The caller chooses the
+    file from the adapter (`source_for`); this only reads the path it was given.
+    """
+    path = source_path(source)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ShareRefused(f"could not read {path}: {exc}") from exc
+    try:
+        blob = tomllib.loads(text) if path.suffix == ".toml" else json.loads(text)
+    except ValueError as exc:
+        raise ShareRefused(f"could not read {path}: {exc}") from exc
+    if not isinstance(blob, dict):
+        raise ShareRefused(f"{path} is not a JSON object")
+    if path.suffix == ".toml":
+        return _toml_servers(blob)
+    return _json_servers(blob)
 
 
 def select(names: list[str], source: str = "", label: str = "--mcp-server") -> dict[str, dict]:

@@ -1137,6 +1137,13 @@ def _shared_servers(args) -> dict:
     Unions with the project's `.gbfleet/servers` (GRPH-998), read from the repository ROOT:
     `--repo` may be a subdirectory, and reading beside it would find nothing and grant nothing
     — a mis-pointed flag passing as a project that listed no servers.
+
+    The file is the one the child harness reads (GRPH-1038): `~/.grok/config.toml` for
+    `--adapter grok`, `~/.claude.json` for claude, and Claude's file again for an adapter
+    with no known user-level config. A command with no `--adapter` (stdio `mcp`) stays
+    on that default. Passing the path in here, rather than inside `grants`, is the call
+    a wave actually makes — a correct `source_for` that this function never asks is a
+    check that still refuses grok for a missing Claude server.
     """
     from . import mcpshare
 
@@ -1146,7 +1153,12 @@ def _shared_servers(args) -> dict:
         print(f"gbfleet: {exc}", file=sys.stderr)
         raise SystemExit(2)
     try:
-        return mcpshare.grants(list(getattr(args, "mcp_server", []) or []), root)
+        adapter = getattr(args, "adapter", "") or ""
+        return mcpshare.grants(
+            list(getattr(args, "mcp_server", []) or []),
+            root,
+            mcpshare.source_for(adapter),
+        )
     except mcpshare.ShareRefused as exc:
         print(f"gbfleet: {exc}", file=sys.stderr)
         raise SystemExit(2)
