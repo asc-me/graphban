@@ -162,7 +162,7 @@ A box admin is required for every write. A non-admin is `403` with
 `GET /api/sync/projects` adds `local`: one object per local project. A project
 with no `sync_project` row is `sync_level: local`. It is not reported as
 digests, and it is not reported as synced. Each object carries `cloud_permission`,
-`backfill` (`total`, `confirmed`, `parked`, `state`), `queued`, `parked`
+`backfill` (`{state: off}` when `sync_level` is `local` or `digests`, so a cleared manifest is not reported as `running`; at `sync`, `total`, `confirmed`, `parked`, and `state` of `running`, `done`, `parked`, or `refused`), `queued`, `parked`
 (`count`, `reasons`), `backlog_bytes`, `backlog_full`, `held_by` (`budget`,
 `retry_after`, `contract`, or null), `last_push_at`, and `last_push_result`.
 `backlog_full` is `true` when `backlog_bytes()` of the outbox table is at the

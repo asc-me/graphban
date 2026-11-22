@@ -162,11 +162,23 @@ describe("Settings → Sync project sync", () => {
     afterEach(() => localStorage.removeItem(LINK_FINISHED_KEY));
     const localOnly = {
       ...local, sync_level: "local" as const, cloud_permission: null,
+      backfill: { state: "off" as const },
       queued: 0, parked: { count: 0, reasons: [] }, held_by: null, last_push_result: null,
     };
     const unmapped = (): SyncStatus => ({
       ...status(true),
       projects: [proj({ mapped: false, cloud_project_id: null, cloud_project_tag: null })],
+    });
+
+    it("does not show a full-sync backfill for a local-only project", async () => {
+      api.syncStatus.mockResolvedValue(unmapped());
+      api.syncCloudProjects.mockResolvedValue({
+        status: "ok", projects: [], mapping: [], local: [localOnly],
+      });
+      renderPanel();
+      const card = await screen.findByTestId("project-sync");
+      expect(await within(card).findByText(/queued 0/)).toBeInTheDocument();
+      expect(card).not.toHaveTextContent(/\d+ of \d+/);
     });
 
     it("Sync to org creates in org when no cloud project matches the tag", async () => {

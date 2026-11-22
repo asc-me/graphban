@@ -506,8 +506,10 @@ export function LinkToOrgWizard({
             };
         try {
           const saved = await api.putProjectSync(p.project_id, body);
-          if (saved?.backfill && typeof saved.backfill.total === "number") {
-            prog[p.project_id] = { confirmed: saved.backfill.confirmed, total: saved.backfill.total };
+          const started = saved?.backfill;
+          if (started && "total" in started && typeof started.total === "number"
+              && typeof started.confirmed === "number") {
+            prog[p.project_id] = { confirmed: started.confirmed, total: started.total };
           }
         } catch (e) {
           const owner = takenOwner(e);
