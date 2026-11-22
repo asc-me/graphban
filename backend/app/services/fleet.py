@@ -2792,22 +2792,38 @@ class UnreadableAcceptance(MissingAcceptanceCoverage):
 # are what planners actually write when nobody told them it (GRPH-893: SA-498).
 _ACCEPTANCE_HEADINGS = {"tests", "acceptance", "acceptance criteria"}
 _HEADING = re.compile(r"^(#{2,3})\s+(.*?)\s*#*$")
-# An `Acceptance:` label as prose — `Acceptance: the gate names…`, `**Acceptance:** …`.
+# A parenthetical qualifier on the label: `Acceptance (D3)`, `Acceptance criteria (draft)`.
+# It is not a different word. Without it, `**Acceptance (D3):**` matches none of the
+# patterns below and the gate records "no clauses written" (GRPH-1289).
+_ACCEPTANCE_QUALIFIER = r"(?:\s*\([^)\n]{1,60}\))?"
+# An `Acceptance:` / `Acceptance.` label — `Acceptance: the gate names…`,
+# `**Acceptance:**`, `**Acceptance (D3):**`, `**Acceptance.**`, `Acceptance (D3):`.
+# The trailing `.` is the same terminator as `:`. Prose after it stays inline
+# (group 1), which the walker reports as unreadable rather than as clauses.
 _ACCEPTANCE_LABEL = re.compile(
-    r"^[\W_]*acceptance(?:\s+criteria)?[*_]*\s*:[*_]*\s*(.*)$", re.IGNORECASE)
+    rf"^[\W_]*acceptance(?:\s+criteria)?{_ACCEPTANCE_QUALIFIER}[*_]*\s*[:.][*_]*\s*(.*)$",
+    re.IGNORECASE)
 # A bold or underscore label with nothing after it — `**Acceptance**`,
-# `**Acceptance criteria**`, `__Acceptance__`. The colon form is already
-# `_ACCEPTANCE_LABEL` (`**Acceptance:**`). Without this branch a planner's
-# `**Acceptance**` plus a checklist parses to nothing, and the gate records a
-# pass (GRPH-1062).
+# `**Acceptance criteria**`, `__Acceptance__`, `**Acceptance (D3)**`,
+# `__Acceptance.__`. The colon and period forms are already `_ACCEPTANCE_LABEL`.
+# Without this branch a planner's `**Acceptance**` plus a checklist parses to
+# nothing, and the gate records a pass (GRPH-1062, GRPH-1289).
 _ACCEPTANCE_BOLD = re.compile(
-    r"^[*_]+acceptance(?:\s+criteria)?[*_]*\s*:?\s*$", re.IGNORECASE)
+    rf"^[*_]+acceptance(?:\s+criteria)?{_ACCEPTANCE_QUALIFIER}[*_]*\s*[:.]?\s*[*_]*\s*$",
+    re.IGNORECASE)
+# A plain label whose only decoration is the parenthetical — `Acceptance (D3)` —
+# with nothing after it. Bold and punctuated forms are the patterns above. A
+# bare `Acceptance` does not match: that stays unopened (GRPH-1062).
+_ACCEPTANCE_QUALIFIED = re.compile(
+    rf"^[\W_]*acceptance(?:\s+criteria)?\s*\([^)\n]{{1,60}}\)[*_]*\s*[:.]?[*_]*\s*$",
+    re.IGNORECASE)
 # A label-shaped line neither pattern opened. `Acceptance` alone, `# Acceptance`,
 # `Acceptance criteria` — the word first, a few words, optional colon and wrapping
 # marks. A sentence that merely contains the word does not match: "The acceptance
 # of this is obvious." is the control that must stay "no clauses written".
 _UNOPENED_ACCEPTANCE = re.compile(
-    r"^(?:[#>*_~\s`]+)?acceptance\b(?:\s+[A-Za-z][A-Za-z-]*){0,4}\s*:?\s*[*_`]*\s*$",
+    r"^(?:[#>*_~\s`]+)?acceptance\b(?:\s+criteria)?"
+    r"(?:\s*\([^)\n]{1,60}\))?(?:\s+[A-Za-z][A-Za-z-]*){0,4}\s*:?\s*[*_`]*\s*$",
     re.IGNORECASE)
 _LIST_ITEM = re.compile(r"^(?:[-*+]|\d+[.)])\s+(.*)$")
 #: Task-list prefix on a list item (`- [x] the gate names the clause`). Stripped so the
@@ -2848,6 +2864,17 @@ def split_clause_needs(text: str) -> tuple[str, frozenset[str]]:
     return rest, frozenset(needs)
 
 
+def _acceptance_heading_key(raw: str) -> str:
+    """Map a heading's text onto `_ACCEPTANCE_HEADINGS`.
+
+    A parenthetical qualifier and a trailing `.` or `:` are not a different
+    heading: `## Acceptance (D3):` and `## Acceptance.` are `## Acceptance`
+    (GRPH-1289). The same decorations on a label are the label patterns above.
+    """
+    name = re.sub(r"\s*\([^)]*\)", "", (raw or "").strip().lower())
+    return name.strip("*_ ").rstrip(":.").strip("*_ ")
+
+
 def _checklist_follows(lines: list[str], index: int) -> bool:
     """True when a checklist is the next thing after `lines[index]`.
 
@@ -2882,10 +2909,10 @@ def _walk_acceptance(description: str) -> tuple[list[tuple[str, frozenset[str]]]
         stripped = line.strip()
         heading = _HEADING.match(stripped)
         if heading:
-            level, name = heading.group(1), heading.group(2).strip().rstrip(":").lower()
-            if name in _ACCEPTANCE_HEADINGS:
+            level, raw_name = heading.group(1), heading.group(2).strip()
+            if _acceptance_heading_key(raw_name) in _ACCEPTANCE_HEADINGS:
                 close()
-                in_section, section_label, section_count = True, f"`{level} {heading.group(2).strip()}`", 0
+                in_section, section_label, section_count = True, f"`{level} {raw_name}`", 0
             elif level == "##":
                 # A `###` that is not an acceptance heading is a sub-heading of whatever
                 # section it sits in; a `##` ends it.
@@ -2902,9 +2929,12 @@ def _walk_acceptance(description: str) -> tuple[list[tuple[str, frozenset[str]]]
             else:
                 in_section, section_label, section_count = True, "`Acceptance:`", 0
             continue
-        # GRPH-1062. A bold label is not a heading and has no colon, so neither branch
-        # above opens it. Checked before the unopened scan: this shape IS readable.
-        if _ACCEPTANCE_BOLD.match(stripped) and not _LIST_ITEM.match(stripped):
+        # GRPH-1062 / GRPH-1289. A bold label, or a plain label whose parenthetical
+        # is the whole decoration, is not a heading. Checked before the unopened
+        # scan: these shapes ARE readable. A following list is the clauses; no
+        # list is `unreadable`, which sign_off raises as UnreadableAcceptance.
+        if ((_ACCEPTANCE_BOLD.match(stripped) or _ACCEPTANCE_QUALIFIED.match(stripped))
+                and not _LIST_ITEM.match(stripped)):
             close()
             in_section, section_label, section_count = True, f"`{stripped}`", 0
             continue
@@ -2931,11 +2961,14 @@ def parse_acceptance(description: str) -> tuple[list[str], list[str]]:
     """Read the acceptance clauses in an item description, and what could not be read.
 
     Returns `(clauses, unreadable)`. A clause is a markdown list item under a `## Tests`,
-    `## Acceptance` or `## Acceptance criteria` heading (`###` too), under a bare
-    `Acceptance:` label line, or under a bold/underscore label (`**Acceptance**`,
-    `**Acceptance:**`, `**Acceptance criteria**`, `__Acceptance__`). `unreadable` names
-    acceptance text that is there but is not in that shape: an `Acceptance:` label with
-    prose after it, an acceptance heading with no list under it, or a label-shaped line
+    `## Acceptance` or `## Acceptance criteria` heading (`###` too; a parenthetical
+    qualifier and a trailing `.` or `:` still count, as in `## Acceptance (D3):`),
+    under a bare `Acceptance:` / `Acceptance.` label (including `Acceptance (D3):` and
+    `**Acceptance.**`), or under a bold/underscore label (`**Acceptance**`,
+    `**Acceptance:**`, `**Acceptance criteria**`, `__Acceptance__`,
+    `**Acceptance (D3)**`). `unreadable` names acceptance text that is there but is
+    not in that shape: an `Acceptance:` label with prose after it, an acceptance
+    heading or opened label with no list under it, or a label-shaped line
     (`Acceptance`, `# Acceptance`) that a checklist follows and that opened no section.
 
     `unreadable` is the half GRPH-893 added, and it is why this returns two things rather than
