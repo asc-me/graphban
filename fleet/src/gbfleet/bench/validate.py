@@ -51,10 +51,13 @@ def run_check(repo: Path, ref: str, check: Check, overlay: str = "") -> tuple[bo
         try:
             if overlay and check.tests:
                 _git(tree, "checkout", overlay, "--", *check.tests)
-            cmd = check.command + "".join(" " + shlex.quote(t) for t in check.tests)
+            # argv, not a shell: the command is split like a shell would, with no expansion.
+            argv = [*shlex.split(check.command), *check.tests]
             try:
-                done = subprocess.run(cmd, shell=True, cwd=tree, capture_output=True,
+                done = subprocess.run(argv, cwd=tree, capture_output=True,
                                       text=True, timeout=CHECK_TIMEOUT_S)
+            except FileNotFoundError as exc:
+                return False, f"cannot run check: {exc}"
             except subprocess.TimeoutExpired:
                 return False, "timed out"
             return done.returncode == 0, ""
@@ -63,7 +66,8 @@ def run_check(repo: Path, ref: str, check: Check, overlay: str = "") -> tuple[bo
 
 
 def _build(repo: Path, task: Task, *, skip_base: bool = False) -> Verdict:
-    assert task.check is not None
+    if task.check is None:  # the loader refuses this; guard for a hand-built Task
+        return Verdict(task.id, "no_check", "a build task needs a check")
     if not skip_base:
         at_base, why = run_check(repo, task.base_sha, task.check, overlay=task.reference)
         if at_base is None:
