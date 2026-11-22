@@ -1012,7 +1012,11 @@ def project_head_sha(db: Session, project_id: str) -> str | None:
             # never get one. Neither describes the current tree.
             and n.fresh and (n.content_hash or "")
         ]
-        rev = code_graph.map_revision(nodes).get("revision")
+        # GRPH-1845: once the code map producer has stamped nodes, the head is the producer's
+        # map. A file an agent described from its branch that the producer never stamped (a
+        # file new on that branch) is an annotation, not a second revision of the map.
+        stamped = [n for n in nodes if n.producer]
+        rev = code_graph.map_revision(stamped or nodes).get("revision")
     except Exception:  # noqa: BLE001 — an unreadable graph is no head, not a crash
         logger.debug("code graph revision unreadable", exc_info=True)
         return None

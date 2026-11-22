@@ -1973,6 +1973,10 @@ class CodeNode(Base):
     # this existed, or an agent that passed none — and unknown must stay distinguishable
     # from current, because a map that cannot say when it was taken reads like a fresh one.
     revision: Mapped[str] = mapped_column(String, default="", server_default="")
+    # The code map producer (`gban-codemap/<version>`) that last stamped this node's revision
+    # and content_hash (GRPH-1845). "" = never stamped by a producer. A describe without the
+    # producer marker does not move the revision or hash of a stamped node.
+    producer: Mapped[str] = mapped_column(String, default="", server_default="")
     embedding = mapped_column(EmbeddingType(settings.embed_dim), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(

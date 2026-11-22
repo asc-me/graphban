@@ -488,8 +488,8 @@ def test_alembic_stays_single_head_with_0140_in_the_chain():
     # on 0146 (GRPH-1137, decision waits) on 0145 (GRPH-1134, item done_at)
     # on 0144 (GRPH-1133, per-user UI preferences) on 0143
     # (GRPH-1127, scan finding grain); linear through 0140.
-    assert script.get_heads() == ["0225"]
-    assert script.get_revision("0225").down_revision == "0224"  # GRPH-1808, org dismissal of a rule proposal
+    assert script.get_heads() == ["0226"]
+    assert script.get_revision("0226").down_revision == "0225"  # GRPH-1845, producer marker on code nodes
     assert script.get_revision("0224").down_revision == "0223"  # GRPH-1762, publish credential
     assert script.get_revision("0223").down_revision == "0222"  # GRPH-1798, default fix line
     assert script.get_revision("0222").down_revision == "0221"  # GRPH-1787, org-scoped handles
