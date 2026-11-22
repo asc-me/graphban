@@ -10,6 +10,8 @@ with no findings is clean. Every row is independent: a later failure never rolls
 """
 from __future__ import annotations
 
+import csv
+import io
 import json
 import re
 import shutil
@@ -158,6 +160,32 @@ def parse_radon(out: str, rc: int) -> list[dict]:
     return _cap(found)
 
 
+#: radon -n C flags rank C and worse, i.e. cyclomatic complexity above 10; lizard matches that.
+LIZARD_CCN = 10
+
+
+def parse_lizard(out: str, rc: int) -> list[dict]:
+    """lizard --csv: NLOC,CCN,token,PARAM,length,location,file,function,long_name,start,end."""
+    found = []
+    seen = 0
+    for row in csv.reader(io.StringIO(out)):
+        if not row:
+            continue
+        if len(row) < 10:
+            raise Unreadable(f"unexpected lizard row: {','.join(row)[:120]}")
+        try:
+            ccn, start = int(row[1]), int(row[9])
+        except ValueError as exc:
+            raise Unreadable(f"unexpected lizard row: {','.join(row)[:120]}") from exc
+        seen += 1
+        if ccn > LIZARD_CCN:
+            found.append({"summary": f"{row[7]}: complexity {ccn}", "path": f"{row[6]}:{start}",
+                          "severity": "med"})
+    if out.strip() and not seen:
+        raise Unreadable("no lizard rows")
+    return _cap(found)
+
+
 @dataclass(frozen=True)
 class Scanner:
     id: str
@@ -181,6 +209,10 @@ SCANNERS = (
     Scanner("knip", "deadcode", "js", ("knip", "--reporter", "json"), "knip", (0, 1), parse_knip),
     Scanner("radon", "refactor", "python", ("radon", "cc", "-j", "-n", "C", "."),
             "radon", (0, ), parse_radon),
+    # radon is Python-only: lizard covers JS/TS components. Same id the server maps to refactor.
+    Scanner("complexity", "refactor", "js",
+            ("lizard", "--csv", "-x", "*/node_modules/*", "-x", "*/dist/*", "."),
+            "lizard", (0, ), parse_lizard),
 )
 
 

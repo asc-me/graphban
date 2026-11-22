@@ -32,6 +32,7 @@ See the boxes that make up this deployment, whether each is reachable, and its c
 - Map freshness is likewise: mapped (current), stale (mapped at an older commit than head), unmapped, or unknown.
 - "Stale" is compared against the project's code-graph revision (the one commit every node was described at), not the Graphban box's build sha. A graph with no nodes or mixed revisions has no revision, so map and scan freshness read unknown; an explicit `head_sha` overrides it. The instance identity rows still show the build sha.
 - "No facts reported" and "No edges" mean none were reported, not that none exist.
+- Refactor (complexity) scans: `radon` for Python components and `lizard` (recorded as scanner id `complexity`, CCN > 10, `node_modules`/`dist` excluded) for JS/TS components; `gban scan --dry-run` lists which are installed. A missing lizard records `tool_missing`, never clean.
 - "No findings reported" is not a pass if the scan matrix shows never-scanned cells.
 - Empty states name what is missing (no fleet, no sync).
 
