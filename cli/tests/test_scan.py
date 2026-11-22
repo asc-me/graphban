@@ -355,3 +355,71 @@ def test_dry_run_lists_complexity(tmp_path, monkeypatch, capsys):
     _installed(monkeypatch, set())
     scan.run_scan(repo, codemap.head(repo), Server(paths=("web/",)), dry_run=True)
     assert "complexity\tnot installed" in capsys.readouterr().out
+
+
+def _manifestless(tmp_path, files):
+    comp = tmp_path / "c"
+    comp.mkdir()
+    for name in files:
+        (comp / name).write_text("x\n")
+    return tmp_path
+
+
+def test_manifestless_python_plans_bandit_not_pip_audit(tmp_path):
+    root = _manifestless(tmp_path, ["a.py"])
+    ids = {r["scanner"].id for r in scan.plan(root, [{"path": "c"}])}
+    assert "bandit" in ids and "pip-audit" not in ids
+
+
+def test_requirements_python_still_plans_pip_audit(tmp_path):
+    root = _manifestless(tmp_path, ["a.py", "requirements.txt"])
+    ids = {r["scanner"].id for r in scan.plan(root, [{"path": "c"}])}
+    assert {"bandit", "pip-audit"} <= ids
+
+
+_NPM_HIT = json.dumps({"vulnerabilities": {"left-pad": {
+    "name": "left-pad", "severity": "high", "via": [{"title": "Bad thing"}],
+    "fixAvailable": {"name": "left-pad", "version": "1.3.0"}}}})
+
+
+def _npm_kinds(tmp_path, files):
+    return scan.component_kinds(_manifestless(tmp_path, files), "c")
+
+
+def test_package_lock_component_plans_npm_audit(tmp_path):
+    root = _manifestless(tmp_path, ["package.json", "package-lock.json"])
+    rows = [r for r in scan.plan(root, [{"path": "c"}]) if r["scanner"].id == "npm-audit"]
+    assert len(rows) == 1 and rows[0]["scanner"].binary == "npm"
+
+
+def test_pnpm_lock_component_has_no_second_npm_audit(tmp_path):
+    root = _manifestless(tmp_path, ["package.json", "package-lock.json", "pnpm-lock.yaml"])
+    rows = [r for r in scan.plan(root, [{"path": "c"}]) if r["scanner"].id == "npm-audit"]
+    assert len(rows) == 1 and rows[0]["scanner"].binary == "pnpm"
+
+
+def _npm(tmp_path):
+    return next(s for s in scan.SCANNERS if s.id == "npm-audit" and s.kind == "npm")
+
+
+def test_npm_audit_one_advisory_is_one_finding(tmp_path, monkeypatch):
+    _installed(monkeypatch, {"npm"})
+    status, out = scan.execute(_npm(tmp_path), tmp_path, _runner({"npm": (1, _NPM_HIT, "")}), 5)
+    assert status == "complete" and len(out.findings) == 1
+    f = out.findings[0]
+    assert "left-pad" in f["summary"] and f["severity"] == "high"
+
+
+def test_npm_audit_zero_vulns_is_complete_clean(tmp_path, monkeypatch):
+    _installed(monkeypatch, {"npm"})
+    status, out = scan.execute(_npm(tmp_path), tmp_path,
+                               _runner({"npm": (0, json.dumps({"vulnerabilities": {}}), "")}), 5)
+    assert status == "complete" and out.findings == []
+
+
+def test_npm_audit_missing_and_bad_runs(tmp_path, monkeypatch):
+    _installed(monkeypatch, set())
+    assert scan.execute(_npm(tmp_path), tmp_path, _runner({}), 5)[0] == "tool_missing"
+    _installed(monkeypatch, {"npm"})
+    assert scan.execute(_npm(tmp_path), tmp_path, _runner({"npm": (2, "", "boom")}), 5)[0] == "incomplete"
+    assert scan.execute(_npm(tmp_path), tmp_path, _runner({"npm": (0, "not json", "")}), 5)[0] == "incomplete"
