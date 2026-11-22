@@ -992,8 +992,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "describe_code",
         "description": (
-            "Upsert the codebase's structure as a graph of `nodes` and `edges`; you are the source of truth. Idempotent per path — re-describe a changed file with its new "
-            "`content_hash`. `revision` lets a reader tell whether the map is current. `prune=true` "
+            "Upsert the codebase's structure as `nodes` and `edges`. Idempotent per path — re-describe a changed file with its new "
+            "`content_hash`. `prune=true` "
             "after a whole subtree marks unseen nodes stale. An omitted "
             "`summary`/`name` is kept; `\"\"` clears. A contradicting `kind` is corrected in `kind_corrections`."
         ),
@@ -1039,6 +1039,10 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "prune": {"type": "boolean", "description": "Mark nodes absent from this batch stale."},
                 "stale": {"type": "array", "items": {"type": "string"}, "description": "Gone paths to mark stale."},
+                "producer": {
+                    "type": "string",
+                    "description": "`gban-codemap/<v>`; others cannot move its nodes' revision.",
+                },
             },
         },
     },
@@ -4480,6 +4484,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             prune=bool(args.get("prune", False)),
             revision=str(args.get("revision", "")),
             stale=[str(x) for x in (args.get("stale") or [])],
+            producer=str(args.get("producer") or ""),
         )
     if name == "get_code_map":
         # Bounded BY DEFAULT (GRPH-146). An agent that omits `limit` gets a page rather than

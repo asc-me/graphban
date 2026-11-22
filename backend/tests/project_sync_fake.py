@@ -23,7 +23,13 @@ from app.services.project_sync_client import (
     CONTRACT, ENTITY_TYPES, MAX_ENTITY_BYTES, OUTCOME_STATUSES,
 )
 
-_PUBLIC = ("id", "kind", "target", "base_version", "payload", "proposer", "created_at")
+#: The console's pull row (graphban-control docs/contract.md, Proposals): flat, and
+#: ``target_type`` / ``target_id`` / ``base_version`` are omitted when null, as the
+#: console's ``toMember`` omits them. GRPH-1842: this fake once served a nested
+#: ``target`` / ``proposer``, so the box read a shape the real console never sends.
+_PUBLIC = ("id", "kind", "target_type", "target_id", "base_version", "payload",
+           "proposer_label", "created_at")
+_OMIT_WHEN_NULL = ("target_type", "target_id", "base_version")
 
 
 def _is_int(value: object) -> bool:
@@ -106,17 +112,24 @@ class FakeConsole:
     def enqueue_proposal(self, cloud_project_id: str, *, kind: str,
                          target: dict | None, base_version: int | None, payload: dict,
                          proposer: dict) -> dict:
-        """A cloud member's proposal, waiting for the box to pull it."""
+        """A cloud member's proposal, waiting for the box to pull it.
+
+        ``target`` is ``{type, id}`` and ``proposer`` is ``{label, ...}`` for the
+        test's convenience. On the wire they become the console's flat
+        ``target_type`` / ``target_id`` / ``proposer_label``.
+        """
         replica = self._require_replica(cloud_project_id)
         self._proposal_seq += 1
         replica.revision += 1
+        target = target if isinstance(target, dict) else {}
         proposal = {
             "id": f"pr{self._proposal_seq}",
             "kind": kind,
-            "target": target,
+            "target_type": target.get("type"),
+            "target_id": target.get("id"),
             "base_version": base_version,
             "payload": dict(payload),
-            "proposer": dict(proposer),
+            "proposer_label": str(proposer.get("label") or ""),
             "created_at": datetime.now(timezone.utc).isoformat(),
             "_seq": self._proposal_seq,
             "_open": True,
@@ -336,7 +349,15 @@ class FakeConsole:
                              headers={"ETag": etag})
 
     def _outcomes_call(self, request: httpx.Request, token: str) -> httpx.Response:
-        del token  # outcomes are addressed by proposal id; the credential was already checked
+        # The console names the project on outcomes, as on every project-scoped
+        # call: ``?project=`` or ``X-Cloud-Project``, else 422; home only, else 403.
+        project = (request.url.params.get("project", "").strip()
+                   or request.headers.get("x-cloud-project", "").strip())
+        if not project:
+            return self._problem(422, "project is required", field="project")
+        replica = self._home(project, token)
+        if isinstance(replica, httpx.Response):
+            return replica
         try:
             body = json.loads(request.content or b"{}")
         except ValueError:
@@ -399,7 +420,8 @@ class FakeConsole:
         return replica
 
     def _public(self, proposal: dict) -> dict:
-        return {key: proposal[key] for key in _PUBLIC}
+        return {key: proposal[key] for key in _PUBLIC
+                if not (key in _OMIT_WHEN_NULL and proposal[key] is None)}
 
     def _respond(self, status: int, *, json: dict | None = None,
                  headers: dict | None = None) -> httpx.Response:

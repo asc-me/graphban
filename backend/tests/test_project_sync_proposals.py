@@ -40,6 +40,14 @@ def db(client):
         session.close()
 
 
+@pytest.fixture(autouse=True)
+def _no_outcome_backoff():
+    """The outcome backoff is process state. One test's refusal must not hold the next."""
+    proposals._outcome_backoff.clear()
+    yield
+    proposals._outcome_backoff.clear()
+
+
 @pytest.fixture()
 def fake():
     console = FakeConsole()
@@ -280,7 +288,7 @@ def test_a_failed_report_stays_queued_and_the_next_pull_does_not_reapply(db, fak
         fake, mapping.cloud_project_id, kind="comment", target=_target(item),
         payload={"text": "keep me"})
 
-    def _unknown(db, *, outcomes, transport=None):
+    def _unknown(db, *, project, outcomes, transport=None):
         return SyncResult(status="unknown", reason="down")
 
     monkeypatch.setattr(project_sync_client, "report_outcomes", _unknown)
@@ -461,3 +469,139 @@ def test_existing_sync_project_rows_gain_a_cursor_and_sync_proposal_appears():
     assert "sync_proposal" not in tables
     assert "proposal_cursor" not in cols and "proposal_pull_now" not in cols
     assert kept[0] == "cloud-1"
+
+
+# ---- GRPH-1842: the real console's proposal wire ------------------------------------------
+
+#: graphban-control docs/contract.md, Proposals: the pull row. Optional keys are
+#: omitted when null, so this is the full set when every one is present.
+CONSOLE_PULL_KEYS = {"id", "kind", "target_type", "target_id", "base_version", "payload",
+                     "proposer_label", "created_at"}
+
+
+def _register(db, fake, tag, name):
+    created = project_sync_client.register_project(
+        db, tag=tag, name=name, transport=fake.transport())
+    assert created.status == "ok"
+    return created.cloud_project_id
+
+
+def test_the_fake_serves_exactly_the_console_pull_row(db, fake, linked):
+    mapping = _mapping(db, linked.cloud_project_id)
+    item = _item(db)
+    _enqueue(fake, mapping.cloud_project_id, kind="edit", target=_target(item),
+             base_version=1, payload={"title": "x"})
+    _enqueue(fake, mapping.cloud_project_id, kind="create", payload={"title": "y"})
+    page = fake.handle(_pull_request(mapping.cloud_project_id)).json()["proposals"]
+    assert set(page[0]) == CONSOLE_PULL_KEYS
+    assert page[0]["target_type"] == "item" and page[0]["target_id"] == item.key
+    assert page[0]["proposer_label"] == "Ada"
+    # A create has no target and no base version: the console omits them.
+    assert set(page[1]) == CONSOLE_PULL_KEYS - {"target_type", "target_id", "base_version"}
+    assert "target" not in page[0] and "proposer" not in page[0]
+
+
+def _pull_request(cloud_id):
+    import httpx
+
+    return httpx.Request(
+        "GET", f"{CONSOLE}/api/sync/proposals",
+        params={"project": cloud_id, "after": ""},
+        headers={"Authorization": f"Bearer {TOKEN}", "X-Cloud-Project": cloud_id},
+    )
+
+
+def test_a_flat_comment_reaches_its_item_and_the_outcome_names_the_project(db, fake, linked):
+    mapping = _mapping(db, linked.cloud_project_id)
+    item = _item(db)
+    proposal = _enqueue(fake, mapping.cloud_project_id, kind="comment",
+                        target=_target(item), payload={"text": "from the cloud"})
+    outcome = proposals.pull_project(db, mapping, now=T0, transport=fake.transport())[-1]
+    assert outcome == {"id": proposal["id"], "status": "applied"}
+    comments = _comments(db, item)
+    assert len(comments) == 1 and comments[0].actor_label == "cloud:Ada"
+    posts = _outcome_posts(fake)
+    assert posts, "no outcome was posted"
+    assert all(p["params"].get("project") == mapping.cloud_project_id for p in posts)
+    assert all(p["headers"].get("x-cloud-project") == mapping.cloud_project_id for p in posts)
+    assert fake.outcome_for(proposal["id"]) == {"status": "applied"}
+    db.expire_all()
+    assert db.get(SyncProposal, proposal["id"]).reported is True
+
+
+def test_the_fake_refuses_an_outcome_post_that_names_no_project(db, fake, linked):
+    result = project_sync_client.report_outcomes(
+        db, project="", outcomes=[{"id": "pr1", "status": "applied"}],
+        transport=fake.transport())
+    assert fake.last_status == 422
+    assert result.status == "refused" and result.reason == "project is required"
+    assert result.field == "project"
+
+
+def test_outcomes_for_two_projects_go_as_two_calls_each_naming_its_own(db, fake, linked):
+    first = _mapping(db, linked.cloud_project_id)
+    db.add(Project(id="ops", name="Ops", tag="OPS"))
+    db.commit()
+    second = _mapping(db, _register(db, fake, "OPS", "Ops"), project_id="ops")
+    a = _item(db)
+    b = _item(db, project_id="ops")
+    pa = _enqueue(fake, first.cloud_project_id, kind="comment", target=_target(a),
+                  payload={"text": "a"})
+    pb = _enqueue(fake, second.cloud_project_id, kind="comment", target=_target(b),
+                  payload={"text": "b"})
+
+    def _down(db, *, project, outcomes, transport=None):
+        return SyncResult(status="unknown", reason="down")
+
+    real = project_sync_client.report_outcomes
+    project_sync_client.report_outcomes = _down
+    try:
+        proposals.pull_project(db, first, now=T0, transport=fake.transport())
+        proposals.pull_project(db, second, now=T0, transport=fake.transport())
+    finally:
+        project_sync_client.report_outcomes = real
+    before = len(_outcome_posts(fake))
+    proposals.pull_project(db, db.get(SyncProject, "core"), now=T0 + timedelta(seconds=11),
+                           transport=fake.transport())
+    proposals.pull_project(db, db.get(SyncProject, "ops"), now=T0 + timedelta(seconds=11),
+                           transport=fake.transport())
+    posts = _outcome_posts(fake)[before:]
+    assert [p["params"]["project"] for p in posts] == [first.cloud_project_id,
+                                                        second.cloud_project_id]
+    assert fake.outcome_for(pa["id"]) == {"status": "applied"}
+    assert fake.outcome_for(pb["id"]) == {"status": "applied"}
+    db.expire_all()
+    assert db.get(SyncProposal, pa["id"]).reported is True
+    assert db.get(SyncProposal, pb["id"]).reported is True
+
+
+def test_a_refused_outcome_post_backs_off_instead_of_going_every_poll(db, fake, linked, monkeypatch):
+    mapping = _mapping(db, linked.cloud_project_id)
+    item = _item(db)
+    _enqueue(fake, mapping.cloud_project_id, kind="comment", target=_target(item),
+             payload={"text": "held"})
+    calls = []
+
+    def _refused(db, *, project, outcomes, transport=None):
+        calls.append(project)
+        return SyncResult(status="refused", reason="project is required", field="project")
+
+    monkeypatch.setattr(project_sync_client, "report_outcomes", _refused)
+    proposals.pull_project(db, mapping, now=T0, transport=fake.transport())
+    assert len(calls) == 1
+    # The next ~10 s poll: still inside the backoff, so no post.
+    proposals.pull_project(db, db.get(SyncProject, "core"), now=T0 + timedelta(seconds=10),
+                           transport=fake.transport())
+    assert len(calls) == 1
+    # Past the first step: one more try, which doubles the wait.
+    after = T0 + proposals.OUTCOME_BACKOFF_START + timedelta(seconds=1)
+    proposals.pull_project(db, db.get(SyncProject, "core"), now=after,
+                           transport=fake.transport())
+    assert len(calls) == 2
+    proposals.pull_project(db, db.get(SyncProject, "core"),
+                           now=after + proposals.OUTCOME_BACKOFF_START + timedelta(seconds=1),
+                           transport=fake.transport())
+    assert len(calls) == 2
+    db.expire_all()
+    assert all(r.reported is False for r in db.scalars(select(SyncProposal)).all())
+
