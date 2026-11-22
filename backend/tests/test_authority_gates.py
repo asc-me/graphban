@@ -140,6 +140,9 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         # P91 S3 (GRPH-1775). QUALITY: files a cited suggestion; nothing adopts it
         # (rules.person_adopts), and the server refuses an agent's loosening.
         "propose_rule",
+        # GRPH-1856. QUALITY: a planner opens a scratch-project bench run and posts a baseline
+        # record; neither touches the source project or a grid rate.
+        "bench",
         # P75 S1. QUALITY: records an answer on a decision wait. Refused for the filing agent,
         # and an agent answer must cite a source that resolves.
         "answer_wait",

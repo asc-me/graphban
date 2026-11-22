@@ -3405,6 +3405,56 @@ class CapabilityProbeRun(Base):
     summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
+class BenchRun(Base):
+    """One opened baseline run (GRPH-P98 §4, GRPH-1856).
+
+    The scratch project a run's children register on, so a baseline task is never an item or an
+    agent on the source project. Distinct from `CapabilityProbeRun`, which is retired.
+    """
+
+    __tablename__ = "bench_runs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    source_project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    vendor: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str] = mapped_column(String(64))
+    binary_version: Mapped[str] = mapped_column(String(32), default="")
+    suite_id: Mapped[str] = mapped_column(String(64))
+    suite_version: Mapped[str] = mapped_column(String(32))
+    #: The scratch items, in the order the tasks were named: `[{task_id, item_id}]`.
+    tasks: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class BenchBaseline(Base):
+    """One posted baseline result, keyed by vendor, model, binary_version, suite id and suite
+    version (GRPH-P98 §6, GRPH-1856).
+
+    Never written to `AttemptTelemetry` and never read into a natural or probe rate: a baseline
+    is shown beside the grid's cells under its own label.
+    """
+
+    __tablename__ = "bench_baselines"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    source_project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("bench_runs.id"), nullable=True)
+    vendor: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str] = mapped_column(String(64))
+    binary_version: Mapped[str] = mapped_column(String(32), default="")
+    suite_id: Mapped[str] = mapped_column(String(64))
+    suite_version: Mapped[str] = mapped_column(String(32))
+    #: Per-task outcomes: `[{task_id, outcome, capabilities, tokens, wall_seconds}]`.
+    outcomes: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    #: Per-capability rollups, computed by the server from `outcomes`.
+    rollups: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    #: Null when no task reported tokens: never a zero.
+    tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    wall_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    posted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class CapabilityPrior(Base):
     """The platform snapshot this instance last fetched (PRD-41 D12).
 
