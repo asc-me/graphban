@@ -3072,19 +3072,31 @@ def _dependencies_not_done(planner: Graphban, item_id: str) -> list[dict]:
     "not done".
     """
     try:
-        related = planner.call("related_work", id=item_id) or {}
+        got = planner.call("get_item_details", id=item_id) or {}
     except (ToolFailed, NotPermitted, ServerUnreachable):
         return []
+    # A dependency link reads `a` depends on `b`. `related_work` returns both
+    # directions with no direction field, so it would count an item's dependents as
+    # its dependencies (GRPH-1866): only links where this item is `a` count.
     out: list[dict] = []
-    for row in (related.get("results") if isinstance(related, dict) else None) or []:
-        if not isinstance(row, dict):
+    seen: set[str] = set()
+    for link in (got.get("links") if isinstance(got, dict) else None) or []:
+        if not isinstance(link, dict) or link.get("type") != "dependency":
             continue
-        if "dependency" not in [str(t) for t in (row.get("link_types") or [])]:
+        if str(link.get("a") or "") != item_id:
             continue
-        status = row.get("status")
+        dep_id = str(link.get("b") or "")
+        if not dep_id or dep_id in seen:
+            continue
+        seen.add(dep_id)
+        try:
+            row = planner.call("get_item_details", id=dep_id) or {}
+        except (ToolFailed, NotPermitted, ServerUnreachable):
+            continue
+        status = row.get("status") if isinstance(row, dict) else None
         if not isinstance(status, str) or not status or status == "done":
             continue
-        out.append(row)
+        out.append({"id": dep_id, "status": status})
     return out
 
 
