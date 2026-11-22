@@ -69,6 +69,7 @@ from app.services import tool_tiers
 from app.services import waits as waits_svc
 from app.services import delegation as delegation_svc
 from app.services import entitlements as entitlements_svc
+from app.services import bench as bench_svc
 from app.services import rule_proposals as rule_proposals_svc
 from app.services import rule_toggles as rule_toggles_svc
 from app.services import headroom as headroom_svc
@@ -896,6 +897,21 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "bench",
+        "description": (
+            "PLANNER ONLY. action open_run: scratch project + a bound seat per task. "
+            "post_result: store a baseline record; touches no telemetry."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["open_run", "post_result"]},
+                "body": {"type": "object"},
+            },
+            "required": ["action", "body"],
+        },
+    },
+    {
         "name": "retire_wave",
         "description": (
             "PLANNER ONLY. Revoke the seats YOU minted and release what agents on them hold. Does "
@@ -1623,7 +1639,7 @@ _PROJECT_SCOPED = {
 # trusting the set, so a NEW tool that starts reading `pid` fails until it is declared.
 _TAKES_PROJECT = _PROJECT_SCOPED | {
     "claim_cluster", "claim_review", "fleet_status", "get_context",
-    "mint_enrolment", "register_agent", "retire_wave", "sign_off",
+    "mint_enrolment", "register_agent", "retire_wave", "sign_off", "bench",
 }
 # Creates accept an idempotency key so a retried call returns the original resource.
 _IDEMPOTENT_CREATES = {"create_item", "add_memory", "link_items"}
@@ -1868,6 +1884,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     "list_entitlements": {"type": "object", "properties": {"entitlements": {"type": "array"}}},
     "get_rule_toggles": {"type": "object", "properties": {"toggles": {"type": "array"}}},
     "propose_rule": {"type": "object", "properties": {"id": {"type": "integer"}}},
+    "bench": {"type": "object", "properties": {"id": {"type": "string"}}},
     "set_entitlement": {"type": "object", "properties": {"id": {"type": "string"}}},
     "report_entitlement_event": {"type": "object", "properties": {"admitted": {"type": "boolean"}}},
     "report_utilization": {"type": "object", "properties": {"recorded": {"type": "boolean"}}},
@@ -4092,6 +4109,16 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 raise errors.Validation(str(e))
         got = fleet_svc.fleet_status(db, pid, minted_by=minted_by, caller_user_id=key.user_id)
         return fleet_svc.roster_view(got, args.get("view") or "lean")
+    if name == "bench":
+        try:
+            if args.get("action") == "open_run":
+                return bench_svc.open_run(db, project_id=pid, user_id=key.user_id,
+                                          body=args.get("body") or {})
+            if args.get("action") == "post_result":
+                return bench_svc.post_result(db, project_id=pid, body=args.get("body") or {})
+        except bench_svc.AttemptRefused as e:
+            raise errors.Validation(str(e))
+        raise errors.Validation("action must be open_run or post_result")
     if name == "retire_wave":
         try:
             minter = fleet_svc.minter_for(db, args["agent_id"], key)

@@ -143,7 +143,7 @@ _IDENTITY = {
 # Writes. An unknown field is not a filter of a page. Named so a new tool cannot
 # land here by being forgotten.
 _WRITES = {
-    "add_memory", "answer_grill", "answer_wait", "assign_role", "bounce",
+    "add_memory", "answer_grill", "answer_wait", "assign_role", "bench", "bounce",
     "claim_cluster", "claim_next", "claim_review", "close_prd", "compile_prompts",
     "confirm_tier", "create_item", "create_line", "create_prd", "create_project",
     "decompose_prd", "delegate", "describe_code", "extract_lessons", "file_finding",

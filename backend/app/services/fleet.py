@@ -1503,6 +1503,9 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     # `claim_next` two entries up, so a planner has NO AUTHORED WORK TO LAUNDER. If this ever
     # gains a second role, that argument evaporates silently; a test asserts it does not.
     "mint_enrolment": ("planner",),
+    # GRPH-1856. A planner opens a bench run: it mints seats on a scratch project, as it does
+    # for a wave. A worker has no seats to mint.
+    "bench": ("planner",),
     "create_prd": ("planner",),
     # GRPH-1681. Opening the project's one maintenance line is planner work over MCP; a
     # person does it through REST with the permission that accepts a request.
