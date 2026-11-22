@@ -520,12 +520,44 @@ def test_a_host_with_no_supervisor_is_unknown(monkeypatch):
 
 
 def test_a_service_installed_and_not_running_fails(monkeypatch):
+    """A loaded job that has exited keeps the not-running reading (GRPH-1853).
+
+    `not_loaded` stays false: launchd listed the label, or systemd had the unit
+    loaded. Sabotage that treats every stopped drain as not loaded fails this.
+    """
     from gbfleet import service as service_mod
 
     _pretend(monkeypatch, _state(running=False, last_exit=1, detail="failed"))
     report = Report()
     doctor.check_service(report)
-    assert _service_finding(report).status == FAIL
+    finding = _service_finding(report)
+    assert finding.status == FAIL
+    assert "installed and NOT running" in finding.detail
+    assert "not loaded" not in finding.detail
+    assert "loads and dies" in finding.remedy
+
+
+def test_a_not_loaded_unit_is_not_a_unit_that_loads_and_dies(monkeypatch):
+    """GRPH-1853. The unit file exists and status says not loaded: no job, so
+    KeepAlive and Restart= never fire.
+
+    Sabotage: skip the `not_loaded` branch in `_one_service`. This then reads
+    FAIL "installed and NOT running" and the loads-and-dies remedy, and the
+    install command is gone.
+    """
+    _pretend(monkeypatch, _state(
+        running=False, last_exit=None, detail="not loaded", not_loaded=True,
+    ))
+    report = Report()
+    doctor.check_service(report)
+    finding = _service_finding(report)
+    assert finding.status == FAIL
+    assert "installed but not loaded" in finding.detail
+    assert "will not restart" in finding.detail
+    assert "gbfleet service install --name drain" in finding.detail
+    assert "gbfleet service install --name drain" in finding.remedy
+    assert "loads and dies" not in finding.remedy
+    assert "installed and NOT running" not in finding.detail
 
 
 def test_a_running_service_with_no_path_fails(monkeypatch):
