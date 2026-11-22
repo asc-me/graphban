@@ -38,7 +38,9 @@ stamps each node with it. A later `describe_code` without that marker (an agent 
 file from its branch) cannot change the revision or content_hash of a producer-stamped node: the
 server keeps the producer's values, still updates summary, name and edges, and lists the paths
 in `kept_revision`. So the map stays pinned at one revision and the Stack head stays known. It
-can still create nodes the producer never stamped and describe symbol nodes (`path::name`). A
+can still create nodes the producer never stamped and describe symbol nodes (`path::name`);
+once the producer has stamped nodes, the Stack head reads only those, so a file new on a branch
+does not unpin it either. A
 producer batch always wins, so the next since-run or full run restamps to its target. Batches
 without the marker behave as before on nodes the producer never stamped.
 

@@ -238,3 +238,15 @@ def test_batches_without_producer_behave_as_before_on_unstamped_nodes(db):
     r = code_graph.describe_code(db, project_id=PID, nodes=[_file("src/a.py", "sha256:" + "2" * 64)], revision=R2)
     assert r["kept_revision"] == []
     assert _rev(db, "src/a.py").revision == R2
+
+
+def test_reproduced_case_head_stays_at_producer_revision(db):
+    # 1975 producer nodes at A; a fleet child describes 2 files from its branch at B, one
+    # stamped by the producer and one new on the branch. The head stays A.
+    nodes = [_file(f"src/m{i}.py", "sha256:" + f"{i:064x}") for i in range(1975)]
+    code_graph.describe_code(db, project_id=PID, nodes=nodes, revision=R, producer=P)
+    code_graph.describe_code(
+        db, project_id=PID, revision=R2,
+        nodes=[_file("src/m0.py", "sha256:" + "f" * 64), _file("web/LineBadges.tsx")])
+    assert _rev(db, "src/m0.py").revision == R
+    assert stack_svc.project_head_sha(db, PID) == R
