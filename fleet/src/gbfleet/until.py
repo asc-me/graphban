@@ -1165,9 +1165,13 @@ def _loop(
                             return "unstaffed"
                         owners[seed] = child
                         _forget_refused(wave, seed)
+                        # GRPH-1849. Present only when this seed jumped a backlog member.
+                        # An absent reason is the old walk: first ready member by id.
+                        jumped = flags.get("delegated_reason")
                         observe.emit(
                             "delegated", item=seed, tier=want or "",
                             bound=bool(seat.item),
+                            **({"reason": jumped} if jumped else {}),
                         )
                     if chosen[0] and chosen[0] not in wave.vendors_launched:
                         wave.vendors_launched.append(chosen[0])
@@ -2479,6 +2483,26 @@ def _seed_ready(details: dict) -> bool:
     return True
 
 
+def _ready_rank(details: dict) -> int:
+    """`next` before `backlog` among clean seeds (GRPH-1849).
+
+    Anything else sorts after both. Clean candidates are only those two — `_seed_ready`
+    already refused the rest — so a bounce remainder (GRPH-1024) keeps the treatment it
+    had when it entered the candidate list. Ranking reorders that list; it does not
+    decide who is on it.
+    """
+    status = str(details.get("status") or "")
+    if status == "next":
+        return 0
+    if status == "backlog":
+        return 1
+    return 2
+
+
+#: Named on the `delegated` event when a `next` seed was offered ahead of a `backlog` one.
+NEXT_BEFORE_BACKLOG = "next before backlog"
+
+
 def _attested_here(entry: dict, branch: str) -> bool:
     """Is this evidence entry about `branch`? (GRPH-983, reading 2)
 
@@ -3229,6 +3253,10 @@ def _delegate_next(
     seed: str | None = None
     lane = "backend"
     want = str(request or "cheap")
+    # Prepared in server order, delegated after every cluster has a seed. A `next`
+    # seed in a later cluster has to be visible before the first `delegate` call,
+    # or the one free slot is already spent on an earlier backlog member (GRPH-1849).
+    prepared: list[dict] = []
     for cluster in clusters.get("clusters") or []:
         if not isinstance(cluster, dict) or cluster.get("held_by"):
             continue
@@ -3344,7 +3372,29 @@ def _delegate_next(
                 observe.emit("dependency_unresolved", item=candidate,
                              detail=f"{row['id']}'s commit is not in this clone; not checked")
             clean.append(candidate)
-        for candidate in clean:
+        # Server order, so a later stable sort keeps first-ready-by-id within one status.
+        prepared.append({"clean": list(clean), "details_for": details_for})
+    old_first: str | None = None
+    old_details: dict | None = None
+    for row in prepared:
+        # Stable: within one status the list stays in the server's order.
+        row["ranked"] = sorted(
+            row["clean"], key=lambda cid: _ready_rank(row["details_for"][cid]))
+        if old_first is None and row["clean"]:
+            # Who the old walk would have seeded: first clean member, first cluster.
+            old_first = row["clean"][0]
+            old_details = row["details_for"]
+    # A cluster with no clean seed sorts last and is skipped below. Same seed status
+    # keeps the server's cluster order.
+    ordered = sorted(
+        prepared,
+        key=lambda row: (
+            _ready_rank(row["details_for"][row["ranked"][0]]) if row["ranked"] else 2
+        ),
+    )
+    for row in ordered:
+        details_for = row["details_for"]
+        for candidate in row["ranked"]:
             details = details_for[candidate]
             brief = details.get("brief") if isinstance(details.get("brief"), dict) else {}
             lane = str(((brief.get("lane") or {}).get("value")) or "backend")
@@ -3420,7 +3470,18 @@ def _delegate_next(
             # seats for it. The "delegated" event waits until the child has actually
             # claimed: a bound seat that registers and is told `taken` is not staffed
             # (GRPH-1292). `failover` emits it, or logs the refusal and returns.
+            # The reason rides on `bound_out` until that emit: a `next` seed that was
+            # not the first ready member by id jumped a backlog one (GRPH-1849).
             delegated.add(seed)
+            if (
+                bound_out is not None
+                and old_first
+                and old_first != seed
+                and old_details is not None
+                and str(details_for[seed].get("status") or "") == "next"
+                and str(old_details[old_first].get("status") or "") == "backlog"
+            ):
+                bound_out["delegated_reason"] = NEXT_BEFORE_BACKLOG
             return seed, code, want
     # No cluster was delegable
     return None, None, None
