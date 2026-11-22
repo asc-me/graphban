@@ -358,6 +358,7 @@ class Worktree:
 
     def __init__(self, repo: Path, sha: str):
         self.repo, self.sha, self.path = repo, sha, None
+        self.links: list[Path] = []
 
     def __enter__(self) -> Path:
         base = tempfile.mkdtemp(prefix="gban-scan-")
@@ -370,9 +371,34 @@ class Worktree:
             raise ScanError(f"worktree: {exc}") from exc
         return self.path
 
+    def link_node_modules(self, comp_path: str) -> bool:
+        """Symlink the source checkout's `<comp>/node_modules` into the worktree component.
+
+        A fresh worktree never has node_modules, so knip could not resolve. Returns True when linked.
+        """
+        if self.path is None:
+            return False
+        src = self.repo / comp_path / "node_modules"
+        dst = self.path / comp_path / "node_modules"
+        if not src.is_dir() or not dst.parent.is_dir() or dst.is_symlink() or dst.exists():
+            return False
+        try:
+            dst.symlink_to(src.resolve(), target_is_directory=True)
+        except OSError:
+            return False
+        self.links.append(dst)
+        return True
+
     def __exit__(self, *exc) -> None:
         if self.path is None:
             return
+        # Remove the links first so no cleanup step can ever follow them into the source checkout.
+        for link in self.links:
+            try:
+                link.unlink()
+            except OSError:
+                pass
+        self.links = []
         try:
             codemap._git(self.repo, "worktree", "remove", "--force", str(self.path))
         except codemap.MapError:
@@ -430,7 +456,10 @@ def run_scan(repo: Path, sha: str | None, call, *, dry_run: bool = False, run: R
     except codemap.MapError as exc:
         raise ScanError(f"server: {exc}") from exc
     counts = {"recorded": 0, "tool_missing": 0, "incomplete": 0, "failed": 0, "sha": target}
-    with Worktree(repo, target) as root:
+    wt = Worktree(repo, target)
+    with wt as root:
+        for comp in components:
+            wt.link_node_modules(comp["path"])
         rows = plan(root, components)
         if dry_run:
             for r in rows:
