@@ -464,9 +464,11 @@ def retire_unplanned(call, sha: str, components: list[dict], rows: list[dict],
 
     A scanner that no longer applies (a component dropped Python, a scanner left SCANNERS)
     would otherwise hold the cell at its last row forever (GRPH-1846). A planned scanner that
-    failed is never retired: it is in `rows`, whatever its outcome.
+    failed is never retired: it is in `rows`, whatever its outcome. Only scanners in
+    SCANNERS are retired; another producer's row (stubscan) is left alone (GRPH-1851).
     """
     planned = {(r["path"], r["scanner"].id) for r in rows}
+    own = {sc.id for sc in SCANNERS}  # another producer's rows are never ours to retire
     retired = 0
     for comp in components:
         path = comp["path"]
@@ -476,6 +478,7 @@ def retire_unplanned(call, sha: str, components: list[dict], rows: list[dict],
             for s in status.get("scans", []):
                 sid = s.get("scanner_id")
                 if (not s.get("current") or not sid or sid in seen or (path, sid) in planned
+                        or sid not in own
                         or s.get("result") == "retired" or not s.get("scan_id")):
                     continue
                 seen.add(sid)

@@ -117,6 +117,11 @@ PRODUCER_RESULTS = frozenset({
 # A scanner that no longer applies at a path (GRPH-1846). The row stays in history; the cell
 # ignores it, and a later row from the same scanner un-retires it.
 RETIRED = "retired"
+# Only `gban scan` retires, and only its own scanners (GRPH-1851). Keep in step with
+# `SCANNERS` in cli/src/gban/scan.py. Another producer's row is never retired.
+GBAN_SCAN_IDS = frozenset({
+    "pip-audit", "bandit", "npm-audit", "vulture", "knip", "radon", "complexity",
+})
 _EMPTY_FINDINGS_REFUSAL = (
     "result is required when findings is empty — use 'complete' for a clean scan, or "
     "'tool_missing' / 'not_applicable' when the scanner did not run; nothing was stored"
@@ -401,6 +406,12 @@ def record_scan(
             f"result '{outcome}' cannot be stored with findings; nothing was stored"
         )
 
+    if outcome == RETIRED and sid not in GBAN_SCAN_IDS:
+        raise ValueError(
+            f"scanner {sid!r} is not one of gban scan's scanners; only gban scan's own "
+            "scanners can be retired; nothing was stored"
+        )
+
     scan = CodeScan(
         id="cs_" + uuid.uuid4().hex[:12],
         project_id=project_id,
@@ -502,6 +513,10 @@ def _newest_per_scanner_path(scans: list[CodeScan]) -> list[CodeScan]:
     seen: set[tuple[str, str]] = set()
     out: list[CodeScan] = []
     for s in scans:
+        # A retired row for a scanner gban scan does not run is ignored (GRPH-1851): the
+        # newest earlier row for that scanner and path is current again.
+        if _stored_result(s) == RETIRED and s.scanner_id not in GBAN_SCAN_IDS:
+            continue
         k = (s.scanner_id, s.path)
         if k not in seen:
             seen.add(k)
@@ -537,6 +552,10 @@ def _state_for_scan(scan: CodeScan | None, findings: list[dict], head_sha: str) 
     }
     head = (head_sha or "").strip()
     stale = bool(head and scan.scanned_sha != head)
+
+    if outcome == RETIRED:
+        # Absence of a scanner, never a clean result, at any head (GRPH-1851).
+        return {**base, "state": "not_applicable"}
 
     if outcome == "not_applicable":
         if stale:
