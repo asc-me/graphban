@@ -1326,6 +1326,9 @@ def _loop(
                 rows = rows + extra
                 rows_outside = [r for r in rows_outside if r not in extra]
                 staff_all = staff_all and not line
+            # GRPH-1843. An empty branch cannot open a PR. Release it before this
+            # cycle reads collision again, so its areas are not held for the poll.
+            rows = _release_empty_branches(planner, rows, repo, base, agent_id)
             # GRPH-1409: a row whose newest refusal is a post-cooldown `pr_ci_not_green` cannot
             # be cleared by another reviewer, so it is taken out of what can spawn one.
             ci_stuck = [r for r in rows if ci_unattestable(r)]
@@ -1670,7 +1673,8 @@ def _loop(
         # take it; the skip on the seat names the same ids.
         if unheld_review and need <= 0:
             unheld_review, pr_waiting = _pr_opened(
-                unheld_review, repo, base, ci_logged, planner=planner)
+                unheld_review, repo, base, ci_logged, planner=planner,
+                agent_id=agent_id)
         for row in pr_waiting:
             wait_line = f"{row.get('id')}: review waits on its PR being opened"
             if wait_line not in waits:
@@ -3984,6 +3988,134 @@ def _record_pr(planner, item: str, branch: str, url: str) -> bool:
     return True
 
 
+#: Builder evidence that the empty branch was a choice, not a failed push (GRPH-1843).
+#: Bouncing that loops the same item back onto the same builder. A planner decides
+#: duplicate or superseded instead.
+_NO_CHANGE_PHRASES = (
+    "nothing to commit",
+    "no change was needed",
+    "no change needed",
+    "identical to base",
+    "nothing to change",
+    "branch is identical",
+)
+
+
+def _evidence_text(row: dict) -> str:
+    parts: list[str] = []
+    for ev in row.get("evidence") or []:
+        if isinstance(ev, dict):
+            parts.append(str(ev.get("detail") or ""))
+        else:
+            parts.append(str(ev))
+    return "\n".join(parts).lower()
+
+
+def _no_change_needed(row: dict) -> bool:
+    text = _evidence_text(row)
+    return any(phrase in text for phrase in _NO_CHANGE_PHRASES)
+
+
+def _no_commits_between(reason: str) -> bool:
+    return "no commits between" in (reason or "").lower()
+
+
+def _ref_readable(repo: Path, ref: str) -> bool:
+    done = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+        cwd=str(repo), capture_output=True, text=True,
+    )
+    return done.returncode == 0 and bool((done.stdout or "").strip())
+
+
+def _empty_branch_reason(row: dict, repo: Path, base: str) -> str:
+    """Why this review row's branch has nothing ahead of `base`, or "".
+
+    A ref this checkout cannot see is not empty. `commits_beyond_base` returns 0
+    when the rev-list fails, and that 0 would bounce work the supervisor has not
+    fetched yet.
+    """
+    branch = str(row.get("branch") or "").strip()
+    item = str(row.get("id") or "")
+    if not branch or not item:
+        return ""
+    if not wt_mod.branch_exists(repo, branch):
+        return ""
+    trunk = (base or "").strip() or "HEAD"
+    if trunk != "HEAD" and not _ref_readable(repo, trunk):
+        return ""
+    if wt_mod.commits_beyond_base(repo, branch, trunk) > 0:
+        return ""
+    return f"{item}: {branch} has no commits beyond {trunk}"
+
+
+def _renew_review_hold(row: dict, repo: Path, base: str) -> bool:
+    """Whether this review row keeps occupying its areas for another cycle.
+
+    An empty branch does not: nothing for a reviewer to read, and no PR can be
+    opened, so the hold keeps every colliding item out of the pool. Restoring
+    `return True` here renews the hold unconditionally and the empty-branch
+    test fails.
+    """
+    if _empty_branch_reason(row, repo, base):
+        return False
+    return True
+
+
+def _release_empty_review(planner, row: dict, reason: str, agent_id: str) -> bool:
+    """Take an empty-branch review row out of review. False when the write was refused.
+
+    Bounce, unless the builder's evidence says no change was needed: that is a
+    planner decision (duplicate or superseded), not another failed attempt.
+    Either way the row leaves `review`, so its areas stop being held. The event
+    detail names the item and "no commits".
+    """
+    item = str(row.get("id") or "")
+    if not item or planner is None:
+        return False
+    detail = reason if "no commits" in (reason or "").lower() else f"{item}: no commits. {reason}"
+    if item not in detail:
+        detail = f"{item}: {detail}"
+    if _no_change_needed(row):
+        args: dict = {
+            "id": item,
+            "status": "blocked",
+            "blocker": f"planner decision: duplicate or superseded — {detail}",
+            "evidence": [{"kind": "note", "detail": (
+                f"{item}: no commits on its branch; planner decision "
+                f"(duplicate or superseded), not a bounce. {reason}"
+            )}],
+        }
+        call = "update_item"
+    else:
+        args = {"id": item, "reason": detail}
+        call = "bounce"
+    if agent_id:
+        args["agent_id"] = agent_id
+    try:
+        planner.call(call, **args)
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("review_empty_branch_unrecorded", item=item,
+                     detail=f"{item}: no commits; release refused: {exc}")
+        return False
+    observe.emit("review_empty_branch", item=item, detail=detail)
+    return True
+
+
+def _release_empty_branches(planner, rows: list[dict], repo: Path, base: str,
+                            agent_id: str) -> list[dict]:
+    """Drop review rows whose branch has no commits. A refused write stays in review."""
+    kept: list[dict] = []
+    for row in rows:
+        if _renew_review_hold(row, repo, base):
+            kept.append(row)
+            continue
+        reason = _empty_branch_reason(row, repo, base)
+        if not _release_empty_review(planner, row, reason, agent_id):
+            kept.append(row)
+    return kept
+
+
 def _note_pr_wait(logged: set, item: str, reason: str) -> None:
     key = ("review_waits_on_pr", item, (reason or "")[:200])
     if key in logged:
@@ -3993,7 +4125,7 @@ def _note_pr_wait(logged: set, item: str, reason: str) -> None:
 
 
 def _pr_opened(rows: list[dict], repo: Path, base: str, logged: set, *,
-               planner=None) -> tuple[list[dict], list[dict]]:
+               planner=None, agent_id: str = "") -> tuple[list[dict], list[dict]]:
     """Split unheld review rows into (has a linked PR, waiting for one) (GRPH-1730).
 
     A reviewer's `sign_off` is refused `pr_missing` for a branch with no linked PR, so a
@@ -4040,7 +4172,13 @@ def _pr_opened(rows: list[dict], repo: Path, base: str, logged: set, *,
         if got.skipped:
             ready.append(row)
             continue
-        _note_pr_wait(logged, item, got.reason or "no PR")
+        reason = got.reason or "no PR"
+        # GRPH-1843. "No commits between" is not a retry: the branch has nothing
+        # to propose, and parking it here renewed the review hold every cycle.
+        if _no_commits_between(reason) and _release_empty_review(
+                planner, row, reason, agent_id):
+            continue
+        _note_pr_wait(logged, item, reason)
         waiting.append(row)
     return ready, waiting
 
@@ -4804,23 +4942,53 @@ _ACCEPT_RE = re.compile(
     re.I | re.M)
 
 
-def _unready(planner: Graphban, line: str) -> list[dict]:
-    """`[{id, missing}]` for this line's open items the server will not hand out for want of
-    an acceptance clause or a touchpoint (GRPH-1697). Empty means it looked and found none.
+def _held_by_review(clusters) -> dict[str, str]:
+    """Sibling id → the review item whose hold stripped it (`held_because`).
 
-    The server computes this list (`items.unready_line_items`) but returns it only on a line
-    seat's `claim_cluster`, which a supervisor must not call. So WHICH items are unready is
-    the server's verdict, read from its claim pool: a line item counts only when it is open,
-    unheld and unblocked and `collision_clusters` left it out. `missing` is named here, from
-    the item's touchpoints and description, and an item for which neither is missing is out
-    of the pool for another reason (a dependency) and is not listed. A failed read is an empty
-    list: the run is already finishing.
+    The review item itself is not a sibling of its own hold. `by` is that item's
+    key, not the word "review" and not a live reviewer.
+    """
+    held: dict[str, str] = {}
+    for cluster in clusters or []:
+        if not isinstance(cluster, dict):
+            continue
+        for why in cluster.get("held_because") or []:
+            if not isinstance(why, dict):
+                continue
+            holder = str(why.get("by") or "")
+            if not holder:
+                continue
+            for sibling in why.get("held") or []:
+                key = str(sibling)
+                if key and key != holder and key not in held:
+                    held[key] = holder
+    return held
+
+
+def _unready(planner: Graphban, line: str) -> list[dict]:
+    """Open line items the server will not hand out, and why (GRPH-1697, GRPH-1843).
+
+    `[{id, missing}]` when an acceptance clause or a touchpoint is absent.
+    `[{id, held_by}]` when the item is ready and the only reason it is out of the
+    pool is another item's review hold. Empty means it looked and found none.
+
+    The server computes the missing list (`items.unready_line_items`) but returns it
+    only on a line seat's `claim_cluster`, which a supervisor must not call. So WHICH
+    items are out is the server's verdict, read from its claim pool: a line item counts
+    only when it is open, unclaimed and unblocked and `collision_clusters` left it out
+    of `items`. A sibling stripped by a review hold lives in `held_because[].held`, not
+    in `items` — naming that `missing: acceptance` is how a hold was reported as an
+    unfinished description. An item for which neither acceptance nor touchpoints are
+    missing, and which no review hold names, is out of the pool for another reason (a
+    dependency) and is not listed. A failed read is an empty list: the run is already
+    finishing.
     """
     try:
-        pooled = {i for c in (planner.call("collision_clusters") or {}).get("clusters") or []
-                  if isinstance(c, dict) for i in (c.get("items") or [])}
+        clusters = (planner.call("collision_clusters") or {}).get("clusters") or []
     except (NotPermitted, ToolFailed, ServerUnreachable):
         return []
+    pooled = {str(i) for c in clusters if isinstance(c, dict) for i in (c.get("items") or [])}
+    held_by = _held_by_review(clusters)
     out: list[dict] = []
     for status in ("backlog", "next"):
         try:
@@ -4829,15 +4997,24 @@ def _unready(planner: Graphban, line: str) -> list[dict]:
             return out
         for r in (got or {}).get("results") or []:
             if not isinstance(r, dict) or r.get("line_id") != line or r.get("claimed_by") \
-                    or r.get("blocker") or str(r.get("id")) in pooled:
+                    or r.get("blocker"):
+                continue
+            rid = str(r.get("id"))
+            if rid in pooled:
+                continue
+            has_accept = bool(_ACCEPT_RE.search(str(r.get("description") or "")))
+            has_touch = bool([t for t in (r.get("touchpoints") or []) if str(t).strip()])
+            # Ready, and out only because a review item holds its area.
+            if rid in held_by and has_accept and has_touch:
+                out.append({"id": rid, "held_by": held_by[rid]})
                 continue
             missing = []
-            if not _ACCEPT_RE.search(str(r.get("description") or "")):
+            if not has_accept:
                 missing.append("acceptance")
-            if not [t for t in (r.get("touchpoints") or []) if str(t).strip()]:
+            if not has_touch:
                 missing.append("touchpoints")
             if missing:
-                out.append({"id": str(r["id"]), "missing": missing})
+                out.append({"id": rid, "missing": missing})
     return out
 
 

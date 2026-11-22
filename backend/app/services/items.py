@@ -1584,6 +1584,22 @@ def _submitter_branch(db: Session, item: Item, submitted_by: str) -> str:
     return ((agent.branch if agent is not None else "") or "").strip()
 
 
+def _effective_review_branch(db: Session, item: Item, submitted_by: str, fields: dict) -> str:
+    """The branch a move to review would hand a reviewer.
+
+    The incoming `branch` wins, then the item's own, then the submitter's registered
+    branch. That last one is stamped onto the row later in this same call, so the
+    gate has to read it now. An empty string is not a write.
+    """
+    incoming = fields.get("branch")
+    if isinstance(incoming, str) and incoming.strip():
+        return incoming.strip()
+    own = (item.branch or "").strip()
+    if own:
+        return own
+    return _submitter_branch(db, item, submitted_by)
+
+
 def pr_linked_at(evidence, existing=None):
     """When this item's PR was FIRST linked, or None.
 
@@ -2385,6 +2401,18 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         # agent or credential (`submitted_by` set — the MCP path), not of a person moving a
         # card on the board, whose item may have no branch at all. A typed wait is exempt:
         # it carries no built work, so there is no branch to point at.
+        #
+        # GRPH-1843: a branch that IS the measured gitops base has no commits for a
+        # reviewer to read. Same caller rule as the handoff — an agent, not a person.
+        if fields["status"] == "review" and submitted_by and not wait_tags_on(item):
+            effective = _effective_review_branch(db, item, submitted_by, fields)
+            from app.services import fleet as fleet_svc
+            matched = fleet_svc.branch_equals_base(db, item.project_id, effective)
+            if matched:
+                raise ValueError(
+                    f"{item.key} cannot move to review: branch `{effective}` equals its "
+                    f"base `{matched}`, so it has no commits for a reviewer to read"
+                )
         if (fields["status"] == "review" and submitted_by and not wait_tags_on(item)
                 and not _submitter_branch(db, item, submitted_by)
                 and not reviewable_handoff(item, fields.get("evidence"))):

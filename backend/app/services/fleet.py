@@ -1429,6 +1429,40 @@ def collapsed_agents(db: Session, project_id: str | None, *, offset: int = 0,
                                   offset=offset)}
 
 
+def _branch_ref_name(ref: str) -> str:
+    """The branch name of a ref: `refs/heads/` and a single `origin/` stripped."""
+    text = (ref or "").strip()
+    if text.startswith("refs/heads/"):
+        text = text[len("refs/heads/"):]
+    if text.startswith("origin/"):
+        text = text[len("origin/"):]
+    return text
+
+
+def branch_equals_base(db: Session, project_id: str | None, branch: str) -> str:
+    """The measured gitops base name when `branch` names that ref, else "".
+
+    GRPH-1843. The server has no git, so "the branch equals its base" is this name
+    comparison. An unset base is not a match: absence is not "equals main", and
+    refusing every review on an unmeasured project would stop the fleet. `origin/`
+    is stripped from both sides so `origin/main` and `main` are one ref.
+    """
+    name = _branch_ref_name(branch)
+    if not name or not project_id:
+        return ""
+    project = db.get(Project, project_id)
+    if project is None:
+        return ""
+    from app.services import gitops as gitops_svc
+    base = gitops_svc.base_branches(db, [project]).get(project.id)
+    if not isinstance(base, str) or not str(base).strip():
+        return ""
+    base_name = _branch_ref_name(str(base))
+    if name == base_name:
+        return base_name
+    return ""
+
+
 def review_holds(db: Session, project_id: str | None) -> list[dict]:
     """Items in `review` and the declared areas each holds while it waits (GRPH-951).
 
