@@ -1,0 +1,45 @@
+---
+name: graphban-work
+description: >
+  Claim and finish one Graphban item: register, claim_cluster or claim_next,
+  heartbeat, evidence, release. Use when claiming work, implementing an item,
+  updating item status, recording evidence, or when the user runs /graphban-work.
+user-invocable: true
+---
+
+# Work an item
+
+Take one item, leave a receipt, hand it to review. Reading the repo is `graphban-orient`: `search_code`, then `code_neighbors`, before grep or a wide read.
+
+1. In a fleet, `register_agent` once before any claim. Read `active_role`, `heartbeat_interval_seconds`, and `tools_off_limits`. A name in `tools_off_limits` is still in the prompt; the server refuses the call. Heartbeat on that interval. Pass `agent_id` from this registration on later calls.
+2. Fleet: `claim_cluster`. Solo: `claim_next`. `claimed: false` names who holds the area and when it frees. That is the answer. Take different work.
+3. `get_item_details` once. The `brief` suggests `lane` and `tier` with a basis. You still choose both if you hand it to a child.
+4. `heartbeat(id, status=<one line>, files=[the paths you are in])` on the lease interval. A heartbeat is not a `fleet_status` poll.
+   Heartbeat before any command that can run longer than the lease: a Postgres suite or `pnpm test` prints nothing, and a silent command drops the claim around 150 seconds.
+   After you change paths, `describe_code` those paths so the next child does not grep for them.
+   A review-ready receipt is a test line: an `update_item` evidence entry of kind `test` with passed and failed counts.
+   Finishing the item is `graphban-prove`.
+5. `update_item` as you go. Evidence appends. Touchpoints union: send the files you actually touched. An empty touchpoint list writes nothing. Status goes to `review`.
+6. Stopping unfinished: `release_item`. A blocker that is still true tomorrow is status `blocked` with `blocker` set. `backlog` is claimable and will be handed out again. A build claim released without `to_status` goes back to `next`.
+
+Test scope follows the project's mode, which your delegation brief states. `agent_targeted`: run the tests you wrote or changed, the module's existing tests and the sabotage check, then push and hand off; the PR's CI runs the full suites and is the receipt. `agent_and_pr`: run the full suites per `AGENTS.md`'s operating loop. `agent_full`: run the full suites; your receipts are the proof. In every mode, a full local run is still right when reproducing a CI failure.
+
+Found bug follows the project's mode, which your delegation brief states on a `Found bug:` line; read it there, do not choose it per bug. `fix_in_build`: a bug in the files of the item you hold is fixed on that item, and a new fix over those files is refused; a bug outside them is a ticket. `file_ticket`: a bug found during the work is a new ticket, including a bug in those files, and your item cannot move to review while its diff touches a path on that ticket until it is `done`.
+
+Filing a fix: a defect has three exits. Fix it on the item you hold (only in `fix_in_build` mode); file a blocking fix on the PRD, `create_item` with `kind=fix`, `prd_id`, `blocks=<an item on that PRD>`, a description with `## Acceptance`, and touchpoints, and when `blocks` names the item you hold the same call releases it to `blocked` with the fix as its blocker, so your lease ends; or file a fix on the line, `create_item` with `kind=fix` and `line_id` read from `get_context.maintenance_line.id`. Scope is required: a fix with neither `prd_id` nor `line_id` is refused. Never hardcode a line key.
+
+A product decision the item and its PRD framing do not already state: file a wait and stop. `create_item` with tag `wait:decision`, `status=blocked`, this item's `prd_id`, and a description that is the question plus what each answer would make you do. `link_items` with `a` this item, `b` the wait, `type` `dependency`, `reason` `wait:decision`. Leave this item `blocked`. Leave the wait blocked. Answering it is `graphban-answer`.
+
+A broken build is either still this item (move it back to `next` with the failure named), or a
+new ticket this item depends on — `create_item`, `link_items` with `type=dependency`, and
+`blocker` set to that item's id. A free-text `blocker` alone is not a wait and is not claimable.
+
+Signing off is `graphban-review`. The builder does not set `done`.
+
+Memory, when the next agent cannot see the lesson in the diff:
+
+- `search_memory` first, as in `graphban-orient`.
+- `add_memory`. Read the returned `status`. `candidate` does not appear in later search. A near-duplicate is rejected.
+- `publish_memory` asks a judge. `kept: false` is a normal result.
+
+Handing the item to a child is `graphban-delegation`. That is a `delegate`, not a second claim.
