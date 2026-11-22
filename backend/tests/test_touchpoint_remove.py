@@ -94,6 +94,19 @@ def test_mcp_reply_lists_what_was_removed(client, auth):
     assert out["touchpoints"] == ["a.py"]
 
 
+def test_rest_patch_removes_touchpoints_and_plain_field_still_unions(client, auth):
+    """GRPH-1388: the REST PATCH carries `touchpoints_remove` too."""
+    proj = client.post("/api/projects", json={"name": "RmRest"}, headers=auth).json()["id"]
+    item = client.post("/api/items", json={"title": "x", "project_id": proj,
+                       "touchpoints": ["a.py", "backend/tests/*"]}, headers=auth).json()
+    r = client.patch(f"/api/items/{item['id']}",
+                     json={"touchpoints_remove": ["backend/tests/*"]}, headers=auth)
+    assert r.status_code == 200, r.text
+    assert r.json()["touchpoints"] == ["a.py"]
+    r = client.patch(f"/api/items/{item['id']}", json={"touchpoints": ["b.py"]}, headers=auth)
+    assert r.json()["touchpoints"] == ["a.py", "b.py"]
+
+
 WIDE = "backend/alembic/versions/*"  # a hard area (fleet.HARD_AREAS)
 
 
