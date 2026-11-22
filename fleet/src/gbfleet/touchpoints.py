@@ -136,20 +136,171 @@ def is_file(path: str) -> bool:
     return "." in p.rsplit("/", 1)[-1]
 
 
+def _filename_pattern(path: str) -> bool:
+    """The server's `clustering._filename_pattern`, mirrored (GRPH-1848).
+
+    A `*` or `?` in the last segment that still names files. `backend/tests/*` is the
+    directory; `backend/tests/test_prd*.py` is a claim about names, and reading it as the
+    directory chained every backend test into one cluster.
+    """
+    seg = (path or "").strip().rstrip("/").rsplit("/", 1)[-1]
+    if not any(c in seg for c in "*?"):
+        return False
+    return bool(seg.replace("*", "").replace("?", ""))
+
+
+def _atoms(pat: str) -> list | None:
+    """Mirror of `clustering._atoms`. None means the caller collides rather than guessing."""
+    out: list = []
+    i, n = 0, len(pat)
+    while i < n:
+        c = pat[i]
+        if c == "*":
+            if not out or out[-1] != ("star",):
+                out.append(("star",))
+            i += 1
+        elif c == "?":
+            out.append(("any",))
+            i += 1
+        elif c == "[":
+            j = pat.find("]", i + 2 if i + 1 < n and pat[i + 1] in "!^" else i + 1)
+            if j == -1:
+                return None
+            body = pat[i + 1:j]
+            i = j + 1
+            neg = bool(body) and body[0] in "!^"
+            if neg:
+                body = body[1:]
+            if not body:
+                return None
+            chars: set[str] = set()
+            k = 0
+            while k < len(body):
+                if body[k] == "\\" and k + 1 < len(body):
+                    chars.add(body[k + 1])
+                    k += 2
+                elif k + 2 < len(body) and body[k + 1] == "-" and body[k + 2] != "]":
+                    start, end = ord(body[k]), ord(body[k + 2])
+                    if end < start or end - start > 256:
+                        return None
+                    chars.update(chr(ch) for ch in range(start, end + 1))
+                    k += 3
+                else:
+                    chars.add(body[k])
+                    k += 1
+            if not chars:
+                return None
+            out.append(("class", frozenset(chars), neg))
+        else:
+            out.append(("lit", c))
+            i += 1
+    return out
+
+
+def _atom_overlap(a: tuple, b: tuple) -> bool:
+    def chars(atom: tuple) -> set[str] | None:
+        if atom[0] == "lit":
+            return {atom[1]}
+        if atom[0] == "any":
+            return None
+        if atom[2]:
+            return None
+        return set(atom[1])
+
+    ca, cb = chars(a), chars(b)
+    if ca is None and cb is None:
+        return True
+    if ca is None:
+        if a[0] == "class" and a[2]:
+            return any(ch not in a[1] for ch in cb)
+        return True
+    if cb is None:
+        if b[0] == "class" and b[2]:
+            return any(ch not in b[1] for ch in ca)
+        return True
+    return bool(ca & cb)
+
+
+def _globs_overlap(a: str, b: str) -> bool:
+    """Mirror of `clustering._globs_overlap`: some filename matches both patterns."""
+    import fnmatch
+
+    if fnmatch.fnmatch(a, b) or fnmatch.fnmatch(b, a):
+        return True
+    aa, bb = _atoms(a), _atoms(b)
+    if aa is None or bb is None:
+        return True
+    memo: dict[tuple[int, int], bool] = {}
+
+    def rec(i: int, j: int) -> bool:
+        key = (i, j)
+        if key in memo:
+            return memo[key]
+        if i == len(aa) and j == len(bb):
+            memo[key] = True
+            return True
+        if i < len(aa) and aa[i] == ("star",):
+            ok = rec(i + 1, j) or (j < len(bb) and rec(i, j + 1))
+            memo[key] = ok
+            return ok
+        if j < len(bb) and bb[j] == ("star",):
+            ok = rec(i, j + 1) or (i < len(aa) and rec(i + 1, j))
+            memo[key] = ok
+            return ok
+        if i == len(aa) or j == len(bb):
+            memo[key] = False
+            return False
+        ok = _atom_overlap(aa[i], bb[j]) and rec(i + 1, j + 1)
+        memo[key] = ok
+        return ok
+
+    return rec(0, 0)
+
+
+def _filename_globs_overlap(x: str, y: str) -> bool:
+    return _globs_overlap(x.rstrip("/").rsplit("/", 1)[-1], y.rstrip("/").rsplit("/", 1)[-1])
+
+
+def _directory_clause(x: str, nx: str, y: str, ny: str) -> bool:
+    """Shared parent, and at least one side is not a named file — unless a filename pattern
+    is being read as that parent (GRPH-1848).
+
+    Two filename patterns still relate when they can name the same file. A pattern and a
+    concrete file that did not glob-match do not. Containment (`backend/tests/` over
+    `backend/tests/test_prd*.py`) is the prefix clause, which already ran.
+    """
+    import posixpath
+
+    if not ("/" in nx and "/" in ny and posixpath.dirname(nx) == posixpath.dirname(ny)):
+        return False
+    if is_file(x) and is_file(y):
+        return False
+    px, py = _filename_pattern(nx), _filename_pattern(ny)
+    if px and py:
+        return _filename_globs_overlap(nx, ny)
+    if px or py:
+        return False
+    return True
+
+
 def collide(a: list[str], b: list[str]) -> list[str]:
     """The areas of `a` that overlap `b` — the server's `areas_collide`, mirrored (GRPH-951).
 
     Used by `until` to decide which siblings a merged-but-unsigned member holds. The server
     cannot see that case (it does not know the base), so the loop has to judge it, and it
     judges it by the server's rule: equal, one under the other, a glob match, or a shared
-    parent directory when at least one side is not a named file. Either side EMPTY collides
-    with everything: "declared nothing" is not "disjoint".
+    parent directory when at least one side is not a named file. A filename pattern is not
+    its parent directory (GRPH-1848): it matches names, not every file beside it. Either
+    side EMPTY collides with everything: "declared nothing" is not "disjoint".
     """
     import fnmatch
-    import posixpath
 
     def norm(x: str) -> str:
         return (x or "").strip().rstrip("/")
+
+    def glob_hit(nx: str, ny: str) -> bool:
+        return ((any(c in nx for c in "*?") and fnmatch.fnmatch(ny, nx))
+                or (any(c in ny for c in "*?") and fnmatch.fnmatch(nx, ny)))
 
     if not [x for x in a or [] if norm(x)] or not [y for y in b or [] if norm(y)]:
         return list(a or []) or ["*"]
@@ -163,11 +314,8 @@ def collide(a: list[str], b: list[str]) -> list[str]:
             if not ny:
                 continue
             if (nx == ny or nx.startswith(ny + "/") or ny.startswith(nx + "/")
-                    or ("*" in nx and fnmatch.fnmatch(ny, nx))
-                    or ("*" in ny and fnmatch.fnmatch(nx, ny))
-                    or ("/" in nx and "/" in ny
-                        and posixpath.dirname(nx) == posixpath.dirname(ny)
-                        and not (is_file(x) and is_file(y)))):
+                    or glob_hit(nx, ny)
+                    or _directory_clause(x, nx, y, ny)):
                 out.append(x)
                 break
     return out
