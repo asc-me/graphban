@@ -23,6 +23,10 @@ OUTCOMES = ("never_registered", "no_branch", "check_red", "check_green", "timed_
             "harness_error")
 PLUMBING = ("never_registered", "harness_error")
 MAX_TASKS = 200
+#: The column widths in `bench_runs` / `bench_baselines`: a longer value is refused by name
+#: rather than reaching Postgres as a truncation error.
+FIELD_MAX = {"vendor": 32, "model": 64, "binary_version": 32, "suite_id": 64,
+             "suite_version": 32}
 
 
 def _text(body: dict, field: str, *, required: bool = True) -> str:
@@ -33,7 +37,11 @@ def _text(body: dict, field: str, *, required: bool = True) -> str:
         return ""
     if not isinstance(value, str):
         raise AttemptRefused(f"{field} must be a string", status=422)
-    return value.strip()
+    value = value.strip()
+    limit = FIELD_MAX.get(field)
+    if limit is not None and len(value) > limit:
+        raise AttemptRefused(f"{field} must be at most {limit} characters", status=422)
+    return value
 
 
 def _identity(body: dict) -> dict:

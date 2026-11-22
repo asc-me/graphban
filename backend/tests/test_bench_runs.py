@@ -75,30 +75,42 @@ def test_unreported_tokens_are_null_never_zero(client, env):
     assert out["tokens"] is None and out["wall_seconds"] is None
 
 
-def test_posting_a_result_leaves_telemetry_and_rates_unchanged(client, env):
-    before = _counts(env["proj"])
-    assert _post(client, env).status_code == 201
-    assert _counts(env["proj"]) == before
+def _seed_telemetry(proj):
+    """Finished attempts for the same vendor+model+capability the baseline names, so a
+    post that leaked into telemetry or a rate would land in exactly these cells."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
     with SessionLocal() as db:
-        assert db.scalar(select(func.count()).select_from(BenchBaseline)) == 1
+        for i, outcome in enumerate(["signed_off", "signed_off", "bounced"]):
+            db.add(AttemptTelemetry(
+                id=f"at-bench-{i}", project_id=proj, vendor="anthropic", model="sonnet",
+                binary_version="1.2.3", capabilities=["A1"], outcome=outcome,
+                tokens_in=10, tokens_out=10, derived_at=now - timedelta(days=1)))
+        db.commit()
 
 
-def test_the_telemetry_guard_fails_when_a_post_also_writes_attempt_telemetry(client, env,
-                                                                            monkeypatch):
-    """Sabotage: a post that also writes AttemptTelemetry must trip the guard above."""
-    real = bench_svc.post_result
+def _telemetry_and_grid(proj):
+    from app.services import harness as harness_svc
 
-    def sabotaged(db, *, project_id, body):
-        out = real(db, project_id=project_id, body=body)
-        db.add(AttemptTelemetry(id="sab1", project_id=project_id, vendor="anthropic",
-                                model="sonnet"))
-        db.flush()
-        return out
+    with SessionLocal() as db:
+        rows = sorted((harness_svc.row_dict(r) for r in db.scalars(select(AttemptTelemetry))),
+                      key=lambda r: r["id"])
+        cells = harness_svc.report(db, proj)["cells"]
+        db.commit()
+    return rows, cells
 
-    monkeypatch.setattr(bench_svc, "post_result", sabotaged)
-    before = _counts(env["proj"])
-    _post(client, env)
-    assert _counts(env["proj"]) != before
+
+def test_posting_a_result_leaves_telemetry_and_rates_unchanged(client, env):
+    _seed_telemetry(env["proj"])
+    rows, cells = _telemetry_and_grid(env["proj"])
+    assert len(rows) == 3 and any(c.get("rate") is not None for c in cells), cells
+    assert _post(client, env).status_code == 201
+    assert _post(client, env, outcomes=[
+        {"task_id": "t1", "outcome": "check_red", "capabilities": ["A1"]}]).status_code == 201
+    assert _telemetry_and_grid(env["proj"]) == (rows, cells)
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(BenchBaseline)) == 2
 
 
 @pytest.mark.parametrize("field", ["vendor", "model", "suite_id", "suite_version"])
@@ -111,6 +123,11 @@ def test_a_result_missing_a_key_field_is_refused_naming_it(client, env, field):
     assert r.status_code == 422 and field in r.text
     with SessionLocal() as db:
         assert db.scalar(select(func.count()).select_from(BenchBaseline)) == 0
+
+
+def test_an_overlong_key_field_is_refused_naming_it(client, env):
+    r = _post(client, env, vendor="v" * 33)
+    assert r.status_code == 422 and "vendor" in r.text
 
 
 def test_a_bad_outcome_is_refused(client, env):
