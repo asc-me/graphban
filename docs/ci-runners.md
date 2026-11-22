@@ -36,3 +36,27 @@ To add a runner, get a registration token
 (`gh api -X POST repos/asc-me/graphban/actions/runners/registration-token`) and run
 `config.sh --unattended --labels graphban-ci` in a fresh `~/actions-runner-<name>`. On
 rog-om-01, copy `bin/runsvc.sh` to the runner root before you start its user unit.
+
+## A ledger box behind NAT
+
+This repository's own CI can post `suite_green` to `127.0.0.1` because the runner and the
+ledger share a machine. A project whose ledger is a box behind NAT cannot do that: a
+GitHub-hosted runner cannot open a connection to it, and `until` then stops at
+`review-ci-unattestable` even when the check is green.
+
+The default for that box is to pull (GRPH-1822). The API leader reads
+`GET https://api.github.com/repos/{owner}/{repo}/commits/{sha}/check-runs` for each item in
+`review` that has a linked GitHub pull request and no `suite_green` at the recorded head,
+and writes the attestation itself under adapter `github-checks`. Nothing accepts an inbound
+callback, and no gate key is minted for the write.
+
+The token is `GITHUB_TOKEN` (or `GRAPHBAN_GITHUB_TOKEN`). A private repository needs read
+access to its checks: a classic personal access token with the `repo` scope, or a
+fine-grained token with Checks: Read. The loop does not call GitHub without a token — an
+empty token is not the unauthenticated 60-calls-an-hour budget. A missing token, a 401 and
+a 404 are named on the item's done refusal and on `GET /health` as `ci_pull.last_error`.
+
+A head is polled at most every 60 seconds (`CI_PULL_SECONDS`; `0` disables the loop) and
+less often while GitHub's rate-limit reset is still in the future. Zero check-runs is not a
+green suite. Checks that are still running write nothing. Only `suite_green` is written;
+`scans_clean` still needs its own source.
