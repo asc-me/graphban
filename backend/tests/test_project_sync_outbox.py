@@ -63,7 +63,8 @@ def test_alembic_head_is_the_proposal_migration():
     cfg.set_main_option("script_location", str(backend / "alembic"))
     cfg.set_main_option("path_separator", "os")
     script = ScriptDirectory.from_config(cfg)
-    assert script.get_heads() == ["0225"]
+    assert script.get_heads() == ["0226"]
+    assert script.get_revision("0226").down_revision == "0225"  # GRPH-1822, CI pull notes
     assert script.get_revision("0225").down_revision == "0224"  # GRPH-1808, org dismissal of a rule proposal
     assert script.get_revision("0224").down_revision == "0223"  # GRPH-1762, publish credential
     assert script.get_revision("0223").down_revision == "0222"  # GRPH-1798, default fix line

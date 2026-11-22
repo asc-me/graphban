@@ -55,6 +55,10 @@ access to its checks: a classic personal access token with the `repo` scope, or 
 fine-grained token with Checks: Read. The loop does not call GitHub without a token — an
 empty token is not the unauthenticated 60-calls-an-hour budget. A missing token, a 401 and
 a 404 are named on the item's done refusal and on `GET /health` as `ci_pull.last_error`.
+The loop runs in one process. Those sentences, and the ones for zero check-runs,
+a head that is still running, and a truncated list, are rows in `ci_pull_notes`,
+so the worker that answers `/health` or the done refusal can read them. A
+process-local flag cannot carry the sentence.
 
 A head is polled at most every 60 seconds (`CI_PULL_SECONDS`; `0` disables the loop) and
 less often while GitHub's rate-limit reset is still in the future. Zero check-runs is not a

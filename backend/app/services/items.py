@@ -1977,7 +1977,7 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
     # Empty when the loop has not looked at this head: the old wording stays, and
     # a head nobody asked GitHub about does not grow a reason the box never had.
     from app.services import ci_pull
-    clause = ci_pull.refusal_clause(commits)
+    clause = ci_pull.refusal_clause(commits, db)
     if clause:
         run = f"{run}. {clause}"
     # CI ran the suite at the PR's head and it did not pass: that is an answer, not silence,
@@ -2479,7 +2479,7 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
             # GitHub about does not grow a reason the box never had.
             if predicate == "attestation_missing":
                 from app.services import ci_pull
-                clause = ci_pull.refusal_clause([head] if head else [])
+                clause = ci_pull.refusal_clause([head] if head else [], db)
                 if clause:
                     detail = f"{detail} {clause}"
             record_refusal(db, item, predicate=predicate, detail=detail)

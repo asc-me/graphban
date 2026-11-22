@@ -2413,6 +2413,27 @@ class SyncStorageConfig(Base):
                                                  nullable=False)
 
 
+class CiPullNote(Base):
+    """One sentence the CI pull loop stored for every worker (GRPH-1822).
+
+    The loop runs in the leader process. `GET /health` and the done refusal run
+    on whichever worker the request hits. A module global is true in one process
+    of N, so the sentence lives here.
+
+    `key` is `__last_error__` for the loop's last error, or `owner/repo@sha` for
+    one head. A missing last-error row means no pass has finished — not the same
+    as a row whose `body` is empty, which is a pass that read what it needed.
+    An observation row exists only while that head has a reason and no
+    `suite_green` yet.
+    """
+
+    __tablename__ = "ci_pull_notes"
+
+    key: Mapped[str] = mapped_column(String(300), primary_key=True)
+    body: Mapped[str] = mapped_column(Text, default="", server_default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class CodeSyncState(Base):
     """Per-project manifest of the code graph last pushed to the linked cloud tenant (AL-139):
     `manifest` is {path: content_hash} of what the cloud confirmed — the diff base for an

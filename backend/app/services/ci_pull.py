@@ -11,6 +11,13 @@ not silence — `last_error` is what `/health` reports, and `refusal_clause` is
 what the done gate appends. A head is polled at most every 60 seconds, less
 often when `ci_pull_seconds` is higher, and not at all once a pass or a fail
 is on the item.
+
+The loop runs in the leader process. `/health` and the done refusal run on
+whichever worker the request hits, and a module global is true in one process
+of N (`leader.leader_lock_held` can say "not this worker" and cannot carry the
+sentence). The sentences live in `ci_pull_notes`. Poll timing stays in this
+process: only the leader polls, and a successor that takes the lock starts
+from a fresh clock.
 """
 from __future__ import annotations
 
@@ -20,11 +27,11 @@ import threading
 import time
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Item
+from app.models import CiPullNote, Item, utcnow
 from app.services import items as items_svc
 
 logger = logging.getLogger("graphban.ci_pull")
@@ -48,45 +55,85 @@ FAIL_CONCLUSIONS = frozenset({
 })
 
 _lock = threading.Lock()
-#: None: no pass has finished. "": the last pass read what it needed (or had
-#: nothing to read). A string: the last pass could not, and why. Empty must not
-#: be the only answer, because "no error" and "nobody looked" are different.
-_last_error: str | None = None
+#: Poll clock for THIS process. The leader is the only writer; a new leader
+#: starts from zero, which polls early rather than waiting out a dead clock.
 _backoff_until = 0.0
 _next_poll: dict[str, float] = {}
-_observations: dict[str, str] = {}
+#: One row, not a sentence about a head. Missing row: no pass has finished.
+#: A row whose body is "" : the last pass read what it needed. Those two are
+#: different, and an empty string must not be the only answer.
+LAST_ERROR_KEY = "__last_error__"
+_UNREADABLE = "the box could not read the stored CI pull observation"
 
 
 def last_error() -> str | None:
-    """The loop's last error. None if it has not completed a pass."""
-    with _lock:
-        return _last_error
+    """The loop's last error, as stored for every worker.
+
+    None if no pass has finished. "" if the last pass had nothing it could not
+    read. A string is why it could not. This process's memory is not the answer:
+    a non-leader never ran the loop.
+    """
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        row = db.get(CiPullNote, LAST_ERROR_KEY)
+    except Exception:  # noqa: BLE001 — health must get a sentence, not a crash
+        logger.warning("ci pull observation unreadable", exc_info=True)
+        return _UNREADABLE
+    finally:
+        db.close()
+    if row is None:
+        return None
+    return row.body
 
 
-def refusal_clause(commits: list[str]) -> str:
+def refusal_clause(commits: list[str], db: Session | None = None) -> str:
     """What the done gate should add when this loop has looked at `commits` and
     written no `suite_green`. Empty when it has not looked — the old sentence
-    stays the whole refusal."""
+    stays the whole refusal.
+
+    `db` is the caller's session. The note was committed by the leader, so any
+    worker's session sees it; reading on the caller's connection is what keeps
+    a SQLite write transaction from locking the lookup out.
+    """
     wanted = [(c or "").strip() for c in commits if (c or "").strip()]
     if not wanted:
         return ""
-    with _lock:
-        snapshot = list(_observations.items())
-    for key, text in snapshot:
-        sha = key.rsplit("@", 1)[-1]
+    own = db is None
+    if own:
+        from app.db import SessionLocal
+        db = SessionLocal()
+    try:
+        rows = db.scalars(
+            select(CiPullNote).where(CiPullNote.key != LAST_ERROR_KEY)).all()
+    except Exception:  # noqa: BLE001 — silence here is the old missing sentence
+        logger.warning("ci pull observation unreadable", exc_info=True)
+        return _UNREADABLE
+    finally:
+        if own and db is not None:
+            db.close()
+    for row in rows:
+        sha = row.key.rsplit("@", 1)[-1]
         if any(items_svc.same_commit(sha, c) for c in wanted):
-            return text
+            return row.body
     return ""
 
 
 def reset_state() -> None:
-    """Forget poll times, observations and the last error. Tests, and a fresh process."""
-    global _last_error, _backoff_until
+    """Forget poll times and the stored sentences. Tests, and a fresh process."""
+    global _backoff_until
     with _lock:
-        _last_error = None
         _backoff_until = 0.0
         _next_poll.clear()
-        _observations.clear()
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        db.execute(delete(CiPullNote))
+        db.commit()
+    finally:
+        db.close()
 
 
 def run_once(db: Session, *, now: float | None = None) -> None:
@@ -100,7 +147,11 @@ def run_once(db: Session, *, now: float | None = None) -> None:
         _poll(db, clock)
     except Exception as exc:  # noqa: BLE001 — silence here is the failure
         logger.warning("ci pull pass failed", exc_info=True)
-        _set_last_error(f"the box could not read GitHub checks: {type(exc).__name__}")
+        try:
+            _set_last_error(db, f"the box could not read GitHub checks: {type(exc).__name__}",
+                            recover=True)
+        except Exception:  # noqa: BLE001 — the pass already failed; storing it must not raise
+            logger.warning("ci pull could not store the error", exc_info=True)
 
 
 def _poll_gap() -> float:
@@ -123,13 +174,13 @@ def _poll(db: Session, clock: float) -> None:
         # Falling through to it would spend that budget and, on a private repo,
         # look the same as a green silence. No token is a stated reason.
         if candidates:
-            _blame_all(candidates, "the box could not read GitHub checks: no token is set")
-            _set_last_error("the box could not read GitHub checks: no token is set")
+            _blame_all(db, candidates, "the box could not read GitHub checks: no token is set")
+            _set_last_error(db, "the box could not read GitHub checks: no token is set")
         else:
-            _set_last_error("")
+            _set_last_error(db, "")
         return
     if not candidates:
-        _set_last_error("")
+        _set_last_error(db, "")
         return
 
     groups: dict[str, list[tuple[Item, str]]] = {}
@@ -167,7 +218,7 @@ def _poll(db: Session, clock: float) -> None:
                         targets[later] = groups[later]
             else:
                 targets = {key: groups[key]}
-            _blame_groups(targets, fetched.problem)
+            _blame_groups(db, targets, fetched.problem)
             problems.append(fetched.problem)
             if fetched.stop or fetched.backoff:
                 break
@@ -176,11 +227,11 @@ def _poll(db: Session, clock: float) -> None:
         if verdict.kind in ("pass", "fail"):
             for item, exact in groups[key]:
                 _write(db, item, exact, verdict)
-            _clear_observation(key)
+            _clear_observation(db, key)
         else:
-            _blame_groups({key: groups[key]}, verdict.sentence)
+            _blame_groups(db, {key: groups[key]}, verdict.sentence)
     if looked:
-        _set_last_error(problems[0] if problems else "")
+        _set_last_error(db, problems[0] if problems else "")
 
 
 class _Fetched:
@@ -402,29 +453,41 @@ def _backoff_seconds(headers: dict) -> float:
     return delay if delay > 0 else 0.0
 
 
-def _blame_all(candidates, sentence: str) -> None:
+def _blame_all(db: Session, candidates, sentence: str) -> None:
     groups: dict[str, list] = {}
     for item, exact, owner, repo in candidates:
         key = f"{owner.lower()}/{repo.lower()}@{exact.lower()}"
         groups.setdefault(key, []).append((item, exact))
-    _blame_groups(groups, sentence)
+    _blame_groups(db, groups, sentence)
 
 
-def _blame_groups(groups: dict, sentence: str) -> None:
-    with _lock:
-        for key in groups:
-            _observations[key] = sentence
+def _blame_groups(db: Session, groups: dict, sentence: str) -> None:
+    for key in groups:
+        _upsert(db, key, sentence)
+    db.commit()
 
 
-def _clear_observation(key: str) -> None:
-    with _lock:
-        _observations.pop(key, None)
+def _clear_observation(db: Session, key: str) -> None:
+    row = db.get(CiPullNote, key)
+    if row is not None:
+        db.delete(row)
+        db.commit()
 
 
-def _set_last_error(text: str) -> None:
-    global _last_error
-    with _lock:
-        _last_error = text
+def _set_last_error(db: Session, text: str, *, recover: bool = False) -> None:
+    if recover:
+        db.rollback()
+    _upsert(db, LAST_ERROR_KEY, text)
+    db.commit()
+
+
+def _upsert(db: Session, key: str, body: str) -> None:
+    row = db.get(CiPullNote, key)
+    if row is None:
+        db.add(CiPullNote(key=key, body=body, updated_at=utcnow()))
+    else:
+        row.body = body
+        row.updated_at = utcnow()
 
 
 def _read_backoff() -> float:

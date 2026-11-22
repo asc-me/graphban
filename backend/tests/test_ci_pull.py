@@ -296,6 +296,61 @@ def test_no_token_makes_no_request_and_says_so(db, client, monkeypatch):
     assert error in str(exc.value)
 
 
+def _as_another_worker():
+    """A non-leader has none of the leader's locals. Plant that emptiness so a
+    read that consults this process, instead of `ci_pull_notes`, fails closed."""
+    ci_pull._last_error = None
+    ci_pull._observations = {}
+
+
+@pytest.mark.parametrize("case,sentence,on_health", [
+    ("401", "GitHub answered 401", True),
+    ("404", "GitHub answered 404", True),
+    ("notoken", "no token is set", True),
+    ("zero", "no check-runs were found", False),
+    ("running", "still running", False),
+    ("truncated", "truncated", True),
+])
+def test_a_worker_that_did_not_run_the_loop_still_names_why(
+        db, client, monkeypatch, case, sentence, on_health):
+    """Compose runs N workers. The loop is the leader's. `/health` and the done
+    refusal land on whichever worker the request hits, and that worker's module
+    globals are empty. The sentence has to be the row."""
+    if case == "notoken":
+        monkeypatch.setattr(settings, "github_token", "", raising=False)
+    if case == "truncated":
+        monkeypatch.setattr(ci_pull, "MAX_PAGES", 1)
+    item = _item(db, head=_sha(f"worker-{case}"))
+
+    def responder(url, headers):
+        if case == "401":
+            return _Resp(401, {})
+        if case == "404":
+            return _Resp(404, {})
+        if case == "zero":
+            return _Resp(200, {"total_count": 0, "check_runs": []})
+        if case == "running":
+            return _Resp(200, _body(_check("test", status="in_progress", conclusion="")))
+        if case == "truncated":
+            return _Resp(200, {"total_count": 150, "check_runs": [_check("only")]})
+        return _Resp(200, _body(_check("test")))
+
+    _github(monkeypatch, responder)
+    ci_pull.run_once(db, now=0)
+    db.refresh(item)
+    assert _suite(item) == []
+    _as_another_worker()
+    error = client.get("/health").json()["ci_pull"]["last_error"]
+    if on_health:
+        assert sentence in (error or "")
+    else:
+        assert error == ""
+    with pytest.raises(items_svc.MissingAttestation) as exc:
+        items_svc.update_item(db, item.id, status="done")
+    assert sentence in str(exc.value)
+    assert "nothing has attested it" in str(exc.value)
+
+
 def test_github_404_writes_nothing_and_names_the_miss(db, client, monkeypatch):
     item = _item(db, head=_sha("missing"))
     _github(monkeypatch, lambda url, headers: _Resp(404, {}))

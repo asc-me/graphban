@@ -848,6 +848,8 @@ def health():
         # — the loop is off, or it has not run — which is not the same as a clean read.
         # "" means the last pass had nothing it could not read. A string is why it
         # could not (no token, 401, 404, rate limit). It is not a verdict on a suite.
+        # Read from `ci_pull_notes`, not this process: the loop runs on the leader
+        # and this request may be a different worker.
         "ci_pull": {"last_error": ci_pull_svc.last_error()},
     }
 
