@@ -518,3 +518,16 @@ def test_planned_scanner_that_failed_is_never_retired(tmp_path, monkeypatch):
     counts = scan.run_scan(repo, codemap.head(repo), srv, run=_runner({}))
     assert counts["retired"] == 0
     assert not [r for r in srv.records if r["result"] == "retired"]
+
+
+def test_another_producers_row_is_never_retired(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _installed(monkeypatch, {"bandit"})
+    srv = Server()
+    srv.current = [{"scanner_id": "stubscan", "category": "stub", "result": "complete"},
+                   {"scanner_id": "npm-audit", "category": "security", "result": "incomplete"}]
+    scan.run_scan(repo, codemap.head(repo), srv, run=_runner({
+        "bandit": (0, json.dumps({"results": []}), ""),
+        "vulture": (0, "", ""), "radon": (0, "{}", "")}))
+    retired = [r["scanner_id"] for r in srv.records if r["result"] == "retired"]
+    assert retired == ["npm-audit"]
