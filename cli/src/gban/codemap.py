@@ -259,6 +259,16 @@ def plan(built: dict, existing: dict[str, dict]) -> dict:
         else:
             new += 1
         nodes.append(node_for(path, texts[path], keep_summary=has_summary))
+    # A tracked path the mapper skips (lockfile, binary, SKIP_PREFIXES) is never described, so a
+    # full run would leave it at its old revision. Restamp a fresh one at the target, keeping its
+    # kind/lang/content_hash, as `plan_since` does. A gone path or retired node is never restamped.
+    tracked_set = set(built["paths"])
+    for path, old in sorted(existing.items()):
+        if (path in texts or path not in tracked_set or "::" in path
+                or not old.get("fresh", True) or not (old.get("content_hash") or "")):
+            continue
+        nodes.append({"path": path, "kind": old.get("kind", "file"), "lang": old.get("lang", ""),
+                      "content_hash": old["content_hash"]})
     alive = present_paths(built["paths"])
     gone = sorted(p for p, n in existing.items()
                   if "::" not in p and n.get("fresh", True) and p.rstrip("/") not in alive)
@@ -341,7 +351,10 @@ def pinned_revision(result: dict) -> tuple[str | None, str]:
     # The server's `revision` counts stale nodes, and a retired path keeps the revision it was
     # last described at, so one deletion would read as "mixed" forever. A stale node says
     # nothing about what the live map describes: judge the fresh ones.
-    live = [n for n in nodes if n.get("fresh", True)]
+    # Directory nodes the mapper never maps carry no content_hash and an empty revision, and a
+    # symbol (`::`) is a hand-described annotation: neither says what the file map was built at.
+    live = [n for n in nodes
+            if n.get("fresh", True) and (n.get("content_hash") or "") and "::" not in n.get("path", "")]
     seen = {n.get("revision") or "" for n in live}
     if len(seen) == 1 and "" not in seen:
         return next(iter(seen)), ""

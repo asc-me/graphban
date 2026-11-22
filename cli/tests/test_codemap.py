@@ -150,3 +150,35 @@ def test_directory_and_skipped_nodes_are_not_gone(tmp_path):
     for path in ("pkg/src/mypkg", "pkg/src/", "uv.lock", "logo.png", "dist-release/x.py"):
         assert graph.nodes[path]["fresh"] is True, path
     assert graph.nodes["pkg/old"]["fresh"] is False
+
+
+def _n(path, rev, h="sha256:x", fresh=True):
+    return {"path": path, "revision": rev, "content_hash": h, "fresh": fresh}
+
+
+def test_pinned_revision_ignores_directory_and_retired_nodes():
+    nodes = [_n("a.py", "R"), _n("b.py", "R"), _n("backend/app", "", h="", fresh=True),
+             _n("old.py", "OLD", fresh=False)]
+    assert codemap.pinned_revision({"nodes": nodes}) == ("R", "")
+
+
+def test_pinned_revision_still_none_for_disagreeing_content_nodes():
+    pinned, why = codemap.pinned_revision({"nodes": [_n("a.py", "R"), _n("b.py", "S")]})
+    assert pinned is None and "mixed" in why
+
+
+def test_full_plan_restamps_skipped_lockfile_at_target():
+    built = {"revision": "T", "paths": ["a.py", "uv.lock", "gone-soon.lock"],
+             "texts": {"a.py": "x = 1\n"}, "edges": []}
+    existing = {
+        "uv.lock": {**_n("uv.lock", "OLD", h="sha256:lock"), "kind": "config", "lang": "toml"},
+        "retired.lock": _n("retired.lock", "OLD", fresh=False),
+        "deleted.lock": _n("deleted.lock", "OLD"),
+        "gone-soon.lock": _n("gone-soon.lock", "OLD", fresh=False),
+    }
+    planned = codemap.plan(built, existing)
+    by = {n["path"]: n for n in planned["nodes"]}
+    assert by["uv.lock"] == {"path": "uv.lock", "kind": "config", "lang": "toml",
+                             "content_hash": "sha256:lock"}
+    assert set(by) == {"a.py", "uv.lock"}
+    assert planned["gone"] == ["deleted.lock"]
