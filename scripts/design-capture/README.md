@@ -28,6 +28,8 @@ scripts/design-capture/run.sh
 It needs `backend/.venv` and `web/node_modules`. In a worktree without them, point `GB_REPO` at a checkout
 that has them. Don't `npm install` in `web/`: it is pnpm-locked.
 
+Run `npm ci` in this directory to install playwright and knip; the `gban scan` dead-code cell runs knip from here.
+
 ## Push
 
 This is not scripted: DesignSync is only reachable from a Claude session.

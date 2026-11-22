@@ -3,5 +3,8 @@
   "private": true,
   "type": "module",
   "description": "Capture the running web app into graphban-local Claude Design cards (see README.md).",
-  "devDependencies": { "playwright": "1.49.0" }
+  "devDependencies": {
+    "knip": "6.47.0",
+    "playwright": "1.49.0"
+  }
 }
