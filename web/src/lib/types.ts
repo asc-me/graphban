@@ -1502,13 +1502,19 @@ export interface SyncMappingRow {
   last_push_reason: string | null;
 }
 
-/** One local project's sync state from `GET /api/sync/projects` `local` (GRPH-1739). */
-export interface SyncBackfill {
-  total: number;
-  confirmed: number;
-  parked: number;
-  state: "running" | "done" | "parked" | "refused";
-}
+/**
+ * Full-sync progress from `GET /api/sync/projects` (GRPH-1739).
+ * `off` is not a progress reading: the project is local or digests and is not pushing.
+ * A cleared manifest must not come back as `running`.
+ */
+export type SyncBackfill =
+  | { state: "off" }
+  | {
+      total: number;
+      confirmed: number;
+      parked: number;
+      state: "running" | "done" | "parked" | "refused";
+    };
 
 export interface LocalSyncProject {
   project_id: string;
