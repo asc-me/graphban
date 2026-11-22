@@ -8,6 +8,7 @@ Checks run in a throwaway detached worktree, so the repo's own checkout is never
 
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 import tempfile
@@ -37,6 +38,25 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["git", "-C", str(repo), *args], check=False, capture_output=True, text=True)
 
 
+def split_command(command: str, *, windows: bool | None = None) -> list[str]:
+    """Split a check command into argv the way the host's shell would quote it.
+
+    POSIX mode strips backslashes, which would turn `C:\\x\\python.exe` into `C:xpython.exe`,
+    so on Windows split in non-POSIX mode (backslashes kept) and drop the quotes it leaves
+    around a quoted token.
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if not windows:
+        return shlex.split(command)
+    out = []
+    for tok in shlex.split(command, posix=False):
+        if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in "\"'":
+            tok = tok[1:-1]
+        out.append(tok)
+    return out
+
+
 PASS, FAIL, BAD_REF, UNRUNNABLE = "pass", "fail", "bad_ref", "check_unrunnable"
 
 
@@ -57,7 +77,7 @@ def run_check(repo: Path, ref: str, check: Check, overlay: str = "") -> tuple[st
             if overlay and check.tests:
                 _git(tree, "checkout", overlay, "--", *check.tests)
             # argv, not a shell: the command is split like a shell would, with no expansion.
-            argv = [*shlex.split(check.command), *check.tests]
+            argv = [*split_command(check.command), *check.tests]
             try:
                 done = subprocess.run(argv, check=False, cwd=tree, capture_output=True,
                                       text=True, timeout=CHECK_TIMEOUT_S)

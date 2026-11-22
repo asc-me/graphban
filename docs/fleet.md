@@ -87,7 +87,8 @@ and a capability that is not a leaf, naming the task id and the field.
 `gbfleet bench validate MANIFEST [--repo DIR]` runs each build task's check at `base_sha` (must
 fail; else `green_at_base`) and at the reference (must pass). A review task's planted-defect ref
 must make a check red and its clean ref must leave it green. A check command that cannot start
-(a missing binary) reports `check_unrunnable`, never a red check. One line per task; exit 1 if
+(a missing binary) reports `check_unrunnable`, never a red check. The command runs as argv, not through a
+shell: split POSIX-style, except on Windows, where backslashes in paths are kept. One line per task; exit 1 if
 any task does not discriminate.
 
 ## Reading an empty result

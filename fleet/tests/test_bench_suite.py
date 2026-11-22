@@ -11,6 +11,7 @@ import pytest
 from gbfleet.bench import suite as suite_mod
 from gbfleet.bench import validate as validate_mod
 from gbfleet.bench.suite import CAPABILITY_LEAVES, SuiteError, parse
+from gbfleet.bench.validate import split_command
 from gbfleet.cli import main
 
 HEAD = '[suite]\nid = "s"\nversion = "1.0.0"\n'
@@ -84,7 +85,9 @@ def repo(tmp_path: Path):
     return r, base, git(r, "rev-parse", "HEAD")
 
 
-PYTEST = f"{shlex.quote(sys.executable)} -m pytest -q -p no:cacheprovider"
+# as_posix: a Windows sys.executable is full of backslashes, which a TOML basic string
+# refuses unescaped; forward slashes are valid in TOML, on Windows, and through the split.
+PYTEST = f"{shlex.quote(Path(sys.executable).as_posix())} -m pytest -q -p no:cacheprovider"
 
 
 def manifest(tmp_path: Path, repo_info, *, base_is_green=False, command=PYTEST) -> Path:
@@ -124,3 +127,20 @@ def test_unrunnable_check_is_not_discriminating(tmp_path, repo, capsys):
     p = manifest(tmp_path, repo, command="gbfleet-no-such-binary-xyz")
     assert main(["bench", "validate", str(p), "--repo", str(repo[0])]) == 1
     assert "t1: check_unrunnable" in capsys.readouterr().out
+
+
+def test_manifest_fixture_parses_as_toml(tmp_path, repo):
+    """The fixture command must survive TOML whatever sys.executable looks like."""
+    p = manifest(tmp_path, repo, command=PYTEST)
+    assert suite_mod.load(p).tasks[0].check.command == PYTEST
+
+
+def test_split_command_keeps_windows_backslashes():
+    assert split_command(r'C:\x\python.exe -m pytest', windows=True) == [
+        r"C:\x\python.exe", "-m", "pytest"]
+    assert split_command(r'"C:\Program Files\py.exe" -q', windows=True) == [
+        r"C:\Program Files\py.exe", "-q"]
+
+
+def test_split_command_posix_quoting():
+    assert split_command("'/a b/python' -m pytest", windows=False) == ["/a b/python", "-m", "pytest"]
