@@ -34,6 +34,7 @@ See the boxes that make up this deployment, whether each is reachable, and its c
 - "No facts reported" and "No edges" mean none were reported, not that none exist.
 - Refactor (complexity) scans: `radon` for Python components and `lizard` (recorded as scanner id `complexity`, CCN > 10, `node_modules`/`dist` excluded) for JS/TS components; `gban scan --dry-run` lists which are installed. A missing lizard records `tool_missing`, never clean.
 - Security scanners by manifest (`gban scan`): `pip-audit` only for a component with a Python dependency manifest (`pyproject.toml`, `setup.py`, `requirements*.txt` or `uv.lock`); `bandit` for any component with `.py` files; `pnpm audit` when a `pnpm-lock.yaml` exists; `npm audit --json` when there is a `package-lock.json` and no pnpm lockfile (both recorded as scanner id `npm-audit`). A missing tool records `tool_missing`.
+- Dead-code scanner `knip` (JS/TS components) needs `pnpm install` in the component's checkout: `gban scan` symlinks that checkout's `node_modules` into its temporary scan worktree (the link is removed with the worktree; the source `node_modules` is never deleted). With no `node_modules` in the checkout the row records `tool_missing`, never clean.
 - "No findings reported" is not a pass if the scan matrix shows never-scanned cells.
 - Empty states name what is missing (no fleet, no sync).
 

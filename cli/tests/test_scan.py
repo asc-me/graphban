@@ -434,3 +434,58 @@ def test_npm_audit_missing_and_bad_runs(tmp_path, monkeypatch):
     _installed(monkeypatch, {"npm"})
     assert scan.execute(_npm(tmp_path), tmp_path, _runner({"npm": (2, "", "boom")}), 5)[0] == "incomplete"
     assert scan.execute(_npm(tmp_path), tmp_path, _runner({"npm": (0, "not json", "")}), 5)[0] == "incomplete"
+
+
+def _knip_repo(tmp_path: Path, with_modules: bool) -> Path:
+    repo = _js_repo(tmp_path)
+    if with_modules:
+        bin_dir = repo / "web/node_modules/.bin"
+        bin_dir.mkdir(parents=True)
+        (bin_dir / "knip").write_text("#!/bin/sh\n")
+    return repo
+
+
+def _knip_dry(tmp_path, monkeypatch, with_modules):
+    repo = _knip_repo(tmp_path, with_modules)
+    _installed(monkeypatch, set())
+    lines: list[str] = []
+    scan.run_scan(repo, codemap.head(repo), Server(paths=("web/",)), dry_run=True, out=lines.append)
+    return [ln for ln in lines if "\tknip\t" in ln]
+
+
+def test_knip_installed_via_source_node_modules_link(tmp_path, monkeypatch):
+    assert _knip_dry(tmp_path, monkeypatch, True) == ["web/\tknip\tinstalled"]
+
+
+def test_knip_runs_with_linked_binary_and_source_node_modules_survives(tmp_path, monkeypatch):
+    repo = _knip_repo(tmp_path, True)
+    _installed(monkeypatch, set())
+    srv = Server(paths=("web/",))
+    calls = []
+
+    def run(argv, cwd, timeout):
+        calls.append(argv)
+        return (0, json.dumps({"issues": []}), "")
+
+    scan.run_scan(repo, codemap.head(repo), srv, run=run)
+    knip_calls = [a for a in calls if Path(a[0]).as_posix().endswith(("node_modules/.bin/knip", "node_modules/.bin/knip.cmd"))]
+    assert len(knip_calls) == 1 and "gban-scan-" in knip_calls[0][0]
+    assert _by(srv)["knip"]["result"] == "complete"
+    assert (repo / "web/node_modules/.bin/knip").exists()
+
+
+def test_knip_tool_missing_without_any_node_modules(tmp_path, monkeypatch):
+    assert _knip_dry(tmp_path, monkeypatch, False) == ["web/\tknip\tnot installed"]
+    repo = _knip_repo(tmp_path / "x", False) if (tmp_path / "x").mkdir() is None else None
+    srv = Server(paths=("web/",))
+    _installed(monkeypatch, set())
+    scan.run_scan(repo, codemap.head(repo), srv, run=_runner({}))
+    assert _by(srv)["knip"]["result"] == "tool_missing"
+
+
+def test_knip_bad_exit_code_is_incomplete(tmp_path, monkeypatch):
+    repo = _knip_repo(tmp_path, True)
+    _installed(monkeypatch, set())
+    srv = Server(paths=("web/",))
+    scan.run_scan(repo, codemap.head(repo), srv, run=lambda a, c, t: (2, "", "boom"))
+    assert _by(srv)["knip"]["result"] == "incomplete"

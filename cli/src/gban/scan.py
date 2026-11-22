@@ -13,6 +13,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -267,9 +268,13 @@ def component_kinds(root: Path, path: str) -> set[str]:
 def resolve_argv(scanner: Scanner, comp: Path) -> list[str] | None:
     """The command to run, or None when the scanner is not installed."""
     if scanner.id == "knip":
-        local = comp / "node_modules" / ".bin" / "knip"
-        if local.exists():
-            return [str(local), *scanner.argv[1:]]
+        bin_dir = comp / "node_modules" / ".bin"
+        # On Windows the runnable shim is knip.cmd; the bare `knip` is a sh script.
+        names = ("knip.cmd", "knip") if os.name == "nt" else ("knip",)
+        for name in names:
+            local = bin_dir / name
+            if local.exists():
+                return [str(local), *scanner.argv[1:]]
         return None  # needs node_modules; absent -> tool_missing
     if shutil.which(scanner.binary) is None:
         return None
@@ -358,6 +363,7 @@ class Worktree:
 
     def __init__(self, repo: Path, sha: str):
         self.repo, self.sha, self.path = repo, sha, None
+        self.links: list[Path] = []
 
     def __enter__(self) -> Path:
         base = tempfile.mkdtemp(prefix="gban-scan-")
@@ -370,9 +376,43 @@ class Worktree:
             raise ScanError(f"worktree: {exc}") from exc
         return self.path
 
+    def link_node_modules(self, comp_path: str) -> bool:
+        """Symlink the source checkout's `<comp>/node_modules` into the worktree component.
+
+        A fresh worktree never has node_modules, so knip could not resolve. Returns True when linked.
+        """
+        if self.path is None:
+            return False
+        src = self.repo / comp_path / "node_modules"
+        dst = self.path / comp_path / "node_modules"
+        if not src.is_dir() or not dst.parent.is_dir() or dst.is_symlink() or dst.exists():
+            return False
+        try:
+            dst.symlink_to(src.resolve(), target_is_directory=True)
+        except OSError:
+            if os.name != "nt":
+                return False
+            try:  # unprivileged Windows cannot symlink; a directory junction needs no privilege
+                import _winapi
+                _winapi.CreateJunction(str(src.resolve()), str(dst))
+            except (ImportError, OSError):
+                return False
+        self.links.append(dst)
+        return True
+
     def __exit__(self, *exc) -> None:
         if self.path is None:
             return
+        # Remove the links first so no cleanup step can ever follow them into the source checkout.
+        for link in self.links:
+            try:
+                link.unlink()
+            except OSError:
+                try:  # a Windows directory symlink or junction is removed as a directory entry
+                    os.rmdir(link)
+                except OSError:
+                    pass
+        self.links = []
         try:
             codemap._git(self.repo, "worktree", "remove", "--force", str(self.path))
         except codemap.MapError:
@@ -430,7 +470,10 @@ def run_scan(repo: Path, sha: str | None, call, *, dry_run: bool = False, run: R
     except codemap.MapError as exc:
         raise ScanError(f"server: {exc}") from exc
     counts = {"recorded": 0, "tool_missing": 0, "incomplete": 0, "failed": 0, "sha": target}
-    with Worktree(repo, target) as root:
+    wt = Worktree(repo, target)
+    with wt as root:
+        for comp in components:
+            wt.link_node_modules(comp["path"])
         rows = plan(root, components)
         if dry_run:
             for r in rows:
