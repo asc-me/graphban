@@ -211,7 +211,7 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | POST | `/api/items/collision-decisions` | JWT (override: project owner) | Body: `{project_id, members, decision, order?, snooze_until?}`. Serialize/hold add dependency links in `order`; override is refused (403) for non-owners. Writes a `collision_decide` event. |
 | DELETE | `/api/items/collision-decisions/{id}` | JWT | Undo: removes exactly the links the decision added. Writes `collision_undo`. |
 | GET | `/api/items/{id}` | JWT |
-| PATCH | `/api/items/{id}` | JWT |
+| PATCH | `/api/items/{id}` | JWT | `touchpoints` unions with the stored list; `touchpoints_remove: [paths]` (GRPH-1388) is the only way off it — drops those exact entries, releases any area reservation on them and records a `note` receipt. |
 | GET | `/api/items/blockers` | JWT (read) | Blocked items for triage, snoozed ones hidden; decision waits carry `decision: {question, options, answer?}` (GRPH-1137). |
 | POST | `/api/items/{id}/answer` | JWT (write) | Answer a decision wait. Body: `{option?, text?}`; stores the answer, marks the wait done and returns the blocked item to `next`. 409 if already answered, 422 if `option` is not one of the options. |
 | POST | `/api/items/{id}/unblock` | JWT (write) | Clear the blocker: `next`, or `in_progress` while the lease is live. Writes one `blocker.*` event (as do the rest below). |

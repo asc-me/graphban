@@ -695,6 +695,8 @@ class ItemUpdate(BaseModel):
     github_url: str | None = None
     assignee: str | None = None
     touchpoints: list[str] | None = None
+    #: Paths to take OFF the item's touchpoints (GRPH-1388); `touchpoints` only unions.
+    touchpoints_remove: list[str] | None = None
     prd_id: str | None = None
     prd_section: str | None = None
     evidence: list[dict] | None = None  # proof-on-done receipts (AL-53)
