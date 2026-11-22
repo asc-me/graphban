@@ -1972,6 +1972,14 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
                + ("passed there" if ok else f"did not pass {CI_PREDICATE}"))
     else:
         run = f"no CI run has reported {CI_PREDICATE} for it yet"
+    # GRPH-1822. The pull loop writes no receipt while checks are absent, still
+    # running, or unreadable, so this sentence is the only place that state shows.
+    # Empty when the loop has not looked at this head: the old wording stays, and
+    # a head nobody asked GitHub about does not grow a reason the box never had.
+    from app.services import ci_pull
+    clause = ci_pull.refusal_clause(commits, db)
+    if clause:
+        run = f"{run}. {clause}"
     # CI ran the suite at the PR's head and it did not pass: that is an answer, not silence,
     # so there is nothing to wait for (GRPH-1345).
     failed_at_head = [a for a in runs
@@ -2465,6 +2473,15 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
                     f"its attestation reports {', '.join(failed_names)} as failing.")
             else:
                 predicate, detail = "attestation_missing", "nothing has attested it."
+            # GRPH-1822. An item with no passing receipt never reaches the cooldown,
+            # so the pull loop's reason has to be on THIS refusal. Empty when the
+            # loop has not looked: the old sentence stays, and a head nobody asked
+            # GitHub about does not grow a reason the box never had.
+            if predicate == "attestation_missing":
+                from app.services import ci_pull
+                clause = ci_pull.refusal_clause([head] if head else [], db)
+                if clause:
+                    detail = f"{detail} {clause}"
             record_refusal(db, item, predicate=predicate, detail=detail)
             raise MissingAttestation(
                 f"{item.key} cannot move to done: {detail} `done` needs an "

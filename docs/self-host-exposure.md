@@ -150,3 +150,13 @@ your tunnel origin, not `cloud.graphban.dev`:
 </script>
 <script src="https://feedback.yourdomain.com/embed/feedback.js" defer></script>
 ```
+
+## CI on a box behind NAT
+
+A project's `suite_green` result does not need an inbound path. The pull loop
+(GRPH-1822, [ci-runners.md](ci-runners.md)) uses only outbound HTTPS to
+`api.github.com`, authenticated with `GITHUB_TOKEN`. A private repository needs
+Checks: Read: a classic personal access token with the `repo` scope, or a
+fine-grained token with Checks: Read. The loop runs in one worker; the
+reason it could not attest is a row every worker reads. Do not open a tunnel,
+and do not publish a port, so that a GitHub-hosted runner can post to the ledger.

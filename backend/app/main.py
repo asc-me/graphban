@@ -294,11 +294,19 @@ async def lifespan(app: FastAPI):
     if is_leader and settings.proposal_poll_seconds > 0:
         proposal_task = asyncio.create_task(_proposal_poll_loop())
 
+    # CI pull (GRPH-1822): leader-only, `0` disables. Reads GitHub check-runs for
+    # items in review and writes `suite_green` itself, so a box behind NAT does not
+    # need an inbound path. Each pass opens and closes its own session.
+    ci_pull_task = None
+    if is_leader and settings.ci_pull_seconds > 0:
+        logger.info("ci pull loop started")
+        ci_pull_task = asyncio.create_task(_ci_pull_loop())
+
     try:
         yield
     finally:
         for task in (retry_task, export_task, judge_task, update_task, grant_task, sweep_task,
-                     tls_task, flush_task, proposal_task):
+                     tls_task, flush_task, proposal_task, ci_pull_task):
             if task is not None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -422,6 +430,31 @@ async def _project_sync_flush_loop() -> None:
         except Exception:  # noqa: BLE001 — silence here is the failure
             logger.warning("project sync flush pass failed", exc_info=True)
         await asyncio.sleep(settings.sync_flush_seconds)
+
+
+def _ci_pull_pass() -> None:
+    """One GitHub check-run pull, session included. Runs inside a worker thread (GRPH-535)."""
+    from app.services import ci_pull
+
+    db = SessionLocal()
+    try:
+        ci_pull.run_once(db)
+    finally:
+        db.close()
+
+
+async def _ci_pull_loop() -> None:
+    """Read GitHub check-runs and attest `suite_green`. Same properties as `_plan_grant_loop`:
+    broad `except` inside, own session per pass, cancel re-raised. A pass that raises must
+    not take the process down, and must not end the loop — the next wake tries again."""
+    while True:
+        try:
+            await asyncio.to_thread(_ci_pull_pass)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — silence here is the failure
+            logger.warning("ci pull pass failed", exc_info=True)
+        await asyncio.sleep(settings.ci_pull_seconds)
 
 
 async def _proposal_poll_loop() -> None:
@@ -775,6 +808,7 @@ def public_config():
 
 
 from app.services import agent_calls as agent_calls_svc  # noqa: E402 — PRD-34 D18
+from app.services import ci_pull as ci_pull_svc  # noqa: E402 — GRPH-1822
 
 
 @app.get("/health")
@@ -810,6 +844,13 @@ def health():
         # The observed feed's retention sweep (PRD-34 D18). Runs on the write path and
         # swallows nothing silently: a count here is a table growing past retention.
         "agent_calls_sweep_failed": agent_calls_svc.SWEEP_FAILED,
+        # The CI pull loop (GRPH-1822). `last_error` is null when no pass has finished
+        # — the loop is off, or it has not run — which is not the same as a clean read.
+        # "" means the last pass had nothing it could not read. A string is why it
+        # could not (no token, 401, 404, rate limit). It is not a verdict on a suite.
+        # Read from `ci_pull_notes`, not this process: the loop runs on the leader
+        # and this request may be a different worker.
+        "ci_pull": {"last_error": ci_pull_svc.last_error()},
     }
 
 
