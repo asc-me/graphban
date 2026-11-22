@@ -4,7 +4,8 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.security import authz
-from app.security.deps import get_agent_key
+from app.models import User
+from app.security.deps import get_agent_key, get_user_or_agent_key
 from app.services import bench as bench_svc
 from app.services.harness import AttemptRefused
 
@@ -48,6 +49,9 @@ def post_result(body: dict, project_id: str | None = None, db: Session = Depends
 @router.get("/results")
 def list_results(project_id: str | None = None, vendor: str | None = None,
                  model: str | None = None, db: Session = Depends(get_db),
-                 key=Depends(get_agent_key)):
-    pid = _project(key, project_id, db)
+                 principal=Depends(get_user_or_agent_key)):
+    """A read a person makes too: baselines are shown beside the grid (P98 D11)."""
+    user_id = principal.id if isinstance(principal, User) else principal.user_id
+    pid = project_id or getattr(principal, "project_id", None)
+    authz.require_readable(db, user_id, pid)
     return {"results": bench_svc.list_results(db, pid, vendor=vendor, model=model)}

@@ -17,7 +17,7 @@ def env(client, auth):
     proj = client.post("/api/projects", json={"name": "BenchSrc"}, headers=auth).json()["id"]
     key = client.post("/api/api-keys", json={"name": "bench", "scopes": ["read", "write"]},
                       headers=auth).json()["plaintext"]
-    return {"proj": proj, "key": key, "h": {"X-API-Key": key}}
+    return {"proj": proj, "key": key, "h": {"X-API-Key": key}, "auth": auth}
 
 
 def _counts(proj):
@@ -68,6 +68,9 @@ def test_agent_key_posts_a_result_and_rollups_exclude_plumbing(client, env):
     assert out["tokens"] == 100
     listed = client.get(f"/api/bench/results?project_id={env['proj']}", headers=env["h"]).json()
     assert [x["id"] for x in listed["results"]] == [out["id"]]
+    # A person reads them too, beside the grid.
+    as_user = client.get(f"/api/bench/results?project_id={env['proj']}", headers=env["auth"])
+    assert [x["id"] for x in as_user.json()["results"]] == [out["id"]]
 
 
 def test_unreported_tokens_are_null_never_zero(client, env):
