@@ -57,6 +57,13 @@ REASON_WAIVER = "an attestation waiver is never accepted from the cloud (v1)"
 REASON_PRD_CLOSE = "closing a PRD is never accepted from the cloud (v1)"
 REASON_RULES = "rules changes are never accepted from the cloud (v1)"
 
+#: A refused outcome post (a 4xx the console will answer again) waits before the
+#: next attempt instead of going out on every ~10 s poll (GRPH-1842). Doubles per
+#: refusal, capped. In process: a restart retries at once, which is safe.
+OUTCOME_BACKOFF_START = timedelta(seconds=30)
+OUTCOME_BACKOFF_CAP = timedelta(minutes=15)
+_outcome_backoff: dict[str, tuple[datetime, timedelta]] = {}
+
 
 class _HoldCommit:
     """Turn ``db.commit`` into ``flush`` for one service call.
@@ -183,7 +190,7 @@ def pull_project(db: Session, project: SyncProject, *, now: datetime,
         db, project=cloud_id, after=cursor, etag=etag, transport=transport,
     )
     if result.status != "ok":
-        _report_pending(db, local_id, transport)
+        _report_pending(db, local_id, transport, now=now)
         return []
     if result.not_modified:
         if result.etag:
@@ -191,7 +198,7 @@ def pull_project(db: Session, project: SyncProject, *, now: datetime,
             if row is not None:
                 row.proposal_etag = result.etag
                 db.commit()
-        _report_pending(db, local_id, transport)
+        _report_pending(db, local_id, transport, now=now)
         return []
 
     outcomes: list[dict] = []
@@ -199,7 +206,7 @@ def pull_project(db: Session, project: SyncProject, *, now: datetime,
         row = db.get(SyncProject, local_id)
         if row is None:
             break
-        outcomes.append(apply_proposal(db, row, proposal, transport=transport))
+        outcomes.append(apply_proposal(db, row, proposal, transport=transport, now=now))
     row = db.get(SyncProject, local_id)
     if row is not None:
         if isinstance(result.cursor, str):
@@ -207,12 +214,13 @@ def pull_project(db: Session, project: SyncProject, *, now: datetime,
         if result.etag:
             row.proposal_etag = result.etag
         db.commit()
-    _report_pending(db, local_id, transport)
+    _report_pending(db, local_id, transport, now=now)
     return outcomes
 
 
 def apply_proposal(db: Session, project: SyncProject, proposal: dict, *,
-                   transport: httpx.BaseTransport | None = None) -> dict:
+                   transport: httpx.BaseTransport | None = None,
+                   now: datetime | None = None) -> dict:
     """Apply one proposal, or report the outcome already stored for its id.
 
     The lookup below is the exactly-once guard. The receipt write is an
@@ -229,7 +237,7 @@ def apply_proposal(db: Session, project: SyncProject, proposal: dict, *,
     existing = db.get(SyncProposal, proposal_id)
     if existing is not None:
         outcome = _outcome_dict(existing)
-        _send(db, [outcome], transport)
+        _send(db, project, [outcome], transport, now=now)
         return outcome
 
     try:
@@ -240,14 +248,14 @@ def apply_proposal(db: Session, project: SyncProject, proposal: dict, *,
             db, project.local_project_id, proposal_id, "refused", str(exc), None,
         )
         db.commit()
-    _send(db, [outcome], transport)
+    _send(db, project, [outcome], transport, now=now)
     return outcome
 
 
 def _decide(db: Session, project: SyncProject, proposal_id: str, proposal: dict) -> dict:
     kind = proposal.get("kind") if isinstance(proposal.get("kind"), str) else ""
     payload_body = proposal.get("payload") if isinstance(proposal.get("payload"), dict) else {}
-    target = proposal.get("target") if isinstance(proposal.get("target"), dict) else None
+    target = _target(proposal)
     reason = _permission_reason(project.cloud_permission, kind) or _never_reason(target, payload_body)
     if reason:
         outcome = _persist(db, project.local_project_id, proposal_id, "refused", reason, None)
@@ -429,6 +437,21 @@ def _apply_create(db: Session, project: SyncProject, proposal_id: str, proposal:
     return outcome
 
 
+def _target(proposal: dict) -> dict | None:
+    """``{type, id}`` from the console's flat ``target_type`` / ``target_id``.
+
+    The pull row is flat (graphban-control docs/contract.md, Proposals). A
+    ``create`` has neither, which is ``None``. GRPH-1842: reading a nested
+    ``target`` found nothing on the real console, so every target was missing.
+    """
+    target_type = proposal.get("target_type")
+    target_id = proposal.get("target_id")
+    if not isinstance(target_id, str) or not target_id.strip():
+        return None
+    return {"type": target_type if isinstance(target_type, str) else None,
+            "id": target_id.strip()}
+
+
 def _require_item(db: Session, project: SyncProject, target: dict | None) -> Item:
     from app.services import keys
 
@@ -452,9 +475,10 @@ def _text(body: dict, *keys: str) -> str:
 
 
 def _actor_label(proposal: dict) -> str:
-    proposer = proposal.get("proposer") if isinstance(proposal.get("proposer"), dict) else {}
-    label = proposer.get("label") if isinstance(proposer.get("label"), str) else ""
-    return f"cloud:{label}"
+    """``cloud:<proposer_label>``. The console sends the display name only, never an email."""
+    label = proposal.get("proposer_label")
+    label = label.strip() if isinstance(label, str) else ""
+    return f"cloud:{label or 'Member'}"
 
 
 def _history(db: Session, *, item: Item, action: str, proposal_id: str,
@@ -507,13 +531,31 @@ def _outcome_dict(row: SyncProposal) -> dict:
     return outcome
 
 
-def _send(db: Session, outcomes: list[dict], transport: httpx.BaseTransport | None) -> None:
-    """Post outcomes. ``ok`` marks those rows reported. Anything else leaves them queued."""
-    if not outcomes:
+def _send(db: Session, project: SyncProject, outcomes: list[dict],
+          transport: httpx.BaseTransport | None, *, now: datetime | None = None) -> None:
+    """Post one project's outcomes, naming its cloud project.
+
+    ``ok`` marks those rows reported. Anything else leaves them queued. A
+    ``refused`` post backs off for this project (``_outcome_backoff``); an
+    ``unknown`` one does not, since the poll interval already paces it.
+    """
+    if not outcomes or not project.cloud_project_id:
         return
-    result = sync_client.report_outcomes(db, outcomes=outcomes, transport=transport)
+    key = project.local_project_id
+    at = _aware(now) if now is not None else datetime.now(timezone.utc)
+    held = _outcome_backoff.get(key)
+    if held is not None and at < held[0]:
+        return
+    result = sync_client.report_outcomes(
+        db, project=project.cloud_project_id, outcomes=outcomes, transport=transport,
+    )
+    if result.status == "refused":
+        step = OUTCOME_BACKOFF_START if held is None else min(held[1] * 2, OUTCOME_BACKOFF_CAP)
+        _outcome_backoff[key] = (at + step, step)
+        return
     if result.status != "ok":
         return
+    _outcome_backoff.pop(key, None)
     for outcome in outcomes:
         row = db.get(SyncProposal, outcome["id"])
         if row is not None and row.status == outcome["status"]:
@@ -522,9 +564,13 @@ def _send(db: Session, outcomes: list[dict], transport: httpx.BaseTransport | No
 
 
 def _report_pending(db: Session, project_id: str,
-                    transport: httpx.BaseTransport | None) -> None:
+                    transport: httpx.BaseTransport | None, *,
+                    now: datetime | None = None) -> None:
+    project = db.get(SyncProject, project_id)
+    if project is None:
+        return
     rows = db.scalars(select(SyncProposal).where(
         SyncProposal.project_id == project_id,
         SyncProposal.reported.is_(False),
     )).all()
-    _send(db, [_outcome_dict(row) for row in rows], transport)
+    _send(db, project, [_outcome_dict(row) for row in rows], transport, now=now)
