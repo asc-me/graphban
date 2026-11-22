@@ -296,7 +296,9 @@ def test_proposal_get_is_304_when_the_etag_matches(db, fake, linked):
     assert page.etag and page.cursor
     assert page.proposals[0]["id"] == proposal["id"]
     assert page.proposals[0]["kind"] == "edit"
-    assert page.proposals[0]["target"] == {"type": "item", "id": "GRPH-1"}
+    assert page.proposals[0]["target_type"] == "item"
+    assert page.proposals[0]["target_id"] == "GRPH-1"
+    assert page.proposals[0]["proposer_label"] == "Ada"
     idle = project_sync_client.pull_proposals(
         db, project=created.cloud_project_id, after=page.cursor, etag=page.etag,
         transport=_wire(fake))
@@ -309,7 +311,7 @@ def test_proposal_get_is_304_when_the_etag_matches(db, fake, linked):
     nxt = project_sync_client.pull_proposals(
         db, project=created.cloud_project_id, after=page.cursor, transport=_wire(fake))
     assert [row["id"] for row in nxt.proposals] == ["pr2"]
-    assert nxt.proposals[0]["target"] is None
+    assert nxt.proposals[0]["target_type"] is None and nxt.proposals[0]["target_id"] is None
 
 
 def test_the_same_outcome_is_a_no_op_and_a_different_one_is_already_resolved(db, fake, linked):
@@ -319,13 +321,13 @@ def test_the_same_outcome_is_a_no_op_and_a_different_one_is_already_resolved(db,
         created.cloud_project_id, kind="answer", target={"type": "wait", "id": "W-1"},
         base_version=1, payload={"answer": "yes"}, proposer={"label": "Ada", "role": "member"})
     first = project_sync_client.report_outcomes(
-        db, outcomes=[{"id": proposal["id"], "status": "applied"}], transport=_wire(fake))
+        db, project=created.cloud_project_id, outcomes=[{"id": proposal["id"], "status": "applied"}], transport=_wire(fake))
     assert first.status == "ok"
     again = project_sync_client.report_outcomes(
-        db, outcomes=[{"id": proposal["id"], "status": "applied"}], transport=_wire(fake))
+        db, project=created.cloud_project_id, outcomes=[{"id": proposal["id"], "status": "applied"}], transport=_wire(fake))
     assert again.status == "ok"
     changed = project_sync_client.report_outcomes(
-        db, outcomes=[{"id": proposal["id"], "status": "conflict", "current_version": 4}],
+        db, project=created.cloud_project_id, outcomes=[{"id": proposal["id"], "status": "conflict", "current_version": 4}],
         transport=_wire(fake))
     assert changed.status == "refused" and changed.reason == "already_resolved"
     assert fake.outcome_for(proposal["id"])["status"] == "applied"

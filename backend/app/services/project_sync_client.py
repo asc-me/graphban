@@ -205,14 +205,20 @@ def pull_proposals(db: Session, *, project: str, after: str = "", etag: str | No
                       etag=resp.headers.get("etag"), not_modified=False)
 
 
-def report_outcomes(db: Session, *, outcomes: list[Outcome],
+def report_outcomes(db: Session, *, project: str, outcomes: list[Outcome],
                     transport: httpx.BaseTransport | None = None) -> SyncResult:
-    """``POST /api/sync/proposals/outcomes``. The same outcome again is ``ok``.
+    """``POST /api/sync/proposals/outcomes?project=``. The same outcome again is ``ok``.
     A different status for an id the console already resolved is ``refused``
     with ``already_resolved``.
+
+    ``project`` is the cloud project id. The console answers ``422 project is
+    required`` without it (GRPH-1842), so it goes as ``?project=`` and as
+    ``X-Cloud-Project``, the same as ``pull_proposals``. One call names one project.
     """
     result, resp = _call(db, "POST", "/api/sync/proposals/outcomes",
-                         json_body={"outcomes": list(outcomes)}, transport=transport)
+                         json_body={"outcomes": list(outcomes)},
+                         params={"project": project},
+                         extra_headers={"X-Cloud-Project": project}, transport=transport)
     if result is not None:
         return result
     if _object(resp) is None:
@@ -352,7 +358,11 @@ def _entity_lists(data: dict | None) -> tuple[list[dict], list[dict]] | None:
     return parsed_stored, parsed_refused
 
 
-_PROPOSAL_KEYS = ("id", "kind", "target", "base_version", "payload", "proposer", "created_at")
+#: The console's pull row (graphban-control docs/contract.md, Proposals). Flat:
+#: the target is ``target_type`` + ``target_id`` and the proposer is
+#: ``proposer_label``. A key the console omitted reads as ``None``.
+_PROPOSAL_KEYS = ("id", "kind", "target_type", "target_id", "base_version", "payload",
+                  "proposer_label", "created_at")
 
 
 def _proposals(data: dict | None) -> list[dict] | None:
