@@ -16,6 +16,160 @@ from app.models import Item, Link
 from app.services import items as items_svc
 
 
+def _has_glob(path: str) -> bool:
+    return any(c in (path or "") for c in "*?")
+
+
+def _filename_pattern(path: str) -> bool:
+    """A `*` or `?` in the last segment that still names files, not the directory.
+
+    `backend/tests/*` and `backend/tests/**` are the directory: the last segment is only
+    wildcards. `backend/tests/test_prd*.py` is a claim about names. GRPH-1848: reading the
+    second as the first joined every file in `backend/tests/` into one cluster.
+    """
+    seg = (path or "").strip().rstrip("/").rsplit("/", 1)[-1]
+    if not _has_glob(seg):
+        return False
+    return bool(seg.replace("*", "").replace("?", ""))
+
+
+def _directory_covers(area: str, path: str) -> bool:
+    """True when `area` is a directory touchpoint that contains `path`.
+
+    `backend/tests/`, `backend/tests` and `backend/tests/*` contain
+    `backend/tests/test_prd*.py`. A sibling (`backend/tests/helpers`) does not: a filename
+    pattern is not "somewhere in this directory"."""
+    a = (area or "").strip().rstrip("/")
+    p = (path or "").strip().rstrip("/")
+    if not a or not p:
+        return False
+    seg = a.rsplit("/", 1)[-1]
+    parent = a.rsplit("/", 1)[0] if seg and not seg.replace("*", "").replace("?", "") else a
+    if not parent or (parent == a and _filename_pattern(a)):
+        return False
+    return p == parent or p.startswith(parent + "/")
+
+
+def _atoms(pat: str) -> list | None:
+    """Filename-glob atoms, or None when a construct is not worth proving disjoint.
+
+    `*`, `?`, literals and `[seq]` / `[!seq]`. An unclosed class, or a class this parser
+    will not stand behind, is None — the caller collides, which is the safe direction for
+    two patterns that might name one file."""
+    out: list = []
+    i, n = 0, len(pat)
+    while i < n:
+        c = pat[i]
+        if c == "*":
+            if not out or out[-1] != ("star",):
+                out.append(("star",))
+            i += 1
+        elif c == "?":
+            out.append(("any",))
+            i += 1
+        elif c == "[":
+            j = pat.find("]", i + 2 if i + 1 < n and pat[i + 1] in "!^" else i + 1)
+            if j == -1:
+                return None
+            body = pat[i + 1:j]
+            i = j + 1
+            neg = bool(body) and body[0] in "!^"
+            if neg:
+                body = body[1:]
+            if not body:
+                return None
+            chars: set[str] = set()
+            k = 0
+            while k < len(body):
+                if body[k] == "\\" and k + 1 < len(body):
+                    chars.add(body[k + 1])
+                    k += 2
+                elif k + 2 < len(body) and body[k + 1] == "-" and body[k + 2] != "]":
+                    start, end = ord(body[k]), ord(body[k + 2])
+                    if end < start or end - start > 256:
+                        return None
+                    chars.update(chr(ch) for ch in range(start, end + 1))
+                    k += 3
+                else:
+                    chars.add(body[k])
+                    k += 1
+            if not chars:
+                return None
+            out.append(("class", frozenset(chars), neg))
+        else:
+            out.append(("lit", c))
+            i += 1
+    return out
+
+
+def _atom_overlap(a: tuple, b: tuple) -> bool:
+    """Can these two non-star atoms consume one character together?"""
+    def chars(atom: tuple) -> set[str] | None:
+        if atom[0] == "lit":
+            return {atom[1]}
+        if atom[0] == "any":
+            return None
+        if atom[2]:  # negated class: infinite. Overlap unless the other side is a known miss.
+            return None
+        return set(atom[1])
+
+    ca, cb = chars(a), chars(b)
+    if ca is None and cb is None:
+        return True
+    if ca is None:
+        if a[0] == "class" and a[2]:
+            return any(ch not in a[1] for ch in cb)
+        return True
+    if cb is None:
+        if b[0] == "class" and b[2]:
+            return any(ch not in b[1] for ch in ca)
+        return True
+    return bool(ca & cb)
+
+
+def _globs_overlap(a: str, b: str) -> bool:
+    """True when some filename matches both globs.
+
+    `test_*.py` and `*_adoption.py` share `test_rule_adoption.py` even though neither
+    pattern fnmatches the other's text. Two patterns this parser will not compare collide:
+    a false "disjoint" is two workers on one file."""
+    if fnmatch.fnmatch(a, b) or fnmatch.fnmatch(b, a):
+        return True
+    aa, bb = _atoms(a), _atoms(b)
+    if aa is None or bb is None:
+        return True
+    memo: dict[tuple[int, int], bool] = {}
+
+    def rec(i: int, j: int) -> bool:
+        key = (i, j)
+        if key in memo:
+            return memo[key]
+        if i == len(aa) and j == len(bb):
+            memo[key] = True
+            return True
+        if i < len(aa) and aa[i] == ("star",):
+            ok = rec(i + 1, j) or (j < len(bb) and rec(i, j + 1))
+            memo[key] = ok
+            return ok
+        if j < len(bb) and bb[j] == ("star",):
+            ok = rec(i, j + 1) or (i < len(aa) and rec(i + 1, j))
+            memo[key] = ok
+            return ok
+        if i == len(aa) or j == len(bb):
+            memo[key] = False
+            return False
+        ok = _atom_overlap(aa[i], bb[j]) and rec(i + 1, j + 1)
+        memo[key] = ok
+        return ok
+
+    return rec(0, 0)
+
+
+def _filename_globs_overlap(x: str, y: str) -> bool:
+    """The last segments, which is the whole pattern once the directory already matches."""
+    return _globs_overlap(x.rstrip("/").rsplit("/", 1)[-1], y.rstrip("/").rsplit("/", 1)[-1])
+
+
 def why_match(x: str, y: str) -> str:
     """WHICH rule relates two touchpoints, or "" for none (GRPH-810).
 
@@ -33,7 +187,7 @@ def why_match(x: str, y: str) -> str:
         return ""
     if x == y:
         return "exact"
-    if ("*" in x and fnmatch.fnmatch(y, x)) or ("*" in y and fnmatch.fnmatch(x, y)):
+    if (_has_glob(x) and fnmatch.fnmatch(y, x)) or (_has_glob(y) and fnmatch.fnmatch(x, y)):
         # GRPH-1399: a glob over a test folder and one named test file in it. Named, so the
         # clustering view can say why they did not collide, and in `NON_COLLIDING`, so they
         # do not. Test files are added per item and almost never edited by two items at once;
@@ -42,6 +196,20 @@ def why_match(x: str, y: str) -> str:
         if _test_glob_over_test_file(x, y) or _test_glob_over_test_file(y, x):
             return "test-glob"
         return "glob"
+    # GRPH-1848: a filename pattern is a claim about names. It relates to a path that matches
+    # it (the glob branch above), to another filename pattern that can name the same file, and
+    # to a directory touchpoint that contains it. It does not relate to every other file in
+    # the directory — that reading is what chained 31 items into one cluster.
+    if _filename_pattern(x) and _filename_pattern(y):
+        same_dir = "/" in x and "/" in y and x.rsplit("/", 1)[0] == y.rsplit("/", 1)[0]
+        if same_dir and _filename_globs_overlap(x, y):
+            return "glob"
+        return ""
+    if _filename_pattern(x) or _filename_pattern(y):
+        pattern, other = (x, y) if _filename_pattern(x) else (y, x)
+        if _directory_covers(other, pattern):
+            return "directory"
+        return ""
     if "/" in x and "/" in y and x.rsplit("/", 1)[0] == y.rsplit("/", 1)[0]:
         # GRPH-951: two NAMED files are a statement about exactly which files the work
         # touches. `NeedsYou.tsx` and `CueQueue.tsx` declared by two items are two claims that
@@ -71,6 +239,11 @@ def _test_glob_over_test_file(glob: str, path: str) -> bool:
     helpers are shared by every test in the folder, so a glob still reserves them.
     """
     if not any(c in glob for c in "*?[") or not is_file(path):
+        return False
+    # GRPH-1848: `backend/tests/test_prd*.py` names files. The exemption is a wildcard over
+    # the folder (`backend/tests/*`), which is the touchpoint that was reserving every new
+    # test. A filename pattern still collides with the test file it matches.
+    if _filename_pattern(glob):
         return False
     fixed = re.split(r"[*?\[]", glob, maxsplit=1)[0]
     folder = fixed.rsplit("/", 1)[0] if "/" in fixed else ""
