@@ -144,3 +144,20 @@ def test_split_command_keeps_windows_backslashes():
 
 def test_split_command_posix_quoting():
     assert split_command("'/a b/python' -m pytest", windows=False) == ["/a b/python", "-m", "pytest"]
+
+
+def test_failed_overlay_is_not_a_red_check(tmp_path, repo, capsys):
+    """Test files the reference does not carry cannot be laid over base: not a red check."""
+    p = manifest(tmp_path, repo)
+    p.write_text(p.read_text().replace('tests = ["test_x.py"]', 'tests = ["test_missing.py"]'))
+    assert main(["bench", "validate", str(p), "--repo", str(repo[0])]) == 1
+    assert "t1: bad_overlay" in capsys.readouterr().out
+
+
+def test_timed_out_check_is_not_a_red_check(tmp_path, repo, capsys, monkeypatch):
+    """A hang at base must not read as the check failing before the work."""
+    monkeypatch.setattr(validate_mod, "CHECK_TIMEOUT_S", 1)
+    sleeper = f"{shlex.quote(Path(sys.executable).as_posix())} -c 'import time; time.sleep(30)'"
+    p = manifest(tmp_path, repo, command=sleeper)
+    assert main(["bench", "validate", str(p), "--repo", str(repo[0])]) == 1
+    assert "t1: check_timed_out" in capsys.readouterr().out

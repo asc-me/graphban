@@ -58,12 +58,16 @@ def split_command(command: str, *, windows: bool | None = None) -> list[str]:
 
 
 PASS, FAIL, BAD_REF, UNRUNNABLE = "pass", "fail", "bad_ref", "check_unrunnable"
+BAD_OVERLAY, TIMED_OUT = "bad_overlay", "check_timed_out"
+# Outcomes that say nothing about the work: none of them may count as a red or green check.
+INCONCLUSIVE = (BAD_REF, UNRUNNABLE, BAD_OVERLAY, TIMED_OUT)
 
 
 def run_check(repo: Path, ref: str, check: Check, overlay: str = "") -> tuple[str, str]:
     """PASS or FAIL for the check at `ref`; BAD_REF when `ref` cannot be checked out;
     UNRUNNABLE when the command cannot start (a missing binary is not a red check, so
-    it must never count as discriminating).
+    it must never count as discriminating); BAD_OVERLAY when the test files cannot be laid
+    over `ref`; TIMED_OUT when the check outlives CHECK_TIMEOUT_S (a hang is not a red check).
 
     `overlay`, a second ref, supplies the check's test files on top of `ref`: a test that
     only exists in the reference commit must still be run against the base.
@@ -75,7 +79,9 @@ def run_check(repo: Path, ref: str, check: Check, overlay: str = "") -> tuple[st
             return BAD_REF, f"cannot check out {ref}: {added.stderr.strip()}"
         try:
             if overlay and check.tests:
-                _git(tree, "checkout", overlay, "--", *check.tests)
+                laid = _git(tree, "checkout", overlay, "--", *check.tests)
+                if laid.returncode != 0:
+                    return BAD_OVERLAY, f"cannot lay tests from {overlay}: {laid.stderr.strip()}"
             # argv, not a shell: the command is split like a shell would, with no expansion.
             argv = [*split_command(check.command), *check.tests]
             try:
@@ -84,7 +90,7 @@ def run_check(repo: Path, ref: str, check: Check, overlay: str = "") -> tuple[st
             except FileNotFoundError as exc:
                 return UNRUNNABLE, f"cannot run check: {exc}"
             except subprocess.TimeoutExpired:
-                return FAIL, "timed out"
+                return TIMED_OUT, f"check ran past {CHECK_TIMEOUT_S}s"
             return (PASS if done.returncode == 0 else FAIL), ""
         finally:
             _git(repo, "worktree", "remove", "--force", str(tree))
@@ -95,12 +101,12 @@ def _build(repo: Path, task: Task, *, skip_base: bool = False) -> Verdict:
         return Verdict(task.id, "no_check", "a build task needs a check")
     if not skip_base:
         at_base, why = run_check(repo, task.base_sha, task.check, overlay=task.reference)
-        if at_base in (BAD_REF, UNRUNNABLE):
+        if at_base in INCONCLUSIVE:
             return Verdict(task.id, at_base, why)
         if at_base == PASS:
             return Verdict(task.id, "green_at_base", "the check passes before the work")
     at_ref, why = run_check(repo, task.reference, task.check)
-    if at_ref in (BAD_REF, UNRUNNABLE):
+    if at_ref in INCONCLUSIVE:
         return Verdict(task.id, at_ref, why)
     if at_ref == FAIL:
         return Verdict(task.id, "red_at_reference", "the check fails on the reference solution")
@@ -111,7 +117,7 @@ def _review(repo: Path, task: Task) -> Verdict:
     if task.check is None:
         return Verdict(task.id, "no_check", "a review task needs a check to discriminate")
     outcome, why = run_check(repo, task.ref, task.check)
-    if outcome in (BAD_REF, UNRUNNABLE):
+    if outcome in INCONCLUSIVE:
         return Verdict(task.id, outcome, why)
     passed = outcome == PASS
     if task.expect == "bounce" and passed:
