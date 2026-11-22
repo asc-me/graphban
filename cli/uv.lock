@@ -124,7 +124,7 @@ wheels = [
 
 [[package]]
 name = "graphban-cli"
-version = "0.8.15"
+version = "0.8.16"
 source = { editable = "." }
 
 [package.optional-dependencies]
