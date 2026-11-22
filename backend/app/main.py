@@ -23,6 +23,7 @@ from app.routers import (
     apikeys,
     assistant,
     auth,
+    bench,
     cli_pair,
     documents,
     fleet,
@@ -743,6 +744,7 @@ app.include_router(memory.router, prefix=API)
 app.include_router(artifacts.router, prefix=API)
 app.include_router(fleet.router, prefix=API)
 app.include_router(harness.router, prefix=API)
+app.include_router(bench.router, prefix=API)
 app.include_router(live.router, prefix=API)
 app.include_router(learning.router, prefix=API)
 app.include_router(apikeys.router, prefix=API)

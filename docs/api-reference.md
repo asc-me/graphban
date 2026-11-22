@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 396 of the 396. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 398 of the 398. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -396,6 +396,8 @@ failure the propose-only boundary exists to prevent.
 | POST | `/api/harness/recommendations/mark` | JWT | Record that this caller accepted or dismissed a card at this evidence (`card_key`, `evidence_hash`, `action`). **Applies nothing** — R1/R2 accept by a commit somebody makes, R3/R4 by PUTting the PRD-37 profile or policy routes. An accepted card drafts a lesson candidate; when its numbers move the hash moves and the card returns |
 | PUT | `/api/harness/platform/share` | JWT | Opt into or out of the platform average (PRD-38 D13 / PRD-41 D11). Hosted: org admin, `org_id` required, opting out recomputes immediately. Self-hosted: instance toggle; opting out stops the nightly contribution and the hosted recompute drops this contributor |
 | GET | `/api/harness/probe/candidates` | JWT | Closed items with a red sabotage, grouped by leaf capability, with family fallback when a leaf is below the floor. Carries the estimated token cost from the panel's history so a person can see it before starting a run (PRD-41 D7) |
+| POST | `/api/bench/runs` | API key (planner, project writer) | Open a baseline run (GRPH-1856, P98 §4): body `{vendor, model, binary_version?, suite_id, suite_version, tasks[{id, title?, description?, touchpoints?}]}`. Creates a scratch project and one bound worker seat per task; the source project is unchanged. Returns `{id, project_id, seats[]}`. 422 names a missing vendor, model, suite id or suite version; a session JWT is 401 |
+| POST / GET | `/api/bench/results` | API key (project writer) | POST stores one baseline record (201) keyed by vendor, model, binary_version, suite id and suite version: `outcomes[{task_id, outcome, capabilities?, tokens?, wall_seconds?}]` with `outcome` one of `never_registered`, `no_branch`, `check_red`, `check_green`, `timed_out`, `harness_error`; the server computes per-capability rollups (scored `n`, `green`, plumbing `excluded`). `tokens` is null when no task reported any, never 0. Never written to `AttemptTelemetry`, never read into a natural or probe rate. GET lists them, optional `vendor`/`model` |
 | POST | `/api/harness/probe/runs` | JWT | Start a probe panel: creates a scratch project, a `capability_probe_runs` row, and delegations with `sampled = probe`. One model and one leaf at a time, under the project's `caps`. Body: `project_id`, `vendor`, `model`, `capability`, `item_ids` (one to three), `trigger` (`new_row` \| `version_change`) |
 | POST | `/api/harness/review-checks/run` | API key | Recompute `harness_review_checks` over the 14-day window — the nightly job's entry point (PRD-41 D6). Optional `project_id` |
 | POST | `/api/harness/platform/roll` | API key | Recompute `platform_rollups` from the orgs that opted in — the nightly job's entry point. Hosted only. Reads rollups, never raw rows, and writes no org id |

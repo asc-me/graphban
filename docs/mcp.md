@@ -97,7 +97,7 @@ agent carries ~5,100 fewer tokens on every turn.
 | *(core)* | Everything on the path of doing one piece of work: finding, claiming, updating and releasing items, reviewing, memory, all code-graph **reads**, and reading a PRD |
 | `prd` | **Authoring** a spec — `create_prd`, `create_line`, `update_prd`, `grill_prd`, `answer_grill`, `decompose_prd`, `close_prd`, `request_rebaseline`, `submit_verdict` |
 | `codegraph` | **Writing** the code graph — `describe_code`, `link_code`, `unlink_code`, `record_scan`, `scan_status`, `scans_due` |
-| `fleet` | **Running** a fleet — `propose_allocation`, `assign_role`, `mint_enrolment`, `retire_wave`, `delegate`, `list_entitlements`, `set_entitlement`, `report_entitlement_event`, `report_utilization`. Being *in* a fleet needs none of it |
+| `fleet` | **Running** a fleet — `propose_allocation`, `assign_role`, `mint_enrolment`, `retire_wave`, `delegate`, `bench`, `list_entitlements`, `set_entitlement`, `report_entitlement_event`, `report_utilization`. Being *in* a fleet needs none of it |
 | `misc` | `extract_lessons`, `generate_digest`, `report_graphban_issue`, `learning_loop`, `create_project`, `publish_memory`, `reject_memory`, `get_rule_toggles`, `propose_rule` |
 
 Two things to know, because getting either wrong is expensive:
@@ -115,7 +115,7 @@ Settings → API keys. `fleet.mint` gives a planner credential the `fleet` tier 
 operator can restore the pre-tiering manifest for a whole deployment with
 `MCP_DEFAULT_TOOL_TIERS=prd,codegraph,fleet,misc` — see [configuration.md](configuration.md).
 
-## The 81 tools
+## The 82 tools
 
 The manifest you receive is gated twice. **By scope** (AL-78): a key without `write` is not
 shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b): a key whose
@@ -146,7 +146,7 @@ that stops once the four dimensions are answered or deferred. The tool still wri
 The one-shot editor command (`POST /api/prds/{id}/ai` with `command=grill`) stays on the
 body-only prompt, which has no transcript and cannot know when to stop.
 
-**Every tool argues its role gate** (GRPH-516). 29 of the 81 tools are role-gated; the other
+**Every tool argues its role gate** (GRPH-516). 30 of the 82 tools are role-gated; the other
 50 are callable by every role. That was a *default* rather than a decision — `TOOLS` has had a
 completeness guard forcing each new tool to be classified as a quality gate or an authority
 one, and `TOOL_ROLES` had no equivalent, so forty tools arrived at "open to everyone" without
@@ -322,6 +322,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `report_utilization` | `kind`, `count`, `agent_id`, `project_id` | Planner only. Wave-end counts for the Observe Harness org rollup (PRD-62 S5): `wave_ended_capacity` or `item_deferred_reset`; summed over the last full week, null with a not-recorded note when nobody reported |
 | `delegate` | `id`, `lane`, `tier`, `note`, `seat`, `wave`, `agent_id`, `bound_only`, `withdraw` (fleet tier) | Record that you are handing an item to a child you are about to spawn (PRD-35). **Claims nothing, spawns nothing.** With `seat: true` (PRD-36) it also mints a worker seat **bound to the item** and returns its `enrolment_code`: registering on that seat claims the item server-side. `bound_only: true` (GRPH-1089, requires `seat: true`) stores the flag on that seat: once the item leaves `in_progress`, `claim_review`, `claim_next`, `claim_item`, `claim_cluster` and `next_cluster` refuse and name it. Omit it and the child may review other items after it builds — `gbfleet until` omits it. `withdraw: true` (GRPH-1753) closes the caller's open delegation on `id` and opens nothing, so a spawn that never started does not leave the next planner refused until the lease expires. Needs the mint gate (planner or all-in-one), and is refused when the item's areas are reserved by someone else, naming the holder. `lane` and `tier` are required with no default — the brief suggests, you commit. Links when a declared child (`parent_agent_id`, or a seat you minted) claims the item; anyone else's claim closes it as `superseded`. Your own open one is withdrawn by re-delegating; another agent's is refused until it expires. Refused on a blocked, held or bounce-pinned item. The reply always includes `bound_only`. |
 | `mint_enrolment` | `agent_id`, `role`, `wave`, `review_only`, `bound_only` + `item` (fleet tier) | PLANNER ONLY. Mint a seat for an agent you are spawning, bounded by your credential — the code is returned once and grants that role for one session. `review_only` mints a seat KIND rather than a role: the child still holds `worker` and still reviews, but `claim_next` / `claim_item` / `claim_cluster` refuse it, so a supervisor run with `--max-workers 0` cannot build through its reviewer children (GRPH-988). `bound_only` with `item` mints a seat bound to that item which, once the item leaves `in_progress`, is refused `claim_review`, `claim_next`, `claim_item`, `claim_cluster` and `next_cluster` (GRPH-1089). The two flags together are refused. Areas already held refuse the mint and write nothing. The reply always includes `bound_only` |
+| `bench` | `action` (`open_run` \| `post_result`), `body`, `project_id` | PLANNER ONLY (GRPH-1856, P98 §4/§6), `fleet` tier. `open_run` takes `body` `{vendor, model, binary_version?, suite_id, suite_version, tasks: [{id, title?, description?, touchpoints?}]}`, creates a scratch project and one bound worker seat per task there, and returns `{id, project_id, seats[{task_id, item_id, delegation_id, enrolment_code}]}`; the source project gets no item and no agent. `post_result` takes `{vendor, model, binary_version?, suite_id, suite_version, outcomes[{task_id, outcome, capabilities?, tokens?, wall_seconds?}], run_id?}` and stores one baseline record. A missing vendor, model, suite id or suite version is refused 422 naming the field. Never written to `AttemptTelemetry`, never read into a natural or probe rate |
 | `retire_wave` | `agent_id`, `wave` | PLANNER ONLY. Revoke the seats YOU minted and release what agents on them hold, in one step — it does NOT stop processes, and `agents_still_running` names the ones still building against dead seats |
 | `collision_clusters` | `project_id`, `status` | Partition ready work into clusters that provably share no touch-areas; `predicted` marks lower-confidence grouping |
 | `claim_cluster` | `agent_id`, `max_items`, `lease_seconds`, `wait_seconds` | Claim a whole non-colliding cluster and reserve its areas, checked against in-flight work. `max_items` is lowered to the project's `cluster_ceiling` for the cluster's lane (web: 1 by default); a bound seat is refused while its item is open (GRPH-948), and a `bound_only` seat is refused once its item has left `in_progress` (GRPH-1089) |
