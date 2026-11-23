@@ -149,6 +149,20 @@ class Result:
 
 Start = Callable[..., object]
 
+#: The field of the open-run reply carrying a credential scoped to the scratch project.
+#: The children register there and the supervisor reads its roster there; the source
+#: project's key cannot reach it (a project-scoped key reads and writes only its own
+#: project), so a run without this credential has no seat a child could take.
+SCRATCH_KEY = "api_key"
+NO_SCRATCH_KEY = ("seat acquisition failed: the server issued no credential for the scratch "
+                  "project (open-run reply has no `api_key`)")
+
+
+def scratch_credential(run: dict) -> str | None:
+    """The scratch project's key from an open-run reply, or None when it carries none."""
+    key = run.get(SCRATCH_KEY) if isinstance(run, dict) else None
+    return key if isinstance(key, str) and key.strip() else None
+
 
 def _run_task(task: Task, code: str, *, repo: Path, scratch, start: Start, limits, wave: str,
               clock: Callable[[], float], sleep: Callable[[float], None], cut: Callable[..., object],
@@ -206,7 +220,8 @@ def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], o
     """Open the run, work each task, post the results. Returns the posted record.
 
     `client.open_bench_run` and `client.post_bench_result` are the server's two bench routes;
-    `open_scratch(run)` yields the client for the scratch project the children register in.
+    `open_scratch(run)` yields the client for the scratch project the children register in,
+    built on `scratch_credential(run)`; a reply without that credential is `harness_error`.
     """
     body = {"vendor": plan.adapter.split(":")[0], "model": plan.model, "binary_version": binary_version,
             "suite_id": plan.suite_id, "suite_version": plan.suite_version,
@@ -214,6 +229,7 @@ def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], o
                        "touchpoints": list(p.task.touchpoints)} for p in plan.tasks]}
     results: list[Result] = []
     run_id = None
+    run: dict | None = None
     try:
         run = client.open_bench_run(body)
     except Exception as exc:  # noqa: BLE001 - no seats: every task is plumbing, not a miss
@@ -221,6 +237,11 @@ def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], o
                    for p in plan.tasks]
     else:
         run_id = run.get("id")
+    if run is not None and scratch_credential(run) is None:
+        # Never fall back to the source key: the child would fail to register in the scratch
+        # project and the run would read as a fleet of no-shows instead of plumbing.
+        results = [Result(p.task.id, "harness_error", NO_SCRATCH_KEY) for p in plan.tasks]
+    elif run is not None:
         seats = {s["task_id"]: s["enrolment_code"] for s in run.get("seats", [])}
         scratch = open_scratch(run)
         for p in plan.tasks:

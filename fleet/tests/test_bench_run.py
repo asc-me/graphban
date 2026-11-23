@@ -70,7 +70,7 @@ class FakeServer:
         self.opened = body
         if self.fail_open:
             raise ObservationRefused("/api/bench/runs: HTTP 500")
-        return {"id": "bnr_1", "project_id": "scratch",
+        return {"id": "bnr_1", "project_id": "scratch", "api_key": "scratch-key",
                 "seats": [{"task_id": t, "enrolment_code": f"C-{t}"} for t in self.tasks]}
 
     def post_bench_result(self, body):
@@ -228,3 +228,67 @@ def test_all_suite_reports_an_empty_repo_suite_as_zero_and_does_not_skip_it(monk
     out = capsys.readouterr().out
     assert "repo suite: 0 tasks" in out and "skipped" not in out
 
+
+
+# --- the scratch credential (bounce of attempt 1) ------------------------------------------
+
+class KeyedServer(FakeServer):
+    """An open-run reply that carries the scratch project's key, as the server's must."""
+
+    def __init__(self, tasks, key="scratch-key"):
+        super().__init__(tasks)
+        self.key = key
+
+    def open_bench_run(self, body):
+        got = super().open_bench_run(body)
+        got.pop("api_key")
+        if self.key is not None:
+            got["api_key"] = self.key
+        return got
+
+
+def test_a_run_reply_without_a_scratch_key_is_harness_error_and_spawns_nothing(repo, tmp_path):
+    server = KeyedServer(["t1"], key=None)
+    posted, seen = drive(repo, tmp_path, [task(repo)], server, solve)
+    assert seen == {}
+    assert [o["outcome"] for o in server.posted["outcomes"]] == ["harness_error"]
+    assert "scratch" in posted["results"][0].detail
+
+
+def test_cli_children_and_roster_use_the_scratch_key_not_the_source_key(repo, tmp_path, monkeypatch):
+    from gbfleet import supervisor as sup
+    from gbfleet import worktree as wt_mod
+
+    clients: list = []
+    seats: list = []
+    source = KeyedServer(["t1"], key="scratch-key")
+    source.get_suite = lambda project_id: {"version": 1, "tasks": [row(repo)]}
+
+    def graphban(server, key, project_id=None, **kw):
+        c = SimpleNamespace(api_key=key, project_id=project_id)
+        clients.append(c)
+        return source if project_id == "p" else c
+
+    def tree_for(repo_, workspace, wave, name, base=None):
+        wt = tmp_path / f"wt-{name}"
+        git(repo, "worktree", "add", "-q", "-b", f"bench-{name}", str(wt), base)
+        return SimpleNamespace(path=wt, branch=f"bench-{name}", repo=repo, base=base)
+
+    def start_one(tree, seat, factory, client, *a, **k):
+        seats.append((seat, client))
+        raise LaunchFailed("stub")
+
+    monkeypatch.setenv(cli.API_KEY_ENV, "source-key")
+    monkeypatch.setattr(cli, "Graphban", graphban)
+    monkeypatch.setattr(cli, "read_preferences",
+                        lambda c: (None, SimpleNamespace(caps={}), "", {}, {}, None))
+    monkeypatch.setattr(cli, "make_adapter_factory", lambda *a, **k: object())
+    monkeypatch.setattr(sup, "_tree_for", tree_for)
+    monkeypatch.setattr(sup, "start_one", start_one)
+    monkeypatch.setattr(wt_mod, "reap_held", lambda tree, vendor: None)
+    assert run_cli("--suite", "repo", "--adapter", "claude:haiku", "--repo", str(repo),
+                   "--workspace", str(tmp_path / "ws")) == 0
+    [(seat, roster)] = seats
+    assert seat.api_key == "scratch-key" and seat.code == "C-t1"
+    assert roster.api_key == "scratch-key" and roster.project_id == "scratch"
+    assert source.posted["outcomes"][0]["outcome"] == "never_registered"

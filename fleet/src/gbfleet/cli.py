@@ -1713,8 +1713,10 @@ def _bench_run(args: argparse.Namespace) -> int:
             c if c.isalnum() else "-" for c in task.id), base=task.base_sha)
 
     def start(tree, code, task, scratch):
-        seat = Seat(code, args.server, api_key, declare={"vendor": vendor, "model": model, "tier": "cheap"},
-                    bound_only=True)
+        # The scratch client carries the scratch project's key; the source key cannot
+        # register a child there (it is scoped to the source project).
+        seat = Seat(code, args.server, scratch.api_key,
+                    declare={"vendor": vendor, "model": model, "tier": "cheap"}, bound_only=True)
         return sup.start_one(tree, seat, factory, scratch, limits, sup.Partition(), workspace=workspace,
                              wave_name=wave, slot=tree.branch.rsplit("-", 1)[-1])
 
@@ -1726,7 +1728,8 @@ def _bench_run(args: argparse.Namespace) -> int:
 
     posted = run_mod.run_plan(
         plan, repo=repo, client=client,
-        open_scratch=lambda run: Graphban(args.server, api_key, project_id=run["project_id"]),
+        open_scratch=lambda run: Graphban(args.server, run_mod.scratch_credential(run),
+                                          project_id=run["project_id"]),
         start=start, cut=cut, limits=limits, stop=stop, reap=reap, wave=wave)
     for r in posted.get("results", []):
         print(f"{r.task_id}: {r.outcome}" + (f" ({r.detail})" if r.detail else ""))

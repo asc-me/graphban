@@ -115,6 +115,11 @@ salvage), and on exit restores the held-out files and runs the check. Outcomes a
 are posted to `/api/bench/results`. A failure to acquire seats records `harness_error` for every
 task. Review tasks are not run.
 
+The children register in the scratch project, not in `--project`, so they and the supervisor's
+roster reads use the credential the open-run reply carries in `api_key` (scoped to the scratch
+project). `$GBFLEET_API_KEY` is only for the source project: a project-scoped key cannot reach the
+scratch project. A reply without `api_key` records `harness_error` for every task and spawns nothing.
+
 `--dry-run` lists the tasks, adapter, model and an estimated token spend (by `size_band`) and
 spawns nothing. A task whose estimate exceeds a `fleet_policy.caps` value (`per_attempt_tokens`,
 `per_item_tokens`) is skipped with the cap named. `--suite repo` with no adopted tasks exits 2
