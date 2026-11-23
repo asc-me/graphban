@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import posixpath
+import re
 import shlex
 import subprocess
 import sys
@@ -94,8 +95,23 @@ def _interpreter(repo: Path, comp: str) -> list[str]:
         if cand.is_file():
             return [str(cand)]
     if (repo / comp / "uv.lock").is_file():
-        return ["uv", "run", "python"]
+        return ["uv", "run", *_uv_test_deps(repo / comp), "python"]
     return [sys.executable]
+
+
+def _uv_test_deps(comp_dir: Path) -> list[str]:
+    """`uv run` flags that put the component's test runner in the fresh venv it builds:
+    the `dev` extra, else the `dev` dependency group, else pytest alone."""
+    try:
+        data = tomllib.loads((comp_dir / "pyproject.toml").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    extras = (data.get("project") or {}).get("optional-dependencies") or {}
+    if "dev" in extras:
+        return ["--extra", "dev"]
+    if "dev" in (data.get("dependency-groups") or {}):
+        return ["--group", "dev"]
+    return ["--with", "pytest"]
 
 
 def resolve_check(repo: Path, tree: Path, check: Check) -> tuple[list[str], str]:
@@ -141,6 +157,17 @@ BAD_OVERLAY, TIMED_OUT = "bad_overlay", "check_timed_out"
 INCONCLUSIVE = (BAD_REF, UNRUNNABLE, BAD_OVERLAY, TIMED_OUT)
 
 
+def _runner_missing(argv: list[str], done: subprocess.CompletedProcess[str]) -> str:
+    """Why a non-zero exit means the runner never ran (empty when it is a real result):
+    `No module named <mod>` on stderr, or pytest's usage (4) / nothing-collected (5) codes."""
+    m = re.search(r"No module named '?([\w.]+)", done.stderr or "")
+    if m:
+        return f"test runner not installed: No module named {m.group(1)}"
+    if done.returncode in (4, 5) and any("pytest" in a for a in argv):
+        return f"pytest could not run the check (exit {done.returncode})"
+    return ""
+
+
 def run_check(repo: Path, ref: str, check: Check, overlay: str = "") -> tuple[str, str]:
     """PASS or FAIL for the check at `ref`; BAD_REF when `ref` cannot be checked out;
     UNRUNNABLE when the command cannot start (a missing binary is not a red check, so
@@ -170,7 +197,10 @@ def run_check(repo: Path, ref: str, check: Check, overlay: str = "") -> tuple[st
                 return UNRUNNABLE, f"cannot run check: {exc}"
             except subprocess.TimeoutExpired:
                 return TIMED_OUT, f"check ran past {CHECK_TIMEOUT_S}s"
-            return (PASS if done.returncode == 0 else FAIL), ""
+            if done.returncode == 0:
+                return PASS, ""
+            missing = _runner_missing(argv, done)
+            return (UNRUNNABLE, missing) if missing else (FAIL, "")
         finally:
             _git(repo, "worktree", "remove", "--force", str(tree))
 

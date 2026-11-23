@@ -268,3 +268,11 @@ def test_src_layout_component_tests_the_tree_not_an_editable_install(tmp_path):
     (tmp_path / "src").mkdir()
     assert V.check_env(tmp_path)["PYTHONPATH"].split(__import__("os").pathsep)[0] == str(tmp_path / "src")
     assert V.check_env(tmp_path / "nosrc").get("PYTHONPATH") == __import__("os").environ.get("PYTHONPATH")
+
+
+def test_a_missing_test_runner_drops_the_merge_as_check_unrunnable_not_red(repo):
+    found = H.harvest(repo, since="", commands={"py": f"{sys.executable} -m no_such_runner_mod",
+                                                 "js": f"{sys.executable} -m no_such_runner_mod"})
+    reasons = by_reason(found)
+    assert reasons["good"] == "check_unrunnable"
+    assert "red_at_merge" not in reasons.values() and not found.candidates
