@@ -940,22 +940,6 @@ export const api = {
       "/harness/recommendations/mark",
       { method: "POST", body: JSON.stringify(body) },
     ),
-  harnessProbeCandidates: (projectId: string) =>
-    request<{
-      project_id: string;
-      by_leaf: Record<string, { id: string; key: string; title: string; capabilities: string[]; touchpoints: string[] }[]>;
-      by_family: Record<string, { leaf_ready: string[]; fallback: boolean; n: number; items: { id: string; key: string; title: string; capabilities: string[]; touchpoints: string[] }[]; thin_leaves: string[] }>;
-      floor: number;
-      estimated_tokens: { comparable: boolean; reported: number; finished: number; tokens_per_attempt?: number; tokens_in?: number; tokens_out?: number; reason?: string };
-      suggestions: { trigger: string; vendor: string; model: string; binary_version: string; estimated_tokens: unknown; reason: string }[];
-    }>(`/harness/probe/candidates?project_id=${encodeURIComponent(projectId)}`),
-  startHarnessProbeRun: (body: {
-    project_id: string; vendor: string; model: string; capability: string;
-    item_ids: string[]; trigger?: string; binary_version?: string;
-  }) =>
-    request<Record<string, unknown>>("/harness/probe/runs", {
-      method: "POST", body: JSON.stringify(body),
-    }),
   lessons: (projectId: string, filters: LessonFilters = {}) => {
     const q = new URLSearchParams({ project_id: projectId });
     if (filters.trend) q.set("trend", filters.trend);

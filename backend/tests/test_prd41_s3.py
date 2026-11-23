@@ -315,41 +315,6 @@ def _done_with_red_sabotage(client, auth, proj, title, touchpoints):
     return item["id"]
 
 
-def test_probe_candidates_group_closed_red_sabotage_by_leaf(client, auth, proj, db):
-    """8. Family fallback when no leaf clears the floor."""
-    _done_with_red_sabotage(client, auth, proj, "mig",
-                            ["backend/alembic/versions/0121.py"])
-    got = client.get(f"/api/harness/probe/candidates?project_id={proj}", headers=auth)
-    assert got.status_code == 200, got.text
-    body = got.json()
-    assert "A4" in body["by_leaf"]
-    assert body["by_leaf"]["A4"]
-    assert body["by_family"]["A"]["fallback"] is True
-    assert "estimated_tokens" in body
-
-
-def test_starting_a_probe_run_creates_the_row_and_sampled_probe(
-        client, auth, proj, db, key):
-    """8. POST /probe/runs writes capability_probe_runs and a launch with sampled=probe."""
-    src = _done_with_red_sabotage(client, auth, proj, "mig-probe",
-                                  ["backend/alembic/versions/0121.py"])
-    r = client.post("/api/harness/probe/runs", json={
-        "project_id": proj, "vendor": "gbagent", "model": "qwen3.6",
-        "capability": "A4", "item_ids": [src], "trigger": "new_row",
-    }, headers=auth)
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["sampled"] == "probe"
-    run = db.get(CapabilityProbeRun, body["id"])
-    assert run is not None
-    assert run.vendor == "gbagent" and run.capability == "A4"
-    assert run.project_id != proj  # scratch
-    tel = db.scalar(select(AttemptTelemetry).where(
-        AttemptTelemetry.project_id == run.project_id))
-    assert tel is not None
-    assert tel.sampled == "probe"
-
-
 def test_probe_and_natural_rates_are_two_numbers_never_summed(
         client, key, db, proj, auth):
     """8. Sabotage: add the two ns and the cell rate becomes the pool."""
@@ -382,8 +347,6 @@ def test_a_probe_cell_under_five_is_grey_and_a_family_panel_is_family_level(
                             ["backend/alembic/versions/0121.py"])
     _done_with_red_sabotage(client, auth, proj, "a1",
                             ["backend/app/foo.py", "backend/tests/test_foo.py"])
-    cand = client.get(f"/api/harness/probe/candidates?project_id={proj}", headers=auth).json()
-    assert cand["by_family"]["A"]["fallback"] is True
 
 
 def test_a_new_declared_vendor_produces_a_probe_suggestion(client, key, db, proj, auth):
@@ -394,8 +357,6 @@ def test_a_new_declared_vendor_produces_a_probe_suggestion(client, key, db, proj
     hits = [s for s in report["probe_suggestions"]
             if s["vendor"] == "acme" and s["model"] == "nova"]
     assert hits and hits[0]["trigger"] == "new_row"
-    cand = client.get(f"/api/harness/probe/candidates?project_id={proj}", headers=auth).json()
-    assert any(s["vendor"] == "acme" for s in cand["suggestions"])
 
 
 # ---- 27: probe attempts do not feed D5 project quality -------------------------------------
