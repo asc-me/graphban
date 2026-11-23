@@ -47,6 +47,14 @@ def test_bench_validate_template_every_task_discriminates(repo, capsys):
     assert len(lines) == 16 and all(ln.endswith(": ok") for ln in lines)
 
 
+def test_bench_validate_template_builds_its_own_fixture(capsys):
+    """No --repo: validate builds the fixture itself rather than checking the caller's repo."""
+    rc = main(["bench", "validate", str(suite_mod.template_manifest())])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert sum(ln.endswith(": ok") for ln in out.splitlines()) == 16
+
+
 def test_validate_refuses_leaf_with_fewer_than_five_tasks(repo, tmp_path, capsys):
     text = suite_mod.template_manifest().read_text(encoding="utf-8")
     # Drop one build task: every build leaf now has 5... drop two to get 4.

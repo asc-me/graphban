@@ -295,3 +295,94 @@ def test_cli_children_and_roster_use_the_scratch_key_not_the_source_key(repo, tm
     assert seat.api_key == "scratch-key" and seat.code == "C-t1"
     assert roster.api_key == "scratch-key" and roster.project_id == "scratch"
     assert source.posted["outcomes"][0]["outcome"] == "never_registered"
+
+
+# --- the template fixture (bounce of attempt 2) --------------------------------------------
+
+def test_template_tasks_cut_and_check_in_the_fixture_repo_not_the_users(repo, tmp_path, monkeypatch):
+    """`--suite all`: a template task runs against the built fixture, a repo task against --repo."""
+    from gbfleet import supervisor as sup
+    from gbfleet import worktree as wt_mod
+    from gbfleet.bench import suite as suite_mod
+    from gbfleet.bench import validate as validate_mod
+    from gbfleet.bench.template import fixture
+
+    full = R.template_suite()
+    slug = next(t for t in full.tasks if t.id == "build-slugify")
+    monkeypatch.setattr(R, "template_suite", lambda: suite_mod.Suite(full.id, full.version, (slug,)))
+    source = KeyedServer(["build-slugify", "t1"])
+    source.get_suite = lambda project_id: {"version": 1, "tasks": [row(repo)]}
+    cuts: dict = {}
+    checks: dict = {}
+
+    def tree_for(repo_, workspace, wave, name, base=None):
+        cuts[name] = Path(repo_)
+        wt = tmp_path / f"wt-{name}"
+        git(repo_, "worktree", "add", "-q", "-b", f"bench-{name}", str(wt), base)
+        return SimpleNamespace(path=wt, branch=f"bench-{name}", repo=repo_, base=base)
+
+    def start_one(tree, seat, factory, client, *a, **k):
+        if (tree.path / "pkg/m1.py").exists():
+            _n, _s, _d, impl, test = fixture.BUILD[1]
+            (tree.path / "pkg/m1.py").write_text(impl)
+            (tree.path / "tests/test_m1.py").write_text(fixture._test_file("m1", "slugify", test))
+        else:
+            solve(tree, None)
+        git(tree.path, "add", "-A")
+        git(tree.path, "commit", "-q", "-m", "child")
+        return SimpleNamespace(running=False)
+
+    real_check = validate_mod.run_check
+
+    def run_check(repo_, branch, check, overlay=""):
+        checks[branch] = Path(repo_)
+        return real_check(repo_, branch, check, overlay=overlay)
+
+    monkeypatch.setenv(cli.API_KEY_ENV, "source-key")
+    monkeypatch.setattr(cli, "Graphban", lambda server, key, project_id=None, **kw:
+                        source if project_id == "p" else SimpleNamespace(api_key=key))
+    monkeypatch.setattr(cli, "read_preferences",
+                        lambda c: (None, SimpleNamespace(caps={}), "", {}, {}, None))
+    monkeypatch.setattr(cli, "make_adapter_factory", lambda *a, **k: object())
+    monkeypatch.setattr(sup, "_tree_for", tree_for)
+    monkeypatch.setattr(sup, "start_one", start_one)
+    monkeypatch.setattr(wt_mod, "reap_held", lambda tree, vendor: None)
+    monkeypatch.setattr(validate_mod, "run_check", run_check)
+    ws = tmp_path / "ws"
+    assert run_cli("--suite", "all", "--adapter", "claude:haiku", "--repo", str(repo),
+                   "--workspace", str(ws)) == 0
+    fx = R.template_fixture(ws)
+    assert fx.parent == ws and fx != repo
+    assert cuts == {"build-slugify": fx, "t1": repo}
+    assert checks == {"bench-build-slugify": fx, "bench-t1": repo}
+    outcomes = {o["task_id"]: o["outcome"] for o in source.posted["outcomes"]}
+    assert outcomes["build-slugify"] == "check_green"
+
+
+def test_template_only_run_needs_no_user_repo(tmp_path, monkeypatch):
+    """`--suite template` from a directory that is not a git repo still cuts in the fixture."""
+    from gbfleet import supervisor as sup
+
+    full = R.template_suite()
+    slug = next(t for t in full.tasks if t.id == "build-slugify")
+    from gbfleet.bench import suite as suite_mod
+    monkeypatch.setattr(R, "template_suite", lambda: suite_mod.Suite(full.id, full.version, (slug,)))
+    source = KeyedServer(["build-slugify"])
+    cuts: list = []
+
+    def tree_for(repo_, *a, **k):
+        cuts.append(Path(repo_))
+        raise RuntimeError("stop here")
+
+    monkeypatch.setenv(cli.API_KEY_ENV, "k")
+    monkeypatch.setattr(cli, "Graphban", lambda server, key, project_id=None, **kw:
+                        source if project_id == "p" else SimpleNamespace(api_key=key))
+    monkeypatch.setattr(cli, "read_preferences",
+                        lambda c: (None, SimpleNamespace(caps={}), "", {}, {}, None))
+    monkeypatch.setattr(cli, "make_adapter_factory", lambda *a, **k: object())
+    monkeypatch.setattr(sup, "_tree_for", tree_for)
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+    assert run_cli("--suite", "template", "--adapter", "claude", "--repo", str(plain),
+                   "--workspace", str(tmp_path / "ws")) == 0
+    assert cuts == [R.template_fixture(tmp_path / "ws")]

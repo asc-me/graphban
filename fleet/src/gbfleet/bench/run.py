@@ -165,6 +165,21 @@ def scratch_credential(run: dict) -> str | None:
     return key if isinstance(key, str) and key.strip() else None
 
 
+def template_fixture(workspace: Path) -> Path:
+    """The template suite's fixture repo under `workspace`, built there on first use.
+
+    Named by the template's content hash, so a version bump never reuses an older fixture;
+    the generator is deterministic, so an existing one with its `root` tag is the same repo.
+    """
+    from . import suite as suite_mod
+    from .template import fixture
+
+    dest = Path(workspace) / f"template-fixture-{suite_mod.content_hash()[:12]}"
+    if dest.is_dir() and _git(dest, "rev-parse", "-q", "--verify", f"refs/tags/{fixture.ROOT_REF}").returncode == 0:
+        return dest
+    return fixture.build(dest)
+
+
 def _run_task(task: Task, code: str, *, repo: Path, scratch, start: Start, limits, wave: str,
               clock: Callable[[], float], sleep: Callable[[float], None], cut: Callable[..., object],
               stop: Callable[..., object], reap: Callable[..., object]) -> Result:
@@ -217,8 +232,12 @@ def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], o
              clock: Callable[[], float] = time.monotonic,
              sleep: Callable[[float], None] = time.sleep,
              stop: Callable[..., object] = lambda child: None,
-             reap: Callable[..., object] = lambda tree: None, wave: str = "bench") -> dict:
+             reap: Callable[..., object] = lambda tree: None, wave: str = "bench",
+             repo_for: Callable[[Task], Path] | None = None) -> dict:
     """Open the run, work each task, post the results. Returns the posted record.
+
+    `repo_for(task)` names the repository a task's branch and check live in (the template's
+    fixture for template tasks, the user's repo for repo-suite ones); without it, `repo`.
 
     `client.open_bench_run` and `client.post_bench_result` are the server's two bench routes;
     `open_scratch(run)` yields the client for the scratch project the children register in,
@@ -250,7 +269,7 @@ def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], o
             if not code:
                 results.append(Result(p.task.id, "harness_error", "no seat issued for this task"))
                 continue
-            results.append(_run_task(p.task, code, repo=repo, scratch=scratch, start=start,
+            results.append(_run_task(p.task, code, repo=repo_for(p.task) if repo_for else repo, scratch=scratch, start=start,
                                      limits=limits, wave=wave, clock=clock, sleep=sleep, cut=cut,
                                      stop=stop, reap=reap))
     by_id = {p.task.id: p.task for p in plan.tasks}
