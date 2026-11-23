@@ -529,6 +529,10 @@ def build_parser() -> argparse.ArgumentParser:
     bench_har.add_argument("--limit", type=int, default=50, help="most merges to scan")
     bench_har.add_argument("--sabotage-items", default="",
                            help="comma-separated item ids with a red sabotage: ranked first")
+    bench_cmp = bench_do.add_parser("compare", help="show two baseline runs side by side")
+    bench_cmp.add_argument("runs", nargs=2, metavar="RUN", help="two run ids (or record ids)")
+    bench_cmp.add_argument("--server", required=True, help="Graphban base URL")
+    bench_cmp.add_argument("--project", required=True, help="project id")
     bench_ad = bench_do.add_parser("adopt", help="post chosen harvested candidates to the repo suite")
     bench_ad.add_argument("ids", nargs="+", help="candidate ids from `bench harvest`")
     bench_ad.add_argument("--repo", default=".", help="the git repository (default: here)")
@@ -1633,6 +1637,26 @@ def _bench_adopt(args: argparse.Namespace) -> int:
     return 0
 
 
+def _bench_compare(args: argparse.Namespace) -> int:
+    from .bench import compare as compare_mod
+
+    api_key = os.environ.get(API_KEY_ENV)
+    if not api_key:
+        print(f"gbfleet bench compare: set ${API_KEY_ENV} to an agent key", file=sys.stderr)
+        return 2
+    client = Graphban(args.server, api_key, project_id=args.project)
+    try:
+        results = client.list_bench_results(args.project)
+        a = compare_mod.find_run(results, args.runs[0])
+        b = compare_mod.find_run(results, args.runs[1])
+        lines = compare_mod.compare(a, b)
+    except (ObservationRefused, compare_mod.CompareRefused) as exc:
+        print(f"gbfleet bench compare: {exc}", file=sys.stderr)
+        return 1
+    print("\n".join(lines))
+    return 0
+
+
 def _bench(args: argparse.Namespace) -> int:
     from .bench import suite as suite_mod
     from .bench import validate as validate_mod
@@ -1641,6 +1665,8 @@ def _bench(args: argparse.Namespace) -> int:
         return _bench_harvest(args)
     if args.act == "adopt":
         return _bench_adopt(args)
+    if args.act == "compare":
+        return _bench_compare(args)
     if args.act != "validate":
         print("gbfleet bench: say what to do. Try `gbfleet bench validate MANIFEST`.", file=sys.stderr)
         return 2
