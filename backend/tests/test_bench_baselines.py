@@ -65,3 +65,22 @@ def test_a_baseline_at_another_binary_version_does_not_attach(client, auth):
     assert natural[0]["baseline"] is None
     assert any(r.get("layer") == "baseline" and r["key"]["binary_version"] == "9.9.9"
                for r in rows)
+    newer = next(r for r in rows if r.get("layer") == "baseline")
+    assert newer["is_current_version"] is True
+
+
+def test_a_baseline_only_row_at_an_older_version_honours_the_versions_filter(client, auth):
+    """The grid serves `versions=current`: a baseline at a version older than the natural
+    newest is not passed off as a new current row."""
+    from app.services import harness as harness_svc
+
+    proj, h = _env(client, auth)
+    _post(client, proj, h, binary_version="0.1.0")
+    rows = _rows(client, proj, h)
+    assert [r for r in rows if r.get("layer") == "baseline"] == []
+    with SessionLocal() as db:
+        cells = harness_svc.report(db, proj, versions="all")["cells"]
+    old = [x for c in cells for x in (c.get("leaves") or [c]) if x.get("layer") == "baseline"]
+    assert len(old) == 1 and old[0]["key"]["binary_version"] == "0.1.0"
+    assert old[0]["is_current_version"] is False
+    assert old[0]["versions_seen"] == ["0.1.0", "1.2.3"]

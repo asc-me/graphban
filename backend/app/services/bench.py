@@ -211,7 +211,8 @@ def list_results(db: Session, project_id: str, *, vendor: str | None = None,
     return [view(r) for r in db.scalars(q.order_by(BenchBaseline.posted_at.desc())).all()]
 
 
-def attach_baselines(db: Session, project_id: str, cells: list[dict]) -> None:
+def attach_baselines(db: Session, project_id: str, cells: list[dict], *,
+                     versions: str = "all") -> None:
     """Give every measured grid cell a `baseline` block, or None when no run posted one.
 
     Matches on vendor, model, binary_version and capability, newest posted record first; the
@@ -221,10 +222,15 @@ def attach_baselines(db: Session, project_id: str, cells: list[dict]) -> None:
     A family rollup gets no `baseline` key at all. Baseline rollups are keyed by function, so a
     family has no number of its own, and None there would read as "no run" — a false "no
     baseline". Its leaves carry theirs; read those.
+
+    A baseline with no natural cell gets a row of its own. It honours `versions` the way the
+    natural cells do: under `current`, a baseline at a version older than the newest natural
+    one is dropped unless natural cells at that version are also being shown, and a kept row is
+    current only when no natural version of its vendor+model is newer.
     """
     from app.models import BenchBaseline
     from app.services.fleet import canonical_vendor
-    from app.services.harness import FLOOR, SAMPLED, _cost, family_of
+    from app.services.harness import FLOOR, SAMPLED, _cost, _version_key, family_of
 
     rows = db.scalars(select(BenchBaseline).where(
         BenchBaseline.source_project_id == project_id)
@@ -244,6 +250,8 @@ def attach_baselines(db: Session, project_id: str, cells: list[dict]) -> None:
         return dict(found) if found else None
 
     natural: set[tuple] = set()
+    shown: dict[tuple, set[str]] = {}  # (vendor, model) -> natural versions in the payload
+    newest: dict[tuple, str] = {}  # (vendor, model) -> the current natural version
     for cell in cells:
         if cell.get("kind") == "family":
             cell.pop("baseline", None)
@@ -253,6 +261,9 @@ def attach_baselines(db: Session, project_id: str, cells: list[dict]) -> None:
             if "key" in c:
                 k = c["key"]
                 natural.add((k["vendor"], k["model"], k["binary_version"], k["capability"]))
+                shown.setdefault((k["vendor"], k["model"]), set()).add(k["binary_version"])
+                if c.get("is_current_version"):
+                    newest[(k["vendor"], k["model"])] = k["binary_version"]
         for leaf in cell.get("leaves") or []:
             leaf["baseline"] = block(leaf)
 
@@ -262,13 +273,20 @@ def attach_baselines(db: Session, project_id: str, cells: list[dict]) -> None:
         if key in natural:
             continue
         vendor, model, version, cap = key
+        current = newest.get((vendor, model))
+        is_current = current is None or _version_key(version) >= _version_key(current)
+        if (versions == "current" and not is_current
+                and version not in shown.get((vendor, model), set())):
+            continue
+        seen = sorted(shown.get((vendor, model), set()) | {version}, key=_version_key)
         cells.append({
             "key": {"vendor": vendor, "model": model, "binary_version": version,
                     "capability": cap, "size_band": ""},
             "kind": "leaf", "family": family_of(cap), "label": cap,
             "layer": "baseline", "finished": 0, "signed_off": 0, "bounced": 0, "rate": None,
             "below_floor": True, "sampling": {r: 0 for r in SAMPLED}, "skew": None,
-            "median_seconds": None, "cost": _cost(0, 0, 0, 0, 0), "series": [], "versions_seen": [version], "is_current_version": True,
+            "median_seconds": None, "cost": _cost(0, 0, 0, 0, 0), "series": [], "versions_seen": seen,
+            "is_current_version": is_current,
             "by_project": [], "baseline": dict(found)})
 
 

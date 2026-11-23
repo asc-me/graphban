@@ -386,3 +386,36 @@ def test_template_only_run_needs_no_user_repo(tmp_path, monkeypatch):
     assert run_cli("--suite", "template", "--adapter", "claude", "--repo", str(plain),
                    "--workspace", str(tmp_path / "ws")) == 0
     assert cuts == [R.template_fixture(tmp_path / "ws")]
+
+
+def test_bench_run_posts_the_binary_version_the_adapter_resolved(tmp_path, monkeypatch):
+    """GRPH-1876: the baseline carries the version the supervisor stamps on natural attempts,
+    so it can key onto the natural cell. Posted as "" it never matched one."""
+    from gbfleet import supervisor as sup
+    from gbfleet.bench import suite as suite_mod
+
+    full = R.template_suite()
+    slug = next(t for t in full.tasks if t.id == "build-slugify")
+    monkeypatch.setattr(R, "template_suite", lambda: suite_mod.Suite(full.id, full.version, (slug,)))
+    source = KeyedServer(["build-slugify"])
+
+    def tree_for(*a, **k):
+        raise RuntimeError("stop here")
+
+    monkeypatch.setenv(cli.API_KEY_ENV, "k")
+    monkeypatch.setattr(cli, "Graphban", lambda server, key, project_id=None, **kw:
+                        source if project_id == "p" else SimpleNamespace(api_key=key))
+    monkeypatch.setattr(cli, "read_preferences",
+                        lambda c: (None, SimpleNamespace(caps={}), "", {}, {}, None))
+    # The real factory, over a resolved adapter: the version must come from `resolve`.
+    monkeypatch.setattr(cli, "resolve", lambda name, **k: SimpleNamespace(
+        adapter=object(), binary="/bin/claude", version="2.1.37"))
+    monkeypatch.setattr(cli, "checked_tuning", lambda adapter, tuning: None)
+    monkeypatch.setattr(sup, "_tree_for", tree_for)
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+    assert run_cli("--suite", "template", "--adapter", "claude:sonnet", "--repo", str(plain),
+                   "--workspace", str(tmp_path / "ws")) == 0
+    assert source.opened["binary_version"] == "2.1.37"
+    assert source.posted["binary_version"] == "2.1.37"
+    assert source.posted["vendor"] == "claude" and source.posted["model"] == "sonnet"
