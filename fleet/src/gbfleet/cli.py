@@ -516,6 +516,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bench_val.add_argument("manifest", help="the suite manifest (TOML)")
     bench_val.add_argument("--repo", default=".", help="the suite's git repository (default: here)")
+    bench_har = bench_do.add_parser(
+        "harvest",
+        help="propose candidate tasks from the repo's merge history (writes nothing to the server)",
+        description="Each merge's added or modified test files run 3 times at the first parent "
+                    "(all red) and 3 times at the merge (all green). Dropped merges are listed "
+                    "with flaky, green_at_parent, red_at_merge or no_tests.",
+    )
+    bench_har.add_argument("--repo", default=".", help="the git repository (default: here)")
+    bench_har.add_argument("--branch", default="HEAD", help="the default branch to scan")
+    bench_har.add_argument("--since", default="180d", help="how far back, e.g. 180d, 4w")
+    bench_har.add_argument("--limit", type=int, default=50, help="most merges to scan")
+    bench_har.add_argument("--sabotage-items", default="",
+                           help="comma-separated item ids with a red sabotage: ranked first")
+    bench_ad = bench_do.add_parser("adopt", help="post chosen harvested candidates to the repo suite")
+    bench_ad.add_argument("ids", nargs="+", help="candidate ids from `bench harvest`")
+    bench_ad.add_argument("--repo", default=".", help="the git repository (default: here)")
+    bench_ad.add_argument("--server", required=True, help="Graphban base URL")
+    bench_ad.add_argument("--project", required=True, help="project id")
+    bench_ad.add_argument("--capability", default="B7", help="PRD-41 capability leaf for the tasks")
+    bench_ad.add_argument("--expected-version", type=int, default=None,
+                          help="suite version to write against (default: read the current one)")
 
     harn = sub.add_parser("harness", help="read the Harness page's numbers (grid)")
     harn_do = harn.add_subparsers(dest="act", metavar="ACT")
@@ -1556,10 +1577,70 @@ def _entitlement(args) -> int:
     return 0
 
 
+def _bench_harvest(args: argparse.Namespace) -> int:
+    from .bench import harvest as harvest_mod
+
+    sab = frozenset(i.strip() for i in args.sabotage_items.split(",") if i.strip())
+    try:
+        found = harvest_mod.harvest(Path(args.repo), branch=args.branch, since=args.since,
+                                    limit=args.limit, red_sabotage=sab)
+        saved = harvest_mod.save(Path(args.repo), found)
+    except (RuntimeError, OSError) as exc:
+        print(f"gbfleet bench harvest: {exc}", file=sys.stderr)
+        return 1
+    for c in found.candidates:
+        mark = " [sabotage]" if c.sabotage else ""
+        print(f"{c.id}: {c.title} base={c.base_sha[:10]} check={c.command} {' '.join(c.tests)}{mark}")
+    for d in found.dropped:
+        print(f"dropped {d.merge_sha[:10]}: {d.reason}" + (f" ({d.detail})" if d.detail else ""))
+    print(f"{len(found.candidates)} candidate(s), {len(found.dropped)} dropped; "
+          f"nothing was sent to the server. Choose with `gbfleet bench adopt IDS` ({saved}).")
+    return 0
+
+
+def _bench_adopt(args: argparse.Namespace) -> int:
+    from .bench import harvest as harvest_mod
+
+    api_key = os.environ.get(API_KEY_ENV)
+    if not api_key:
+        print(f"gbfleet bench adopt: set ${API_KEY_ENV} to an agent key", file=sys.stderr)
+        return 2
+    cands = harvest_mod.load_candidates(Path(args.repo))
+    missing = [i for i in args.ids if i not in cands]
+    if missing:
+        print(f"gbfleet bench adopt: no harvested candidate {', '.join(missing)}; "
+              "run `gbfleet bench harvest` first", file=sys.stderr)
+        return 1
+    tasks = [harvest_mod.to_task(cands[i], args.capability) for i in args.ids]
+    client = Graphban(args.server, api_key, project_id=args.project)
+    try:
+        version = args.expected_version
+        if version is None:
+            version = int(client.get_suite(args.project).get("version", 0))
+        got = client.adopt_suite(expected_version=version, tasks=tasks)
+    except ObservationRefused as exc:
+        if exc.status == 409:
+            try:
+                current = json.loads(exc.body).get("current_version")
+            except (ValueError, AttributeError):
+                current = None
+            print(f"gbfleet bench adopt: the suite moved: expected_version {version} is stale; "
+                  f"current version is {current}. Re-run to adopt against it.", file=sys.stderr)
+            return 1
+        print(f"gbfleet bench adopt: {exc}", file=sys.stderr)
+        return 1
+    print(f"adopted {len(tasks)} task(s); suite is now version {got.get('version')}")
+    return 0
+
+
 def _bench(args: argparse.Namespace) -> int:
     from .bench import suite as suite_mod
     from .bench import validate as validate_mod
 
+    if args.act == "harvest":
+        return _bench_harvest(args)
+    if args.act == "adopt":
+        return _bench_adopt(args)
     if args.act != "validate":
         print("gbfleet bench: say what to do. Try `gbfleet bench validate MANIFEST`.", file=sys.stderr)
         return 2

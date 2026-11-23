@@ -59,6 +59,9 @@ ATTEMPTS_PATH = "/api/fleet/attempts"
 #: and the body is names only — the scanner drops URLs, headers and paths before posting.
 SURFACE_PATH = "/api/harness/surface"
 GRID_PATH = "/api/harness/grid"
+#: The repo suite (GRPH-P98 §3): read with `get_suite`, written with `adopt_suite`.
+SUITE_PATH = "/api/bench/suite"
+SUITE_ADOPT_PATH = "/api/bench/suite/adopt"
 #: Facts only the supervisor knows about a tree it cut (GRPH-975): the base, the draft PR,
 #: a salvage, a withheld proposal. One route, so a later kind extends it rather than adding
 #: a path. The body is those facts; the server composes the note. Not a tool — widening
@@ -71,7 +74,8 @@ OBSERVATIONS_PATH = "/api/fleet/observations"
 # gate, and nothing is written either way. `gban.doctor.PROBE_BODY` is the same body.
 OBSERVATION_PROBE_ITEM = "__gbfleet_probe_no_such_item__"
 OBSERVATION_PROBE = {"item_id": OBSERVATION_PROBE_ITEM, "kind": "cut_from"}
-ALLOWED_PATHS: frozenset[str] = frozenset({ATTEMPTS_PATH, SURFACE_PATH, OBSERVATIONS_PATH})
+ALLOWED_PATHS: frozenset[str] = frozenset(
+    {ATTEMPTS_PATH, SURFACE_PATH, OBSERVATIONS_PATH, SUITE_ADOPT_PATH})
 
 #: Short on purpose. This is a measurement posted beside real work; a supervisor waiting on it
 #: is a supervisor not starting a child.
@@ -95,9 +99,11 @@ class ObservationRefused(RuntimeError):
     "this credential cannot supervise" and a dropped connection is not.
     """
 
-    def __init__(self, message: str = "", status: int | None = None) -> None:
+    def __init__(self, message: str = "", status: int | None = None, body: str = "") -> None:
         super().__init__(message)
         self.status = status
+        #: The reply body when the server answered (a 409 carries `current_version`).
+        self.body = body
 
 
 class ServerUnreachable(RuntimeError):
@@ -266,6 +272,34 @@ class Graphban:
             raise ObservationRefused(f"{GRID_PATH}: reply was not an object")
         return parsed
 
+    def get_suite(self, project_id: str, *, timeout: float = 20.0) -> dict:
+        """The project's repo suite: `{version, tasks}`. A read of one fixed path."""
+        url = self.base_url.rstrip("/") + SUITE_PATH
+        try:
+            reply = self._client().get(url, params={"project_id": project_id}, timeout=timeout)
+        except httpx.HTTPError as exc:
+            raise ObservationRefused(f"{SUITE_PATH}: {exc}") from exc
+        if reply.status_code >= 400:
+            raise ObservationRefused(f"{SUITE_PATH}: HTTP {reply.status_code}: {reply.text[:300]}",
+                                     status=reply.status_code, body=reply.text)
+        try:
+            parsed = reply.json()
+        except ValueError:
+            raise ObservationRefused(f"{SUITE_PATH}: reply was not JSON")
+        if not isinstance(parsed, dict):
+            raise ObservationRefused(f"{SUITE_PATH}: reply was not an object")
+        return parsed
+
+    def adopt_suite(self, *, expected_version: int, tasks: list[dict],
+                    timeout: float = 30.0) -> dict:
+        """Adopt tasks into the repo suite. Raises ObservationRefused; a 409 has status 409
+        and the server's body (with `current_version`)."""
+        got = self._post(SUITE_ADOPT_PATH, {"expected_version": expected_version, "tasks": tasks},
+                         timeout=timeout, strict=True)
+        if not isinstance(got, dict):
+            raise ObservationRefused(f"{SUITE_ADOPT_PATH}: empty reply")
+        return got
+
     def post_observation(self, *, timeout: float = 10.0, **payload: Any) -> dict:
         """One fact about a tree this supervisor cut (GRPH-975).
 
@@ -313,7 +347,7 @@ class Graphban:
             if strict:
                 raise ObservationRefused(
                     f"{path}: HTTP {reply.status_code}: {reply.text[:300]}",
-                    status=reply.status_code,
+                    status=reply.status_code, body=reply.text,
                 )
             return None
         try:
