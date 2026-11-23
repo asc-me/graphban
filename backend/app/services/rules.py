@@ -8,6 +8,7 @@ its entry here.
 from __future__ import annotations
 
 import ast
+import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -434,7 +435,13 @@ def _library_entries(db: Session, project_id: str | None) -> list[dict]:
     from app.services import custom_rules
     for t in rule_toggles.effective(db, project_id):
         if custom_rules.is_custom(t["rule_id"]):
-            lib = custom_rules.library_rule(custom_rules.get(db, t["rule_id"], project_id))
+            crow = custom_rules.get(db, t["rule_id"], project_id)
+            lib = custom_rules.library_rule(crow)
+            if crow.state == "observing" and not lib.unmeasured_reason:
+                # GRPH-1873 / P91 D5: observing is on and measured, never "not used": drawn
+                # advisory (it holds nothing yet) and used.
+                t = dict(t, on=dict(t["on"], value=True))
+                lib = dataclasses.replace(lib, enforcement="advisory")
         else:
             lib = rule_toggles.LIBRARY[t["rule_id"]]
         out.append({

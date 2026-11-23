@@ -5410,13 +5410,28 @@ def _hard_paths(paths) -> tuple[str, ...]:
 def project_hard_areas(db: Session, project_id: str | None) -> tuple[str, ...]:
     """The project's exclusive areas: its resolved `plan.exclusive_areas` `paths`, in place of
     `HARD_AREAS` (GRPH-1423). A box whose pack lacks the rule reads the default."""
-    from app.services import rule_toggles
+    from app.services import custom_rules, rule_toggles
+    # GRPH-1873: an ACTIVE custom `exclusive_areas` rule adds its paths; an observing one holds
+    # nothing (`claim_cluster` records what it would have).
+    custom = tuple(p for _, paths in custom_rules.exclusive_area_rules(db, project_id)[0]
+                   for p in paths)
     if rule_toggles.EXCLUSIVE_AREAS_RULE not in rule_toggles.LIBRARY:
-        return HARD_AREAS
+        return HARD_AREAS + custom
     # GRPH-1777: an observing rule holds nothing; `claim_cluster` records what it would have.
     if rule_toggles.observing_since(db, rule_toggles.EXCLUSIVE_AREAS_RULE, project_id):
-        return ()
-    return rule_toggles.exclusive_paths(db, project_id)
+        return custom
+    return rule_toggles.exclusive_paths(db, project_id) + custom
+
+
+def custom_hold_rules(db: Session, project_id: str | None,
+                      pairs: list[tuple[str, str]]) -> list[str]:
+    """Ids of ACTIVE custom `exclusive_areas` rules whose paths hold any of `pairs`."""
+    from app.services import custom_rules
+    out: list[str] = []
+    for rid, paths in custom_rules.exclusive_area_rules(db, project_id)[0]:
+        if any(hard_collide([m], [t], paths) for m, t in pairs) and rid not in out:
+            out.append(rid)
+    return out
 
 
 def hard_collide(a: list[str], b: list[str],
@@ -5588,10 +5603,18 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     tier_blocks: list[dict] = []
     hards = project_hard_areas(db, project_id)
     # GRPH-1777: the paths an OBSERVING `plan.exclusive_areas` would hold, else none.
+    from app.services import custom_rules as custom_rules_mod
     from app.services import rule_toggles as rule_toggles_mod
-    observed = (rule_toggles_mod.exclusive_paths(db, project_id)
-                if not hards and rule_toggles_mod.observing_since(
-                    db, rule_toggles_mod.EXCLUSIVE_AREAS_RULE, project_id) else ())
+    #: (rule id, paths) for each OBSERVING exclusive-areas rule: the library rule and, GRPH-1873,
+    #: every observing custom one.
+    observed: list[tuple[str, tuple[str, ...]]] = []
+    if rule_toggles_mod.EXCLUSIVE_AREAS_RULE in rule_toggles_mod.LIBRARY and \
+            rule_toggles_mod.observing_since(
+                db, rule_toggles_mod.EXCLUSIVE_AREAS_RULE, project_id):
+        observed.append((rule_toggles_mod.EXCLUSIVE_AREAS_RULE,
+                         rule_toggles_mod.exclusive_paths(db, project_id)))
+    observed += [(rid, tuple(paths)) for rid, paths in
+                 custom_rules_mod.exclusive_area_rules(db, project_id)[1]]
 
     for cluster in collision_svc.clusters_for_project(db, project_id,
                                                        lease_seconds=lease_seconds,
@@ -5601,15 +5624,17 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
         free = set().union(*[o for o in overrides if members <= o]) if overrides else set()
         blocked = [r.area for r in taken if r.agent_id != agent_id and r.item_id not in free]
         overlap = hard_collide(cluster.get("areas") or [], blocked, hards)
-        if not overlap and observed:
-            would = hard_collide(cluster.get("areas") or [], blocked, observed)
-            if would:
+        if not overlap:
+            for obs_rule, obs_paths in observed:
+                would = hard_collide(cluster.get("areas") or [], blocked, obs_paths)
+                if not would:
+                    continue
                 from app.services import rule_observations
                 for r in taken:
                     if r.agent_id != agent_id and r.item_id not in free and hard_collide(
-                            cluster.get("areas") or [], [r.area], observed):
+                            cluster.get("areas") or [], [r.area], obs_paths):
                         rule_observations.record(
-                            db, project_id, rule_toggles_mod.EXCLUSIVE_AREAS_RULE, "would_hold",
+                            db, project_id, obs_rule, "would_hold",
                             item_id=(cluster.get("items") or [None])[0],
                             detail={"areas": would, "held_by": r.agent_id,
                                     "held_item": r.item_id})
@@ -5672,6 +5697,8 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
         reason = ("all ready clusters collide with areas held by "
                   + ", ".join(held)
                   + (f" ({describe_pairs(collided)})" if collided else "")
+                  + (f" under {', '.join(hold_rules)}" if (hold_rules := custom_hold_rules(
+                      db, project_id, collided)) else "")
                   + (f" — the earliest frees in {free_in}s" if free_in is not None else ""))
     elif tier_blocks and not held and not collided:
         # The board is not empty. Every ready item this sweep could see asked for a tier
