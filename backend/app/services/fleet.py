@@ -2562,6 +2562,10 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
     if project_id:
         stmt = stmt.where(Item.project_id == project_id)
     declined = {s for s in (skip or [])}
+    from app.services import bench as bench_svc
+    bench_only = bench_svc.review_restriction(db, agent_id)
+    if bench_only is not None:
+        stmt = stmt.where(Item.id.in_(bench_only)) if bench_only else stmt.where(False)
     candidates = [
         it for it in db.scalars(stmt.order_by(Item.sort_order, Item.number)).all()
         # Declined this round — see `claim_next`. A reviewer that must refuse the top item

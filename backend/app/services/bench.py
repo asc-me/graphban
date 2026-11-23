@@ -126,19 +126,20 @@ def open_run(db: Session, *, project_id: str, user_id: str, body: dict) -> dict:
             _seat, code = fleet_svc.issue_enrolment(
                 db, project_id=scratch.id, role="worker", minted_by=agent.id, review_only=True)
             seats.append({"task_id": t["id"], "item_id": item.id, "kind": "review",
-                          "enrolment_code": code})
+                          "enrolment_code": code, "_seat_id": _seat.id})
             continue
         row, _withdrew, _code = delegation_svc.delegate(
             db, agent=agent, item=item, lane="backend", tier="cheap",
             note=f"bench {ident['suite_id']} {t['id']}", lease_seconds=600, seat=False)
         _seat, code = fleet_svc.issue_enrolment(
             db, project_id=scratch.id, role="worker", minted_by=agent.id,
-            item_id=item.id, delegation_id=row.id)
+            item_id=item.id, delegation_id=row.id, bound_only=True)
         seats.append({"task_id": t["id"], "item_id": item.id, "delegation_id": row.id,
-                      "kind": "build", "enrolment_code": code})
+                      "kind": "build", "enrolment_code": code, "_seat_id": _seat.id})
     run = BenchRun(
         id=f"bnr_{uuid.uuid4().hex[:12]}", source_project_id=project_id, project_id=scratch.id,
-        tasks=[{"task_id": s["task_id"], "item_id": s["item_id"]} for s in seats], **ident)
+        tasks=[{"task_id": s["task_id"], "item_id": s["item_id"], "kind": s["kind"],
+                "seat_id": s["_seat_id"]} for s in seats], **ident)
     db.add(run)
     db.flush()
     # The scratch project's own credential (GRPH-1869): a project-scoped key reaches only its
@@ -149,7 +150,32 @@ def open_run(db: Session, *, project_id: str, user_id: str, body: dict) -> dict:
         db, user_id, f"bench run {run.id}", scopes=["read", "write"], project_id=scratch.id,
         expires_in_days=1, origin="bench", commit=False)
     return {"id": run.id, "project_id": scratch.id, "source_project_id": project_id,
-            **ident, "seats": seats, "api_key": api_key}
+            **ident, "seats": [{k: v for k, v in s.items() if k != "_seat_id"} for s in seats],
+            "api_key": api_key}
+
+
+def review_restriction(db: Session, agent_id: str | None) -> set[str] | None:
+    """What `claim_review` may hand this agent on a bench scratch project (GRPH-1883).
+
+    None: the agent is not on a bench run's seat, so nothing changes. Otherwise the set of
+    item ids it may review: its own review item for a review seat, and nothing for a build
+    seat. Without this a build child that polls first takes the run's review items, its own
+    build never happens, and the model is charged `no_branch` for a build it never attempted.
+    """
+    from app.models import Agent, BenchRun
+
+    if not agent_id:
+        return None
+    agent = db.get(Agent, agent_id)
+    if agent is None or not agent.enrolment_id:
+        return None
+    run = db.scalar(select(BenchRun).where(BenchRun.project_id == agent.project_id))
+    if run is None:
+        return None
+    for t in run.tasks or []:
+        if t.get("seat_id") == agent.enrolment_id:
+            return {t["item_id"]} if t.get("kind") == "review" else set()
+    return None
 
 
 LEAF_VERDICTS = ("pass", "fail", "excluded")
