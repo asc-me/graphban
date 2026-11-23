@@ -92,6 +92,19 @@ test files that cannot be laid over `base_sha` from the reference `bad_overlay`;
 shell: split POSIX-style, except on Windows, where backslashes in paths are kept. One line per task; exit 1 if
 any task does not discriminate.
 
+`gbfleet bench harvest [--repo DIR] [--branch B] [--since 180d] [--limit N] [--sabotage-items IDS]`
+scans first-parent merges and proposes candidate build tasks locally; it writes nothing to the
+server. A candidate's `base_sha` is the merge's first parent, and its check is the test files the
+merge added or modified (the PRD-41 test-path pattern, mirrored as `TEST_RE_SOURCE`), run with
+pytest (Python) or the package manager's runner (JS). The check runs 3 times at the parent (all
+must be red) and 3 times at the merge (all must be green). Dropped merges print with a reason:
+`flaky`, `green_at_parent`, `red_at_merge` or `no_tests`. Items named by `--sabotage-items` (a
+red sabotage) rank first, then the most recent. Candidates are saved in the repo's git dir.
+
+`gbfleet bench adopt IDS --server URL --project P` posts chosen candidates to the repo suite
+with `expected_version` (read from the server, or `--expected-version N`). On a 409 it prints the
+suite's current version and exits 1.
+
 ## Reading an empty result
 
 "No ready work to partition" means nothing is ready, not that everything is done. "Nothing
