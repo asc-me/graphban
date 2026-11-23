@@ -119,6 +119,29 @@ def _bounded(limit: int = 200):
     return sleep
 
 
+def _child_until_released(scripts) -> Path:
+    """Point the stand-in at a child that ends only when `release` appears.
+
+    The shared `works_until_released` script also dies after 10s, so a test that
+    forgets to release cannot hang the suite. That cap is a wall-clock budget.
+    On a loaded host the supervisor has not answered the reconnect poll inside
+    those 10s, the child exits, and the wave ends "before reconnect" (GRPH-1879).
+    Callers pass `sleep=_bounded()`, so a missing release still fails by count
+    and the child can outlive any load.
+    """
+    path = scripts["works_until_released"]
+    path.write_text(
+        "import pathlib, time\n"
+        "here = pathlib.Path(__file__).resolve().parent\n"
+        "pathlib.Path('feature.py').write_text('print(1)\\n', encoding='utf-8')\n"
+        "while not (here / 'release').exists():\n"
+        "    time.sleep(0.02)\n"
+        "(here / 'builder-exited').write_text('', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    return path.parent
+
+
 def _cut_off_after(server: Flaky, rosters: int):
     """Let the wave get going, then take the network away.
 
@@ -203,7 +226,7 @@ def test_a_short_partition_does_not_stop_anyone(git_repo: Path, tmp_path: Path, 
         return original(request)
 
     server._handle = handle
-    here = scripts["works_until_released"].parent
+    here = _child_until_released(scripts)
 
     wave = up(
         git_repo, _seats(1), _factory(scripts, "works_until_released"), server.client(),
@@ -352,11 +375,11 @@ def test_work_reclaimed_during_a_partition_is_reported_not_replayed(
         return original(request)
 
     server._handle = handle
-    here = scripts["works_until_released"].parent
+    here = _child_until_released(scripts)
 
     wave = up(
         git_repo, _seats(1), _factory(scripts, "works_until_released"), server.client(),
-        state=state, workspace=workspace, poll=0.05,
+        state=state, workspace=workspace, poll=0.05, sleep=_bounded(),
     )
 
     assert calls["n"] >= 6, f"the wave ended after {calls['n']} polls, before reconnect"
@@ -393,7 +416,7 @@ def test_a_partition_that_changed_nothing_reports_nothing(
         return original(request)
 
     server._handle = handle
-    here = scripts["works_until_released"].parent
+    here = _child_until_released(scripts)
 
     wave = up(
         git_repo, _seats(1), _factory(scripts, "works_until_released"), server.client(),
