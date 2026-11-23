@@ -112,8 +112,15 @@ def open_run(db: Session, *, project_id: str, user_id: str, body: dict) -> dict:
         tasks=[{"task_id": s["task_id"], "item_id": s["item_id"]} for s in seats], **ident)
     db.add(run)
     db.flush()
+    # The scratch project's own credential (GRPH-1869): a project-scoped key reaches only its
+    # project, so the caller's source-project key cannot register children here. Plaintext is
+    # returned once; it is revoked when the run's result is posted and expires in a day anyway.
+    from app.security import apikey as apikey_svc
+    _row, api_key = apikey_svc.generate_api_key(
+        db, user_id, f"bench run {run.id}", scopes=["read", "write"], project_id=scratch.id,
+        expires_in_days=1, origin="bench", commit=False)
     return {"id": run.id, "project_id": scratch.id, "source_project_id": project_id,
-            **ident, "seats": seats}
+            **ident, "seats": seats, "api_key": api_key}
 
 
 def _rollups(outcomes: list[dict]) -> dict:
@@ -170,6 +177,11 @@ def post_result(db: Session, *, project_id: str, body: dict) -> dict:
         run = db.get(BenchRun, run_id)
         if run is None or run.source_project_id != project_id:
             raise AttemptRefused("run not found", status=404)
+    if run_id is not None:
+        from app.models import ApiKey
+        for k in db.scalars(select(ApiKey).where(
+                ApiKey.project_id == run.project_id, ApiKey.revoked.is_(False))).all():
+            k.revoked = True
     reported = [o["tokens"] for o in outcomes if o["tokens"] is not None]
     walls = [o["wall_seconds"] for o in outcomes if o["wall_seconds"] is not None]
     row = BenchBaseline(
