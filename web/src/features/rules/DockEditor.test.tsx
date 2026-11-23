@@ -84,4 +84,21 @@ describe("DockEditor custom rules", () => {
     expect(screen.queryByText(/platform default/i)).toBeNull();
     await waitFor(() => expect(screen.getByTestId("rules-history-adopted")).toHaveTextContent("proposed by Agent PNW-A1"));
   });
+
+  it("keeps the would-have record readable after promotion (D5)", async () => {
+    vi.mocked(api.customRules).mockResolvedValue([
+      { rule_id: "custom.walk-docs-exclusive", stage: "Plan", title: "Walk docs exclusive", state: "active", params: {} },
+    ] as never);
+    vi.mocked(api.ruleObservations).mockResolvedValue([
+      { id: 7, rule_id: "custom.walk-docs-exclusive", outcome: "would_hold", item_id: "PNW-12", at: "2026-11-20T10:00:00Z" },
+    ] as never);
+    const user = userEvent.setup();
+    view();
+    await user.click(screen.getByTestId("rules-dock-row-custom.walk-docs-exclusive"));
+    const record = await screen.findByTestId("would-have-custom.walk-docs-exclusive");
+    await waitFor(() => expect(record).toHaveTextContent("Would have held PNW-12"));
+    expect(screen.getByTestId("would-have-record-custom.walk-docs-exclusive")).toHaveTextContent("WOULD-HAVE RECORD (1)");
+    expect(api.ruleObservations).toHaveBeenCalledWith("core", "custom.walk-docs-exclusive");
+    expect(screen.queryByTestId("rules-dock-state")).toBeNull();
+  });
 });

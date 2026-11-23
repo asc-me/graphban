@@ -175,6 +175,32 @@ export function ObservingRow({
   );
 }
 
+/**
+ * The would-have record of a custom rule that no longer observes (GRPH-1880, D5). Promotion never
+ * purges the rows, so the reason a rule was promoted stays readable from the custom rule view even
+ * once get_rule_toggles stops carrying an observation summary.
+ */
+export function WouldHaveRecord({ ruleId, projectId }: { ruleId: string; projectId: string }) {
+  const { data: rows, isError } = useRuleObservations(projectId, ruleId, true);
+  return (
+    <div className="flex flex-col gap-1" data-testid={`would-have-record-${ruleId}`}>
+      <span className={cn(MONO, "text-meta tracking-[0.07em] text-muted-2")}>
+        WOULD-HAVE RECORD{rows ? ` (${rows.length})` : ""}
+      </span>
+      <ol className="list-none text-small text-fg-2" data-testid={`would-have-${ruleId}`}>
+        {(rows ?? []).map((o) => (
+          <li key={o.id}>
+            {o.outcome === "would_hold" ? "Would have held" : "Would have refused"}
+            {o.item_id ? ` ${o.item_id}` : ""} · {day(o.at)}
+          </li>
+        ))}
+        {rows && !rows.length && <li>Nothing recorded while it observed.</li>}
+        {!rows && <li>{isError ? "Would-have record not read." : "Reading the would-have record…"}</li>}
+      </ol>
+    </div>
+  );
+}
+
 export function ObservingRules({ stageId, ruleIds }: { stageId: string; ruleIds: string[] }) {
   const { activeId } = useProjectCtx();
   const { data: toggles } = useRuleToggles(activeId);

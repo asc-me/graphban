@@ -31,7 +31,7 @@ import {
 } from "./levels";
 import { cleanParams, FOUND_BUG_DEFAULT, FOUND_BUG_RULE, MEMORY_WRITE_MODES, MemoryWriteModeControl, useCanWriteRules } from "./LibraryRuleControls";
 import { AdminGitopsLink, BudgetCapEditor, currentValue, GITOPS_RULE_FIELDS, toPatch, useOrgNameOrNull } from "./RuleEditors";
-import { ObservingRow } from "./ObservingRules";
+import { ObservingRow, WouldHaveRecord } from "./ObservingRules";
 import { RuleHistory } from "./RuleHistory";
 import { RuleLevelIcon } from "./RuleLevelIcon";
 import { relTime } from "@/lib/relTime";
@@ -692,6 +692,7 @@ export function DockEditor({
                 projectId={activeId}
               />
             )}
+            {customRule && customRule.state !== "observing" && <WouldHaveRecord ruleId={rule.id} projectId={activeId} />}
             <ReadOnlyReason>Custom rule: it has no library switch. Promote it while it observes.</ReadOnlyReason>
           </div>
         )}
