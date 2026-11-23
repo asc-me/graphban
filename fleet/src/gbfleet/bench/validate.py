@@ -140,6 +140,18 @@ def resolve_check(repo: Path, tree: Path, check: Check) -> tuple[list[str], str]
     return [*argv, *rel], cwd
 
 
+def split_by_component(tree: Path, check: Check) -> list[Check]:
+    """One check per component the tests live in, in first-seen order. A merge whose tests
+    span backend/ and fleet/ must run each set in its own component with its own
+    interpreter; run from one component, the other's files can never pass."""
+    groups: dict[str, list[str]] = {}
+    for t in check.tests:
+        groups.setdefault(component_dir(tree, (t,)), []).append(t)
+    if len(groups) <= 1:
+        return [check]
+    return [Check(check.command, tuple(ts)) for ts in groups.values()]
+
+
 def check_env(comp: Path) -> dict[str, str]:
     """The check's environment. A src-layout component (`<comp>/src`) goes first on
     PYTHONPATH: the repo's venv often holds an editable install pointing at the repo's own
@@ -157,21 +169,70 @@ BAD_OVERLAY, TIMED_OUT = "bad_overlay", "check_timed_out"
 INCONCLUSIVE = (BAD_REF, UNRUNNABLE, BAD_OVERLAY, TIMED_OUT)
 
 
-def _runner_missing(argv: list[str], done: subprocess.CompletedProcess[str]) -> str:
-    """Why a non-zero exit means the runner never ran (empty when it is a real result):
-    `No module named <mod>` on stderr, or pytest's usage (4) / nothing-collected (5) codes."""
-    m = re.search(r"No module named '?([\w.]+)", done.stderr or "")
-    if m:
-        return f"test runner not installed: No module named {m.group(1)}"
-    if done.returncode in (4, 5) and any("pytest" in a for a in argv):
-        return f"pytest could not run the check (exit {done.returncode})"
+_JS_RUNNERS = ("npm", "npx", "pnpm", "yarn", "bun")
+
+
+def _js_deps_missing(repo: Path, tree: Path, argv: list[str], cwd: str) -> str:
+    """Why a JS check cannot run (empty when it can). The throwaway tree has no
+    `node_modules`: link the repo's own in, and call the check unrunnable when the repo has
+    none. A runner that is not installed is not a red test."""
+    if not argv or Path(argv[0]).name.split(".")[0] not in _JS_RUNNERS:
+        return ""
+    have = repo.resolve() / cwd / "node_modules"
+    if not have.is_dir():
+        return f"test runner not installed: no node_modules in {cwd or '.'}"
+    link = tree / cwd / "node_modules"
+    if not link.exists():
+        link.symlink_to(have, target_is_directory=True)
     return ""
+
+
+#: The interpreter's own line when `python -m <mod>` cannot find <mod>; a traceback's
+#: `ModuleNotFoundError: No module named 'x'` quotes the name and so never matches.
+_NO_MODULE = re.compile(r"^(.*): No module named ([\w.]+)\s*$", re.M)
+
+
+def _runner_missing(argv: list[str], done: subprocess.CompletedProcess[str]) -> str:
+    """Why a non-zero exit means the runner never ran (empty when it is a real result).
+
+    Only the runner itself counts: `python -m <mod>` exiting 1 with the interpreter's
+    `<python>: No module named <mod>` line, or pytest collecting nothing (exit 5). A test or
+    conftest importing a missing or broken module is a red tree, not a missing runner (pytest
+    exits 2 or 4 with a traceback; unittest exits 1 with one), and must stay FAIL."""
+    runner = argv[argv.index("-m") + 1] if "-m" in argv[:-1] else ""
+    if runner and done.returncode == 1:
+        for m in _NO_MODULE.finditer(done.stderr or ""):
+            if m.group(2) == runner and not m.group(1).endswith("Error"):
+                return f"test runner not installed: No module named {runner}"
+    if done.returncode == 5 and runner == "pytest":
+        return "pytest collected no tests (exit 5)"
+    return ""
+
+
+def _run_one(repo: Path, tree: Path, check: Check) -> tuple[str, str]:
+    """One component's run of the check in the checked-out `tree`."""
+    # argv, not a shell: the command is split like a shell would, with no expansion.
+    argv, cwd = resolve_check(repo, tree, check)
+    missing = _js_deps_missing(repo, tree, argv, cwd)
+    if missing:
+        return UNRUNNABLE, missing
+    try:
+        done = subprocess.run(argv, check=False, cwd=tree / cwd, capture_output=True,
+                              text=True, timeout=CHECK_TIMEOUT_S, env=check_env(tree / cwd))
+    except FileNotFoundError as exc:
+        return UNRUNNABLE, f"cannot run check: {exc}"
+    except subprocess.TimeoutExpired:
+        return TIMED_OUT, f"check ran past {CHECK_TIMEOUT_S}s"
+    if done.returncode == 0:
+        return PASS, ""
+    missing = _runner_missing(argv, done)
+    return (UNRUNNABLE, missing) if missing else (FAIL, "")
 
 
 def run_check(repo: Path, ref: str, check: Check, overlay: str = "") -> tuple[str, str]:
     """PASS or FAIL for the check at `ref`; BAD_REF when `ref` cannot be checked out;
-    UNRUNNABLE when the command cannot start (a missing binary is not a red check, so
-    it must never count as discriminating); BAD_OVERLAY when the test files cannot be laid
+    UNRUNNABLE when the command or its runner cannot start (a missing binary, runner module
+    or node_modules is not a red check, so it must never count as discriminating); BAD_OVERLAY when the test files cannot be laid
     over `ref`; TIMED_OUT when the check outlives CHECK_TIMEOUT_S (a hang is not a red check).
 
     `overlay`, a second ref, supplies the check's test files on top of `ref`: a test that
@@ -187,20 +248,15 @@ def run_check(repo: Path, ref: str, check: Check, overlay: str = "") -> tuple[st
                 laid = _git(tree, "checkout", overlay, "--", *check.tests)
                 if laid.returncode != 0:
                     return BAD_OVERLAY, f"cannot lay tests from {overlay}: {laid.stderr.strip()}"
-            # argv, not a shell: the command is split like a shell would, with no expansion.
-            argv, cwd = resolve_check(repo, tree, check)
-            try:
-                done = subprocess.run(argv, check=False, cwd=tree / cwd, capture_output=True,
-                                      text=True, timeout=CHECK_TIMEOUT_S,
-                                      env=check_env(tree / cwd))
-            except FileNotFoundError as exc:
-                return UNRUNNABLE, f"cannot run check: {exc}"
-            except subprocess.TimeoutExpired:
-                return TIMED_OUT, f"check ran past {CHECK_TIMEOUT_S}s"
-            if done.returncode == 0:
-                return PASS, ""
-            missing = _runner_missing(argv, done)
-            return (UNRUNNABLE, missing) if missing else (FAIL, "")
+            # One run per component the tests live in; green only when every run is green.
+            outcome = PASS
+            for part in split_by_component(tree, check):
+                got, why = _run_one(repo, tree, part)
+                if got in INCONCLUSIVE:
+                    return got, why
+                if got == FAIL:
+                    outcome = FAIL
+            return outcome, ""
         finally:
             _git(repo, "worktree", "remove", "--force", str(tree))
 
