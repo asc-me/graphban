@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .suite import Check
-from .validate import FAIL, PASS, component_dir, run_check
+from .validate import FAIL, PASS, component_dir, run_check, split_by_component
 
 RUNS = 3
 
@@ -137,6 +137,28 @@ def _tally(repo: Path, ref: str, check: Check, overlay: str, runs: int) -> tuple
     return "flaky", f"{seen.count(PASS)} of {runs} runs passed"
 
 
+def _judge(repo: Path, parent: str, sha: str, parts: list[Check], runs: int) -> tuple[str, str] | None:
+    """None when every part is red at `parent` and green at `sha`; else (reason, detail)."""
+    many = len(parts) > 1
+
+    def where(c: Check) -> str:
+        return f"{component_dir(repo, c.tests) or '.'}: " if many else ""
+
+    for c in parts:
+        at_parent, why = _tally(repo, parent, c, sha, runs)
+        if at_parent == PASS:
+            return "green_at_parent", where(c).rstrip(": ")
+        if at_parent != FAIL:
+            return at_parent, where(c) + why
+    for c in parts:
+        at_merge, why = _tally(repo, sha, c, "", runs)
+        if at_merge == FAIL:
+            return "red_at_merge", where(c).rstrip(": ")
+        if at_merge != PASS:
+            return at_merge, where(c) + why
+    return None
+
+
 def harvest(repo: Path, *, branch: str = "HEAD", since: str = "180d", limit: int = 50,
             runs: int = RUNS, red_sabotage: frozenset[str] = frozenset(),
             commands: dict[str, str] | None = None) -> Harvest:
@@ -161,20 +183,12 @@ def harvest(repo: Path, *, branch: str = "HEAD", since: str = "180d", limit: int
         if not files:
             result.dropped.append(Dropped(sha, "no_tests", title, "no runnable test files"))
             continue
-        check = Check(cmd, tuple(files))
-        at_parent, why = _tally(repo, parent, check, sha, runs)
-        if at_parent == PASS:
-            result.dropped.append(Dropped(sha, "green_at_parent", title))
-            continue
-        if at_parent != FAIL:
-            result.dropped.append(Dropped(sha, at_parent, title, why))
-            continue
-        at_merge, why = _tally(repo, sha, check, "", runs)
-        if at_merge == FAIL:
-            result.dropped.append(Dropped(sha, "red_at_merge", title))
-            continue
-        if at_merge != PASS:
-            result.dropped.append(Dropped(sha, at_merge, title, why))
+        # One check per component: a merge whose tests span backend/ and fleet/ is a
+        # candidate only when each component's tests are red at the parent and green at it.
+        parts = split_by_component(repo, Check(cmd, tuple(files)))
+        drop = _judge(repo, parent, sha, parts, runs)
+        if drop:
+            result.dropped.append(Dropped(sha, drop[0], title, drop[1]))
             continue
         m = _ITEM_RE.search(title + "\n" + body)
         item = m.group(0) if m else ""

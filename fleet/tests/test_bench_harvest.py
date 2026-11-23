@@ -268,3 +268,54 @@ def test_src_layout_component_tests_the_tree_not_an_editable_install(tmp_path):
     (tmp_path / "src").mkdir()
     assert V.check_env(tmp_path)["PYTHONPATH"].split(__import__("os").pathsep)[0] == str(tmp_path / "src")
     assert V.check_env(tmp_path / "nosrc").get("PYTHONPATH") == __import__("os").environ.get("PYTHONPATH")
+
+
+def test_a_missing_test_runner_drops_the_merge_as_check_unrunnable_not_red(repo):
+    found = H.harvest(repo, since="", commands={"py": f"{sys.executable} -m no_such_runner_mod",
+                                                 "js": f"{sys.executable} -m no_such_runner_mod"})
+    reasons = by_reason(found)
+    assert reasons["good"] == "check_unrunnable"
+    assert "red_at_merge" not in reasons.values() and not found.candidates
+
+
+def test_a_conftest_importing_the_new_module_is_still_a_red_to_green_candidate(repo):
+    """A conftest import error at the parent is a red tree (pytest exit 4), not a missing runner."""
+    merge(repo, "conftestnew", {"cnewmod.py": "def ok():\n    return True\n",
+                                "cpkg/tests/conftest.py": "import cnewmod\n",
+                                "cpkg/tests/test_c.py": "def test_it():\n    assert True\n"})
+    found = run(repo)
+    assert "conftestnew" in [c.title.split()[1] for c in found.candidates], found.dropped
+
+
+def test_a_js_merge_with_no_node_modules_drops_as_check_unrunnable(repo):
+    merge(repo, "jsonly", {"web/package.json": "{}", "web/src/a.test.ts": "test('x', () => {})\n"})
+    assert by_reason(run(repo))["jsonly"] == "check_unrunnable"
+
+
+TWO_COMPONENTS = {
+    "pa/pyproject.toml": "[project]\nname='pa'\n", "pb/pyproject.toml": "[project]\nname='pb'\n",
+}
+
+
+def test_a_merge_with_tests_in_two_components_is_one_candidate(repo):
+    _commit_on_main(repo, TWO_COMPONENTS, "components")
+    merge(repo, "twocomp", {
+        "pa/pamod.py": "def ok():\n    return True\n",
+        "pa/tests/test_pa.py": GOOD_TEST.replace("goodmod", "pamod"),
+        "pb/pbmod.py": "def ok():\n    return True\n",
+        "pb/tests/test_pb.py": GOOD_TEST.replace("goodmod", "pbmod")})
+    cands = {c.title.split()[1]: c for c in run(repo).candidates}
+    assert cands["twocomp"].tests == ["pa/tests/test_pa.py", "pb/tests/test_pb.py"]
+
+
+def test_a_two_component_merge_green_at_parent_in_one_is_dropped(repo):
+    """Every component's tests must be red at the parent, not just one of them."""
+    _commit_on_main(repo, dict(TWO_COMPONENTS, **{"pb/tests/test_pb.py": "def test_it():\n    pass\n"}),
+                    "components")
+    merge(repo, "halfgreen", {
+        "pa/pamod.py": "def ok():\n    return True\n",
+        "pa/tests/test_pa.py": GOOD_TEST.replace("goodmod", "pamod"),
+        "pb/tests/test_pb.py": "def test_it():\n    assert 1\n"})
+    found = run(repo)
+    assert by_reason(found)["halfgreen"] == "green_at_parent"
+    assert [d.detail for d in found.dropped if d.title.split()[1] == "halfgreen"] == ["pb"]
