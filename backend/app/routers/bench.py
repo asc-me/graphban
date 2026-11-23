@@ -1,5 +1,6 @@
 """Baseline bench runs, for an agent key (GRPH-P98 §4 and §6, GRPH-1856)."""
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -63,7 +64,9 @@ def _suite_write(fn, body: dict, project_id: str | None, db: Session, key):
         out = fn(db, project_id=pid, body=body)
     except bench_svc.SuiteConflict as e:
         db.rollback()
-        raise HTTPException(409, {"error": str(e), "current_version": e.current_version})
+        return JSONResponse(status_code=409, content={
+            "error": "conflict", "code": e.code, "detail": str(e), "hint": e.hint,
+            "current_version": e.current_version})
     except AttemptRefused as e:
         db.rollback()
         raise HTTPException(e.status, str(e))

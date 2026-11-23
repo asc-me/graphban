@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.errors import AppError
 from app.services.harness import CAPABILITY_LEAVES, FAMILIES, AttemptRefused
 
 #: P98 §5. `never_registered` and `harness_error` are plumbing: counted, never scored.
@@ -201,11 +202,19 @@ _STR_FIELDS = {"title": 256, "description": None, "size_band": 32, "reference": 
                "expect": 16, "ref": 128}
 
 
-class SuiteConflict(Exception):
-    """`expected_version` did not match. Carries the current version for the 409 body."""
+class SuiteConflict(AppError):
+    """`expected_version` did not match. Carries the current version for the 409 body.
+
+    Not an `errors.Conflict`: a stale read is a retryable state conflict, not a policy refusal
+    (the same call as `BlobPending`), so it stays out of the refusal ratchet. REST returns 409
+    with `current_version`; MCP returns code `stale_version`. The caller re-reads and retries.
+    """
+
+    code = "stale_version"
 
     def __init__(self, current_version: int) -> None:
-        super().__init__(f"expected_version is stale; the suite is at version {current_version}")
+        super().__init__(f"expected_version is stale; the suite is at version {current_version}",
+                         hint="read the suite again and retry with its version")
         self.current_version = current_version
 
 

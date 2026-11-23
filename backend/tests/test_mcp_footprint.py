@@ -242,7 +242,7 @@ CEILING = 18310
 # CEILING stays 18160. Headroom 19.
 # 18157 -> 18301 (GRPH-1856, P98 S3): `bench`, one tool with an `action` argument, in the fleet
 # tier and planner-only. CEILING 18160 -> 18310 with it. Headroom 9.
-MEASURED_TOKENS = 18301  # P75 S1: +170 for answer_wait (ceiling 17775). GRPH-1650's
+MEASURED_TOKENS = 18305  # P75 S1: +170 for answer_wait (ceiling 17775). GRPH-1650's
 # create_item `agent_id` is fleet-only (_FLEET_ONLY_ARGS), so it costs this manifest nothing.
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
