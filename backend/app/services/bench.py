@@ -47,7 +47,12 @@ def _text(body: dict, field: str, *, required: bool = True) -> str:
 
 def _identity(body: dict) -> dict:
     """The fields every bench write names. A missing one is refused by name."""
+    from app.services.fleet import canonical_vendor
+
     out = {f: _text(body, f) for f in ("vendor", "model", "suite_id", "suite_version")}
+    # The same fold natural cells use (`claude` is `anthropic`), so a baseline posted by an
+    # adapter name lands on the company's cell.
+    out["vendor"] = canonical_vendor(out["vendor"])
     out["binary_version"] = _text(body, "binary_version", required=False)
     return out
 
@@ -218,7 +223,8 @@ def attach_baselines(db: Session, project_id: str, cells: list[dict]) -> None:
     baseline". Its leaves carry theirs; read those.
     """
     from app.models import BenchBaseline
-    from app.services.harness import FLOOR
+    from app.services.fleet import canonical_vendor
+    from app.services.harness import FLOOR, SAMPLED, _cost, family_of
 
     rows = db.scalars(select(BenchBaseline).where(
         BenchBaseline.source_project_id == project_id)
@@ -226,7 +232,7 @@ def attach_baselines(db: Session, project_id: str, cells: list[dict]) -> None:
     latest: dict[tuple, dict] = {}
     for r in rows:
         for cap, roll in (r.rollups or {}).items():
-            latest.setdefault((r.vendor, r.model, r.binary_version, cap), {
+            latest.setdefault((canonical_vendor(r.vendor), r.model, r.binary_version, cap), {
                 "suite_id": r.suite_id, "suite_version": r.suite_version,
                 "binary_version": r.binary_version, "n": roll["n"], "green": roll["green"],
                 "rate": round(roll["green"] / roll["n"], 3) if roll["n"] else None,
@@ -237,13 +243,33 @@ def attach_baselines(db: Session, project_id: str, cells: list[dict]) -> None:
         found = latest.get((k["vendor"], k["model"], k["binary_version"], k["capability"]))
         return dict(found) if found else None
 
+    natural: set[tuple] = set()
     for cell in cells:
         if cell.get("kind") == "family":
             cell.pop("baseline", None)
         else:
             cell["baseline"] = block(cell)
+        for c in [cell, *(cell.get("leaves") or [])]:
+            if "key" in c:
+                k = c["key"]
+                natural.add((k["vendor"], k["model"], k["binary_version"], k["capability"]))
         for leaf in cell.get("leaves") or []:
             leaf["baseline"] = block(leaf)
+
+    # A baseline covers a cell natural traffic may never have made: the cold start it exists
+    # for. Those get a row of their own, layer `baseline`, natural n 0.
+    for key, found in sorted(latest.items()):
+        if key in natural:
+            continue
+        vendor, model, version, cap = key
+        cells.append({
+            "key": {"vendor": vendor, "model": model, "binary_version": version,
+                    "capability": cap, "size_band": ""},
+            "kind": "leaf", "family": family_of(cap), "label": cap,
+            "layer": "baseline", "finished": 0, "signed_off": 0, "bounced": 0, "rate": None,
+            "below_floor": True, "sampling": {r: 0 for r in SAMPLED}, "skew": None,
+            "median_seconds": None, "cost": _cost(0, 0, 0, 0, 0), "series": [], "versions_seen": [version], "is_current_version": True,
+            "by_project": [], "baseline": dict(found)})
 
 
 # --- the repo suite (GRPH-P98 §3, GRPH-1857) -------------------------------------------------

@@ -645,6 +645,8 @@ def make_adapter_factory(name: str, binary: str | None, model: str = "",
             launch = with_foreign_variables_stripped(launch, entitlement)
         return replace(launch, binary_version=found.version)
 
+    # The version the supervisor stamps on natural attempts; `bench run` posts the same one.
+    factory.binary_version = found.version
     return factory
 
 
@@ -1760,7 +1762,8 @@ def _bench_run(args: argparse.Namespace) -> int:
         plan, repo=repo, client=client,
         open_scratch=lambda run: Graphban(args.server, run_mod.scratch_credential(run),
                                           project_id=run["project_id"]),
-        start=start, cut=cut, limits=limits, stop=stop, reap=reap, wave=wave, repo_for=repo_for)
+        start=start, cut=cut, limits=limits, stop=stop, reap=reap, wave=wave, repo_for=repo_for,
+        binary_version=getattr(factory, "binary_version", "") or "")
     for r in posted.get("results", []):
         print(f"{r.task_id}: {r.outcome}" + (f" ({r.detail})" if r.detail else ""))
     print(f"posted {len(posted.get('results', []))} outcome(s) for {args.adapter}")
@@ -1861,6 +1864,11 @@ def _harness(args: argparse.Namespace) -> int:
         for c in (cell.get("leaves") or [cell]):
             k = c["key"]
             samples = c.get("samples") or {}
+            if c.get("layer") == "baseline":
+                label = (f"{k['vendor']}:{k['model']}@{k.get('binary_version') or '?'} "
+                         f"{k['capability']} band {k.get('size_band') or '?'}")
+                print(f"{label}\t0\tbaseline\t-\t{_grid_baseline(c.get('baseline'))}")
+                continue
             nat = samples.get("natural") or {"finished": c["finished"], "rate": c.get("rate")}
             prb = samples.get("probe")
             for layer, side in (("natural", nat), ("probe", prb)):
