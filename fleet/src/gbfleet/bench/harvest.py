@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .suite import Check
-from .validate import FAIL, PASS, run_check
+from .validate import FAIL, PASS, component_dir, run_check
 
 RUNS = 3
 
@@ -26,6 +26,7 @@ TEST_RE_SOURCE = (
     r"|\.test\.(ts|tsx|js)$|\.spec\.(ts|tsx|js)$"
 )
 _TEST_RE = re.compile(TEST_RE_SOURCE, re.I)
+_SQUASH_RE = re.compile(r"\(#\d+\)\s*$")
 _ITEM_RE = re.compile(r"\b[A-Z]{2,}-\d+\b")
 
 #: Component kind -> test command. Python runs pytest on the files; JS the package
@@ -86,20 +87,25 @@ def is_test_path(path: str) -> bool:
 
 
 def command_for(repo: Path, tests: list[str]) -> tuple[str, list[str]]:
-    """The component's test command and the test files it covers. Python wins a mixed merge."""
+    """The component's test command and the test files it covers. Python wins a mixed merge.
+    The interpreter and working directory are resolved at run time (`validate.resolve_check`);
+    the JS lockfile is looked up in the tests' component directory."""
     py = [t for t in tests if t.endswith(".py")]
     if py:
         return PY_COMMAND, py
     js = [t for t in tests if t.endswith((".ts", ".tsx", ".js", ".jsx"))]
     cmd = JS_DEFAULT
+    comp = repo / component_dir(repo, js)
     for lock, c in JS_COMMANDS.items():
-        if (repo / lock).exists():
+        if (comp / lock).exists():
             cmd = c
     return cmd, js
 
 
 def _merges(repo: Path, branch: str, since: str, limit: int) -> list[tuple[str, str, int, str]]:
-    args = ["log", "--merges", "--first-parent", "--format=%H%x1f%ct%x1f%s%x1f%b%x1e"]
+    """First-parent commits of `branch`: two-parent merges, and single-parent commits whose
+    subject ends in `(#<n>)` (squash merges). Anything else is not a merged change."""
+    args = ["log", "--first-parent", "--format=%H%x1f%P%x1f%ct%x1f%s%x1f%b%x1e"]
     if since:
         args.append(f"--since={parse_since(since)}")
     args.append(branch)
@@ -108,8 +114,10 @@ def _merges(repo: Path, branch: str, since: str, limit: int) -> list[tuple[str, 
         rec = rec.strip("\n")
         if not rec.strip():
             continue
-        sha, ct, subject, body = (rec.split("\x1f") + ["", "", "", ""])[:4]
-        out.append((sha.strip(), subject, int(ct or 0), body))
+        sha, parents, ct, subject, body = (rec.split("\x1f") + ["", "", "", "", ""])[:5]
+        n = len(parents.split())
+        if n == 2 or (n == 1 and _SQUASH_RE.search(subject)):
+            out.append((sha.strip(), subject, int(ct or 0), body))
     return out[:limit] if limit else out
 
 
