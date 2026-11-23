@@ -130,3 +130,52 @@ def propose_review_tasks(repo: Path, candidates: list[Candidate], mutations: dic
         tasks.append({**base, "id": f"{c.id}-defect", "expect": "bounce", "ref": sha})
         tasks.append({**base, "id": f"{c.id}-clean", "expect": "sign_off", "ref": c.merge_sha})
     return tasks, dropped
+
+
+# --- a review task on a live run (GRPH-1874) -------------------------------------------------
+
+#: The pull-request url a bench review item names. The server's `open_run` refuses a review
+#: task without one, because `claim_review` withholds a branch with no linked PR
+#: (`pr_unlinked`). A seeded-defect ref lives in a local fixture repo and has no PR, so the run
+#: names one under `.invalid` (RFC 2606): it matches the PR shape and can never resolve.
+BENCH_PR_URL = "https://bench.gbfleet.invalid/{suite}/pull/{task}"
+
+#: The note `sign_off` leaves on an item when a gate refuses `done` (`items.record_refusal`).
+REFUSED_AT_DONE = "refused at `done` ("
+
+
+def bench_pr(suite_id: str, task_id: str) -> str:
+    safe = "".join(c if c.isalnum() or c in "-_." else "-" for c in f"{suite_id}") or "suite"
+    return BENCH_PR_URL.format(suite=safe, task="".join(
+        c if c.isalnum() or c in "-_." else "-" for c in task_id))
+
+
+def review_description(task: Task) -> str:
+    """The scratch item's brief: the task's own words plus where the change is."""
+    where = (f"The change under review is `{task.ref}` in your worktree's repository. Read it "
+             f"with `git diff {task.base_sha}..{task.ref}`"
+             + (f" (it touches {', '.join(task.touchpoints)})" if task.touchpoints else "")
+             + ". Sign off if it is correct; bounce with a reason if it is not.")
+    return f"{task.description.strip()}\n\n{where}" if task.description.strip() else where
+
+
+def verdict_of(item: dict) -> tuple[str, str]:
+    """The reviewer's verdict on one scratch item, as (outcome, detail).
+
+    `done` is a sign_off. A `bounce` sends the item to `next` and CLEARS `reviewed_by`, so
+    the bounce is read off `bounce_reason`, never off `reviewed_by`. An item still in review
+    with a refused `done` is a sign_off a server gate refused. The bench's PR is synthetic and
+    has no CI, so the PR gates refuse every bench sign_off. That refusal is the harness's
+    doing, not the reviewer's: the verdict was sign_off, and the refusal rides in `detail`.
+    Anything else is `no_verdict`.
+    """
+    status = str(item.get("status") or "")
+    if status == "done":
+        return "sign_off", ""
+    if status != "review" and str(item.get("bounce_reason") or "").strip():
+        return "bounce", ""
+    refusals = [str(e.get("detail") or "") for e in item.get("evidence") or []
+                if isinstance(e, dict) and str(e.get("detail") or "").startswith(REFUSED_AT_DONE)]
+    if status == "review" and refusals:
+        return "sign_off", f"sign_off refused by the server: {refusals[-1][:160]}"
+    return "no_verdict", f"item left in {status or 'an unknown state'} with no verdict"

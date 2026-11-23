@@ -251,6 +251,8 @@ def leaf_verdicts(task: Task, repo: Path, branch: str, outcome: str, *, commits:
 
 
 Start = Callable[..., object]
+#: `(task, scratch, item_id) -> (outcome, detail)`: a review item's verdict (`review.verdict_of`).
+ReadVerdict = Callable[[Task, object, str], tuple[str, str]]
 
 #: The field of the open-run reply carrying a credential scoped to the scratch project.
 #: The children register there and the supervisor reads its roster there; the source
@@ -334,10 +336,14 @@ def _run_task(task: Task, code: str, *, repo: Path, scratch, start: Start, limit
 def _run_review(task: Task, code: str, *, repo: Path, scratch, start: Start, limits,
                 clock: Callable[[], float], sleep: Callable[[float], None], cut: Callable[..., object],
                 stop: Callable[..., object], reap: Callable[..., object],
-                read_verdict: Callable[[Task, object], str | None] | None) -> Result:
-    """One review task: preflight, a reviewer child on the task's `ref`, its verdict read back."""
-    from dataclasses import replace
+                read_verdict: ReadVerdict | None, seat: dict, review_skip: tuple = ()) -> Result:
+    """One review task: preflight, a reviewer child on the task's `ref`, its verdict read back.
 
+    `seat` is the server's seat row. A review task must come back seated as review work, a
+    `review_only` seat on an item already in `review`. A build seat would make the reviewer
+    child claim the item as its builder, and no verdict could ever exist (GRPH-1878).
+    `review_skip` names the run's other review items, so this child reviews its own.
+    """
     from ..spawn import LaunchFailed
     from . import review as review_mod
 
@@ -350,12 +356,18 @@ def _run_review(task: Task, code: str, *, repo: Path, scratch, start: Start, lim
         return Result(task.id, "harness_error", f"preflight {pre.line()}"[:200])
     if read_verdict is None:
         return Result(task.id, "harness_error", "no way to read a reviewer verdict")
+    item_id = seat.get("item_id")
+    if seat.get("kind") != "review" or not item_id:
+        return Result(task.id, "harness_error",
+                      "the server seated this review task as build work; a reviewer child "
+                      "there would build it, not review it")
     try:
-        tree = cut(replace(task, base_sha=task.ref))
+        # The task itself, not a copy: `repo_for` knows a template task by identity.
+        tree = cut(task, base=task.ref)
     except Exception as exc:  # noqa: BLE001
         return Result(task.id, "harness_error", f"worktree: {str(exc)[:200]}")
     try:
-        child = start(tree, code, task, scratch)
+        child = start(tree, code, task, scratch, review_skip=review_skip)
     except LaunchFailed as exc:
         reap(tree)
         return Result(task.id, "never_registered", str(exc)[:200], wall_seconds=clock() - started)
@@ -371,15 +383,16 @@ def _run_review(task: Task, code: str, *, repo: Path, scratch, start: Start, lim
         sleep(1.0)
     wall = clock() - started
     reap(tree)
-    if timed_out:
-        return Result(task.id, "timed_out", wall_seconds=wall)
     try:
-        verdict = read_verdict(task, scratch)
+        verdict, detail = read_verdict(task, scratch, item_id)
     except Exception as exc:  # noqa: BLE001
         return Result(task.id, "harness_error", f"verdict: {str(exc)[:200]}", wall_seconds=wall)
-    if verdict not in ("bounce", "sign_off"):
-        return Result(task.id, "no_verdict", wall_seconds=wall)
-    return Result(task.id, verdict, wall_seconds=wall)
+    if verdict in ("bounce", "sign_off"):
+        # A verdict recorded before the wall clock ran out still counts.
+        return Result(task.id, verdict, detail, wall_seconds=wall)
+    if timed_out:
+        return Result(task.id, "timed_out", "child ran past its wall clock", wall_seconds=wall)
+    return Result(task.id, "no_verdict", detail, wall_seconds=wall)
 
 
 def _commits_beyond(repo: Path, branch: str, base: str) -> int:
@@ -394,7 +407,7 @@ def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], o
              stop: Callable[..., object] = lambda child: None,
              reap: Callable[..., object] = lambda tree: None, wave: str = "bench",
              repo_for: Callable[[Task], Path] | None = None,
-             read_verdict: Callable[[Task, object], str | None] | None = None) -> dict:
+             read_verdict: ReadVerdict | None = None) -> dict:
     """Open the run, work each task, post the results. Returns the posted record.
 
     `repo_for(task)` names the repository a task's branch and check live in (the template's
@@ -403,12 +416,21 @@ def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], o
     `client.open_bench_run` and `client.post_bench_result` are the server's two bench routes;
     `open_scratch(run)` yields the client for the scratch project the children register in,
     built on `scratch_credential(run)`; a reply without that credential is `harness_error`.
+
+    A review task goes to the server with its `ref`, `expect`, a brief naming the diff and a
+    synthetic `pr` (`review.bench_pr`), so `open_run` puts it in `review` on a review-only
+    seat. `read_verdict(task, scratch, item_id)` returns `(outcome, detail)` for its item.
     """
+    from . import review as review_mod
+
     body = {"vendor": plan.adapter.split(":")[0], "model": plan.model, "binary_version": binary_version,
             "suite_id": plan.suite_id, "suite_version": plan.suite_version,
             "tasks": [{"id": p.task.id, "title": p.task.title, "description": p.task.description,
                        "touchpoints": list(p.task.touchpoints),
-                       **({"kind": "review"} if p.task.kind == "review" else {})} for p in plan.tasks]}
+                       **({"kind": "review", "ref": p.task.ref, "expect": p.task.expect,
+                           "description": review_mod.review_description(p.task),
+                           "pr": review_mod.bench_pr(plan.suite_id, p.task.id)}
+                          if p.task.kind == "review" else {})} for p in plan.tasks]}
     results: list[Result] = []
     run_id = None
     run: dict | None = None
@@ -424,7 +446,10 @@ def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], o
         # project and the run would read as a fleet of no-shows instead of plumbing.
         results = [Result(p.task.id, "harness_error", NO_SCRATCH_KEY) for p in plan.tasks]
     elif run is not None:
-        seats = {s["task_id"]: s["enrolment_code"] for s in run.get("seats", [])}
+        rows = {s["task_id"]: s for s in run.get("seats", [])}
+        seats = {tid: s.get("enrolment_code") for tid, s in rows.items()}
+        review_items = {tid: s["item_id"] for tid, s in rows.items()
+                        if s.get("kind") == "review" and s.get("item_id")}
         scratch = open_scratch(run)
         for p in plan.tasks:
             code = seats.get(p.task.id)
@@ -435,7 +460,9 @@ def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], o
             if p.task.kind == "review":
                 results.append(_run_review(p.task, code, repo=task_repo, scratch=scratch, start=start,
                                            limits=limits, clock=clock, sleep=sleep, cut=cut, stop=stop,
-                                           reap=reap, read_verdict=read_verdict))
+                                           reap=reap, read_verdict=read_verdict,
+                                           seat=rows[p.task.id], review_skip=tuple(
+                                               i for t, i in review_items.items() if t != p.task.id)))
                 continue
             results.append(_run_task(p.task, code, repo=task_repo, scratch=scratch, start=start,
                                      limits=limits, wave=wave, clock=clock, sleep=sleep, cut=cut,
