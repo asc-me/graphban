@@ -419,3 +419,48 @@ def test_bench_run_posts_the_binary_version_the_adapter_resolved(tmp_path, monke
     assert source.opened["binary_version"] == "2.1.37"
     assert source.posted["binary_version"] == "2.1.37"
     assert source.posted["vendor"] == "claude" and source.posted["model"] == "sonnet"
+
+
+def leafy(repo, caps=("A1", "E1", "E2", "H5")):
+    t = task(repo)
+    return Task(**{**t.__dict__, "capabilities": caps})
+
+
+def leaves_of(server):
+    return {k: v["verdict"] for k, v in server.posted["outcomes"][0]["leaves"].items()}
+
+
+def test_red_check_inside_touchpoints_fails_a1_and_passes_e1_e2_h5(repo, tmp_path):
+    server = FakeServer(["t1"])
+    drive(repo, tmp_path, [leafy(repo)], server,
+          lambda tree, t: (tree.path / "mod.py").write_text("def ok():\n    return False\n"))
+    assert server.posted["outcomes"][0]["outcome"] == "check_red"
+    assert leaves_of(server) == {"A1": "fail", "E1": "pass", "E2": "pass", "H5": "pass"}
+
+
+def test_edit_outside_touchpoints_fails_h5_with_a_green_check(repo, tmp_path):
+    def behave(tree, t):
+        solve(tree, t)
+        (tree.path / "other.py").write_text("x = 1\n")
+
+    server = FakeServer(["t1"])
+    drive(repo, tmp_path, [leafy(repo)], server, behave)
+    assert server.posted["outcomes"][0]["outcome"] == "check_green"
+    assert leaves_of(server) == {"A1": "pass", "E1": "pass", "E2": "pass", "H5": "fail"}
+
+
+def test_instruction_file_fails_e2(repo, tmp_path):
+    def behave(tree, t):
+        solve(tree, t)
+        (tree.path / "CLAUDE.md").write_text("hi\n")
+
+    server = FakeServer(["t1"])
+    drive(repo, tmp_path, [leafy(repo)], server, behave)
+    assert leaves_of(server)["E2"] == "fail"
+
+
+def test_no_branch_fails_e1_and_excludes_diff_leaves(repo, tmp_path):
+    server = FakeServer(["t1"])
+    drive(repo, tmp_path, [leafy(repo)], server, nothing)
+    assert leaves_of(server)["E1"] == "fail"
+    assert leaves_of(server)["A1"] == "fail"

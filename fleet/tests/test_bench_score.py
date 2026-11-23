@@ -85,3 +85,19 @@ def test_bad_outcome_refused():
     with pytest.raises(ValueError):
         score_run([TaskOutcome("x", "review", ("F1",), "bounce")])
     assert score_mod.FLOOR == 5
+
+
+def test_leaf_verdicts_score_each_leaf_by_its_own_predicate():
+    from gbfleet.bench.score import TaskOutcome, score_run
+
+    rec = TaskOutcome("t", "build", ("A1", "E1"), "check_red",
+                      leaves={"A1": ("fail", ""), "E1": ("pass", "")})
+    cells = {c.key: c for c in score_run([rec]).cells}
+    assert cells["A1"].value == 0.0 and cells["E1"].value == 1.0
+
+
+def test_excluded_leaf_is_out_of_that_leaf_n():
+    from gbfleet.bench.score import TaskOutcome, score_run
+
+    rec = TaskOutcome("t", "build", ("H5",), "check_green", leaves={"H5": ("excluded", "none")})
+    assert {c.key: c.n for c in score_run([rec]).cells}["H5"] == 0

@@ -128,17 +128,57 @@ def open_run(db: Session, *, project_id: str, user_id: str, body: dict) -> dict:
             **ident, "seats": seats, "api_key": api_key}
 
 
+LEAF_VERDICTS = ("pass", "fail", "excluded")
+
+
 def _rollups(outcomes: list[dict]) -> dict:
-    """Per capability: scored `n`, `green`, and the plumbing excluded. Server-computed."""
+    """Per capability: scored `n`, `green`, and the plumbing excluded. Server-computed.
+
+    A task that posted per-leaf `leaves` is scored on each leaf's own verdict (GRPH-1877); a
+    leaf it claims but has no verdict for, or whose verdict is `excluded`, leaves that leaf's
+    n with the reason. A task that posted none (an older client) is scored on its check.
+    """
     out: dict[str, dict] = {}
     for o in outcomes:
+        leaves = o.get("leaves")
         for cap in o["capabilities"] or ["uncategorised"]:
             cell = out.setdefault(cap, {"n": 0, "green": 0, "excluded": 0})
             if o["outcome"] in PLUMBING:
                 cell["excluded"] += 1
-            else:
+            elif leaves is None:
                 cell["n"] += 1
                 cell["green"] += o["outcome"] == "check_green"
+            else:
+                v = leaves.get(cap)
+                if v is None or v["verdict"] == "excluded":
+                    cell["excluded"] += 1
+                    reason = (v or {}).get("reason") or "no verdict reported for this leaf"
+                    cell.setdefault("excluded_reasons", []).append(
+                        {"task_id": o["task_id"], "reason": reason})
+                else:
+                    cell["n"] += 1
+                    cell["green"] += v["verdict"] == "pass"
+    return out
+
+
+def _leaves(task_id: str, raw) -> dict | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise AttemptRefused(f"leaves for {task_id} must be an object", status=422)
+    out: dict[str, dict] = {}
+    for leaf, v in raw.items():
+        if leaf not in CAPABILITY_LEAVES and leaf not in FAMILIES:
+            raise AttemptRefused(f"unknown leaf {leaf!r} in leaves for {task_id}", status=422)
+        if isinstance(v, str):
+            v = {"verdict": v}
+        if not isinstance(v, dict) or v.get("verdict") not in LEAF_VERDICTS:
+            raise AttemptRefused(
+                f"leaf {leaf} for {task_id} needs a verdict of {list(LEAF_VERDICTS)}", status=422)
+        reason = v.get("reason")
+        if reason is not None and not isinstance(reason, str):
+            raise AttemptRefused(f"leaf {leaf} reason must be a string", status=422)
+        out[leaf] = {"verdict": v["verdict"], "reason": (reason or "")[:300]}
     return out
 
 
@@ -175,8 +215,12 @@ def post_result(db: Session, *, project_id: str, body: dict) -> dict:
         for name, v in (("tokens", tokens), ("wall_seconds", wall)):
             if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0):
                 raise AttemptRefused(f"{name} must be a non-negative number or null", status=422)
-        outcomes.append({"task_id": o["task_id"], "outcome": o["outcome"], "capabilities": caps,
-                         "tokens": tokens, "wall_seconds": wall})
+        entry = {"task_id": o["task_id"], "outcome": o["outcome"], "capabilities": caps,
+                 "tokens": tokens, "wall_seconds": wall}
+        leaves = _leaves(o["task_id"], o.get("leaves"))
+        if leaves is not None:
+            entry["leaves"] = leaves
+        outcomes.append(entry)
     run_id = body.get("run_id")
     if run_id is not None:
         run = db.get(BenchRun, run_id)
