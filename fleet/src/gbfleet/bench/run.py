@@ -53,7 +53,7 @@ def template_suite() -> Suite | None:
     """The shipped template suite, or None when this install carries none."""
     from . import suite as suite_mod
 
-    path = Path(__file__).with_name("template_suite.toml")
+    path = suite_mod.template_manifest()
     if not path.is_file():
         return None
     try:

@@ -224,6 +224,9 @@ def test_repo_suite_with_no_tasks_exits_2(monkeypatch, capsys):
 
 def test_all_suite_reports_an_empty_repo_suite_as_zero_and_does_not_skip_it(monkeypatch, capsys):
     patch_cli(monkeypatch, [], [])
+    # The shipped template now carries review tasks, which a plan lists as skipped; this test
+    # is about the empty repo suite, so take the template out of it.
+    monkeypatch.setattr(R, "template_suite", lambda: None)
     assert run_cli("--suite", "all", "--adapter", "claude", "--dry-run") == 0
     out = capsys.readouterr().out
     assert "repo suite: 0 tasks" in out and "skipped" not in out
