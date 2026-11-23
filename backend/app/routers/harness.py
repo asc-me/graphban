@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import User
 from app.security import authz
-from app.security.deps import get_agent_key, get_current_user
+from app.security.deps import get_agent_key, get_current_user, get_user_or_agent_key
 from app.services import events as events_svc
 from app.services import fleet_profiles as fleet_profiles_svc
 from app.services import items as items_svc
@@ -166,10 +166,19 @@ def post_surface(body: SurfaceIn, db: Session = Depends(get_db),
 
 @router.get("/grid")
 def harness_grid(project_id: str, window_days: int | None = None,
-                 db: Session = Depends(get_db), key=Depends(get_agent_key)):
-    """The grid's cells for an agent key (`gbfleet harness grid`, GRPH-1862). Same payload as
-    the page reads, with each cell's `baseline` beside its natural and probe numbers."""
-    if project_id not in authz.key_writable_ids(db, key):
+                 db: Session = Depends(get_db), who=Depends(get_user_or_agent_key)):
+    """The grid's cells for `gbfleet harness grid` (GRPH-1862). Same payload as the page
+    reads, with each cell's `baseline` beside its natural and probe numbers.
+
+    Either credential: a person may already read every cell here from `GET /api/harness`, so
+    the agent-key path widens nothing. A user is gated by `require_readable`; a key by the
+    projects it can write. 404 either way for a project the caller cannot reach.
+    """
+    if window_days is not None and (window_days < 1 or window_days > 1000):
+        raise HTTPException(422, "window_days must be between 1 and 1000")
+    if isinstance(who, User):
+        authz.require_readable(db, who.id, project_id)
+    elif project_id not in authz.key_writable_ids(db, who):
         raise HTTPException(404, "no such project")
     out = harness_svc.report(db, project_id, window_days=window_days)
     db.commit()

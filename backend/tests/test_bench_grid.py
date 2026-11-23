@@ -78,3 +78,23 @@ def test_a_baseline_at_another_binary_version_does_not_attach(client, auth):
         "outcomes": [{"task_id": "t1", "outcome": "check_green", "capabilities": ["A1"]}]})
     cells = client.get(f"/api/harness/grid?project_id={proj}", headers=h).json()["cells"]
     assert _leaf(cells)["baseline"] is None
+
+
+def test_a_person_reads_the_same_grid_with_a_session(client, auth):
+    """The CLI route takes either credential; a session sees exactly what the key sees."""
+    proj, h = _env(client, auth)
+    client.post(f"/api/bench/results?project_id={proj}", headers=h, json={
+        **IDENT, "outcomes": [{"task_id": "t1", "outcome": "check_green", "capabilities": ["A1"]}]})
+    by_key = client.get(f"/api/harness/grid?project_id={proj}", headers=h).json()["cells"]
+    by_user = client.get(f"/api/harness/grid?project_id={proj}", headers=auth)
+    assert by_user.status_code == 200, by_user.text
+    assert by_user.json()["cells"] == by_key
+    assert _leaf(by_key)["baseline"]["n"] == 1
+
+
+def test_the_grid_refuses_an_unreachable_project_and_a_bad_window(client, auth):
+    proj, h = _env(client, auth)
+    assert client.get("/api/harness/grid?project_id=nope", headers=h).status_code == 404
+    assert client.get("/api/harness/grid?project_id=nope", headers=auth).status_code in (403, 404)
+    r = client.get(f"/api/harness/grid?project_id={proj}&window_days=0", headers=h)
+    assert r.status_code == 422
