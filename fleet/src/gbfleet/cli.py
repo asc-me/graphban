@@ -280,7 +280,9 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Installs `gbfleet until` as a user-domain service. Everything after the "
             "subcommand is passed to `until` unchanged, so `gbfleet until --help` stays the "
-            "authority on its own flags.\n\n"
+            "authority on its own flags. `install --name X` with no arguments after it "
+            "reloads the unit already written for X — the command `status` prints when "
+            "that unit is installed but not loaded — and refuses when no such unit exists.\n\n"
             "The API key is read from $" + API_KEY_ENV + " at install time and written to an "
             "owner-only file the unit references. It is NEVER put in the unit itself: a unit "
             "file is world-readable.\n\n"
@@ -1264,6 +1266,12 @@ def _service(args) -> int:
         return 0
 
     rest = [a for a in (args.rest or []) if a != "--"]
+    # No until arguments is not "nothing to run" when that name already has a unit.
+    # Status tells the operator to run exactly `install --name X`, and that command
+    # has to load the unit as written (GRPH-1872). A name with no unit still falls
+    # through to the refusal inside this branch.
+    if not rest:
+        return _reload_named_service(args)
     try:
         plan = service_mod.make_plan(rest, name=args.name, every=args.every)
     except service_mod.Refused as exc:
@@ -1322,6 +1330,33 @@ def _service(args) -> int:
            or "the supervisor gave no reason")
     print(f"{plan.name}: NOT running, last exit {code} — {why}", file=sys.stderr)
     print(f"        {plan.err_path} is where it said why", file=sys.stderr)
+    return 1
+
+
+def _reload_named_service(args) -> int:
+    """`install --name X` with no `until` arguments: load the unit already on disk.
+
+    Does not render a new unit and does not read a key. Both already belong to the
+    file this command is loading; rewriting either would need the arguments the
+    operator was not given.
+    """
+    try:
+        if args.dry_run:
+            path = service_mod.installed_unit_path(args.name)
+            print(f"# would load {path} without rewriting it")
+            return 0
+        state = service_mod.reload_installed(args.name)
+    except service_mod.Refused as exc:
+        print(f"gbfleet service: {exc}", file=sys.stderr)
+        return 2
+    print(f"loaded {state.unit_path} (existing arguments unchanged)")
+    _service_status(state)
+    # Still not loaded means the supervisor did not take the unit. A job we could
+    # not ask about is the same failure: reporting success would hide it.
+    if state.not_loaded or state.running is None:
+        return 1
+    if state.running or state.idle or state.unsettled:
+        return 0
     return 1
 
 
