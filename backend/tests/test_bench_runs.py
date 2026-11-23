@@ -6,6 +6,7 @@ from app.db import SessionLocal
 from app.models import Agent, AttemptTelemetry, BenchBaseline, BenchRun, Item, Project
 from app.services import bench as bench_svc
 
+PR = "https://github.com/o/r/pull/7"
 TASKS = [{"id": "t1", "title": "fix a thing", "touchpoints": ["a.py"]},
          {"id": "t2", "title": "fix another"}]
 IDENT = {"vendor": "anthropic", "model": "sonnet", "binary_version": "1.2.3",
@@ -183,3 +184,68 @@ def test_open_run_returns_a_scratch_scoped_key_revoked_on_post(client, env):
         assert verify_api_key(db, key) is None
     again = client.post("/api/mcp", json=body, headers=h)
     assert again.status_code == 401
+
+
+def test_open_run_seats_review_tasks_as_review_work(client, env):
+    tasks = [TASKS[0], {"id": "r1", "kind": "review", "title": "review it", "ref": "gb/x",
+                        "expect": "bounce", "pr": PR}]
+    out = _open(client, env, tasks=tasks).json()
+    by = {s["task_id"]: s for s in out["seats"]}
+    assert by["r1"]["kind"] == "review" and by["t1"]["kind"] == "build"
+    from app.models import Enrolment
+    with SessionLocal() as db:
+        build, rev = db.get(Item, by["t1"]["item_id"]), db.get(Item, by["r1"]["item_id"])
+        assert build.status == "next"
+        assert rev.status == "review" and rev.branch == "gb/x" and rev.github_url == PR
+        assert rev.built_by and rev.built_by != by["r1"].get("agent")
+        seats = db.scalars(select(Enrolment).where(
+            Enrolment.project_id == out["project_id"])).all()
+        assert sorted(bool(e.review_only) for e in seats) == [False, True]
+        assert [e.item_id for e in seats if e.review_only] == [None]
+
+
+def test_review_outcomes_score_green_when_verdict_matches_expect(client, env):
+    def o(tid, outcome, expect):
+        return {"task_id": tid, "outcome": outcome, "capabilities": ["A1"],
+                "kind": "review", "expect": expect}
+    r = _post(client, env, outcomes=[o("a", "bounce", "bounce"), o("b", "sign_off", "bounce"),
+                                     o("c", "sign_off", "sign_off")])
+    assert r.status_code == 201, r.text
+    out = r.json()
+    assert out["rollups"]["A1"] == {"n": 3, "green": 2, "excluded": 0}
+    assert out["outcomes"][0]["kind"] == "review" and out["outcomes"][0]["expect"] == "bounce"
+
+
+def _mcp(client, key, name, args):
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": name, "arguments": args}}
+    res = client.post("/api/mcp", json=body, headers={"X-API-Key": key}).json()["result"]
+    assert not res.get("isError"), res
+    return res["structuredContent"]
+
+
+def test_a_reviewer_on_the_review_seat_claims_the_review_item(client, env):
+    """The bounce on GRPH-1878: the seat existed but claim_review withheld the item
+    (`pr_unlinked`). Registering on the review_only seat must hand over that item."""
+    task = {"id": "r1", "kind": "review", "title": "review it", "ref": "gb/x",
+            "expect": "bounce", "pr": PR}
+    out = _open(client, env, tasks=[task]).json()
+    seat = out["seats"][0]
+    me = _mcp(client, out["api_key"], "register_agent",
+              {"enrolment_code": seat["enrolment_code"], "label": "reviewer"})
+    got = _mcp(client, out["api_key"], "claim_review",
+               {"agent_id": me["agent_id"], "wait_seconds": 0})
+    assert got["claimed"] is True, got
+    assert got["item"]["id"] == seat["item_id"]
+    assert got["branch"] == "gb/x"
+
+
+@pytest.mark.parametrize("drop", ["pr", "ref"])
+def test_a_review_task_without_a_pr_or_ref_is_refused_by_name(client, env, drop):
+    task = {"id": "r1", "kind": "review", "title": "t", "ref": "gb/x", "pr": PR,
+            "expect": "bounce"}
+    task.pop(drop)
+    before = _counts(env["proj"])
+    r = _open(client, env, tasks=[task])
+    assert r.status_code == 422 and drop in r.text, r.text
+    assert _counts(env["proj"])[:2] == before[:2]

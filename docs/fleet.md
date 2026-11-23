@@ -93,10 +93,15 @@ shell: split POSIX-style, except on Windows, where backslashes in paths are kept
 any task does not discriminate.
 
 `gbfleet bench harvest [--repo DIR] [--branch B] [--since 180d] [--limit N] [--sabotage-items IDS]`
-scans first-parent merges and proposes candidate build tasks locally; it writes nothing to the
+scans first-parent commits (two-parent merges, and single-parent squash merges whose subject ends in `(#<n>)`, with the parent as base) and proposes candidate build tasks locally; it writes nothing to the
 server. A candidate's `base_sha` is the merge's first parent, and its check is the test files the
 merge added or modified (the PRD-41 test-path pattern, mirrored as `TEST_RE_SOURCE`), run with
-pytest (Python) or the package manager's runner (JS). The check runs 3 times at the parent (all
+pytest (Python) or the package manager's runner (JS), from the component: the nearest ancestor of
+the test files holding `pyproject.toml` or `package.json` is the working directory and test paths
+are relative to it. Python uses that directory's `.venv/bin/python`, else `uv run python` when it
+has `uv.lock`, else gbfleet's interpreter; a src-layout component's `src/` goes first on
+`PYTHONPATH`, so an editable install of the repo's own checkout is not what gets tested. A repo overrides this per path prefix with
+`[[check]] prefix, cwd, command` in `.gbfleet/bench.toml`; `bench run --suite repo` resolves the same way. The check runs 3 times at the parent (all
 must be red) and 3 times at the merge (all must be green). Dropped merges print with a reason:
 `flaky`, `green_at_parent`, `red_at_merge` or `no_tests`. Items named by `--sabotage-items` (a
 red sabotage) rank first, then the most recent. Candidates are saved in the repo's git dir.

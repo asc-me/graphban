@@ -38,6 +38,9 @@ class TaskOutcome:
     #: None means the vendor reported none. Never defaulted to 0.
     tokens: int | None = None
     wall_seconds: float | None = None
+    #: build only: leaf -> (verdict, reason), verdict pass | fail | excluded. None means the
+    #: record carries none and every leaf is scored on the check.
+    leaves: dict[str, tuple[str, str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -92,8 +95,19 @@ def _check(rec: TaskOutcome) -> None:
         raise ValueError(f"task {rec.task_id!r}: unknown kind {rec.kind!r}")
 
 
-def _correct(rec: TaskOutcome) -> bool:
-    return rec.outcome == "check_green" if rec.kind == "build" else rec.outcome == rec.expect
+def _correct(rec: TaskOutcome, leaf: str | None = None) -> bool:
+    if rec.kind != "build":
+        return rec.outcome == rec.expect
+    if rec.leaves is not None and leaf in rec.leaves:
+        return rec.leaves[leaf][0] == "pass"
+    return rec.outcome == "check_green"
+
+
+def _leaf_scored(rec: TaskOutcome, leaf: str) -> bool:
+    """A leaf whose predicate could not be evaluated is not in that leaf's n."""
+    if rec.kind != "build" or rec.leaves is None:
+        return True
+    return leaf in rec.leaves and rec.leaves[leaf][0] != "excluded"
 
 
 def _sum(values: Iterable[int | float | None]):
@@ -142,8 +156,8 @@ def score_run(
         elif leaf == "F2":
             cell = _cell("F2", len(planted), f2_hits)
         else:
-            rs = by_leaf.get(leaf, [])
-            cell = _cell(leaf, len(rs), sum(_correct(r) for r in rs))
+            rs = [r for r in by_leaf.get(leaf, []) if _leaf_scored(r, leaf)]
+            cell = _cell(leaf, len(rs), sum(_correct(r, leaf) for r in rs))
         cells.append(cell)
         if cell.below_floor:
             grey_families.add(leaf[0])

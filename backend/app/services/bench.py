@@ -21,7 +21,7 @@ from app.services.harness import CAPABILITY_LEAVES, FAMILIES, AttemptRefused
 
 #: P98 §5. `never_registered` and `harness_error` are plumbing: counted, never scored.
 OUTCOMES = ("never_registered", "no_branch", "check_red", "check_green", "timed_out",
-            "harness_error")
+            "harness_error", "bounce", "sign_off")
 PLUMBING = ("never_registered", "harness_error")
 MAX_TASKS = 200
 #: The column widths in `bench_runs` / `bench_baselines`: a longer value is refused by name
@@ -47,7 +47,12 @@ def _text(body: dict, field: str, *, required: bool = True) -> str:
 
 def _identity(body: dict) -> dict:
     """The fields every bench write names. A missing one is refused by name."""
+    from app.services.fleet import canonical_vendor
+
     out = {f: _text(body, f) for f in ("vendor", "model", "suite_id", "suite_version")}
+    # The same fold natural cells use (`claude` is `anthropic`), so a baseline posted by an
+    # adapter name lands on the company's cell.
+    out["vendor"] = canonical_vendor(out["vendor"])
     out["binary_version"] = _text(body, "binary_version", required=False)
     return out
 
@@ -73,6 +78,17 @@ def open_run(db: Session, *, project_id: str, user_id: str, body: dict) -> dict:
         if tid in seen:
             raise AttemptRefused(f"task id {tid!r} appears twice", status=422)
         seen.add(tid)
+        if t.get("kind") == "review":
+            # A review row with a branch and no linked PR is withheld from `claim_review`
+            # (`pr_unlinked`) and refused `pr_missing` at sign_off, so a review seat without
+            # one could never be claimed. The run names the PR; the server does not invent one.
+            if not isinstance(t.get("ref"), str) or not t["ref"].strip():
+                raise AttemptRefused(f"review task {tid} needs a ref", status=422)
+            if not isinstance(t.get("pr"), str) or not items_svc.is_pr_url(t["pr"]):
+                raise AttemptRefused(
+                    f"review task {tid} needs a pr: the pull request url its ref is on. "
+                    "claim_review withholds a branch with no linked PR (pr_unlinked)",
+                    status=422)
     if db.get(Project, project_id) is None:
         raise AttemptRefused("project not found", status=404)
 
@@ -94,11 +110,24 @@ def open_run(db: Session, *, project_id: str, user_id: str, body: dict) -> dict:
     db.flush()
     seats = []
     for t in tasks:
+        is_review = t.get("kind") == "review"
         item = items_svc.create_item(
             db, title=str(t.get("title") or t["id"]), description=str(t.get("description") or ""),
             tags=["bench"], touchpoints=list(t.get("touchpoints") or []),
-            project_id=scratch.id, status="next", commit=False)
+            project_id=scratch.id, status="review" if is_review else "next", commit=False)
+        if is_review:
+            # A review task is work someone else built: attributed to the run's planner agent,
+            # branch = the task's ref, so `claim_review` hands it to the reviewer child.
+            item.built_by = agent.id
+            item.branch = t["ref"].strip()
+            item.github_url = t["pr"].strip()
         db.flush()
+        if is_review:
+            _seat, code = fleet_svc.issue_enrolment(
+                db, project_id=scratch.id, role="worker", minted_by=agent.id, review_only=True)
+            seats.append({"task_id": t["id"], "item_id": item.id, "kind": "review",
+                          "enrolment_code": code})
+            continue
         row, _withdrew, _code = delegation_svc.delegate(
             db, agent=agent, item=item, lane="backend", tier="cheap",
             note=f"bench {ident['suite_id']} {t['id']}", lease_seconds=600, seat=False)
@@ -106,7 +135,7 @@ def open_run(db: Session, *, project_id: str, user_id: str, body: dict) -> dict:
             db, project_id=scratch.id, role="worker", minted_by=agent.id,
             item_id=item.id, delegation_id=row.id)
         seats.append({"task_id": t["id"], "item_id": item.id, "delegation_id": row.id,
-                      "enrolment_code": code})
+                      "kind": "build", "enrolment_code": code})
     run = BenchRun(
         id=f"bnr_{uuid.uuid4().hex[:12]}", source_project_id=project_id, project_id=scratch.id,
         tasks=[{"task_id": s["task_id"], "item_id": s["item_id"]} for s in seats], **ident)
@@ -123,17 +152,65 @@ def open_run(db: Session, *, project_id: str, user_id: str, body: dict) -> dict:
             **ident, "seats": seats, "api_key": api_key}
 
 
+LEAF_VERDICTS = ("pass", "fail", "excluded")
+
+
+def _is_green(o: dict) -> bool:
+    """A build outcome is green on `check_green`; a review outcome when its verdict matched
+    `expect` (bounce for a defect, sign_off for clean work)."""
+    if o.get("kind") == "review":
+        return o.get("expect") in EXPECTS and o["outcome"] == o["expect"]
+    return o["outcome"] == "check_green"
+
+
 def _rollups(outcomes: list[dict]) -> dict:
-    """Per capability: scored `n`, `green`, and the plumbing excluded. Server-computed."""
+    """Per capability: scored `n`, `green`, and the plumbing excluded. Server-computed.
+
+    A task that posted per-leaf `leaves` is scored on each leaf's own verdict (GRPH-1877); a
+    leaf it claims but has no verdict for, or whose verdict is `excluded`, leaves that leaf's
+    n with the reason. A task that posted none (an older client) is scored on its check.
+    """
     out: dict[str, dict] = {}
     for o in outcomes:
+        leaves = o.get("leaves")
         for cap in o["capabilities"] or ["uncategorised"]:
             cell = out.setdefault(cap, {"n": 0, "green": 0, "excluded": 0})
             if o["outcome"] in PLUMBING:
                 cell["excluded"] += 1
-            else:
+            elif leaves is None:
                 cell["n"] += 1
-                cell["green"] += o["outcome"] == "check_green"
+                cell["green"] += _is_green(o)
+            else:
+                v = leaves.get(cap)
+                if v is None or v["verdict"] == "excluded":
+                    cell["excluded"] += 1
+                    reason = (v or {}).get("reason") or "no verdict reported for this leaf"
+                    cell.setdefault("excluded_reasons", []).append(
+                        {"task_id": o["task_id"], "reason": reason})
+                else:
+                    cell["n"] += 1
+                    cell["green"] += v["verdict"] == "pass"
+    return out
+
+
+def _leaves(task_id: str, raw) -> dict | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise AttemptRefused(f"leaves for {task_id} must be an object", status=422)
+    out: dict[str, dict] = {}
+    for leaf, v in raw.items():
+        if leaf not in CAPABILITY_LEAVES and leaf not in FAMILIES:
+            raise AttemptRefused(f"unknown leaf {leaf!r} in leaves for {task_id}", status=422)
+        if isinstance(v, str):
+            v = {"verdict": v}
+        if not isinstance(v, dict) or v.get("verdict") not in LEAF_VERDICTS:
+            raise AttemptRefused(
+                f"leaf {leaf} for {task_id} needs a verdict of {list(LEAF_VERDICTS)}", status=422)
+        reason = v.get("reason")
+        if reason is not None and not isinstance(reason, str):
+            raise AttemptRefused(f"leaf {leaf} reason must be a string", status=422)
+        out[leaf] = {"verdict": v["verdict"], "reason": (reason or "")[:300]}
     return out
 
 
@@ -170,8 +247,19 @@ def post_result(db: Session, *, project_id: str, body: dict) -> dict:
         for name, v in (("tokens", tokens), ("wall_seconds", wall)):
             if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0):
                 raise AttemptRefused(f"{name} must be a non-negative number or null", status=422)
-        outcomes.append({"task_id": o["task_id"], "outcome": o["outcome"], "capabilities": caps,
-                         "tokens": tokens, "wall_seconds": wall})
+        entry = {"task_id": o["task_id"], "outcome": o["outcome"], "capabilities": caps,
+                 "tokens": tokens, "wall_seconds": wall}
+        leaves = _leaves(o["task_id"], o.get("leaves"))
+        if leaves is not None:
+            entry["leaves"] = leaves
+        if o.get("kind") == "review":
+            if o.get("expect") not in EXPECTS:
+                raise AttemptRefused(
+                    f"expect for review task {o['task_id']} must be one of {list(EXPECTS)}",
+                    status=422)
+            entry["kind"] = "review"
+            entry["expect"] = o["expect"]
+        outcomes.append(entry)
     run_id = body.get("run_id")
     if run_id is not None:
         run = db.get(BenchRun, run_id)
@@ -206,7 +294,8 @@ def list_results(db: Session, project_id: str, *, vendor: str | None = None,
     return [view(r) for r in db.scalars(q.order_by(BenchBaseline.posted_at.desc())).all()]
 
 
-def attach_baselines(db: Session, project_id: str, cells: list[dict]) -> None:
+def attach_baselines(db: Session, project_id: str, cells: list[dict], *,
+                     versions: str = "all") -> None:
     """Give every measured grid cell a `baseline` block, or None when no run posted one.
 
     Matches on vendor, model, binary_version and capability, newest posted record first; the
@@ -216,9 +305,15 @@ def attach_baselines(db: Session, project_id: str, cells: list[dict]) -> None:
     A family rollup gets no `baseline` key at all. Baseline rollups are keyed by function, so a
     family has no number of its own, and None there would read as "no run" — a false "no
     baseline". Its leaves carry theirs; read those.
+
+    A baseline with no natural cell gets a row of its own. It honours `versions` the way the
+    natural cells do: under `current`, a baseline at a version older than the newest natural
+    one is dropped unless natural cells at that version are also being shown, and a kept row is
+    current only when no natural version of its vendor+model is newer.
     """
     from app.models import BenchBaseline
-    from app.services.harness import FLOOR
+    from app.services.fleet import canonical_vendor
+    from app.services.harness import FLOOR, SAMPLED, _cost, _version_key, family_of
 
     rows = db.scalars(select(BenchBaseline).where(
         BenchBaseline.source_project_id == project_id)
@@ -226,7 +321,7 @@ def attach_baselines(db: Session, project_id: str, cells: list[dict]) -> None:
     latest: dict[tuple, dict] = {}
     for r in rows:
         for cap, roll in (r.rollups or {}).items():
-            latest.setdefault((r.vendor, r.model, r.binary_version, cap), {
+            latest.setdefault((canonical_vendor(r.vendor), r.model, r.binary_version, cap), {
                 "suite_id": r.suite_id, "suite_version": r.suite_version,
                 "binary_version": r.binary_version, "n": roll["n"], "green": roll["green"],
                 "rate": round(roll["green"] / roll["n"], 3) if roll["n"] else None,
@@ -237,13 +332,45 @@ def attach_baselines(db: Session, project_id: str, cells: list[dict]) -> None:
         found = latest.get((k["vendor"], k["model"], k["binary_version"], k["capability"]))
         return dict(found) if found else None
 
+    natural: set[tuple] = set()
+    shown: dict[tuple, set[str]] = {}  # (vendor, model) -> natural versions in the payload
+    newest: dict[tuple, str] = {}  # (vendor, model) -> the current natural version
     for cell in cells:
         if cell.get("kind") == "family":
             cell.pop("baseline", None)
         else:
             cell["baseline"] = block(cell)
+        for c in [cell, *(cell.get("leaves") or [])]:
+            if "key" in c:
+                k = c["key"]
+                natural.add((k["vendor"], k["model"], k["binary_version"], k["capability"]))
+                shown.setdefault((k["vendor"], k["model"]), set()).add(k["binary_version"])
+                if c.get("is_current_version"):
+                    newest[(k["vendor"], k["model"])] = k["binary_version"]
         for leaf in cell.get("leaves") or []:
             leaf["baseline"] = block(leaf)
+
+    # A baseline covers a cell natural traffic may never have made: the cold start it exists
+    # for. Those get a row of their own, layer `baseline`, natural n 0.
+    for key, found in sorted(latest.items()):
+        if key in natural:
+            continue
+        vendor, model, version, cap = key
+        current = newest.get((vendor, model))
+        is_current = current is None or _version_key(version) >= _version_key(current)
+        if (versions == "current" and not is_current
+                and version not in shown.get((vendor, model), set())):
+            continue
+        seen = sorted(shown.get((vendor, model), set()) | {version}, key=_version_key)
+        cells.append({
+            "key": {"vendor": vendor, "model": model, "binary_version": version,
+                    "capability": cap, "size_band": ""},
+            "kind": "leaf", "family": family_of(cap), "label": cap,
+            "layer": "baseline", "finished": 0, "signed_off": 0, "bounced": 0, "rate": None,
+            "below_floor": True, "sampling": {r: 0 for r in SAMPLED}, "skew": None,
+            "median_seconds": None, "cost": _cost(0, 0, 0, 0, 0), "series": [], "versions_seen": seen,
+            "is_current_version": is_current,
+            "by_project": [], "baseline": dict(found)})
 
 
 # --- the repo suite (GRPH-P98 §3, GRPH-1857) -------------------------------------------------

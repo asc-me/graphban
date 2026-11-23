@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import re
 import sys
 from pathlib import Path
 
@@ -443,6 +444,147 @@ def test_systemd_silence_about_load_state_is_not_called_not_loaded(
     assert not state.not_loaded
     assert "last exit unknown" in state.line()
     assert "installed but not loaded" not in state.line()
+
+
+# --- install --name X reloads a unit that is already written (GRPH-1872) -------------
+
+
+_ADVICE = re.compile(r"`(gbfleet [^`]+)`")
+
+
+def _advice_argv(line: str) -> list[str]:
+    """The command inside the first backticks, without the `gbfleet` token."""
+    match = _ADVICE.search(line)
+    assert match, line
+    argv = match.group(1).split()
+    assert argv[0] == "gbfleet", argv
+    return argv[1:]
+
+
+def _supervisor_that_loads(kind: str, name: str):
+    """A fake supervisor: not loaded until the reload command, then loaded.
+
+    Returns ``(fake_run, calls, loaded)``. ``loaded['on']`` flips when the reload
+    command for this kind is seen, which is what a real bootstrap / enable does.
+    """
+    label = service.label_for(name)
+    calls: list[list[str]] = []
+    loaded = {"on": False}
+
+    def fake(cmd, timeout=20.0):
+        calls.append(list(cmd))
+        if kind == "launchd":
+            if cmd[:2] == ["launchctl", "bootstrap"]:
+                loaded["on"] = True
+                return 0, "bootstrapped"
+            if len(cmd) >= 2 and cmd[0] == "launchctl" and cmd[1] == "list":
+                if loaded["on"]:
+                    return 0, f"-\t0\t{label}"
+                return 0, "1\t0\tcom.apple.something"
+            return 0, ""
+        if kind == "systemd":
+            if cmd[:4] == ["systemctl", "--user", "enable", "--now"]:
+                loaded["on"] = True
+                return 0, "enabled"
+            if "is-active" in cmd:
+                return 0, "inactive"
+            if any(arg.startswith("--property=LoadState") for arg in cmd):
+                if loaded["on"]:
+                    return 0, "LoadState=loaded\nUnitFileState=enabled"
+                return 0, "LoadState=not-found\nUnitFileState=disabled"
+            if any(arg.startswith("--property=ExecMainStatus") for arg in cmd):
+                return 0, "ExecMainStatus=0"
+            return 0, ""
+        if cmd[:2] == ["schtasks", "/Create"]:
+            loaded["on"] = True
+            return 0, "registered"
+        if cmd[:2] == ["schtasks", "/Run"]:
+            return 0, "ran"
+        if "/Query" in cmd:
+            if loaded["on"]:
+                return 0, "Status: Ready\nLast Result: 0"
+            return 1, "ERROR: The system cannot find the file specified."
+        return 0, ""
+
+    return fake, calls, loaded
+
+
+@pytest.mark.parametrize("kind", ["launchd", "systemd", "schtasks"])
+def test_install_name_reloads_an_existing_unit_without_rewriting_it(
+        tmp_path: Path, monkeypatch, capsys, kind):
+    """GRPH-1872. The command status prints loads the unit already on disk.
+
+    Sabotage: in `_service`, drop the `if not rest: return _reload_named_service`
+    branch so an empty install goes back to `make_plan`. This test's command
+    exits 2 with "nothing to run" and the unit stays unloaded.
+    """
+    name = "p91"
+    unit = _unit_on_disk(tmp_path, monkeypatch, name, kind)
+    original = unit.read_bytes()
+    monkeypatch.setattr(service, "_launchd_gui_domain", lambda: "gui/501")
+    monkeypatch.setattr(service, "SETTLE", 0)
+    monkeypatch.setattr(service, "HEALTH_POLL", 0)
+    monkeypatch.setattr(service, "HEALTH_WINDOW", 0)
+    fake, calls, loaded = _supervisor_that_loads(kind, name)
+    monkeypatch.setattr(service, "_run", fake)
+
+    if kind != "schtasks":
+        before = service.status(name, kind=kind)
+        assert before.not_loaded
+        advice = _advice_argv(before.line())
+        assert advice == ["service", "install", "--name", name]
+        argv = advice
+    else:
+        # Task Scheduler has no not-loaded sentence. The same command is still
+        # what an operator runs, and it must not refuse.
+        argv = ["service", "install", "--name", name]
+
+    dry = main(["service", "install", "--dry-run", "--name", name])
+    dry_out = capsys.readouterr()
+    assert dry == 0, dry_out.err
+    assert "would load" in dry_out.out
+    assert str(unit) in dry_out.out
+    assert unit.read_bytes() == original
+    assert loaded["on"] is False, "dry-run loaded the unit"
+
+    code = main(argv)
+    out = capsys.readouterr()
+    assert code == 0, out.err + out.out
+    assert unit.read_bytes() == original, "reload rewrote the unit"
+    assert not (tmp_path / f"{name}.env").exists(), "reload rewrote the key file"
+    assert loaded["on"] is True
+    after = service.status(name, kind=kind)
+    assert after.installed and not after.not_loaded
+    assert "installed but not loaded" not in after.line()
+    if kind == "launchd":
+        assert ["launchctl", "bootstrap", "gui/501", str(unit)] in calls
+    elif kind == "systemd":
+        assert ["systemctl", "--user", "enable", "--now", service.unit_name(name)] in calls
+    else:
+        tn = service.task_name(name)
+        assert ["schtasks", "/Create", "/TN", tn, "/XML", str(unit), "/F"] in calls
+        assert ["schtasks", "/Run", "/TN", tn] in calls
+        assert not (tmp_path / f"{name}.cmd").exists()
+
+
+@pytest.mark.parametrize("kind", ["launchd", "systemd", "schtasks"])
+def test_install_name_with_no_unit_still_refuses(tmp_path: Path, monkeypatch, capsys, kind):
+    """A name nothing was written under is still "nothing to run".
+
+    Sabotage: make `installed_unit_path` return a path that does not exist and
+    this refusal goes away — the command would try to load it.
+    """
+    monkeypatch.setattr(service, "host", lambda: service.Host(kind))
+    missing = tmp_path / "no-such-unit"
+    monkeypatch.setattr(service, "unit_path_for", lambda n, k: missing)
+    called: list[list[str]] = []
+    monkeypatch.setattr(service, "_run", lambda cmd, timeout=20.0: called.append(list(cmd)) or (0, ""))
+    code = main(["service", "install", "--name", "ghost"])
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "nothing to run" in err
+    assert not missing.exists()
+    assert called == []
 
 
 # --- uninstall ------------------------------------------------------------------------

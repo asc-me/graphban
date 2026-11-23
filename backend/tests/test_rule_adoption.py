@@ -47,7 +47,9 @@ def test_admin_adopts_agent_proposal_observing_with_history(client, env):
     assert meta["reason"] == "migrations keep clashing"
 
 
-def test_batch_refuses_loosens_then_alone_succeeds(client, env):
+def test_batch_refuses_loosens_then_alone_succeeds(client, env, monkeypatch):
+    # GRPH-1873: this test is about proposal mechanics, not evaluation of the primitive.
+    monkeypatch.setattr("app.services.custom_rules.EVALUATED", tuple(__import__("app.services.rule_pack", fromlist=["x"]).PRIMITIVES))
     a, g = _agent_prop(env, client), _loosening(client, env)
     r = client.post(_base(env) + "/adopt", headers=env["h"],
                     json={"proposal_ids": [a, g], "reason": "both"})

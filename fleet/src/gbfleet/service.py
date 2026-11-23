@@ -540,6 +540,17 @@ def env_path_for(name: str) -> Path:
     return CONFIG_DIR / f"{name}.env"
 
 
+#: What `install` says when it has no `until` arguments and no unit of that name on disk.
+#: `install --name X` with no arguments reloads an existing unit instead (GRPH-1872); this
+#: refusal stays for a name nothing was ever written under, because a fresh install still
+#: has to be told what to run.
+_NOTHING_TO_RUN = (
+    "nothing to run: pass `until`'s own arguments after the command, e.g.\n"
+    "  gbfleet service install -- --repo /srv/graphban --server http://host:8080 "
+    "--project graphban --adapter claude --max-workers 2"
+)
+
+
 def make_plan(
     until_args: list[str],
     *,
@@ -562,10 +573,7 @@ def make_plan(
             f"--every must be at least 1 second (got {every}); a zero delay makes a unit that "
             "fails at startup respawn as fast as the supervisor can fork it")
     if not until_args:
-        raise Refused(
-            "nothing to run: pass `until`'s own arguments after the command, e.g.\n"
-            "  gbfleet service install -- --repo /srv/graphban --server http://host:8080 "
-            "--project graphban --adapter claude --max-workers 2")
+        raise Refused(_NOTHING_TO_RUN)
     missing = [flag for flag in _REQUIRED_ARGS if flag not in until_args]
     if missing:
         raise Refused(
@@ -905,6 +913,89 @@ def write_env(plan: Plan, api_key: str) -> list[str]:
     return []
 
 
+def installed_unit_path(name: str, *, kind: str = "") -> Path:
+    """The unit file already written for `name`.
+
+    Refuses with ``nothing to run`` when that file is not there: `install --name X`
+    with no `until` arguments is a reload, and a reload of a unit nobody wrote is
+    still a fresh install that has not been told what to run (GRPH-1872).
+    """
+    found = host()
+    kind = kind or found.kind
+    if not kind:
+        raise Refused(found.why)
+    path = unit_path_for(name, kind)
+    if not path.is_file():
+        raise Refused(_NOTHING_TO_RUN)
+    return path
+
+
+def reload_installed(name: str, *, kind: str = "") -> Status:
+    """Load the unit already on disk for `name`, without rewriting it.
+
+    This is what `gbfleet service install --name X` does when no `until` arguments
+    follow. Status prints that command for a unit that is installed but not loaded;
+    the arguments are already in the unit, and asking for them again is why the
+    remedy used to refuse. launchd gets `bootstrap gui/<uid>`; systemd gets
+    `--user enable --now`. The file's bytes are not touched.
+    """
+    found = host()
+    kind = kind or found.kind
+    path = installed_unit_path(name, kind=kind)
+    _load_existing(name, kind, path)
+    return _status_after_load(name, kind)
+
+
+def _status_after_load(name: str, kind: str) -> Status:
+    """Whether the job stayed up, read after it has had a chance to exit or settle.
+
+    Accepted is not running. `until` exits when there is no ready work, and a read
+    in the same instant as the load is a coin flip (GRPH-1312).
+    """
+    time.sleep(SETTLE)
+    state = status(name, kind=kind)
+    waited = 0.0
+    while state.running and waited < HEALTH_WINDOW:
+        time.sleep(HEALTH_POLL)
+        waited += HEALTH_POLL
+        state = status(name, kind=kind)
+    return state
+
+
+def _load_existing(name: str, kind: str, path: Path) -> str:
+    """Hand the supervisor the unit file that is already written. Do not render another."""
+    if kind == "launchd":
+        domain = _launchd_gui_domain()
+        if domain is None:
+            raise Refused(
+                "launchd domain needs a numeric uid; os.getuid is absent, so this unit "
+                "cannot be bootstrapped")
+        # The plist path is the job. No bootout first: this is the not-loaded case,
+        # and bootout of a label launchd does not have is not the load.
+        code, out = _run(["launchctl", "bootstrap", domain, str(path)])
+        if code != 0:
+            # A job that is already loaded answers non-zero. One retry covers the
+            # asynchronous gap the installer already knows; status is the verdict.
+            code, out = _run(["launchctl", "bootstrap", domain, str(path)])
+        return out
+    if kind == "schtasks":
+        tn = task_name(name)
+        # `/Create /F` re-registers the task from the XML already on disk. It does
+        # not write that file; a `/Change` of a task the scheduler has dropped
+        # would refuse, which is the not-loaded case again.
+        code, out = _run(["schtasks", "/Create", "/TN", tn, "/XML", str(path), "/F"])
+        if code != 0:
+            return out
+        _code, run_out = _run(["schtasks", "/Run", "/TN", tn])
+        return (out + ("\n" + run_out if run_out else "")).strip()
+    # A unit file systemd has dropped (LoadState=not-found) is invisible to
+    # `enable` until the user manager re-reads the directory. That re-read is not
+    # a rewrite of the file.
+    _run(["systemctl", "--user", "daemon-reload"])
+    _code, out = _run(["systemctl", "--user", "enable", "--now", unit_name(name)])
+    return out
+
+
 def install(plan: Plan, api_key: str) -> Installed:
     """Write, load, and then ask the supervisor whether it is actually running.
 
@@ -956,20 +1047,9 @@ def install(plan: Plan, api_key: str) -> Installed:
         detail = _load_launchd(plan)
     else:
         detail = _load_systemd(plan)
-    # A beat before asking. `until` reaches the lock, the server and its first decision in
-    # well under a second, so an immediate read is a coin flip between "running" and whatever
-    # it became — and the walk that found this got "running" from `install` and "NOT running"
-    # from `status` one command later, describing the same healthy service two ways.
-    time.sleep(SETTLE)
-    state = status(plan.name, kind=plan.kind)
-    # GRPH-1312. One reading is a coin flip for a job that refuses at startup: it reads
-    # "running" and is gone a second later. Keep watching for the health window; a job that
-    # exits inside it is reported with its exit code and its err log's reason.
-    waited = 0.0
-    while state.running and waited < HEALTH_WINDOW:
-        time.sleep(HEALTH_POLL)
-        waited += HEALTH_POLL
-        state = status(plan.name, kind=plan.kind)
+    # A beat before asking, then the health window (GRPH-1312). One reading is a coin flip
+    # for a job that refuses at startup: it reads "running" and is gone a second later.
+    state = _status_after_load(plan.name, plan.kind)
     if plan.kind == "systemd" and linger() is False:
         warnings.append(
             "this user has no linger, so systemd stops your services when your last session "

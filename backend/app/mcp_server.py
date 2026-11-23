@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import datetime as _dt
 import json
 import secrets
 import time
@@ -4967,10 +4968,20 @@ def _attach_resolved_project(result: Any, scope: dict) -> Any:
                                      "none — pass project_id to choose"}
 
 
+def _json_default(o: Any) -> Any:
+    """GRPH-1871: a service result may carry datetimes (e.g. an observing rule's `since`);
+    encode them as ISO 8601 at the MCP edge rather than 500 the whole call."""
+    if isinstance(o, (_dt.datetime, _dt.date)):
+        return o.isoformat()
+    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
+
+
 def _success(id_: Any, result: Any, modern: bool = False) -> dict:
     """Wrap a tool result. Objects are also returned as `structuredContent` (typed,
     no JSON-in-a-text-block); text mirrors it for back-compat (#8)."""
-    payload: dict[str, Any] = {"content": [{"type": "text", "text": json.dumps(result)}]}
+    text = json.dumps(result, default=_json_default)
+    result = json.loads(text)  # structuredContent must be the same JSON-safe value
+    payload: dict[str, Any] = {"content": [{"type": "text", "text": text}]}
     if isinstance(result, dict):
         payload["structuredContent"] = result
     if modern:
