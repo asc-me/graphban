@@ -9,9 +9,12 @@ Checks run in a throwaway detached worktree, so the repo's own checkout is never
 from __future__ import annotations
 
 import os
+import posixpath
 import shlex
 import subprocess
+import sys
 import tempfile
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -57,6 +60,66 @@ def split_command(command: str, *, windows: bool | None = None) -> list[str]:
     return out
 
 
+def component_dir(tree: Path, tests: tuple[str, ...] | list[str]) -> str:
+    """The nearest ancestor directory of the test files (repo-relative, "" for the root) that
+    holds a `pyproject.toml` or `package.json` in `tree`; the root when none does."""
+    for test in tests:
+        d = posixpath.dirname(test.replace("\\", "/"))
+        while True:
+            if (tree / d / "pyproject.toml").is_file() or (tree / d / "package.json").is_file():
+                return d
+            if not d:
+                break
+            d = posixpath.dirname(d)
+    return ""
+
+
+def load_overrides(repo: Path) -> list[dict]:
+    """`[[check]]` rows (prefix, cwd, command) of the repo's `.gbfleet/bench.toml`."""
+    try:
+        data = tomllib.loads((repo / ".gbfleet" / "bench.toml").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    rows = data.get("check")
+    return [r for r in rows if isinstance(r, dict) and "prefix" in r] if isinstance(rows, list) else []
+
+
+def _interpreter(repo: Path, comp: str) -> str:
+    for rel in (".venv/bin/python", ".venv/Scripts/python.exe"):
+        cand = repo / comp / rel
+        if cand.is_file():
+            return str(cand)
+    if (repo / comp / "uv.lock").is_file():
+        return "uv run python"
+    return sys.executable
+
+
+def resolve_check(repo: Path, tree: Path, check: Check) -> tuple[list[str], str]:
+    """The argv and the working directory (repo-relative) a check runs with.
+
+    A `.gbfleet/bench.toml` `[[check]]` whose `prefix` starts the first test path wins.
+    Otherwise the working directory is the tests' component directory, test paths are made
+    relative to it, and a bare `python` is the component's `.venv` interpreter, else
+    `uv run python` when it has `uv.lock`, else this process's interpreter.
+    """
+    first = check.tests[0].replace("\\", "/") if check.tests else ""
+    for row in load_overrides(repo):
+        if first.startswith(str(row["prefix"])):
+            cwd = str(row.get("cwd") or "").strip("/")
+            command = str(row.get("command") or check.command)
+            break
+    else:
+        cwd, command = component_dir(tree, check.tests), check.command
+    rel = []
+    for t in check.tests:
+        t = t.replace("\\", "/")
+        rel.append(posixpath.relpath(t, cwd) if cwd else t)
+    argv = split_command(command)
+    if argv and argv[0] in ("python", "python3"):
+        argv = [*shlex.split(_interpreter(repo, cwd)), *argv[1:]]
+    return [*argv, *rel], cwd
+
+
 PASS, FAIL, BAD_REF, UNRUNNABLE = "pass", "fail", "bad_ref", "check_unrunnable"
 BAD_OVERLAY, TIMED_OUT = "bad_overlay", "check_timed_out"
 # Outcomes that say nothing about the work: none of them may count as a red or green check.
@@ -83,9 +146,9 @@ def run_check(repo: Path, ref: str, check: Check, overlay: str = "") -> tuple[st
                 if laid.returncode != 0:
                     return BAD_OVERLAY, f"cannot lay tests from {overlay}: {laid.stderr.strip()}"
             # argv, not a shell: the command is split like a shell would, with no expansion.
-            argv = [*split_command(check.command), *check.tests]
+            argv, cwd = resolve_check(repo, tree, check)
             try:
-                done = subprocess.run(argv, check=False, cwd=tree, capture_output=True,
+                done = subprocess.run(argv, check=False, cwd=tree / cwd, capture_output=True,
                                       text=True, timeout=CHECK_TIMEOUT_S)
             except FileNotFoundError as exc:
                 return UNRUNNABLE, f"cannot run check: {exc}"
