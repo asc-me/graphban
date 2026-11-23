@@ -160,3 +160,26 @@ def test_mcp_bench_round_trip(client, env):
     assert res["structuredContent"]["run_id"] == run["structuredContent"]["id"]
     bad = call({"action": "post_result", "project_id": env["proj"], "body": {}})
     assert bad.get("isError")
+
+
+def test_open_run_returns_a_scratch_scoped_key_revoked_on_post(client, env):
+    out = _open(client, env).json()
+    key = out["api_key"]
+    h = {"X-API-Key": key}
+    code = out["seats"][0]["enrolment_code"]
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+        "name": "register_agent", "arguments": {"enrolment_code": code}}}
+    res = client.post("/api/mcp", json=body, headers=h).json()["result"]
+    assert not res.get("isError"), res
+    assert res["structuredContent"]["project_id"] == out["project_id"]
+    from app.security.apikey import verify_api_key
+    with SessionLocal() as db:
+        assert verify_api_key(db, key) is not None
+    src = client.get(f"/api/items?project_id={env['proj']}", headers=h)
+    assert src.status_code in (401, 403, 404), src.text
+    assert _post(client, env, run_id=out["id"]).status_code == 201
+    from app.security.apikey import verify_api_key
+    with SessionLocal() as db:
+        assert verify_api_key(db, key) is None
+    again = client.post("/api/mcp", json=body, headers=h)
+    assert again.status_code == 401
