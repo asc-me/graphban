@@ -78,7 +78,7 @@ class FakeServer:
         return {"id": "bnb_1", **body}
 
 
-def drive(repo, tmp_path, tasks, server, behaviour, cut_at="base", **kw):
+def drive(repo, tmp_path, tasks, server, behaviour, cut_at="base", running=False, **kw):
     plan = R.build_plan(tasks, adapter="fake:m", model="m", suite_id="s", suite_version="1")
     seen = {}
 
@@ -92,7 +92,7 @@ def drive(repo, tmp_path, tasks, server, behaviour, cut_at="base", **kw):
             p.name for p in (tree.path / "tests").glob("*.py")),
             "old": (tree.path / "tests/test_old.py").read_text()}
         behaviour(tree, t)
-        return SimpleNamespace(running=False)
+        return SimpleNamespace(running=running)
 
     def reap(tree):
         subprocess.run(["git", "-C", str(tree.path), "add", "-A"], check=True)
@@ -464,3 +464,68 @@ def test_no_branch_fails_e1_and_excludes_diff_leaves(repo, tmp_path):
     drive(repo, tmp_path, [leafy(repo)], server, nothing)
     assert leaves_of(server)["E1"] == "fail"
     assert leaves_of(server)["A1"] == "fail"
+    assert leaves_of(server)["E2"] == "excluded" and leaves_of(server)["H5"] == "excluded"
+
+
+
+def timing_out(repo, tmp_path, server, behaviour, caps=("A1", "E1", "E2", "H5")):
+    ticks = iter(range(0, 10_000, 100))
+    drive(repo, tmp_path, [leafy(repo, caps)], server, behaviour, running=True,
+          clock=lambda: next(ticks), sleep=lambda s: None)
+    assert server.posted["outcomes"][0]["outcome"] == "timed_out"
+    return server.posted["outcomes"][0]["leaves"]
+
+
+def test_timed_out_child_with_commits_is_measured_on_its_diff(repo, tmp_path):
+    leaves = timing_out(repo, tmp_path, FakeServer(["t1"]), solve)
+    assert {k: v["verdict"] for k, v in leaves.items()} == {
+        "A1": "excluded", "E1": "pass", "E2": "pass", "H5": "pass"}
+    assert leaves["A1"]["reason"]
+
+
+def test_timed_out_child_outside_touchpoints_fails_h5(repo, tmp_path):
+    def behave(tree, t):
+        (tree.path / "other.py").write_text("x = 1\n")
+
+    leaves = timing_out(repo, tmp_path, FakeServer(["t1"]), behave)
+    assert leaves["H5"]["verdict"] == "fail" and leaves["E1"]["verdict"] == "pass"
+
+
+def test_timed_out_child_without_commits_fails_e1_and_excludes_diff_leaves(repo, tmp_path):
+    leaves = timing_out(repo, tmp_path, FakeServer(["t1"]), nothing)
+    assert {k: v["verdict"] for k, v in leaves.items()} == {
+        "A1": "excluded", "E1": "fail", "E2": "excluded", "H5": "excluded"}
+
+
+MINE = "import mod\n\n\ndef test_mine():\n    assert mod.ok()\n"
+
+
+def c1_of(repo, tmp_path, test_body):
+    def behave(tree, t):
+        solve(tree, t)
+        (tree.path / "tests/test_mine.py").write_text(test_body)
+
+    server = FakeServer(["t1"])
+    drive(repo, tmp_path, [leafy(repo, ("A1", "C1"))], server, behave)
+    assert server.posted["outcomes"][0]["outcome"] == "check_green"
+    return server.posted["outcomes"][0]["leaves"]["C1"]
+
+
+def test_c1_passes_a_test_green_with_the_change_and_red_without(repo, tmp_path):
+    assert c1_of(repo, tmp_path, MINE)["verdict"] == "pass"
+
+
+def test_c1_fails_a_test_that_is_red_with_the_change_in_place(repo, tmp_path):
+    c1 = c1_of(repo, tmp_path, "import nosuchmod\n\n\ndef test_mine():\n    assert True\n")
+    assert c1["verdict"] == "fail" and "in place" in c1["reason"]
+
+
+def test_c1_fails_a_test_that_still_passes_with_the_change_reverted(repo, tmp_path):
+    c1 = c1_of(repo, tmp_path, "def test_mine():\n    assert True\n")
+    assert c1["verdict"] == "fail" and "reverted" in c1["reason"]
+
+
+def test_c1_excluded_when_the_child_wrote_no_test(repo, tmp_path):
+    server = FakeServer(["t1"])
+    drive(repo, tmp_path, [leafy(repo, ("C1",))], server, solve)
+    assert server.posted["outcomes"][0]["leaves"]["C1"]["verdict"] == "excluded"

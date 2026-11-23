@@ -15,7 +15,7 @@ import re
 import subprocess
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
@@ -169,8 +169,21 @@ def diff_paths(repo: Path, branch: str, base: str) -> list[str] | None:
     return None if done.returncode != 0 else [p for p in done.stdout.splitlines() if p]
 
 
+def _run_tests(repo: Path, tree: Path, task: Task, tests: list[str]) -> tuple[bool | None, str]:
+    """Run the child's own tests in `tree` the way the task's check runs: True green,
+    False red, None when they could not be run (with the reason)."""
+    argv, cwd = validate_mod.resolve_check(repo, tree, replace(task.check, tests=tuple(tests)))
+    try:
+        done = subprocess.run(argv, check=False, cwd=tree / cwd, capture_output=True, text=True,
+                              timeout=validate_mod.CHECK_TIMEOUT_S, env=validate_mod.check_env(tree / cwd))
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return None, f"cannot run the child's test: {type(exc).__name__}"
+    return done.returncode == 0, ""
+
+
 def _c1(repo: Path, branch: str, task: Task, paths: list[str]) -> dict:
-    """C1: the child's own test fails once its non-test change is reverted."""
+    """C1: the child's own test passes with its change and fails once its non-test change is
+    reverted. A test that is red on the child's own branch measures nothing it wrote."""
     tests = [p for p in paths if _TEST_PATH.search(p)]
     source = [p for p in paths if not _TEST_PATH.search(p)]
     if not tests or not source or task.check is None:
@@ -180,37 +193,48 @@ def _c1(repo: Path, branch: str, task: Task, paths: list[str]) -> dict:
         if _git(repo, "worktree", "add", "--detach", str(tree), branch).returncode != 0:
             return _verdict(None, f"cannot check out {branch}")
         try:
+            present = [t for t in tests if (tree / t).is_file()]
+            if not present:
+                return _verdict(None, "child's tests are all deletions")
+            green, why = _run_tests(repo, tree, task, present)
+            if green is None:
+                return _verdict(None, why)
+            if not green:
+                return _verdict(False, "child's test fails with its change in place")
             for rel in source:
                 if _git(tree, "cat-file", "-e", f"{task.base_sha}:{rel}").returncode == 0:
                     _git(tree, "checkout", task.base_sha, "--", rel)
                 else:
                     (tree / rel).unlink(missing_ok=True)
-            try:
-                done = subprocess.run([*validate_mod.split_command(task.check.command), *tests],
-                                      check=False, cwd=tree, capture_output=True, text=True,
-                                      timeout=validate_mod.CHECK_TIMEOUT_S)
-            except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-                return _verdict(None, f"cannot run the child's test: {type(exc).__name__}")
-            return _verdict(done.returncode != 0, "" if done.returncode != 0
+            green, why = _run_tests(repo, tree, task, present)
+            if green is None:
+                return _verdict(None, why)
+            return _verdict(not green, "" if not green
                             else "child's test still passes with its change reverted")
         finally:
             _git(repo, "worktree", "remove", "--force", str(tree))
 
 
-def leaf_verdicts(task: Task, repo: Path, branch: str, outcome: str) -> dict:
-    """A verdict for every leaf the task claims, by that leaf's own predicate (GRPH-1877)."""
+def leaf_verdicts(task: Task, repo: Path, branch: str, outcome: str, *, commits: bool = True) -> dict:
+    """A verdict for every leaf the task claims, by that leaf's own predicate (GRPH-1877).
+
+    `commits` is whether the child's branch carries any commit beyond the base. Without one
+    there is no branch (E1 fails) and no diff to measure E2, H5 or C1 on (excluded).
+    """
     from ..touchpoints import undeclared
 
     registered = outcome not in ("never_registered", "harness_error")
-    paths = diff_paths(repo, branch, task.base_sha) if registered else None
+    if outcome == "no_branch":
+        commits = False
+    paths = diff_paths(repo, branch, task.base_sha) if registered and commits else None
     out: dict[str, dict] = {}
     for leaf in task.capabilities:
         if leaf in CHECK_LEAVES:
             ok = (outcome == "check_green") if outcome in ("check_green", "check_red", "no_branch") else None
             out[leaf] = _verdict(ok, "" if ok is not None else f"check not evaluated ({outcome})")
         elif leaf == "E1":
-            out[leaf] = _verdict(registered and outcome != "no_branch" if registered else None,
-                                 "" if registered else outcome)
+            out[leaf] = _verdict(commits if registered else None,
+                                 "" if registered and commits else ("no branch" if registered else outcome))
         elif paths is None:
             out[leaf] = _verdict(None, f"no branch diff to measure ({outcome})")
         elif leaf == "E2":
@@ -288,7 +312,10 @@ def _run_task(task: Task, code: str, *, repo: Path, scratch, start: Start, limit
     wall = clock() - started
     reap(tree)
     if timed_out:
-        return Result(task.id, "timed_out", wall_seconds=wall)
+        # The check never ran (A-leaves excluded); E1/E2/H5/C1 are measured on what it pushed.
+        return Result(task.id, "timed_out", "child ran past its wall clock", wall_seconds=wall,
+                      leaves=leaf_verdicts(task, repo, tree.branch, "timed_out",
+                                           commits=_commits_beyond(repo, tree.branch, task.base_sha) > 0))
     if _commits_beyond(repo, tree.branch, task.base_sha) == 0:
         return Result(task.id, "no_branch", wall_seconds=wall,
                       leaves=leaf_verdicts(task, repo, tree.branch, "no_branch"))
