@@ -84,14 +84,18 @@ def load_overrides(repo: Path) -> list[dict]:
     return [r for r in rows if isinstance(r, dict) and "prefix" in r] if isinstance(rows, list) else []
 
 
-def _interpreter(repo: Path, comp: str) -> str:
+def _interpreter(repo: Path, comp: str) -> list[str]:
+    """argv prefix for a bare `python`. A list, never re-split: a Windows path keeps its
+    backslashes and a path with spaces stays one argument. Absolute: the check runs from the
+    component directory of a throwaway tree, so a path relative to `--repo .` would miss."""
+    repo = repo.resolve()
     for rel in (".venv/bin/python", ".venv/Scripts/python.exe"):
         cand = repo / comp / rel
         if cand.is_file():
-            return str(cand)
+            return [str(cand)]
     if (repo / comp / "uv.lock").is_file():
-        return "uv run python"
-    return sys.executable
+        return ["uv", "run", "python"]
+    return [sys.executable]
 
 
 def resolve_check(repo: Path, tree: Path, check: Check) -> tuple[list[str], str]:
@@ -116,8 +120,19 @@ def resolve_check(repo: Path, tree: Path, check: Check) -> tuple[list[str], str]
         rel.append(posixpath.relpath(t, cwd) if cwd else t)
     argv = split_command(command)
     if argv and argv[0] in ("python", "python3"):
-        argv = [*shlex.split(_interpreter(repo, cwd)), *argv[1:]]
+        argv = [*_interpreter(repo, cwd), *argv[1:]]
     return [*argv, *rel], cwd
+
+
+def check_env(comp: Path) -> dict[str, str]:
+    """The check's environment. A src-layout component (`<comp>/src`) goes first on
+    PYTHONPATH: the repo's venv often holds an editable install pointing at the repo's own
+    checkout, which would otherwise be tested instead of the tree at the ref."""
+    env = dict(os.environ)
+    src = comp / "src"
+    if src.is_dir():
+        env["PYTHONPATH"] = os.pathsep.join(p for p in (str(src), env.get("PYTHONPATH", "")) if p)
+    return env
 
 
 PASS, FAIL, BAD_REF, UNRUNNABLE = "pass", "fail", "bad_ref", "check_unrunnable"
@@ -149,7 +164,8 @@ def run_check(repo: Path, ref: str, check: Check, overlay: str = "") -> tuple[st
             argv, cwd = resolve_check(repo, tree, check)
             try:
                 done = subprocess.run(argv, check=False, cwd=tree / cwd, capture_output=True,
-                                      text=True, timeout=CHECK_TIMEOUT_S)
+                                      text=True, timeout=CHECK_TIMEOUT_S,
+                                      env=check_env(tree / cwd))
             except FileNotFoundError as exc:
                 return UNRUNNABLE, f"cannot run check: {exc}"
             except subprocess.TimeoutExpired:

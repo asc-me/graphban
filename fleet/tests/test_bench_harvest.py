@@ -186,26 +186,36 @@ def test_single_parent_commit_without_pr_suffix_is_not_scanned(repo):
     assert sha not in [d.merge_sha for d in found.dropped]
 
 
-def _component_repo(repo: Path) -> str:
-    """A `svc/` component with its own pyproject and a fake venv whose python records its cwd."""
+SVC_FILES = {"svc/pyproject.toml": "[project]\nname='svc'\n", "svc/.gitignore": ".venv\n"}
+SVC_MERGE = {"svc/svcmod.py": "def ok():\n    return True\n",
+             "svc/tests/test_svc.py": GOOD_TEST.replace("goodmod", "svcmod")}
+# `python -m pytest` puts the cwd on sys.path, so svc/tests/test_svc.py imports `svcmod`
+# only when the check runs from svc/ — from the repo root it is red at the merge too.
+SVC_COMMAND = "python -m pytest -q -p no:cacheprovider -p no:randomly"
+
+
+def _harvest_svc(repo: Path, monkeypatch) -> list:
+    _commit_on_main(repo, SVC_FILES, "component")
+    _commit_on_main(repo, SVC_MERGE, "Add svc (#13)")
+    monkeypatch.setattr(H, "PY_COMMAND", SVC_COMMAND)
+    found = H.harvest(repo, since="")
+    return [c for c in found.candidates if c.title.startswith("Add svc")]
+
+
+def test_component_in_subdirectory_is_harvested_red_to_green(repo, monkeypatch):
+    cand = _harvest_svc(repo, monkeypatch)
+    assert cand and cand[0].tests == ["svc/tests/test_svc.py"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fake venv interpreter is a sh script")
+def test_component_in_subdirectory_runs_from_its_own_venv(repo, monkeypatch, tmp_path):
     venv = repo / "svc" / ".venv" / "bin"
     venv.mkdir(parents=True)
     py = venv / "python"
     py.write_text(f"#!/bin/sh\npwd > \"$GB_CWD\"\nexec {shlex.quote(sys.executable)} \"$@\"\n")
     py.chmod(0o755)
-    return _commit_on_main(repo, {"svc/pyproject.toml": "[project]\nname='svc'\n",
-                                  "svc/.gitignore": ".venv\n"}, "component")
-
-
-def test_component_in_subdirectory_runs_from_its_own_venv(repo, monkeypatch, tmp_path):
-    _component_repo(repo)
     monkeypatch.setenv("GB_CWD", str(tmp_path / "cwd"))
-    # svc/tests/test_svc.py imports `svcmod`, which only resolves with cwd == svc/ (rootdir on path).
-    _commit_on_main(repo, {"svc/svcmod.py": "def ok():\n    return True\n",
-                           "svc/tests/test_svc.py": GOOD_TEST.replace("goodmod", "svcmod")}, "Add svc (#13)")
-    monkeypatch.setattr(H, "PY_COMMAND", "python -m pytest -q -p no:cacheprovider --rootdir=. -p no:randomly")
-    found = H.harvest(repo, since="")
-    cand = [c for c in found.candidates if c.title.startswith("Add svc")]
+    cand = _harvest_svc(repo, monkeypatch)
     assert cand and cand[0].tests == ["svc/tests/test_svc.py"]
     assert (tmp_path / "cwd").read_text().strip().endswith("/svc")
 
@@ -213,7 +223,7 @@ def test_component_in_subdirectory_runs_from_its_own_venv(repo, monkeypatch, tmp
 def test_bench_toml_override_wins_over_discovery(repo):
     (repo / ".gbfleet").mkdir()
     (repo / ".gbfleet" / "bench.toml").write_text(
-        f'[[check]]\nprefix = "svc/"\ncwd = "svc"\ncommand = "{sys.executable} -m pytest -q"\n')
+        f"[[check]]\nprefix = 'svc/'\ncwd = 'svc'\ncommand = '{sys.executable} -m pytest -q'\n")
     from gbfleet.bench import validate as V
     tree = repo
     argv, cwd = V.resolve_check(repo, tree, V.Check("python -m pytest -q", ("svc/tests/test_x.py",)))
@@ -228,3 +238,33 @@ def test_discovery_uses_nearest_manifest_and_relative_paths(repo):
     assert cwd == "svc" and argv[-1] == "tests/test_x.py" and argv[0] == sys.executable
     argv, cwd = V.resolve_check(repo, repo, V.Check("python -m pytest -q", ("tests/test_good.py",)))
     assert cwd == "" and argv[-1] == "tests/test_good.py"
+
+
+def test_venv_interpreter_path_is_one_argument(tmp_path):
+    # A path with a space (and, on Windows, backslashes) must reach argv unsplit.
+    root = tmp_path / "my repo"
+    (root / "svc" / ".venv" / "bin").mkdir(parents=True)
+    (root / "svc" / "pyproject.toml").write_text("")
+    interp = root / "svc" / ".venv" / "bin" / "python"
+    interp.write_text("")
+    from gbfleet.bench import validate as V
+    argv, cwd = V.resolve_check(root, root, V.Check("python -m pytest -q", ("svc/tests/test_x.py",)))
+    assert argv == [str(interp), "-m", "pytest", "-q", "tests/test_x.py"] and cwd == "svc"
+
+
+def test_relative_repo_still_finds_the_component_venv(tmp_path, monkeypatch):
+    # `--repo .`: the check runs from the throwaway tree, so the interpreter must be absolute.
+    (tmp_path / "svc" / ".venv" / "bin").mkdir(parents=True)
+    (tmp_path / "svc" / "pyproject.toml").write_text("")
+    (tmp_path / "svc" / ".venv" / "bin" / "python").write_text("")
+    monkeypatch.chdir(tmp_path)
+    from gbfleet.bench import validate as V
+    argv, _ = V.resolve_check(Path("."), tmp_path, V.Check("python -m pytest", ("svc/tests/test_x.py",)))
+    assert Path(argv[0]).is_absolute() and Path(argv[0]) == (tmp_path / "svc/.venv/bin/python").resolve()
+
+
+def test_src_layout_component_tests_the_tree_not_an_editable_install(tmp_path):
+    from gbfleet.bench import validate as V
+    (tmp_path / "src").mkdir()
+    assert V.check_env(tmp_path)["PYTHONPATH"].split(__import__("os").pathsep)[0] == str(tmp_path / "src")
+    assert V.check_env(tmp_path / "nosrc").get("PYTHONPATH") == __import__("os").environ.get("PYTHONPATH")
