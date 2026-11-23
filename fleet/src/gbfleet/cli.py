@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -515,7 +516,10 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     bench_val.add_argument("manifest", help="the suite manifest (TOML)")
-    bench_val.add_argument("--repo", default=".", help="the suite's git repository (default: here)")
+    bench_val.add_argument("--repo", default=None,
+                           help="the suite's git repository (default: here; for the shipped "
+                                "template, a fixture repo built for this check)")
+    bench_do.add_parser("list", help="name the shipped template suite, its version and task count")
     bench_har = bench_do.add_parser(
         "harvest",
         help="propose candidate tasks from the repo's merge history (writes nothing to the server)",
@@ -1668,6 +1672,7 @@ def _bench_run(args: argparse.Namespace) -> int:
     tasks: list = []
     counts: dict[str, int] = {}
     ids: dict[str, str] = {}
+    tpl = None
     if args.suite in ("template", "all"):
         tpl = run_mod.template_suite()
         got = list(tpl.tasks) if tpl else []
@@ -1706,14 +1711,35 @@ def _bench_run(args: argparse.Namespace) -> int:
     except AdapterError as exc:
         print(f"gbfleet bench run: {exc}", file=sys.stderr)
         return 2
-    repo = repo_root(Path(args.repo))
-    workspace = Path(args.workspace) if args.workspace else repo.parent / f"{repo.name}-bench"
+    # Template tasks live in the shipped fixture repo, built into the workspace; only
+    # repo-suite tasks need the user's repo (PRD-98 section 2: a template run needs no code).
+    template_ids = {id(t) for t in (tpl.tasks if tpl else ())}
+    needs_user = any(id(p.task) not in template_ids for p in plan.tasks)
+    user_repo = repo_root(Path(args.repo)) if needs_user else None
+    if args.workspace:
+        workspace = Path(args.workspace)
+    elif user_repo is not None:
+        workspace = user_repo.parent / f"{user_repo.name}-bench"
+    else:
+        workspace = Path(tempfile.gettempdir()) / "gbfleet-bench"
+    fixture_repo = None
+    if any(id(p.task) in template_ids for p in plan.tasks):
+        try:
+            fixture_repo = run_mod.template_fixture(workspace)
+        except (OSError, RuntimeError) as exc:
+            print(f"gbfleet bench run: cannot build the template fixture: {exc}", file=sys.stderr)
+            return 1
+
+    def repo_for(task) -> Path:
+        return fixture_repo if id(task) in template_ids else user_repo
+
+    repo = user_repo or fixture_repo
     wave = "bench"
     limits = Limits(max_workers=1, child_wall_clock=args.child_wall_clock,
                     registration_window=args.registration_window)
 
     def cut(task):
-        return sup._tree_for(repo, workspace, wave, "".join(
+        return sup._tree_for(repo_for(task), workspace, wave, "".join(
             c if c.isalnum() else "-" for c in task.id), base=task.base_sha)
 
     def start(tree, code, task, scratch):
@@ -1734,7 +1760,7 @@ def _bench_run(args: argparse.Namespace) -> int:
         plan, repo=repo, client=client,
         open_scratch=lambda run: Graphban(args.server, run_mod.scratch_credential(run),
                                           project_id=run["project_id"]),
-        start=start, cut=cut, limits=limits, stop=stop, reap=reap, wave=wave)
+        start=start, cut=cut, limits=limits, stop=stop, reap=reap, wave=wave, repo_for=repo_for)
     for r in posted.get("results", []):
         print(f"{r.task_id}: {r.outcome}" + (f" ({r.detail})" if r.detail else ""))
     print(f"posted {len(posted.get('results', []))} outcome(s) for {args.adapter}")
@@ -1773,6 +1799,14 @@ def _bench(args: argparse.Namespace) -> int:
         return _bench_adopt(args)
     if args.act == "compare":
         return _bench_compare(args)
+    if args.act == "list":
+        try:
+            tpl = suite_mod.load(suite_mod.template_manifest())
+        except suite_mod.SuiteError as exc:
+            print(f"gbfleet bench list: {exc}", file=sys.stderr)
+            return 1
+        print(f"template: {tpl.id} v{tpl.version} ({len(tpl.tasks)} tasks)")
+        return 0
     if args.act != "validate":
         print("gbfleet bench: say what to do. Try `gbfleet bench validate MANIFEST`.", file=sys.stderr)
         return 2
@@ -1781,10 +1815,24 @@ def _bench(args: argparse.Namespace) -> int:
     except suite_mod.SuiteError as exc:
         print(f"gbfleet bench validate: {exc}", file=sys.stderr)
         return 1
-    verdicts = validate_mod.validate(loaded, Path(args.repo))
+    problems = suite_mod.leaf_floor_problems(loaded) if loaded.id == suite_mod.TEMPLATE_ID else []
+    for line in problems:
+        print(f"gbfleet bench validate: {line}", file=sys.stderr)
+    if args.repo is None and loaded.id == suite_mod.TEMPLATE_ID:
+        from .bench.template import fixture
+
+        with tempfile.TemporaryDirectory(prefix="gbfleet-template-") as tmp:
+            try:
+                verdicts = validate_mod.validate(loaded, fixture.build(Path(tmp) / "repo"))
+            except (OSError, RuntimeError) as exc:
+                print(f"gbfleet bench validate: cannot build the template fixture: {exc}",
+                      file=sys.stderr)
+                return 1
+    else:
+        verdicts = validate_mod.validate(loaded, Path(args.repo or "."))
     for v in verdicts:
         print(v.line())
-    return 0 if all(v.ok for v in verdicts) else 1
+    return 0 if all(v.ok for v in verdicts) and not problems else 1
 
 
 def _grid_baseline(b: dict | None) -> str:
