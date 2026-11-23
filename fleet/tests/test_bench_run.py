@@ -189,8 +189,8 @@ class CliServer:
         return {"version": 3, "tasks": self.rows}
 
 
-def row(repo):
-    return {"id": "t1", "kind": "build", "base_sha": base_of(repo), "title": "t", "description": "d",
+def row(repo, tid="t1"):
+    return {"id": tid, "kind": "build", "base_sha": base_of(repo), "title": "t", "description": "d",
             "capabilities": ["B7"], "size_band": "S", "reference": ref_of(repo),
             "check": {"command": "pytest", "tests": ["tests/test_new.py"]}}
 
@@ -268,8 +268,10 @@ def test_cli_children_and_roster_use_the_scratch_key_not_the_source_key(repo, tm
     clients: list = []
     seats: list = []
     slots: list = []
-    source = KeyedServer(["t1"], key="scratch-key")
-    source.get_suite = lambda project_id: {"version": 1, "tasks": [row(repo)]}
+    source = KeyedServer(["avg-clean", "take-clean"], key="scratch-key")
+    # Dashed ids sharing a last segment: keyed on that segment, both would log to `-clean`.
+    source.get_suite = lambda project_id: {"version": 1, "tasks": [row(repo, "avg-clean"),
+                                                                    row(repo, "take-clean")]}
 
     def graphban(server, key, project_id=None, **kw):
         c = SimpleNamespace(api_key=key, project_id=project_id)
@@ -296,12 +298,14 @@ def test_cli_children_and_roster_use_the_scratch_key_not_the_source_key(repo, tm
     monkeypatch.setattr(wt_mod, "reap_held", lambda tree, vendor: None)
     assert run_cli("--suite", "repo", "--adapter", "claude:haiku", "--repo", str(repo),
                    "--workspace", str(tmp_path / "ws")) == 0
-    [(seat, roster)] = seats
-    assert seat.api_key == "scratch-key" and seat.code == "C-t1"
-    assert roster.api_key == "scratch-key" and roster.project_id == "scratch"
-    assert source.posted["outcomes"][0]["outcome"] == "never_registered"
-    # GRPH-1883: the log slot is the whole task id, never its last dash segment.
-    assert slots == ["t1"]
+    assert [s.code for s, _ in seats] == ["C-avg-clean", "C-take-clean"]
+    for seat, roster in seats:
+        assert seat.api_key == "scratch-key"
+        assert roster.api_key == "scratch-key" and roster.project_id == "scratch"
+    assert [o["outcome"] for o in source.posted["outcomes"]] == ["never_registered"] * 2
+    # GRPH-1883: the log slot is the whole task id, never its last dash segment, so two
+    # tasks ending in the same segment log to distinct directories.
+    assert slots == ["avg-clean", "take-clean"]
 
 
 # --- the template fixture (bounce of attempt 2) --------------------------------------------
