@@ -11,9 +11,11 @@ through `review.run_review_task` with a reviewer adapter (GRPH-P98 section 8).
 
 from __future__ import annotations
 
+import re
 import subprocess
+import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
@@ -146,6 +148,107 @@ class Result:
     detail: str = ""
     tokens: int | None = None
     wall_seconds: float | None = None
+    #: leaf -> {"verdict": pass | fail | excluded, "reason": str}; None when not measured.
+    leaves: dict | None = None
+
+
+#: Files a build child must not leave in its diff (E2); the server's `_STATE_FILES`.
+STATE_FILES = ("agents.md", "claude.md", ".gbfleet-instruction", ".gitignore", ".cursor/mcp.json",
+               ".grok/config.toml", ".grok/mcp.json")
+CHECK_LEAVES = ("A1", "A3", "A5", "C2")
+_TEST_PATH = re.compile(r"(^|/)(tests?|__tests__|spec)(/|$)|(^|/)test_[^/]+$|_test\.py$|\.(test|spec)\.(ts|tsx|js)$",
+                        re.I)
+
+
+def _verdict(ok: bool | None, reason: str = "") -> dict:
+    return {"verdict": "excluded" if ok is None else ("pass" if ok else "fail"), "reason": reason}
+
+
+def diff_paths(repo: Path, branch: str, base: str) -> list[str] | None:
+    done = _git(repo, "diff", "--name-only", f"{base}...{branch}")
+    return None if done.returncode != 0 else [p for p in done.stdout.splitlines() if p]
+
+
+def _run_tests(repo: Path, tree: Path, task: Task, tests: list[str]) -> tuple[bool | None, str]:
+    """Run the child's own tests in `tree` the way the task's check runs: True green,
+    False red, None when they could not be run (with the reason)."""
+    argv, cwd = validate_mod.resolve_check(repo, tree, replace(task.check, tests=tuple(tests)))
+    try:
+        done = subprocess.run(argv, check=False, cwd=tree / cwd, capture_output=True, text=True,
+                              timeout=validate_mod.CHECK_TIMEOUT_S, env=validate_mod.check_env(tree / cwd))
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return None, f"cannot run the child's test: {type(exc).__name__}"
+    return done.returncode == 0, ""
+
+
+def _c1(repo: Path, branch: str, task: Task, paths: list[str]) -> dict:
+    """C1: the child's own test passes with its change and fails once its non-test change is
+    reverted. A test that is red on the child's own branch measures nothing it wrote."""
+    tests = [p for p in paths if _TEST_PATH.search(p)]
+    source = [p for p in paths if not _TEST_PATH.search(p)]
+    if not tests or not source or task.check is None:
+        return _verdict(None, "child changed no test or no non-test file")
+    with tempfile.TemporaryDirectory(prefix="gbfleet-bench-c1-") as tmp:
+        tree = Path(tmp) / "tree"
+        if _git(repo, "worktree", "add", "--detach", str(tree), branch).returncode != 0:
+            return _verdict(None, f"cannot check out {branch}")
+        try:
+            present = [t for t in tests if (tree / t).is_file()]
+            if not present:
+                return _verdict(None, "child's tests are all deletions")
+            green, why = _run_tests(repo, tree, task, present)
+            if green is None:
+                return _verdict(None, why)
+            if not green:
+                return _verdict(False, "child's test fails with its change in place")
+            for rel in source:
+                if _git(tree, "cat-file", "-e", f"{task.base_sha}:{rel}").returncode == 0:
+                    _git(tree, "checkout", task.base_sha, "--", rel)
+                else:
+                    (tree / rel).unlink(missing_ok=True)
+            green, why = _run_tests(repo, tree, task, present)
+            if green is None:
+                return _verdict(None, why)
+            return _verdict(not green, "" if not green
+                            else "child's test still passes with its change reverted")
+        finally:
+            _git(repo, "worktree", "remove", "--force", str(tree))
+
+
+def leaf_verdicts(task: Task, repo: Path, branch: str, outcome: str, *, commits: bool = True) -> dict:
+    """A verdict for every leaf the task claims, by that leaf's own predicate (GRPH-1877).
+
+    `commits` is whether the child's branch carries any commit beyond the base. Without one
+    there is no branch (E1 fails) and no diff to measure E2, H5 or C1 on (excluded).
+    """
+    from ..touchpoints import undeclared
+
+    registered = outcome not in ("never_registered", "harness_error")
+    if outcome == "no_branch":
+        commits = False
+    paths = diff_paths(repo, branch, task.base_sha) if registered and commits else None
+    out: dict[str, dict] = {}
+    for leaf in task.capabilities:
+        if leaf in CHECK_LEAVES:
+            ok = (outcome == "check_green") if outcome in ("check_green", "check_red", "no_branch") else None
+            out[leaf] = _verdict(ok, "" if ok is not None else f"check not evaluated ({outcome})")
+        elif leaf == "E1":
+            out[leaf] = _verdict(commits if registered else None,
+                                 "" if registered and commits else ("no branch" if registered else outcome))
+        elif paths is None:
+            out[leaf] = _verdict(None, f"no branch diff to measure ({outcome})")
+        elif leaf == "E2":
+            bad = [p for p in paths if p.lower() in STATE_FILES or p.lower().endswith(STATE_FILES)]
+            out[leaf] = _verdict(not bad, ", ".join(bad[:5]))
+        elif leaf == "H5":
+            if not task.touchpoints:
+                out[leaf] = _verdict(None, "task declares no touchpoints")
+            else:
+                bad = undeclared(paths, list(task.touchpoints))
+                out[leaf] = _verdict(not bad, ", ".join(bad[:5]))
+        elif leaf == "C1":
+            out[leaf] = _c1(repo, branch, task, paths)
+    return out
 
 
 Start = Callable[..., object]
@@ -209,17 +312,24 @@ def _run_task(task: Task, code: str, *, repo: Path, scratch, start: Start, limit
     wall = clock() - started
     reap(tree)
     if timed_out:
-        return Result(task.id, "timed_out", wall_seconds=wall)
+        # The check never ran (A-leaves excluded); E1/E2/H5/C1 are measured on what it pushed.
+        return Result(task.id, "timed_out", "child ran past its wall clock", wall_seconds=wall,
+                      leaves=leaf_verdicts(task, repo, tree.branch, "timed_out",
+                                           commits=_commits_beyond(repo, tree.branch, task.base_sha) > 0))
     if _commits_beyond(repo, tree.branch, task.base_sha) == 0:
-        return Result(task.id, "no_branch", wall_seconds=wall)
+        return Result(task.id, "no_branch", wall_seconds=wall,
+                      leaves=leaf_verdicts(task, repo, tree.branch, "no_branch"))
     verdict, why = validate_mod.run_check(repo, tree.branch, task.check, overlay=task.reference)
     if verdict == validate_mod.PASS:
-        return Result(task.id, "check_green", wall_seconds=wall)
-    if verdict == validate_mod.FAIL:
-        return Result(task.id, "check_red", wall_seconds=wall)
-    if verdict == validate_mod.TIMED_OUT:
-        return Result(task.id, "timed_out", why, wall_seconds=wall)
-    return Result(task.id, "harness_error", f"{verdict}: {why}", wall_seconds=wall)
+        outcome, detail = "check_green", ""
+    elif verdict == validate_mod.FAIL:
+        outcome, detail = "check_red", ""
+    elif verdict == validate_mod.TIMED_OUT:
+        outcome, detail = "timed_out", why
+    else:
+        outcome, detail = "harness_error", f"{verdict}: {why}"
+    return Result(task.id, outcome, detail, wall_seconds=wall,
+                  leaves=leaf_verdicts(task, repo, tree.branch, outcome))
 
 
 def _commits_beyond(repo: Path, branch: str, base: str) -> int:
@@ -276,7 +386,9 @@ def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], o
     post = {**{k: body[k] for k in ("vendor", "model", "binary_version", "suite_id", "suite_version")},
             "outcomes": [{"task_id": r.task_id, "outcome": r.outcome,
                           "capabilities": list(by_id[r.task_id].capabilities),
-                          "tokens": r.tokens, "wall_seconds": r.wall_seconds} for r in results]}
+                          "tokens": r.tokens, "wall_seconds": r.wall_seconds,
+                          **({"leaves": r.leaves} if r.leaves is not None else {})}
+                         for r in results]}
     if run_id:
         post["run_id"] = run_id
     if not results:
@@ -289,4 +401,6 @@ def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], o
 def to_outcomes(plan: Plan, results: list[Result]) -> list[TaskOutcome]:
     by_id = {p.task.id: p.task for p in plan.tasks}
     return [TaskOutcome(r.task_id, "build", by_id[r.task_id].capabilities, r.outcome,
-                        tokens=r.tokens, wall_seconds=r.wall_seconds) for r in results]
+                        tokens=r.tokens, wall_seconds=r.wall_seconds,
+                        leaves=({k: (v["verdict"], v["reason"]) for k, v in r.leaves.items()}
+                                if r.leaves is not None else None)) for r in results]

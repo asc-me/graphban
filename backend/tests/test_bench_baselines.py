@@ -84,3 +84,24 @@ def test_a_baseline_only_row_at_an_older_version_honours_the_versions_filter(cli
     assert len(old) == 1 and old[0]["key"]["binary_version"] == "0.1.0"
     assert old[0]["is_current_version"] is False
     assert old[0]["versions_seen"] == ["0.1.0", "1.2.3"]
+
+
+def test_rollups_score_each_leaf_by_its_own_verdict():
+    from app.services.bench import _rollups
+
+    o = {"task_id": "t", "outcome": "check_red", "capabilities": ["A1", "E1", "H5", "E2"],
+         "leaves": {"A1": {"verdict": "fail"}, "E1": {"verdict": "pass"},
+                    "H5": {"verdict": "excluded", "reason": "no touchpoints"}}}
+    r = _rollups([o])
+    assert (r["A1"]["n"], r["A1"]["green"]) == (1, 0)
+    assert (r["E1"]["n"], r["E1"]["green"]) == (1, 1)
+    assert (r["H5"]["n"], r["H5"]["excluded"]) == (0, 1)
+    assert r["H5"]["excluded_reasons"][0]["reason"] == "no touchpoints"
+    assert r["E2"]["n"] == 0 and r["E2"]["excluded"] == 1
+
+
+def test_rollups_without_leaves_score_on_the_check():
+    from app.services.bench import _rollups
+
+    r = _rollups([{"task_id": "t", "outcome": "check_green", "capabilities": ["E1"]}])
+    assert (r["E1"]["n"], r["E1"]["green"]) == (1, 1)
