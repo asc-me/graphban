@@ -3455,6 +3455,44 @@ class BenchBaseline(Base):
     posted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class BenchSuite(Base):
+    """The repo suite's version counter for one project (GRPH-P98 §3, GRPH-1857).
+
+    The server is authoritative for the suite; a write carries `expected_version` and bumps
+    this by one. There is no merge model.
+    """
+
+    __tablename__ = "bench_suites"
+
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class BenchSuiteTask(Base):
+    """One adopted task of a project's repo suite: the GRPH-P98 §1 manifest fields."""
+
+    __tablename__ = "bench_suite_tasks"
+    __table_args__ = (UniqueConstraint("project_id", "task_id", name="uq_bench_suite_task"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    task_id: Mapped[str] = mapped_column(String(128))
+    kind: Mapped[str] = mapped_column(String(16))
+    base_sha: Mapped[str] = mapped_column(String(64))
+    title: Mapped[str] = mapped_column(String(256), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    acceptance: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    touchpoints: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    capabilities: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    size_band: Mapped[str] = mapped_column(String(32), default="")
+    check: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    reference: Mapped[str] = mapped_column(Text, default="")
+    expect: Mapped[str] = mapped_column(String(16), default="")
+    ref: Mapped[str] = mapped_column(String(128), default="")
+    adopted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class CapabilityPrior(Base):
     """The platform snapshot this instance last fetched (PRD-41 D12).
 

@@ -899,13 +899,14 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "bench",
         "description": (
-            "PLANNER ONLY. action open_run: scratch project + a bound seat per task. "
-            "post_result: store a baseline record; touches no telemetry."
+            "PLANNER ONLY. open_run: scratch project + seats. post_result: no telemetry. "
+            "*_tasks need expected_version."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["open_run", "post_result"]},
+                "action": {"type": "string", "enum": ["open_run", "post_result", "get_suite",
+                                                      "adopt_tasks", "remove_tasks"]},
                 "body": {"type": "object"},
             },
             "required": ["action", "body"],
@@ -4116,9 +4117,16 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                                           body=args.get("body") or {})
             if args.get("action") == "post_result":
                 return bench_svc.post_result(db, project_id=pid, body=args.get("body") or {})
+            if args.get("action") == "get_suite":
+                return bench_svc.get_suite(db, pid)
+            if args.get("action") == "adopt_tasks":
+                return bench_svc.adopt_tasks(db, project_id=pid, body=args.get("body") or {})
+            if args.get("action") == "remove_tasks":
+                return bench_svc.remove_tasks(db, project_id=pid, body=args.get("body") or {})
         except bench_svc.AttemptRefused as e:
             raise errors.Validation(str(e))
-        raise errors.Validation("action must be open_run or post_result")
+        raise errors.Validation(
+            "action must be open_run, post_result, get_suite, adopt_tasks or remove_tasks")
     if name == "retire_wave":
         try:
             minter = fleet_svc.minter_for(db, args["agent_id"], key)
