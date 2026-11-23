@@ -77,7 +77,7 @@ export function measureLine(o: RuleObservationSummary | null | undefined): { kin
   return { kind: "plain", text: `${verb} · ${o.checks} ${noun} checked since ${since}` };
 }
 
-function ObservingRow({
+export function ObservingRow({
   ruleId,
   title,
   observation,

@@ -1,0 +1,87 @@
+/** A custom rule is not a library rule (GRPH-1880). */
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { api } from "@/lib/api";
+import type { RuleFlowRule, RuleStage } from "@/lib/types";
+
+import { DockEditor } from "./DockEditor";
+
+vi.mock("@/lib/api", () => ({
+  api: {
+    ruleToggles: vi.fn(), gitops: vi.fn(), me: vi.fn(), members: vi.fn(), syncStatus: vi.fn(), config: vi.fn(),
+    customRules: vi.fn(), ruleProposals: vi.fn(), events: vi.fn(), ruleEffect: vi.fn(),
+    ruleObservations: vi.fn(),
+  },
+}));
+vi.mock("@/features/ProjectContext", () => ({
+  useProjectCtx: () => ({ activeId: "core", active: { id: "core" }, projects: [], setActiveId: () => {} }),
+}));
+
+function rule(over: Partial<RuleFlowRule> & { id: string }): RuleFlowRule {
+  return {
+    stage: "plan", title: over.id, summary: "", enforcement: "enforced", channel: null,
+    enforcer: { kind: "code", url: "" } as RuleFlowRule["enforcer"], truth: "db", scope: "project", models: [],
+    value: true, source: "platform default", used: true, label: null, skills: null, control: "toggle",
+    params: { value: {}, source: "platform default" }, locked: false, ...over,
+  } as RuleFlowRule;
+}
+
+const lib = rule({ id: "plan.exclusive_areas", title: "Exclusive areas" });
+const cust = rule({ id: "custom.walk-docs-exclusive", title: "Walk docs exclusive", value: false, used: false });
+const stage = { id: "plan", title: "Plan", summary: "", state: "enforced", rules: [lib, cust] } as unknown as RuleStage;
+
+beforeEach(() => {
+  vi.resetAllMocks();
+  vi.mocked(api.me).mockResolvedValue({ id: "u1" } as never);
+  vi.mocked(api.members).mockResolvedValue([{ user: { id: "u1" }, role: "owner" }] as never);
+  vi.mocked(api.gitops).mockResolvedValue({ control: { state: "local", writable: true, message: "" } } as never);
+  vi.mocked(api.config).mockResolvedValue({ hosted_mode: false } as never);
+  vi.mocked(api.syncStatus).mockResolvedValue({ linked: false } as never);
+  vi.mocked(api.ruleToggles).mockResolvedValue({ toggles: [] } as never);
+  vi.mocked(api.ruleObservations).mockResolvedValue([] as never);
+  vi.mocked(api.events).mockResolvedValue({ results: [] } as never);
+  vi.mocked(api.ruleEffect).mockResolvedValue({ rules: [] } as never);
+  vi.mocked(api.ruleProposals).mockResolvedValue([
+    { id: 2, rule_id: "custom.walk-docs-exclusive", proposer: "PNW-A1", proposer_kind: "agent", citations: [] },
+  ] as never);
+  vi.mocked(api.customRules).mockResolvedValue([
+    { rule_id: "custom.walk-docs-exclusive", stage: "Plan", title: "Walk docs exclusive", state: "observing", params: { paths: ["docs/walk/"] } },
+  ] as never);
+});
+
+function view() {
+  return render(
+    <MemoryRouter>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <DockEditor stage={stage} version="1" model={null} focusRule={null} prefill={null} onClose={() => {}} />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+}
+
+describe("DockEditor custom rules", () => {
+  it("keeps custom.* out of LIBRARY RULES and its count", () => {
+    view();
+    const library = screen.getByTestId("rules-dock-group-library");
+    expect(library).toHaveTextContent("LIBRARY RULES · 1");
+    expect(library).not.toHaveTextContent("custom.");
+    expect(screen.getByTestId("rules-dock-group-custom")).toHaveTextContent("custom.walk-docs-exclusive");
+  });
+
+  it("opens a custom view: custom/project, params, state, no On/Off/Inherit, adoption in history", async () => {
+    const user = userEvent.setup();
+    view();
+    await user.click(screen.getByTestId("rules-dock-row-custom.walk-docs-exclusive"));
+    expect(screen.getByTestId("rules-dock-kind")).toHaveTextContent("CUSTOM RULE");
+    expect(screen.getByTestId("rules-dock-custom-source")).toHaveTextContent("custom/project");
+    expect(await screen.findByTestId("rules-dock-custom-params")).toHaveTextContent("docs/walk/");
+    expect(screen.getByTestId("rules-dock-state-badge")).toHaveTextContent("OBSERVING");
+    expect(screen.queryByTestId("rules-dock-state")).toBeNull();
+    expect(screen.queryByText(/platform default/i)).toBeNull();
+    await waitFor(() => expect(screen.getByTestId("rules-history-adopted")).toHaveTextContent("proposed by Agent PNW-A1"));
+  });
+});

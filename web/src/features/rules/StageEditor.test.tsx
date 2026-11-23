@@ -225,4 +225,18 @@ describe("StageEditor", () => {
     expect(screen.queryByTestId("rules-draft-partly-saved")).not.toBeInTheDocument();
     expect(api.setRuleToggles).not.toHaveBeenCalled();
   });
+
+  it("draws a custom rule as read-only text, never with the library on/off switch", async () => {
+    const cust = rule({ id: "custom.walk-docs-exclusive", title: "Walk docs", value: false, params: { value: {}, source: "project" } });
+    const st = { id: "plan", title: "Plan", summary: "", state: "enforced", rules: [areas, cust] } as unknown as RuleStage;
+    vi.mocked(api.ruleToggles).mockResolvedValue({ toggles: [] } as never);
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <StageEditor stage={st} narrow={false} onClose={() => {}} />
+      </QueryClientProvider>,
+    );
+    const row = await screen.findByTestId("rules-edit-custom.walk-docs-exclusive");
+    expect(within(row).queryByRole("switch")).toBeNull();
+    expect(row).toHaveTextContent("custom/project");
+  });
 });
