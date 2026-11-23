@@ -46,6 +46,38 @@ def is_custom(rule_id: str) -> bool:
     return rule_id.startswith(PREFIX)
 
 
+#: GRPH-1873: the primitives the server evaluates for a CUSTOM rule where the primitive runs.
+#: Any other primitive would store a rule that silently holds nothing, so a draft naming one is
+#: refused (`refuse_unevaluated`). Add a primitive here only with the wiring and a test.
+EVALUATED = ("exclusive_areas",)
+
+
+def refuse_unevaluated(primitive: str) -> None:
+    """Refuse a custom-rule draft whose primitive no server path evaluates for custom rules."""
+    if primitive in rule_pack.PRIMITIVES and primitive not in EVALUATED:
+        raise Validation(
+            f"primitive {primitive!r} cannot be used by a custom rule yet: the server only "
+            f"evaluates {', '.join(EVALUATED)} for custom rules, so this rule would hold nothing",
+            hint="use a library rule's toggle for this primitive, or draft an "
+                 f"{EVALUATED[0]} rule")
+
+
+def exclusive_area_rules(db: Session, project_id: str | None
+                         ) -> tuple[list[tuple[str, list[str]]], list[tuple[str, list[str]]]]:
+    """`(active, observing)` custom `exclusive_areas` rules that hold for a project, each as
+    `(rule_id, paths)`. An unmeasured rule (its primitive no longer loads) is in neither."""
+    active: list[tuple[str, list[str]]] = []
+    observing: list[tuple[str, list[str]]] = []
+    for r in rows_for_project(db, project_id):
+        if r.primitive != "exclusive_areas" or unmeasured_reason(r):
+            continue
+        paths = (r.params or {}).get("paths")
+        if not isinstance(paths, list) or not all(isinstance(x, str) for x in paths):
+            continue
+        (observing if r.state == "observing" else active).append((r.rule_id, list(paths)))
+    return active, observing
+
+
 def _draft(row: CustomRule) -> dict:
     return {"id": row.rule_id, "stage": row.stage, "title": row.title, "summary": row.why,
             "primitive": row.primitive, "claims": row.claims, "params": row.params or {}}
@@ -218,6 +250,7 @@ def _validated(slug: str, primitive: str, title: str, why: str, params: dict | N
     if prim is None:
         raise Validation(f"primitive {primitive!r} does not exist in primitive API "
                          f"{rule_pack.PRIMITIVE_API}")
+    refuse_unevaluated(primitive)
     rule_id = PREFIX + slug
     draft = {"id": rule_id, "stage": prim.stage, "title": title.strip(), "summary": why.strip(),
              "primitive": primitive, "claims": claims or prim.level, "params": params or {}}
