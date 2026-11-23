@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
-import { useConfig, useGitops, useRuleEffect, useRuleHistory, useRuleToggles, useSetRuleToggles, useUpdateGitops } from "@/lib/queries";
+import { useConfig, useCustomRules, useGitops, useRuleEffect, useRuleHistory, useRuleToggles, useSetRuleToggles, useUpdateGitops } from "@/lib/queries";
 import { settingsPath } from "@/lib/routes";
 import type { GitopsPatch, RuleEffectRule, RuleFlowRule, RuleMeasured, RuleStage, RuleToggle, RuleToggleBatchEntry } from "@/lib/types";
 
@@ -31,6 +31,8 @@ import {
 } from "./levels";
 import { cleanParams, FOUND_BUG_DEFAULT, FOUND_BUG_RULE, MEMORY_WRITE_MODES, MemoryWriteModeControl, useCanWriteRules } from "./LibraryRuleControls";
 import { AdminGitopsLink, BudgetCapEditor, currentValue, GITOPS_RULE_FIELDS, toPatch, useOrgNameOrNull } from "./RuleEditors";
+import { ObservingRow, WouldHaveRecord } from "./ObservingRules";
+import { RuleHistory } from "./RuleHistory";
 import { RuleLevelIcon } from "./RuleLevelIcon";
 import { relTime } from "@/lib/relTime";
 import { showValue, type Params } from "./RuleReviewSheet";
@@ -41,24 +43,29 @@ import { FIXED_RULE_REASONS, GitopsField, gitopsReadOnly } from "./StageEditor";
 const MONO = "font-mono";
 export const MIN_REASON = 8;
 
-type Group = "builtin" | "project" | "library";
+type Group = "builtin" | "project" | "library" | "custom";
 const GROUPS: { id: Group; label: string }[] = [
   { id: "builtin", label: "BUILT-IN RULES" },
   { id: "project", label: "PROJECT SETTINGS" },
   { id: "library", label: "LIBRARY RULES" },
+  { id: "custom", label: "CUSTOM RULES" },
 ];
 
-const isLibrary = (r: RuleFlowRule) => r.control === "toggle";
+/** A project's own adopted rule (`custom.*`): never a library rule, so no On/Off/Inherit and no platform default. */
+export const isCustom = (r: RuleFlowRule) => r.id.startsWith("custom.");
+const isLibrary = (r: RuleFlowRule) => r.control === "toggle" && !isCustom(r);
 const isEditableLibrary = (r: RuleFlowRule) => isLibrary(r) && !r.unmeasured_reason && !r.locked;
 
 export function groupOf(r: RuleFlowRule): Group {
+  if (isCustom(r)) return "custom";
   if (isLibrary(r)) return "library";
   if (r.id in GITOPS_RULE_FIELDS || r.control === "select" || r.id === "plan.budget_cap") return "project";
   return "builtin";
 }
 
-function stateWord(r: RuleFlowRule): string {
+function stateWord(r: RuleFlowRule, customState?: string): string {
   if (groupOf(r) === "builtin") return "BUILT IN";
+  if (isCustom(r)) return customState ? customState.toUpperCase() : "CUSTOM";
   if (!r.used) return "NOT USED";
   return r.params?.source === "org" || r.source === "org" ? "ON · ORG" : "ON";
 }
@@ -68,13 +75,14 @@ const ACCENT = "#c6f24e";
 /** "LIBRARY RULE · REVIEW", "BUILT-IN RULE · REVIEW", "PROJECT SETTING · MERGE". */
 export function kindLine(r: RuleFlowRule, stage: RuleStage): string {
   const g = groupOf(r);
-  const kind = g === "library" ? "LIBRARY RULE" : g === "project" ? "PROJECT SETTING" : "BUILT-IN RULE";
+  const kind = g === "library" ? "LIBRARY RULE" : g === "custom" ? "CUSTOM RULE" : g === "project" ? "PROJECT SETTING" : "BUILT-IN RULE";
   return `${kind} · ${stage.title.toUpperCase()}`;
 }
 
 /** The form header's state badge: ON, NOT USED, or NOT USED · INHERITED when the off comes from above the project. */
-export function stateBadge(r: RuleFlowRule, onSource: string | null | undefined): string {
+export function stateBadge(r: RuleFlowRule, onSource: string | null | undefined, customState?: string): string {
   if (r.unmeasured_reason) return "UNMEASURED";
+  if (isCustom(r)) return customState ? customState.toUpperCase() : "CUSTOM";
   if (!isLibrary(r)) return r.used ? "ON" : "NOT USED";
   if (r.value === true) return "ON";
   return onSource === "project" ? "NOT USED" : "NOT USED · INHERITED";
@@ -259,6 +267,9 @@ export function DockEditor({
     onRule?.(rule);
   }, [rule, onRule]);
   const t: RuleToggle | undefined = toggles?.toggles.find((x) => x.rule_id === rule?.id);
+  const { data: customRules } = useCustomRules(activeId);
+  const customStates = React.useMemo(() => new Map((customRules ?? []).map((c) => [c.rule_id, c])), [customRules]);
+  const customRule = rule ? customStates.get(rule.id) : undefined;
   const effect = useRuleEffect(activeId, rule && isLibrary(rule) ? rule.id : null);
   const effectRule = effect.data?.rules.find((x) => x.rule_id === rule?.id);
 
@@ -432,6 +443,7 @@ export function DockEditor({
   const level = ruleLevel(rule);
   const meta = LEVELS[level];
   const builtin = groupOf(rule) === "builtin";
+  const custom = isCustom(rule);
   const library = isLibrary(rule);
   const fixed = FIXED_RULE_REASONS[rule.id];
   const onNow = draft.on ?? rule.value === true;
@@ -478,7 +490,7 @@ export function DockEditor({
               {rs.map((r) => {
                 const on = r.id === rule.id;
                 const lv = ruleLevel(r);
-                const word = stateWord(r);
+                const word = stateWord(r, customStates.get(r.id)?.state);
                 const lit = word.startsWith("ON");
                 return (
                   <button
@@ -547,12 +559,12 @@ export function DockEditor({
               data-testid="rules-dock-state-badge"
               className={cn(MONO, "rounded-[4px] border px-1.5 text-meta font-semibold tracking-[0.05em]")}
               style={
-                stateBadge(rule, onSource) === "ON"
+                stateBadge(rule, onSource, customRule?.state) === "ON"
                   ? { borderColor: "rgba(198,242,78,.4)", color: ACCENT }
                   : { borderColor: "#2a333a", color: "#8b949e" }
               }
             >
-              {stateBadge(rule, onSource)}
+              {stateBadge(rule, onSource, customRule?.state)}
             </span>
           </div>
           <span className="text-lead font-semibold leading-tight" style={{ opacity: dim ? 0.7 : 1 }}>
@@ -648,6 +660,40 @@ export function DockEditor({
                   : stateNote(onNow, noteSource, orgName)}
               </span>
             )}
+          </div>
+        )}
+
+        {custom && (
+          <div className="flex flex-col gap-1.5" data-testid="rules-dock-custom">
+            <span className="text-small text-fg-2" data-testid="rules-dock-custom-source">
+              Source: custom/project
+            </span>
+            <span className="text-small text-fg-2" data-testid="rules-dock-custom-state">
+              {customRule?.state === "observing"
+                ? "Observing: advisory only, it does not hold anything yet."
+                : customRule?.state
+                  ? `State: ${customRule.state}.`
+                  : "State not read."}
+            </span>
+            {Object.keys(customRule?.params ?? {}).length > 0 && (
+              <ul className="list-none" data-testid="rules-dock-custom-params">
+                {Object.entries(customRule?.params ?? {}).map(([k, v]) => (
+                  <li key={k} className={cn(MONO, "break-all text-small text-fg-2")}>
+                    {k}: {showValue(v as Params[string])}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {customRule?.state === "observing" && (
+              <ObservingRow
+                ruleId={rule.id}
+                title={rule.title}
+                observation={t?.observation}
+                projectId={activeId}
+              />
+            )}
+            {customRule && customRule.state !== "observing" && <WouldHaveRecord ruleId={rule.id} projectId={activeId} />}
+            <ReadOnlyReason>Custom rule: it has no library switch. Promote it while it observes.</ReadOnlyReason>
           </div>
         )}
 
@@ -776,7 +822,7 @@ export function DockEditor({
       {/* 3 · resolution, effect, history, and the pinned save area */}
       <aside data-testid="rules-dock-side" className="flex min-h-0 flex-col border-t border-line min-[900px]:border-l min-[900px]:border-t-0">
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
-          <Resolution rule={rule} t={t} orgName={orgName} />
+          {!custom && <Resolution rule={rule} t={t} orgName={orgName} />}
 
           <div data-testid="rules-dock-effect" className="flex flex-col gap-1.5">
             <span className={cn(MONO, "text-meta tracking-[0.07em] text-muted-2")} data-testid="rules-dock-effect-heading">
@@ -819,7 +865,9 @@ export function DockEditor({
 
           <div className="flex flex-col gap-0.5" data-testid="rules-dock-history">
             <span className={cn(MONO, "text-meta tracking-[0.07em] text-muted-2")}>HISTORY</span>
-            {library && !rule.unmeasured_reason ? (
+            {custom ? (
+              <RuleHistory ruleId={rule.id} />
+            ) : library && !rule.unmeasured_reason ? (
               <DockHistory ruleId={rule.id} />
             ) : (
               <span className="text-small leading-snug text-muted" data-testid="rules-dock-history-none">
@@ -837,7 +885,11 @@ export function DockEditor({
         </div>
 
         <div data-testid="rules-dock-save" className="flex flex-col gap-2 border-t border-line bg-surface-2 p-3">
-          {builtin ? (
+          {custom ? (
+            <p className="text-small text-fg-2" data-testid="rules-dock-custom-note">
+              A custom rule is changed by proposal, not here.
+            </p>
+          ) : builtin ? (
             <p className="text-small text-fg-2" data-testid="rules-dock-builtin-note">
               This rule is built in and can't be changed here.
             </p>
@@ -865,7 +917,7 @@ export function DockEditor({
               No changes. Edit a value to see the diff and save it with a reason.
             </p>
           )}
-          {!builtin && (
+          {!builtin && !custom && (
             <>
               {risks.length > 0 && (
                 <label className="flex items-start gap-2 text-small text-[#ffb454]" data-testid="rules-dock-weakening">
