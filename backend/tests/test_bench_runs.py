@@ -183,3 +183,33 @@ def test_open_run_returns_a_scratch_scoped_key_revoked_on_post(client, env):
         assert verify_api_key(db, key) is None
     again = client.post("/api/mcp", json=body, headers=h)
     assert again.status_code == 401
+
+
+def test_open_run_seats_review_tasks_as_review_work(client, env):
+    tasks = [TASKS[0], {"id": "r1", "kind": "review", "title": "review it", "ref": "gb/x",
+                        "expect": "bounce"}]
+    out = _open(client, env, tasks=tasks).json()
+    by = {s["task_id"]: s for s in out["seats"]}
+    assert by["r1"]["kind"] == "review" and by["t1"]["kind"] == "build"
+    from app.models import Enrolment
+    with SessionLocal() as db:
+        build, rev = db.get(Item, by["t1"]["item_id"]), db.get(Item, by["r1"]["item_id"])
+        assert build.status == "next"
+        assert rev.status == "review" and rev.branch == "gb/x"
+        assert rev.built_by and rev.built_by != by["r1"].get("agent")
+        seats = db.scalars(select(Enrolment).where(
+            Enrolment.project_id == out["project_id"])).all()
+        assert sorted(bool(e.review_only) for e in seats) == [False, True]
+        assert [e.item_id for e in seats if e.review_only] == [None]
+
+
+def test_review_outcomes_score_green_when_verdict_matches_expect(client, env):
+    def o(tid, outcome, expect):
+        return {"task_id": tid, "outcome": outcome, "capabilities": ["A1"],
+                "kind": "review", "expect": expect}
+    r = _post(client, env, outcomes=[o("a", "bounce", "bounce"), o("b", "sign_off", "bounce"),
+                                     o("c", "sign_off", "sign_off")])
+    assert r.status_code == 201, r.text
+    out = r.json()
+    assert out["rollups"]["A1"] == {"n": 3, "green": 2, "excluded": 0}
+    assert out["outcomes"][0]["kind"] == "review" and out["outcomes"][0]["expect"] == "bounce"

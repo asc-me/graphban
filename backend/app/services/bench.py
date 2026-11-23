@@ -21,7 +21,7 @@ from app.services.harness import CAPABILITY_LEAVES, FAMILIES, AttemptRefused
 
 #: P98 §5. `never_registered` and `harness_error` are plumbing: counted, never scored.
 OUTCOMES = ("never_registered", "no_branch", "check_red", "check_green", "timed_out",
-            "harness_error")
+            "harness_error", "bounce", "sign_off")
 PLUMBING = ("never_registered", "harness_error")
 MAX_TASKS = 200
 #: The column widths in `bench_runs` / `bench_baselines`: a longer value is refused by name
@@ -99,11 +99,23 @@ def open_run(db: Session, *, project_id: str, user_id: str, body: dict) -> dict:
     db.flush()
     seats = []
     for t in tasks:
+        is_review = t.get("kind") == "review"
         item = items_svc.create_item(
             db, title=str(t.get("title") or t["id"]), description=str(t.get("description") or ""),
             tags=["bench"], touchpoints=list(t.get("touchpoints") or []),
-            project_id=scratch.id, status="next", commit=False)
+            project_id=scratch.id, status="review" if is_review else "next", commit=False)
+        if is_review:
+            # A review task is work someone else built: attributed to the run's planner agent,
+            # branch = the task's ref, so `claim_review` hands it to the reviewer child.
+            item.built_by = agent.id
+            item.branch = str(t.get("ref") or "")
         db.flush()
+        if is_review:
+            _seat, code = fleet_svc.issue_enrolment(
+                db, project_id=scratch.id, role="worker", minted_by=agent.id, review_only=True)
+            seats.append({"task_id": t["id"], "item_id": item.id, "kind": "review",
+                          "enrolment_code": code})
+            continue
         row, _withdrew, _code = delegation_svc.delegate(
             db, agent=agent, item=item, lane="backend", tier="cheap",
             note=f"bench {ident['suite_id']} {t['id']}", lease_seconds=600, seat=False)
@@ -111,7 +123,7 @@ def open_run(db: Session, *, project_id: str, user_id: str, body: dict) -> dict:
             db, project_id=scratch.id, role="worker", minted_by=agent.id,
             item_id=item.id, delegation_id=row.id)
         seats.append({"task_id": t["id"], "item_id": item.id, "delegation_id": row.id,
-                      "enrolment_code": code})
+                      "kind": "build", "enrolment_code": code})
     run = BenchRun(
         id=f"bnr_{uuid.uuid4().hex[:12]}", source_project_id=project_id, project_id=scratch.id,
         tasks=[{"task_id": s["task_id"], "item_id": s["item_id"]} for s in seats], **ident)
@@ -128,6 +140,14 @@ def open_run(db: Session, *, project_id: str, user_id: str, body: dict) -> dict:
             **ident, "seats": seats, "api_key": api_key}
 
 
+def _is_green(o: dict) -> bool:
+    """A build outcome is green on `check_green`; a review outcome when its verdict matched
+    `expect` (bounce for a defect, sign_off for clean work)."""
+    if o.get("kind") == "review":
+        return o.get("expect") in EXPECTS and o["outcome"] == o["expect"]
+    return o["outcome"] == "check_green"
+
+
 def _rollups(outcomes: list[dict]) -> dict:
     """Per capability: scored `n`, `green`, and the plumbing excluded. Server-computed."""
     out: dict[str, dict] = {}
@@ -138,7 +158,7 @@ def _rollups(outcomes: list[dict]) -> dict:
                 cell["excluded"] += 1
             else:
                 cell["n"] += 1
-                cell["green"] += o["outcome"] == "check_green"
+                cell["green"] += _is_green(o)
     return out
 
 
@@ -175,8 +195,16 @@ def post_result(db: Session, *, project_id: str, body: dict) -> dict:
         for name, v in (("tokens", tokens), ("wall_seconds", wall)):
             if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0):
                 raise AttemptRefused(f"{name} must be a non-negative number or null", status=422)
-        outcomes.append({"task_id": o["task_id"], "outcome": o["outcome"], "capabilities": caps,
-                         "tokens": tokens, "wall_seconds": wall})
+        entry = {"task_id": o["task_id"], "outcome": o["outcome"], "capabilities": caps,
+                 "tokens": tokens, "wall_seconds": wall}
+        if o.get("kind") == "review":
+            if o.get("expect") not in EXPECTS:
+                raise AttemptRefused(
+                    f"expect for review task {o['task_id']} must be one of {list(EXPECTS)}",
+                    status=422)
+            entry["kind"] = "review"
+            entry["expect"] = o["expect"]
+        outcomes.append(entry)
     run_id = body.get("run_id")
     if run_id is not None:
         run = db.get(BenchRun, run_id)
