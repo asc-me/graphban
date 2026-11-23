@@ -189,7 +189,7 @@ def _js_deps_missing(repo: Path, tree: Path, argv: list[str], cwd: str) -> str:
 
 #: The interpreter's own line when `python -m <mod>` cannot find <mod>; a traceback's
 #: `ModuleNotFoundError: No module named 'x'` quotes the name and so never matches.
-_NO_MODULE = re.compile(r"^(.*): No module named ([\w.]+)\s*$", re.M)
+_NO_MODULE = re.compile(r"^(.*): No module named ([\w.]+)\s*$", re.MULTILINE)
 
 
 def _runner_missing(argv: list[str], done: subprocess.CompletedProcess[str]) -> str:
