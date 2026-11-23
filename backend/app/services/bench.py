@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.errors import AppError
 from app.services.harness import CAPABILITY_LEAVES, FAMILIES, AttemptRefused
 
 #: P98 §5. `never_registered` and `harness_error` are plumbing: counted, never scored.
@@ -231,3 +232,166 @@ def attach_baselines(db: Session, project_id: str, cells: list[dict]) -> None:
             cell["baseline"] = block(cell)
         for leaf in cell.get("leaves") or []:
             leaf["baseline"] = block(leaf)
+
+
+# --- the repo suite (GRPH-P98 §3, GRPH-1857) -------------------------------------------------
+
+KINDS = ("build", "review")
+EXPECTS = ("bounce", "sign_off")
+_STR_FIELDS = {"title": 256, "description": None, "size_band": 32, "reference": None,
+               "expect": 16, "ref": 128}
+
+
+class SuiteConflict(AppError):
+    """`expected_version` did not match. Carries the current version for the 409 body.
+
+    Not an `errors.Conflict`: a stale read is a retryable state conflict, not a policy refusal
+    (the same call as `BlobPending`), so it stays out of the refusal ratchet. REST returns 409
+    with `current_version`; MCP returns code `stale_version`. The caller re-reads and retries.
+    """
+
+    code = "stale_version"
+
+    def __init__(self, current_version: int) -> None:
+        super().__init__(f"expected_version is stale; the suite is at version {current_version}",
+                         hint="read the suite again and retry with its version")
+        self.current_version = current_version
+
+
+def _task_view(r) -> dict:
+    return {"id": r.task_id, "kind": r.kind, "base_sha": r.base_sha, "title": r.title,
+            "description": r.description, "acceptance": r.acceptance or [],
+            "touchpoints": r.touchpoints or [], "capabilities": r.capabilities or [],
+            "size_band": r.size_band, "check": r.check, "reference": r.reference,
+            "expect": r.expect, "ref": r.ref}
+
+
+def get_suite(db: Session, project_id: str) -> dict:
+    from app.models import BenchSuite, BenchSuiteTask
+
+    row = db.get(BenchSuite, project_id)
+    tasks = db.scalars(select(BenchSuiteTask).where(BenchSuiteTask.project_id == project_id)
+                       .order_by(BenchSuiteTask.adopted_at, BenchSuiteTask.task_id)).all()
+    return {"version": row.version if row else 0, "tasks": [_task_view(t) for t in tasks]}
+
+
+def _expected(body: dict) -> int:
+    v = body.get("expected_version")
+    if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+        raise AttemptRefused("expected_version is required: a non-negative integer", status=422)
+    return v
+
+
+def _strs(task: dict, field: str) -> list[str]:
+    v = task.get(field) or []
+    if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+        raise AttemptRefused(f"{field} must be a list of strings", status=422)
+    return v
+
+
+def _validate_task(t) -> dict:
+    if not isinstance(t, dict):
+        raise AttemptRefused("every task must be an object", status=422)
+    tid = t.get("id")
+    if not isinstance(tid, str) or not tid.strip() or len(tid) > 128:
+        raise AttemptRefused("every task needs an id", status=422)
+    where = f"task {tid}: "
+    kind = t.get("kind", "build")
+    if kind not in KINDS:
+        raise AttemptRefused(f"{where}kind must be one of {list(KINDS)}", status=422)
+    base_sha = t.get("base_sha")
+    if not isinstance(base_sha, str) or not base_sha.strip():
+        raise AttemptRefused(f"{where}base_sha is required", status=422)
+    if len(base_sha) > 64:
+        raise AttemptRefused(f"{where}base_sha must be at most 64 characters", status=422)
+    caps = _strs(t, "capabilities")
+    for c in caps:
+        if c not in CAPABILITY_LEAVES:
+            raise AttemptRefused(f"{where}capabilities: unknown capability {c!r}", status=422)
+    out: dict = {"task_id": tid, "kind": kind, "base_sha": base_sha.strip(),
+                 "acceptance": _strs(t, "acceptance"), "touchpoints": _strs(t, "touchpoints"),
+                 "capabilities": caps}
+    for f, limit in _STR_FIELDS.items():
+        v = t.get(f) or ""
+        if not isinstance(v, str):
+            raise AttemptRefused(f"{where}{f} must be a string", status=422)
+        if limit is not None and len(v) > limit:
+            raise AttemptRefused(f"{where}{f} must be at most {limit} characters", status=422)
+        out[f] = v
+    if kind == "review" and out["expect"] not in EXPECTS:
+        raise AttemptRefused(f"{where}expect must be one of {list(EXPECTS)}", status=422)
+    check = t.get("check")
+    if check is not None:
+        if (not isinstance(check, dict) or not isinstance(check.get("command"), str)
+                or not check["command"].strip()):
+            raise AttemptRefused(f"{where}check must be an object with a command", status=422)
+        check = {"command": check["command"], "tests": _strs(check, "tests")}
+    if kind == "build" and check is None:
+        raise AttemptRefused(f"{where}check is required for a build task", status=422)
+    out["check"] = check
+    return out
+
+
+def _bump(db: Session, project_id: str, expected: int) -> int:
+    """Compare-and-set the version. A mismatch raises `SuiteConflict` with the current one."""
+    from sqlalchemy import update
+
+    from app.models import BenchSuite
+
+    if db.get(BenchSuite, project_id) is None:
+        db.add(BenchSuite(project_id=project_id, version=0))
+        db.flush()
+    res = db.execute(
+        update(BenchSuite).where(BenchSuite.project_id == project_id,
+                                 BenchSuite.version == expected)
+        .values(version=expected + 1, updated_at=datetime.now(timezone.utc)))
+    if res.rowcount != 1:
+        db.expire_all()
+        raise SuiteConflict(db.get(BenchSuite, project_id).version)
+    db.expire_all()
+    return expected + 1
+
+
+def adopt_tasks(db: Session, *, project_id: str, body: dict) -> dict:
+    """Adopt one or more tasks (an id already in the suite is replaced). Bumps version by one."""
+    from app.models import BenchSuiteTask
+
+    expected = _expected(body)
+    raw = body.get("tasks")
+    if not isinstance(raw, list) or not (1 <= len(raw) <= MAX_TASKS):
+        raise AttemptRefused(f"tasks must be a list of 1 to {MAX_TASKS}", status=422)
+    tasks = [_validate_task(t) for t in raw]
+    ids = [t["task_id"] for t in tasks]
+    if len(set(ids)) != len(ids):
+        raise AttemptRefused("a task id appears twice", status=422)
+    _bump(db, project_id, expected)
+    for t in tasks:
+        existing = db.scalar(select(BenchSuiteTask).where(
+            BenchSuiteTask.project_id == project_id, BenchSuiteTask.task_id == t["task_id"]))
+        if existing is not None:
+            db.delete(existing)
+    db.flush()
+    for t in tasks:
+        db.add(BenchSuiteTask(id=f"bst_{uuid.uuid4().hex[:12]}", project_id=project_id, **t))
+    db.flush()
+    return get_suite(db, project_id)
+
+
+def remove_tasks(db: Session, *, project_id: str, body: dict) -> dict:
+    """Remove tasks by id. Bumps version by one; an id not in the suite is refused."""
+    from app.models import BenchSuiteTask
+
+    expected = _expected(body)
+    ids = body.get("task_ids")
+    if not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids):
+        raise AttemptRefused("task_ids must be a non-empty list of task ids", status=422)
+    rows = db.scalars(select(BenchSuiteTask).where(
+        BenchSuiteTask.project_id == project_id, BenchSuiteTask.task_id.in_(ids))).all()
+    missing = sorted(set(ids) - {r.task_id for r in rows})
+    if missing:
+        raise AttemptRefused(f"task {missing[0]!r} is not in the suite", status=404)
+    _bump(db, project_id, expected)
+    for r in rows:
+        db.delete(r)
+    db.flush()
+    return get_suite(db, project_id)
