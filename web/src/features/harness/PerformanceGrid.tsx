@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronsLeft, ChevronsRight, X } from "lucide-react";
 
 import { cn } from "@/lib/cn";
-import type { HarnessCell, HarnessCost, HarnessReport, HarnessRoutingRow, HarnessSampling } from "@/lib/types";
+import type { HarnessBaseline, HarnessCell, HarnessCost, HarnessReport, HarnessRoutingRow, HarnessSampling } from "@/lib/types";
 import { TIER, accentMap, modelFamily, modelVendor, pairKey, pct, tierOf } from "@/features/harness/look";
 
 const EFFORTS = ["All", "S", "M", "L"] as const;
@@ -70,6 +70,26 @@ function aggregate(cells: HarnessCell[], floor: number, leafTicks: Agg["leafTick
     probe: cells.reduce((s, c) => s + (c.sampling.probe ?? 0), 0),
     leafTicks,
   };
+}
+
+/** The baseline block a cell set carries, kept apart from the natural and probe numbers. */
+export const baselineOf = (cells: HarnessCell[]): HarnessBaseline | null =>
+  cells.find((c) => c.baseline)?.baseline ?? null;
+
+export const baselineText = (b: HarnessBaseline | null): string =>
+  b ? `${b.rate === null ? "—" : pct(b.rate)} n ${b.n} · ${b.suite_id} v${b.suite_version}` : "no baseline";
+
+function BaselineLine({ baseline }: { baseline: HarnessBaseline | null }) {
+  return (
+    <span
+      data-testid="harness-baseline"
+      data-below-floor={baseline?.below_floor ? "true" : "false"}
+      className={cn("whitespace-nowrap font-mono text-[10px]", !baseline || baseline.below_floor ? "text-faint" : "text-fg-2")}
+      title="Baseline suite result: never pooled with the natural or probe rate"
+    >
+      {baselineText(baseline)}
+    </span>
+  );
 }
 
 const rateOf = (a: Agg) => (a.finished ? a.signed_off / a.finished : null);
@@ -548,6 +568,7 @@ export function PerformanceGrid({
                             </span>
                           </>
                         )}
+                        <BaselineLine baseline={baselineOf(a.cells)} />
                       </button>
                     </div>
                   );

@@ -101,6 +101,11 @@ def _telemetry_and_grid(proj):
                       key=lambda r: r["id"])
         cells = harness_svc.report(db, proj)["cells"]
         db.commit()
+    # The `baseline` block is its own layer (GRPH-1862); natural and probe must not move.
+    for c in cells:
+        c.pop("baseline", None)
+        for leaf in c.get("leaves") or []:
+            leaf.pop("baseline", None)
     return rows, cells
 
 

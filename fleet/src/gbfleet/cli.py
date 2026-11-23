@@ -16,7 +16,7 @@ from pathlib import Path
 from . import __version__
 from . import adopt as adopt_mod
 from .adapters import ADAPTERS, AdapterError, Tuning, checked_tuning, resolve
-from .client import ALLOWED_TOOLS, Graphban, NotPermitted, ServerUnreachable, ToolFailed
+from .client import ALLOWED_TOOLS, Graphban, NotPermitted, ObservationRefused, ServerUnreachable, ToolFailed
 from . import doctor
 from . import service as service_mod
 from . import surface as surface_mod
@@ -516,6 +516,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bench_val.add_argument("manifest", help="the suite manifest (TOML)")
     bench_val.add_argument("--repo", default=".", help="the suite's git repository (default: here)")
+
+    harn = sub.add_parser("harness", help="read the Harness page's numbers (grid)")
+    harn_do = harn.add_subparsers(dest="act", metavar="ACT")
+    harn_grid = harn_do.add_parser(
+        "grid",
+        help="print the grid's cells with n, layer and the baseline column",
+        description="Reads the project's Harness grid with $GBFLEET_API_KEY. The baseline is "
+                    "its own column: never pooled with the natural or probe rate.",
+    )
+    harn_grid.add_argument("--server", required=True, help="Graphban base URL")
+    harn_grid.add_argument("--project", required=True, help="project id")
 
     sub.add_parser(
         "gc",
@@ -1563,6 +1574,45 @@ def _bench(args: argparse.Namespace) -> int:
     return 0 if all(v.ok for v in verdicts) else 1
 
 
+def _grid_baseline(b: dict | None) -> str:
+    if not b:
+        return "no baseline"
+    rate = "-" if b.get("rate") is None else f"{round(b['rate'] * 100)}%"
+    grey = " (below floor)" if b.get("below_floor") else ""
+    return f"{rate} n={b['n']} {b['suite_id']} v{b['suite_version']}{grey}"
+
+
+def _harness(args: argparse.Namespace) -> int:
+    if args.act != "grid":
+        print("gbfleet harness: say what to do. Try `gbfleet harness grid`.", file=sys.stderr)
+        return 2
+    api_key = os.environ.get(API_KEY_ENV)
+    if not api_key:
+        print(f"gbfleet harness grid: set ${API_KEY_ENV} to an agent key", file=sys.stderr)
+        return 2
+    try:
+        data = Graphban(args.server, api_key, project_id=args.project).get_grid(args.project)
+    except ObservationRefused as exc:
+        print(f"gbfleet harness grid: {exc}", file=sys.stderr)
+        return 1
+    print("cell\tn\tlayer\trate\tbaseline")
+    for cell in data.get("cells") or []:
+        for c in (cell.get("leaves") or [cell]):
+            k = c["key"]
+            samples = c.get("samples") or {}
+            nat = samples.get("natural") or {"finished": c["finished"], "rate": c.get("rate")}
+            prb = samples.get("probe")
+            for layer, side in (("natural", nat), ("probe", prb)):
+                if side is None or (layer == "probe" and not side.get("finished")):
+                    continue
+                n = side.get("finished", side.get("n", 0))
+                rate = "-" if side.get("rate") is None else f"{round(side['rate'] * 100)}%"
+                floor = " (below floor)" if n < data.get("floor", 5) else ""
+                base = _grid_baseline(c.get("baseline")) if layer == "natural" else ""
+                print(f"{k['vendor']}:{k['model']} {k['capability']}\t{n}{floor}\t{layer}\t{rate}\t{base}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1609,6 +1659,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "bench":
         return _bench(args)
+
+    if args.command == "harness":
+        return _harness(args)
 
     if args.command == "teardown":
         return _teardown(args)

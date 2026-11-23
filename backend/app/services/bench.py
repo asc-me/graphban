@@ -191,3 +191,35 @@ def list_results(db: Session, project_id: str, *, vendor: str | None = None,
     if model:
         q = q.where(BenchBaseline.model == model)
     return [view(r) for r in db.scalars(q.order_by(BenchBaseline.posted_at.desc())).all()]
+
+
+def attach_baselines(db: Session, project_id: str, cells: list[dict]) -> None:
+    """Give every grid cell (and each family's leaves) a `baseline` block, or None.
+
+    Matches on vendor, model, binary_version and capability, newest posted record first. The
+    block is its own object: it is never added to a cell's natural or probe counts (P98 D11).
+    """
+    from app.models import BenchBaseline
+    from app.services.harness import FLOOR
+
+    rows = db.scalars(select(BenchBaseline).where(
+        BenchBaseline.source_project_id == project_id)
+        .order_by(BenchBaseline.posted_at.desc())).all()
+    latest: dict[tuple, dict] = {}
+    for r in rows:
+        for cap, roll in (r.rollups or {}).items():
+            latest.setdefault((r.vendor, r.model, r.binary_version, cap), {
+                "suite_id": r.suite_id, "suite_version": r.suite_version, "n": roll["n"],
+                "green": roll["green"],
+                "rate": round(roll["green"] / roll["n"], 3) if roll["n"] else None,
+                "below_floor": roll["n"] < FLOOR})
+
+    def block(cell: dict) -> dict | None:
+        k = cell["key"]
+        found = latest.get((k["vendor"], k["model"], k["binary_version"], k["capability"]))
+        return dict(found) if found else None
+
+    for cell in cells:
+        cell["baseline"] = block(cell)
+        for leaf in cell.get("leaves") or []:
+            leaf["baseline"] = block(leaf)

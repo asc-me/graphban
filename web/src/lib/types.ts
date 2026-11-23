@@ -3106,8 +3106,19 @@ export interface HarnessUtilization {
   };
 }
 
+/** A baseline suite result for a cell (GRPH-P98 §6). Never pooled with natural or probe. */
+export interface HarnessBaseline {
+  suite_id: string;
+  suite_version: string;
+  n: number;
+  green: number;
+  rate: number | null;
+  below_floor: boolean;
+}
+
 export interface HarnessCell {
   key: HarnessCellKey;
+  baseline?: HarnessBaseline | null;
   kind?: "family" | "leaf" | "other";
   family?: string;
   /** `family rollup` for a family cell; the leaf id; or `other`. Criterion 3. */

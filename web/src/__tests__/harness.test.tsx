@@ -203,6 +203,25 @@ describe("Harness page", () => {
     expect(screen.getByTestId("harness-floor-note")).toHaveTextContent("1 of 1 cells");
   });
 
+  it("says no baseline when a cell has none", async () => {
+    harness.mockResolvedValueOnce(report());
+    show();
+    expect(await screen.findByTestId("harness-baseline")).toHaveTextContent("no baseline");
+  });
+
+  it("greys a baseline under the floor and shows its n, suite and version", async () => {
+    harness.mockResolvedValueOnce(
+      report({ cells: [cell({ baseline: { suite_id: "template", suite_version: "0.1.0", n: 2,
+                                           green: 1, rate: 0.5, below_floor: true } })] }),
+    );
+    show();
+    const thin = await screen.findByTestId("harness-baseline");
+    expect(thin).toHaveTextContent("n 2");
+    expect(thin).toHaveTextContent("template v0.1.0");
+    expect(thin).toHaveAttribute("data-below-floor", "true");
+    expect(thin).toHaveClass("text-faint");
+  });
+
   it("badges a lopsided cell without changing its rate", async () => {
     harness.mockResolvedValueOnce(
       report({

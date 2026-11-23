@@ -164,6 +164,18 @@ def post_surface(body: SurfaceIn, db: Session = Depends(get_db),
     return stored
 
 
+@router.get("/grid")
+def harness_grid(project_id: str, window_days: int | None = None,
+                 db: Session = Depends(get_db), key=Depends(get_agent_key)):
+    """The grid's cells for an agent key (`gbfleet harness grid`, GRPH-1862). Same payload as
+    the page reads, with each cell's `baseline` beside its natural and probe numbers."""
+    if project_id not in authz.key_writable_ids(db, key):
+        raise HTTPException(404, "no such project")
+    out = harness_svc.report(db, project_id, window_days=window_days)
+    db.commit()
+    return out
+
+
 @router.get("/recommendations")
 def recommendations(project_id: str | None = None, org_id: str | None = None,
                     window_days: int | None = None,
