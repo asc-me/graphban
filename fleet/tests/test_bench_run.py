@@ -267,6 +267,7 @@ def test_cli_children_and_roster_use_the_scratch_key_not_the_source_key(repo, tm
 
     clients: list = []
     seats: list = []
+    slots: list = []
     source = KeyedServer(["t1"], key="scratch-key")
     source.get_suite = lambda project_id: {"version": 1, "tasks": [row(repo)]}
 
@@ -282,6 +283,7 @@ def test_cli_children_and_roster_use_the_scratch_key_not_the_source_key(repo, tm
 
     def start_one(tree, seat, factory, client, *a, **k):
         seats.append((seat, client))
+        slots.append(k.get("slot"))
         raise LaunchFailed("stub")
 
     monkeypatch.setenv(cli.API_KEY_ENV, "source-key")
@@ -298,6 +300,8 @@ def test_cli_children_and_roster_use_the_scratch_key_not_the_source_key(repo, tm
     assert seat.api_key == "scratch-key" and seat.code == "C-t1"
     assert roster.api_key == "scratch-key" and roster.project_id == "scratch"
     assert source.posted["outcomes"][0]["outcome"] == "never_registered"
+    # GRPH-1883: the log slot is the whole task id, never its last dash segment.
+    assert slots == ["t1"]
 
 
 # --- the template fixture (bounce of attempt 2) --------------------------------------------

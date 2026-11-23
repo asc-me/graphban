@@ -249,3 +249,26 @@ def test_a_review_task_without_a_pr_or_ref_is_refused_by_name(client, env, drop)
     r = _open(client, env, tasks=[task])
     assert r.status_code == 422 and drop in r.text, r.text
     assert _counts(env["proj"])[:2] == before[:2]
+
+
+def test_build_seat_cannot_claim_review_and_review_seat_gets_its_own_item(client, env):
+    """GRPH-1883: a build child must not take the run's review items, and a review child
+    gets its own task's item rather than the queue head."""
+    tasks = [
+        {"id": "b1", "title": "build it"},
+        {"id": "r1", "kind": "review", "title": "older", "ref": "gb/x", "expect": "bounce", "pr": PR},
+        {"id": "r2", "kind": "review", "title": "newer", "ref": "gb/y", "expect": "bounce", "pr": PR},
+    ]
+    out = _open(client, env, tasks=tasks).json()
+    by = {s["task_id"]: s for s in out["seats"]}
+    build = _mcp(client, out["api_key"], "register_agent",
+                 {"enrolment_code": by["b1"]["enrolment_code"], "label": "builder"})
+    got = _mcp(client, out["api_key"], "claim_review",
+               {"agent_id": build["agent_id"], "wait_seconds": 0})
+    assert got["claimed"] is False, got
+    rev = _mcp(client, out["api_key"], "register_agent",
+               {"enrolment_code": by["r2"]["enrolment_code"], "label": "reviewer"})
+    got = _mcp(client, out["api_key"], "claim_review",
+               {"agent_id": rev["agent_id"], "wait_seconds": 0})
+    assert got["claimed"] is True, got
+    assert got["item"]["id"] == by["r2"]["item_id"]

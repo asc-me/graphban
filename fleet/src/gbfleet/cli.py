@@ -1795,7 +1795,8 @@ def _bench_run(args: argparse.Namespace) -> int:
         else:
             seat = Seat(code, args.server, scratch.api_key, declare=declare, bound_only=True)
         return sup.start_one(tree, seat, factory, scratch, limits, sup.Partition(), workspace=workspace,
-                             wave_name=wave, slot=tree.branch.rsplit("-", 1)[-1])
+                             wave_name=wave, slot="".join(
+                                 c if c.isalnum() else "-" for c in task.id))
 
     def reap(tree):
         wt_mod.reap_held(tree, vendor)
