@@ -35,7 +35,8 @@ PY_COMMAND = "python -m pytest -q"
 JS_COMMANDS = {"pnpm-lock.yaml": "pnpm test --", "yarn.lock": "yarn test"}
 JS_DEFAULT = "npm test --"
 
-DROPPED = ("flaky", "green_at_parent", "red_at_merge", "no_tests", "mutation_not_applicable")
+DROPPED = ("flaky", "green_at_parent", "red_at_merge", "no_tests", "mutation_not_applicable",
+           "no_spec")
 
 
 @dataclass
@@ -50,6 +51,8 @@ class Candidate:
     item: str = ""
     sabotage: bool = False
     committed_at: int = 0
+    #: The merge commit body (a squash merge carries the PR body); the spec when no item is named.
+    body: str = ""
 
 
 @dataclass
@@ -181,7 +184,7 @@ def harvest(repo: Path, *, branch: str = "HEAD", since: str = "180d", limit: int
         result.candidates.append(Candidate(
             id=f"h-{sha[:10]}", merge_sha=sha, base_sha=parent, title=title, command=cmd,
             tests=files, touchpoints=[p for p in changed if not is_test_path(p)], item=item,
-            sabotage=bool(item and item in red_sabotage), committed_at=ct))
+            sabotage=bool(item and item in red_sabotage), committed_at=ct, body=body.strip()))
     # Red-sabotage items first, then the most recent.
     result.candidates.sort(key=lambda c: (not c.sabotage, -c.committed_at))
     return result
@@ -207,13 +210,69 @@ def load_candidates(repo: Path) -> dict[str, Candidate]:
     return {r["id"]: Candidate(**r) for r in rows}
 
 
-def to_task(c: Candidate, capability: str = "B7") -> dict:
-    """The suite-store task body for a candidate (a build task; the merge is the reference)."""
+_ACCEPT_HEAD = re.compile(r"^#{1,6}\s*acceptance\b.*$", re.I | re.M)
+_TRAILER = re.compile(r"^(co-authored-by|signed-off-by|generated with)\b.*$", re.I | re.M)
+
+
+def _bullets(text: str) -> list[str]:
+    out = []
+    for line in text.splitlines():
+        m = re.match(r"\s*(?:[-*]|\d+[.)])\s+(.*\S)", line)
+        if m:
+            out.append(m.group(1).strip())
+    return out
+
+
+def spec_from_item(item: dict) -> dict | None:
+    """`{description, acceptance}` from a server item, or None when it has no description.
+    The `## Acceptance` section's bullets are the acceptance; the description keeps the rest."""
+    text = str(item.get("description") or "").strip()
+    if not text:
+        return None
+    m = _ACCEPT_HEAD.search(text)
+    if not m:
+        return {"description": text, "acceptance": []}
+    rest = text[m.end():]
+    nxt = re.search(r"^#{1,6}\s", rest, re.M)
+    section = rest[:nxt.start()] if nxt else rest
+    head = (text[:m.start()] + (rest[nxt.start():] if nxt else "")).strip()
+    return {"description": head or text, "acceptance": _bullets(section)}
+
+
+def spec_from_body(body: str) -> dict | None:
+    """The merge/PR body as the spec, minus commit trailers; None when nothing is left."""
+    text = _TRAILER.sub("", body or "").strip()
+    if not text:
+        return None
+    return {"description": text, "acceptance": _bullets(text) if _ACCEPT_HEAD.search(text) else []}
+
+
+def resolve_spec(c: Candidate, fetch_item=None) -> dict | None:
+    """The spec a child is given for `c`: the named item's (via `fetch_item(id) -> dict | None`),
+    else the merge body. None means `no_spec`: the candidate must not be adopted."""
+    if c.item and fetch_item is not None:
+        try:
+            item = fetch_item(c.item)
+        except Exception:  # an unreadable item falls back to the body, never to a title guess
+            item = None
+        spec = spec_from_item(item) if isinstance(item, dict) else None
+        if spec:
+            return spec
+    return spec_from_body(c.body)
+
+
+def to_task(c: Candidate, capability: str = "B7", spec: dict | None = None) -> dict:
+    """The suite-store task body for a candidate (a build task; the merge is the reference).
+    `spec` is `resolve_spec`'s answer; without one the task falls back to the bare title."""
     n = len(c.touchpoints)
+    spec = spec or {"description": c.title + (f" ({c.item})" if c.item else ""), "acceptance": []}
+    # The check's test files are held out of the child's worktree, so they are not named here.
+    acceptance = list(spec["acceptance"]) + [
+        "The held-out tests for this change pass (their files are withheld from your worktree)"]
     return {
         "id": c.id, "kind": "build", "base_sha": c.base_sha, "reference": c.merge_sha,
-        "title": c.title[:256], "description": c.title + (f" ({c.item})" if c.item else ""),
-        "acceptance": [f"{' '.join(shlex.split(c.command))} {' '.join(c.tests)} passes"],
+        "title": c.title[:256], "description": spec["description"],
+        "acceptance": acceptance,
         "touchpoints": c.touchpoints, "capabilities": [capability],
         "size_band": "S" if n <= 2 else "M" if n <= 6 else "L",
         "check": {"command": c.command, "tests": c.tests},

@@ -115,8 +115,13 @@ def test_test_pattern_mirrors_the_backend():
 
 
 class AdoptFake:
+    allowed = frozenset()
+
     def __init__(self, *a, **k):
         self.sent = None
+
+    def call(self, tool, **k):
+        return {"description": "Do it.\n\n## Acceptance\n- it works\n"}
 
     def get_suite(self, project_id):
         return {"version": 4, "tasks": []}
@@ -268,3 +273,39 @@ def test_src_layout_component_tests_the_tree_not_an_editable_install(tmp_path):
     (tmp_path / "src").mkdir()
     assert V.check_env(tmp_path)["PYTHONPATH"].split(__import__("os").pathsep)[0] == str(tmp_path / "src")
     assert V.check_env(tmp_path / "nosrc").get("PYTHONPATH") == __import__("os").environ.get("PYTHONPATH")
+
+
+def _cand(**kw):
+    base = dict(id="h-1", merge_sha="m", base_sha="b", title="Fix the thing (#9)", command="python -m pytest -q",
+                tests=["tests/test_x.py"], touchpoints=["a.py"], item="GRPH-5", body="")
+    base.update(kw)
+    return H.Candidate(**base)
+
+
+def test_adopt_carries_the_items_description_and_acceptance_not_the_title():
+    item = {"description": "Make X retry.\n\n## Acceptance\n- retries 3 times\n- gives up after\n"}
+    c = _cand()
+    spec = H.resolve_spec(c, lambda i: item)
+    task = H.to_task(c, "B7", spec)
+    assert task["description"] == "Make X retry."
+    assert task["acceptance"][:2] == ["retries 3 times", "gives up after"]
+    assert "tests/test_x.py" not in " ".join(task["acceptance"])
+
+
+def test_no_item_and_empty_body_is_no_spec_and_body_is_used_otherwise():
+    assert H.resolve_spec(_cand(item="", body=""), lambda i: None) is None
+    assert H.resolve_spec(_cand(body="Co-Authored-By: x"), lambda i: None) is None
+    assert H.resolve_spec(_cand(item="", body="Do the thing."))["description"] == "Do the thing."
+
+
+def test_adopt_drops_no_spec_candidate_without_posting(repo, monkeypatch, capsys):
+    monkeypatch.setattr(H, "PY_COMMAND", PYTEST)
+    cli.main(["bench", "harvest", "--repo", str(repo), "--since", ""])
+    cid = next(iter(H.load_candidates(repo)))
+    fake = AdoptFake()
+    fake.call = lambda tool, **k: {}
+    monkeypatch.setattr(cli, "Graphban", lambda *a, **k: fake)
+    monkeypatch.setenv("GBFLEET_API_KEY", "k")
+    assert cli.main(["bench", "adopt", cid, "--repo", str(repo), "--server", "http://x",
+                     "--project", "p"]) == 1
+    assert fake.sent is None and "no_spec" in capsys.readouterr().out

@@ -1674,8 +1674,23 @@ def _bench_adopt(args: argparse.Namespace) -> int:
         print(f"gbfleet bench adopt: no harvested candidate {', '.join(missing)}; "
               "run `gbfleet bench harvest` first", file=sys.stderr)
         return 1
-    tasks = [harvest_mod.to_task(cands[i], args.capability) for i in args.ids]
     client = Graphban(args.server, api_key, project_id=args.project)
+    # Reading the named item is the one extra read adopt needs, on this instance only.
+    client.allowed = client.allowed | {"get_item_details"}
+
+    def fetch_item(item_id: str):
+        return client.call("get_item_details", id=item_id)
+
+    tasks = []
+    for i in args.ids:
+        spec = harvest_mod.resolve_spec(cands[i], fetch_item)
+        if spec is None:
+            print(f"dropped {i}: no_spec (no readable item description or merge body)")
+            continue
+        tasks.append(harvest_mod.to_task(cands[i], args.capability, spec))
+    if not tasks:
+        print("gbfleet bench adopt: nothing to adopt; every candidate had no_spec", file=sys.stderr)
+        return 1
     try:
         version = args.expected_version
         if version is None:
