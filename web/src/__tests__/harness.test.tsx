@@ -265,6 +265,35 @@ describe("Harness page", () => {
     expect(lines.map((l) => l.textContent)).toContain("50% n 6 · template v0.1.0 @ 0.9.1");
   });
 
+  it("renders a baseline-only row for a model natural traffic never ran (GRPH-1876)", async () => {
+    // The server's shape for a baseline with no natural cell: a top-level leaf, layer baseline,
+    // natural n 0, and the baseline block. It is the only cell for this model.
+    const only: HarnessCell = {
+      key: { vendor: "anthropic", model: "sonnet", binary_version: "2.1.37", capability: "B5", size_band: "" },
+      kind: "leaf", family: "B", label: "B5", layer: "baseline",
+      finished: 0, signed_off: 0, bounced: 0, rate: null, below_floor: true,
+      sampling: { first_choice: 0, fallback: 0, explicit: 0, unknown: 0, probe: 0 },
+      skew: null, median_seconds: null,
+      cost: { comparable: false, reported: 0, finished: 0,
+              reason: "not comparable: 0 of 0 attempts reported tokens" },
+      series: [], versions_seen: ["2.1.37"], is_current_version: true,
+      baseline: { suite_id: "template", suite_version: "0.1.0", binary_version: "2.1.37",
+                  n: 6, green: 5, rate: 0.833, below_floor: false },
+    };
+    harness.mockResolvedValueOnce(report({
+      capability_set: { leaves: ["B3", "B5"], families: { B: ["B3", "B5"], other: [] },
+                        labels: { B: "Layer", B3: "Service", B5: "React component", other: "other" } },
+      cells: [only],
+    }));
+    show();
+    const fam = await screen.findByTestId("harness-baseline");
+    expect(fam).toHaveAttribute("data-family", "true");
+    expect(screen.getAllByText(/sonnet/).length).toBeGreaterThan(0);
+    await userEvent.setup().click(screen.getByRole("button", { name: /^Expand Layer into/ }));
+    const lines = screen.getAllByTestId("harness-baseline").map((l) => l.textContent);
+    expect(lines).toContain("83% n 6 · template v0.1.0 @ 2.1.37");
+  });
+
   it("badges a lopsided cell without changing its rate", async () => {
     harness.mockResolvedValueOnce(
       report({

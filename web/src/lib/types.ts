@@ -3121,6 +3121,8 @@ export interface HarnessBaseline {
 export interface HarnessCell {
   key: HarnessCellKey;
   baseline?: HarnessBaseline | null;
+  /** `baseline` on a row only a bench baseline covers: its natural n is 0. */
+  layer?: "baseline";
   kind?: "family" | "leaf" | "other";
   family?: string;
   /** `family rollup` for a family cell; the leaf id; or `other`. Criterion 3. */
