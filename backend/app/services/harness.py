@@ -1148,6 +1148,8 @@ def report(db: Session, project_id: str, *, window_days: int | None = None,
     out = _shape(rows, window=window, versions=versions, facts=facts)
     out["project_id"] = project_id
     out["scope"] = "project"
+    from app.services import bench as bench_svc
+    bench_svc.attach_baselines(db, project_id, out["cells"])
     out["capability_set"] = capability_catalog()
     out["coverage"] = _coverage(db, [project_id], cutoff)
     out["review_cells"] = review_cells(db, [project_id])

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronsLeft, ChevronsRight, X } from "lucide-react";
 
 import { cn } from "@/lib/cn";
-import type { HarnessCell, HarnessCost, HarnessReport, HarnessRoutingRow, HarnessSampling } from "@/lib/types";
+import type { HarnessBaseline, HarnessCell, HarnessCost, HarnessReport, HarnessRoutingRow, HarnessSampling } from "@/lib/types";
 import { TIER, accentMap, modelFamily, modelVendor, pairKey, pct, tierOf } from "@/features/harness/look";
 
 const EFFORTS = ["All", "S", "M", "L"] as const;
@@ -70,6 +70,60 @@ function aggregate(cells: HarnessCell[], floor: number, leafTicks: Agg["leafTick
     probe: cells.reduce((s, c) => s + (c.sampling.probe ?? 0), 0),
     leafTicks,
   };
+}
+
+/**
+ * The baseline for a cell set, kept apart from the natural and probe numbers. A row pools
+ * every binary_version the payload serves (current and previous), but a baseline belongs to
+ * one: take the newest version present in the set (by the server's `versions_seen` order) and
+ * that version's own baseline. An older version's baseline is never shown in its place.
+ */
+export function baselineOf(cells: HarnessCell[]): { version: string; baseline: HarnessBaseline | null } | null {
+  if (cells.length === 0) return null;
+  const present = new Set(cells.map((c) => c.key.binary_version));
+  const order = cells.find((c) => c.versions_seen?.length)?.versions_seen ?? [];
+  const ranked = order.filter((v) => present.has(v));
+  const current = cells.find((c) => c.is_current_version)?.key.binary_version;
+  const version = current ?? ranked[ranked.length - 1] ?? cells[0].key.binary_version;
+  const baseline = cells.find((c) => c.key.binary_version === version && c.baseline)?.baseline ?? null;
+  return { version, baseline };
+}
+
+export const baselineText = (b: HarnessBaseline | null, version?: string): string => {
+  const at = version ? ` @ ${version}` : "";
+  return b
+    ? `${b.rate === null ? "—" : pct(b.rate)} n ${b.n} · ${b.suite_id} v${b.suite_version}${at}`
+    : `no baseline${at}`;
+};
+
+function BaselineLine({ cells, family }: { cells: HarnessCell[]; family: boolean }) {
+  if (family) {
+    // Baselines are per function; a family has no number of its own. A dash, not "no
+    // baseline": that phrase is reserved for a function with no run.
+    return (
+      <span
+        data-testid="harness-baseline"
+        data-family="true"
+        className="whitespace-nowrap font-mono text-[10px] text-faint"
+        title="Baselines are per function: expand the family to see each one"
+      >
+        baseline —
+      </span>
+    );
+  }
+  const picked = baselineOf(cells);
+  const baseline = picked?.baseline ?? null;
+  return (
+    <span
+      data-testid="harness-baseline"
+      data-below-floor={baseline?.below_floor ? "true" : "false"}
+      data-version={picked?.version ?? ""}
+      className={cn("whitespace-nowrap font-mono text-[10px]", !baseline || baseline.below_floor ? "text-faint" : "text-fg-2")}
+      title={`Baseline suite result for binary ${picked?.version ?? "?"}: never pooled with the natural or probe rate`}
+    >
+      {baselineText(baseline, picked?.version)}
+    </span>
+  );
 }
 
 const rateOf = (a: Agg) => (a.finished ? a.signed_off / a.finished : null);
@@ -548,6 +602,7 @@ export function PerformanceGrid({
                             </span>
                           </>
                         )}
+                        <BaselineLine cells={a.cells} family={isFam} />
                       </button>
                     </div>
                   );

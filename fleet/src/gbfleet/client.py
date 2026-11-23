@@ -58,6 +58,7 @@ ATTEMPTS_PATH = "/api/fleet/attempts"
 #: The same rule as attempts: a REST route on this credential is a deliberate widening,
 #: and the body is names only — the scanner drops URLs, headers and paths before posting.
 SURFACE_PATH = "/api/harness/surface"
+GRID_PATH = "/api/harness/grid"
 #: Facts only the supervisor knows about a tree it cut (GRPH-975): the base, the draft PR,
 #: a salvage, a withheld proposal. One route, so a later kind extends it rather than adding
 #: a path. The body is those facts; the server composes the note. Not a tool — widening
@@ -242,6 +243,28 @@ class Graphban:
         start a wave because the Harness page is a report behind.
         """
         return self._post(SURFACE_PATH, payload, timeout=10.0)
+
+    def get_grid(self, project_id: str, *, timeout: float = 20.0) -> dict:
+        """The Harness grid's cells, read with the agent key (`gbfleet harness grid`).
+
+        A read of one fixed path; raises ObservationRefused on any failure so the CLI can
+        name it. Not a door for other reads: the path is not a parameter.
+        """
+        url = self.base_url.rstrip("/") + GRID_PATH
+        try:
+            reply = self._client().get(url, params={"project_id": project_id}, timeout=timeout)
+        except httpx.HTTPError as exc:
+            raise ObservationRefused(f"{GRID_PATH}: {exc}") from exc
+        if reply.status_code >= 400:
+            raise ObservationRefused(f"{GRID_PATH}: HTTP {reply.status_code}: {reply.text[:300]}",
+                                     status=reply.status_code)
+        try:
+            parsed = reply.json()
+        except ValueError:
+            raise ObservationRefused(f"{GRID_PATH}: reply was not JSON")
+        if not isinstance(parsed, dict):
+            raise ObservationRefused(f"{GRID_PATH}: reply was not an object")
+        return parsed
 
     def post_observation(self, *, timeout: float = 10.0, **payload: Any) -> dict:
         """One fact about a tree this supervisor cut (GRPH-975).

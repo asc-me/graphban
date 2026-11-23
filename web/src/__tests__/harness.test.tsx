@@ -203,6 +203,79 @@ describe("Harness page", () => {
     expect(screen.getByTestId("harness-floor-note")).toHaveTextContent("1 of 1 cells");
   });
 
+  it("says no baseline when a cell has none", async () => {
+    harness.mockResolvedValueOnce(report());
+    show();
+    expect(await screen.findByTestId("harness-baseline")).toHaveTextContent("no baseline");
+  });
+
+  it("greys a baseline under the floor and shows its n, suite and version", async () => {
+    harness.mockResolvedValueOnce(
+      report({ cells: [cell({ baseline: { suite_id: "template", suite_version: "0.1.0", n: 2,
+                                           green: 1, rate: 0.5, below_floor: true } })] }),
+    );
+    show();
+    const thin = await screen.findByTestId("harness-baseline");
+    expect(thin).toHaveTextContent("n 2");
+    expect(thin).toHaveTextContent("template v0.1.0");
+    expect(thin).toHaveAttribute("data-below-floor", "true");
+    expect(thin).toHaveClass("text-faint");
+  });
+
+  it("shows the newest version's own baseline, never an older version's", async () => {
+    // Two binaries of one model pool into one row; only the older one has a baseline.
+    const old = cell({
+      key: { ...cell().key, binary_version: "0.9.0" },
+      versions_seen: ["0.9.0", "0.9.1"], is_current_version: false,
+      baseline: { suite_id: "template", suite_version: "0.1.0", binary_version: "0.9.0", n: 9,
+                  green: 9, rate: 1, below_floor: false },
+    });
+    const cur = cell({ versions_seen: ["0.9.0", "0.9.1"], is_current_version: true, baseline: null });
+    harness.mockResolvedValueOnce(report({ cells: [old, cur] }));
+    show();
+    const b = await screen.findByTestId("harness-baseline");
+    expect(b).toHaveTextContent("no baseline @ 0.9.1");
+    expect(b).not.toHaveTextContent("100%");
+    expect(b).toHaveAttribute("data-version", "0.9.1");
+  });
+
+  it("names the version a baseline was measured at", async () => {
+    const cur = cell({
+      versions_seen: ["0.9.0", "0.9.1"], is_current_version: true,
+      baseline: { suite_id: "template", suite_version: "0.1.0", binary_version: "0.9.1", n: 8,
+                  green: 6, rate: 0.75, below_floor: false },
+    });
+    const old = cell({ key: { ...cell().key, binary_version: "0.9.0" },
+                       versions_seen: ["0.9.0", "0.9.1"], is_current_version: false, baseline: null });
+    harness.mockResolvedValueOnce(report({ cells: [old, cur] }));
+    show();
+    const b = await screen.findByTestId("harness-baseline");
+    expect(b).toHaveTextContent("75% n 8 · template v0.1.0 @ 0.9.1");
+    expect(b).toHaveAttribute("data-below-floor", "false");
+  });
+
+  it("gives a family column a dash, not a false no baseline, and its leaf its own", async () => {
+    const leafBaseline = { suite_id: "template", suite_version: "0.1.0", binary_version: "0.9.1",
+                           n: 6, green: 3, rate: 0.5, below_floor: false };
+    harness.mockResolvedValueOnce(
+      report({
+        cells: [cell({
+          kind: "family", family: "B", label: "family rollup",
+          key: { ...cell().key, capability: "B" }, baseline: undefined,
+          leaves: [{ ...cell(), kind: "leaf", family: "B", label: "B5",
+                     key: { ...cell().key, capability: "B5" }, baseline: leafBaseline }],
+        })],
+      }),
+    );
+    show();
+    const fam = await screen.findByTestId("harness-baseline");
+    expect(fam).toHaveAttribute("data-family", "true");
+    expect(fam).not.toHaveTextContent("no baseline");
+    await userEvent.setup().click(screen.getByRole("button", { name: /^Expand B into/ }));
+    const lines = screen.getAllByTestId("harness-baseline");
+    expect(lines.map((l) => l.textContent)).toContain("50% n 6 · template v0.1.0 @ 0.9.1");
+  });
+
   it("badges a lopsided cell without changing its rate", async () => {
     harness.mockResolvedValueOnce(
       report({
