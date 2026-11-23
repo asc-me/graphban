@@ -537,6 +537,22 @@ def build_parser() -> argparse.ArgumentParser:
     bench_ad.add_argument("--capability", default="B7", help="PRD-41 capability leaf for the tasks")
     bench_ad.add_argument("--expected-version", type=int, default=None,
                           help="suite version to write against (default: read the current one)")
+    bench_run = bench_do.add_parser(
+        "run", help="run an adapter against a bench suite and post the baseline",
+        description="Per build task: a worktree at base_sha with the check's tests held out, "
+                    "a child under ordinary supervision, then the check with the tests restored.",
+    )
+    bench_run.add_argument("--suite", choices=("template", "repo", "all"), required=True)
+    bench_run.add_argument("--adapter", required=True, help="vendor[:model]")
+    bench_run.add_argument("--dry-run", action="store_true",
+                           help="list tasks, adapter, model and estimated spend; spawn nothing")
+    bench_run.add_argument("--repo", default=".", help="the git repository (default: here)")
+    bench_run.add_argument("--server", required=True, help="Graphban base URL")
+    bench_run.add_argument("--project", required=True, help="project id")
+    bench_run.add_argument("--binary", default=None, help="path to the vendor binary")
+    bench_run.add_argument("--workspace", default=None, help="where worktrees go")
+    bench_run.add_argument("--child-wall-clock", type=float, default=3600.0)
+    bench_run.add_argument("--registration-window", type=float, default=None)
 
     harn = sub.add_parser("harness", help="read the Harness page's numbers (grid)")
     harn_do = harn.add_subparsers(dest="act", metavar="ACT")
@@ -1633,10 +1649,97 @@ def _bench_adopt(args: argparse.Namespace) -> int:
     return 0
 
 
+def _bench_run(args: argparse.Namespace) -> int:
+    from . import supervisor as sup
+    from . import worktree as wt_mod
+    from .bench import run as run_mod
+    from .spawn import Reason, stop as stop_child
+
+    api_key = os.environ.get(API_KEY_ENV)
+    if not api_key:
+        print(f"gbfleet bench run: set ${API_KEY_ENV} to an agent key", file=sys.stderr)
+        return 2
+    vendor, _, model = args.adapter.partition(":")
+    client = Graphban(args.server, api_key, project_id=args.project)
+    tasks: list = []
+    counts: dict[str, int] = {}
+    ids: dict[str, str] = {}
+    if args.suite in ("template", "all"):
+        tpl = run_mod.template_suite()
+        got = list(tpl.tasks) if tpl else []
+        counts["template"] = len(got)
+        tasks += got
+        if tpl:
+            ids["template"] = f"{tpl.id}@{tpl.version}"
+    if args.suite in ("repo", "all"):
+        try:
+            suite_row = client.get_suite(args.project)
+        except ObservationRefused as exc:
+            print(f"gbfleet bench run: {exc}", file=sys.stderr)
+            return 1
+        got = [run_mod.task_from_row(r) for r in suite_row.get("tasks") or []]
+        counts["repo"] = len(got)
+        tasks += got
+        ids["repo"] = f"repo@{suite_row.get('version', 0)}"
+        if args.suite == "repo" and not got:
+            print(run_mod.EMPTY_REPO, file=sys.stderr)
+            return 2
+    suite_id = args.suite if args.suite != "all" else "all"
+    suite_version = "+".join(ids.values()) or "0"
+    _p, policy, _n, _m, _c, _t = read_preferences(client)
+    plan = run_mod.build_plan(tasks, adapter=args.adapter, model=model, suite_id=suite_id,
+                              suite_version=suite_version, caps=policy.caps, counts=counts)
+    for line in plan.describe():
+        print(line)
+    if args.dry_run:
+        print("dry run: nothing was spawned")
+        return 0
+    if not plan.tasks:
+        print("nothing to run")
+        return 0
+    try:
+        factory = make_adapter_factory(vendor, args.binary, model)
+    except AdapterError as exc:
+        print(f"gbfleet bench run: {exc}", file=sys.stderr)
+        return 2
+    repo = repo_root(Path(args.repo))
+    workspace = Path(args.workspace) if args.workspace else repo.parent / f"{repo.name}-bench"
+    wave = "bench"
+    limits = Limits(max_workers=1, child_wall_clock=args.child_wall_clock,
+                    registration_window=args.registration_window)
+
+    def cut(task):
+        return sup._tree_for(repo, workspace, wave, "".join(
+            c if c.isalnum() else "-" for c in task.id), base=task.base_sha)
+
+    def start(tree, code, task, scratch):
+        seat = Seat(code, args.server, api_key, declare={"vendor": vendor, "model": model, "tier": "cheap"},
+                    bound_only=True)
+        return sup.start_one(tree, seat, factory, scratch, limits, sup.Partition(), workspace=workspace,
+                             wave_name=wave, slot=tree.branch.rsplit("-", 1)[-1])
+
+    def reap(tree):
+        wt_mod.reap_held(tree, vendor)
+
+    def stop(child):
+        stop_child(child, Reason.WALL_CLOCK)
+
+    posted = run_mod.run_plan(
+        plan, repo=repo, client=client,
+        open_scratch=lambda run: Graphban(args.server, api_key, project_id=run["project_id"]),
+        start=start, cut=cut, limits=limits, stop=stop, reap=reap, wave=wave)
+    for r in posted.get("results", []):
+        print(f"{r.task_id}: {r.outcome}" + (f" ({r.detail})" if r.detail else ""))
+    print(f"posted {len(posted.get('results', []))} outcome(s) for {args.adapter}")
+    return 0
+
+
 def _bench(args: argparse.Namespace) -> int:
     from .bench import suite as suite_mod
     from .bench import validate as validate_mod
 
+    if args.act == "run":
+        return _bench_run(args)
     if args.act == "harvest":
         return _bench_harvest(args)
     if args.act == "adopt":

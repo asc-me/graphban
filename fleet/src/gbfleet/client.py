@@ -62,6 +62,9 @@ GRID_PATH = "/api/harness/grid"
 #: The repo suite (GRPH-P98 §3): read with `get_suite`, written with `adopt_suite`.
 SUITE_PATH = "/api/bench/suite"
 SUITE_ADOPT_PATH = "/api/bench/suite/adopt"
+#: A baseline run (GRPH-P98 §4): open it for a scratch project and seats, post its results.
+BENCH_RUNS_PATH = "/api/bench/runs"
+BENCH_RESULTS_PATH = "/api/bench/results"
 #: Facts only the supervisor knows about a tree it cut (GRPH-975): the base, the draft PR,
 #: a salvage, a withheld proposal. One route, so a later kind extends it rather than adding
 #: a path. The body is those facts; the server composes the note. Not a tool — widening
@@ -75,7 +78,8 @@ OBSERVATIONS_PATH = "/api/fleet/observations"
 OBSERVATION_PROBE_ITEM = "__gbfleet_probe_no_such_item__"
 OBSERVATION_PROBE = {"item_id": OBSERVATION_PROBE_ITEM, "kind": "cut_from"}
 ALLOWED_PATHS: frozenset[str] = frozenset(
-    {ATTEMPTS_PATH, SURFACE_PATH, OBSERVATIONS_PATH, SUITE_ADOPT_PATH})
+    {ATTEMPTS_PATH, SURFACE_PATH, OBSERVATIONS_PATH, SUITE_ADOPT_PATH,
+     BENCH_RUNS_PATH, BENCH_RESULTS_PATH})
 
 #: Short on purpose. This is a measurement posted beside real work; a supervisor waiting on it
 #: is a supervisor not starting a child.
@@ -298,6 +302,20 @@ class Graphban:
                          timeout=timeout, strict=True)
         if not isinstance(got, dict):
             raise ObservationRefused(f"{SUITE_ADOPT_PATH}: empty reply")
+        return got
+
+    def open_bench_run(self, body: dict, *, timeout: float = 60.0) -> dict:
+        """Open a baseline run: `{id, project_id, seats[]}`. Raises ObservationRefused."""
+        got = self._post(BENCH_RUNS_PATH, body, timeout=timeout, strict=True)
+        if not isinstance(got, dict):
+            raise ObservationRefused(f"{BENCH_RUNS_PATH}: empty reply")
+        return got
+
+    def post_bench_result(self, body: dict, *, timeout: float = 30.0) -> dict:
+        """Store one baseline record. Raises ObservationRefused."""
+        got = self._post(BENCH_RESULTS_PATH, body, timeout=timeout, strict=True)
+        if not isinstance(got, dict):
+            raise ObservationRefused(f"{BENCH_RESULTS_PATH}: empty reply")
         return got
 
     def post_observation(self, *, timeout: float = 10.0, **payload: Any) -> dict:

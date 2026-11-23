@@ -105,6 +105,22 @@ red sabotage) rank first, then the most recent. Candidates are saved in the repo
 with `expected_version` (read from the server, or `--expected-version N`). On a 409 it prints the
 suite's current version and exits 1.
 
+`gbfleet bench run --suite template|repo|all --adapter vendor[:model] --server URL --project P
+[--dry-run]` runs one baseline. It opens a bench run on the server (a scratch project and one bound
+seat per task), then for each build task cuts a worktree at `base_sha` with the check's test files
+held out (added files absent, modified files at their base version), spawns the child through the
+ordinary supervisor path (`start_one`: registration window, `--child-wall-clock`, reap and
+salvage), and on exit restores the held-out files and runs the check. Outcomes are
+`never_registered`, `no_branch`, `check_red`, `check_green`, `timed_out` or `harness_error`, and
+are posted to `/api/bench/results`. A failure to acquire seats records `harness_error` for every
+task. Review tasks are not run.
+
+`--dry-run` lists the tasks, adapter, model and an estimated token spend (by `size_band`) and
+spawns nothing. A task whose estimate exceeds a `fleet_policy.caps` value (`per_attempt_tokens`,
+`per_item_tokens`) is skipped with the cap named. `--suite repo` with no adopted tasks exits 2
+(`repo suite has 0 tasks; run gbfleet bench harvest or use --suite template`); `--suite all`
+reports an empty suite as 0 tasks and never skips it.
+
 ## Reading an empty result
 
 "No ready work to partition" means nothing is ready, not that everything is done. "Nothing
