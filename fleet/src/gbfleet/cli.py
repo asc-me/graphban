@@ -516,6 +516,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bench_val.add_argument("manifest", help="the suite manifest (TOML)")
     bench_val.add_argument("--repo", default=".", help="the suite's git repository (default: here)")
+    bench_do.add_parser("list", help="name the shipped template suite, its version and task count")
     bench_har = bench_do.add_parser(
         "harvest",
         help="propose candidate tasks from the repo's merge history (writes nothing to the server)",
@@ -1773,6 +1774,14 @@ def _bench(args: argparse.Namespace) -> int:
         return _bench_adopt(args)
     if args.act == "compare":
         return _bench_compare(args)
+    if args.act == "list":
+        try:
+            tpl = suite_mod.load(suite_mod.template_manifest())
+        except suite_mod.SuiteError as exc:
+            print(f"gbfleet bench list: {exc}", file=sys.stderr)
+            return 1
+        print(f"template: {tpl.id} v{tpl.version} ({len(tpl.tasks)} tasks)")
+        return 0
     if args.act != "validate":
         print("gbfleet bench: say what to do. Try `gbfleet bench validate MANIFEST`.", file=sys.stderr)
         return 2
@@ -1781,10 +1790,13 @@ def _bench(args: argparse.Namespace) -> int:
     except suite_mod.SuiteError as exc:
         print(f"gbfleet bench validate: {exc}", file=sys.stderr)
         return 1
+    problems = suite_mod.leaf_floor_problems(loaded) if loaded.id == suite_mod.TEMPLATE_ID else []
+    for line in problems:
+        print(f"gbfleet bench validate: {line}", file=sys.stderr)
     verdicts = validate_mod.validate(loaded, Path(args.repo))
     for v in verdicts:
         print(v.line())
-    return 0 if all(v.ok for v in verdicts) else 1
+    return 0 if all(v.ok for v in verdicts) and not problems else 1
 
 
 def _grid_baseline(b: dict | None) -> str:

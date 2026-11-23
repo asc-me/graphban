@@ -7,6 +7,7 @@ into a child's worktree.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -166,3 +167,44 @@ def load(path: str | Path) -> Suite:
     except OSError as exc:
         raise SuiteError(f"cannot read {path}: {exc}") from exc
     return parse(text)
+
+
+#: The shipped template suite (PRD-98 section 2) lives in package data next to its fixture-repo
+#: generator, README and `hash.toml`, which records the content hash beside the version.
+TEMPLATE_ID = "gbfleet-template"
+#: A suite that claims a leaf needs at least this many tasks for it (PRD-41's floor).
+LEAF_FLOOR = 5
+_HASHED = ("suite.toml", "fixture.py", "README.md")
+
+
+def template_dir() -> Path:
+    return Path(__file__).with_name("template")
+
+
+def template_manifest() -> Path:
+    return template_dir() / "suite.toml"
+
+
+def content_hash(directory: Path | None = None) -> str:
+    """sha256 over the template's manifest, fixture generator and README, name-prefixed."""
+    d = directory or template_dir()
+    h = hashlib.sha256()
+    for name in _HASHED:
+        h.update(name.encode() + b"\0" + (d / name).read_bytes().replace(b"\r\n", b"\n") + b"\0")
+    return h.hexdigest()
+
+
+def recorded_hash(directory: Path | None = None) -> tuple[str, str]:
+    """(version, content_hash) as recorded in `hash.toml`."""
+    data = tomllib.loads(((directory or template_dir()) / "hash.toml").read_text(encoding="utf-8"))
+    return str(data.get("version", "")), str(data.get("content_hash", ""))
+
+
+def leaf_floor_problems(suite: Suite) -> list[str]:
+    """One line per claimed leaf with fewer than LEAF_FLOOR tasks. Empty means fine."""
+    counts: dict[str, int] = {}
+    for t in suite.tasks:
+        for cap in t.capabilities:
+            counts[cap] = counts.get(cap, 0) + 1
+    return [f"leaf {leaf} is claimed by {n} task(s); at least {LEAF_FLOOR} are needed"
+            for leaf, n in sorted(counts.items()) if n < LEAF_FLOOR]
