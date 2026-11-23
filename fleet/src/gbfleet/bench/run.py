@@ -5,8 +5,10 @@ spawned through the ordinary supervisor path (`supervisor.start_one`, so the reg
 window, wall clock, reap and salvage are the ones natural children get), the check run
 with the held-out files restored, and one outcome recorded and posted.
 
-Review tasks are not spawned here: they need a built branch and a second seat. They run
-through `review.run_review_task` with a reviewer adapter (GRPH-P98 section 8).
+Review tasks (GRPH-P98 section 8) are run here too: after `review.preflight`, a reviewer child
+is spawned with the run's adapter in a worktree at the task's `ref` (the planted-defect or clean
+commit), and its verdict (`bounce`, `sign_off`) or non-verdict is the task's outcome, scored
+against `expect`.
 """
 
 from __future__ import annotations
@@ -106,13 +108,10 @@ class Plan:
 
 def build_plan(tasks: list[Task], *, adapter: str, model: str, suite_id: str, suite_version: str,
                caps: dict | None = None, counts: dict[str, int] | None = None) -> Plan:
-    """Keep build tasks; skip one whose estimate exceeds a `fleet_policy.caps` value, naming it."""
+    """Keep build and review tasks; skip one whose estimate exceeds a `fleet_policy.caps` value, naming it."""
     plan = Plan(adapter, model, suite_id, suite_version, counts=dict(counts or {}))
     caps = caps or {}
     for t in tasks:
-        if t.kind != "build":
-            plan.skipped.append(Skipped(t.id, "review task: run through `bench.review`, not spawned here"))
-            continue
         est = estimate_tokens(t)
         over = next(((k, caps[k]) for k in TASK_CAPS
                      if isinstance(caps.get(k), (int, float)) and est > caps[k]), None)
@@ -252,6 +251,8 @@ def leaf_verdicts(task: Task, repo: Path, branch: str, outcome: str, *, commits:
 
 
 Start = Callable[..., object]
+#: `(task, scratch, item_id) -> (outcome, detail)`: a review item's verdict (`review.verdict_of`).
+ReadVerdict = Callable[[Task, object, str], tuple[str, str]]
 
 #: The field of the open-run reply carrying a credential scoped to the scratch project.
 #: The children register there and the supervisor reads its roster there; the source
@@ -332,6 +333,68 @@ def _run_task(task: Task, code: str, *, repo: Path, scratch, start: Start, limit
                   leaves=leaf_verdicts(task, repo, tree.branch, outcome))
 
 
+def _run_review(task: Task, code: str, *, repo: Path, scratch, start: Start, limits,
+                clock: Callable[[], float], sleep: Callable[[float], None], cut: Callable[..., object],
+                stop: Callable[..., object], reap: Callable[..., object],
+                read_verdict: ReadVerdict | None, seat: dict, review_skip: tuple = ()) -> Result:
+    """One review task: preflight, a reviewer child on the task's `ref`, its verdict read back.
+
+    `seat` is the server's seat row. A review task must come back seated as review work, a
+    `review_only` seat on an item already in `review`. A build seat would make the reviewer
+    child claim the item as its builder, and no verdict could ever exist (GRPH-1878).
+    `review_skip` names the run's other review items, so this child reviews its own.
+    """
+    from ..spawn import LaunchFailed
+    from . import review as review_mod
+
+    started = clock()
+    try:
+        pre = review_mod.preflight(repo, task)
+    except Exception as exc:  # noqa: BLE001
+        return Result(task.id, "harness_error", f"preflight: {str(exc)[:200]}")
+    if not pre.ok:
+        return Result(task.id, "harness_error", f"preflight {pre.line()}"[:200])
+    if read_verdict is None:
+        return Result(task.id, "harness_error", "no way to read a reviewer verdict")
+    item_id = seat.get("item_id")
+    if seat.get("kind") != "review" or not item_id:
+        return Result(task.id, "harness_error",
+                      "the server seated this review task as build work; a reviewer child "
+                      "there would build it, not review it")
+    try:
+        # The task itself, not a copy: `repo_for` knows a template task by identity.
+        tree = cut(task, base=task.ref)
+    except Exception as exc:  # noqa: BLE001
+        return Result(task.id, "harness_error", f"worktree: {str(exc)[:200]}")
+    try:
+        child = start(tree, code, task, scratch, review_skip=review_skip)
+    except LaunchFailed as exc:
+        reap(tree)
+        return Result(task.id, "never_registered", str(exc)[:200], wall_seconds=clock() - started)
+    except Exception as exc:  # noqa: BLE001
+        reap(tree)
+        return Result(task.id, "harness_error", str(exc)[:200], wall_seconds=clock() - started)
+    timed_out = False
+    while child.running:
+        if clock() - started >= limits.child_wall_clock:
+            stop(child)
+            timed_out = True
+            break
+        sleep(1.0)
+    wall = clock() - started
+    reap(tree)
+    try:
+        verdict, detail = read_verdict(task, scratch, item_id)
+    except Exception as exc:  # noqa: BLE001
+        return Result(task.id, "harness_error", f"verdict: {str(exc)[:200]}", wall_seconds=wall)
+    if verdict in ("bounce", "sign_off"):
+        # A verdict recorded before the wall clock ran out still counts.
+        return Result(task.id, verdict, detail, wall_seconds=wall)
+    if timed_out:
+        return Result(task.id, "timed_out", "child ran past its wall clock", wall_seconds=wall)
+    return Result(task.id, "no_verdict", detail, wall_seconds=wall)
+
+
 def _commits_beyond(repo: Path, branch: str, base: str) -> int:
     done = _git(repo, "rev-list", "--count", f"{base}..{branch}")
     return int(done.stdout.strip() or 0) if done.returncode == 0 else 0
@@ -343,7 +406,8 @@ def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], o
              sleep: Callable[[float], None] = time.sleep,
              stop: Callable[..., object] = lambda child: None,
              reap: Callable[..., object] = lambda tree: None, wave: str = "bench",
-             repo_for: Callable[[Task], Path] | None = None) -> dict:
+             repo_for: Callable[[Task], Path] | None = None,
+             read_verdict: ReadVerdict | None = None) -> dict:
     """Open the run, work each task, post the results. Returns the posted record.
 
     `repo_for(task)` names the repository a task's branch and check live in (the template's
@@ -352,11 +416,21 @@ def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], o
     `client.open_bench_run` and `client.post_bench_result` are the server's two bench routes;
     `open_scratch(run)` yields the client for the scratch project the children register in,
     built on `scratch_credential(run)`; a reply without that credential is `harness_error`.
+
+    A review task goes to the server with its `ref`, `expect`, a brief naming the diff and a
+    synthetic `pr` (`review.bench_pr`), so `open_run` puts it in `review` on a review-only
+    seat. `read_verdict(task, scratch, item_id)` returns `(outcome, detail)` for its item.
     """
+    from . import review as review_mod
+
     body = {"vendor": plan.adapter.split(":")[0], "model": plan.model, "binary_version": binary_version,
             "suite_id": plan.suite_id, "suite_version": plan.suite_version,
             "tasks": [{"id": p.task.id, "title": p.task.title, "description": p.task.description,
-                       "touchpoints": list(p.task.touchpoints)} for p in plan.tasks]}
+                       "touchpoints": list(p.task.touchpoints),
+                       **({"kind": "review", "ref": p.task.ref, "expect": p.task.expect,
+                           "description": review_mod.review_description(p.task),
+                           "pr": review_mod.bench_pr(plan.suite_id, p.task.id)}
+                          if p.task.kind == "review" else {})} for p in plan.tasks]}
     results: list[Result] = []
     run_id = None
     run: dict | None = None
@@ -372,14 +446,25 @@ def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], o
         # project and the run would read as a fleet of no-shows instead of plumbing.
         results = [Result(p.task.id, "harness_error", NO_SCRATCH_KEY) for p in plan.tasks]
     elif run is not None:
-        seats = {s["task_id"]: s["enrolment_code"] for s in run.get("seats", [])}
+        rows = {s["task_id"]: s for s in run.get("seats", [])}
+        seats = {tid: s.get("enrolment_code") for tid, s in rows.items()}
+        review_items = {tid: s["item_id"] for tid, s in rows.items()
+                        if s.get("kind") == "review" and s.get("item_id")}
         scratch = open_scratch(run)
         for p in plan.tasks:
             code = seats.get(p.task.id)
             if not code:
                 results.append(Result(p.task.id, "harness_error", "no seat issued for this task"))
                 continue
-            results.append(_run_task(p.task, code, repo=repo_for(p.task) if repo_for else repo, scratch=scratch, start=start,
+            task_repo = repo_for(p.task) if repo_for else repo
+            if p.task.kind == "review":
+                results.append(_run_review(p.task, code, repo=task_repo, scratch=scratch, start=start,
+                                           limits=limits, clock=clock, sleep=sleep, cut=cut, stop=stop,
+                                           reap=reap, read_verdict=read_verdict,
+                                           seat=rows[p.task.id], review_skip=tuple(
+                                               i for t, i in review_items.items() if t != p.task.id)))
+                continue
+            results.append(_run_task(p.task, code, repo=task_repo, scratch=scratch, start=start,
                                      limits=limits, wave=wave, clock=clock, sleep=sleep, cut=cut,
                                      stop=stop, reap=reap))
     by_id = {p.task.id: p.task for p in plan.tasks}
@@ -387,6 +472,8 @@ def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], o
             "outcomes": [{"task_id": r.task_id, "outcome": r.outcome,
                           "capabilities": list(by_id[r.task_id].capabilities),
                           "tokens": r.tokens, "wall_seconds": r.wall_seconds,
+                          **({"kind": "review", "expect": by_id[r.task_id].expect}
+                             if by_id[r.task_id].kind == "review" else {}),
                           **({"leaves": r.leaves} if r.leaves is not None else {})}
                          for r in results]}
     if run_id:
@@ -400,7 +487,8 @@ def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], o
 
 def to_outcomes(plan: Plan, results: list[Result]) -> list[TaskOutcome]:
     by_id = {p.task.id: p.task for p in plan.tasks}
-    return [TaskOutcome(r.task_id, "build", by_id[r.task_id].capabilities, r.outcome,
+    return [TaskOutcome(r.task_id, by_id[r.task_id].kind, by_id[r.task_id].capabilities, r.outcome,
+                        expect=by_id[r.task_id].expect if by_id[r.task_id].kind == "review" else "",
                         tokens=r.tokens, wall_seconds=r.wall_seconds,
                         leaves=({k: (v["verdict"], v["reason"]) for k, v in r.leaves.items()}
                                 if r.leaves is not None else None)) for r in results]

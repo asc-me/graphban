@@ -108,3 +108,32 @@ def test_harvest_drops_inapplicable_mutation(repo):
     missing = {"path": "gone.py", "old": "a", "new": "b"}
     _, dropped = R.propose_review_tasks(repo, [cand(repo, "GRPH-3")], {"GRPH-3": missing})
     assert [d.reason for d in dropped] == ["mutation_not_applicable"]
+
+
+# --- verdict_of: reading a live reviewer's verdict (GRPH-1874) -------------------------------
+
+def test_verdict_of_reads_done_as_sign_off():
+    assert R.verdict_of({"status": "done"}) == ("sign_off", "")
+
+
+def test_verdict_of_reads_a_bounce_off_bounce_reason_not_reviewed_by():
+    """`fleet.bounce` clears `reviewed_by`; a reader keyed on it never sees a bounce."""
+    item = {"status": "next", "reviewed_by": None, "bounce_reason": "returns the first element"}
+    assert R.verdict_of(item) == ("bounce", "")
+
+
+def test_verdict_of_reads_a_gate_refused_sign_off_as_sign_off():
+    item = {"status": "review", "evidence": [
+        {"kind": "note", "detail": "refused at `done` (pr_ci_not_green): no suite_green"}]}
+    outcome, detail = R.verdict_of(item)
+    assert outcome == "sign_off" and "pr_ci_not_green" in detail
+
+
+def test_verdict_of_untouched_item_is_no_verdict():
+    assert R.verdict_of({"status": "review", "evidence": []})[0] == "no_verdict"
+    assert R.verdict_of({"status": "next"})[0] == "no_verdict"
+
+
+def test_bench_pr_is_a_pr_url_that_cannot_resolve():
+    url = R.bench_pr("template", "review-x defect")
+    assert "/pull/" in url and ".invalid/" in url and " " not in url

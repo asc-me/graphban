@@ -83,6 +83,8 @@ SPAWN_READS: frozenset[str] = ALLOWED_TOOLS | frozenset(
 #: asked for the merge by name and the receipt is the half that makes the merge visible to
 #: the ledger. The server still bounds what that call may write by role.
 MERGE_TOOLS: frozenset[str] = frozenset({"get_item_details", "related_work", "update_item"})
+#: `bench run` reads a reviewer's verdict off its scratch item and does nothing else there.
+BENCH_VERDICT_READS: frozenset[str] = frozenset({"get_item_details"})
 
 _MERGE_HELP = (
     "finish the merge for items whose fleet.sign_off attestation names a commit — the "
@@ -1697,6 +1699,7 @@ def _bench_adopt(args: argparse.Namespace) -> int:
 def _bench_run(args: argparse.Namespace) -> int:
     from . import supervisor as sup
     from . import worktree as wt_mod
+    from .bench import review as review_mod
     from .bench import run as run_mod
     from .spawn import Reason, stop as stop_child
 
@@ -1775,15 +1778,22 @@ def _bench_run(args: argparse.Namespace) -> int:
     limits = Limits(max_workers=1, child_wall_clock=args.child_wall_clock,
                     registration_window=args.registration_window)
 
-    def cut(task):
+    def cut(task, base=None):
+        # `base` is a review task's ref: its reviewer reads the change at that commit.
         return sup._tree_for(repo_for(task), workspace, wave, "".join(
-            c if c.isalnum() else "-" for c in task.id), base=task.base_sha)
+            c if c.isalnum() else "-" for c in task.id), base=base or task.base_sha)
 
-    def start(tree, code, task, scratch):
+    def start(tree, code, task, scratch, review_skip=()):
         # The scratch client carries the scratch project's key; the source key cannot
         # register a child there (it is scoped to the source project).
-        seat = Seat(code, args.server, scratch.api_key,
-                    declare={"vendor": vendor, "model": model, "tier": "cheap"}, bound_only=True)
+        declare = {"vendor": vendor, "model": model, "tier": "cheap"}
+        if task.kind == "review":
+            # A review-only seat: the child gets the review instruction (claim_review, then
+            # sign_off or bounce), never the build one (GRPH-1874 bounce).
+            seat = Seat(code, args.server, scratch.api_key, role="reviewer", declare=declare,
+                        review_only=True, review_skip=tuple(review_skip))
+        else:
+            seat = Seat(code, args.server, scratch.api_key, declare=declare, bound_only=True)
         return sup.start_one(tree, seat, factory, scratch, limits, sup.Partition(), workspace=workspace,
                              wave_name=wave, slot=tree.branch.rsplit("-", 1)[-1])
 
@@ -1793,8 +1803,21 @@ def _bench_run(args: argparse.Namespace) -> int:
     def stop(child):
         stop_child(child, Reason.WALL_CLOCK)
 
+    def read_verdict(task, scratch, item_id):
+        """The reviewer's verdict on the task's own scratch item (`review.verdict_of`).
+
+        Read on a client that may call `get_item_details` and nothing else. The scratch
+        roster client carries the supervisor's allowlist, which reads no item.
+        """
+        reader = Graphban(args.server, scratch.api_key, project_id=getattr(scratch, "project_id", ""),
+                          allowed=BENCH_VERDICT_READS)
+        try:
+            return review_mod.verdict_of(reader.call("get_item_details", id=item_id))
+        finally:
+            reader.close()
+
     posted = run_mod.run_plan(
-        plan, repo=repo, client=client,
+        plan, repo=repo, client=client, read_verdict=read_verdict,
         open_scratch=lambda run: Graphban(args.server, run_mod.scratch_credential(run),
                                           project_id=run["project_id"]),
         start=start, cut=cut, limits=limits, stop=stop, reap=reap, wave=wave, repo_for=repo_for,

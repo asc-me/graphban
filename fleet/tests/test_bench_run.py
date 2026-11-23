@@ -70,8 +70,11 @@ class FakeServer:
         self.opened = body
         if self.fail_open:
             raise ObservationRefused("/api/bench/runs: HTTP 500")
+        # The server's seat rows (GRPH-1878): a review task comes back on a review seat.
+        kinds = {t["id"]: t.get("kind", "build") for t in body.get("tasks", [])}
         return {"id": "bnr_1", "project_id": "scratch", "api_key": "scratch-key",
-                "seats": [{"task_id": t, "enrolment_code": f"C-{t}"} for t in self.tasks]}
+                "seats": [{"task_id": t, "enrolment_code": f"C-{t}", "item_id": f"I-{t}",
+                           "kind": kinds.get(t, "build")} for t in self.tasks]}
 
     def post_bench_result(self, body):
         self.posted = body
@@ -529,3 +532,218 @@ def test_c1_excluded_when_the_child_wrote_no_test(repo, tmp_path):
     server = FakeServer(["t1"])
     drive(repo, tmp_path, [leafy(repo, ("C1",))], server, solve)
     assert server.posted["outcomes"][0]["leaves"]["C1"]["verdict"] == "excluded"
+
+
+# --- review tasks (GRPH-1874) ---------------------------------------------------------------
+
+from gbfleet.bench import review as review_mod  # noqa: E402
+from gbfleet.bench.score import score_run  # noqa: E402
+
+REVIEW_PYTEST = f"{shlex.quote(sys.executable)} -m pytest -q -p no:cacheprovider"
+
+
+@pytest.fixture
+def rrepo(tmp_path):
+    r = tmp_path / "rrepo"
+    r.mkdir()
+    git(r, "init", "-q", "-b", "main")
+    (r / "mod.py").write_text("def add(a, b):\n    return a + b\n")
+    (r / "test_mod.py").write_text("from mod import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n")
+    git(r, "add", "-A")
+    git(r, "commit", "-q", "-m", "clean")
+    return r
+
+
+def review_tasks(repo):
+    sha = review_mod.apply_mutation(repo, "HEAD", "d1", {"path": "mod.py", "old": "a + b", "new": "a - b"})
+    base = git(repo, "rev-parse", "HEAD")
+
+    def mk(tid, expect, ref):
+        return Task(id=tid, kind="review", base_sha=base, title=tid, description="d", acceptance=(),
+                    touchpoints=("mod.py",), capabilities=("F2",), size_band="S",
+                    check=Check(REVIEW_PYTEST, ("test_mod.py",)), expect=expect, ref=ref)
+    return [mk("defect", "bounce", sha), mk("clean", "sign_off", base)]
+
+
+def drive_review(repo, tmp_path, tasks, server, verdict, start=None, **kw):
+    plan = R.build_plan(tasks, adapter="fake:m", model="m", suite_id="s", suite_version="1")
+    started = []
+
+    def cut(t, base=None):
+        wt = tmp_path / f"rwt-{t.id}"
+        git(repo, "worktree", "add", "-q", "--detach", str(wt), base or t.base_sha)
+        return SimpleNamespace(path=wt, branch="x", repo=repo, base=base or t.base_sha)
+
+    def default_start(tree, code, t, scratch, review_skip=()):
+        started.append((t.id, code))
+        return SimpleNamespace(running=False)
+
+    def read_verdict(t, scratch, item_id):
+        assert item_id == f"I-{t.id}"  # the task's own item, not a title search
+        v = verdict(t)
+        return v if isinstance(v, tuple) else (v or "no_verdict", "")
+
+    posted = R.run_plan(plan, repo=repo, client=server, open_scratch=lambda run: None,
+                        start=start or default_start, cut=cut,
+                        limits=SimpleNamespace(child_wall_clock=60.0),
+                        reap=lambda tree: git(repo, "worktree", "remove", "--force", str(tree.path)),
+                        read_verdict=read_verdict, **kw)
+    return plan, posted, started
+
+
+def test_review_tasks_are_planned_not_skipped(rrepo):
+    plan = R.build_plan(review_tasks(rrepo), adapter="f", model="", suite_id="s", suite_version="1")
+    assert [p.task.id for p in plan.tasks] == ["defect", "clean"] and plan.skipped == []
+    assert "defect [S] ~60000 tokens" in "\n".join(plan.describe())
+
+
+def test_a_reviewer_that_bounces_everything_passes_defects_and_fails_clean(rrepo, tmp_path):
+    tasks = review_tasks(rrepo)
+    server = FakeServer(["defect", "clean"])
+    plan, posted, started = drive_review(rrepo, tmp_path, tasks, server, lambda t: "bounce")
+    assert sorted(started) == [("clean", "C-clean"), ("defect", "C-defect")]
+    got = {o["task_id"]: (o["outcome"], o["expect"]) for o in server.posted["outcomes"]}
+    assert got == {"defect": ("bounce", "bounce"), "clean": ("bounce", "sign_off")}
+    s = score_run(R.to_outcomes(plan, posted["results"]))
+    assert (s.f2_n, s.f2) == (1, 1.0) and s.f1 < 1.0
+
+
+def test_a_reviewer_that_never_registers_is_excluded_from_n(rrepo, tmp_path):
+    def start(*a, **k):
+        raise LaunchFailed("never registered")
+    tasks = review_tasks(rrepo)
+    plan, posted, _ = drive_review(rrepo, tmp_path, tasks, FakeServer(["defect", "clean"]),
+                                   lambda t: "bounce", start=start)
+    assert {r.outcome for r in posted["results"]} == {"never_registered"}
+    s = score_run(R.to_outcomes(plan, posted["results"]))
+    assert s.f1_n == 0 and s.f2_n == 0
+
+
+def test_no_verdict_and_failed_preflight(rrepo, tmp_path):
+    tasks = review_tasks(rrepo)
+    bad = Task(**{**tasks[0].__dict__, "id": "bad", "ref": tasks[1].ref})  # "defect" that stays green
+    _, posted, started = drive_review(rrepo, tmp_path, [tasks[0], bad], FakeServer(["defect", "bad"]),
+                                      lambda t: None)
+    got = {r.task_id: r.outcome for r in posted["results"]}
+    assert got == {"defect": "no_verdict", "bad": "harness_error"}
+    assert [s[0] for s in started] == ["defect"]
+
+
+def test_open_run_sends_review_tasks_as_review_work(rrepo, tmp_path):
+    """open_run refuses a review task without ref and a PR url (GRPH-1878); it gets both."""
+    tasks = review_tasks(rrepo)
+    server = FakeServer(["defect", "clean"])
+    drive_review(rrepo, tmp_path, tasks, server, lambda t: "bounce")
+    sent = {t["id"]: t for t in server.opened["tasks"]}
+    for t in tasks:
+        row = sent[t.id]
+        assert row["kind"] == "review" and row["ref"] == t.ref and row["expect"] == t.expect
+        assert "/pull/" in row["pr"] and ".invalid/" in row["pr"]
+        assert f"git diff {t.base_sha}..{t.ref}" in row["description"]
+
+
+def test_each_reviewer_is_told_to_skip_the_other_review_items(rrepo, tmp_path):
+    skips = {}
+
+    def start(tree, code, t, scratch, review_skip=()):
+        skips[t.id] = review_skip
+        return SimpleNamespace(running=False)
+    drive_review(rrepo, tmp_path, review_tasks(rrepo), FakeServer(["defect", "clean"]),
+                 lambda t: "bounce", start=start)
+    assert skips == {"defect": ("I-clean",), "clean": ("I-defect",)}
+
+
+def test_a_review_task_seated_as_build_work_is_harness_error_and_spawns_nothing(rrepo, tmp_path):
+    """The bounce on attempt 1: a build seat makes the 'reviewer' its builder. Never spawn it."""
+    class BuildSeats(FakeServer):
+        def open_bench_run(self, body):
+            got = super().open_bench_run(body)
+            for s in got["seats"]:
+                s["kind"] = "build"
+            return got
+    _, posted, started = drive_review(rrepo, tmp_path, review_tasks(rrepo),
+                                      BuildSeats(["defect", "clean"]), lambda t: "bounce")
+    assert started == []
+    assert {r.outcome for r in posted["results"]} == {"harness_error"}
+    assert "build work" in posted["results"][0].detail
+
+
+def test_a_verdict_recorded_before_the_wall_clock_counts(rrepo, tmp_path):
+    ticks = iter(range(0, 10_000, 100))
+
+    def start(tree, code, t, scratch, review_skip=()):
+        return SimpleNamespace(running=True)
+    tasks = review_tasks(rrepo)[:1]
+    _, posted, _ = drive_review(rrepo, tmp_path, tasks, FakeServer(["defect"]),
+                                lambda t: "bounce", start=start,
+                                clock=lambda: next(ticks), sleep=lambda s: None)
+    assert [r.outcome for r in posted["results"]] == ["bounce"]
+    _, posted, _ = drive_review(rrepo, tmp_path / "again", tasks, FakeServer(["defect"]),
+                                lambda t: None, start=start,
+                                clock=lambda: next(ticks), sleep=lambda s: None)
+    assert [r.outcome for r in posted["results"]] == ["timed_out"]
+
+
+def test_cli_spawns_a_review_only_reviewer_and_reads_its_item(tmp_path, monkeypatch):
+    """The real cli `start` and `read_verdict` against a stub of open_run (bounce item 3).
+
+    The server half is stubbed the way GRPH-1878 shipped it: review seats with an item id,
+    and a bounce that sends the item to `next` with `reviewed_by` cleared."""
+    from gbfleet import supervisor as sup
+    from gbfleet import worktree as wt_mod
+    from gbfleet.bench import suite as suite_mod
+    from gbfleet.seat import instruction_for
+
+    full = R.template_suite()
+    pair = tuple(t for t in full.tasks if t.id in ("review-take_last-defect", "review-take_last-clean"))
+    assert len(pair) == 2
+    monkeypatch.setattr(R, "template_suite", lambda: suite_mod.Suite(full.id, full.version, pair))
+    source = KeyedServer([t.id for t in pair])
+    items = {
+        "I-review-take_last-defect": {"status": "next", "reviewed_by": None,
+                                      "bounce_reason": "take_last returns the first element"},
+        "I-review-take_last-clean": {"status": "review", "evidence": [
+            {"kind": "note", "detail": "refused at `done` (pr_ci_not_green): no suite_green"}]},
+    }
+    readers: list = []
+    seats: list = []
+
+    def graphban(server, key, project_id=None, **kw):
+        if project_id == "p":
+            return source
+        c = SimpleNamespace(api_key=key, project_id=project_id, allowed=kw.get("allowed"),
+                            close=lambda: None,
+                            call=lambda tool, **a: (readers.append((tool, c.allowed)), items[a["id"]])[1])
+        return c
+
+    def tree_for(repo_, workspace, wave, name, base=None):
+        wt = tmp_path / f"wt-{name}"
+        git(repo_, "worktree", "add", "-q", "--detach", str(wt), base)
+        return SimpleNamespace(path=wt, branch=f"bench-{name}", repo=repo_, base=base)
+
+    def start_one(tree, seat, factory, client, *a, **k):
+        seats.append((seat, instruction_for(seat, tree.path, tree.branch)))
+        return SimpleNamespace(running=False)
+
+    monkeypatch.setenv(cli.API_KEY_ENV, "source-key")
+    monkeypatch.setattr(cli, "Graphban", graphban)
+    monkeypatch.setattr(cli, "read_preferences",
+                        lambda c: (None, SimpleNamespace(caps={}), "", {}, {}, None))
+    monkeypatch.setattr(cli, "make_adapter_factory", lambda *a, **k: object())
+    monkeypatch.setattr(sup, "_tree_for", tree_for)
+    monkeypatch.setattr(sup, "start_one", start_one)
+    monkeypatch.setattr(wt_mod, "reap_held", lambda tree, vendor: None)
+    assert run_cli("--suite", "template", "--adapter", "claude:haiku",
+                   "--workspace", str(tmp_path / "ws")) == 0
+    assert len(seats) == 2
+    for seat, text in seats:
+        assert seat.review_only and seat.role == "reviewer" and not seat.bound_only
+        assert seat.api_key == "scratch-key"
+        assert "claim_review" in text and "REVIEW-ONLY" in text
+    assert seats[0][0].review_skip == ("I-review-take_last-clean",)
+    assert readers and all(tool == "get_item_details" and allowed == cli.BENCH_VERDICT_READS
+                           for tool, allowed in readers)
+    got = {o["task_id"]: (o["outcome"], o.get("kind"), o.get("expect"))
+           for o in source.posted["outcomes"]}
+    assert got == {"review-take_last-defect": ("bounce", "review", "bounce"),
+                   "review-take_last-clean": ("sign_off", "review", "sign_off")}
