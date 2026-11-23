@@ -5,7 +5,8 @@ spawned through the ordinary supervisor path (`supervisor.start_one`, so the reg
 window, wall clock, reap and salvage are the ones natural children get), the check run
 with the held-out files restored, and one outcome recorded and posted.
 
-Review tasks are not spawned here: they need a built branch and a second seat.
+Review tasks are not spawned here: they need a built branch and a second seat. They run
+through `review.run_review_task` with a reviewer adapter (GRPH-P98 section 8).
 """
 
 from __future__ import annotations
@@ -108,7 +109,7 @@ def build_plan(tasks: list[Task], *, adapter: str, model: str, suite_id: str, su
     caps = caps or {}
     for t in tasks:
         if t.kind != "build":
-            plan.skipped.append(Skipped(t.id, "review task: not run by `bench run`"))
+            plan.skipped.append(Skipped(t.id, "review task: run through `bench.review`, not spawned here"))
             continue
         est = estimate_tokens(t)
         over = next(((k, caps[k]) for k in TASK_CAPS

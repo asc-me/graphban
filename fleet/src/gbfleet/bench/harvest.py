@@ -34,7 +34,7 @@ PY_COMMAND = "python -m pytest -q"
 JS_COMMANDS = {"pnpm-lock.yaml": "pnpm test --", "yarn.lock": "yarn test"}
 JS_DEFAULT = "npm test --"
 
-DROPPED = ("flaky", "green_at_parent", "red_at_merge", "no_tests")
+DROPPED = ("flaky", "green_at_parent", "red_at_merge", "no_tests", "mutation_not_applicable")
 
 
 @dataclass
