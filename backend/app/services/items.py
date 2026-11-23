@@ -2553,6 +2553,9 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
                 "severity"):
         if key in fields and fields[key] is not None:
             setattr(item, key, fields[key])
+    if "blocker" in fields:
+        # GRPH-1867. Links derived from the old text go when the new text no longer names them.
+        drop_stale_blocker_dependencies(db, item)
     if "blocker" in fields and (item.blocker or "").strip():
         # GRPH-1530. The text is not the only record: item ids named in it become
         # dependency links in this same commit, so a later `done` can clear the block.
@@ -3718,6 +3721,44 @@ def _hold_live(item: Item) -> bool:
     return claimed is not None and claimed >= cutoff
 
 
+def drop_stale_blocker_dependencies(db: Session, item: Item) -> int:
+    """Remove this item's `blocker`-reason dependency links its blocker text no longer names.
+
+    Links with any other reason are left alone (GRPH-1867).
+    """
+    named: set[str] = set()
+    for token in keys_named_in((item.blocker or "").strip()):
+        stored = keys.resolve_item(db, token)
+        if stored:
+            named.add(stored)
+    stale = db.scalars(select(Link).where(
+        Link.type == "dependency", Link.a == item.id,
+        Link.reason == BLOCKER_DEP_REASON)).all()
+    dropped = 0
+    for link in stale:
+        if link.b not in named:
+            db.delete(link)
+            dropped += 1
+    return dropped
+
+
+def _depends_through_links(db: Session, start: str, target: str) -> bool:
+    """True when `start` reaches `target` through dependency links."""
+    seen = {start}
+    frontier = [start]
+    while frontier:
+        nxt = db.scalars(select(Link.b).where(
+            Link.type == "dependency", Link.a.in_(frontier))).all()
+        frontier = []
+        for b in nxt:
+            if b == target:
+                return True
+            if b not in seen:
+                seen.add(b)
+                frontier.append(b)
+    return False
+
+
 def record_blocker_dependencies(db: Session, item: Item) -> list[str]:
     """Link this item to every item its blocker text names (GRPH-1530).
 
@@ -3744,6 +3785,9 @@ def record_blocker_dependencies(db: Session, item: Item) -> list[str]:
         existing = db.scalar(select(Link).where(
             Link.type == "dependency", Link.a == item.id, Link.b == other.id))
         if existing is None:
+            # GRPH-1867. A link that closes a cycle would stall the drain: skip it.
+            if _depends_through_links(db, other.id, item.id):
+                continue
             db.add(Link(
                 project_id=item.project_id, a=item.id, b=other.id,
                 type="dependency", reason=BLOCKER_DEP_REASON, confidence=1.0,

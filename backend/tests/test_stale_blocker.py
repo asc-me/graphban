@@ -172,3 +172,50 @@ def test_sign_off_calls_the_same_release():
         if name == "release_when_named_blockers_done":
             found = True
     assert found
+
+
+def _dep(db, a, b):
+    return db.query(Link).filter(
+        Link.a == a.id, Link.b == b.id, Link.type == "dependency").one_or_none()
+
+
+def test_clearing_a_blocker_drops_its_links_but_keeps_hand_made_ones(client, auth):
+    project = _project(client, auth, "Stale 1867 clear")
+    with SessionLocal() as db:
+        x = _item(db, project, "x")
+        y = _item(db, project, "y")
+        a = _item(db, project, "a", status="next")
+        db.add(Link(project_id=project, a=a.id, b=y.id, type="dependency",
+                    reason="manual", confidence=1.0))
+        db.commit()
+        items_svc.update_item(db, a.id, blocker=f"needs {x.key} and {y.key}")
+        assert _dep(db, a, x).reason == items_svc.BLOCKER_DEP_REASON
+        items_svc.update_item(db, a.id, blocker="")
+        assert _dep(db, a, x) is None
+        assert _dep(db, a, y).reason == "manual"
+
+
+def test_replacing_a_blocker_swaps_the_links(client, auth):
+    project = _project(client, auth, "Stale 1867 swap")
+    with SessionLocal() as db:
+        x = _item(db, project, "x")
+        y = _item(db, project, "y")
+        a = _item(db, project, "a", status="next")
+        items_svc.update_item(db, a.id, blocker=f"needs {x.key}")
+        items_svc.update_item(db, a.id, blocker=f"needs {y.key}")
+        assert _dep(db, a, x) is None
+        assert _dep(db, a, y) is not None
+
+
+def test_a_blocker_that_would_close_a_cycle_adds_no_link(client, auth):
+    project = _project(client, auth, "Stale 1867 cycle")
+    with SessionLocal() as db:
+        a = _item(db, project, "a", status="next")
+        b = _item(db, project, "b")
+        db.add(Link(project_id=project, a=b.id, b=a.id, type="dependency",
+                    reason="manual", confidence=1.0))
+        db.commit()
+        items_svc.update_item(db, a.id, blocker=f"waiting on {b.key}'s rework")
+        db.refresh(a)
+        assert b.key in a.blocker
+        assert _dep(db, a, b) is None
