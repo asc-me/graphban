@@ -301,4 +301,35 @@ def test_a_rebuilt_item_gets_a_pr_for_its_new_branch(monkeypatch):
                               "branch": "gb/new", "url": URL}]
     assert ("GRPH-1", URL) in closed
     assert until._linked_pr(row) == URL
-    assert until.review_ci_branch  # the mismatch check now reads the newest link
+
+
+def test_a_rebuilt_item_stops_logging_review_branch_mismatch(monkeypatch):
+    """After the new PR is stamped, the review gate reads gb/new and names no mismatch.
+
+    The row holds the old PR (gb/old, which does not descend from gb/new) and, once
+    `_pr_opened` has run, the newly stamped pr_opened link for gb/new. `review_ci_branch`
+    resolves to gb/new and emits no `review_branch_mismatch` — the loop ends on the
+    first cycle instead of repeating every poll.
+
+    Sabotage: drop the `reversed(...)` in `_linked_pr`; the gate reads the old PR again
+    and emits `review_branch_mismatch item.branch gb/new pr gb/old`.
+    """
+    old = "https://github.com/o/r/pull/5"
+    heads = {old: {"headRefName": "gb/old", "headRefOid": "aaa"},
+             URL: {"headRefName": "gb/new", "headRefOid": "bbb"}}
+    _wire(monkeypatch, _Gh())
+    monkeypatch.setattr(propose_mod, "view", lambda repo, sel: (heads[sel], ""))
+    monkeypatch.setattr(propose_mod, "close_item_prs", lambda *a, **kw: ())
+    monkeypatch.setattr(until, "_tip", lambda repo, b: "bbb")
+    monkeypatch.setattr(until.wt_mod, "is_ancestor", lambda *a: False)
+    events: list[tuple] = []
+    monkeypatch.setattr(until.observe, "emit", lambda ev, **kw: events.append((ev, kw)))
+    row = _row(branch="gb/new", evidence=[{"kind": "url", "url": old}])
+    logged: set = set()
+
+    ready, waiting = _open(row, _Planner(), logged)
+    assert ready == [row] and not waiting
+
+    for _poll in range(2):
+        assert until.review_ci_branch(REPO, row, logged) == ("gb/new", "")
+    assert not [ev for ev, _ in events if ev == "review_branch_mismatch"], events
