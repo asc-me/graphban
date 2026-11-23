@@ -3110,6 +3110,8 @@ export interface HarnessUtilization {
 export interface HarnessBaseline {
   suite_id: string;
   suite_version: string;
+  /** The binary the suite ran on; it always matches the cell's own key.binary_version. */
+  binary_version?: string;
   n: number;
   green: number;
   rate: number | null;

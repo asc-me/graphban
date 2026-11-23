@@ -194,10 +194,15 @@ def list_results(db: Session, project_id: str, *, vendor: str | None = None,
 
 
 def attach_baselines(db: Session, project_id: str, cells: list[dict]) -> None:
-    """Give every grid cell (and each family's leaves) a `baseline` block, or None.
+    """Give every measured grid cell a `baseline` block, or None when no run posted one.
 
-    Matches on vendor, model, binary_version and capability, newest posted record first. The
-    block is its own object: it is never added to a cell's natural or probe counts (P98 D11).
+    Matches on vendor, model, binary_version and capability, newest posted record first; the
+    block names the binary_version it was measured at. It is its own object: it is never added
+    to a cell's natural or probe counts (P98 D11).
+
+    A family rollup gets no `baseline` key at all. Baseline rollups are keyed by function, so a
+    family has no number of its own, and None there would read as "no run" — a false "no
+    baseline". Its leaves carry theirs; read those.
     """
     from app.models import BenchBaseline
     from app.services.harness import FLOOR
@@ -209,8 +214,8 @@ def attach_baselines(db: Session, project_id: str, cells: list[dict]) -> None:
     for r in rows:
         for cap, roll in (r.rollups or {}).items():
             latest.setdefault((r.vendor, r.model, r.binary_version, cap), {
-                "suite_id": r.suite_id, "suite_version": r.suite_version, "n": roll["n"],
-                "green": roll["green"],
+                "suite_id": r.suite_id, "suite_version": r.suite_version,
+                "binary_version": r.binary_version, "n": roll["n"], "green": roll["green"],
                 "rate": round(roll["green"] / roll["n"], 3) if roll["n"] else None,
                 "below_floor": roll["n"] < FLOOR})
 
@@ -220,6 +225,9 @@ def attach_baselines(db: Session, project_id: str, cells: list[dict]) -> None:
         return dict(found) if found else None
 
     for cell in cells:
-        cell["baseline"] = block(cell)
+        if cell.get("kind") == "family":
+            cell.pop("baseline", None)
+        else:
+            cell["baseline"] = block(cell)
         for leaf in cell.get("leaves") or []:
             leaf["baseline"] = block(leaf)

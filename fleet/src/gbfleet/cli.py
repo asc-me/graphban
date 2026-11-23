@@ -1609,7 +1609,9 @@ def _harness(args: argparse.Namespace) -> int:
                 rate = "-" if side.get("rate") is None else f"{round(side['rate'] * 100)}%"
                 floor = " (below floor)" if n < data.get("floor", 5) else ""
                 base = _grid_baseline(c.get("baseline")) if layer == "natural" else ""
-                print(f"{k['vendor']}:{k['model']} {k['capability']}\t{n}{floor}\t{layer}\t{rate}\t{base}")
+                label = (f"{k['vendor']}:{k['model']}@{k.get('binary_version') or '?'} "
+                         f"{k['capability']} band {k.get('size_band') or '?'}")
+                print(f"{label}\t{n}{floor}\t{layer}\t{rate}\t{base}")
     return 0
 
 

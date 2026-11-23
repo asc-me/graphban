@@ -52,8 +52,29 @@ def test_baseline_rides_beside_natural_and_probe_and_changes_neither(client, aut
     assert r.status_code == 201, r.text
     after = client.get(f"/api/harness/grid?project_id={proj}", headers=h).json()["cells"]
     b = _leaf(after)["baseline"]
-    assert b == {"suite_id": "template", "suite_version": "0.1.0", "n": 2, "green": 1,
-                 "rate": 0.5, "below_floor": True}
+    assert b == {"suite_id": "template", "suite_version": "0.1.0", "binary_version": "1.2.3",
+                 "n": 2, "green": 1, "rate": 0.5, "below_floor": True}
     assert _strip(after) == _strip(before)
     with SessionLocal() as db:
         assert len(db.scalars(select(AttemptTelemetry)).all()) == 3
+
+
+def test_a_family_rollup_has_no_baseline_of_its_own(client, auth):
+    """Rollups are keyed by function, so a family carries no `baseline` key: None there would
+    claim "no run" while its leaves have one."""
+    proj, h = _env(client, auth)
+    client.post(f"/api/bench/results?project_id={proj}", headers=h, json={
+        **IDENT, "outcomes": [{"task_id": "t1", "outcome": "check_green", "capabilities": ["A1"]}]})
+    cells = client.get(f"/api/harness/grid?project_id={proj}", headers=h).json()["cells"]
+    fam = next(c for c in cells if c.get("kind") == "family")
+    assert "baseline" not in fam
+    assert _leaf(cells)["baseline"]["n"] == 1
+
+
+def test_a_baseline_at_another_binary_version_does_not_attach(client, auth):
+    proj, h = _env(client, auth)
+    client.post(f"/api/bench/results?project_id={proj}", headers=h, json={
+        **IDENT, "binary_version": "9.9.9",
+        "outcomes": [{"task_id": "t1", "outcome": "check_green", "capabilities": ["A1"]}]})
+    cells = client.get(f"/api/harness/grid?project_id={proj}", headers=h).json()["cells"]
+    assert _leaf(cells)["baseline"] is None
