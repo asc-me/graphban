@@ -1153,7 +1153,7 @@ def report(db: Session, project_id: str, *, window_days: int | None = None,
     out["capability_set"] = capability_catalog()
     out["coverage"] = _coverage(db, [project_id], cutoff)
     out["review_cells"] = review_cells(db, [project_id])
-    out["probe_suggestions"] = probe_suggestions(db, project_id)
+    out["probe_suggestions"] = baseline_suggestions(db, project_id)
     out["unavailable"] = unavailable_rows(db, [project_id], cutoff)
     out["snapshot_at"] = latest_snapshot_at(db)
     out["surface"] = surface_svc.for_project(db, project_id)
@@ -2605,7 +2605,7 @@ def probe_candidates(db: Session, project_id: str) -> dict:
         "by_family": families,
         "floor": FLOOR,
         "estimated_tokens": estimate,
-        "suggestions": probe_suggestions(db, project_id),
+        "suggestions": baseline_suggestions(db, project_id),
     }
 
 
@@ -2634,8 +2634,11 @@ def _probe_cost_estimate(db: Session, project_id: str, *, vendor: str | None = N
             "tokens_out": sum(r.tokens_out or 0 for r in reported)}
 
 
-def probe_suggestions(db: Session, project_id: str) -> list[dict]:
-    """A newly declared vendor/model/version with no natural cell. Never on a schedule."""
+def baseline_suggestions(db: Session, project_id: str) -> list[dict]:
+    """A newly declared vendor/model/version with no natural cell. Never on a schedule.
+
+    Each suggestion carries the `gbfleet bench run` command that would take a baseline.
+    """
     from app.models import Agent, CapabilityProbeRun
 
     suggestions = []
@@ -2675,6 +2678,7 @@ def probe_suggestions(db: Session, project_id: str) -> list[dict]:
             "model": model,
             "binary_version": version,
             "estimated_tokens": estimate,
+            "command": f"gbfleet bench run --suite template --adapter {vendor}:{model}",
             "reason": ("a declared version has no natural cell yet" if trigger == "version_change"
                        else "a harness first resolved with no cell for it"),
         })

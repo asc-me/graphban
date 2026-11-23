@@ -61,6 +61,7 @@ SURFACE_PATH = "/api/harness/surface"
 GRID_PATH = "/api/harness/grid"
 #: The repo suite (GRPH-P98 §3): read with `get_suite`, written with `adopt_suite`.
 SUITE_PATH = "/api/bench/suite"
+BENCH_RESULTS_PATH = "/api/bench/results"
 SUITE_ADOPT_PATH = "/api/bench/suite/adopt"
 #: A baseline run (GRPH-P98 §4): open it for a scratch project and seats, post its results.
 BENCH_RUNS_PATH = "/api/bench/runs"
@@ -293,6 +294,22 @@ class Graphban:
         if not isinstance(parsed, dict):
             raise ObservationRefused(f"{SUITE_PATH}: reply was not an object")
         return parsed
+
+    def list_bench_results(self, project_id: str, *, timeout: float = 20.0) -> list[dict]:
+        """The project's baseline records, newest first."""
+        url = self.base_url.rstrip("/") + BENCH_RESULTS_PATH
+        try:
+            reply = self._client().get(url, params={"project_id": project_id}, timeout=timeout)
+        except httpx.HTTPError as exc:
+            raise ObservationRefused(f"{BENCH_RESULTS_PATH}: {exc}") from exc
+        if reply.status_code >= 400:
+            raise ObservationRefused(
+                f"{BENCH_RESULTS_PATH}: HTTP {reply.status_code}: {reply.text[:300]}",
+                status=reply.status_code, body=reply.text)
+        try:
+            return list(reply.json().get("results") or [])
+        except (ValueError, AttributeError) as exc:
+            raise ObservationRefused(f"{BENCH_RESULTS_PATH}: not JSON") from exc
 
     def adopt_suite(self, *, expected_version: int, tasks: list[dict],
                     timeout: float = 30.0) -> dict:
