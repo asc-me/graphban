@@ -773,12 +773,12 @@ def _probe_suggestion_lines(report: Report, suggestions: list, *, looked_up: boo
     """
     if not looked_up:
         report.add(
-            "probe suggestions", UNKNOWN, "not looked up",
+            "baseline suggestions", UNKNOWN, "not looked up",
             "pass --server and set GBFLEET_API_KEY; nothing runs without a person starting it",
         )
         return
     if not suggestions:
-        report.add("probe suggestions", PASS, "none")
+        report.add("baseline suggestions", PASS, "none")
         return
     for sug in suggestions:
         if not isinstance(sug, dict):
@@ -788,11 +788,12 @@ def _probe_suggestion_lines(report: Report, suggestions: list, *, looked_up: boo
         trigger = sug.get("trigger") or "new_row"
         version = sug.get("binary_version") or ""
         report.add(
-            f"probe {vendor}:{model}",
+            f"baseline {vendor}:{model}",
             PASS,
             f"{trigger}"
             + (f" binary_version={version}" if version else "")
-            + " — nothing runs without a person starting it",
+            + f" — run `{sug.get('command') or f'gbfleet bench run --suite template --adapter {vendor}:{model}'}`"
+            + "; nothing runs without a person starting it",
         )
 
 
