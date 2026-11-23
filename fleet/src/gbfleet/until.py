@@ -4020,7 +4020,8 @@ def _linked_pr(row: dict) -> str:
     pr = row.get("pr")
     if isinstance(pr, dict) and _is_pr_url(str(pr.get("url") or "")):
         return str(pr["url"])
-    for ev in row.get("evidence") or []:
+    # The newest link wins (GRPH-1881): a rebuilt item's later PR supersedes the first.
+    for ev in reversed(row.get("evidence") or []):
         if isinstance(ev, dict) and _is_pr_url(str(ev.get("url") or "")):
             return str(ev["url"])
     return ""
@@ -4065,6 +4066,33 @@ def _note_pr_wait(logged: set, item: str, reason: str) -> None:
     observe.emit("review_waits_on_pr", item=item, detail=f"{item}: {reason}")
 
 
+def _linked_pr_is_superseded(repo: Path, row: dict, branch: str) -> bool:
+    """The row's recorded PR heads another branch than `item.branch` and does not carry it (GRPH-1881).
+
+    A rebuilt item keeps the first child's draft PR as its only link, so no PR is ever
+    opened for the new branch and the drain logs `review_branch_mismatch` forever. A PR
+    on a branch that descends from `item.branch` is still that item's PR (GRPH-1770).
+    """
+    url = _linked_pr(row)
+    if not url or not branch:
+        return False
+    from . import propose
+    try:
+        pr, _err = propose.view(repo, url)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    if not isinstance(pr, dict):
+        return False
+    pr_branch = str(pr.get("headRefName") or "").strip()
+    if not pr_branch or pr_branch == branch:
+        return False
+    item_head = _tip(repo, branch)
+    pr_head = str(pr.get("headRefOid") or "").strip()
+    if item_head and pr_head and wt_mod.is_ancestor(repo, item_head, pr_head):
+        return False
+    return True
+
+
 def _pr_opened(rows: list[dict], repo: Path, base: str, logged: set, *,
                planner=None) -> tuple[list[dict], list[dict]]:
     """Split unheld review rows into (has a linked PR, waiting for one) (GRPH-1730).
@@ -4088,7 +4116,10 @@ def _pr_opened(rows: list[dict], repo: Path, base: str, logged: set, *,
     for row in rows:
         branch = str(row.get("branch") or "")
         item = str(row.get("id") or "")
-        if not branch or _linked_pr(row) or not _pr_missing_is_the_only_refusal(row):
+        superseded = bool(branch and _linked_pr(row)
+                          and _linked_pr_is_superseded(repo, row, branch))
+        if not branch or (_linked_pr(row) and not superseded) or (
+                not superseded and not _pr_missing_is_the_only_refusal(row)):
             ready.append(row)
             continue
         try:
@@ -4105,6 +4136,14 @@ def _pr_opened(rows: list[dict], repo: Path, base: str, logged: set, *,
             # url is on the item, the next sign_off is still `pr_missing`.
             if _record_pr(planner, item, branch, got.url):
                 _stamp_link(row, branch, got.url)
+                if superseded and item:
+                    try:
+                        propose.close_item_prs(
+                            repo, item, got.url,
+                            comment=f"Superseded by {got.url} (item rebuilt on {branch})",
+                            older_drafts_only=True)
+                    except (OSError, subprocess.SubprocessError):
+                        pass
                 ready.append(row)
                 continue
             _note_pr_wait(logged, item, got.reason or "PR opened but not recorded on the item")
