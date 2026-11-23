@@ -1756,8 +1756,21 @@ def _bench_run(args: argparse.Namespace) -> int:
     def stop(child):
         stop_child(child, Reason.WALL_CLOCK)
 
+    def read_verdict(task, scratch):
+        """The reviewer's verdict from the scratch project: `done` is a sign_off, an item
+        sent back to `next` by a reviewer is a bounce, anything else is no verdict."""
+        found = scratch.call("search_items", query=task.title, fields="full").get("items") or []
+        item = next((i for i in found if i.get("title") == task.title), None)
+        if not item:
+            return None
+        if item.get("status") == "done":
+            return "sign_off"
+        if item.get("status") == "next" and item.get("reviewed_by"):
+            return "bounce"
+        return None
+
     posted = run_mod.run_plan(
-        plan, repo=repo, client=client,
+        plan, repo=repo, client=client, read_verdict=read_verdict,
         open_scratch=lambda run: Graphban(args.server, run_mod.scratch_credential(run),
                                           project_id=run["project_id"]),
         start=start, cut=cut, limits=limits, stop=stop, reap=reap, wave=wave, repo_for=repo_for)

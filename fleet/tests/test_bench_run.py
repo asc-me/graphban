@@ -386,3 +386,93 @@ def test_template_only_run_needs_no_user_repo(tmp_path, monkeypatch):
     assert run_cli("--suite", "template", "--adapter", "claude", "--repo", str(plain),
                    "--workspace", str(tmp_path / "ws")) == 0
     assert cuts == [R.template_fixture(tmp_path / "ws")]
+
+
+# --- review tasks (GRPH-1874) ---------------------------------------------------------------
+
+from gbfleet.bench import review as review_mod  # noqa: E402
+from gbfleet.bench.score import score_run  # noqa: E402
+
+REVIEW_PYTEST = f"{shlex.quote(sys.executable)} -m pytest -q -p no:cacheprovider"
+
+
+@pytest.fixture
+def rrepo(tmp_path):
+    r = tmp_path / "rrepo"
+    r.mkdir()
+    git(r, "init", "-q", "-b", "main")
+    (r / "mod.py").write_text("def add(a, b):\n    return a + b\n")
+    (r / "test_mod.py").write_text("from mod import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n")
+    git(r, "add", "-A")
+    git(r, "commit", "-q", "-m", "clean")
+    return r
+
+
+def review_tasks(repo):
+    sha = review_mod.apply_mutation(repo, "HEAD", "d1", {"path": "mod.py", "old": "a + b", "new": "a - b"})
+    base = git(repo, "rev-parse", "HEAD")
+
+    def mk(tid, expect, ref):
+        return Task(id=tid, kind="review", base_sha=base, title=tid, description="d", acceptance=(),
+                    touchpoints=("mod.py",), capabilities=("F2",), size_band="S",
+                    check=Check(REVIEW_PYTEST, ("test_mod.py",)), expect=expect, ref=ref)
+    return [mk("defect", "bounce", sha), mk("clean", "sign_off", base)]
+
+
+def drive_review(repo, tmp_path, tasks, server, verdict, start=None):
+    plan = R.build_plan(tasks, adapter="fake:m", model="m", suite_id="s", suite_version="1")
+    started = []
+
+    def cut(t):
+        wt = tmp_path / f"rwt-{t.id}"
+        git(repo, "worktree", "add", "-q", "--detach", str(wt), t.base_sha)
+        return SimpleNamespace(path=wt, branch="x", repo=repo, base=t.base_sha)
+
+    def default_start(tree, code, t, scratch):
+        started.append((t.id, code))
+        return SimpleNamespace(running=False)
+
+    posted = R.run_plan(plan, repo=repo, client=server, open_scratch=lambda run: None,
+                        start=start or default_start, cut=cut,
+                        limits=SimpleNamespace(child_wall_clock=60.0),
+                        reap=lambda tree: git(repo, "worktree", "remove", "--force", str(tree.path)),
+                        read_verdict=lambda t, scratch: verdict(t))
+    return plan, posted, started
+
+
+def test_review_tasks_are_planned_not_skipped(rrepo):
+    plan = R.build_plan(review_tasks(rrepo), adapter="f", model="", suite_id="s", suite_version="1")
+    assert [p.task.id for p in plan.tasks] == ["defect", "clean"] and plan.skipped == []
+    assert "defect [S] ~60000 tokens" in "\n".join(plan.describe())
+
+
+def test_a_reviewer_that_bounces_everything_passes_defects_and_fails_clean(rrepo, tmp_path):
+    tasks = review_tasks(rrepo)
+    server = FakeServer(["defect", "clean"])
+    plan, posted, started = drive_review(rrepo, tmp_path, tasks, server, lambda t: "bounce")
+    assert sorted(started) == [("clean", "C-clean"), ("defect", "C-defect")]
+    got = {o["task_id"]: (o["outcome"], o["expect"]) for o in server.posted["outcomes"]}
+    assert got == {"defect": ("bounce", "bounce"), "clean": ("bounce", "sign_off")}
+    s = score_run(R.to_outcomes(plan, posted["results"]))
+    assert (s.f2_n, s.f2) == (1, 1.0) and s.f1 < 1.0
+
+
+def test_a_reviewer_that_never_registers_is_excluded_from_n(rrepo, tmp_path):
+    def start(*a):
+        raise LaunchFailed("never registered")
+    tasks = review_tasks(rrepo)
+    plan, posted, _ = drive_review(rrepo, tmp_path, tasks, FakeServer(["defect", "clean"]),
+                                   lambda t: "bounce", start=start)
+    assert {r.outcome for r in posted["results"]} == {"never_registered"}
+    s = score_run(R.to_outcomes(plan, posted["results"]))
+    assert s.f1_n == 0 and s.f2_n == 0
+
+
+def test_no_verdict_and_failed_preflight(rrepo, tmp_path):
+    tasks = review_tasks(rrepo)
+    bad = Task(**{**tasks[0].__dict__, "id": "bad", "ref": tasks[1].ref})  # "defect" that stays green
+    _, posted, started = drive_review(rrepo, tmp_path, [tasks[0], bad], FakeServer(["defect", "bad"]),
+                                      lambda t: None)
+    got = {r.task_id: r.outcome for r in posted["results"]}
+    assert got == {"defect": "no_verdict", "bad": "harness_error"}
+    assert [s[0] for s in started] == ["defect"]
