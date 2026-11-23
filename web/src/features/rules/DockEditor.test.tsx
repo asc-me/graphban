@@ -85,6 +85,41 @@ describe("DockEditor custom rules", () => {
     await waitFor(() => expect(screen.getByTestId("rules-history-adopted")).toHaveTextContent("proposed by Agent PNW-A1"));
   });
 
+  it("points an observing custom rule at Promote and an active one at a proposal", async () => {
+    const user = userEvent.setup();
+    const first = view();
+    await user.click(screen.getByTestId("rules-dock-row-custom.walk-docs-exclusive"));
+    expect(await screen.findByTestId("rules-dock-state-badge")).toHaveTextContent("OBSERVING");
+    expect(screen.getByTestId("rules-readonly-reason")).toHaveTextContent(
+      "Custom rule: it has no library switch. Promote it while it observes.",
+    );
+
+    first.unmount();
+    vi.mocked(api.customRules).mockResolvedValue([
+      { rule_id: "custom.walk-docs-exclusive", stage: "Plan", title: "Walk docs exclusive", state: "active", params: {} },
+    ] as never);
+    view();
+    await user.click(screen.getByTestId("rules-dock-row-custom.walk-docs-exclusive"));
+    expect(await screen.findByTestId("rules-dock-state-badge")).toHaveTextContent("ACTIVE");
+    const reason = screen.getByTestId("rules-readonly-reason");
+    // This assertion fails when the state check is removed and the promote sentence stays.
+    expect(reason).toHaveTextContent(
+      "Custom rule: it has no library switch. It is changed by proposal, not here.",
+    );
+    expect(reason).not.toHaveTextContent(/promote/i);
+  });
+
+  it("does not tell the reader to promote a custom rule whose state was not read", async () => {
+    vi.mocked(api.customRules).mockResolvedValue([] as never);
+    const user = userEvent.setup();
+    view();
+    await user.click(screen.getByTestId("rules-dock-row-custom.walk-docs-exclusive"));
+    expect(await screen.findByTestId("rules-dock-custom-state")).toHaveTextContent("State not read.");
+    const reason = screen.getByTestId("rules-readonly-reason");
+    expect(reason).toHaveTextContent("Custom rule: it has no library switch. State not read.");
+    expect(reason).not.toHaveTextContent(/promote/i);
+  });
+
   it("keeps the would-have record readable after promotion (D5)", async () => {
     vi.mocked(api.customRules).mockResolvedValue([
       { rule_id: "custom.walk-docs-exclusive", stage: "Plan", title: "Walk docs exclusive", state: "active", params: {} },

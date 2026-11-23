@@ -53,6 +53,22 @@ const GROUPS: { id: Group; label: string }[] = [
 
 /** A project's own adopted rule (`custom.*`): never a library rule, so no On/Off/Inherit and no platform default. */
 export const isCustom = (r: RuleFlowRule) => r.id.startsWith("custom.");
+
+/**
+ * Why the dock cannot edit a custom rule. Promote is only still possible while the rule
+ * observes; an active rule is already promoted and changes by proposal (GRPH-1887).
+ * A state that was not read stays unnamed — it is not treated as active or observing.
+ */
+function customReadOnlyReason(state: string | undefined): string {
+  if (state === "observing") {
+    return "Custom rule: it has no library switch. Promote it while it observes.";
+  }
+  if (state === "active") {
+    return "Custom rule: it has no library switch. It is changed by proposal, not here.";
+  }
+  return "Custom rule: it has no library switch. State not read.";
+}
+
 const isLibrary = (r: RuleFlowRule) => r.control === "toggle" && !isCustom(r);
 const isEditableLibrary = (r: RuleFlowRule) => isLibrary(r) && !r.unmeasured_reason && !r.locked;
 
@@ -693,7 +709,7 @@ export function DockEditor({
               />
             )}
             {customRule && customRule.state !== "observing" && <WouldHaveRecord ruleId={rule.id} projectId={activeId} />}
-            <ReadOnlyReason>Custom rule: it has no library switch. Promote it while it observes.</ReadOnlyReason>
+            <ReadOnlyReason>{customReadOnlyReason(customRule?.state)}</ReadOnlyReason>
           </div>
         )}
 
