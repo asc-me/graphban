@@ -139,9 +139,12 @@ project, the page says so and points to Settings.
 
 ## The local hook (`--on-notify`)
 
-`gbfleet service install --on-notify <command> -- --prd GRPH-Pxx ...` runs `<command>` through
-the shell once for each drain notice the server accepts as a change of state, with the notice
-as JSON on stdin: `{"prd", "outcome", "open", "sent_at"}`. It runs once per notice, not once
+`gbfleet service install --on-notify <command> -- --prd GRPH-Pxx ...` runs `<command>` once
+for each drain notice the server accepts as a change of state, with the notice as JSON on
+stdin: `{"prd", "outcome", "open", "sent_at"}`. It runs once per notice, not once
 per cycle. A hook that exits non-zero is logged (`drain_notice_hook_failed`) and the drain
 carries on; a hook still running after 30 seconds is killed. Without `--on-notify` nothing
 runs and the notice still reaches the server.
+
+The command is split like a shell command line and run directly, not through a shell. For
+pipes or redirects, ask for the shell yourself: `--on-notify "sh -c 'jq .outcome >> ~/drains.log'"`.

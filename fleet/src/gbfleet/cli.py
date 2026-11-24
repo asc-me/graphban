@@ -319,7 +319,7 @@ def build_parser() -> argparse.ArgumentParser:
              "rather than seconds")
     svc_install.add_argument(
         "--on-notify", default=None, metavar="COMMAND",
-        help="run COMMAND (via the shell) once per drain notice, with the notice as JSON on "
+        help="run COMMAND (split like a shell line, not run through one) once per drain notice, with the notice as JSON on "
              "stdin (prd, outcome, open, sent_at). A non-zero exit is logged and the drain "
              "carries on; a hook still running after 30s is killed")
     svc_install.add_argument("rest", nargs=argparse.REMAINDER,

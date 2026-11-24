@@ -483,16 +483,26 @@ class HookFailed(RuntimeError):
 def run_hook(command: str, notice: dict, *, timeout: float = HOOK_TIMEOUT_S) -> None:
     """Run the `--on-notify` command once with `notice` as JSON on stdin (GRPH-1915).
 
-    Raises `HookFailed` for a non-zero exit or a timeout; the caller logs it and the drain
-    carries on. On timeout the whole process group is killed, so a shell's child dies too.
+    The command is split like a shell command line (`shlex`) and run as an argv, never
+    through a shell: an operator who wants pipes or redirects writes `sh -c '...'` and so
+    chooses the shell themselves. Raises `HookFailed` for a non-zero exit or a timeout; the
+    caller logs it and the drain carries on. On timeout the whole process group is killed,
+    so a child the hook started dies too.
     """
     import json
+    import shlex
     import signal
     import subprocess
     posix = os.name == "posix"
     try:
+        argv = shlex.split(command, posix=posix)
+    except ValueError as exc:
+        raise HookFailed(f"hook command does not parse: {exc}: {command}") from exc
+    if not argv:
+        raise HookFailed("hook command is empty")
+    try:
         proc = subprocess.Popen(
-            command, shell=True, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+            argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE, text=True, start_new_session=posix)
     except OSError as exc:
         raise HookFailed(f"hook could not run: {exc}") from exc

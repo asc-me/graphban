@@ -16,13 +16,13 @@ NOTICE = {"prd": "GRPH-P1", "outcome": "drained", "open": [], "sent_at": "2026-1
 
 def test_hook_gets_notice_json_on_stdin(tmp_path):
     out = tmp_path / "got.json"
-    service_mod.run_hook(f"cat > {out}", NOTICE)
+    service_mod.run_hook(f"sh -c 'cat > {out}'", NOTICE)
     assert json.loads(out.read_text()) == NOTICE
 
 
 def test_nonzero_exit_raises(tmp_path):
     with pytest.raises(service_mod.HookFailed, match="exited 3"):
-        service_mod.run_hook("exit 3", NOTICE)
+        service_mod.run_hook("sh -c 'exit 3'", NOTICE)
 
 
 def test_slow_hook_is_killed():
@@ -30,6 +30,18 @@ def test_slow_hook_is_killed():
     with pytest.raises(service_mod.HookFailed, match="killed"):
         service_mod.run_hook("sleep 30", NOTICE, timeout=0.5)
     assert time.monotonic() - t < 10
+
+
+def test_command_runs_without_a_shell(tmp_path):
+    # `;` is an argument to echo, not a command separator: no shell sees the string.
+    marker = tmp_path / "pwned"
+    service_mod.run_hook(f"echo hi ; touch {marker}", NOTICE)
+    assert not marker.exists()
+
+
+def test_missing_executable_raises():
+    with pytest.raises(service_mod.HookFailed, match="could not run"):
+        service_mod.run_hook("/nonexistent/gbfleet-hook", NOTICE)
 
 
 def test_no_command_no_hook():
@@ -46,14 +58,14 @@ class _Server:
 
 
 def test_failing_hook_is_logged_and_drain_continues(tmp_path):
-    hook = service_mod.hook_for("exit 1")
+    hook = service_mod.hook_for("false")
     got = notify_outcome(_Server(), Wave(), "idle", "GRPH-P1", on_notice=hook)
     assert got is not None and got["outcome"] == "drained"
 
 
 def test_hook_runs_once_with_notice(tmp_path):
     out = tmp_path / "n"
-    hook = service_mod.hook_for(f"cat >> {out}; echo >> {out}")
+    hook = service_mod.hook_for(f"sh -c 'cat >> {out}; echo >> {out}'")
     notify_outcome(_Server(), Wave(), "idle", "GRPH-P1", on_notice=hook)
     lines = out.read_text().strip().splitlines()
     assert len(lines) == 1
