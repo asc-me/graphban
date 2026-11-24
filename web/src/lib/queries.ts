@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
-import { api } from "./api";
+import { api, type OwnerCloseBody } from "./api";
 import { httpsAddress, probeTrust } from "@/lib/https";
 import type { MyInvite, OnboardingMark, ProposalDecision, SetupConfirm } from "./types";
 import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, RoutingReplayProposal, Item, ItemCreateBody, ItemDetail, LessonFilters, LogExportPatch, Project, RequestItem, RuleProfileApplyWrite, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
@@ -1342,8 +1342,7 @@ export function useUpdateItem() {
 export function useOwnerClose() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, commit, pr_url }: { id: string; commit: string; pr_url?: string }) =>
-      api.ownerClose(id, { commit, pr_url }),
+    mutationFn: ({ id, ...body }: { id: string } & OwnerCloseBody) => api.ownerClose(id, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.items }),
   });
 }

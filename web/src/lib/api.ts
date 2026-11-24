@@ -321,6 +321,16 @@ export interface AnswerWaitResult {
   drain?: DrainNote;
 }
 
+/** Body of POST /items/{id}/owner-close. `kind` omitted (or "merged") records the merge;
+ * "verified" records the revision checked, a required note and an optional url (GRPH-1909). */
+export interface OwnerCloseBody {
+  commit: string;
+  pr_url?: string;
+  kind?: "merged" | "verified";
+  note?: string;
+  url?: string;
+}
+
 export const api = {
   async login(email: string, password: string): Promise<User> {
     const data = await request<{ access_token: string; refresh_token: string }>(
@@ -811,7 +821,7 @@ export const api = {
     }),
   updateItem: (id: string, body: Partial<ItemDetail>) =>
     request<Item>(`/items/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
-  ownerClose: (id: string, body: { commit: string; pr_url?: string }) =>
+  ownerClose: (id: string, body: OwnerCloseBody) =>
     request<Item>(`/items/${id}/owner-close`, { method: "POST", body: JSON.stringify(body) }),
   resolveItem: (id: string, body: { kind: "duplicate" | "superseded"; of: string; reason?: string }) =>
     request<Item>(`/items/${id}/resolve`, { method: "POST", body: JSON.stringify(body) }),
