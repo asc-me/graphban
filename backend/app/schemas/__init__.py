@@ -720,6 +720,12 @@ class OwnerCloseIn(BaseModel):
     """Body for POST /api/items/{id}/owner-close (GRPH-1030)."""
     commit: str
     pr_url: str | None = None
+    #: `merged` (default) or `verified`; checked in the service so a bad value is a 422.
+    kind: str | None = None
+    #: Required for `verified`: one line, at most 200 characters, naming where it was checked.
+    note: str | None = None
+    #: `verified` only: a link to the walk log or artifact. Never a PR url.
+    url: str | None = None
 
 
 class ResolveIn(BaseModel):

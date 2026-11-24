@@ -271,7 +271,7 @@ def owner_close(
     try:
         item = items_svc.owner_close(
             db, item_id, closer=closer, commit=body.commit, pr_url=body.pr_url,
-            defer=background.add_task,
+            kind=body.kind, note=body.note, url=body.url, defer=background.add_task,
         )
     except items_svc.MissingAttestation as e:
         raise HTTPException(409, str(e))

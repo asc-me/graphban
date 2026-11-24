@@ -2236,8 +2236,13 @@ def resolve_item(db: Session, item_id: str, *, kind: str, of: str, reason: str =
     return out
 
 
+OWNER_CLOSE_KINDS = ("merged", "verified")
+OWNER_CLOSE_NOTE_MAX = 200
+
+
 def owner_close(db: Session, item_id: str, *, closer: dict, commit: str,
-                pr_url: str | None = None, defer=None) -> Item | None:
+                pr_url: str | None = None, defer=None, kind: str | None = None,
+                note: str | None = None, url: str | None = None) -> Item | None:
     """Close an item whose work is on the base, as a signed-in project owner (GRPH-1030).
 
     Not `fleet.sign_off`. Completes through `update_item` so the completion gate is the
@@ -2248,7 +2253,26 @@ def owner_close(db: Session, item_id: str, *, closer: dict, commit: str,
     `closer` is `{id, handle, name}` of the JWT user, passed in rather than looked up:
     services stay principal-free. Authority (project owner, not an agent key) is the
     REST boundary.
+
+    `kind` is `merged` (default) or `verified`. Verified records that the owner checked the
+    work somewhere other than the base: it needs a one-line `note` naming where, takes an
+    optional `url` (a walk log or artifact, never a PR url), and writes `walk_verified`
+    in place of `on_base`.
     """
+    kind = (kind or "merged").strip().lower()
+    if kind not in OWNER_CLOSE_KINDS:
+        raise ValueError(f"kind must be one of {', '.join(OWNER_CLOSE_KINDS)}, not {kind!r}")
+    verified = kind == "verified"
+    note_text = (note or "").strip()
+    if verified:
+        if not note_text:
+            raise ValueError("note is required for a verified close: one line naming where "
+                             "the check happened")
+        if "\n" in note_text or "\r" in note_text:
+            raise ValueError("note must be a single line")
+        if len(note_text) > OWNER_CLOSE_NOTE_MAX:
+            raise ValueError(f"note is {len(note_text)} characters; the limit is "
+                             f"{OWNER_CLOSE_NOTE_MAX}")
     item = get_item(db, item_id)
     if item is None:
         return None
@@ -2257,17 +2281,21 @@ def owner_close(db: Session, item_id: str, *, closer: dict, commit: str,
     sha = (commit or "").strip().lower()
     if not _COMMIT.fullmatch(sha):
         raise ValueError(
-            "owner close needs the merge commit as 7–40 hex characters — the revision "
-            "that landed on the base, not a branch name"
+            "commit must be 7–40 hex characters — the revision "
+            + ("that was checked" if verified else "that landed on the base")
+            + ", not a branch name (owner close needs the merge commit)"
         )
-    url = (pr_url or "").strip()
-    if url and not is_pr_url(url):
-        raise ValueError(f"{url!r} is not a pull/merge request URL")
+    if verified:
+        url = (url or "").strip()
+    else:
+        url = (pr_url or "").strip()
+        if url and not is_pr_url(url):
+            raise ValueError(f"{url!r} is not a pull/merge request URL")
     cut = cut_from_commits(item.evidence)
     if any(same_commit(sha, base) for base in cut):
         raise ValueError(
-            f"{item.key}: {sha[:12]} is the commit this branch was cut from, so it "
-            "carries none of the merge — name the commit that landed on the base"
+            f"{item.key}: commit {sha[:12]} is the commit this branch was cut from, so it "
+            "carries none of the work — name a later commit"
         )
     handle = str(closer.get("handle") or closer.get("name") or closer.get("id") or "owner")
     uid = str(closer.get("id") or "").strip()
@@ -2277,13 +2305,18 @@ def owner_close(db: Session, item_id: str, *, closer: dict, commit: str,
         "",
     )
     pr_detail = existing_pr or "no PR url recorded"
+    if verified:
+        first = {"name": "walk_verified", "passed": True,
+                 "detail": f"verified by {handle}: {note_text}"}
+    else:
+        first = {"name": "on_base", "passed": True,
+                 "detail": f"owner {handle} closed as merged at {sha[:12]}; PR {pr_detail}"}
     receipt = {
         "kind": "attestation",
         "adapter": OWNER_CLOSE_ADAPTER,
         "commit": sha,
         "predicates": [
-            {"name": "on_base", "passed": True,
-             "detail": f"owner {handle} closed as merged at {sha[:12]}; PR {pr_detail}"},
+            first,
             {"name": "owner_close", "passed": True,
              "detail": (f"closed by {handle}"
                         + (f" ({uid})" if uid else "")
@@ -2294,10 +2327,11 @@ def owner_close(db: Session, item_id: str, *, closer: dict, commit: str,
     if url:
         incoming.append({
             "kind": "url", "url": url, "commit": sha,
-            "detail": f"merge recorded by owner {handle}",
+            "detail": (f"walk log recorded by owner {handle}" if verified
+                       else f"merge recorded by owner {handle}"),
         })
     item.evidence = append_evidence(item.evidence, incoming)
-    if url and not (item.github_url or "").strip():
+    if url and not verified and not (item.github_url or "").strip():
         item.github_url = url
     db.flush()
     out = update_item(db, item.id, defer=defer, status="done")
