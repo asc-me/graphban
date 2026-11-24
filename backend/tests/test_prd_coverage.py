@@ -665,13 +665,20 @@ def test_decompose_create_writes_the_link_in_the_same_direction(client, auth):
     assert rows[0].confidence == prd_svc._INFERRED_LINK_CONFIDENCE
 
 
-def test_decompose_links_a_term_one_section_defines_and_another_uses(client, auth):
+def test_decompose_links_a_record_or_route_and_not_a_command(client, auth):
+    """A command both sections mention is not a dependency. A defined record is.
+
+    GRPH-1895. `gbfleet until` used to link Wave runner to Supervisor because a
+    backtick was treated as a term one section defines. That is a command. The
+    import run is a record, and that is what the edge quotes.
+    """
     body = (
         "# Fleet\n\n"
         "## Supervisor\n"
-        "Adds `gbfleet until`, the drain loop.\n\n"
+        "Adds `gbfleet until`, the drain loop.\n"
+        "An import run is a record.\n\n"
         "## Wave runner\n"
-        "Calls `gbfleet until` once per PRD.\n\n"
+        "Calls `gbfleet until` once per PRD and files into the import run.\n\n"
         "## Acceptance criteria\n"
         "### Supervisor\n- the drain runs\n### Wave runner\n- a wave drains\n"
     )
@@ -680,7 +687,10 @@ def test_decompose_links_a_term_one_section_defines_and_another_uses(client, aut
     by = {p["section"]: p for p in dry["proposals"]}
     assert [d["section"] for d in by["Wave runner"]["depends_on"]] == ["Supervisor"]
     assert by["Supervisor"]["depends_on"] == []
-    assert by["Wave runner"]["depends_on"][0]["matched"] == "gbfleet until"
+    only = by["Wave runner"]["depends_on"][0]
+    assert only["matched"] == "import run"
+    assert "record" in only["why"]
+    assert "gbfleet until" not in only["why"]
 
 
 def test_decompose_reports_a_cycle_instead_of_creating_it(client, auth):
@@ -790,7 +800,12 @@ def test_mcp_decompose_create_writes_the_links_it_proposed(client, auth):
     assert rows == [(by_section["Draining the line"], by_section["The line"])]
 
 
-def test_decompose_links_a_slice_label_when_the_heading_is_not_quoted(client, auth):
+def test_a_slice_label_mention_is_not_a_dependency(client, auth):
+    """Naming S1 is a mention, not a dependency (GRPH-1895).
+
+    The heading is not quoted and no record is consumed, so nothing is linked.
+    Restoring label matching makes this assertion fail.
+    """
     body = (
         "# Spec\n\n"
         "## S1 — The line\n"
@@ -804,11 +819,8 @@ def test_decompose_links_a_slice_label_when_the_heading_is_not_quoted(client, au
     prd = client.post("/api/prds", json={"title": "Slices", "body": body}, headers=auth).json()
     dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
     by = {p["section"]: p for p in dry["proposals"]}
-    assert [d["section"] for d in by["S2 — Draining"]["depends_on"]] == ["S1 — The line"]
+    assert by["S2 — Draining"]["depends_on"] == []
     assert by["S1 — The line"]["depends_on"] == []
-    only = by["S2 — Draining"]["depends_on"][0]
-    assert only["matched"] == "S1"
-    assert "slice label" in only["why"]
     assert dry["link_cycles"] == []
 
 

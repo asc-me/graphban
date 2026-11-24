@@ -242,7 +242,11 @@ CEILING = 18310
 # CEILING stays 18160. Headroom 19.
 # 18157 -> 18301 (GRPH-1856, P98 S3): `bench`, one tool with an `action` argument, in the fleet
 # tier and planner-only. CEILING 18160 -> 18310 with it. Headroom 9.
-MEASURED_TOKENS = 18305  # P75 S1: +170 for answer_wait (ceiling 17775). GRPH-1650's
+# 18305 -> 18307 (GRPH-1895): `decompose_prd` names `split_refused`, the refusal an
+# oversized section with no piece to split on returns. CEILING stays 18310. Headroom 3.
+# Naming it costs 12; paying inside the same description ("Missing acceptance or" ->
+# "No acceptance/", "linked, then backlog" -> "linked, backlog") took the bill to +2.
+MEASURED_TOKENS = 18307  # P75 S1: +170 for answer_wait (ceiling 17775). GRPH-1650's
 # create_item `agent_id` is fleet-only (_FLEET_ONLY_ARGS), so it costs this manifest nothing.
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
