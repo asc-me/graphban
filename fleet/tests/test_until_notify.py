@@ -19,7 +19,8 @@ class FakeServer:
         self.down = False
 
     def call(self, tool, /, **kw):
-        assert tool == "search_items"
+        if tool != "search_items":
+            return {}
         return {"results": list(self.items)}
 
     def post_drain_notice(self, **p):
@@ -110,3 +111,22 @@ def test_a_failing_hook_does_not_raise():
         raise RuntimeError("x")
 
     assert notify_outcome(s, Wave(), "idle", "GRPH-P1", on_notice=boom) is not None
+
+
+def test_an_exit_of_a_prd_drain_posts_through_finish_and_a_line_drain_does_not():
+    """The wiring: `_finish` (every `_leave` of `_loop`) posts for `--prd` only (P99 D5)."""
+    posted = []
+
+    class Planner(FakeServer):
+        def post_drain_notice(self, **p):
+            posted.append(p)
+            return super().post_drain_notice(**p)
+
+    s = Planner()
+    s.items = [_item("A")]
+    hooks = []
+    until_mod._finish(Wave(), "idle", 0, 0, s, review=[], waits=[], outside=[],
+                      prd="GRPH-P1", on_notice=hooks.append)
+    until_mod._finish(Wave(), "idle", 0, 0, s, review=[], waits=[], outside=[],
+                      line="L1", on_notice=hooks.append)
+    assert [p["outcome"] for p in posted] == ["drained"] and len(hooks) == 1
