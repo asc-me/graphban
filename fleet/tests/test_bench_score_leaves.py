@@ -74,8 +74,27 @@ def test_b7_excluded_with_reason_when_check_not_evaluated(repo):
     assert out["B7"]["verdict"] == "excluded" and out["B7"]["reason"]
 
 
+@pytest.mark.parametrize("outcome", ["check_green", "check_red", "no_branch"])
 @pytest.mark.parametrize("leaf", suite_mod.CAPABILITY_LEAVES)
-def test_every_claimable_leaf_gets_an_entry(repo, leaf):
-    out = run_mod.leaf_verdicts(_claiming(leaf), repo, "root", "check_green")
+def test_every_claimable_leaf_gets_an_entry(repo, leaf, outcome):
+    """Ratchet (GRPH-1902): every leaf a task may claim comes back scored, or excluded for a reason
+    that leaf's own handling states. An unhandled leaf raises, so it fails here, not silently."""
+    out = run_mod.leaf_verdicts(_claiming(leaf), repo, "root", outcome)
     assert leaf in out
-    assert out[leaf]["verdict"] in ("pass", "fail") or out[leaf]["reason"], out[leaf]
+    entry = out[leaf]
+    if entry["verdict"] == "excluded":
+        assert entry["reason"], entry
+        if leaf not in run_mod.UNSCORED_LEAVES:
+            assert entry["reason"] != f"no predicate scores {leaf}", entry
+
+
+def test_scored_leaves_are_not_also_listed_unscored():
+    handled = set(run_mod.CHECK_LEAVES) | {"E1", "E2", "H5", "C1"}
+    assert not handled & set(run_mod.UNSCORED_LEAVES)
+    assert handled | set(run_mod.UNSCORED_LEAVES) == set(suite_mod.CAPABILITY_LEAVES)
+
+
+def test_a_leaf_no_predicate_handles_raises(repo, monkeypatch):
+    monkeypatch.setattr(run_mod, "CHECK_LEAVES", ("A1", "A3", "A5", "C2"))
+    with pytest.raises(ValueError, match="B7"):
+        run_mod.leaf_verdicts(_claiming("B7"), repo, "root", "check_green")
