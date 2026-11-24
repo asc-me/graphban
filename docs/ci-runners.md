@@ -53,6 +53,20 @@ what it does for a fine-grained token, whatever that token was granted — the s
 read from `GET .../actions/runs?head_sha={sha}` and each run's `/jobs` instead (GRPH-1921).
 Actions jobs are judged exactly as check-runs are, and the attestation is the same one.
 
+An item whose head commit the server was never told is polled all the same (GRPH-1925).
+`head_commit` is empty for a pull request nobody recorded a head for, and such an item used
+to be dropped from the poll — which reads exactly like a head still waiting for CI, because
+nothing says otherwise. The loop looks the head up instead: `GET .../pulls/{n}` answers
+`head.sha`, and when the token cannot read that route (403, or 404 for a token that cannot
+see the pull request at all) the newest `GET
+.../actions/runs?event=pull_request&branch={branch}` run whose `pull_requests[]` lists that
+PR number answers its `head.sha` — a run for a different PR on the same branch is not this
+PR's head. The head is looked up again on every poll gap, so a push after a red run is seen,
+and a head that has already been answered is never polled again. **Pull requests: Read is
+optional**: Actions: Read on its own finds the head. A head that cannot be found is a stated
+reason, not a skip — the item's done refusal and `GET /health` both say `the box could not
+find the pull request's head commit`, why, and which pull request it was looking for.
+
 The token is `GITHUB_TOKEN` (or `GRAPHBAN_GITHUB_TOKEN`). A private repository needs a
 token that can read one of those routes, and only one of them is available to a
 fine-grained token: **Actions: Read** on the repository (plus Metadata, which every
