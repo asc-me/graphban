@@ -34,6 +34,19 @@ def open_run(body: dict, project_id: str | None = None, db: Session = Depends(ge
     return out
 
 
+@router.post("/seat")
+def task_seat(body: dict, project_id: str | None = None, db: Session = Depends(get_db),
+              key=Depends(get_agent_key)):
+    """A fresh seat for one task of an open run, minted as the task starts (GRPH-1888)."""
+    pid = _project(key, project_id, db)
+    try:
+        out = bench_svc.issue_task_seat(db, project_id=pid, body=body)
+    except AttemptRefused as e:
+        raise HTTPException(e.status, str(e))
+    db.commit()
+    return out
+
+
 @router.post("/results", status_code=201)
 def post_result(body: dict, project_id: str | None = None, db: Session = Depends(get_db),
                 key=Depends(get_agent_key)):

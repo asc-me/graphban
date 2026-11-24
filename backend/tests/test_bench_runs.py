@@ -272,3 +272,40 @@ def test_build_seat_cannot_claim_review_and_review_seat_gets_its_own_item(client
                {"agent_id": rev["agent_id"], "wait_seconds": 0})
     assert got["claimed"] is True, got
     assert got["item"]["id"] == by["r2"]["item_id"]
+
+
+def _age_out_seats(proj_id):
+    """Move the clock past ENROLMENT_TTL_MINUTES: every seat in the project is now old."""
+    from datetime import datetime, timedelta, timezone
+    from app.models import Enrolment
+    from app.services import fleet as fleet_svc
+    with SessionLocal() as db:
+        for e in db.scalars(select(Enrolment).where(Enrolment.project_id == proj_id)):
+            e.expires_at = datetime.now(timezone.utc) - timedelta(
+                minutes=fleet_svc.ENROLMENT_TTL_MINUTES)
+        db.commit()
+
+
+def test_a_seat_requested_after_the_ttl_registers(client, env):
+    """GRPH-1888: a task starting after minute 30 found its open_run seat expired."""
+    out = _open(client, env).json()
+    _age_out_seats(out["project_id"])
+    stale = out["seats"][1]["enrolment_code"]
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "register_agent", "arguments": {"enrolment_code": stale}}}
+    res = client.post("/api/mcp", json=body, headers={"X-API-Key": out["api_key"]}).json()
+    assert "expired" in str(res), res
+    r = client.post(f"/api/bench/seat?project_id={env['proj']}", headers=env["h"],
+                    json={"run_id": out["id"], "task_id": "t2"})
+    assert r.status_code == 200, r.text
+    me = _mcp(client, out["api_key"], "register_agent",
+              {"enrolment_code": r.json()["enrolment_code"], "label": "late"})
+    assert me["assigned"]["state"] == "claimed"
+    assert me["assigned"]["item"] == out["seats"][1]["item_id"]
+
+
+def test_a_seat_for_an_unknown_task_is_refused(client, env):
+    out = _open(client, env).json()
+    r = client.post(f"/api/bench/seat?project_id={env['proj']}", headers=env["h"],
+                    json={"run_id": out["id"], "task_id": "nope"})
+    assert r.status_code == 404

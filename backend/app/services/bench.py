@@ -139,6 +139,7 @@ def open_run(db: Session, *, project_id: str, user_id: str, body: dict) -> dict:
     run = BenchRun(
         id=f"bnr_{uuid.uuid4().hex[:12]}", source_project_id=project_id, project_id=scratch.id,
         tasks=[{"task_id": s["task_id"], "item_id": s["item_id"], "kind": s["kind"],
+                "delegation_id": s.get("delegation_id"),
                 "seat_id": s["_seat_id"]} for s in seats], **ident)
     db.add(run)
     db.flush()
@@ -152,6 +153,44 @@ def open_run(db: Session, *, project_id: str, user_id: str, body: dict) -> dict:
     return {"id": run.id, "project_id": scratch.id, "source_project_id": project_id,
             **ident, "seats": [{k: v for k, v in s.items() if k != "_seat_id"} for s in seats],
             "api_key": api_key}
+
+
+def issue_task_seat(db: Session, *, project_id: str, body: dict) -> dict:
+    """Mint a fresh seat for one task of an open run (GRPH-1888).
+
+    The seats `open_run` mints expire after `ENROLMENT_TTL_MINUTES`, and tasks run one at a
+    time, so a long run's later tasks would find their seat gone. The CLI asks for each
+    task's seat as the task starts. The new seat replaces the task's recorded seat, so
+    `review_restriction` follows the seat the child actually registers on.
+    """
+    from app.models import Agent, BenchRun
+    from app.services import fleet as fleet_svc
+
+    run_id = _text(body, "run_id")
+    task_id = _text(body, "task_id")
+    run = db.get(BenchRun, run_id)
+    if run is None or run.source_project_id != project_id:
+        raise AttemptRefused("bench run not found", status=404)
+    tasks = [dict(t) for t in (run.tasks or [])]
+    row = next((t for t in tasks if t.get("task_id") == task_id), None)
+    if row is None:
+        raise AttemptRefused(f"task {task_id!r} is not in run {run_id}", status=404)
+    minter = db.scalar(select(Agent).where(Agent.project_id == run.project_id,
+                                           Agent.active_role == "planner"))
+    minted_by = minter.id if minter else None
+    if row.get("kind") == "review":
+        seat, code = fleet_svc.issue_enrolment(
+            db, project_id=run.project_id, role="worker", minted_by=minted_by, review_only=True)
+    else:
+        seat, code = fleet_svc.issue_enrolment(
+            db, project_id=run.project_id, role="worker", minted_by=minted_by,
+            item_id=row["item_id"], delegation_id=row.get("delegation_id"), bound_only=True)
+    row["seat_id"] = seat.id
+    run.tasks = tasks  # reassigned: an in-place edit of a JSON column is not tracked
+    db.flush()
+    return {"run_id": run.id, "task_id": task_id, "item_id": row["item_id"],
+            "kind": row["kind"], "delegation_id": row.get("delegation_id"),
+            "enrolment_code": code}
 
 
 def review_restriction(db: Session, agent_id: str | None) -> set[str] | None:
