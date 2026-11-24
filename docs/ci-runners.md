@@ -48,11 +48,20 @@ The default for that box is to pull (GRPH-1822). The API leader reads
 `GET https://api.github.com/repos/{owner}/{repo}/commits/{sha}/check-runs` for each item in
 `review` that has a linked GitHub pull request and no `suite_green` at the recorded head,
 and writes the attestation itself under adapter `github-checks`. Nothing accepts an inbound
-callback, and no gate key is minted for the write.
+callback, and no gate key is minted for the write. When check-runs answers 403 — which is
+what it does for a fine-grained token, whatever that token was granted — the same head is
+read from `GET .../actions/runs?head_sha={sha}` and each run's `/jobs` instead (GRPH-1921).
+Actions jobs are judged exactly as check-runs are, and the attestation is the same one.
 
-The token is `GITHUB_TOKEN` (or `GRAPHBAN_GITHUB_TOKEN`). A private repository needs read
-access to its checks: a classic personal access token with the `repo` scope, or a
-fine-grained token with Checks: Read. The loop does not call GitHub without a token — an
+The token is `GITHUB_TOKEN` (or `GRAPHBAN_GITHUB_TOKEN`). A private repository needs a
+token that can read one of those routes, and only one of them is available to a
+fine-grained token: **Actions: Read** on the repository (plus Metadata, which every
+fine-grained token carries). GitHub offers no Checks permission on a fine-grained token at
+all, so check-runs answers it 403 `Resource not accessible by personal access token` with
+`x-accepted-github-permissions: checks=read` — there is nothing to grant. The only token
+that reads check-runs is a classic personal access token with the `repo` scope, which is
+read *and write* on every private repo that owner can see; it is not recommended. The loop
+does not call GitHub without a token — an
 empty token is not the unauthenticated 60-calls-an-hour budget. A missing token, a 401 and
 a 404 are named on the item's done refusal and on `GET /health` as `ci_pull.last_error`.
 The loop runs in one process. Those sentences, and the ones for zero check-runs,

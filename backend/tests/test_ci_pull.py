@@ -493,6 +493,217 @@ def test_a_pass_with_nothing_to_pull_clears_the_error(db, client, monkeypatch):
     assert client.get("/health").json()["ci_pull"]["last_error"] == ""
 
 
+# ---- a token that cannot read check-runs (GRPH-1921) ---------------------------------
+#
+# A fine-grained token has no Checks permission GitHub will grant it, so
+# `commits/{sha}/check-runs` answers 403 whatever else it can read. The head is
+# then read from Actions instead: `actions/runs?head_sha=` plus each run's
+# `/jobs`. Same judge, same attestation, same adapter.
+
+RUN_URL = "https://github.com/asc-me/graphban/actions/runs/77"
+
+
+def _run(run_id=77, name="ci", status="completed", conclusion="success", url=RUN_URL):
+    return {"id": run_id, "name": name, "status": status, "conclusion": conclusion,
+            "html_url": url}
+
+
+def _runs_body(*runs, total=None):
+    return {"total_count": len(runs) if total is None else total,
+            "workflow_runs": list(runs)}
+
+
+def _jobs_body(*jobs, total=None):
+    return {"total_count": len(jobs) if total is None else total, "jobs": list(jobs)}
+
+
+def _actions(monkeypatch, jobs_by_run, *, runs=None, checks_status=403):
+    """Route check-runs to `checks_status` and serve Actions from `jobs_by_run`.
+
+    `jobs_by_run` maps a run id to that run's jobs. `runs` defaults to one
+    completed run per id, so a test states only the jobs it cares about.
+    """
+    ids = list(jobs_by_run)
+    if runs is None:
+        runs = [_run(rid) for rid in ids]
+
+    def responder(url, headers):
+        if "/check-runs" in url:
+            return _Resp(checks_status, {})
+        if "/actions/runs?" in url:
+            return _Resp(200, _runs_body(*runs))
+        for rid in ids:
+            if f"/actions/runs/{rid}/jobs" in url:
+                return _Resp(200, _jobs_body(*jobs_by_run[rid]))
+        return _Resp(404, {})
+
+    return _github(monkeypatch, responder)
+
+
+def test_a_403_on_check_runs_falls_through_to_actions_and_attests_green(db, monkeypatch):
+    head = "AbCdEf34" + "b" * 32
+    item = _item(db, head=head)
+    calls = _actions(monkeypatch, {
+        77: [_check("test", url=f"{RUN_URL}/job/1")],
+    })
+    ci_pull.run_once(db, now=0)
+    db.refresh(item)
+    [(receipt, preds)] = _suite(item)
+    assert receipt["adapter"] == "github-checks"
+    assert receipt["commit"] == head
+    assert preds == [{"name": "suite_green", "passed": True,
+                      "detail": "all 1 jobs completed and none failed"}]
+    # The run URL points at the Actions run, not at the job inside it.
+    assert receipt["run_ref"] == RUN_URL
+    # Check-runs is still tried first; Actions is the fallback, not the route.
+    assert "/check-runs" in calls[0]["url"]
+    assert f"/actions/runs?head_sha={head.lower()}" in calls[1]["url"]
+    assert f"/actions/runs/77/jobs" in calls[2]["url"]
+    assert calls[2]["headers"]["Authorization"] == "Bearer test-token"
+    # The 403 that fell through is not a problem to report: Actions answered.
+    assert ci_pull.last_error() == ""
+    done = items_svc.update_item(db, item.id, status="done")
+    assert done.status == "done"
+    assert items_svc.CI_PREDICATE in items_svc.attested_predicates(done.evidence, commit=head)
+
+
+def test_a_token_that_reads_check_runs_never_calls_actions(db, monkeypatch):
+    item = _item(db, head=_sha("classic-token"))
+    calls = _github(monkeypatch, lambda url, headers: _ok(url, headers, [_check("test")]))
+    ci_pull.run_once(db, now=0)
+    db.refresh(item)
+    [(_, preds)] = _suite(item)
+    assert preds == [{"name": "suite_green", "passed": True,
+                      "detail": "all 1 check-runs completed and none failed"}]
+    assert len(calls) == 1
+    assert "actions" not in calls[0]["url"]
+
+
+@pytest.mark.parametrize("conclusion", sorted(ci_pull.FAIL_CONCLUSIONS))
+def test_a_completed_actions_job_that_failed_names_that_job(db, monkeypatch, conclusion):
+    item = _item(db, head=_sha(f"actions-{conclusion}"))
+    _actions(monkeypatch, {77: [
+        _check("postgres"),
+        _check("test", conclusion=conclusion, url=f"{RUN_URL}/job/2"),
+    ]})
+    ci_pull.run_once(db, now=0)
+    db.refresh(item)
+    [(receipt, preds)] = _suite(item)
+    assert preds == [{"name": "suite_green", "passed": False,
+                      "detail": f"failing job: test ({conclusion})"}]
+    assert receipt["run_ref"] == RUN_URL
+    assert ci_pull.last_error() == ""
+
+
+def test_an_actions_job_still_running_writes_nothing(db, monkeypatch):
+    item = _item(db, head=_sha("actions-running"))
+    _actions(monkeypatch, {77: [
+        _check("test"),
+        _check("lint", status="in_progress", conclusion=""),
+    ]})
+    ci_pull.run_once(db, now=0)
+    db.refresh(item)
+    assert _suite(item) == []
+    assert items_svc.has_valid_attestation(item.evidence, commit=item.head_commit) is False
+    assert ci_pull.last_error() == ""
+    with pytest.raises(items_svc.MissingAttestation) as exc:
+        items_svc.update_item(db, item.id, status="done")
+    assert "still running" in str(exc.value)
+
+
+def test_a_queued_run_with_no_jobs_yet_writes_nothing(db, monkeypatch):
+    """A run that has not produced a job is not an empty, therefore green, list."""
+    item = _item(db, head=_sha("actions-queued"))
+    _actions(monkeypatch, {77: []}, runs=[_run(77, status="queued", conclusion="")])
+    ci_pull.run_once(db, now=0)
+    db.refresh(item)
+    assert _suite(item) == []
+    with pytest.raises(items_svc.MissingAttestation) as exc:
+        items_svc.update_item(db, item.id, status="done")
+    assert "still running" in str(exc.value)
+
+
+def test_zero_actions_runs_is_not_a_green_suite(db, monkeypatch):
+    item = _item(db, head=_sha("actions-noruns"))
+    calls = _actions(monkeypatch, {}, runs=[])
+    ci_pull.run_once(db, now=0)
+    db.refresh(item)
+    assert _suite(item) == []
+    assert items_svc.has_valid_attestation(item.evidence, commit=item.head_commit) is False
+    # An absent head is not a fault in the token, so it is not on `/health`.
+    assert ci_pull.last_error() == ""
+    with pytest.raises(items_svc.MissingAttestation) as exc:
+        items_svc.update_item(db, item.id, status="done")
+    assert "no workflow runs were found" in str(exc.value)
+    # The runs list was read and answered empty; the jobs call needs a run id.
+    assert any("/actions/runs?" in call["url"] for call in calls)
+    assert not any("/jobs" in call["url"] for call in calls)
+
+
+def test_a_failure_in_a_later_run_names_that_run(db, monkeypatch):
+    """Two workflows at one head: the green one must not hide the red one."""
+    item = _item(db, head=_sha("actions-two-runs"))
+    _actions(monkeypatch, {
+        77: [_check("test")],
+        88: [_check("lint", conclusion="failure", url="https://github.com/r/88/job/1")],
+    }, runs=[
+        _run(77, url="https://github.com/asc-me/graphban/actions/runs/77"),
+        _run(88, name="lint", url="https://github.com/asc-me/graphban/actions/runs/88"),
+    ])
+    ci_pull.run_once(db, now=0)
+    db.refresh(item)
+    [(receipt, preds)] = _suite(item)
+    assert preds == [{"name": "suite_green", "passed": False,
+                      "detail": "failing job: lint (failure)"}]
+    assert receipt["run_ref"] == "https://github.com/asc-me/graphban/actions/runs/88"
+
+
+def test_a_rate_limited_403_does_not_fall_through_to_actions(db, monkeypatch):
+    """A spent budget is not a missing permission: retrying Actions would spend
+    the same budget twice and report a green head that was never read."""
+    item = _item(db, head=_sha("actions-ratelimit"))
+    calls = _github(monkeypatch, lambda url, headers: _Resp(
+        403, {}, headers={"retry-after": "30"}))
+    ci_pull.run_once(db, now=0)
+    db.refresh(item)
+    assert _suite(item) == []
+    assert all("/actions/" not in call["url"] for call in calls)
+    assert "rate limited" in (ci_pull.last_error() or "")
+
+
+def test_a_truncated_workflow_run_list_is_not_a_green_suite(db, monkeypatch):
+    monkeypatch.setattr(ci_pull, "MAX_PAGES", 1)
+    item = _item(db, head=_sha("actions-truncated"))
+
+    def responder(url, headers):
+        if "/check-runs" in url:
+            return _Resp(403, {})
+        return _Resp(200, _runs_body(_run(1), total=150))
+
+    _github(monkeypatch, responder)
+    ci_pull.run_once(db, now=0)
+    db.refresh(item)
+    assert _suite(item) == []
+    assert "truncated" in (ci_pull.last_error() or "")
+
+
+def test_a_token_that_can_read_neither_route_names_the_permission(db, client, monkeypatch):
+    item = _item(db, head=_sha("actions-both-403"))
+    calls = _github(monkeypatch, lambda url, headers: _Resp(403, {}))
+    ci_pull.run_once(db, now=0)
+    db.refresh(item)
+    assert _suite(item) == []
+    error = client.get("/health").json()["ci_pull"]["last_error"]
+    assert "neither check-runs nor Actions runs" in error
+    assert "Actions: Read" in error
+    with pytest.raises(items_svc.MissingAttestation) as exc:
+        items_svc.update_item(db, item.id, status="done")
+    assert "Actions: Read" in str(exc.value)
+    # Both routes were tried, so the sentence is about the token and not a guess.
+    assert any("/check-runs" in call["url"] for call in calls)
+    assert any("/actions/runs?" in call["url"] for call in calls)
+
+
 # ---- the loop, and the docs ----------------------------------------------------------
 
 def test_lifespan_starts_and_stops_the_pull_loop():
@@ -536,12 +747,13 @@ def test_the_pull_route_and_its_token_scope_are_documented():
     assert "behind NAT" in runners
     assert "api.github.com" in runners
     assert "github-checks" in runners
-    assert "Checks: Read" in runners
+    assert "Actions: Read" in runners
+    assert "no Checks permission" in runners
     assert "classic personal access token with the `repo` scope" in runners
     assert "Zero check-runs is not a green suite" in flat
     assert "CI_PULL_SECONDS" in runners
     assert "outbound HTTPS to" in exposure and "api.github.com" in exposure
-    assert "Checks: Read" in exposure
+    assert "Actions: Read" in exposure
     assert "Do not open a tunnel" in exposure
     assert "CI_PULL_SECONDS" in config
     assert "does not fall through" in config
