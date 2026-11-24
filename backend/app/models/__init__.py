@@ -2776,6 +2776,11 @@ class Alert(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cleared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Drain notices (GRPH-1913, P99): `drain_drained` / `drain_stalled` rows carry the PRD and no
+    # wait (`item_id` is ""). NULL on every `response_needed` row. `pushed_at` is when Web Push
+    # last fired for this row, read by the 30-minute throttle.
+    prd_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    pushed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class PushSubscription(Base):
