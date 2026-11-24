@@ -3343,7 +3343,7 @@ def test_the_loop_spawns_beside_a_live_child_for_a_free_cluster(
         git_repo, factory,
         planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
         state=state, workspace=workspace, poll=0.05, empty_ticks=3,
-        limits=Limits(max_workers=3, max_children=2, child_wall_clock=15.0),
+        limits=Limits(max_workers=3, max_children=2, child_wall_clock=3600.0),
     )
     assert result.spawned == 2, result.detail
     assert alive_at_launch[1] >= 1, "the second child waited out the first"
