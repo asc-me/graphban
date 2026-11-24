@@ -4250,6 +4250,13 @@ def _clause_title_pattern(title: str) -> re.Pattern[str] | None:
 # that says "the skill" belongs to that section even though it never writes the label
 # or the whole heading (GRPH-1895). "three" is a count, not a subject, so "Three buckets"
 # is the word "buckets".
+#
+# Pronouns stay IN. Dropping "them" from "D1. Sources and who reads them" reads like the
+# same cleanup, and on the real GRPH-P92 it is not: D1's subject then ties D5's at 1 hit
+# in 2 words for "A rescan … files a source-gone notice", the tie breaks on title length,
+# and the rescan clause moves from D5 to D1 — a wrong assignment bought with a shorter
+# stop list (GRPH-1895, measured against body_hash 49ef50d796f3048e). Adding a word here
+# needs a real-PRD decompose, not a reading of the heading.
 _SUBJECT_STOP = frozenset(
     "the a an and or who of to for its their with from that this into over per by on in as at "
     "be is are not one two three four five six seven eight nine ten".split()
@@ -4278,11 +4285,17 @@ def _subject_words(title: str) -> list[str]:
 
 
 def _word_in(word: str, text: str) -> bool:
-    """Whole-token match. A trailing s stems when the stem is at least 4 letters,
-    so "source" names "sources" and "reports" names "report", and "run" does not
-    swallow "runs"."""
+    """Whole-token match. A trailing s stems when the stem is at least 3 letters, so
+    "source" names "sources", "reports" names "report", and the heading "Runs" names a
+    clause that says "run".
+
+    The floor used to be 4, which left every 4-letter plural — Docs, Logs, Keys, Runs,
+    Bugs — matching nothing while Reports, Buckets and Sources worked, so those sections
+    came back blocked for "no acceptance" (GRPH-1895). Two- and three-letter words still
+    never stem: "as", "is" and "us" are not plurals of anything.
+    """
     forms = [word]
-    if word.endswith("s") and len(word) > 4:
+    if word.endswith("s") and len(word) > 3:
         forms.append(word[:-1])
     elif len(word) >= 4:
         forms.append(word + "s")
@@ -4357,6 +4370,8 @@ _WRITE_CUE = re.compile(
     r"replaces?|replacing|deletes?|deleting)\b",
     re.IGNORECASE,
 )
+# Straight or curly double quotes, on one line. Text inside them is being quoted.
+_QUOTED_SPAN = re.compile(r'"[^"\n]*"|\u201c[^\u201d\n]*\u201d')
 
 
 def _file_name_in_text(base: str, text: str) -> bool:
@@ -4372,18 +4387,43 @@ def _file_name_in_text(base: str, text: str) -> bool:
     return re.search(rf"(?<![A-Za-z0-9]){re.escape(base)}(?![A-Za-z0-9])", text) is not None
 
 
+def _mention_cues(text: str) -> list[tuple[int, str]]:
+    """`(offset, 'read'|'write')` for every verb in `text`, sorted, quoted spans skipped.
+
+    A double-quoted span is text the section is quoting, not something the work does:
+    P92's D1 lists `"DO NOT EDIT" headers` as a marker a parser looks for, and that
+    "edit" was the nearest cue for every path the section named after it (GRPH-1895).
+    """
+    quoted = [(m.start(), m.end()) for m in _QUOTED_SPAN.finditer(text)]
+    out: list[tuple[int, str]] = []
+    for pattern, kind in ((_WRITE_CUE, "write"), (_READ_CUE, "read")):
+        for m in pattern.finditer(text):
+            if not any(start <= m.start() < end for start, end in quoted):
+                out.append((m.start(), kind))
+    out.sort()
+    return out
+
+
 def _mention_role(text: str, needle: str) -> str:
     """'read' when every mention of `needle` is a read, 'write' otherwise, '' if absent.
 
-    The cue is the nearest verb in the 80 characters before the mention, so
+    The cue is the nearest verb before the mention, however far back it sits, so
     "reads `AGENTS.md` and change parser.py" does not paint both paths with one
-    sentence. A mention with no verb is a write: the section named the path.
+    sentence. A mention no verb precedes is a write: the section named the path.
+
+    The window used to stop 80 characters back, and the cap did no work the
+    nearest-verb rule was not already doing. P92's D1 names its sources in a markdown
+    table row and says two paragraphs later that agent guidance files "are read, never
+    replaced"; inside 80 characters the row carried no evidence at all, so `AGENTS.md`,
+    `CLAUDE.md`, `.cursorrules` and `CONTRIBUTING.md` all defaulted to write and came
+    back as the section's only touchpoints — the symptom this item was filed for.
     """
     if not needle:
         return ""
     raw = text or ""
     low = raw.lower()
     needle_l = needle.lower()
+    cues = _mention_cues(raw)
     roles: list[str] = []
     start = 0
     while True:
@@ -4394,12 +4434,12 @@ def _mention_role(text: str, needle: str) -> str:
         before_ok = i == 0 or not low[i - 1].isalnum()
         after_ok = after >= len(low) or not low[after].isalnum()
         if before_ok and after_ok:
-            window = raw[max(0, i - 80):i]
-            writes = list(_WRITE_CUE.finditer(window))
-            reads = list(_READ_CUE.finditer(window))
-            last_write = writes[-1].start() if writes else -1
-            last_read = reads[-1].start() if reads else -1
-            roles.append("read" if last_read > last_write else "write")
+            role = "write"
+            for pos, kind in cues:
+                if pos >= i:
+                    break
+                role = kind
+            roles.append(role)
         start = after or i + 1
     if not roles:
         return ""
@@ -4769,13 +4809,22 @@ def _defined_names(body: str) -> list[tuple[str, str]]:
     "An import run is a record" defines the record `import run`. A backticked HTTP
     method and path defines a route. A command in backticks is neither: two sections
     that both mention `gban rules import` are not handing work to each other.
+
+    A record name is two or more words, or one word the author backticked. "An item is
+    a record with a status" and "Ours is a record of a codebase" define no record:
+    `item` and `ours` are ordinary words, and taking them as names made every later
+    section whose prose happened to say them depend on this one (GRPH-1895). A false
+    dependency is worse than a missing one — it silently reorders somebody's drain, and
+    at create=True it is written as a real link.
     """
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
     for match in re.finditer(r"\bis a record\b", body or "", re.IGNORECASE):
         before = (body or "")[:match.start()]
         chunk = re.split(r"[\n.;:]|\*\*", before)[-1]
-        chunk = chunk.strip().strip("*_`").strip()
+        chunk = chunk.strip()
+        quoted = "`" in chunk
+        chunk = chunk.strip("*_`").strip()
         chunk = re.sub(r"^(?:an?|the)\s+", "", chunk, count=1, flags=re.IGNORECASE).strip()
         words = re.findall(r"[A-Za-z][\w-]*", chunk)
         if not words:
@@ -4784,6 +4833,8 @@ def _defined_names(body: str) -> list[tuple[str, str]]:
         name = re.sub(r"^(?:an?|the)\s+", "", name, count=1, flags=re.IGNORECASE)
         key = name.lower()
         if len(key) < 3 or key in seen:
+            continue
+        if len(name.split()) < 2 and not quoted:
             continue
         seen.add(key)
         out.append((name, "record"))
