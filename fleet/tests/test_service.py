@@ -1159,3 +1159,22 @@ def test_a_loop_silent_service_keeps_its_wording(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "d: stalled (launchd" in out
     assert "(held)" not in out and "last notice" not in out
+
+
+def test_real_status_reads_the_recorded_notice(tmp_path: Path, monkeypatch, capsys):
+    """GRPH-1916. The real `service.status`, not a fake, carries the last notice.
+
+    Sabotage: pass `notice=None` at the end of `service.status`. `state.notice` is
+    None and `service status` prints no notice line.
+    """
+    name = "p95"
+    _unit_on_disk(tmp_path, monkeypatch, name, "launchd")
+    label = service.label_for(name)
+    monkeypatch.setattr(service, "_run", _launchctl_list(f"-\t0\t{label}"))
+    service.record_notice(name, {"prd": "P", "outcome": "drained", "open": [],
+                                 "sent_at": "2026-11-24T10:00:00+00:00"})
+    state = service.status(name, kind="launchd")
+    assert state.notice and state.notice["outcome"] == "drained"
+    main(["service", "status", "--name", name])
+    out = capsys.readouterr().out
+    assert "last notice: drained, sent 2026-11-24T10:00:00+00:00" in out
