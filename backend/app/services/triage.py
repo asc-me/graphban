@@ -234,10 +234,16 @@ def _blocker_rows(db: Session, project_id: str, now) -> list[dict]:
                                    "options": b["decision"]["options"]}
                 row.update(blocks.get(item.id) or {})
             else:
-                dep = next((d for d in (ctx.item(i)
-                                        for i in prio.blocked_by(ctx, item)) if d), None)
-                if dep is not None:
-                    row["waiting_on"] = {"id": dep.key, "title": dep.title, "status": dep.status}
+                deps = [d for d in (ctx.item(i) for i in prio.blocked_by(ctx, item)) if d]
+                if deps:
+                    # `ctx.deps` is appended in the order an unsorted Link scan returns, so
+                    # "the first dependency" was whichever row the engine happened to hand
+                    # back: the same graph could name a different one under another plan, on
+                    # another server, or after a restored dump. Sorted the way `_blocks_many`
+                    # and `questions` here already are (GRPH-1923).
+                    deps.sort(key=lambda d: (d.number or 0, d.key))
+                    row["waiting_on"] = {"id": deps[0].key, "title": deps[0].title,
+                                         "status": deps[0].status}
             rows.append(row)
     return rows
 
