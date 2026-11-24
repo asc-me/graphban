@@ -803,18 +803,23 @@ def test_cli_spawns_a_review_only_reviewer_and_reads_its_item(tmp_path, monkeypa
 
 
 def test_relative_workspace_is_resolved_against_the_callers_cwd(tmp_path, monkeypatch):
-    """A relative --workspace lands under <cwd>/<relative>, not under the fixture repo."""
-    from gbfleet import supervisor as sup
+    """A relative --workspace lands under <cwd>/<relative>, not under the fixture repo.
+
+    The real `_tree_for` cuts the worktree (git runs with the fixture repo as its cwd, which
+    is where an unresolved path went wrong) and the real `start_one` writes the instruction
+    file; the adapter's launch factory is the first stub, and it records both paths.
+    """
     from gbfleet.bench import suite as suite_mod
 
     full = R.template_suite()
     slug = next(t for t in full.tasks if t.id == "build-slugify")
     monkeypatch.setattr(R, "template_suite", lambda: suite_mod.Suite(full.id, full.version, (slug,)))
     source = KeyedServer(["build-slugify"])
-    cuts: list = []
+    seen: dict = {}
 
-    def tree_for(repo_, *a, **k):
-        cuts.append(Path(repo_))
+    def factory(seat, tree, instruction, debug_file):
+        seen.update(tree=Path(tree.path), instruction=Path(instruction),
+                    tree_exists=Path(tree.path).is_dir(), instruction_exists=Path(instruction).is_file())
         raise RuntimeError("stop here")
 
     monkeypatch.setenv(cli.API_KEY_ENV, "k")
@@ -822,8 +827,7 @@ def test_relative_workspace_is_resolved_against_the_callers_cwd(tmp_path, monkey
                         source if project_id == "p" else SimpleNamespace(api_key=key))
     monkeypatch.setattr(cli, "read_preferences",
                         lambda c: (None, SimpleNamespace(caps={}), "", {}, {}, None))
-    monkeypatch.setattr(cli, "make_adapter_factory", lambda *a, **k: object())
-    monkeypatch.setattr(sup, "_tree_for", tree_for)
+    monkeypatch.setattr(cli, "make_adapter_factory", lambda *a, **k: factory)
     plain = tmp_path / "not-a-repo"
     plain.mkdir()
     cwd = tmp_path / "cwd"
@@ -832,5 +836,10 @@ def test_relative_workspace_is_resolved_against_the_callers_cwd(tmp_path, monkey
     assert run_cli("--suite", "template", "--adapter", "claude", "--repo", str(plain),
                    "--workspace", "ws-rel") == 0
     absolute = (cwd / "ws-rel").resolve()
-    assert cuts == [R.template_fixture(absolute)]
-    assert absolute in cuts[0].parents
+    assert seen, "the launch factory was never reached"
+    assert seen["tree"].is_absolute() and seen["tree_exists"]
+    assert seen["tree"] == absolute / "bench-build-slugify"
+    assert seen["instruction"] == absolute / "bench-build-slugify" / ".gbfleet-instruction"
+    assert seen["instruction_exists"]
+    # Nothing was cut inside the fixture repo.
+    assert not (R.template_fixture(absolute) / "ws-rel").exists()
