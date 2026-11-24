@@ -23,16 +23,18 @@ function existingPrUrl(item: Item, evidence: EvidenceReceipt[] = []): string {
 
 /** How the owner is closing it. `merged` records the merge (GRPH-1030); the other two close
  * it as done with nothing delivered, pointing at the work that replaced it (GRPH-1671). */
-type Mode = "merged" | "duplicate" | "superseded";
+type Mode = "merged" | "verified" | "duplicate" | "superseded";
 
 const MODES: { id: Mode; label: string }[] = [
   { id: "merged", label: "Merged" },
+  { id: "verified", label: "Verified" },
   { id: "duplicate", label: "Duplicate" },
   { id: "superseded", label: "Superseded" },
 ];
 
 const TITLES: Record<Mode, string> = {
   merged: "Close as merged",
+  verified: "Close as verified",
   duplicate: "Close as duplicate",
   superseded: "Close as superseded",
 };
@@ -40,6 +42,7 @@ const TITLES: Record<Mode, string> = {
 const DESCRIPTIONS: Record<Mode, string> = {
   merged:
     "Records the merge commit and who closed it. This is an owner close, not a reviewer sign-off.",
+  verified: "Records the revision you checked and where. Nothing is recorded as merged.",
   duplicate:
     "Points at the finished item that already did this work. Nothing is counted as delivered here.",
   superseded:
@@ -64,6 +67,8 @@ export function OwnerCloseDialog({
   const [prUrl, setPrUrl] = React.useState("");
   const [of, setOf] = React.useState("");
   const [reason, setReason] = React.useState("");
+  const [note, setNote] = React.useState("");
+  const [url, setUrl] = React.useState("");
   const [error, setError] = React.useState("");
 
   React.useEffect(() => {
@@ -73,6 +78,8 @@ export function OwnerCloseDialog({
     setPrUrl(existingPrUrl(item));
     setOf("");
     setReason("");
+    setNote("");
+    setUrl("");
     setError("");
     close.reset();
     resolve.reset();
@@ -87,6 +94,8 @@ export function OwnerCloseDialog({
   const ready =
     mode === "merged"
       ? !!commit.trim()
+      : mode === "verified"
+      ? !!commit.trim() && !!note.trim()
       : !!of.trim() && (mode === "duplicate" || !!reason.trim());
   const pending = close.isPending || resolve.isPending;
 
@@ -100,6 +109,14 @@ export function OwnerCloseDialog({
           id: item.id,
           commit: commit.trim(),
           pr_url: prUrl.trim() || undefined,
+        });
+      } else if (mode === "verified") {
+        await close.mutateAsync({
+          id: item.id,
+          kind: "verified",
+          commit: commit.trim(),
+          note: note.trim(),
+          url: url.trim() || undefined,
         });
       } else {
         await resolve.mutateAsync({
@@ -166,6 +183,43 @@ export function OwnerCloseDialog({
                   placeholder="https://github.com/org/repo/pull/123"
                   value={prUrl}
                   onChange={(e) => setPrUrl(e.target.value)}
+                />
+              </label>
+            </>
+          ) : mode === "verified" ? (
+            <>
+              <label className="block space-y-1">
+                <span className="font-mono text-[10.5px] uppercase tracking-wide text-faint">
+                  Commit
+                </span>
+                <Input
+                  placeholder="the revision you verified"
+                  value={commit}
+                  onChange={(e) => setCommit(e.target.value)}
+                  autoFocus
+                  required
+                />
+              </label>
+              <label className="block space-y-1">
+                <span className="font-mono text-[10.5px] uppercase tracking-wide text-faint">
+                  Note
+                </span>
+                <Input
+                  placeholder="where you checked it"
+                  value={note}
+                  maxLength={200}
+                  onChange={(e) => setNote(e.target.value)}
+                  required
+                />
+              </label>
+              <label className="block space-y-1">
+                <span className="font-mono text-[10.5px] uppercase tracking-wide text-faint">
+                  URL (optional)
+                </span>
+                <Input
+                  placeholder="walk log or artifact"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
                 />
               </label>
             </>
