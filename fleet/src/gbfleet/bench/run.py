@@ -417,6 +417,33 @@ def _commits_beyond(repo: Path, branch: str, base: str) -> int:
     return int(done.stdout.strip() or 0) if done.returncode == 0 else 0
 
 
+def _reseating(start: Start, reseat: Callable[[], str | None]) -> Start:
+    """`start`, retried once on a fresh seat when the child reports its seat expired.
+
+    A seat that aged out is the harness's fault, so a second failure is `harness_error`
+    (excluded), never `never_registered` charged to the model (GRPH-1888).
+    """
+    from ..spawn import LaunchFailed
+
+    def wrapped(tree, code, *args, **kwargs):
+        try:
+            return start(tree, code, *args, **kwargs)
+        except LaunchFailed as exc:
+            if "expired" not in str(exc):
+                raise
+            new = reseat()
+            if not new:
+                raise RuntimeError(f"seat expired and no fresh seat could be issued: {exc}") from exc
+            try:
+                return start(tree, new, *args, **kwargs)
+            except LaunchFailed as again:
+                if "expired" in str(again):
+                    raise RuntimeError(f"seat expired twice: {again}") from again
+                raise
+
+    return wrapped
+
+
 def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], object],
              start: Start, cut: Callable[..., object], limits, binary_version: str = "",
              clock: Callable[[], float] = time.monotonic,
@@ -468,20 +495,29 @@ def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], o
         review_items = {tid: s["item_id"] for tid, s in rows.items()
                         if s.get("kind") == "review" and s.get("item_id")}
         scratch = open_scratch(run)
+
+        def fresh_seat(task_id: str) -> str | None:
+            """A seat minted as the task starts: the ones from open_run age out (GRPH-1888)."""
+            try:
+                return client.bench_task_seat(run_id, task_id).get("enrolment_code")
+            except Exception:  # noqa: BLE001 - fall back to the seat from open_run
+                return None
+
         for p in plan.tasks:
-            code = seats.get(p.task.id)
+            code = fresh_seat(p.task.id) or seats.get(p.task.id)
             if not code:
                 results.append(Result(p.task.id, "harness_error", "no seat issued for this task"))
                 continue
             task_repo = repo_for(p.task) if repo_for else repo
+            task_start = _reseating(start, lambda tid=p.task.id: fresh_seat(tid))
             if p.task.kind == "review":
-                results.append(_run_review(p.task, code, repo=task_repo, scratch=scratch, start=start,
+                results.append(_run_review(p.task, code, repo=task_repo, scratch=scratch, start=task_start,
                                            limits=limits, clock=clock, sleep=sleep, cut=cut, stop=stop,
                                            reap=reap, read_verdict=read_verdict,
                                            seat=rows[p.task.id], review_skip=tuple(
                                                i for t, i in review_items.items() if t != p.task.id)))
                 continue
-            results.append(_run_task(p.task, code, repo=task_repo, scratch=scratch, start=start,
+            results.append(_run_task(p.task, code, repo=task_repo, scratch=scratch, start=task_start,
                                      limits=limits, wave=wave, clock=clock, sleep=sleep, cut=cut,
                                      stop=stop, reap=reap))
     by_id = {p.task.id: p.task for p in plan.tasks}

@@ -172,6 +172,51 @@ def test_launch_failure_is_never_registered(repo, tmp_path):
     assert server.posted["outcomes"][0]["outcome"] == "never_registered"
 
 
+class SeatServer(FakeServer):
+    def __init__(self, tasks):
+        super().__init__(tasks)
+        self.minted = []
+
+    def bench_task_seat(self, run_id, task_id):
+        self.minted.append((run_id, task_id))
+        return {"enrolment_code": f"FRESH{len(self.minted)}-{task_id}"}
+
+
+def _seat_plan(repo, tmp_path):
+    def cut(t):
+        wt = tmp_path / "w"
+        git(repo, "worktree", "add", "-q", "-b", "bx", str(wt), t.base_sha)
+        return SimpleNamespace(path=wt, branch="bx")
+    return R.build_plan([task(repo)], adapter="f", model="", suite_id="s", suite_version="1"), cut
+
+
+def test_each_task_starts_on_a_seat_minted_as_it_starts(repo, tmp_path):
+    server, codes = SeatServer(["t1"]), []
+    plan, cut = _seat_plan(repo, tmp_path)
+
+    def start(tree, code, *a):
+        codes.append(code)
+        raise LaunchFailed("stub")
+
+    R.run_plan(plan, repo=repo, client=server, open_scratch=lambda r: None, start=start, cut=cut,
+               limits=SimpleNamespace(child_wall_clock=1.0))
+    assert codes == ["FRESH1-t1"] and server.minted[0] == ("bnr_1", "t1")
+
+
+def test_an_expired_seat_is_re_requested_once_then_is_harness_error(repo, tmp_path):
+    server, codes = SeatServer(["t1"]), []
+    plan, cut = _seat_plan(repo, tmp_path)
+
+    def start(tree, code, *a):
+        codes.append(code)
+        raise LaunchFailed("unauthorized: that seat is already expired")
+
+    R.run_plan(plan, repo=repo, client=server, open_scratch=lambda r: None, start=start, cut=cut,
+               limits=SimpleNamespace(child_wall_clock=1.0))
+    assert len(codes) == 2 and codes[0] != codes[1]
+    assert server.posted["outcomes"][0]["outcome"] == "harness_error"
+
+
 def test_a_task_over_a_cap_is_skipped_naming_the_cap(repo):
     plan = R.build_plan([task(repo, "big", "L"), task(repo, "small", "S")], adapter="f", model="m",
                         suite_id="s", suite_version="1", caps={"per_attempt_tokens": 100_000})

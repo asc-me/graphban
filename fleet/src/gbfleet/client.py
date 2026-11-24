@@ -62,6 +62,7 @@ GRID_PATH = "/api/harness/grid"
 #: The repo suite (GRPH-P98 §3): read with `get_suite`, written with `adopt_suite`.
 SUITE_PATH = "/api/bench/suite"
 BENCH_RESULTS_PATH = "/api/bench/results"
+BENCH_SEAT_PATH = "/api/bench/seat"
 SUITE_ADOPT_PATH = "/api/bench/suite/adopt"
 #: A baseline run (GRPH-P98 §4): open it for a scratch project and seats, post its results.
 BENCH_RUNS_PATH = "/api/bench/runs"
@@ -80,7 +81,7 @@ OBSERVATION_PROBE_ITEM = "__gbfleet_probe_no_such_item__"
 OBSERVATION_PROBE = {"item_id": OBSERVATION_PROBE_ITEM, "kind": "cut_from"}
 ALLOWED_PATHS: frozenset[str] = frozenset(
     {ATTEMPTS_PATH, SURFACE_PATH, OBSERVATIONS_PATH, SUITE_ADOPT_PATH,
-     BENCH_RUNS_PATH, BENCH_RESULTS_PATH})
+     BENCH_RUNS_PATH, BENCH_RESULTS_PATH, BENCH_SEAT_PATH})
 
 #: Short on purpose. This is a measurement posted beside real work; a supervisor waiting on it
 #: is a supervisor not starting a child.
@@ -326,6 +327,14 @@ class Graphban:
         got = self._post(BENCH_RUNS_PATH, body, timeout=timeout, strict=True)
         if not isinstance(got, dict):
             raise ObservationRefused(f"{BENCH_RUNS_PATH}: empty reply")
+        return got
+
+    def bench_task_seat(self, run_id: str, task_id: str, *, timeout: float = 30.0) -> dict:
+        """A fresh seat for one task of an open run (GRPH-1888). Raises ObservationRefused."""
+        got = self._post(BENCH_SEAT_PATH, {"run_id": run_id, "task_id": task_id},
+                         timeout=timeout, strict=True)
+        if not isinstance(got, dict) or not got.get("enrolment_code"):
+            raise ObservationRefused(f"{BENCH_SEAT_PATH}: no seat in the reply")
         return got
 
     def post_bench_result(self, body: dict, *, timeout: float = 30.0) -> dict:

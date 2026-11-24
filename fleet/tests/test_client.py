@@ -189,9 +189,11 @@ def test_the_model_door_cannot_reach_graphban():
 #: exists to prevent.
 #: `get_grid` (GRPH-1862) is a read of one fixed path, GRID_PATH, with no path parameter.
 #: `list_bench_results` (GRPH-1863) is the same: a GET of BENCH_RESULTS_PATH, no path parameter.
+#: `bench_task_seat` (GRPH-1888) POSTs the fixed BENCH_SEAT_PATH through the checked `_post`;
+#: the run and task go in the body, never the path.
 NOT_TOOL_CALLS = {"list_tools", "post_attempt", "post_surface", "post_observation", "get_grid",
                  "get_suite", "adopt_suite", "open_bench_run", "post_bench_result",
-                 "list_bench_results"}
+                 "list_bench_results", "bench_task_seat"}
 
 
 def test_every_named_helper_goes_through_the_checked_call():
@@ -225,7 +227,7 @@ def test_the_exemptions_from_the_allowlist_are_pinned():
     pinned. The next method that skips the check should be an edit with a reason attached."""
     assert NOT_TOOL_CALLS == {"list_tools", "post_attempt", "post_surface", "post_observation",
                               "get_grid", "get_suite", "adopt_suite", "open_bench_run",
-                              "post_bench_result", "list_bench_results"}
+                              "post_bench_result", "list_bench_results", "bench_task_seat"}
 
 
 def test_the_rest_surface_is_pinned_and_every_post_is_checked_against_it():
@@ -241,6 +243,7 @@ def test_the_rest_surface_is_pinned_and_every_post_is_checked_against_it():
     assert ALLOWED_PATHS == {
         "/api/fleet/attempts", "/api/fleet/observations", "/api/harness/surface",
         "/api/bench/suite/adopt", "/api/bench/runs", "/api/bench/results",
+        "/api/bench/seat",
     }
     assert ATTEMPTS_PATH in ALLOWED_PATHS
     assert SURFACE_PATH in ALLOWED_PATHS
