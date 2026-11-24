@@ -27,7 +27,7 @@ from gbfleet.supervisor import (
 from gbfleet.worktree import BaseBranchNotFound, Disposition, SEAT_FILES, Worktree, create, is_seat_file, orphans, reap, salvage_message
 from gbfleet.hostos import is_owner_only  # noqa: E402
 
-from conftest import telemetry_ack  # noqa: E402
+from conftest import pid_alive, telemetry_ack  # noqa: E402
 
 CODE = "WORKER-7F3K"
 KEY = "gbk_test"
@@ -743,35 +743,68 @@ def test_a_free_slot_refills_while_a_sibling_is_still_running(
 ):
     """GRPH-929. One long child must not hold the other slots until it exits.
 
-    Slot 1 sleeps. The other two exit 75 at once. A batch barrier starts the
+    Slot 1 waits. The other two exit 75 at once. A batch barrier starts the
     third seat only after the sleeper exits, and a fast child reaped by
     `watch_tick` used to lose its exit line and its observe record, because
     only `_reap_all` wrote them and it skips a child already reaped.
 
-    The third seat must have started before the sleeper exited. `Child` records
-    no exit time, so the bound is the sleeper's own duration (`started_at +
-    SLEEP`), not a fixed host-speed gap: a slow Windows runner can take more
-    than 1.5s to cut the next worktree and still be refilling correctly
-    (GRPH-1122). Every child — including the one that exited while a sibling
-    was still running — keeps an observe record and, for the 75s, the give-up
-    line.
+    The third seat starting while the first still runs is an EVENT here, not a
+    duration (GRPH-1536, GRPH-1924). Slot 1 stays alive until this test writes
+    its sentinel, and the test writes that sentinel from inside the
+    supervisor's own poll, once slot 3 has announced itself from inside its own
+    process — so the ordering is demonstrated by the run rather than measured
+    against a budget, on any host at any speed. What this replaces was still a
+    wall-clock bound: `Child` records no exit time, so GRPH-1122 could only
+    widen it to the sleeper's own duration (`started_at + SLEEP`), and a loaded
+    self-hosted runner spent more than that cutting the next worktree while
+    refilling perfectly correctly. `GIVE_UP_AFTER` bounds a run where refill
+    never happens at all; a passing test never waits on it.
+
+    Every child — including the one that exited while a sibling was still
+    running — keeps an observe record and, for the 75s, the give-up line.
     """
     from gbfleet.observe import LOG_FILE
 
-    # Shared with the assertion. A second copy of this number is how the bound
-    # drifts back into a host-speed gap.
-    SLEEP = 8.0
+    # Slot 1 gives up only when refill is broken. Deliberately far above any
+    # legitimate refill: the run that filed GRPH-1924 waited over 8s for a
+    # worktree, so a cap tight enough to be a budget is a cap that flakes.
+    GIVE_UP_AFTER = 120.0
+    # Slot 1's exit when the sentinel never came. Not 70 and not 75, so a
+    # broken refill names the child that was left waiting rather than reading
+    # as one more give-up.
+    NEVER_RELEASED = 78
     workspace = tmp_path / "ws"
+    marks = tmp_path / "marks"
+    marks.mkdir()
     script = tmp_path / "stagger.py"
     script.write_text(
-        "import time\n"
+        "import os, time\n"
         "from pathlib import Path\n"
-        "if Path.cwd().name.endswith('-1'):\n"
-        f"    time.sleep({SLEEP})\n"
-        "else:\n"
-        "    raise SystemExit(75)\n",
+        f"marks = Path({marks.as_posix()!r})\n"
+        "slot = Path.cwd().name.rsplit('-', 1)[-1]\n"
+        "(marks / f'started-{slot}').write_text(str(os.getpid()), encoding='utf-8')\n"
+        "if slot != '1':\n"
+        "    raise SystemExit(75)\n"
+        f"give_up = time.time() + {GIVE_UP_AFTER}\n"
+        "while time.time() < give_up and not (marks / 'release').exists():\n"
+        "    time.sleep(0.02)\n"
+        "if not (marks / 'release').exists():\n"
+        f"    raise SystemExit({NEVER_RELEASED})\n",
         encoding="utf-8",
     )
+    first_up = marks / "started-1"
+    third_up = marks / "started-3"
+    seen: dict[str, float | bool] = {}
+
+    def wait_then_release(seconds: float) -> None:
+        """The supervisor's own poll, and the only thing that lets slot 1 go."""
+        if "at" not in seen and third_up.exists() and first_up.exists():
+            seen["at"] = time.monotonic()
+            seen["sleeper_alive"] = pid_alive(
+                int(first_up.read_text(encoding="utf-8")))
+            (marks / "release").write_text("", encoding="utf-8")
+        time.sleep(seconds)
+
     wave = up(
         git_repo,
         _seats(3),
@@ -781,15 +814,25 @@ def test_a_free_slot_refills_while_a_sibling_is_still_running(
         state=state,
         workspace=workspace,
         poll=0.05,
+        sleep=wait_then_release,
     )
     assert len(wave.spawned) == 3, (
         f"spawned {len(wave.spawned)}; unused {wave.unused_seats} {wave.unredeemed}"
     )
     by_slot = {c.worktree.name.rsplit("-", 1)[-1]: c for c in wave.spawned}
     slow, third = by_slot["1"], by_slot["3"]
-    assert third.started_at < slow.started_at + SLEEP, (
-        "the third seat waited for the whole batch; a free slot stayed idle"
+    assert "at" in seen, (
+        "the third seat waited for the whole batch; a free slot stayed idle — "
+        "slot 3 never ran while slot 1 was waiting on the sentinel"
     )
+    assert seen["sleeper_alive"] is True, (
+        "slot 3 started, but slot 1 had already exited: the slot refilled after "
+        "the batch rather than while a sibling was still running"
+    )
+    # Both readings are this process's monotonic clock, so this is an ordering
+    # and not a budget: `started_at` is stamped when slot 3 is spawned, and the
+    # sentinel is written after slot 3's own process announced itself.
+    assert third.started_at <= seen["at"], (third.started_at, seen["at"])
     fast = [by_slot["2"], by_slot["3"]]
     for child in fast:
         assert any(
@@ -805,6 +848,9 @@ def test_a_free_slot_refills_while_a_sibling_is_still_running(
     by_pid = {r["pid"]: r for r in observed}
     for child in wave.spawned:
         assert child.pid in by_pid, observed
+    # Slot 1 left because the sentinel arrived. NEVER_RELEASED is what a batch
+    # barrier produces instead, after the full GIVE_UP_AFTER.
+    assert by_pid[slow.pid]["exit_code"] == 0, observed
     for child in fast:
         assert by_pid[child.pid]["exit_code"] == 75
 
