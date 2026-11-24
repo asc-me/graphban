@@ -3116,6 +3116,9 @@ export interface HarnessBaseline {
   green: number;
   rate: number | null;
   below_floor: boolean;
+  /** Tasks left out of n as plumbing (never_registered, harness_error, no leaf verdict). */
+  excluded?: number;
+  excluded_reasons?: { task_id: string; reason: string }[];
 }
 
 export interface HarnessCell {

@@ -1917,7 +1917,8 @@ def _grid_baseline(b: dict | None) -> str:
         return "no baseline"
     rate = "-" if b.get("rate") is None else f"{round(b['rate'] * 100)}%"
     grey = " (below floor)" if b.get("below_floor") else ""
-    return f"{rate} n={b['n']} {b['suite_id']} v{b['suite_version']}{grey}"
+    excl = f" excluded={b['excluded']}" if b.get("excluded") else ""
+    return f"{rate} n={b['n']}{excl} {b['suite_id']} v{b['suite_version']}{grey}"
 
 
 def _harness(args: argparse.Namespace) -> int:

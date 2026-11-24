@@ -105,3 +105,11 @@ def test_rollups_without_leaves_score_on_the_check():
 
     r = _rollups([{"task_id": "t", "outcome": "check_green", "capabilities": ["E1"]}])
     assert (r["E1"]["n"], r["E1"]["green"]) == (1, 1)
+
+
+def test_a_baseline_carries_its_excluded_count(client, auth):
+    proj, h = _env(client, auth)
+    _post(client, proj, h, outcomes=[
+        *OUT, {"task_id": "t2", "outcome": "never_registered", "capabilities": ["A1"]}])
+    b = _rows(client, proj, h)[0]["baseline"]
+    assert b["n"] == 1 and b["excluded"] == 1

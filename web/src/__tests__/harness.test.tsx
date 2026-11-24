@@ -211,6 +211,18 @@ describe("Harness page", () => {
     expect(thin).toHaveClass("text-faint");
   });
 
+  it("shows the baseline's excluded count, with reasons in the title", async () => {
+    harness.mockResolvedValueOnce(
+      report({ cells: [cell({ baseline: { suite_id: "template", suite_version: "0.1.0", n: 3,
+                                           green: 3, rate: 1, below_floor: true, excluded: 4,
+                                           excluded_reasons: [{ task_id: "t9", reason: "never_registered" }] } })] }),
+    );
+    show();
+    const b = await screen.findByTestId("harness-baseline");
+    expect(b).toHaveTextContent("4 excluded");
+    expect(b.getAttribute("title")).toContain("never_registered");
+  });
+
   it("shows the newest version's own baseline, never an older version's", async () => {
     // Two binaries of one model pool into one row; only the older one has a baseline.
     const old = cell({
