@@ -422,7 +422,9 @@ CORE_TOKENS = 9161  # GRPH-1799: -17, get_backlog description trimmed to pay for
 # codegraph 1808 -> 1811 (GRPH-1845): describe_code gains `producer`; its description is trimmed.
 # fleet 1733 -> 1877 (GRPH-1856, P98 S3): `bench`. The whole bill is this tier.
 # fleet 1877 -> 1881 (GRPH-1857, P98 S4): `bench` suite actions.
-TIER_TOKENS = {"prd": 3863, "codegraph": 1811, "fleet": 1881, "misc": 1585}
+# prd 3863 -> 3864 (GRPH-1895): `decompose_prd` names `split_refused`. The whole bill is
+# this tier; CORE_TOKENS does not move. MEASURED_TOKENS 18305 -> 18307 with it.
+TIER_TOKENS = {"prd": 3864, "codegraph": 1811, "fleet": 1881, "misc": 1585}
 # misc 1577 -> 1586 (GRPH-1780, P91 S8): `propose_rule` names the guidance draft.
 # misc 1463 -> 1577 (GRPH-1775, P91 S3): `propose_rule`. The whole bill is this tier.
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.

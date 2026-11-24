@@ -457,9 +457,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "decompose_prd",
         "description": (
-            "One task per uncovered section. Missing acceptance or touchpoints: blocked. "
+            "One task per uncovered section. No acceptance/touchpoints: blocked. "
             "`depends_on` from the body. "
-            "`oversized`; `splits` files pieces blocked, linked, then backlog. "
+            "`oversized` or `split_refused`; `splits` files pieces blocked, linked, backlog. "
             "Needs approved (grill). Framing skipped unless `include_prose`."
         ),
         "inputSchema": {
