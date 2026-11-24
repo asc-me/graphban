@@ -781,6 +781,32 @@ def test_the_skill_hands_the_person_a_runnable_line_and_carries_the_rest(tmp_pat
     assert "do not retry" in body.lower()
 
 
+def test_the_skill_registers_before_it_delegates(tmp_path):
+    """GRPH-1039. The step the skill omitted, pinned because its absence is silent in the
+    worst way: `delegate` refuses, and a refusal that names only the missing precondition
+    reads as "delegation isn't enabled" rather than as "you never introduced yourself".
+
+    Naming the project matters as much as naming the call. A bare `register_agent` lands in
+    the key's DEFAULT project, which on a credential spanning several is not where the item
+    is — and nothing refuses that, so the retry succeeds somewhere useless.
+
+    Asserted on the package source. The two committed copies (`.claude/skills`,
+    `.agents/skills`) are tied to it by `backend/tests/test_subagent_fleet.py`, which fails
+    on any copy that drifts from what `gen_subagents.py` renders, so pinning all three would
+    be the same assertion three times.
+    """
+    body = " ".join(
+        setup_mod.skill_source("graphban-delegation").read_text(encoding="utf-8").split())
+
+    assert 'register_agent(role_hint="planner", project_id=' in body
+    # A step of its own, ahead of the call it exists to enable — not a parenthetical inside
+    # it. Compared by heading and by the `delegate` invocation rather than by step number,
+    # so renumbering the skill does not break the assertion it should still satisfy.
+    assert body.index("Register this connection as an agent") < body.index('delegate(id="<item>"')
+    # The wrong-project trap is named, not left for the reader to find by losing an item.
+    assert "default" in body and "readable_projects" in body
+
+
 def _built_wheel_names(tmp_path):
     """Build the CLI wheel and return its member names; skip when no builder exists."""
     import subprocess

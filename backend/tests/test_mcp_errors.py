@@ -237,3 +237,111 @@ def test_a_blank_or_unknown_line_id_is_not_the_whole_backlog(client, auth):
     assert missing["code"] == "validation"
     assert "NOPE-L1" in missing["message"]
     assert "results" not in missing
+
+
+# ---- a delegation verb on an unregistered connection names the exact call (GRPH-1039) ----
+
+def _non_default_project_with_an_item(client, auth, name="zzz NonDefault"):
+    """A project that is NOT the key's default, plus one item in it.
+
+    `_key` mints a project-less key, so the dispatcher picks the default by project NAME
+    (`authz._member_project_ids` orders by it, and calls that "deterministic default-project
+    resolution"). The seeded projects are "Core Platform", "Infra" and "Web App", so a name
+    sorting after all three is never the default — which is what makes the "not the default"
+    assertion below able to fail. Callers assert that precondition anyway.
+    """
+    from app.db import SessionLocal
+    from app.services import items as items_svc
+
+    proj = client.post("/api/projects", json={"name": name}, headers=auth).json()["id"]
+    with SessionLocal() as db:
+        item = items_svc.create_item(db, title="delegate me", project_id=proj, status="next")
+        return proj, item.key
+
+
+def _default_project(client, key):
+    """The project this key resolves to when the call names none — the server's own answer,
+    so the test never re-derives the ordering it is asserting against."""
+    return _call(client, key, "get_context", {})["result"]["structuredContent"]["project_id"]
+
+
+def test_delegate_on_an_unregistered_connection_names_the_call_and_the_items_project(
+        client, auth):
+    """The reported trap. A fresh session's connection is not an agent, and the old one-line
+    refusal named neither the call to make nor the project to make it in — so it read as
+    "delegation isn't enabled", and a blind retry registered in the key's DEFAULT project,
+    which on a multi-project key is not where the item lives."""
+    proj, item_key = _non_default_project_with_an_item(client, auth)
+    key = _key(client, auth)
+    default = _default_project(client, key)
+    assert default != proj, "the item's project IS the default; the test cannot tell them apart"
+
+    err = _err(client, key, "delegate", {"id": item_key, "lane": "backend", "tier": "cheap"})
+    assert err["code"] == "validation"
+    assert "register_agent" in err["message"]
+    assert 'role_hint="planner"' in err["message"]
+    assert proj in err["message"]
+    # The exact call, quotable as written — not three facts the caller has to assemble.
+    assert f'register_agent(role_hint="planner", project_id="{proj}")' in err["message"]
+    # Naming the default instead would send the retry somewhere the item is not readable.
+    assert f'project_id="{default}"' not in err["message"]
+
+
+def test_mint_enrolment_for_an_unregistered_agent_names_the_target_project(client, auth):
+    """Same shape as `delegate`, and a real hole rather than only an opaque message:
+    `mint_enrolment_as` records `minted_by` without resolving it, so an id naming no agent
+    used to mint a live seat attributed to nothing."""
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models import Enrolment
+
+    proj, _item_key = _non_default_project_with_an_item(client, auth)
+    key = _key(client, auth)
+    default = _default_project(client, key)
+    assert default != proj, "the target project IS the default; the test cannot tell them apart"
+
+    err = _err(client, key, "mint_enrolment",
+               {"agent_id": "no-such-agent", "role": "worker", "project_id": proj})
+    assert err["code"] == "validation"
+    assert "register_agent" in err["message"]
+    assert 'role_hint="planner"' in err["message"]
+    assert proj in err["message"]
+    assert f'project_id="{default}"' not in err["message"]
+
+    # A refusal that still minted would be the old behaviour wearing a better message.
+    with SessionLocal() as db:
+        assert db.scalars(select(Enrolment)).all() == []
+
+
+def test_mint_enrolment_for_a_bound_seat_names_the_items_project(client, auth):
+    """The bound path already refused, but named no project — and its target is the ITEM's,
+    which is the one a planner minting for a wave actually needs."""
+    proj, item_key = _non_default_project_with_an_item(client, auth)
+    key = _key(client, auth)
+    assert _default_project(client, key) != proj
+
+    err = _err(client, key, "mint_enrolment",
+               {"agent_id": "no-such-agent", "role": "worker",
+                "item": item_key, "bound_only": True})
+    assert err["code"] == "validation"
+    assert "register_agent" in err["message"]
+    assert 'role_hint="planner"' in err["message"]
+    assert proj in err["message"]
+
+
+def test_delegate_still_works_once_the_connection_has_registered(client, auth):
+    """The control. Without it the three tests above could pass on a refusal that fires for
+    every caller, registered or not — which would be a worse trap than the one being fixed."""
+    proj, item_key = _non_default_project_with_an_item(client, auth)
+    key = _key(client, auth)
+
+    me = _call(client, key, "register_agent",
+               {"role_hint": "planner", "project_id": proj})["result"]["structuredContent"]
+    assert me.get("agent_id"), me
+
+    res = _call(client, key, "delegate",
+                {"id": item_key, "lane": "backend", "tier": "cheap",
+                 "agent_id": me["agent_id"]})["result"]
+    assert res.get("isError") is not True, res
+    assert res["structuredContent"]["brief"]
