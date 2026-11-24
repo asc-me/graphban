@@ -156,7 +156,11 @@ your tunnel origin, not `cloud.graphban.dev`:
 A project's `suite_green` result does not need an inbound path. The pull loop
 (GRPH-1822, [ci-runners.md](ci-runners.md)) uses only outbound HTTPS to
 `api.github.com`, authenticated with `GITHUB_TOKEN`. A private repository needs
-Checks: Read: a classic personal access token with the `repo` scope, or a
-fine-grained token with Checks: Read. The loop runs in one worker; the
-reason it could not attest is a row every worker reads. Do not open a tunnel,
-and do not publish a port, so that a GitHub-hosted runner can post to the ledger.
+**Actions: Read** on the repository for a fine-grained token — GitHub has no
+Checks permission to grant one, so the check-runs route answers it 403 and the
+loop reads Actions workflow runs instead (GRPH-1921). The only token that reads
+check-runs is a classic one with the `repo` scope, which is read and write on
+every private repo that owner has, and is not recommended. The loop runs in one
+worker; the reason it could not attest is a row every worker reads.
+Do not open a tunnel, and do not publish a port, so that a GitHub-hosted runner
+can post to the ledger.

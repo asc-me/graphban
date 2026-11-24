@@ -87,9 +87,15 @@ class Settings(BaseSettings):
     # known proxy; refuse to start on a weak/default JWT secret when required.
     github_webhook_secret: str = ""
     # Optional token for the box's update check (GRPH-1663) and for the CI pull loop
-    # (GRPH-1822), which reads check-runs so a box behind NAT can record `suite_green`
-    # without anything reaching in. A private repository needs checks read access: a
-    # classic PAT with the `repo` scope, or a fine-grained token with Checks: Read.
+    # (GRPH-1822), which reads a head's CI status so a box behind NAT can record
+    # `suite_green` without anything reaching in. A private repository needs a token that
+    # can read that status: a fine-grained token with Actions: Read on the repository,
+    # plus the Metadata permission every fine-grained token carries. GitHub offers no
+    # Checks permission on a fine-grained token, so the `check-runs` route answers one 403
+    # `Resource not accessible by personal access token` whatever was granted, and the loop
+    # falls back to `actions/runs?head_sha=` plus each run's `/jobs`, which Actions:
+    # Read does cover. A classic PAT with the `repo` scope is the only token that reads
+    # check-runs, and is not recommended: it grants every repository permission at once.
     # Unauthenticated GitHub REST calls share 60/hour per public IP; a token raises that
     # to 5000. The pull loop does not spend the unauthenticated budget — with no token it
     # writes nothing and says so. Sent as a Bearer header to api.github.com only — never

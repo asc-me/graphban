@@ -61,7 +61,7 @@ without stopping the other.
 | vendor | version seen | range | MCP config | prompt reaches the child by | seat inside the worktree? |
 |---|---|---|---|---|---|
 | `claude` | `2.1.233 (Claude Code)` | 2.0 – 3.0 | `--mcp-config <path>` | stdin | **no** — private temp file |
-| `gbagent` | `gbagent 0.18.37` | **exactly `0.18.37`** — a pin, not a range | `--mcp-config <path>` | `--instruction-file <path>` | **no** — private temp file |
+| `gbagent` | `gbagent 0.18.38` | **exactly `0.18.38`** — a pin, not a range | `--mcp-config <path>` | `--instruction-file <path>` | **no** — private temp file |
 | `cursor-agent` | `2026.04.17-787b533` | 2026.1 – 2027.1 | none; reads `.cursor/mcp.json` from the project dir | stdin | **yes** — forced |
 | `grok` | `grok 1.0.25 (f7e67d6988e2) [stable]` | 1.0 – 2.0 | project-scoped `<worktree>/.grok/config.toml` (**TOML**), needs `--trust` | `--prompt-file <path>` | yes — `.grok/config.toml`, see below |
 | `qwen-code` | `0.23.0` | 0.23 – 1.0 | `--mcp-config <path>` + `--allowed-mcp-server-names graphban`; the entry must be `httpUrl` | stdin | **no** — private temp file |
