@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field, replace
@@ -534,10 +535,11 @@ def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], o
 
     def discard_cut(task_repo: Path) -> None:
         while cut_trees:
+            tree = cut_trees.pop()
             try:
-                discard_tree(task_repo, cut_trees.pop())
-            except Exception:  # noqa: BLE001 - cleanup never changes a scored outcome
-                pass
+                discard_tree(task_repo, tree)
+            except Exception as e:  # noqa: BLE001 - cleanup never changes a scored outcome
+                print(f"bench: could not remove {tree}: {e}", file=sys.stderr)
 
     body = {"vendor": plan.adapter.split(":")[0], "model": plan.model, "binary_version": binary_version,
             "suite_id": plan.suite_id, "suite_version": plan.suite_version,
