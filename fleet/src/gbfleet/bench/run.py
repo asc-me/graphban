@@ -29,6 +29,7 @@ from .suite import Check, Suite, SuiteError, Task
 #: check only; real spend is whatever the vendor reports.
 TOKENS_BY_BAND = {"S": 60_000, "M": 180_000, "L": 450_000}
 DEFAULT_BAND_TOKENS = TOKENS_BY_BAND["M"]
+REVIEW_POLL_SECONDS = 10.0  # how often a running reviewer child is checked for a recorded verdict
 #: The `fleet_policy.caps` keys that bound one task.
 TASK_CAPS = ("per_attempt_tokens", "per_item_tokens")
 
@@ -154,7 +155,25 @@ class Result:
 #: Files a build child must not leave in its diff (E2); the server's `_STATE_FILES`.
 STATE_FILES = ("agents.md", "claude.md", ".gbfleet-instruction", ".gitignore", ".cursor/mcp.json",
                ".grok/config.toml", ".grok/mcp.json")
-CHECK_LEAVES = ("A1", "A3", "A5", "C2")
+#: The B family (B1-B8) is what harvest assigns a repo-suite build task; its held-out check scores it.
+B_LEAVES = tuple(f"B{i}" for i in range(1, 9))
+CHECK_LEAVES = ("A1", "A3", "A5", "C2") + B_LEAVES
+#: Leaves a build task may claim that no build predicate measures yet, each with its own reason.
+#: A claimed leaf that is in neither this table nor a predicate raises: it must never come back
+#: empty, and a blanket exclusion would be the same silent drop out of n (GRPH-1902).
+UNSCORED_LEAVES = {
+    "A2": "no predicate scores A2 (feature slice) yet",
+    "A4": "no predicate scores A4 (schema and migration) yet",
+    "C3": "no predicate scores C3 (reproduce first) yet",
+    "H1": "no predicate scores H1 (concurrency and idempotency) yet",
+    "H2": "no predicate scores H2 (authorization boundaries) yet",
+    "H3": "no predicate scores H3 (cross-engine semantics) yet",
+    "H4": "no predicate scores H4 (long-context coherence) yet",
+    "E3": "no predicate scores E3 (prose and docs) yet",
+    "F1": "F1 is a review leaf; a build task's run does not score it",
+    "F2": "F2 is a review leaf; a build task's run does not score it",
+    "F3": "F3 is a review leaf; a build task's run does not score it",
+}
 _TEST_PATH = re.compile(r"(^|/)(tests?|__tests__|spec)(/|$)|(^|/)test_[^/]+$|_test\.py$|\.(test|spec)\.(ts|tsx|js)$",
                         re.I)
 
@@ -273,6 +292,10 @@ def leaf_verdicts(task: Task, repo: Path, branch: str, outcome: str, *, commits:
                 out[leaf] = _verdict(not bad, ", ".join(bad[:5]))
         elif leaf == "C1":
             out[leaf] = _c1(repo, branch, task, paths)
+        elif leaf in UNSCORED_LEAVES:
+            out[leaf] = _verdict(None, UNSCORED_LEAVES[leaf])
+        else:
+            raise ValueError(f"task {task.id} claims {leaf}, which no leaf predicate scores")
     return out
 
 
@@ -401,16 +424,30 @@ def _run_review(task: Task, code: str, *, repo: Path, scratch, start: Start, lim
         reap(tree)
         return Result(task.id, "harness_error", str(exc)[:200], wall_seconds=clock() - started)
     timed_out = False
+    polled: tuple[str, str] | None = None
+    last_poll = started
     while child.running:
-        if clock() - started >= limits.child_wall_clock:
+        now = clock()
+        if now - started >= limits.child_wall_clock:
             stop(child)
             timed_out = True
             break
+        if now - last_poll >= REVIEW_POLL_SECONDS:
+            last_poll = now
+            try:
+                seen = read_verdict(task, scratch, item_id)
+            except Exception:  # noqa: BLE001 - the final read below reports a real failure
+                seen = None
+            if seen and seen[0] in ("bounce", "sign_off"):
+                # The verdict is recorded; the child may idle on a PR cooldown (GRPH-1899).
+                stop(child)
+                polled = seen
+                break
         sleep(1.0)
     wall = clock() - started
     reap(tree)
     try:
-        verdict, detail = read_verdict(task, scratch, item_id)
+        verdict, detail = polled if polled else read_verdict(task, scratch, item_id)
     except Exception as exc:  # noqa: BLE001
         return Result(task.id, "harness_error", f"verdict: {str(exc)[:200]}", wall_seconds=wall)
     if verdict in ("bounce", "sign_off"):
