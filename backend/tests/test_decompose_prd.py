@@ -390,3 +390,398 @@ def test_a_route_one_section_defines_is_what_the_caller_depends_on(client, auth)
     only = by["Caller"]["depends_on"][0]
     assert only["matched"] == "POST /api/imports"
     assert "route" in only["why"]
+
+
+# ── GRPH-1906: on P92's real body every proposal was blocked for "no touchpoints" ────────
+#
+# The whole real GRPH-P92 v1.1 body (body_hash 49ef50d796f3048e), not a shape beside it: the
+# dry run that filed the item ran on this, and a synthetic fixture is what let the previous
+# pass report green while the real PRD still filed nothing claimable. D1 is interpolated from
+# `_P92_D1` above so the two fixtures cannot drift apart.
+_P92_BODY = f"""\
+# Rules import: bring an org's existing engineering requirements into the rules engine
+
+**Status:** draft, 2026-11-19. Second of two PRDs. Depends on GRPH-P91, the custom-rules pipeline (proposals, citations, tighten-only, person adoption, observe-before-enforce). This PRD adds proposal sources. It adds no adoption path of its own.
+
+**One sentence:** when an org sets up a project, Graphban reads the requirements the team has already written down and files them as cited proposals. Deterministic parsers cover config files and an agent skill covers prose. A person adopts them in one reviewed batch, and a rescan proposes only what changed.
+
+## Problem
+
+<!-- framing -->
+
+- A new org arrives with rules it already follows. They are written in CI workflows, `CODEOWNERS`, branch protection, generated-file markers, `CONTRIBUTING.md`, ADRs, architecture docs and sometimes an `AGENTS.md`.
+- Set up rules (`web/src/features/rules/SetupWizard.tsx`, P82) asks the person questions. It reads nothing in the repo, so the team retypes requirements it already has, and the ones nobody remembers to type are silently missing.
+- Those sources change after onboarding. Nothing notices when the Rules page and the repo disagree.
+- Reading prose with a model can invent a requirement. The pipeline PRD's guarantees exist for exactly that kind of input: every proposal is cited, nothing loosens, and a person adopts. This import must not route around any of them.
+
+## Goals
+
+<!-- framing -->
+
+1. **One command, `gban rules import`,** reads a project's repo and its forge settings and files proposals through the pipeline.
+2. **Structured sources are read by tested parsers, not a model.**
+3. **Prose sources are read by the customer's own agent through a skill.** The skill files through the same `propose_rule` tool, so the server enforces everything the skill asks for.
+4. **Every finding lands in one of three buckets,** and the import report shows all three:
+   - a proposed rule;
+   - an EXTERNAL rule that is enforced outside Graphban;
+   - guidance plus a primitive gap.
+5. **Adoption is one reviewed batch per import,** shown as a diff per stage.
+6. **A rescan proposes only differences** against what is adopted, and can run from CI.
+
+## Non-goals
+
+<!-- framing -->
+
+- **A hook** in any one harness. Imports are org acts, and customers use many harnesses.
+- **Turning anything on without a person,** or adopting straight into enforcing. Pipeline D4 and D5 apply unchanged.
+- **Weakening an invariant** because a team's documents allow it. For example, "self-merge is fine" does not switch off independent review. Invariants (`docs/rule-candidates.md`, "The line") are not proposable at all.
+- **Rules about product architecture or style** beyond what primitives express. These become guidance plus a gap (pipeline D8).
+- **Forges other than GitHub in v1,** and CI systems other than GitHub Actions in v1. The parser boundary is designed for more.
+- **Writing to the customer's repo.** The import reads only.
+
+## {_P92_D1_HEADING}
+{_P92_D1}
+
+## D2. Three buckets
+
+Every finding lands in exactly one bucket:
+
+1. **Proposed rule.** It maps to a primitive with params. It is filed as a pipeline proposal citing file, line range and commit.
+2. **EXTERNAL rule.** It is real and already enforced outside Graphban, for example branch protection requiring two reviews. It is drawn on the Rules page at level EXTERNAL ("held outside Graphban, not verified"), with its source. When a primitive could also enforce it, a proposal for that primitive is filed alongside.
+3. **Guidance plus gap.** It is real, but no primitive can express it. It is filed as pipeline D8 guidance, with its citation.
+
+- **EXTERNAL states configuration, not safety.** Only a parser reading forge or CI configuration (D1: branch protection, rulesets, workflows) files an EXTERNAL rule; the prose skill never does. Graphban does not check that the outside enforcement works, and the label says so: "held outside Graphban, not verified". A setting that is configured but ineffective is still drawn as what is configured, with that label; it is never shown as held by Graphban.
+
+- **A proposed rule targets only what the server enforces today.** That is a tighter value on an existing library rule (for example `build.engine_evidence`, `merge.done_predicates`, `build.generated_files`, `plan.exclusive_areas`), or a custom rule on a primitive the server evaluates for custom rules (`exclusive_areas` as of P91). A requirement whose primitive the server does not evaluate (for example CODEOWNERS review ownership, `reviewer_property`) is guidance plus a gap naming that primitive, never a proposal the pipeline would refuse or a rule that holds nothing. When a primitive gains an evaluator, a rescan proposes what was guidance.
+
+## D3. The import run and its report
+
+- **An import run is a record:** project, commit, sources read and unread, and each finding with its bucket. Its proposals carry the run id as proposer.
+- **The report on the Rules page** groups findings by stage, then by bucket, each with its quote and source link. It shows unread sources first.
+- **Adopt-the-batch** uses pipeline D4 batch adoption: the person ticks findings, gives one reason, and each rule's history records the run.
+
+## D4. The skill
+
+- **The `graphban-rules-import` skill tells the customer's agent:**
+  - which prose sources to read;
+  - how to match a requirement to a primitive using the primitive contract;
+  - to quote the line it relies on;
+  - to file guidance rather than stretch a primitive.
+- **It runs in any harness with MCP.** It files only through `propose_rule`, attaching its findings to an import run the CLI opened (`gban rules import --prose` opens the run and prints the skill invocation).
+- **The prose is read by the customer's own agent, on whatever model it runs.** There is no fallback to the box's local model in v1. A run with no agent attached lists every prose source as unread, so the report never reads as clean.
+- **The skill's instructions guarantee nothing.** Every guarantee comes from the pipeline's server refusals.
+
+## D5. Rescan and drift
+
+- **`gban rules import` on a project that already has adopted rules** compares each finding with what is adopted. It files only:
+  - new requirements;
+  - tightened ones;
+  - **source gone** notices for adopted rules that no finding at the new commit still supports.
+- **A finding matches an adopted rule on what the rule says** (its primitive and params), not on where it was cited. A finding that matches an adopted rule but cites a new location (a moved or renamed file) is reported as **source moved**: shown in the report, nothing filed. So a refactor that moves documents does not flood the Rules page.
+- **Source-gone and source-moved notices are shown, never acted on.** Loosening stays person-only. A notice can still prompt a person to change a rule.
+- **A CI template** (GitHub Actions) runs the rescan when cited sources change on the default branch. It files proposals, never adopts, and reports unread sources as a failed step rather than a pass.
+- **The template ships with the product:** `gban rules import --ci-template` prints the workflow, so it is versioned with the parsers whose findings it files. The docs link to the command rather than carry a copy.
+
+## Acceptance
+
+- On a fixture repo with a workflow that runs Postgres tests on `db/**`, a `CODEOWNERS` file where one team owns `billing/`, a `.gitattributes` marking generated files, and branch protection requiring two reviews, `gban rules import` files:
+  - a `build.engine_evidence` tighten for `db/` on Postgres;
+  - an `exclusive_areas` custom-rule proposal for `billing/`;
+  - a `build.generated_files` tighten;
+  - an EXTERNAL rule for two reviews;
+  - guidance plus a gap naming `reviewer_property` for CODEOWNERS review ownership.
+
+  Each cites file, lines and commit. Nothing is filed that the pipeline would refuse as unevaluated.
+- With a token that cannot read branch protection, the report lists branch protection as unread and the run does not report clean.
+- A `CONTRIBUTING.md` line requiring a layering rule no primitive expresses becomes guidance plus a gap. No rule is filed.
+- A `CONTRIBUTING.md` line allowing self-merge produces nothing that loosens review, and the report says why.
+- Adopting the batch with one reason gives every rule a history entry naming the run. All start `observing`.
+- A rescan after the workflow adds a second engine files one `tighten` proposal and nothing else. A rescan after the workflow is deleted files a source-gone notice and changes no rule.
+- Sabotage: let a parser return empty on an unreadable source, and the unread test fails. Let the skill path bypass `propose_rule`, and the citation-refusal test fails.
+- Carried from the GRPH-P91 walk (GRPH-1783), walked on the import's fixture project, which has a repo set:
+  - An import-run proposal adding a path to `build.generated_files` is accepted, flagged **loosens**, and cannot be batch-adopted; it is adopted alone with its own reason.
+  - A proposal citing a file absent at the cited commit is refused, naming the file and the commit.
+
+## Open questions
+
+None open. Settled in the grill (author, 2026-11-24):
+
+- One import run is one project and its repo in v1; cross-repo paths are unread; an org-wide batch is later, premium work (D1).
+- A finding matches an adopted rule on primitive and params, not citation; a moved source is reported, not filed (D5).
+- A missing forge permission is a report line naming the permission, not a setup step (D1).
+- `AGENTS.md`, `CLAUDE.md`, `.cursorrules` and `.github/copilot-instructions.md` are skill sources; findings sit beside them (D1).
+- The CI template ships with the product as `gban rules import --ci-template` (D5).
+- Prose is read by the customer's own agent; no local-model fallback in v1 (D4).
+"""
+
+# The graph the dry run had. Paths are this repo's, and the summaries marked "live" were read
+# back off the instance at revision 61bf37fa on 2026-11-24. Two groups are not live and say
+# so: the `propose_rule` SYMBOL node, which the instance does not describe yet and which is
+# the shape `describe_code` writes for one, and the CLI siblings a `gban rules` create is
+# placed beside. The read-only paths D1 names are here so their exclusion is measured.
+_P92_GRAPH = [
+    {"path": "backend/app/services/rule_proposals.py", "kind": "file", "name": "",
+     "summary": "Rule proposals: a cited, direction-checked suggestion a project can adopt "
+                "(GRPH-1775 / P91 D2, D3)."},  # live
+    {"path": "backend/app/services/rule_toggles.py", "kind": "file", "name": "rule_toggles.py",
+     "summary": "Library rule toggles (GRPH-1262 / PRD-P63 §8, S2a): state and params, "
+                "layered."},  # live
+    {"path": "backend/app/services/rules_recommend.py", "kind": "file",
+     "name": "rules_recommend.py",
+     "summary": "Recommended rules (GRPH-1160 / PRD-P61 §5): rules a project's own evidence "
+                "implies."},  # live
+    {"path": "backend/tests/test_rule_engine_evidence.py", "kind": "file",
+     "name": "test_rule_engine_evidence.py",
+     "summary": "PRD-P63 §6 primitive 4/7 (GRPH-1271): `build.engine_evidence`, the "
+                "`evidence_required` primitive bound to a library rule."},  # live
+    {"path": "backend/alembic/versions/0167_rule_toggles.py", "kind": "file",
+     "name": "0167_rule_toggles.py",
+     "summary": "`rule_toggles`: per-scope state and params for library rules (GRPH-1262, "
+                "PRD-P63 D4)."},  # live
+    {"path": "web/src/features/rules/StageProposals.tsx", "kind": "file", "name": "",
+     "summary": "One row per stage: how many proposals are open for it, with a link to the "
+                "proposals strip"},  # live
+    {"path": "web/src/features/rules/LibraryRuleControls.tsx", "kind": "file",
+     "name": "LibraryRuleControls.tsx",
+     "summary": "Library rule toggles on the Rules inspector (GRPH-1268 / PRD-P63 §8, "
+                "S2c)."},  # live
+    # Not live: the instance describes few symbols. This is the node `describe_code` writes
+    # for one, and it is what D4's `propose_rule` resolves through when the graph has it.
+    {"path": "backend/app/services/rule_proposals.py::propose_rule", "kind": "symbol",
+     "name": "propose_rule", "summary": "File a cited proposal for a rule."},
+    # Not live summaries; real paths. The package a `gban rules` module is created beside.
+    {"path": "cli/src/gban/cli.py", "kind": "file", "name": "cli.py",
+     "summary": "The `gban` command line: one act, one module."},
+    {"path": "cli/src/gban/scan.py", "kind": "file", "name": "scan.py",
+     "summary": "`gban scan`: run the code-health scanners and record the result."},
+    # What D1 reads. Each must stay out of the proposal.
+    {"path": "AGENTS.md", "kind": "doc", "name": "AGENTS.md", "summary": "Agent guide."},
+    {"path": "CLAUDE.md", "kind": "doc", "name": "CLAUDE.md", "summary": "Agent guide."},
+    {"path": "CONTRIBUTING.md", "kind": "doc", "name": "CONTRIBUTING.md",
+     "summary": "Contributor guide."},
+    {"path": ".cursorrules", "kind": "config", "name": ".cursorrules",
+     "summary": "Editor agent rules."},
+    {"path": ".gitattributes", "kind": "config", "name": ".gitattributes",
+     "summary": "Generated-file markers."},
+    {"path": ".github/workflows/ci.yml", "kind": "config", "name": "ci.yml",
+     "summary": "The CI workflows."},
+]
+
+_P92_READ_ONLY = ("AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", ".gitattributes",
+                  ".cursorrules", ".github/copilot-instructions.md",
+                  ".github/workflows/ci.yml")
+
+
+def _quiet_semantic(monkeypatch):
+    """Empty semantic hits, which is what the live box gives P92.
+
+    Measured 2026-11-24 on the instance at revision 61bf37fa: a whole-section query peaks at
+    0.71, and even an exact symbol-name query (`area_matches`) peaks at 0.72 — under
+    `_TP_SCORE_FLOOR`, and none of those paths is named in the section, so the tier proposes
+    nothing. An empty hit list is that result without an embedder in the test.
+    """
+    monkeypatch.setattr("app.services.code_graph.search_code", lambda *a, **k: [])
+
+
+def _describe(pid, nodes):
+    from app.db import SessionLocal
+    from app.services import code_graph
+
+    db = SessionLocal()
+    try:
+        code_graph.describe_code(db, project_id=pid, nodes=nodes)
+    finally:
+        db.close()
+
+
+def _project_of(prd_id):
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        return db.get(prd_svc.Prd, prd_id).project_id
+    finally:
+        db.close()
+
+
+def _ns(path, kind="file", name="", summary=""):
+    """A code-graph node, the shape `list_nodes` hands `propose_touchpoints`."""
+    return SimpleNamespace(path=path, kind=kind, name=name, summary=summary)
+
+
+def test_p92_real_body_files_a_touchpoint_for_every_section(client, auth, monkeypatch):
+    """The dry run that filed GRPH-1906, on the body it was filed from.
+
+    Every proposal came back `blocked: true` with `touchpoints: []`, which hands the split
+    back to a person. Each section names something the graph can place — D1 `rules_recommend`
+    and `build.engine_evidence`, D2 the same rule id, D3 the Rules page (it names no path and
+    nothing backticked at all), D4 `propose_rule` and `gban rules import`, D5 that command
+    again — and nothing it names only to read is proposed.
+
+    Acceptance-clause assignment is GRPH-1905's item, so `blocked` itself is not asserted
+    here: this test owns the "no touchpoints" half of it.
+    """
+    _quiet_semantic(monkeypatch)
+    # The fixture really is the PRD: its D1 slice is the D1 the last pass pinned verbatim.
+    assert prd_svc.section_bodies(_P92_BODY)[_P92_D1_HEADING].strip() == _P92_D1.strip()
+
+    prd = client.post("/api/prds", json={"title": "P92 real", "body": _P92_BODY},
+                      headers=auth).json()
+    _describe(_project_of(prd["id"]), _P92_GRAPH)
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    by = {p["section"]: p for p in dry["proposals"]}
+    assert set(by) == {_D1, _D2, _D3, _D4, _D5}
+    assert dry["no_touchpoints"] == []
+    for section, proposal in by.items():
+        assert proposal["touchpoints"], section
+        assert "no touchpoints" not in (proposal["blocker"] or ""), section
+        assert not (set(proposal["touchpoints"]) & set(_P92_READ_ONLY)), section
+        assert not ({e["path"] for e in proposal["touchpoint_evidence"]}
+                    & set(_P92_READ_ONLY)), section
+
+    # A backticked symbol resolves to the file that defines it, and the evidence names it.
+    d4 = {e["path"]: e for e in by[_D4]["touchpoint_evidence"]}
+    defined = d4["backend/app/services/rule_proposals.py"]
+    assert "propose_rule" in defined["evidence"]
+    assert defined["create"] is False
+
+    # The module the command needs does not exist: a create beside its existing siblings,
+    # marked as a create so a caller does not go looking for a file that is not there.
+    created = d4["cli/src/gban/rules.py"]
+    assert created["create"] is True
+    assert "create" in created["evidence"] and "cli/src/gban" in created["evidence"]
+    assert "cli/src/gban/rules.py" in by[_D5]["touchpoints"]
+
+    # A rule id resolves through the graph too, with the id in its evidence.
+    d2 = {e["path"]: e for e in by[_D2]["touchpoint_evidence"]}
+    assert any("build.engine_evidence" in e["evidence"] for e in d2.values()), d2
+
+    # D3 names no path and nothing backticked: the page it draws the report on places it.
+    d3 = {e["path"]: e for e in by[_D3]["touchpoint_evidence"]}
+    assert "web/src/features/rules/" in d3
+    assert "Rules page" in d3["web/src/features/rules/"]["evidence"]
+    assert d3["web/src/features/rules/"]["create"] is False
+
+    # D3 is over the clause signal, so it splits — and two of its three pieces name no path,
+    # no symbol and no page of their own. Filed with nothing they would be blocked for "no
+    # touchpoints", which is this item's symptom one level down: a piece is part of the
+    # section, and the section knows where the work lands. `touchpoints_inherited` says the
+    # paths were borrowed rather than resolved, so a caller can narrow them per piece.
+    subs = {s["heading"]: s for s in by[_D3]["sub_items"]}
+    assert set(subs) == {"An import run is a record", "The report on the Rules page",
+                         "Adopt-the-batch"}
+    for heading, sub in subs.items():
+        assert sub["touchpoints"], heading
+        assert "no touchpoints" not in (sub["blocker"] or ""), heading
+    assert subs["The report on the Rules page"]["touchpoints_inherited"] is False
+    assert subs["An import run is a record"]["touchpoints_inherited"] is True
+    assert subs["Adopt-the-batch"]["touchpoints_inherited"] is True
+    assert subs["An import run is a record"]["touchpoints"] == by[_D3]["touchpoints"]
+
+
+def test_a_backticked_name_resolves_to_the_file_that_defines_it():
+    """Symbol node, then file name, then the graph's own description of a file.
+
+    No path appears in the section, so the two tiers GRPH-1895 left see nothing and the name
+    does all the work. Within a tier the definition site wins over a test or a migration of
+    it, because the point is to name the file the work changes.
+    """
+    nodes = [
+        _ns("backend/tests/test_rule_proposals.py", name="test_rule_proposals.py",
+            summary="`propose_rule` refusals and folding."),
+        _ns("backend/app/services/rule_proposals.py",
+            summary="Rule proposals: a cited suggestion a project can adopt."),
+        _ns("backend/app/services/rule_proposals.py::propose_rule", kind="symbol",
+            name="propose_rule", summary="File a cited proposal."),
+        _ns("backend/alembic/versions/0218_rule_proposals.py", name="0218_rule_proposals.py",
+            summary="The `rule_proposals` table."),
+    ]
+    out = prd_svc._resolve_named_things(nodes, "D4. The skill\nIt files only through `propose_rule`.")
+    assert [(path, create) for _o, path, _e, create in out] == [
+        ("backend/app/services/rule_proposals.py", False)]
+    assert "propose_rule" in out[0][2]
+
+    # A rule id the graph describes in a module and in its test lands on the module.
+    ranked = prd_svc._resolve_named_things([
+        _ns("backend/tests/test_engine_evidence.py", name="test_engine_evidence.py",
+            summary="`build.engine_evidence` refusals."),
+        _ns("backend/app/services/items.py", name="items.py",
+            summary="Item moves, including the `build.engine_evidence` gate."),
+    ], "A tighter `build.engine_evidence` for `db/`.")
+    assert [path for _o, path, _e, _c in ranked] == ["backend/app/services/items.py"]
+
+    # Control: a name the graph holds nowhere resolves to nothing. An empty list here is the
+    # honest answer, and it is why the tier is not "propose something for every backtick".
+    assert prd_svc._resolve_named_things(nodes, "Tighten `build.generated_files`.") == []
+
+
+def test_a_command_with_no_module_is_a_create_beside_its_siblings():
+    """`gban rules import` names a module that does not exist; its siblings say where it goes.
+
+    The control is the point of the test: `gban scan` resolves to the module that already
+    defines it and is NOT a create, so the marker is not a constant, and a program the graph
+    holds no directory for places nothing at all rather than inventing one.
+    """
+    nodes = [
+        _ns("cli/src/gban/cli.py", name="cli.py", summary="The `gban` acts."),
+        _ns("cli/src/gban/scan.py", name="scan.py", summary="`gban scan`."),
+        _ns("cli/src/gban/doctor.py", name="doctor.py", summary="`gban doctor`."),
+    ]
+    created = prd_svc._resolve_named_things(nodes, "Run `gban rules import --prose`.")
+    assert [(path, create) for _o, path, _e, create in created] == [
+        ("cli/src/gban/rules.py", True)]
+    assert "create" in created[0][2] and "cli/src/gban" in created[0][2]
+
+    existing = prd_svc._resolve_named_things(nodes, "Run `gban scan --all`.")
+    assert [(path, create) for _o, path, _e, create in existing] == [
+        ("cli/src/gban/scan.py", False)]
+
+    assert prd_svc._resolve_named_things(nodes, "Run `docker compose up`.") == []
+
+
+def test_a_named_page_resolves_to_where_the_graph_puts_it():
+    """"The report on the Rules page" places D3, which names no path and no symbol.
+
+    `.cursor/rules` holds more nodes than the Rules page's own directory, so this is the UI
+    word deciding, not density: a page is drawn somewhere under `web/`.
+    """
+    nodes = [
+        _ns("web/src/features/rules/StageProposals.tsx", summary="One row per stage."),
+        _ns("web/src/features/rules/ProposalsStrip.tsx", summary="The proposals strip."),
+        _ns(".cursor/rules/graphban.mdc", kind="config", name="graphban.mdc",
+            summary="Editor rules."),
+        _ns(".cursor/rules/ledger.mdc", kind="config", name="ledger.mdc",
+            summary="Editor rules."),
+        _ns(".cursor/rules/fleet.mdc", kind="config", name="fleet.mdc",
+            summary="Editor rules."),
+    ]
+    out = prd_svc._resolve_named_things(
+        nodes, "D3. The import run and its report\nThe report on the Rules page groups findings.")
+    assert [(path, create) for _o, path, _e, create in out] == [
+        ("web/src/features/rules/", False)]
+    assert "Rules page" in out[0][2]
+
+    # Control: a surface the graph has no directory for places nothing.
+    assert prd_svc._resolve_named_things(nodes, "Drawn on the Billing page.") == []
+
+
+def test_a_name_the_section_only_reads_is_not_a_touchpoint(client, auth, monkeypatch):
+    """The name tier goes through the same read-only guard the path tier does.
+
+    A section that resolves `AGENTS.md` by name and only reads it must not gain a write
+    touchpoint just because the resolver is new.
+    """
+    _quiet_semantic(monkeypatch)
+    body = (
+        "# Spec\n\n## Sources\n"
+        "The skill reads `AGENTS.md` and files what it finds.\n\n"
+        "## Acceptance\n- each source is read\n"
+    )
+    prd = client.post("/api/prds", json={"title": "Reads by name", "body": body},
+                      headers=auth).json()
+    _describe(_project_of(prd["id"]), [{"path": "AGENTS.md", "kind": "doc",
+                                        "name": "AGENTS.md", "summary": "Agent guide."}])
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    sources = {p["section"]: p for p in dry["proposals"]}["Sources"]
+    assert sources["touchpoints"] == []
+    assert sources["touchpoint_evidence"] == []
