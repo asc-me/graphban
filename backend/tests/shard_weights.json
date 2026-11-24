@@ -115,6 +115,7 @@
 "tests/test_digest_publish.py": 8.14,
 "tests/test_disjoint_touchpoints.py": 0.58,
 "tests/test_docs_completeness.py": 0.42,
+"tests/test_drain_alerts.py": 3.0,
 "tests/test_docs_sync.py": 0.23,
 "tests/test_documents.py": 1.99,
 "tests/test_documents_reference.py": 0.35,

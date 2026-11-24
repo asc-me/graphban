@@ -6,14 +6,22 @@ ONE transaction, so a failed write leaves the wait unhanded and the next sweep r
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
+from types import SimpleNamespace
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Alert, Item, Link, Project, utcnow
+from app import tagging
+from app.models import Alert, Item, Link, Prd, Project, utcnow
 from app.security.authz import readable_project_ids
 
 KIND = "response_needed"
+#: Drain notice outcomes (GRPH-1913, P99) -> the alert kind each writes.
+DRAIN_KINDS = {"drained": "drain_drained", "stalled": "drain_stalled"}
+DRAIN_OUTCOMES = (*DRAIN_KINDS, "working")
+#: Web Push for a drain fires on a change of outcome kind, else at most this often per PRD.
+DRAIN_PUSH_GAP = timedelta(minutes=30)
 
 
 def write_for_wait(db: Session, wait: Item, user_ids: list[str], *, body: str = "") -> list[Alert]:
@@ -37,6 +45,75 @@ def clear_for_item(db: Session, item_id: str) -> int:
         row.cleared_at = now
         n += 1
     return n
+
+
+def _aware(dt):
+    from datetime import timezone
+
+    return dt if dt is None or dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _drain_text(prd_key: str, outcome: str, open_items: list[dict]) -> tuple[str, str]:
+    if outcome == "drained":
+        return f"{prd_key} drained", f"The drain for {prd_key} finished: nothing is left to build."
+    lines = [f"{o['item']}: {o['reason']}" if o.get("reason") else str(o["item"]) for o in open_items]
+    return f"{prd_key} stalled", "\n".join(lines)
+
+
+def post_drain_notice(db: Session, project_id: str, prd: Prd, outcome: str,
+                      open_items: list[dict] | None = None) -> dict:
+    """Turn a drain notice into the PRD's live alert (GRPH-1913, P99 D6/D7). Commits.
+
+    One live alert per (PRD, recipient). `working` clears it. The same outcome with the same
+    text changes nothing; the same outcome with new text updates the row in place; a changed
+    outcome replaces the row. Returns `{"alerts": [ids], "push": [ids to push]}` — the caller
+    pushes AFTER this commit, best-effort.
+    """
+    from app.services.question_recipients import question_recipients
+
+    now = utcnow()
+    live = list(db.scalars(select(Alert).where(
+        Alert.prd_id == prd.id, Alert.kind.in_(tuple(DRAIN_KINDS.values())),
+        Alert.cleared_at.is_(None)).order_by(Alert.created_at, Alert.id)))
+    if outcome == "working":
+        for row in live:
+            row.cleared_at = now
+        db.commit()
+        return {"alerts": [], "cleared": len(live), "push": []}
+    kind = DRAIN_KINDS[outcome]
+    project = db.get(Project, prd.project_id)
+    title, body = _drain_text(tagging.render(project.tag, "prd", prd.number), outcome,
+                              open_items or [])
+    users = list(dict.fromkeys(question_recipients(
+        db, SimpleNamespace(project_id=prd.project_id, prd_id=prd.id))["users"]))
+    by_user: dict[str, list[Alert]] = {}
+    for row in live:
+        by_user.setdefault(row.user_id, []).append(row)
+    ids, push = [], []
+    for row in live:  # no longer a recipient, or a duplicate beyond the one live row
+        if row.user_id not in users or by_user[row.user_id][0] is not row:
+            row.cleared_at = now
+    for uid in users:
+        row = by_user.get(uid, [None])[0]
+        if row is not None and row.kind == kind:
+            ids.append(row.id)
+            if row.title == title and row.body == body:
+                continue  # identical to the last notice: nothing changes
+            row.title, row.body = title, body
+            last = _aware(row.pushed_at)
+            if last is None or now - last >= DRAIN_PUSH_GAP:
+                row.pushed_at = now
+                push.append(row.id)
+            continue
+        if row is not None:
+            row.cleared_at = now  # stalled <-> drained replaces the row
+        new = Alert(id="al_" + uuid.uuid4().hex[:12], user_id=uid, project_id=prd.project_id,
+                    kind=kind, item_id="", prd_id=prd.id, title=title, body=body, pushed_at=now)
+        db.add(new)
+        ids.append(new.id)
+        push.append(new.id)
+    db.commit()
+    return {"alerts": ids, "push": push}
 
 
 def _askers(db: Session, wait_ids: list[str]) -> dict[str, Item]:
@@ -100,6 +177,20 @@ def alert_dict(db: Session, row: Alert, *, lookup: _Lookup | None = None) -> dic
     """One alert as the bell renders it. `lookup` carries a list's shared reads; without it
     this row's own are made here."""
     seen = lookup if lookup is not None else _Lookup(db, [row])
+    if row.prd_id:  # a drain notice: no wait, no asker, no impact to derive
+        project = seen.projects.get(row.project_id)
+        prd = db.get(Prd, row.prd_id)
+        return {
+            "id": row.id, "kind": row.kind, "project": row.project_id,
+            "project_tag": project.tag if project is not None else None,
+            "title": row.title, "impact": "drain",
+            "question": row.title, "body": row.body, "wait": None, "ticket": None,
+            "prd": tagging.render(project.tag, "prd", prd.number)
+            if project is not None and prd is not None else None,
+            "asked_by": None,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "read": row.read_at is not None,
+        }
     wait = seen.wait(row)
     ticket = seen.askers.get(wait.id) if wait is not None else None
     holder = wait if wait is not None and wait.prd_id else ticket

@@ -1,10 +1,19 @@
-"""Pull GitHub check-runs onto a box the internet cannot reach (GRPH-1822).
+"""Pull GitHub CI results onto a box the internet cannot reach (GRPH-1822).
 
 A ledger behind NAT never receives the push CI uses to post `suite_green`, so
 an item with a linked pull request can never reach `done`. This loop reads
 `GET /repos/{owner}/{repo}/commits/{sha}/check-runs` and writes the attestation
 itself. Nothing accepts an inbound callback, and no key is minted: the `gate`
 scope is enforced at the HTTP boundary, and this process is that authority.
+
+Check-runs is not a route every token can read. GitHub offers no Checks
+permission on a fine-grained personal access token, so one answers 403 with
+`x-accepted-github-permissions: checks=read` no matter what it was granted, and
+the only token that reads it is a classic one with `repo` — write access to
+every private repo the owner has (GRPH-1921). So a 403 that is not a rate limit
+falls through to `GET /actions/runs?head_sha={sha}` and each run's `/jobs`,
+which Actions: Read does cover. Both routes write the same attestation under the
+same adapter; a 403 on both names the missing permission rather than going quiet.
 
 Zero check-runs is not a green suite. A missing token, a 401 and a 404 are
 not silence — `last_error` is what `/health` reports, and `refusal_clause` is
@@ -223,7 +232,8 @@ def _poll(db: Session, clock: float) -> None:
             if fetched.stop or fetched.backoff:
                 break
             continue
-        verdict = judge(fetched.runs or [])
+        verdict = judge(fetched.runs or [], noun=fetched.noun, one=fetched.one,
+                        run_ref=fetched.run_ref)
         if verdict.kind in ("pass", "fail"):
             for item, exact in groups[key]:
                 _write(db, item, exact, verdict)
@@ -236,14 +246,54 @@ def _poll(db: Session, clock: float) -> None:
 
 class _Fetched:
     def __init__(self, *, runs: list | None = None, problem: str = "",
-                 backoff: float = 0.0, stop: bool = False):
+                 backoff: float = 0.0, stop: bool = False, forbidden: bool = False,
+                 noun: str = "check-runs", one: str = "check", run_ref: str = ""):
         self.runs = runs
         self.problem = problem
         self.backoff = backoff
         self.stop = stop
+        #: A 403 that is not a rate limit: the token cannot read THIS route, so
+        #: the other one is worth trying. Any other status is the answer.
+        self.forbidden = forbidden
+        #: What the entries in `runs` are. The Actions route reads jobs, and a
+        #: sentence that calls a job a check-run sends the owner to the wrong
+        #: permission to fix.
+        self.noun = noun
+        self.one = one
+        self.run_ref = run_ref
+
+
+#: The one thing a fine-grained token has for a 403 on BOTH routes is a missing
+#: permission, so the sentence names what to grant instead of reporting two
+#: opaque statuses the owner would have to decode on api.github.com.
+_BOTH_REFUSED = (
+    "the box could not read GitHub checks: the token can read neither check-runs "
+    "nor Actions runs (a fine-grained token needs Actions: Read on the repository)")
 
 
 def _fetch(owner: str, repo: str, sha: str, token: str) -> _Fetched:
+    """One head, over whichever route this token can read.
+
+    Check-runs first, and Actions only when check-runs answers a 403 that is not
+    a rate limit. Check-runs is the richer answer — it carries checks posted by
+    other apps, not only this repository's own workflows — and a classic `repo`
+    token reads it, so nothing that works today changes route. A fine-grained
+    token has no Checks permission it could be granted, so its 403 means "wrong
+    route" and not "something is wrong"; Actions: Read is the route that answers.
+    A 403 that falls through is not a problem to report, so it never reaches
+    `last_error` while Actions answers.
+    """
+    checks = _fetch_check_runs(owner, repo, sha, token)
+    if not checks.forbidden:
+        return checks
+    actions = _fetch_actions(owner, repo, sha, token)
+    if actions.problem:
+        return _Fetched(problem=_BOTH_REFUSED if actions.forbidden else actions.problem,
+                        backoff=actions.backoff, stop=actions.stop)
+    return actions
+
+
+def _fetch_check_runs(owner: str, repo: str, sha: str, token: str) -> _Fetched:
     collected: list = []
     total: int | None = None
     last_headers: dict = {}
@@ -267,7 +317,9 @@ def _fetch(owner: str, repo: str, sha: str, token: str) -> _Fetched:
                 return _Fetched(
                     problem="the box could not read GitHub checks: rate limited",
                     backoff=wait or 60.0)
-            return _Fetched(problem=f"the box could not read GitHub checks: GitHub answered {status}")
+            return _Fetched(
+                problem=f"the box could not read GitHub checks: GitHub answered {status}",
+                forbidden=status == 403)
         if status != 200:
             return _Fetched(problem=f"the box could not read GitHub checks: GitHub answered {status}")
         try:
@@ -300,6 +352,116 @@ def _fetch(owner: str, repo: str, sha: str, token: str) -> _Fetched:
     return _Fetched(runs=collected, backoff=_backoff_seconds(last_headers))
 
 
+def _send(url: str, token: str):
+    """One authenticated GET: `((body, headers), None)` on a 200 carrying a JSON
+    object, else `(None, _Fetched)` holding the sentence for what GitHub answered."""
+    try:
+        resp = httpx.get(url, headers=_headers(token), timeout=_FETCH_TIMEOUT)
+    except (httpx.TimeoutException, httpx.HTTPError, OSError) as exc:
+        return None, _Fetched(
+            problem=f"the box could not read GitHub checks: {type(exc).__name__}")
+    headers = _header_map(resp)
+    status = int(getattr(resp, "status_code", 0) or 0)
+    if status == 200:
+        try:
+            body = resp.json()
+        except (ValueError, TypeError):
+            return None, _Fetched(problem="the box could not read GitHub checks: bad response")
+        if not isinstance(body, dict):
+            return None, _Fetched(problem="the box could not read GitHub checks: bad response")
+        return (body, headers), None
+    if status == 401:
+        return None, _Fetched(
+            problem="the box could not read GitHub checks: GitHub answered 401", stop=True)
+    if status == 404:
+        return None, _Fetched(problem="the box could not read GitHub checks: GitHub answered 404")
+    if status in (403, 429):
+        wait = _backoff_seconds(headers)
+        if status == 429 or wait:
+            return None, _Fetched(
+                problem="the box could not read GitHub checks: rate limited",
+                backoff=wait or 60.0)
+    return None, _Fetched(
+        problem=f"the box could not read GitHub checks: GitHub answered {status}",
+        forbidden=status == 403)
+
+
+def _fetch_actions(owner: str, repo: str, sha: str, token: str) -> _Fetched:
+    """The Actions route: the head's workflow runs, then each run's jobs.
+
+    A job carries the same `status`, `conclusion`, `name` and `html_url` a
+    check-run does, so `judge` reads the two alike — `startup_failure` included,
+    which GitHub uses for a job that died before it could report `failure`.
+    """
+    base = f"https://api.github.com/repos/{owner}/{repo}/actions"
+    query = f"head_sha={sha}&per_page={_PAGE_SIZE}"
+    runs: list = []
+    url = f"{base}/runs?{query}"
+    for page in range(2, MAX_PAGES + 2):
+        got, fault = _send(url, token)
+        if fault is not None:
+            return fault
+        body, _ = got
+        batch = body.get("workflow_runs")
+        if not isinstance(batch, list):
+            return _Fetched(problem="the box could not read GitHub checks: bad response")
+        runs.extend(batch)
+        total = body.get("total_count")
+        if not batch:
+            break
+        if isinstance(total, int) and not isinstance(total, bool):
+            # A short page is not the end while `total_count` says there is more,
+            # exactly as the check-runs pagination reads it.
+            if len(runs) >= total:
+                break
+        elif len(batch) < _PAGE_SIZE:
+            break
+        url = f"{base}/runs?{query}&page={page}"
+    else:
+        # Judging a page-worth of a longer list could miss the run that failed.
+        return _Fetched(
+            problem="the box could not read GitHub checks: the workflow-run list was truncated")
+    if not runs:
+        # Not "no jobs": nothing ran at this head at all. The owner reads this
+        # sentence on the done refusal, and the two have different fixes.
+        return _Fetched(runs=[], noun="workflow runs")
+
+    entries: list = []
+    ref = ""
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        batch: list = []
+        run_id = run.get("id")
+        if run_id is not None:
+            got, fault = _send(f"{base}/runs/{run_id}/jobs?per_page={_PAGE_SIZE}", token)
+            if fault is not None:
+                return fault
+            body, _ = got
+            jobs = body.get("jobs")
+            if not isinstance(jobs, list):
+                return _Fetched(problem="the box could not read GitHub checks: bad response")
+            total_jobs = body.get("total_count")
+            if isinstance(total_jobs, int) and not isinstance(total_jobs, bool) \
+                    and len(jobs) < total_jobs:
+                return _Fetched(
+                    problem="the box could not read GitHub checks: the job list was truncated")
+            batch = jobs
+        if not batch:
+            # A run with no job yet — queued, or an id GitHub did not return — is
+            # still running. Judging the run itself keeps the head from reading
+            # as an empty, and therefore green, list of jobs.
+            entries.append(run)
+            continue
+        entries.extend(batch)
+        if not ref and any(_conclusion(job) in FAIL_CONCLUSIONS for job in batch):
+            ref = str(run.get("html_url") or "")
+    if not ref:
+        first = next((run for run in runs if isinstance(run, dict)), {})
+        ref = str(first.get("html_url") or "")
+    return _Fetched(runs=entries, noun="jobs", one="job", run_ref=ref)
+
+
 class _Verdict:
     def __init__(self, kind: str, detail: str = "", run_ref: str = "", sentence: str = ""):
         self.kind = kind
@@ -308,29 +470,38 @@ class _Verdict:
         self.sentence = sentence
 
 
-def judge(runs: list) -> _Verdict:
-    """What one head's check-runs say.
+def judge(runs: list, noun: str = "check-runs", one: str = "check",
+          run_ref: str = "") -> _Verdict:
+    """What one head's entries say. Both routes are judged here, alike.
 
-    `absent` is zero runs. That is not a pass: a repository with no checks
-    configured would otherwise sail through the done gate. A run that has not
-    completed — or a completed run with no conclusion — blocks a verdict even
+    `noun` and `one` name what the entries are — check-runs, or Actions jobs —
+    because the sentences they build are what an owner reads on a done refusal,
+    and "no check-runs were found" would send a fine-grained token's owner back
+    to a permission that does not exist. `run_ref` overrides the URL derived from
+    the entries: the Actions route sets it to the workflow run, since a job's own
+    `html_url` is a fragment of it.
+
+    `absent` is zero entries. That is not a pass: a repository with no checks
+    configured would otherwise sail through the done gate. An entry that has not
+    completed — or a completed one with no conclusion — blocks a verdict even
     when a sibling has already failed, because the acceptance rule is that a
     still-running head writes nothing. The failure is recorded on the poll
-    after every check has finished.
+    after every entry has finished.
     """
     if not runs:
-        return _Verdict("absent", sentence="no check-runs were found")
+        return _Verdict("absent", sentence=f"no {noun} were found")
     if not all(_settled(run) for run in runs):
         return _Verdict("wait", sentence="GitHub checks for this head are still running")
     failing = [run for run in runs if _conclusion(run) in FAIL_CONCLUSIONS]
     if failing:
-        detail = "failing check: " + ", ".join(
-            f"{_name(run)} ({_conclusion(run)})" for run in failing)
-        ref = next((str(run.get("html_url") or "") for run in failing
-                    if str(run.get("html_url") or "")), "")
+        detail = f"failing {one}: " + ", ".join(
+            f"{_name(run, one)} ({_conclusion(run)})" for run in failing)
+        ref = run_ref or next((str(run.get("html_url") or "") for run in failing
+                               if str(run.get("html_url") or "")), "")
         return _Verdict("fail", detail=detail, run_ref=ref)
-    ref = str((runs[0] or {}).get("html_url") or "") if isinstance(runs[0], dict) else ""
-    return _Verdict("pass", detail=f"all {len(runs)} check-runs completed and none failed",
+    ref = run_ref or (
+        str((runs[0] or {}).get("html_url") or "") if isinstance(runs[0], dict) else "")
+    return _Verdict("pass", detail=f"all {len(runs)} {noun} completed and none failed",
                     run_ref=ref)
 
 
@@ -344,8 +515,8 @@ def _conclusion(run) -> str:
     return str(run.get("conclusion") or "").lower()
 
 
-def _name(run) -> str:
-    return str(run.get("name") or "check")
+def _name(run, default: str = "check") -> str:
+    return str(run.get("name") or default)
 
 
 def _candidates(db: Session) -> list[tuple[Item, str, str, str]]:
