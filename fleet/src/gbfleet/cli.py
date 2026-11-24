@@ -1772,7 +1772,7 @@ def _bench_run(args: argparse.Namespace) -> int:
     needs_user = any(id(p.task) not in template_ids for p in plan.tasks)
     user_repo = repo_root(Path(args.repo)) if needs_user else None
     if args.workspace:
-        workspace = Path(args.workspace)
+        workspace = Path(args.workspace).expanduser().resolve()
     elif user_repo is not None:
         workspace = user_repo.parent / f"{user_repo.name}-bench"
     else:
