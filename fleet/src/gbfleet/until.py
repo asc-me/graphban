@@ -4093,6 +4093,34 @@ def _linked_pr_is_superseded(repo: Path, row: dict, branch: str) -> bool:
     return True
 
 
+def _publish_if_local_only(repo: Path, branch: str, base: str, item: str, planner) -> str:
+    """Push `branch` when it exists only in this clone (GRPH-1891). "" when fine, else why not.
+
+    `gh pr create` on an unpushed branch dies with `Head ref must be a branch`, and the
+    drain used to wait on that forever. Unknown remote state is not a refusal: the open
+    below reports whatever is really wrong.
+    """
+    try:
+        if not wt_mod.branch_exists(repo, branch):
+            return ""
+        remote = wt_mod.remote_name(repo, branch)
+        if not remote.known or remote.exists:
+            return ""
+        pushed = wt_mod.push_branch(repo, branch, base)
+    except (OSError, subprocess.SubprocessError, wt_mod.GitError):
+        return ""
+    if pushed.ok or pushed.skipped:
+        return ""
+    reason = f"branch {branch} was never pushed and the push failed: {pushed.reason}"
+    if planner is not None and item:
+        try:
+            planner.post_observation(item_id=item, kind="withheld", branch=branch,
+                                     reason=reason)
+        except Exception as exc:  # noqa: BLE001 — the wait note below still names it
+            reason = f"{reason} (withheld note not recorded: {exc})"
+    return reason
+
+
 def _pr_opened(rows: list[dict], repo: Path, base: str, logged: set, *,
                planner=None) -> tuple[list[dict], list[dict]]:
     """Split unheld review rows into (has a linked PR, waiting for one) (GRPH-1730).
@@ -4121,6 +4149,11 @@ def _pr_opened(rows: list[dict], repo: Path, base: str, logged: set, *,
         if not branch or (_linked_pr(row) and not superseded) or (
                 not superseded and not _pr_missing_is_the_only_refusal(row)):
             ready.append(row)
+            continue
+        unpushed = _publish_if_local_only(repo, branch, base, item, planner)
+        if unpushed:
+            _note_pr_wait(logged, item, unpushed)
+            waiting.append(row)
             continue
         try:
             subject = propose.title_subject(repo, branch, base)
