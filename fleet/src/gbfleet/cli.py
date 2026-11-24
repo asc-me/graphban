@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import tempfile
+import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -1790,12 +1791,15 @@ def _bench_run(args: argparse.Namespace) -> int:
 
     repo = user_repo or fixture_repo
     wave = "bench"
+    # A per-run token in every branch/worktree name: a second run on the same repo never
+    # meets the first run's `gb/bench-*` branches (GRPH-1904).
+    run_tag = uuid.uuid4().hex[:6]
     limits = Limits(max_workers=1, child_wall_clock=args.child_wall_clock,
                     registration_window=args.registration_window)
 
     def cut(task, base=None):
         # `base` is a review task's ref: its reviewer reads the change at that commit.
-        return sup._tree_for(repo_for(task), workspace, wave, "".join(
+        return sup._tree_for(repo_for(task), workspace, wave, run_tag + "-" + "".join(
             c if c.isalnum() else "-" for c in task.id), base=base or task.base_sha)
 
     def start(tree, code, task, scratch, review_skip=()):
@@ -1840,7 +1844,12 @@ def _bench_run(args: argparse.Namespace) -> int:
         binary_version=getattr(factory, "binary_version", "") or "")
     for r in posted.get("results", []):
         print(f"{r.task_id}: {r.outcome}" + (f" ({r.detail})" if r.detail else ""))
-    print(f"posted {len(posted.get('results', []))} outcome(s) for {args.adapter}")
+    results = posted.get("results", [])
+    print(f"posted {len(results)} outcome(s) for {args.adapter}")
+    if results and all(r.outcome in ("harness_error", "never_registered") for r in results):
+        print("gbfleet bench run: every task came back as plumbing (harness_error or "
+              "never_registered); this run measured nothing", file=sys.stderr)
+        return 1
     return 0
 
 

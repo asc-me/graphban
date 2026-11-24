@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field, replace
@@ -490,6 +491,17 @@ def _reseating(start: Start, reseat: Callable[[], str | None]) -> Start:
     return wrapped
 
 
+def discard_tree(repo: Path, tree) -> None:
+    """Drop a scored task's worktree and bench branch; scoring has already read them."""
+    path = getattr(tree, "path", None)
+    if path is not None and Path(path).exists():
+        _git(repo, "worktree", "remove", "--force", str(path))
+    _git(repo, "worktree", "prune")
+    branch = getattr(tree, "branch", "")
+    if branch:
+        _git(repo, "branch", "-D", branch)
+
+
 def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], object],
              start: Start, cut: Callable[..., object], limits, binary_version: str = "",
              clock: Callable[[], float] = time.monotonic,
@@ -512,6 +524,22 @@ def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], o
     seat. `read_verdict(task, scratch, item_id)` returns `(outcome, detail)` for its item.
     """
     from . import review as review_mod
+
+    cut_trees: list = []
+    cut_raw = cut
+
+    def cut(*a, **kw):
+        tree = cut_raw(*a, **kw)
+        cut_trees.append(tree)
+        return tree
+
+    def discard_cut(task_repo: Path) -> None:
+        while cut_trees:
+            tree = cut_trees.pop()
+            try:
+                discard_tree(task_repo, tree)
+            except Exception as e:  # noqa: BLE001 - cleanup never changes a scored outcome
+                print(f"bench: could not remove {tree}: {e}", file=sys.stderr)
 
     body = {"vendor": plan.adapter.split(":")[0], "model": plan.model, "binary_version": binary_version,
             "suite_id": plan.suite_id, "suite_version": plan.suite_version,
@@ -562,10 +590,12 @@ def run_plan(plan: Plan, *, repo: Path, client, open_scratch: Callable[[dict], o
                                            reap=reap, read_verdict=read_verdict,
                                            seat=rows[p.task.id], review_skip=tuple(
                                                i for t, i in review_items.items() if t != p.task.id)))
+                discard_cut(task_repo)
                 continue
             results.append(_run_task(p.task, code, repo=task_repo, scratch=scratch, start=task_start,
                                      limits=limits, wave=wave, clock=clock, sleep=sleep, cut=cut,
                                      stop=stop, reap=reap))
+            discard_cut(task_repo)
     by_id = {p.task.id: p.task for p in plan.tasks}
     post = {**{k: body[k] for k in ("vendor", "model", "binary_version", "suite_id", "suite_version")},
             "outcomes": [{"task_id": r.task_id, "outcome": r.outcome,

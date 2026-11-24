@@ -342,7 +342,7 @@ def test_cli_children_and_roster_use_the_scratch_key_not_the_source_key(repo, tm
     monkeypatch.setattr(sup, "start_one", start_one)
     monkeypatch.setattr(wt_mod, "reap_held", lambda tree, vendor: None)
     assert run_cli("--suite", "repo", "--adapter", "claude:haiku", "--repo", str(repo),
-                   "--workspace", str(tmp_path / "ws")) == 0
+                   "--workspace", str(tmp_path / "ws")) == 1
     assert [s.code for s, _ in seats] == ["C-avg-clean", "C-take-clean"]
     for seat, roster in seats:
         assert seat.api_key == "scratch-key"
@@ -409,8 +409,8 @@ def test_template_tasks_cut_and_check_in_the_fixture_repo_not_the_users(repo, tm
                    "--workspace", str(ws)) == 0
     fx = R.template_fixture(ws)
     assert fx.parent == ws and fx != repo
-    assert cuts == {"build-slugify": fx, "t1": repo}
-    assert checks == {"bench-build-slugify": fx, "bench-t1": repo}
+    assert {k.split("-", 1)[1]: v for k, v in cuts.items()} == {"build-slugify": fx, "t1": repo}
+    assert {k.replace(k.split("-")[1] + "-", "", 1): v for k, v in checks.items()} == {"bench-build-slugify": fx, "bench-t1": repo}
     outcomes = {o["task_id"]: o["outcome"] for o in source.posted["outcomes"]}
     assert outcomes["build-slugify"] == "check_green"
 
@@ -440,7 +440,7 @@ def test_template_only_run_needs_no_user_repo(tmp_path, monkeypatch):
     plain = tmp_path / "not-a-repo"
     plain.mkdir()
     assert run_cli("--suite", "template", "--adapter", "claude", "--repo", str(plain),
-                   "--workspace", str(tmp_path / "ws")) == 0
+                   "--workspace", str(tmp_path / "ws")) == 1
     assert cuts == [R.template_fixture(tmp_path / "ws")]
 
 
@@ -471,7 +471,7 @@ def test_bench_run_posts_the_binary_version_the_adapter_resolved(tmp_path, monke
     plain = tmp_path / "not-a-repo"
     plain.mkdir()
     assert run_cli("--suite", "template", "--adapter", "claude:sonnet", "--repo", str(plain),
-                   "--workspace", str(tmp_path / "ws")) == 0
+                   "--workspace", str(tmp_path / "ws")) == 1
     assert source.opened["binary_version"] == "2.1.37"
     assert source.posted["binary_version"] == "2.1.37"
     assert source.posted["vendor"] == "claude" and source.posted["model"] == "sonnet"
@@ -863,12 +863,62 @@ def test_relative_workspace_is_resolved_against_the_callers_cwd(tmp_path, monkey
     cwd.mkdir()
     monkeypatch.chdir(cwd)
     assert run_cli("--suite", "template", "--adapter", "claude", "--repo", str(plain),
-                   "--workspace", "ws-rel") == 0
+                   "--workspace", "ws-rel") == 1
     absolute = (cwd / "ws-rel").resolve()
     assert seen, "the launch factory was never reached"
     assert seen["tree"].is_absolute() and seen["tree_exists"]
-    assert seen["tree"] == absolute / "bench-build-slugify"
-    assert seen["instruction"] == absolute / "bench-build-slugify" / ".gbfleet-instruction"
+    assert seen["tree"].parent == absolute
+    assert seen["tree"].name.startswith("bench-") and seen["tree"].name.endswith("-build-slugify")
+    assert seen["instruction"] == seen["tree"] / ".gbfleet-instruction"
     assert seen["instruction_exists"]
     # Nothing was cut inside the fixture repo.
     assert not (R.template_fixture(absolute) / "ws-rel").exists()
+
+
+def _branches(repo):
+    return subprocess.run(["git", "-C", str(repo), "branch", "--list", "gb/bench-*"],
+                          capture_output=True, text=True, check=True).stdout.split()
+
+
+def _real_cut_run(repo, tmp_path, tag):
+    from gbfleet import supervisor as sup
+
+    server = FakeServer(["t1"])
+    plan = R.build_plan([task(repo)], adapter="f", model="", suite_id="s", suite_version="1")
+    cuts = []
+
+    def cut(t, base=None):
+        tree = sup._tree_for(repo, tmp_path / "ws", "bench", f"{tag}-{t.id}", base=t.base_sha)
+        cuts.append(tree.branch)
+        return tree
+
+    def start(tree, code, t, scratch):
+        solve(tree, t)
+        return SimpleNamespace(running=False)
+
+    def reap(tree):
+        subprocess.run(["git", "-C", str(tree.path), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(tree.path), "-c", "user.name=t", "-c", "user.email=t@t",
+                        "commit", "-q", "-m", "salvage"], check=False)
+        git(repo, "worktree", "remove", "--force", str(tree.path))
+
+    posted = R.run_plan(plan, repo=repo, client=server, open_scratch=lambda r: None, start=start,
+                        cut=cut, limits=SimpleNamespace(child_wall_clock=60.0), reap=reap)
+    return posted, cuts
+
+
+def test_two_runs_on_one_repo_both_cut_and_leave_no_bench_branch(repo, tmp_path):
+    p1, c1 = _real_cut_run(repo, tmp_path, "aaaaaa")
+    p2, c2 = _real_cut_run(repo, tmp_path, "bbbbbb")
+    assert c1 != c2
+    assert [r.outcome for r in p1["results"]] == ["check_green"]
+    assert [r.outcome for r in p2["results"]] == ["check_green"]
+    assert _branches(repo) == []
+
+
+def test_sabotage_a_branch_left_behind_refuses_the_same_name(repo, tmp_path, monkeypatch):
+    """Without cleanup (or without a run token) the second cut meets the first's branch."""
+    monkeypatch.setattr(R, "discard_tree", lambda repo_, tree: None)
+    _real_cut_run(repo, tmp_path, "same")
+    p2, _ = _real_cut_run(repo, tmp_path, "same")
+    assert [r.outcome for r in p2["results"]] == ["harness_error"]
