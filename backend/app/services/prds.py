@@ -4464,6 +4464,33 @@ def _text_names_path(text: str, path: str) -> bool:
     return _file_name_in_text(path.rsplit("/", 1)[-1].lower(), low)
 
 
+#: What may follow a directory prefix for the rest to be a path and not prose.
+_PATH_CHAR = r"[A-Za-z0-9_.\-]"
+
+
+def _shadowed_directory(path: str, text_low: str, matched: list[str]) -> bool:
+    """Whether `path` is a container the section names something under (GRPH-1910).
+
+    A directory node satisfies `path in text` as a prefix of every file named beneath
+    it, so P99's "3. The server alert" proposed `backend/alembic`,
+    `backend/alembic/versions`, `backend/app`, `backend/app/routers`,
+    `backend/app/routers/fleet.py` — five slots, four of them containers — and
+    `_TP_MAX` truncated the files the section actually named.
+
+    Two signals, because a file under it is named either way: another matched path
+    sits under it, or the text goes on past `path/` with a path character. The second
+    catches a file that is not a node yet. A container with nothing named under it
+    stays — "a migration in `backend/alembic/versions/`" is the write target, and
+    dropping it would leave the section with no touchpoint at all.
+    """
+    prefix = (path or "").rstrip("/")
+    if not prefix:
+        return False
+    if any(other != path and other.startswith(f"{prefix}/") for other in matched):
+        return True
+    return re.search(re.escape(f"{prefix}/".lower()) + _PATH_CHAR, text_low) is not None
+
+
 def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[dict]:
     """Code-graph paths a section likely changes, each with the evidence that matched.
 
@@ -4471,28 +4498,36 @@ def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[
     touchpoint. Otherwise: the path verbatim, or its file name as a whole token; and
     semantic search. A search hit at or above `_TP_SCORE_FLOOR` stands alone. Below
     that floor it is kept only when the section also names the path. A bare directory
-    name is not a file-name match."""
+    name is not a file-name match, and a directory the section names a file under is
+    not proposed either (`_shadowed_directory`).
+
+    What the section named is collected before search runs and keeps its order, so
+    `_TP_MAX` truncation cuts search hits first and the named files last."""
     from app.services import code_graph
 
     raw = f"{section}\n{body}"
     text = raw.lower()
-    found: dict[str, str] = {}
+    named: dict[str, str] = {}
     for n in code_graph.list_nodes(db, prd.project_id):
         path = n.path.split("::", 1)[0]
         if _is_read_only_path(raw, path):
             continue
         base = path.rsplit("/", 1)[-1]
         if path.lower() in text:
-            found.setdefault(path, f"path `{path}` named in the section")
+            named.setdefault(path, f"path `{path}` named in the section")
         elif _file_name_in_text(base.lower(), text):
-            found.setdefault(path, f"file name `{base}` named in the section")
+            named.setdefault(path, f"file name `{base}` named in the section")
+    matched = list(named)
+    found = {p: e for p, e in named.items() if not _shadowed_directory(p, text, matched)}
     try:
         hits = code_graph.search_code(db, raw[:2000], prd.project_id, top_k=_TP_MAX)
     except Exception:  # noqa: BLE001 - semantic search is best effort; lexical hits still stand
         hits = []
     for node, score in hits:
         path = node.path.split("::", 1)[0]
-        if path in found or _is_read_only_path(raw, path):
+        # `named`, not `found`: a container dropped for shadowing must not come back
+        # on a score, which would put the crowding this item was filed for back.
+        if path in named or _is_read_only_path(raw, path):
             continue
         if score >= _TP_SCORE_FLOOR:
             found[path] = f"code search matched the section (score {score:.2f})"
@@ -4692,16 +4727,32 @@ def _compose_task(prd: Prd, body: str, clauses: list[str], context: str, gate_te
     return described
 
 
-def _piece_blocker(prd_key: str, no_clause: bool, no_touchpoints: bool, gate_blocker: str) -> str:
+#: The two reasons a piece can come back with no touchpoint, which are not the same
+#: absence: the graph had nothing to propose, or the caller's own list named nothing
+#: this piece could claim. Only the second one is actionable from the reply alone
+#: (GRPH-1910), so it says where the paths went and what to type instead.
+_NO_TP_PROPOSED = (
+    "no touchpoints: the code graph proposed none for this section, so the "
+    "planner cannot cluster it and gbfleet cannot open its PR. Set "
+    "`touchpoints` (files it changes) on the item."
+)
+_NO_TP_UNNAMED_BY_PIECE = (
+    "no touchpoints: none of the paths given for this section is named by this "
+    "piece, so nothing was copied onto it — `unassigned_touchpoints` on the "
+    "proposal names them. Give this piece its own with "
+    "`touchpoints={\"<section> \u2014 <piece heading>\": [...]}`."
+)
+
+
+def _piece_blocker(prd_key: str, no_clause: bool, no_touchpoints: bool, gate_blocker: str,
+                   no_touchpoints_msg: str = "") -> str:
     blocker = gate_blocker
     if no_clause:
         msg = (f"no acceptance clause in {prd_key} maps to this section; sign-off "
                "refuses an item with no `## Acceptance` list. Add the clauses.")
         blocker = f"{blocker}\n{msg}".strip()
     if no_touchpoints:
-        msg = ("no touchpoints: the code graph proposed none for this section, so the "
-               "planner cannot cluster it and gbfleet cannot open its PR. Set "
-               "`touchpoints` (files it changes) on the item.")
+        msg = no_touchpoints_msg or _NO_TP_PROPOSED
         blocker = f"{blocker}\n{msg}".strip()
     return blocker
 
@@ -4724,6 +4775,33 @@ def _accepted_headings(splits: dict | None, section: str, headings: list[str]) -
         return []
     accepted = {_section_key(str(h)) for h in raw if isinstance(h, str) and str(h).strip()}
     return [h for h in headings if _section_key(h) in accepted]
+
+
+def _piece_override(overrides: dict | None, section: str, heading: str) -> list[str] | None:
+    """The caller's own touchpoints for one piece, keyed `"<section> — <piece heading>"`.
+
+    Matched on `_section_key`, so the dash, the spacing and the section number are the
+    caller's to write: "3. The server alert — Bell", "3. The server alert - Bell" and
+    "the server alert—bell" are one key. The list wins for that piece, empty included —
+    it is what the caller typed. None means the caller gave this piece nothing, and the
+    section-level list is distributed instead.
+    """
+    want = _section_key(f"{section} — {heading}")
+    for key, value in (overrides or {}).items():
+        if _section_key(str(key)) == want:
+            return [t for t in (value or []) if isinstance(t, str) and t.strip()]
+    return None
+
+
+def _piece_given(piece_text: str, given: list[str]) -> list[str]:
+    """The section-level paths this piece names, in the order the caller gave them.
+
+    A piece's own text decides, not the section's preamble: the preamble belongs to
+    every piece, so counting it would hand the same paths to all of them, which is the
+    copy this exists to stop (GRPH-1910). A path the preamble alone names is reported
+    in `unassigned_touchpoints` for the caller to place with `_piece_override`.
+    """
+    return [t for t in given if _text_names_path(piece_text, t)]
 
 
 def _file_split(db: Session, prd: Prd, section: str, fidelity: str, subs: list[dict]) -> list[str]:
@@ -5157,6 +5235,11 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
     is refused in ``split_refused`` and is not reported ``oversized`` with empty
     ``sub_items``. ``splits={section: [headings]}`` with
     create=True files those pieces instead of the one item: blocked, linked, then backlog.
+    A piece of a split gets only the ``touchpoints`` its own text names, not the section's
+    whole list; a key of ``"<section> — <piece heading>"`` gives one piece a list of its
+    own, and that list wins. ``unassigned_touchpoints`` names the section's given paths no
+    piece claimed, and is null when the section was not split — nothing was distributed
+    then, which is not the same answer as an empty list.
     A partial list also files one remainder carrying every other suggested piece's body
     and clauses. Coverage counts by section, so the omitted pieces would otherwise never
     be offered again. ``split_remainders`` names those headings. ``unfiled_pieces`` lists
@@ -5256,6 +5339,9 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
         preamble = next((text for heading, text in groups if heading == ""), "")
         real = [(heading, text) for heading, text in groups if heading]
         sub_items: list[dict] = []
+        # What each piece claimed of the caller's list, read before the UI filter strips
+        # web/ off it, so a path the UI twin took is not also reported as unclaimed.
+        claimed_by_pieces: list[list[str]] = []
         level = section_level.get(p["section"], [])
         # Suggested only once the section is already too big. A short section with two
         # headings is still one child; the caller is not offered a split it did not need.
@@ -5264,11 +5350,21 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                 piece = "\n\n".join(part for part in (preamble, gbody) if part)
                 own = list(per_heading.get((p["section"], heading), []))
                 sub_clauses = level + own
-                if given:
-                    sub_tps = list(given)
+                # GRPH-1910. The caller's section-level list is DISTRIBUTED, not copied:
+                # a piece gets the given paths its own text names, or the list the caller
+                # keyed to that piece. Copying all of it onto every piece is why the Bell
+                # child could edit the migration and the Server child the bell.
+                override = _piece_override(overrides, p["section"], heading)
+                unnamed_by_piece = False
+                if override is not None:
+                    sub_tps = override
+                elif given:
+                    sub_tps = _piece_given(f"{heading}\n{gbody}", given)
+                    unnamed_by_piece = not sub_tps
                 else:
                     sub_tps = [e["path"] for e in propose_touchpoints(
                         db, prd, f"{p['section']} {heading}", piece)]
+                claimed_by_pieces.append(list(sub_tps))
                 if split_ui:
                     sub_tps = [t for t in sub_tps if not _is_web_touchpoint(t)]
                 sub_no_clause = not sub_clauses and not parse_acceptance(piece)[0]
@@ -5280,11 +5376,19 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                     "description": _compose_task(
                         prd, piece, sub_clauses, context, gate_text, design_text),
                     "blocker": _piece_blocker(
-                        prd.key, sub_no_clause, not sub_tps, gate["blocker"] if gate else ""),
+                        prd.key, sub_no_clause, not sub_tps,
+                        gate["blocker"] if gate else "",
+                        _NO_TP_UNNAMED_BY_PIECE if unnamed_by_piece else ""),
                     # Piece text the remainder is built from. Stripped before the reply.
                     "_gbody": gbody,
                     "_own_clauses": own,
                 })
+        # Null when the section was not split: every given path is on the section's own
+        # item then, and an empty list would read as "distributed, nothing left over".
+        unassigned_tps: list[str] | None = None
+        if claimed_by_pieces:
+            claimed = {t for tps in claimed_by_pieces for t in tps}
+            unassigned_tps = [t for t in given if t not in claimed]
         # Oversized with nothing to split used to come back `oversized: true` and
         # `sub_items: []`, which reads as a split nobody made (GRPH-1895). Refuse it
         # instead, and do not advertise an oversized flag the caller cannot act on.
@@ -5328,6 +5432,10 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             "split_refused": split_refused,
             "size": size["size"],
             "sub_items": sub_items,
+            # Given paths no piece claimed, so the caller can key them to one. Null when
+            # the section was not split — nothing was distributed, which is not the same
+            # answer as "distributed and nothing was left over".
+            "unassigned_touchpoints": unassigned_tps,
             # Filing scratch, stripped before the reply. The remainder is built at create
             # time, once `splits` says which pieces were not named.
             "_preamble": preamble,
