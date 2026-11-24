@@ -643,7 +643,12 @@ def test_p92_real_body_files_a_touchpoint_for_every_section(client, auth, monkey
     d4 = {e["path"]: e for e in by[_D4]["touchpoint_evidence"]}
     defined = d4["backend/app/services/rule_proposals.py"]
     assert "propose_rule" in defined["evidence"]
+    assert "a symbol this file defines" in defined["evidence"]
     assert defined["create"] is False
+    # D1's `rules_recommend` is the file-name tier, and D2's rule id the graph-entry tier:
+    # each tier says which of them placed the path, so dropping one is visible.
+    d1 = {e["path"]: e for e in by[_D1]["touchpoint_evidence"]}
+    assert "which is this file" in d1["backend/app/services/rules_recommend.py"]["evidence"]
 
     # The module the command needs does not exist: a create beside its existing siblings,
     # marked as a create so a caller does not go looking for a file that is not there.
@@ -654,7 +659,8 @@ def test_p92_real_body_files_a_touchpoint_for_every_section(client, auth, monkey
 
     # A rule id resolves through the graph too, with the id in its evidence.
     d2 = {e["path"]: e for e in by[_D2]["touchpoint_evidence"]}
-    assert any("build.engine_evidence" in e["evidence"] for e in d2.values()), d2
+    assert any("build.engine_evidence" in e["evidence"] and "code graph's entry" in e["evidence"]
+               for e in d2.values()), d2
 
     # D3 names no path and nothing backticked: the page it draws the report on places it.
     d3 = {e["path"]: e for e in by[_D3]["touchpoint_evidence"]}
@@ -700,15 +706,30 @@ def test_a_backticked_name_resolves_to_the_file_that_defines_it():
     assert [(path, create) for _o, path, _e, create in out] == [
         ("backend/app/services/rule_proposals.py", False)]
     assert "propose_rule" in out[0][2]
+    # The symbol tier, not the graph-entry tier that would also reach this file by its
+    # summary: dropping the symbol lookup has to be visible in what the evidence says.
+    assert "a symbol this file defines" in out[0][2]
 
-    # A rule id the graph describes in a module and in its test lands on the module.
+    # A rule id the graph describes in a module and in its test lands on the module — and
+    # the test's path is the SHORTER of the two, so this is the ranking deciding, not length.
     ranked = prd_svc._resolve_named_things([
         _ns("backend/tests/test_engine_evidence.py", name="test_engine_evidence.py",
             summary="`build.engine_evidence` refusals."),
-        _ns("backend/app/services/items.py", name="items.py",
+        _ns("backend/app/services/rule_engine_evidence.py", name="rule_engine_evidence.py",
             summary="Item moves, including the `build.engine_evidence` gate."),
     ], "A tighter `build.engine_evidence` for `db/`.")
-    assert [path for _o, path, _e, _c in ranked] == ["backend/app/services/items.py"]
+    assert [path for _o, path, _e, _c in ranked] == [
+        "backend/app/services/rule_engine_evidence.py"]
+    assert "code graph's entry" in ranked[0][2]
+
+    # A name only a file's own name carries takes the file-name tier.
+    by_name = prd_svc._resolve_named_things(
+        [_ns("backend/app/services/rule_toggles.py", name="rule_toggles.py",
+             summary="State and params, layered.")],
+        "A tighter value resolved by `rule_toggles`.")
+    assert [path for _o, path, _e, _c in by_name] == [
+        "backend/app/services/rule_toggles.py"]
+    assert "which is this file" in by_name[0][2]
 
     # Control: a name the graph holds nowhere resolves to nothing. An empty list here is the
     # honest answer, and it is why the tier is not "propose something for every backtick".
