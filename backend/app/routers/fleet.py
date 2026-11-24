@@ -678,5 +678,7 @@ def post_drain_notice(body: DrainNoticeIn, db: Session = Depends(get_db),
         push_svc.send_for_alerts(db, out["push"])
     except Exception:  # noqa: BLE001
         db.rollback()
+    # `changed` is false for a post identical to the server's last notice: the drain's
+    # `--on-notify` hook runs only when it is true (GRPH-1912).
     return {"prd": prd.id, "outcome": body.outcome, "alerts": len(out["alerts"]),
-            "pushed": len(out["push"])}
+            "pushed": len(out["push"]), "changed": out["changed"]}

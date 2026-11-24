@@ -72,6 +72,9 @@ BENCH_RESULTS_PATH = "/api/bench/results"
 #: a path. The body is those facts; the server composes the note. Not a tool — widening
 #: `ALLOWED_TOOLS` for this is the thing PRD-22 §4 forbids.
 OBSERVATIONS_PATH = "/api/fleet/observations"
+#: A `--prd` drain's outcome (GRPH-P99): the server holds the last notice and answers
+#: `changed` false for a post identical to it.
+DRAIN_NOTICES_PATH = "/api/fleet/drain-notices"
 # GRPH-1346: the start-up probe of that route. It must be a body the route VALIDATES, or
 # FastAPI answers 422 before `record_observation` reaches its credential check and the probe
 # reads every key as fine. A real kind and an item id no key can resolve: a key that cannot
@@ -80,7 +83,7 @@ OBSERVATIONS_PATH = "/api/fleet/observations"
 OBSERVATION_PROBE_ITEM = "__gbfleet_probe_no_such_item__"
 OBSERVATION_PROBE = {"item_id": OBSERVATION_PROBE_ITEM, "kind": "cut_from"}
 ALLOWED_PATHS: frozenset[str] = frozenset(
-    {ATTEMPTS_PATH, SURFACE_PATH, OBSERVATIONS_PATH, SUITE_ADOPT_PATH,
+    {ATTEMPTS_PATH, SURFACE_PATH, OBSERVATIONS_PATH, DRAIN_NOTICES_PATH, SUITE_ADOPT_PATH,
      BENCH_RUNS_PATH, BENCH_RESULTS_PATH, BENCH_SEAT_PATH})
 
 #: Short on purpose. This is a measurement posted beside real work; a supervisor waiting on it
@@ -359,6 +362,13 @@ class Graphban:
         got = self._post(OBSERVATIONS_PATH, payload, timeout=timeout, strict=True)
         if not isinstance(got, dict):
             raise ObservationRefused(f"{OBSERVATIONS_PATH}: empty reply")
+        return got
+
+    def post_drain_notice(self, *, timeout: float = 10.0, **payload: Any) -> dict:
+        """One drain outcome (GRPH-1912). Raises ObservationRefused when it did not land."""
+        got = self._post(DRAIN_NOTICES_PATH, payload, timeout=timeout, strict=True)
+        if not isinstance(got, dict):
+            raise ObservationRefused(f"{DRAIN_NOTICES_PATH}: empty reply")
         return got
 
     def _post(self, path: str, payload: dict, *, timeout: float,
