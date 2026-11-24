@@ -3975,7 +3975,7 @@ export type FoundBugMode = "fix_in_build" | "file_ticket";
 /** One row of the bell's panel (GRPH-1527). */
 export interface AlertRow {
   id: string;
-  kind: "response_needed";
+  kind: "response_needed" | "drain_drained" | "drain_stalled";
   /** The project the wait lives in — the Triage row is there. */
   project: string;
   /** The project's tag, for the meta line. */
@@ -3983,12 +3983,13 @@ export interface AlertRow {
   /** The wait item's own title: the row headline. `question` is the secondary line. */
   title?: string;
   /** Derived impact (GRPH-1607): a live drain is held on it, a ticket is blocked, or neither. */
-  impact?: "drain_waiting" | "blocks" | "question";
+  impact?: "drain_waiting" | "blocks" | "question" | "drain";
   /** `live | scheduled | not_live | unknown` — the drain-status read behind `impact`. */
   drain?: "live" | "scheduled" | "not_live" | "unknown";
   question: string;
   body: string;
-  wait: string;
+  /** Empty on a drain notice (P99): it has no wait. */
+  wait: string | null;
   ticket: string | null;
   prd: string | null;
   asked_by: string | null;
