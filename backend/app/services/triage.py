@@ -94,18 +94,44 @@ def _request_rows(db: Session, project_id: str, now) -> list[dict]:
 
 def _nobody_alerted(db: Session, item: Item) -> bool:
     """The wait (or a wait this ticket depends on) was handed off with no one to alert."""
+    return item.id in _nobody_alerted_many(db, [item])
+
+
+def _nobody_alerted_many(db: Session, items: list[Item]) -> set[str]:
+    """`_nobody_alerted` for a whole list, in two statements whatever its length (GRPH-1901).
+
+    One query for the list's dependency edges, one for the dependencies. Returns the ids that
+    read True; an id absent from the set is the same answer as the single-item read returning
+    False, which is why the caller reads membership and not a lookup that could miss.
+    """
     from sqlalchemy import select
 
     from app.models import Link
 
-    if (item.decision or {}).get("nobody_alerted"):
-        return True
-    for dep_id in db.scalars(select(Link.b).where(Link.type == "dependency", Link.a == item.id)):
-        dep = db.get(Item, dep_id)
-        if dep is not None and (dep.decision or {}).get("nobody_alerted") and not (
-                dep.decision or {}).get("answer"):
-            return True
-    return False
+    alerted: set[str] = set()
+    need: list[str] = []
+    for item in items:
+        if (item.decision or {}).get("nobody_alerted"):
+            alerted.add(item.id)
+        else:
+            need.append(item.id)
+    if not need:
+        return alerted
+
+    dep_ids: dict[str, list[str]] = {iid: [] for iid in need}
+    for a, b in db.execute(select(Link.a, Link.b).where(
+            Link.type == "dependency", Link.a.in_(need))).all():
+        if b not in dep_ids[a]:
+            dep_ids[a].append(b)
+    wanted = {b for ids in dep_ids.values() for b in ids}
+    deps = {d.id: d for d in db.scalars(select(Item).where(Item.id.in_(wanted)))} if wanted else {}
+    for iid in need:
+        for dep in (deps.get(d) for d in dep_ids[iid]):
+            if dep is not None and (dep.decision or {}).get("nobody_alerted") and not (
+                    dep.decision or {}).get("answer"):
+                alerted.add(iid)
+                break
+    return alerted
 
 
 def _is_open_question(dep: Item) -> bool:
@@ -115,67 +141,104 @@ def _is_open_question(dep: Item) -> bool:
 
 def _blocks(db: Session, wait: Item) -> dict:
     """The ticket that depends on this wait (GRPH-1571): first by key, plus how many more."""
+    return _blocks_many(db, [wait]).get(wait.id) or {}
+
+
+def _blocks_many(db: Session, waits: list[Item]) -> dict[str, dict]:
+    """`_blocks` for a whole list, in two statements whatever its length (GRPH-1901).
+
+    One query for the dependant edges of every wait, one for the tickets. Keyed by wait id; a
+    wait nothing depends on is absent rather than mapped to `{}`, so `.get(id) or {}` is the
+    single-wait answer and a missing key cannot read as "blocks nothing" by accident.
+    """
     from sqlalchemy import select
 
     from app.models import Link
 
-    tickets = [t for t in (db.get(Item, i) for i in db.scalars(select(Link.a).where(
-        Link.type == "dependency", Link.b == wait.id))) if t is not None]
-    if not tickets:
+    ids = [w.id for w in waits]
+    if not ids:
         return {}
-    tickets.sort(key=lambda t: (t.number or 0, t.key))
-    out = {"blocks": {"id": tickets[0].key, "title": tickets[0].title}}
-    if len(tickets) > 1:
-        out["blocks_more"] = len(tickets) - 1
+    dependants: dict[str, list[str]] = {i: [] for i in ids}
+    for b, a in db.execute(select(Link.b, Link.a).where(
+            Link.type == "dependency", Link.b.in_(ids))).all():
+        if a not in dependants[b]:
+            dependants[b].append(a)
+    wanted = {a for ticket_ids in dependants.values() for a in ticket_ids}
+    tickets = ({t.id: t for t in db.scalars(select(Item).where(Item.id.in_(wanted)))}
+               if wanted else {})
+    out: dict[str, dict] = {}
+    for wid in ids:
+        mine = [t for t in (tickets.get(a) for a in dependants[wid]) if t is not None]
+        if not mine:
+            continue
+        mine.sort(key=lambda t: (t.number or 0, t.key))
+        row = {"blocks": {"id": mine[0].key, "title": mine[0].title}}
+        if len(mine) > 1:
+            row["blocks_more"] = len(mine) - 1
+        out[wid] = row
     return out
 
 
 def _blocker_rows(db: Session, project_id: str, now) -> list[dict]:
     ctx = prio.context(db, project_id)
-    rows = []
-    for b in waits_svc.triage_blockers(db, project_id, include_open_questions=True):
-        item = db.get(Item, keys.resolve_item(db, b["id"]) or b["id"])
-        if item is None:
-            continue
-        # One row per question: a ticket held only by decision waits is represented by the
-        # wait's row, which names it. One that also waits on something else keeps its row.
-        questions: list[Item] = []
-        others = 0
-        if not b.get("decision"):
-            for d in (ctx.item(i) for i in prio.blocked_by(ctx, item)):
-                if d is None:
+    # `triage_blockers` renders `it.key` for items it read with the same `list_items(project_id)`
+    # call `ctx` made, so a row's item is a key lookup rather than a resolve and a get of its own
+    # (GRPH-1901). Holding `ctx` for the whole render is what makes that safe: the identity map
+    # keeps objects weakly, and it is the render's own `item.key` reads that would otherwise
+    # re-query the project every row.
+    by_key = {it.key: it for it in ctx.items}
+    found = [(b, by_key[b["id"]]) for b in waits_svc.triage_blockers(
+        db, project_id, include_open_questions=True) if b["id"] in by_key]
+    items = [it for _, it in found]
+    # The three lookups a blocked row used to make on its own — its wait state, whether anyone
+    # was alerted, and what it blocks — are read once for the whole list inside the batch, so the
+    # statement count is what the shortest feed costs and not what the longest one does.
+    with waits_svc.batched(db, items):
+        states = {it.id: waits_svc.question_state(db, it) for it in items}
+        alerted = _nobody_alerted_many(db, [it for it in items if states[it.id]])
+        blocks = _blocks_many(db, [it for b, it in found if b.get("decision")])
+        rows = []
+        for b, item in found:
+            # One row per question: a ticket held only by decision waits is represented by the
+            # wait's row, which names it. One that also waits on something else keeps its row.
+            questions: list[Item] = []
+            others = 0
+            if not b.get("decision"):
+                for d in (ctx.item(i) for i in prio.blocked_by(ctx, item)):
+                    if d is None:
+                        continue
+                    if _is_open_question(d):
+                        questions.append(d)
+                    else:
+                        others += 1
+                if questions and not others:
                     continue
-                if _is_open_question(d):
-                    questions.append(d)
-                else:
-                    others += 1
-            if questions and not others:
-                continue
-        row = {
-            "id": item.key, "kind": "blocker", "title": item.title,
-            "age_seconds": _age(item.created_at, now),
-            "owner": item.claimed_by, "blocked_seconds": _age(item.updated_at, now),
-            "reason": item.blocker or "", "paths": list(item.touchpoints or []),
-        }
-        qs = waits_svc.question_state(db, item)
-        if qs:
-            row["question_state"] = qs
-        if qs and _nobody_alerted(db, item):
-            row["nobody_alerted"] = True
-        if questions:
-            questions.sort(key=lambda q: (q.number or 0, q.key))
-            row["also_questions"] = [
-                {"id": q.key, "question": (q.decision or {}).get("question") or q.title}
-                for q in questions]
-        if b.get("decision"):
-            row["decision"] = {"question": b["decision"]["question"],
-                               "options": b["decision"]["options"]}
-            row.update(_blocks(db, item))
-        else:
-            dep = next((d for d in (ctx.item(i) for i in prio.blocked_by(ctx, item)) if d), None)
-            if dep is not None:
-                row["waiting_on"] = {"id": dep.key, "title": dep.title, "status": dep.status}
-        rows.append(row)
+            row = {
+                "id": item.key, "kind": "blocker", "title": item.title,
+                "age_seconds": _age(item.created_at, now),
+                "owner": item.claimed_by, "blocked_seconds": _age(item.updated_at, now),
+                "reason": item.blocker or "", "paths": list(item.touchpoints or []),
+            }
+            qs = states[item.id]
+            if qs:
+                row["question_state"] = qs
+            if qs and item.id in alerted:
+                row["nobody_alerted"] = True
+            if questions:
+                questions.sort(key=lambda q: (q.number or 0, q.key))
+                row["also_questions"] = [
+                    {"id": q.key, "question": (q.decision or {}).get("question") or q.title}
+                    for q in questions]
+            if b.get("decision"):
+                row["decision"] = {"question": b["decision"]["question"],
+                                   "options": b["decision"]["options"]}
+                row.update(blocks.get(item.id) or {})
+            else:
+                dep = next((d for d in (ctx.item(i)
+                                        for i in prio.blocked_by(ctx, item)) if d), None)
+                if dep is not None:
+                    row["waiting_on"] = {"id": dep.key, "title": dep.title, "status": dep.status}
+            rows.append(row)
     return rows
 
 
