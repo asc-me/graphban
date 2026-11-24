@@ -479,6 +479,27 @@ def perf_project(client, auth):
     return client.post("/api/projects", json={"name": "Triage Perf"}, headers=auth).json()["id"]
 
 
+@pytest.fixture()
+def frozen_feed_clock(monkeypatch):
+    """One `now` for every render a test compares against another.
+
+    `feed()` stamps its own `now` per request and `age_seconds`/`blocked_seconds` are whole
+    seconds off it, so two renders taken either side of a second boundary differ on EVERY row
+    with nothing about the feed having changed. That is what made the row-by-row comparison
+    below flake in CI on a branch that touched no triage code (GRPH-1923): a wall-clock race,
+    not a query one.
+
+    A fixed 90s ahead of the seed, not at it: `_age` floors at 0, so a `now` earlier than the
+    rows' `created_at` would freeze every age at 0 and the two renders would agree on those
+    fields whatever the clock did. Non-zero ages keep them part of the comparison.
+    """
+    from app.services import triage as triage_svc
+
+    now = triage_svc.utcnow() + timedelta(seconds=90)
+    monkeypatch.setattr(triage_svc, "utcnow", lambda: now)
+    return now
+
+
 def _seed_blockers(db, project, units, start=0):
     """`units` more blocker triples, in every shape whose rendering used to cost statements.
 
@@ -537,6 +558,39 @@ def _blockers(client, auth, project):
     return {r["id"]: r for r in _feed(client, auth, project)["rows"] if r["kind"] == "blocker"}
 
 
+def _deps_order(db, project):
+    """The dependency ids each item is read as waiting on, in the order the scan gave them."""
+    from app.services import prioritization as prio
+
+    deps = {k: list(v) for k, v in prio.context(db, project).deps.items()}
+    db.expire_all()
+    return deps
+
+
+def _reverse_dependency_rows(db):
+    """Re-store every dependency edge backwards, leaving the graph itself identical.
+
+    `links.id` is an autoincrement key and none of the reads that build a blocker row sorts, so
+    the order the scan returns rows in is the order they are picked from. Re-storing them in the
+    opposite order is what another query plan, another server or a restored dump does to it.
+    """
+    from sqlalchemy import select
+
+    from app.models import Link
+
+    kept = ("project_id", "a", "b", "type", "confidence", "reason", "created_at")
+    rows = list(db.scalars(select(Link).where(Link.type == "dependency")))
+    snaps = [{c: getattr(r, c) for c in kept} for r in rows]
+    for r in rows:
+        db.delete(r)
+    db.flush()
+    for snap in reversed(snaps):
+        db.add(Link(**snap))
+    db.commit()
+    db.expire_all()
+    return len(snaps)
+
+
 def test_the_blocker_feed_statement_count_does_not_grow_with_the_row_count(
         client, auth, db, perf_project):
     _seed_blockers(db, perf_project, SMALL_UNITS)
@@ -565,7 +619,7 @@ def test_the_blocker_feed_statement_count_does_not_grow_with_the_row_count(
 
 
 def test_the_blocker_rows_are_the_ones_a_row_at_a_time_render_builds(
-        client, auth, db, perf_project, monkeypatch):
+        client, auth, db, perf_project, monkeypatch, frozen_feed_clock):
     """Batching changes what the feed COSTS, not what it says.
 
     Compared against the same render with nothing warmed: `question_states` returning an empty
@@ -573,6 +627,9 @@ def test_the_blocker_rows_are_the_ones_a_row_at_a_time_render_builds(
     this replaced. The two `*_many` helpers have no second implementation to differ from, so
     their values are asserted against what the seed MEANS — a batch wrong in the same way twice
     would otherwise agree with itself.
+
+    Both renders read one frozen `now`: they are two requests, and without it a second boundary
+    between them moves every row's ages and the comparison says nothing about batching.
     """
     from app.services import waits as waits_svc
 
@@ -601,9 +658,37 @@ def test_the_blocker_rows_are_the_ones_a_row_at_a_time_render_builds(
         assert wait.get("nobody_alerted", False) is u["alerted"]
         assert ticket.get("nobody_alerted", False) is u["alerted"]
         assert ticket["also_questions"] == [{"id": u["wait"], "question": u["question"]}]
-        # Which of the two dependencies is named first is `ctx.deps` order, which no query here
-        # sorts — so this asserts that it names one of them, not which.
-        assert ticket["waiting_on"]["id"] in {u["wait"], u["gate"]}
+        # The wait, not the gate: of the two dependencies the ticket names the lower-numbered
+        # one, by the same sort `blocks` uses. Which of the two that was used to depend on the
+        # order an unsorted scan returned, so it is pinned now, not merely a member of the two.
+        assert ticket["waiting_on"] == {"id": u["wait"], "title": u["question"],
+                                        "status": "blocked"}
         # A gate wait is plain blocked: no state, nothing depending on it, nothing it waits on.
         assert "question_state" not in gate and "blocks" not in gate
         assert "waiting_on" not in gate and "nobody_alerted" not in gate
+
+
+def test_the_blocker_rows_say_the_same_thing_whatever_order_the_scan_returns_rows(
+        client, auth, db, perf_project, frozen_feed_clock):
+    """An order no query sorts by is not part of what the feed says.
+
+    Every dependency edge is re-stored backwards between the two renders: same graph, same
+    items, opposite scan order. The rows must come out identical, because a person reading the
+    feed on one server and one reading it on another, or after a restore, must be told the same
+    thing is holding their ticket (GRPH-1923).
+    """
+    _seed_blockers(db, perf_project, SMALL_UNITS)
+    db.expire_all()
+    before_order = _deps_order(db, perf_project)
+    before = _blockers(client, auth, perf_project)
+
+    stored = _reverse_dependency_rows(db)
+    after_order = _deps_order(db, perf_project)
+
+    # The reversal reached the order the render picks from, so the equality below is not two
+    # reads of one untouched table agreeing with themselves.
+    assert stored >= SMALL_UNITS * 2
+    assert after_order == {k: list(reversed(v)) for k, v in before_order.items()}
+    assert before == _blockers(client, auth, perf_project)
+    # And there really are rows whose named dependency the reversal could have changed.
+    assert sum(1 for r in before.values() if r.get("waiting_on")) >= SMALL_UNITS
