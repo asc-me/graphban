@@ -27,6 +27,8 @@ open is refused: filing a wait is not finishing the work.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from sqlalchemy.orm import Session
 
 from app.models import Item
@@ -74,6 +76,30 @@ def _open_decision_state(wait: Item) -> str | None:
     return RESPONSE_NEEDED if d.get("needs_person_at") else CHECKING
 
 
+def _state_with_deps(item: Item, deps) -> str | None:
+    """One item's state, given the items it depends on.
+
+    THE decision, shared by the single-item read and the batched list read (GRPH-1898): what
+    differs between them is how the dependencies are fetched, never what they mean.
+    """
+    own = _open_decision_state(item)
+    if own is not None:
+        return own
+    if item.status != "blocked":
+        return None
+    states = [st for st in (_open_decision_state(d) for d in deps if d is not None)
+              if st is not None]
+    if RESPONSE_NEEDED in states:
+        return RESPONSE_NEEDED
+    return CHECKING if states else None
+
+
+#: A list read's warmed states, keyed by item id, on the session (GRPH-1898). Read-only for
+#: as long as it is set — a write inside that window would not be seen — which is why only
+#: `batched` sets it, and only for the length of one render.
+_PRECOMPUTED_STATES = "waits.question_states"
+
+
 def question_state(db: Session, item: Item) -> str | None:
     """None | "checking" | "response_needed" (GRPH-P75 D1). The ONE definition every surface reads.
 
@@ -81,7 +107,14 @@ def question_state(db: Session, item: Item) -> str | None:
     Response Needed. A `blocked` ticket that depends on one reads the same. Gate waits (merge,
     deploy, secret, access) and every other item read None, i.e. plain blocked. Answering the
     wait clears it on the wait and on whatever waited on it.
+
+    Inside a `batched` window the answer comes from the warmed map instead of a query of its
+    own, so a list of N blocked rows costs two statements rather than one per row. An item
+    outside that map falls through to the single read, so warming can never change an answer.
     """
+    warmed = db.info.get(_PRECOMPUTED_STATES)
+    if warmed is not None and item.id in warmed:
+        return warmed[item.id]
     own = _open_decision_state(item)
     if own is not None:
         return own
@@ -92,16 +125,57 @@ def question_state(db: Session, item: Item) -> str | None:
     from app.models import Link
 
     dep_ids = db.scalars(select(Link.b).where(Link.type == "dependency", Link.a == item.id)).all()
-    states = []
-    for dep_id in dict.fromkeys(dep_ids):
-        dep = db.get(Item, dep_id)
-        if dep is not None:
-            st = _open_decision_state(dep)
-            if st is not None:
-                states.append(st)
-    if RESPONSE_NEEDED in states:
-        return RESPONSE_NEEDED
-    return CHECKING if states else None
+    return _state_with_deps(item, [db.get(Item, dep_id) for dep_id in dict.fromkeys(dep_ids)])
+
+
+def question_states(db: Session, items: list[Item]) -> dict[str, str | None]:
+    """`question_state` for a whole list, in two statements whatever its length (GRPH-1898).
+
+    One query for every blocked row's dependency edges, one for the dependencies themselves,
+    then the same `_state_with_deps` per row. Every item passed gets an entry: a missing key
+    would send `question_state` straight back to the per-row query.
+    """
+    from sqlalchemy import select
+
+    from app.models import Link
+
+    states: dict[str, str | None] = {}
+    blocked: list[str] = []
+    for it in items:
+        own = _open_decision_state(it)
+        states[it.id] = own
+        if own is None and it.status == "blocked":
+            blocked.append(it.id)
+    if not blocked:
+        return states
+
+    dep_ids: dict[str, list[str]] = {iid: [] for iid in blocked}
+    edges = db.execute(select(Link.a, Link.b).where(
+        Link.type == "dependency", Link.a.in_(blocked))).all()
+    for a, b in edges:
+        if b not in dep_ids[a]:
+            dep_ids[a].append(b)
+    wanted = {b for ids in dep_ids.values() for b in ids}
+    deps = {d.id: d for d in db.scalars(select(Item).where(Item.id.in_(wanted)))} if wanted else {}
+    by_id = {it.id: it for it in items}
+    for iid in blocked:
+        states[iid] = _state_with_deps(by_id[iid], [deps.get(d) for d in dep_ids[iid]])
+    return states
+
+
+@contextmanager
+def batched(db: Session, items: list[Item]):
+    """Answer `question_state` from a warmed map for the length of this block (GRPH-1898).
+
+    The map is dropped on exit, so no later read can be served a state computed from rows
+    that have since changed. A caller that WRITES inside the block would not see its own
+    write here — only a read path may open one.
+    """
+    db.info[_PRECOMPUTED_STATES] = question_states(db, items)
+    try:
+        yield db.info[_PRECOMPUTED_STATES]
+    finally:
+        db.info.pop(_PRECOMPUTED_STATES, None)
 
 
 def waiting(db: Session, project_id: str | None = None) -> list[Item]:

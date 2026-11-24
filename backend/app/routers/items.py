@@ -32,12 +32,18 @@ def list_items(
     user: User = Depends(get_current_user),
 ):
     """Lean rows by default (GRPH-1228): no description, evidence or bounce_reason — 8 MB on a
-    1,100-item project, none of it drawn by a list. `?fields=full` or `GET /items/{id}` for them."""
+    1,100-item project, none of it drawn by a list. `?fields=full` or `GET /items/{id}` for them.
+
+    Rendered inside `batched_row_lookups` (GRPH-1898): a row's PRD key and its `question_state`
+    each used to cost their own statements, so the page cost grew with the row count — 135
+    statements for 400 rows against the 7 the same page needs batched.
+    """
     authz.require_readable(db, user.id, project_id)
     rows = items_svc.list_items(db, project_id=project_id, status=status)
-    if fields == "full":
-        return [ItemOut.model_validate(r).model_dump(mode="json", by_alias=True) for r in rows]
-    return [item_list_row(r) for r in rows]
+    with items_svc.batched_row_lookups(db, rows):
+        if fields == "full":
+            return [ItemOut.model_validate(r).model_dump(mode="json", by_alias=True) for r in rows]
+        return [item_list_row(r) for r in rows]
 
 
 def _with_warnings(db: Session, item, touchpoints) -> ItemWritten:

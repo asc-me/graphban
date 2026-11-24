@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import re
 
+from contextlib import contextmanager
 from datetime import timedelta, timezone
 
 from sqlalchemy import delete, func, or_, select, update
@@ -312,6 +313,27 @@ def list_items(db: Session, project_id: str | None = None, status: str | None = 
         stmt = stmt.where(Item.status == status)
     stmt = stmt.order_by(Item.sort_order.asc(), Item.created_at.desc())
     return list(db.scalars(stmt).all())
+
+
+@contextmanager
+def batched_row_lookups(db: Session, items: list[Item]):
+    """Hold what a rendered row looks up, for the length of the render (GRPH-1898).
+
+    A list row renders `prd_id` as the PRD's key and `question_state` from the row's
+    dependency waits. Read a row at a time, each costs statements of its own: a 400-row
+    project measured 135 of them for one page — 80 PRD lookups and 51 link queries — against
+    the 7 a flat read needs.
+
+    Yields the referenced PRDs, and holding them IS the fix rather than a formality: the
+    identity map keeps objects weakly, so a PRD nothing else references is collected the
+    moment its key is rendered and the next row queries it again.
+    """
+    from app.services import waits as waits_svc
+
+    prd_ids = {i.prd_id for i in items if i.prd_id}
+    held = list(db.scalars(select(Prd).where(Prd.id.in_(prd_ids)))) if prd_ids else []
+    with waits_svc.batched(db, items):
+        yield held
 
 
 def get_item(db: Session, item_id: str) -> Item | None:
