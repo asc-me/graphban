@@ -136,3 +136,12 @@ reports an empty suite as 0 tasks and never skips it.
 "No ready work to partition" means nothing is ready, not that everything is done. "Nothing
 waiting for a second pair of eyes" is about the review queue only. If no API key reaches the
 project, the page says so and points to Settings.
+
+## The local hook (`--on-notify`)
+
+`gbfleet service install --on-notify <command> -- --prd GRPH-Pxx ...` runs `<command>` through
+the shell once for each drain notice the server accepts as a change of state, with the notice
+as JSON on stdin: `{"prd", "outcome", "open", "sent_at"}`. It runs once per notice, not once
+per cycle. A hook that exits non-zero is logged (`drain_notice_hook_failed`) and the drain
+carries on; a hook still running after 30 seconds is killed. Without `--on-notify` nothing
+runs and the notice still reaches the server.

@@ -472,6 +472,54 @@ class Plan:
         return [self.binary, "until", *self.until_args]
 
 
+#: A hook that runs longer than this is killed (GRPH-1915).
+HOOK_TIMEOUT_S = 30.0
+
+
+class HookFailed(RuntimeError):
+    """The `--on-notify` command exited non-zero or ran past its time limit."""
+
+
+def run_hook(command: str, notice: dict, *, timeout: float = HOOK_TIMEOUT_S) -> None:
+    """Run the `--on-notify` command once with `notice` as JSON on stdin (GRPH-1915).
+
+    Raises `HookFailed` for a non-zero exit or a timeout; the caller logs it and the drain
+    carries on. On timeout the whole process group is killed, so a shell's child dies too.
+    """
+    import json
+    import signal
+    import subprocess
+    posix = os.name == "posix"
+    try:
+        proc = subprocess.Popen(
+            command, shell=True, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE, text=True, start_new_session=posix)
+    except OSError as exc:
+        raise HookFailed(f"hook could not run: {exc}") from exc
+    try:
+        _, err = proc.communicate(json.dumps(notice), timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        try:
+            if posix:
+                os.killpg(proc.pid, signal.SIGKILL)
+            else:
+                proc.kill()
+        except OSError:
+            pass
+        proc.communicate()
+        raise HookFailed(f"hook killed after {timeout:g}s: {command}") from exc
+    if proc.returncode != 0:
+        raise HookFailed(
+            f"hook exited {proc.returncode}: {command}: {(err or '').strip()[-300:]}")
+
+
+def hook_for(command: str | None):
+    """The `on_notice` callback for `until`, or None when no `--on-notify` was given."""
+    if not command:
+        return None
+    return lambda notice: run_hook(command, notice)
+
+
 def label_for(name: str) -> str:
     return f"{LABEL_PREFIX}.{name}"
 
@@ -559,6 +607,7 @@ def make_plan(
     binary: str | None = None,
     path_env: str | None = None,
     every: int = RESTART_SEC,
+    on_notify: str | None = None,
 ) -> Plan:
     """Work out what would be written, refusing anything that cannot be right.
 
@@ -574,6 +623,9 @@ def make_plan(
             "fails at startup respawn as fast as the supervisor can fork it")
     if not until_args:
         raise Refused(_NOTHING_TO_RUN)
+    if on_notify:
+        # `until` runs the hook; the unit just carries the flag, quoted like any argument.
+        until_args = [*until_args, "--on-notify", on_notify]
     missing = [flag for flag in _REQUIRED_ARGS if flag not in until_args]
     if missing:
         raise Refused(
