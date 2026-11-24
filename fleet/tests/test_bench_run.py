@@ -800,3 +800,37 @@ def test_cli_spawns_a_review_only_reviewer_and_reads_its_item(tmp_path, monkeypa
            for o in source.posted["outcomes"]}
     assert got == {"review-take_last-defect": ("bounce", "review", "bounce"),
                    "review-take_last-clean": ("sign_off", "review", "sign_off")}
+
+
+def test_relative_workspace_is_resolved_against_the_callers_cwd(tmp_path, monkeypatch):
+    """A relative --workspace lands under <cwd>/<relative>, not under the fixture repo."""
+    from gbfleet import supervisor as sup
+    from gbfleet.bench import suite as suite_mod
+
+    full = R.template_suite()
+    slug = next(t for t in full.tasks if t.id == "build-slugify")
+    monkeypatch.setattr(R, "template_suite", lambda: suite_mod.Suite(full.id, full.version, (slug,)))
+    source = KeyedServer(["build-slugify"])
+    cuts: list = []
+
+    def tree_for(repo_, *a, **k):
+        cuts.append(Path(repo_))
+        raise RuntimeError("stop here")
+
+    monkeypatch.setenv(cli.API_KEY_ENV, "k")
+    monkeypatch.setattr(cli, "Graphban", lambda server, key, project_id=None, **kw:
+                        source if project_id == "p" else SimpleNamespace(api_key=key))
+    monkeypatch.setattr(cli, "read_preferences",
+                        lambda c: (None, SimpleNamespace(caps={}), "", {}, {}, None))
+    monkeypatch.setattr(cli, "make_adapter_factory", lambda *a, **k: object())
+    monkeypatch.setattr(sup, "_tree_for", tree_for)
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    assert run_cli("--suite", "template", "--adapter", "claude", "--repo", str(plain),
+                   "--workspace", "ws-rel") == 0
+    absolute = (cwd / "ws-rel").resolve()
+    assert cuts == [R.template_fixture(absolute)]
+    assert absolute in cuts[0].parents
