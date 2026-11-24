@@ -351,7 +351,9 @@ def attach_baselines(db: Session, project_id: str, cells: list[dict], *,
                 "suite_id": r.suite_id, "suite_version": r.suite_version,
                 "binary_version": r.binary_version, "n": roll["n"], "green": roll["green"],
                 "rate": round(roll["green"] / roll["n"], 3) if roll["n"] else None,
-                "below_floor": roll["n"] < FLOOR})
+                "below_floor": roll["n"] < FLOOR,
+                "excluded": roll.get("excluded", 0),
+                "excluded_reasons": (roll.get("excluded_reasons") or [])[:3]})
 
     def block(cell: dict) -> dict | None:
         k = cell["key"]

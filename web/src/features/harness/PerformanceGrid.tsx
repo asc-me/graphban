@@ -92,7 +92,7 @@ export function baselineOf(cells: HarnessCell[]): { version: string; baseline: H
 export const baselineText = (b: HarnessBaseline | null, version?: string): string => {
   const at = version ? ` @ ${version}` : "";
   return b
-    ? `${b.rate === null ? "—" : pct(b.rate)} n ${b.n} · ${b.suite_id} v${b.suite_version}${at}`
+    ? `${b.rate === null ? "—" : pct(b.rate)} n ${b.n}${b.excluded ? ` · ${b.excluded} excluded` : ""} · ${b.suite_id} v${b.suite_version}${at}`
     : `no baseline${at}`;
 };
 
@@ -119,7 +119,11 @@ function BaselineLine({ cells, family }: { cells: HarnessCell[]; family: boolean
       data-below-floor={baseline?.below_floor ? "true" : "false"}
       data-version={picked?.version ?? ""}
       className={cn("whitespace-nowrap font-mono text-[10px]", !baseline || baseline.below_floor ? "text-faint" : "text-fg-2")}
-      title={`Baseline suite result for binary ${picked?.version ?? "?"}: never pooled with the natural or probe rate`}
+      title={`Baseline suite result for binary ${picked?.version ?? "?"}: never pooled with the natural or probe rate${
+        baseline?.excluded_reasons?.length
+          ? `. Excluded: ${baseline.excluded_reasons.map((r) => `${r.task_id} (${r.reason})`).join("; ")}`
+          : ""
+      }`}
     >
       {baselineText(baseline, picked?.version)}
     </span>

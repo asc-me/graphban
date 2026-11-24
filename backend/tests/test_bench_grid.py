@@ -53,7 +53,8 @@ def test_baseline_rides_beside_natural_and_probe_and_changes_neither(client, aut
     after = client.get(f"/api/harness/grid?project_id={proj}", headers=h).json()["cells"]
     b = _leaf(after)["baseline"]
     assert b == {"suite_id": "template", "suite_version": "0.1.0", "binary_version": "1.2.3",
-                 "n": 2, "green": 1, "rate": 0.5, "below_floor": True}
+                 "n": 2, "green": 1, "rate": 0.5, "below_floor": True,
+                 "excluded": 0, "excluded_reasons": []}
     assert _strip(after) == _strip(before)
     with SessionLocal() as db:
         assert len(db.scalars(select(AttemptTelemetry)).all()) == 3
