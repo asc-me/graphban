@@ -1,7 +1,9 @@
 """Unified triage feed (GRPH-1135 / PRD-60 D5)."""
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import event
 
 from app.models import Item, Request
 
@@ -441,3 +443,167 @@ def test_register_agent_keeps_the_drain_record(client, auth, db):
     agent = db.get(Agent, res["structuredContent"]["agent_id"])
     assert fleet_svc.drain_record(agent) == {
         "service": "P75W-P1", "every": 900, "prd": "CORE-P1", "stopped": False}
+
+
+# --- GRPH-1901: the blocker feed must not cost a statement per blocked row --------------------
+#
+# Counts are asserted as "does not grow", never as a magic number — the absolute figure differs
+# by engine. The shape is the one `tests/test_items_list_perf.py` and `tests/test_query_counts.py`
+# use.
+
+SMALL_UNITS = 10
+BIG_UNITS = 100
+
+
+class _Count:
+    """Statements the engine runs, in order."""
+
+    def __init__(self, db):
+        self.engine, self.n, self.sql = db.get_bind(), 0, []
+
+    def _hit(self, conn, cursor, statement, *a, **k):
+        self.n += 1
+        self.sql.append(" ".join(statement.split())[:110])
+
+    def __enter__(self):
+        event.listen(self.engine, "before_cursor_execute", self._hit)
+        return self
+
+    def __exit__(self, *exc):
+        event.remove(self.engine, "before_cursor_execute", self._hit)
+
+
+@pytest.fixture()
+def perf_project(client, auth):
+    """A project of its own: the seeded `core` one carries rows this test does not count."""
+    return client.post("/api/projects", json={"name": "Triage Perf"}, headers=auth).json()["id"]
+
+
+def _seed_blockers(db, project, units, start=0):
+    """`units` more blocker triples, in every shape whose rendering used to cost statements.
+
+    Each unit is a decision wait, a ticket blocked behind it AND behind a gate wait (so the
+    ticket keeps its own row instead of being folded into the wait's), and the gate. Every
+    third wait needs a person, every fifth was handed off with no one to alert, and every
+    seventh has a second ticket depending on it — the shapes `question_state`,
+    `_nobody_alerted` and `_blocks` each read out of the database.
+
+    Every item declares a touchpoint of its own, which is what an item nobody has touched yet
+    does not do. It matters here: the feed's collision source PREDICTS the areas of an item
+    that declares none — one embedding and one code-node search each — so a touchpoint-less
+    fixture would drown the blocker count this test is about in statements from a different
+    source. Unique paths also keep the triples out of each other's clusters.
+    """
+    from app.services import items as items_svc
+    from app.services import links as links_svc
+
+    made = []
+    for i in range(start, start + units):
+        question = f"q{i}?"
+        wait = items_svc.create_item(db, project_id=project, title=question, status="blocked",
+                                     question=question, options=["a", "b"],
+                                     touchpoints=[f"app/u{i}/wait.py"])
+        if i % 3 == 0:
+            wait.decision = {**wait.decision, "needs_person_at": "2026-11-24T00:00:00+00:00"}
+        alerted = i % 5 == 0
+        if alerted:
+            wait.decision = {**wait.decision, "nobody_alerted": True}
+        gate = items_svc.create_item(db, project_id=project, title=f"gate {i}",
+                                     status="blocked", tags=["wait:merge"],
+                                     touchpoints=[f"app/u{i}/gate.py"])
+        ticket = items_svc.create_item(db, project_id=project, title=f"ticket {i}",
+                                       status="in_progress", touchpoints=[f"app/u{i}/work.py"])
+        links_svc.create_link(db, a=ticket.id, b=wait.id, type_="dependency", project_id=project)
+        links_svc.create_link(db, a=ticket.id, b=gate.id, type_="dependency", project_id=project)
+        items_svc.update_item(db, ticket.id, status="blocked")
+        extra = None
+        if i % 7 == 0:
+            extra = items_svc.create_item(db, project_id=project, title=f"extra {i}",
+                                          status="in_progress",
+                                          touchpoints=[f"app/u{i}/extra.py"])
+            links_svc.create_link(db, a=extra.id, b=wait.id, type_="dependency",
+                                  project_id=project)
+            items_svc.update_item(db, extra.id, status="blocked")
+        made.append({
+            "i": i, "question": question, "wait": wait.key, "ticket": ticket.key,
+            "gate": gate.key, "extra": extra.key if extra else None, "alerted": alerted,
+            "state": "response_needed" if i % 3 == 0 else "checking",
+        })
+    db.commit()
+    return made
+
+
+def _blockers(client, auth, project):
+    return {r["id"]: r for r in _feed(client, auth, project)["rows"] if r["kind"] == "blocker"}
+
+
+def test_the_blocker_feed_statement_count_does_not_grow_with_the_row_count(
+        client, auth, db, perf_project):
+    _seed_blockers(db, perf_project, SMALL_UNITS)
+    db.expire_all()
+    with _Count(db) as small:
+        little = _blockers(client, auth, perf_project)
+
+    _seed_blockers(db, perf_project, BIG_UNITS - SMALL_UNITS, start=SMALL_UNITS)
+    db.expire_all()
+    with _Count(db) as big:
+        rows = _blockers(client, auth, perf_project)
+
+    assert len(little) == SMALL_UNITS * 3 and len(rows) == BIG_UNITS * 3
+    # Equality, not a ceiling: a per-row lookup puts the big count an order of magnitude above
+    # the small one, and any bound loose enough to accept that accepts the defect.
+    assert small.n == big.n, (small.n, big.n, Counter(big.sql) - Counter(small.sql))
+    # Flat because the lookups are batched, not because the rows that need them are absent:
+    # a flat count over a feed with no waiting row, no dependant and no unalerted handoff
+    # would prove nothing. One floor per lookup the batching serves.
+    assert sum(1 for r in rows.values() if r.get("question_state")) >= BIG_UNITS * 2
+    assert sum(1 for r in rows.values() if r.get("blocks")) >= BIG_UNITS
+    assert sum(1 for r in rows.values() if r.get("blocks_more")) >= BIG_UNITS // 7
+    assert sum(1 for r in rows.values() if r.get("nobody_alerted")) >= BIG_UNITS // 5 * 2
+    assert sum(1 for r in rows.values() if r.get("also_questions")) >= BIG_UNITS
+    assert sum(1 for r in rows.values() if r.get("waiting_on")) >= BIG_UNITS
+
+
+def test_the_blocker_rows_are_the_ones_a_row_at_a_time_render_builds(
+        client, auth, db, perf_project, monkeypatch):
+    """Batching changes what the feed COSTS, not what it says.
+
+    Compared against the same render with nothing warmed: `question_states` returning an empty
+    map sends every row back to `question_state`'s own link query, which is the per-row read
+    this replaced. The two `*_many` helpers have no second implementation to differ from, so
+    their values are asserted against what the seed MEANS — a batch wrong in the same way twice
+    would otherwise agree with itself.
+    """
+    from app.services import waits as waits_svc
+
+    units = _seed_blockers(db, perf_project, SMALL_UNITS)
+    batched = _blockers(client, auth, perf_project)
+
+    monkeypatch.setattr(waits_svc, "question_states", lambda db, items: {})
+    one_at_a_time = _blockers(client, auth, perf_project)
+
+    assert batched == one_at_a_time
+    assert len(batched) == SMALL_UNITS * 3
+    # The seed really does contain every shape asserted below, so none of them is vacuous.
+    assert sum(1 for u in units if u["state"] == "response_needed") >= 1
+    assert sum(1 for u in units if u["alerted"]) >= 1
+    assert sum(1 for u in units if u["extra"]) >= 1
+
+    for u in units:
+        wait, ticket, gate = batched[u["wait"]], batched[u["ticket"]], batched[u["gate"]]
+        assert wait["question_state"] == u["state"]
+        assert ticket["question_state"] == u["state"]
+        assert wait["decision"] == {"question": u["question"], "options": ["a", "b"]}
+        # The wait names the ticket that depends on it, the lower-numbered one first, and how
+        # many more there are.
+        assert wait["blocks"] == {"id": u["ticket"], "title": f"ticket {u['i']}"}
+        assert wait.get("blocks_more") == (1 if u["extra"] else None)
+        assert wait.get("nobody_alerted", False) is u["alerted"]
+        assert ticket.get("nobody_alerted", False) is u["alerted"]
+        assert ticket["also_questions"] == [{"id": u["wait"], "question": u["question"]}]
+        # Which of the two dependencies is named first is `ctx.deps` order, which no query here
+        # sorts — so this asserts that it names one of them, not which.
+        assert ticket["waiting_on"]["id"] in {u["wait"], u["gate"]}
+        # A gate wait is plain blocked: no state, nothing depending on it, nothing it waits on.
+        assert "question_state" not in gate and "blocks" not in gate
+        assert "waiting_on" not in gate and "nobody_alerted" not in gate
