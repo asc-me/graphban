@@ -6855,9 +6855,11 @@ def park(db: Session, attempt, *, agent_id: str | None = None,
 #: `behind_conflict`, the one kind that also moves the item (`_send_back_behind`).
 #: GRPH-1591 adds `undeclared_held`: the touchpoint gate refused the PR, so a `review` item
 #: goes back to `in_progress` for its builder, with a directive naming the files.
+#: GRPH-1891 adds `unpushed`: the drain found a review item's branch only in its own clone
+#: and could not push it. Not `withheld`, whose note says the branch WAS pushed.
 OBSERVATION_KINDS = ("cut_from", "pr_opened", "salvage", "withheld", "merged_trunk",
                      "behind_conflict", "undeclared_warned", "undeclared_held",
-                     "rule_would_have")
+                     "rule_would_have", "unpushed")
 OBSERVATION_LATER = ("pushed_head",)
 
 _CUT_BASE = re.compile(r"^[0-9a-f]{7,40}$")
@@ -7087,6 +7089,13 @@ def _observation_receipt(kind: str, *, branch: str, base: str | None, url: str |
             raise ObservationError(422, "withheld names why the PR was not proposed")
         return {"kind": "note",
                 "detail": f"pushed `{branch}`; not proposed as a PR — {why}"}
+    if kind == "unpushed":
+        why = (reason or "").strip()
+        if not why:
+            raise ObservationError(422, "unpushed names why the push failed")
+        return {"kind": "note", "detail": (
+            f"gbfleet: `{branch}` was never pushed and the push failed; "
+            f"not proposed as a PR — {why}")}
     if kind == "merged_trunk":
         why = (reason or "").strip()
         if not why:
