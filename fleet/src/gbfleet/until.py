@@ -4116,8 +4116,8 @@ def _publish_if_local_only(repo: Path, branch: str, base: str, item: str, planne
         try:
             planner.post_observation(item_id=item, kind="withheld", branch=branch,
                                      reason=reason)
-        except Exception:  # noqa: BLE001 — the wait note below still names it
-            pass
+        except Exception as exc:  # noqa: BLE001 — the wait note below still names it
+            reason = f"{reason} (withheld note not recorded: {exc})"
     return reason
 
 
