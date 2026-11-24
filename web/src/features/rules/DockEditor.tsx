@@ -472,7 +472,11 @@ export function DockEditor({
   const quiet = quietLine(rule);
   const select_ = rule.control === "select";
   const budget = rule.id === "plan.budget_cap";
-  const settingValue = library
+  // GRPH-1873 draws an observing custom rule with value true so it stays on the map
+  // (used, advisory). That flag is not an in-force claim: the rule holds nothing yet
+  // (GRPH-1894). An active custom rule still reports its value.
+  const observingCustom = custom && customRule?.state === "observing";
+  const settingValue = library || observingCustom
     ? null
     : select_
       ? MEMORY_WRITE_MODES.find((m) => m.value === String(rule.value ?? "review"))?.label ?? String(rule.value ?? "review")
