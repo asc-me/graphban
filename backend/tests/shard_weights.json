@@ -223,6 +223,7 @@
 "tests/test_item_reach.py": 20.29,
 "tests/test_items.py": 0.42,
 "tests/test_items_list.py": 4.51,
+"tests/test_items_list_perf.py": 5.89,
 "tests/test_key_rendering.py": 1.34,
 "tests/test_key_resolution.py": 1.18,
 "tests/test_key_revocation.py": 0.48,
