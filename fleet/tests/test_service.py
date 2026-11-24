@@ -1114,3 +1114,48 @@ def test_last_notice_status_lines(monkeypatch, tmp_path):
     assert lines[0] == "  last notice: stalled (held), sent T"
     assert lines[1] == "    GRPH-1: held"
     assert not any("silent" in line for line in lines)
+
+
+def _status_reading_notice(monkeypatch, **fields):
+    """`service status --name d` over a fake host, with the real `last_notice` behind it."""
+    monkeypatch.setattr(service, "host", lambda: service.Host("launchd"))
+    monkeypatch.setattr(service, "installed_names", lambda kind="": ["d"])
+
+    def fake(name, kind=""):
+        return service.Status(name=name, kind="launchd", installed=True,
+                              unit_path=service.unit_path_for(name, "launchd"),
+                              path_env="/usr/bin", notice=service.last_notice(name), **fields)
+
+    monkeypatch.setattr(service, "status", fake)
+
+
+def test_service_status_prints_the_recorded_drained_notice(monkeypatch, tmp_path, capsys):
+    """GRPH-1916. Sabotage: drop the `notice_lines` loop in `cli._service_status`."""
+    monkeypatch.setattr(service, "CONFIG_DIR", tmp_path)
+    service.record_notice("d", {"prd": "P", "outcome": "drained", "open": [],
+                                "sent_at": "2026-11-24T10:00:00+00:00"})
+    _status_reading_notice(monkeypatch, running=False, last_exit=0, run_reason="idle")
+    assert main(["service", "status", "--name", "d"]) == 0
+    out = capsys.readouterr().out
+    assert "last notice: drained, sent 2026-11-24T10:00:00+00:00" in out
+
+
+def test_service_status_prints_a_held_stall_with_its_items(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(service, "CONFIG_DIR", tmp_path)
+    service.record_notice("d", {"prd": "P", "outcome": "stalled", "sent_at": "T",
+                                "open": [{"item": "GRPH-1", "reason": "blocker: x"}]})
+    _status_reading_notice(monkeypatch, running=False, last_exit=0, run_reason="idle")
+    main(["service", "status", "--name", "d"])
+    out = capsys.readouterr().out
+    assert "last notice: stalled (held), sent T" in out
+    assert "    GRPH-1: blocker: x" in out
+
+
+def test_a_loop_silent_service_keeps_its_wording(monkeypatch, tmp_path, capsys):
+    """The `loop_silent` stall is not a drain stall: no "(held)", no notice line."""
+    monkeypatch.setattr(service, "CONFIG_DIR", tmp_path)
+    _status_reading_notice(monkeypatch, running=True, stalled=True, log_state="stalled")
+    main(["service", "status", "--name", "d"])
+    out = capsys.readouterr().out
+    assert "d: stalled (launchd" in out
+    assert "(held)" not in out and "last notice" not in out
