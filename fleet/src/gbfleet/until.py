@@ -488,6 +488,7 @@ def run(
                 verified_merges=(
                     Path(state) / "verified-merges.json" if state is not None else None
                 ),
+                on_notice=on_notice,
               )
             except ToolFailed as exc:
                 # GRPH-1669. A roster read (`fleet_status`) answered with a tool error.
@@ -975,6 +976,7 @@ def _loop(
     wave_base: "WaveBase | None" = None,
     acknowledge_reach: set[str] | None = None,
     verified_merges: Path | None = None,
+    on_notice: Callable[[dict], None] | None = None,
 ) -> Report:
     from .mcp import _runner_up, read_preferences
     profile, policy, pref_note, measured, cap_measured, tier_map = read_preferences(supervisor)
