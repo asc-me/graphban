@@ -35,6 +35,8 @@ PROBE_EXTRA: dict[str, dict] = {
     "PUT /api/projects/{project_id}/members/{user_id}": {"access": "read"},
     # The batch toggle write refuses a missing reason and an empty list before it looks at the
     # project, so the schema's bare minimum (no reason, no entries) never reaches the org check.
+    # The outcome is validated in the handler, not declared as an enum in the schema.
+    "POST /api/fleet/drain-notices": {"outcome": "stalled"},
     "PUT /api/rules/toggles": {"reason": "cross-tenant probe",
                                "toggles": [{"rule_id": "probe.rule", "on": True}]},
 }
