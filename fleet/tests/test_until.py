@@ -3308,25 +3308,42 @@ def test_the_loop_spawns_beside_a_live_child_for_a_free_cluster(
     the loop starts a second child rather than waiting out the first. Two clusters; the
     first child's leaves the read, as on the real server, so one free cluster remains.
     Spawning twice is not enough — the bug spawned the second once the first was reaped —
-    so the second launch must land inside the first child's wall clock."""
+    so the second launch must land while the first child is still alive.
+
+    GRPH-1926: how long the first child lives is the TEST's decision, not a wall-clock
+    window. It is a release-file fake, held open until the second launch has been counted
+    and released after; `child_wall_clock` sits above the fake's own cap so it can only
+    ever bound a sabotaged run. The 4 s wall this test used to pass was the flake: a
+    loaded CI runner spent longer than that between the two launches, the first child was
+    reaped, and the ordering read as "the loop waited it out" when the loop had done
+    nothing wrong.
+
+    Sabotage: make the loop skip spawning while a child is live (`_wanted_workers`
+    subtracting `live_n` from the free clusters too) and this fails — no second child is
+    launched beside a live one."""
     workspace = tmp_path / "ws"
     planner, supervisor = _clients(workspace, clusters=2, workers=1, sticky_clusters=True,
                                    drop_delegated=True)
-    inner = _factory(scripts, "sleeper")
-    # GRPH-1715: ordering, not a wall-clock window. Each launch records how many children
-    # were alive at that moment; the second must see the first still running.
+    inner = _factory(scripts, "silent_until_released")
+    release = scripts["silent_until_released"].parent / "release"
+    # GRPH-1715: ordering, not a time delta. Each launch records how many children were
+    # alive at that moment; the second must see the first still running.
     alive_at_launch: list[int] = []
 
     def factory(*args, **kwargs):
         alive_at_launch.append(len(_running_pids(git_repo, state)))
+        if len(alive_at_launch) == 2:
+            # The ordering fact is on the record, so let the children go. Both run the same
+            # fake and it is one shared file, which is what ends the wave here: nothing is
+            # left alive for a wall clock to have to reap.
+            release.write_text("", encoding="utf-8")
         return inner(*args, **kwargs)
 
-    wall = 4.0
     result = run(
         git_repo, factory,
         planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
         state=state, workspace=workspace, poll=0.05, empty_ticks=3,
-        limits=Limits(max_workers=3, max_children=2, child_wall_clock=wall),
+        limits=Limits(max_workers=3, max_children=2, child_wall_clock=15.0),
     )
     assert result.spawned == 2, result.detail
     assert alive_at_launch[1] >= 1, "the second child waited out the first"
