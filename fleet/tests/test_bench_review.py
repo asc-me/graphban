@@ -137,3 +137,35 @@ def test_verdict_of_untouched_item_is_no_verdict():
 def test_bench_pr_is_a_pr_url_that_cannot_resolve():
     url = R.bench_pr("template", "review-x defect")
     assert "/pull/" in url and ".invalid/" in url and " " not in url
+
+
+def test_run_review_stops_a_running_child_once_its_verdict_is_recorded(repo):
+    from types import SimpleNamespace
+
+    from gbfleet.bench import run as run_mod
+
+    t = task(repo, "sign_off", git(repo, "rev-parse", "HEAD"))
+    now = [0.0]
+    stopped, polls = [], []
+    child = SimpleNamespace(running=True)  # never exits on its own
+
+    def sleep(s):
+        now[0] += s
+
+    def read_verdict(_t, _scratch, _item):
+        polls.append(now[0])
+        return ("sign_off", "refused: pr_cooldown") if len(polls) >= 3 else ("no_verdict", "")
+
+    def stop(c):
+        stopped.append(c)
+        c.running = False
+
+    tree = SimpleNamespace(path=repo, branch="x", repo=repo, base=t.base_sha)
+    res = run_mod._run_review(
+        t, "C", repo=repo, scratch=None, start=lambda *a, **k: child,
+        limits=SimpleNamespace(child_wall_clock=3600.0), clock=lambda: now[0], sleep=sleep,
+        cut=lambda *a, **k: tree, stop=stop, reap=lambda tr: None, read_verdict=read_verdict,
+        seat={"kind": "review", "item_id": "I-1"})
+    assert res.outcome == "sign_off" and res.detail == "refused: pr_cooldown"
+    assert stopped == [child]
+    assert res.wall_seconds == pytest.approx(3 * run_mod.REVIEW_POLL_SECONDS, abs=2)

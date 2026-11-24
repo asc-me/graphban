@@ -29,6 +29,7 @@ from .suite import Check, Suite, SuiteError, Task
 #: check only; real spend is whatever the vendor reports.
 TOKENS_BY_BAND = {"S": 60_000, "M": 180_000, "L": 450_000}
 DEFAULT_BAND_TOKENS = TOKENS_BY_BAND["M"]
+REVIEW_POLL_SECONDS = 10.0  # how often a running reviewer child is checked for a recorded verdict
 #: The `fleet_policy.caps` keys that bound one task.
 TASK_CAPS = ("per_attempt_tokens", "per_item_tokens")
 
@@ -401,16 +402,30 @@ def _run_review(task: Task, code: str, *, repo: Path, scratch, start: Start, lim
         reap(tree)
         return Result(task.id, "harness_error", str(exc)[:200], wall_seconds=clock() - started)
     timed_out = False
+    polled: tuple[str, str] | None = None
+    last_poll = started
     while child.running:
-        if clock() - started >= limits.child_wall_clock:
+        now = clock()
+        if now - started >= limits.child_wall_clock:
             stop(child)
             timed_out = True
             break
+        if now - last_poll >= REVIEW_POLL_SECONDS:
+            last_poll = now
+            try:
+                seen = read_verdict(task, scratch, item_id)
+            except Exception:  # noqa: BLE001 - the final read below reports a real failure
+                seen = None
+            if seen and seen[0] in ("bounce", "sign_off"):
+                # The verdict is recorded; the child may idle on a PR cooldown (GRPH-1899).
+                stop(child)
+                polled = seen
+                break
         sleep(1.0)
     wall = clock() - started
     reap(tree)
     try:
-        verdict, detail = read_verdict(task, scratch, item_id)
+        verdict, detail = polled if polled else read_verdict(task, scratch, item_id)
     except Exception as exc:  # noqa: BLE001
         return Result(task.id, "harness_error", f"verdict: {str(exc)[:200]}", wall_seconds=wall)
     if verdict in ("bounce", "sign_off"):
