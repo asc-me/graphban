@@ -56,3 +56,26 @@ def test_h5_and_c1_ignore_committed_bytecode(repo, tmp_path):
 
 def test_work_paths_filter(repo):
     assert run_mod.work_paths(["a.py", "pkg/__pycache__/a.cpython-3.pyc", "x.pyo", "t.pyc"]) == ["a.py"]
+
+
+def _claiming(leaf):
+    import dataclasses
+    return dataclasses.replace(_task(), capabilities=(leaf,))
+
+
+@pytest.mark.parametrize("outcome,verdict", [("check_green", "pass"), ("check_red", "fail"), ("no_branch", "fail")])
+def test_b7_scored_from_the_check(repo, outcome, verdict):
+    out = run_mod.leaf_verdicts(_claiming("B7"), repo, "root", outcome)
+    assert out["B7"]["verdict"] == verdict, out["B7"]
+
+
+def test_b7_excluded_with_reason_when_check_not_evaluated(repo):
+    out = run_mod.leaf_verdicts(_claiming("B7"), repo, "root", "harness_error")
+    assert out["B7"]["verdict"] == "excluded" and out["B7"]["reason"]
+
+
+@pytest.mark.parametrize("leaf", suite_mod.CAPABILITY_LEAVES)
+def test_every_claimable_leaf_gets_an_entry(repo, leaf):
+    out = run_mod.leaf_verdicts(_claiming(leaf), repo, "root", "check_green")
+    assert leaf in out
+    assert out[leaf]["verdict"] in ("pass", "fail") or out[leaf]["reason"], out[leaf]

@@ -155,7 +155,9 @@ class Result:
 #: Files a build child must not leave in its diff (E2); the server's `_STATE_FILES`.
 STATE_FILES = ("agents.md", "claude.md", ".gbfleet-instruction", ".gitignore", ".cursor/mcp.json",
                ".grok/config.toml", ".grok/mcp.json")
-CHECK_LEAVES = ("A1", "A3", "A5", "C2")
+#: The B family (B1-B8) is what harvest assigns a repo-suite build task; its held-out check scores it.
+B_LEAVES = tuple(f"B{i}" for i in range(1, 9))
+CHECK_LEAVES = ("A1", "A3", "A5", "C2") + B_LEAVES
 _TEST_PATH = re.compile(r"(^|/)(tests?|__tests__|spec)(/|$)|(^|/)test_[^/]+$|_test\.py$|\.(test|spec)\.(ts|tsx|js)$",
                         re.I)
 
@@ -274,6 +276,8 @@ def leaf_verdicts(task: Task, repo: Path, branch: str, outcome: str, *, commits:
                 out[leaf] = _verdict(not bad, ", ".join(bad[:5]))
         elif leaf == "C1":
             out[leaf] = _c1(repo, branch, task, paths)
+        else:
+            out[leaf] = _verdict(None, f"no predicate scores {leaf}")
     return out
 
 
