@@ -27,7 +27,7 @@ def test_bench_list_names_template(capsys):
     tpl = load(suite_mod.template_manifest())
     out = capsys.readouterr().out
     assert f"{TEMPLATE_ID} v{tpl.version} ({len(tpl.tasks)} tasks)" in out
-    assert tpl.version == "1.0.0" and len(tpl.tasks) >= 16
+    assert tpl.version == "1.0.1" and len(tpl.tasks) >= 16
 
 
 def test_template_claims_only_covered_leaves_with_floor():

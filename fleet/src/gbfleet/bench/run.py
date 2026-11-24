@@ -159,6 +159,16 @@ _TEST_PATH = re.compile(r"(^|/)(tests?|__tests__|spec)(/|$)|(^|/)test_[^/]+$|_te
                         re.I)
 
 
+#: Compiled artifacts a child's `git add -A` can sweep in; they are not its work (H5, C1).
+_COMPILED = re.compile(r"(^|/)__pycache__/|\.py[co]$")
+_SOURCE_TEST = re.compile(r"\.(py|ts|tsx|js)$")
+
+
+def work_paths(paths: list[str]) -> list[str]:
+    """`paths` without compiled artifacts (`__pycache__/`, `*.pyc`, `*.pyo`)."""
+    return [p for p in paths if not _COMPILED.search(p)]
+
+
 def _verdict(ok: bool | None, reason: str = "") -> dict:
     return {"verdict": "excluded" if ok is None else ("pass" if ok else "fail"), "reason": reason}
 
@@ -177,13 +187,20 @@ def _run_tests(repo: Path, tree: Path, task: Task, tests: list[str]) -> tuple[bo
                               timeout=validate_mod.CHECK_TIMEOUT_S, env=validate_mod.check_env(tree / cwd))
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return None, f"cannot run the child's test: {type(exc).__name__}"
+    if done.returncode != 0 and re.search(
+            r"usage:|ERROR: (file or directory|not found)|"
+            r"Ran 0 tests|NO TESTS RAN|no tests ran|collection error|errors during collection|"
+            r"unrecognized arguments|Error: (Cannot find|No test)", done.stdout + done.stderr):
+        # Not a test failure the child owns: the runner could not collect what it was handed.
+        return None, "cannot collect the child's tests: " + (done.stderr or done.stdout).strip()[-120:]
     return done.returncode == 0, ""
 
 
 def _c1(repo: Path, branch: str, task: Task, paths: list[str]) -> dict:
     """C1: the child's own test passes with its change and fails once its non-test change is
     reverted. A test that is red on the child's own branch measures nothing it wrote."""
-    tests = [p for p in paths if _TEST_PATH.search(p)]
+    paths = work_paths(paths)
+    tests = [p for p in paths if _TEST_PATH.search(p) and _SOURCE_TEST.search(p)]
     source = [p for p in paths if not _TEST_PATH.search(p)]
     if not tests or not source or task.check is None:
         return _verdict(None, "child changed no test or no non-test file")
@@ -243,7 +260,7 @@ def leaf_verdicts(task: Task, repo: Path, branch: str, outcome: str, *, commits:
             if not task.touchpoints:
                 out[leaf] = _verdict(None, "task declares no touchpoints")
             else:
-                bad = undeclared(paths, list(task.touchpoints))
+                bad = undeclared(work_paths(paths), list(task.touchpoints))
                 out[leaf] = _verdict(not bad, ", ".join(bad[:5]))
         elif leaf == "C1":
             out[leaf] = _c1(repo, branch, task, paths)

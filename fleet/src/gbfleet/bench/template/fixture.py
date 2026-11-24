@@ -121,6 +121,7 @@ def build(dest: str | Path) -> Path:
     repo.mkdir(parents=True, exist_ok=True)
     _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "commit.gpgsign", "false")
+    _write(repo, ".gitignore", "__pycache__/\n*.pyc\n")
     _write(repo, "pkg/__init__.py", "")
     _write(repo, "tests/__init__.py", "")
     for n, (name, sig, doc, _impl, _test) in BUILD.items():
