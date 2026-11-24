@@ -4195,34 +4195,68 @@ def dangling_refs(text: str) -> list[str]:
 #: `_section_key`s of the sections that hold the PRD's acceptance list (GRPH-1688).
 _ACCEPTANCE_SECTION_KEYS = ("acceptancecriteria", "acceptance", "donecriteria")
 _AC_SUBHEADING = re.compile(r"^(?:#{3,6}\s+(.*?)\s*#*|\*\*(.+?)\*\*:?|__(.+?)__:?)\s*$")
-_AC_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.*\S)\s*$")
+_AC_ITEM = re.compile(r"^(?P<indent>[ \t]*)(?:[-*+]|\d+[.)])\s+(?P<text>.*\S)\s*$")
+#: A markdown table row, dropped from the text a clause is matched against (GRPH-1905).
+_AC_TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
 
 
 def acceptance_clauses(body: str) -> list[tuple[str, str]]:
     """`(clause, group)` for every list item in the PRD's acceptance section(s).
 
     `group` is the sub-heading (`### X` or a bold label) the clause sits under, or "".
+
+    One list item is one clause, however many lines it spans: an indented sub-list and a
+    continuation paragraph stay attached to the item they belong to (GRPH-1905). P92's
+    first clause ends "`gban rules import` files:" and then lists the five proposals the
+    run files. Read as five clauses of their own, each child named no section, so all five
+    came back in `unassigned_clauses` while their parent reached the task truncated at
+    "files:" — the requirement was filed without the list of what it requires. Children
+    keep their relative indentation, so `_compose_task` renders the nested list the PRD
+    had rather than flattening it.
     """
     out: list[tuple[str, str]] = []
     for title, text in section_bodies(body).items():
         if _section_key(title) not in _ACCEPTANCE_SECTION_KEYS:
             continue
         group = ""
+        opened = ""
         in_fence = False
+        lines: list[str] | None = None
+        indent = 0
+
+        def flush() -> None:
+            nonlocal lines
+            if lines is not None:
+                out.append(("\n".join(lines), opened))
+            lines = None
+
         for line in text.splitlines():
             stripped = line.strip()
             if stripped.startswith("```"):
+                flush()
                 in_fence = not in_fence
                 continue
             if in_fence:
                 continue
             item = _AC_ITEM.match(line)
             if item:
-                out.append((item.group(1).strip(), group))
+                depth = len(item.group("indent").expandtabs(4))
+                if lines is not None and depth > indent:
+                    lines.append(" " * (depth - indent) + stripped)
+                    continue
+                flush()
+                opened = group
+                lines = [item.group("text")]
+                indent = depth
                 continue
             sub = _AC_SUBHEADING.match(stripped)
             if sub:
+                flush()
                 group = next(g for g in sub.groups() if g).strip()
+                continue
+            if lines is not None and stripped:
+                lines.append(f"  {stripped}")
+        flush()
     return out
 
 
@@ -4327,9 +4361,103 @@ def _best_subject_section(text: str, titles: list[str]) -> str | None:
     return scored[0][3]
 
 
-def _clause_section(clause: str, group: str, titles: list[str]) -> str | None:
-    """The section a clause belongs to: its sub-heading names it, else the clause does."""
-    def named(text: str) -> str | None:
+def _subject_ratio(title: str, text: str) -> float:
+    """How much of `title`'s subject `text` names. 1.0 is the whole subject, so the text
+    cannot be about anything else the heading covers."""
+    words = _subject_words(title)
+    if not words:
+        return 0.0
+    return sum(1 for w in words if _word_in(w, text)) / len(words)
+
+
+def _stem(word: str) -> str:
+    """Cheap singulariser, so a clause and a section agree on "express"/"expresses".
+
+    `_word_in` stems in one direction only: it lets the heading word "source" find
+    "sources" in a clause. Matching a whole clause against a whole section needs both
+    directions, and on the real P92 the missing one is decisive — D2 says "no primitive
+    can express it", the acceptance clause says "no primitive expresses", and without this
+    the layering clause ties D1 and lands nowhere (GRPH-1905).
+    """
+    if word.endswith("es") and len(word) > 4:
+        return word[:-2]
+    if word.endswith("s") and len(word) > 3:
+        return word[:-1]
+    return word
+
+
+def _content_words(text: str, prose_only: bool = False) -> set[str]:
+    """The stemmed content words of `text`, as a set.
+
+    `prose_only` drops markdown table rows. A row lists examples rather than stating
+    behaviour, and P92's D1 names every source and every primitive it can propose in one
+    table: counted, that table claims clauses about behaviour the section's prose never
+    states. Dropping it is what separates D2 — which defines the three buckets in prose —
+    from D1 for the layering clause (GRPH-1905: 0.64 against 0.36).
+    """
+    if prose_only:
+        text = "\n".join(line for line in (text or "").splitlines()
+                         if not _AC_TABLE_ROW.match(line))
+    out: set[str] = set()
+    for raw in re.split(r"[^A-Za-z0-9]+", text or ""):
+        low = raw.lower()
+        if low and low not in _SUBJECT_STOP:
+            out.add(_stem(low))
+    return out
+
+
+#: How much of a clause a section's own prose has to restate before the clause moves to it
+#: on that evidence alone. A third is the line, not a tuned value: below it the section is
+#: echoing one word back, which is coincidence rather than ownership. Measured on the real
+#: GRPH-P92 (body_hash 49ef50d796f3048e) the weakest clause that does belong to a section
+#: covers 0.34 of its own words, and a clause that belongs nowhere covers 0.00.
+_BODY_COVER_FLOOR = 1 / 3
+
+
+def _body_cover(clause: str, titles: list[str], bodies: dict[str, str]) -> str | None:
+    """The section whose own prose restates `clause`, or None when the text does not say.
+
+    The heading subject is what a clause names when the author wrote the acceptance list
+    against the headings. A real PRD does not: P92's D1 is "Sources and who reads them"
+    and the clause that exercises it reads "with a token that cannot read branch
+    protection … the run does not report clean" — one subject word, which D3's heading
+    also carries and outranks, so the clause went to D3 and D1 came back blocked for
+    `no_acceptance` (GRPH-1905). The section's prose is the stronger evidence: it is where
+    the behaviour the clause asserts is specified.
+
+    A tie returns None. Two sections covering the clause equally means the text does not
+    decide, and picking one would decide it by section name.
+    """
+    want = _content_words(clause)
+    if not want:
+        return None
+    scored = sorted(
+        ((len(want & _content_words(f"{t}\n{bodies.get(t, '')}", prose_only=True)) / len(want), t)
+         for t in titles),
+        reverse=True,
+    )
+    best = scored[0]
+    runner_up = scored[1][0] if len(scored) > 1 else 0.0
+    if best[0] < _BODY_COVER_FLOOR or best[0] <= runner_up:
+        return None
+    return best[1]
+
+
+def _clause_section(clause: str, group: str, titles: list[str],
+                    bodies: dict[str, str] | None = None) -> str | None:
+    """The section a clause belongs to: its sub-heading names it, else the clause does.
+
+    A clause that names a section outright — its key, its whole title, or every word of
+    its subject — belongs to that section and nothing else is consulted. Otherwise the
+    section whose prose restates the clause wins, when `bodies` is given and one section
+    clearly does (GRPH-1905).
+
+    A clause under a sub-heading is never matched against section prose: its group says
+    which piece of a section it belongs to, and `claim_subheading_clauses` is what routes
+    it there. Letting a piece's clause land on the whole section is how a split section
+    loses the clauses that justified splitting it.
+    """
+    def named(text: str) -> tuple[str | None, float]:
         key = _section_key(text)
         hits = [t for t in titles if key and _section_key(t) == key]
         if not hits:
@@ -4337,18 +4465,35 @@ def _clause_section(clause: str, group: str, titles: list[str]) -> str | None:
                     if (pat := _clause_title_pattern(t)) is not None and pat.search(text or "")]
         if hits:
             # Longest title wins, so "Auth tokens" is not claimed by a section called "Auth".
-            return max(hits, key=len)
+            return max(hits, key=len), 1.0
         # A flat list names the subject ("the skill", "a rescan") and not the heading.
-        return _best_subject_section(text, titles)
-    return (named(group) if group else None) or named(clause)
+        best = _best_subject_section(text, titles)
+        return best, (_subject_ratio(best, text) if best is not None else 0.0)
+
+    if group:
+        return named(group)[0] or named(clause)[0]
+    hit, ratio = named(clause)
+    if hit is not None and ratio >= 1.0:
+        return hit
+    if bodies is None:
+        return hit
+    return _body_cover(clause, titles, bodies) or hit
 
 
-def assign_acceptance(body: str, titles: list[str]) -> tuple[dict[str, list[str]], list[str]]:
-    """Per-section acceptance clauses, and the clauses that map to no section."""
+def assign_acceptance(body: str, titles: list[str],
+                      bodies: dict[str, str] | None = None,
+                      ) -> tuple[dict[str, list[str]], list[str]]:
+    """Per-section acceptance clauses, and the clauses that map to no section.
+
+    `bodies` is `section_bodies(body)` when the caller already has it, so a decompose
+    parses the PRD once.
+    """
+    if bodies is None:
+        bodies = section_bodies(body)
     by_section: dict[str, list[str]] = {}
     unassigned: list[str] = []
     for clause, group in acceptance_clauses(body):
-        target = _clause_section(clause, group, titles)
+        target = _clause_section(clause, group, titles, bodies)
         if target is None:
             unassigned.append(clause)
         else:
@@ -4628,10 +4773,10 @@ def claim_subheading_clauses(
     copy them onto every piece — they apply to the whole section.
     """
     indexed = list(acceptance_clauses(body))
-    section_level, _unassigned = assign_acceptance(body, titles)
+    section_level, _unassigned = assign_acceptance(body, titles, section_texts)
     assigned: set[int] = set()
     for i, (clause, group) in enumerate(indexed):
-        if _clause_section(clause, group, titles) is not None:
+        if _clause_section(clause, group, titles, section_texts) is not None:
             assigned.add(i)
     per_heading: dict[tuple[str, str], list[str]] = {}
     groups_of = {title: section_groups(section_texts.get(title, "")) for title in titles}
