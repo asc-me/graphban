@@ -53,11 +53,11 @@ beforeEach(() => {
   ] as never);
 });
 
-function view() {
+function view(shown: RuleStage = stage) {
   return render(
     <MemoryRouter>
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <DockEditor stage={stage} version="1" model={null} focusRule={null} prefill={null} onClose={() => {}} />
+        <DockEditor stage={shown} version="1" model={null} focusRule={null} prefill={null} onClose={() => {}} />
       </QueryClientProvider>
     </MemoryRouter>,
   );
@@ -107,6 +107,37 @@ describe("DockEditor custom rules", () => {
       "Custom rule: it has no library switch. It is changed by proposal, not here.",
     );
     expect(reason).not.toHaveTextContent(/promote/i);
+  });
+
+  it("does not call an observing custom rule in force, and still does for an active one", async () => {
+    // The flow reports value true for an observing custom rule so it stays drawn (GRPH-1873).
+    // That must not read as IN FORCE. This assertion fails when the observing state check is removed.
+    const holding = rule({
+      id: "custom.walk-docs-exclusive",
+      title: "Walk docs exclusive",
+      value: true,
+      used: true,
+    });
+    const holdingStage = { ...stage, rules: [lib, holding] } as unknown as RuleStage;
+    const user = userEvent.setup();
+    const first = view(holdingStage);
+    await user.click(screen.getByTestId("rules-dock-row-custom.walk-docs-exclusive"));
+    expect(await screen.findByTestId("rules-dock-custom-state")).toHaveTextContent(
+      "Observing: advisory only, it does not hold anything yet.",
+    );
+    const observingValue = screen.queryByTestId("rules-value");
+    expect(observingValue === null || observingValue.textContent !== "true").toBe(true);
+    expect(screen.getByTestId("rules-dock-form").textContent ?? "").not.toMatch(/IN FORCE\s*true/);
+
+    first.unmount();
+    vi.mocked(api.customRules).mockResolvedValue([
+      { rule_id: "custom.walk-docs-exclusive", stage: "Plan", title: "Walk docs exclusive", state: "active", params: {} },
+    ] as never);
+    view(holdingStage);
+    await user.click(screen.getByTestId("rules-dock-row-custom.walk-docs-exclusive"));
+    expect(await screen.findByTestId("rules-dock-state-badge")).toHaveTextContent("ACTIVE");
+    expect(screen.getByTestId("rules-value")).toHaveTextContent("true");
+    expect(screen.getByTestId("rules-dock-form").textContent ?? "").toMatch(/IN FORCE/);
   });
 
   it("does not tell the reader to promote a custom rule whose state was not read", async () => {
