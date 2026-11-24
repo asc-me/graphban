@@ -253,6 +253,7 @@
 "tests/test_mcp_proxy.py": 0.35,
 "tests/test_mcp_role_manifest.py": 0.65,
 "tests/test_mcp_session_manifest.py": 1.38,
+"tests/test_me_alerts_perf.py": 1.98,
 "tests/test_membership_mutations.py": 2.42,
 "tests/test_memory_advisory_judge.py": 0.66,
 "tests/test_memory_auto_triage.py": 4.01,
