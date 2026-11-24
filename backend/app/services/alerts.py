@@ -183,7 +183,7 @@ def alert_dict(db: Session, row: Alert, *, lookup: _Lookup | None = None) -> dic
         return {
             "id": row.id, "kind": row.kind, "project": row.project_id,
             "project_tag": project.tag if project is not None else None,
-            "title": row.title, "impact": "drain", "drain": "unknown",
+            "title": row.title, "impact": "drain",
             "question": row.title, "body": row.body, "wait": None, "ticket": None,
             "prd": tagging.render(project.tag, "prd", prd.number)
             if project is not None and prd is not None else None,

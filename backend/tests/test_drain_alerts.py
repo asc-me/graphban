@@ -15,7 +15,7 @@ import pytest
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Alert, Membership, Prd, utcnow
+from app.models import Alert, Membership, Prd, Project, utcnow
 from app.services import prds as prds_svc
 from app.services import push as push_svc
 
@@ -89,6 +89,21 @@ def test_drained_writes_one_alert_listed_and_pushed(client, auth, key, prd, db, 
     assert [a["kind"] for a in listed] == ["drain_drained"] and listed[0]["wait"] is None
     assert listed[0]["prd"]
     assert len(pushes) == 1 and "drained" in pushes[0]["title"]
+
+
+def test_the_push_links_to_the_prd_page(client, key, prd, db, proj, pushes, monkeypatch):
+    _post(client, key, prd, "drained")
+    assert pushes[0]["url"] == f"/prds/{prd.id}"
+    [row] = _rows(db, prd)
+    tag = db.get(Project, proj).tag
+    monkeypatch.setattr(settings, "hosted_mode", True)
+    assert json.loads(push_svc._payload(db, row))["url"] == f"/p/{tag}/prds/{prd.id}"
+
+
+def test_a_drain_alert_carries_no_wait_drain_field(client, auth, key, prd, pushes):
+    _post(client, key, prd, "drained")
+    [listed] = client.get("/api/me/alerts", headers=auth).json()["alerts"]
+    assert "drain" not in listed and listed["impact"] == "drain"
 
 
 def test_stalled_body_lists_each_item_and_reason(client, key, prd, db, pushes):
