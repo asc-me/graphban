@@ -631,9 +631,17 @@ def test_the_blocker_rows_are_the_ones_a_row_at_a_time_render_builds(
     Both renders read one frozen `now`: they are two requests, and without it a second boundary
     between them moves every row's ages and the comparison says nothing about batching.
     """
+    from app.services import triage as triage_svc
     from app.services import waits as waits_svc
 
     units = _seed_blockers(db, perf_project, SMALL_UNITS)
+    # Both renders read ONE clock. `triage.feed()` stamps `now = utcnow()` per call and
+    # `age_seconds`/`blocked_seconds` are integer seconds off it, so a host slow enough to cross
+    # a second boundary between the two renders differs on EVERY row for a reason that is not
+    # batching. That is a wall-clock budget this test never meant to set: it red on a loaded
+    # runner and green alone, with the two ages off by one and nothing else between them.
+    frozen = triage_svc.utcnow()
+    monkeypatch.setattr(triage_svc, "utcnow", lambda: frozen)
     batched = _blockers(client, auth, perf_project)
 
     monkeypatch.setattr(waits_svc, "question_states", lambda db, items: {})
