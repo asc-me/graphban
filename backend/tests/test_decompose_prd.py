@@ -780,21 +780,28 @@ def test_p92_real_body_files_a_touchpoint_for_every_section(client, auth, monkey
     assert "Rules page" in d3["web/src/features/rules/"]["evidence"]
     assert d3["web/src/features/rules/"]["create"] is False
 
-    # D3 is over the clause signal, so it splits — and two of its three pieces name no path,
-    # no symbol and no page of their own. Filed with nothing they would be blocked for "no
+    # D2 is over the clause signal, so it splits — and some of its pieces name no path, no
+    # symbol and no page of their own. Filed with nothing they would be blocked for "no
     # touchpoints", which is this item's symptom one level down: a piece is part of the
     # section, and the section knows where the work lands. `touchpoints_inherited` says the
     # paths were borrowed rather than resolved, so a caller can narrow them per piece.
-    subs = {s["heading"]: s for s in by[_D3]["sub_items"]}
-    assert set(subs) == {"An import run is a record", "The report on the Rules page",
-                         "Adopt-the-batch"}
+    # Which section splits is GRPH-1905's clause assignment, not this item's: it folded a
+    # clause's sub-list into that clause and re-placed the sections' prose, so the split
+    # this measured moved from D3 (now one clause) to D2.
+    subs = {s["heading"]: s for s in by[_D2]["sub_items"]}
+    assert len(subs) >= 2, by[_D2]["oversized_reason"]
     for heading, sub in subs.items():
         assert sub["touchpoints"], heading
         assert "no touchpoints" not in (sub["blocker"] or ""), heading
-    assert subs["The report on the Rules page"]["touchpoints_inherited"] is False
-    assert subs["An import run is a record"]["touchpoints_inherited"] is True
-    assert subs["Adopt-the-batch"]["touchpoints_inherited"] is True
-    assert subs["An import run is a record"]["touchpoints"] == by[_D3]["touchpoints"]
+    borrowed = {h for h, s in subs.items() if s["touchpoints_inherited"]}
+    resolved = {h for h, s in subs.items() if not s["touchpoints_inherited"]}
+    # The marker is not a constant: one piece resolved its own path, another could not and
+    # says it borrowed the section's. A piece that borrowed carries exactly the section's.
+    assert borrowed and resolved, (sorted(borrowed), sorted(resolved))
+    assert "EXTERNAL rule" in resolved, sorted(resolved)
+    assert "Guidance plus gap" in borrowed, sorted(borrowed)
+    for heading in borrowed:
+        assert subs[heading]["touchpoints"] == by[_D2]["touchpoints"], heading
 
 
 def test_a_backticked_name_resolves_to_the_file_that_defines_it():
