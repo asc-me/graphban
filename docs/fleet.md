@@ -146,5 +146,6 @@ per cycle. A hook that exits non-zero is logged (`drain_notice_hook_failed`) and
 carries on; a hook still running after 30 seconds is killed. Without `--on-notify` nothing
 runs and the notice still reaches the server.
 
-The command is split like a shell command line and run directly, not through a shell. For
+The command is run directly, not through a shell: split like a shell command line on Linux
+and macOS, and handed to CreateProcess as is on Windows. For
 pipes or redirects, ask for the shell yourself: `--on-notify "sh -c 'jq .outcome >> ~/drains.log'"`.

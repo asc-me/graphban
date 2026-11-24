@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 
 import pytest
@@ -14,28 +15,38 @@ from gbfleet.until import Wave, notify_outcome
 NOTICE = {"prd": "GRPH-P1", "outcome": "drained", "open": [], "sent_at": "2026-11-24T00:00:00Z"}
 
 
+def _py(tmp_path, body: str, name: str = "hook.py") -> str:
+    """A hook command line that runs `body` under this interpreter, on POSIX and Windows.
+
+    No `sh`, `cat` or `sleep`: the Windows runner has none of them on a bare CreateProcess.
+    """
+    script = tmp_path / name
+    script.write_text(body)
+    return f'"{sys.executable}" "{script}"'
+
+
 def test_hook_gets_notice_json_on_stdin(tmp_path):
     out = tmp_path / "got.json"
-    service_mod.run_hook(f"sh -c 'cat > {out}'", NOTICE)
+    service_mod.run_hook(_py(tmp_path, f"import sys\nopen({str(out)!r}, 'w').write(sys.stdin.read())\n"), NOTICE)
     assert json.loads(out.read_text()) == NOTICE
 
 
 def test_nonzero_exit_raises(tmp_path):
     with pytest.raises(service_mod.HookFailed, match="exited 3"):
-        service_mod.run_hook("sh -c 'exit 3'", NOTICE)
+        service_mod.run_hook(_py(tmp_path, "import sys\nsys.exit(3)\n"), NOTICE)
 
 
-def test_slow_hook_is_killed():
+def test_slow_hook_is_killed(tmp_path):
     t = time.monotonic()
     with pytest.raises(service_mod.HookFailed, match="killed"):
-        service_mod.run_hook("sleep 30", NOTICE, timeout=0.5)
+        service_mod.run_hook(_py(tmp_path, "import time\ntime.sleep(30)\n"), NOTICE, timeout=0.5)
     assert time.monotonic() - t < 10
 
 
 def test_command_runs_without_a_shell(tmp_path):
-    # `;` is an argument to echo, not a command separator: no shell sees the string.
+    # `;` is an argument to the hook, not a command separator: no shell sees the string.
     marker = tmp_path / "pwned"
-    service_mod.run_hook(f"echo hi ; touch {marker}", NOTICE)
+    service_mod.run_hook(f'{_py(tmp_path, "pass")} ; touch "{marker}"', NOTICE)
     assert not marker.exists()
 
 
@@ -58,14 +69,15 @@ class _Server:
 
 
 def test_failing_hook_is_logged_and_drain_continues(tmp_path):
-    hook = service_mod.hook_for("false")
+    hook = service_mod.hook_for(_py(tmp_path, "import sys\nsys.exit(1)\n"))
     got = notify_outcome(_Server(), Wave(), "idle", "GRPH-P1", on_notice=hook)
     assert got is not None and got["outcome"] == "drained"
 
 
 def test_hook_runs_once_with_notice(tmp_path):
     out = tmp_path / "n"
-    hook = service_mod.hook_for(f"sh -c 'cat >> {out}; echo >> {out}'")
+    hook = service_mod.hook_for(_py(
+        tmp_path, f"import sys\nopen({str(out)!r}, 'a').write(sys.stdin.read() + '\\n')\n"))
     notify_outcome(_Server(), Wave(), "idle", "GRPH-P1", on_notice=hook)
     lines = out.read_text().strip().splitlines()
     assert len(lines) == 1

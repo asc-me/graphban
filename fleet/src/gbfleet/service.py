@@ -483,21 +483,27 @@ class HookFailed(RuntimeError):
 def run_hook(command: str, notice: dict, *, timeout: float = HOOK_TIMEOUT_S) -> None:
     """Run the `--on-notify` command once with `notice` as JSON on stdin (GRPH-1915).
 
-    The command is split like a shell command line (`shlex`) and run as an argv, never
-    through a shell: an operator who wants pipes or redirects writes `sh -c '...'` and so
-    chooses the shell themselves. Raises `HookFailed` for a non-zero exit or a timeout; the
-    caller logs it and the drain carries on. On timeout the whole process group is killed,
-    so a child the hook started dies too.
+    The command is never run through a shell. On POSIX it is split like a shell command
+    line (`shlex`) and run as an argv; on Windows the string goes to CreateProcess as is,
+    which splits it by the Windows rules (non-POSIX `shlex` would keep the quotes inside
+    each word). An operator who wants pipes or redirects names the shell themselves
+    (`sh -c '...'`). Raises `HookFailed` for a non-zero exit or a timeout; the caller logs
+    it and the drain carries on. On timeout the whole process group is killed, so a child
+    the hook started dies too.
     """
     import json
     import shlex
     import signal
     import subprocess
     posix = os.name == "posix"
-    try:
-        argv = shlex.split(command, posix=posix)
-    except ValueError as exc:
-        raise HookFailed(f"hook command does not parse: {exc}: {command}") from exc
+    argv: list[str] | str
+    if posix:
+        try:
+            argv = shlex.split(command)
+        except ValueError as exc:
+            raise HookFailed(f"hook command does not parse: {exc}: {command}") from exc
+    else:
+        argv = command.strip()
     if not argv:
         raise HookFailed("hook command is empty")
     try:
