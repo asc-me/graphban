@@ -95,6 +95,7 @@
 "tests/test_decision_waits.py": 2.1,
 "tests/test_declining_work.py": 1.97,
 "tests/test_decompose_context.py": 0.3,
+"tests/test_decompose_prd.py": 3.57,
 "tests/test_decompose_requires_approved.py": 0.71,
 "tests/test_decoy_guard.py": 0.76,
 "tests/test_delegation.py": 5.97,
