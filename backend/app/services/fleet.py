@@ -2410,7 +2410,7 @@ def _review_pr_unlinked(it: Item) -> bool:
         return False
     if not (it.branch or "").strip() and not (getattr(it, "head_commit", "") or "").strip():
         return False
-    if any(a.get("adapter") == items_svc.OWNER_CLOSE_ADAPTER
+    if any(items_svc.is_owner_close_merge(a)
            for a in items_svc.valid_attestations(evidence)):
         return False
     refusals = [str(e.get("detail") or "") for e in evidence
@@ -4639,7 +4639,7 @@ def merge_landed(item: Item) -> bool:
         if (e.get("kind") == "url" and str(e.get("commit") or "").strip()
                 and str(e.get("detail") or "").startswith(MERGE_RECEIPT_PREFIX)):
             return True
-    return any(a.get("adapter") == items_svc.OWNER_CLOSE_ADAPTER
+    return any(items_svc.is_owner_close_merge(a)
                for a in items_svc.valid_attestations(item.evidence or []))
 
 
