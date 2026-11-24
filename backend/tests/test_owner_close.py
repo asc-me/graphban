@@ -313,3 +313,69 @@ def test_rest_patch_refusal_is_on_the_call():
            ).read_text(encoding="utf-8")
     assert "OWNER_CLOSE_ADAPTER" in src
     assert "owner-close" in src
+
+
+# ---- Verified kind (GRPH-1907) ---------------------------------------------------
+
+NOTE = "walked the flow on staging build 42"
+
+
+def test_verified_close_writes_a_walk_verified_receipt(db):
+    it = _item(db, status="review")
+    out = items_svc.owner_close(db, it.id, closer=CLOSER, commit=MERGE, kind="verified",
+                                note=NOTE, url="https://example.com/walk/42")
+
+    assert out.status == "done"
+    assert out.reviewed_by is None
+    assert not out.github_url
+    [att] = items_svc.valid_attestations(out.evidence, commit=MERGE)
+    assert att["adapter"] == "owner.close"
+    names = {p["name"] for p in att["predicates"]}
+    assert names == {"walk_verified", "owner_close"}
+    walk = next(p for p in att["predicates"] if p["name"] == "walk_verified")
+    assert "ascme" in walk["detail"] and NOTE in walk["detail"]
+    urls = [e for e in out.evidence if e.get("kind") == "url"]
+    assert [e["url"] for e in urls] == ["https://example.com/walk/42"]
+
+
+def test_verified_close_accepts_a_non_cut_from_earlier_sha(db):
+    it = _item(db, status="review")
+    out = items_svc.owner_close(db, it.id, closer=CLOSER, commit="abcdef1", kind="verified",
+                                note=NOTE)
+    assert out.status == "done"
+
+
+def test_verified_close_refusals_name_the_field(db):
+    it = _item(db, status="review")
+    it.evidence = items_svc.append_evidence(it.evidence, [{
+        "kind": "note", "detail": f"{items_svc.CUT_FROM_MARKER}{CUT_FROM} (`gb/x`)"}])
+    db.commit()
+    for kw, field in [
+        ({"commit": "zzz", "note": NOTE}, "commit"),
+        ({"commit": CUT_FROM, "note": NOTE}, "commit"),
+        ({"commit": MERGE, "note": ""}, "note"),
+        ({"commit": MERGE, "note": "x" * 201}, "note"),
+        ({"commit": MERGE, "note": "a\nb"}, "note"),
+        ({"commit": MERGE, "note": NOTE, "kind": "bogus"}, "kind"),
+    ]:
+        kw.setdefault("kind", "verified")
+        with pytest.raises(ValueError, match=field):
+            items_svc.owner_close(db, it.id, closer=CLOSER, **kw)
+    db.refresh(it)
+    assert it.status != "done"
+
+
+def test_rest_verified_close_and_422s(client, auth):
+    item = client.post("/api/items", json={"title": "walked", "status": "review"},
+                       headers=auth).json()
+    url = f"/api/items/{item['id']}/owner-close"
+    r = client.post(url, json={"commit": MERGE, "kind": "verified", "note": ""}, headers=auth)
+    assert r.status_code == 422 and "note" in r.text
+    r = client.post(url, json={"commit": MERGE, "kind": "verified", "note": "x" * 201},
+                    headers=auth)
+    assert r.status_code == 422 and "note" in r.text
+    r = client.post(url, json={"commit": "nope", "kind": "verified", "note": NOTE}, headers=auth)
+    assert r.status_code == 422 and "commit" in r.text
+    r = client.post(url, json={"commit": MERGE, "kind": "verified", "note": NOTE}, headers=auth)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "done"
