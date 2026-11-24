@@ -1959,7 +1959,7 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
     # An owner.close receipt is the owner saying the work is already on the base.
     # The cooldown waits for CI after a PR is linked; that wait does not apply to a
     # human closing something they already merged (GRPH-1030).
-    if any(a.get("adapter") == OWNER_CLOSE_ADAPTER for a in valid_attestations(merged)):
+    if any(is_owner_close_merge(a) for a in valid_attestations(merged)):
         return []
     commits = pr_commits(merged, commit, item.head_commit)
     if any(CI_PREDICATE in attested_predicates(merged, commit=c) for c in commits):
@@ -2238,6 +2238,16 @@ def resolve_item(db: Session, item_id: str, *, kind: str, of: str, reason: str =
 
 OWNER_CLOSE_KINDS = ("merged", "verified")
 OWNER_CLOSE_NOTE_MAX = 200
+
+
+def is_owner_close_merge(attestation: dict) -> bool:
+    """An `owner.close` attestation that carries a passed `on_base` predicate (GRPH-1908).
+
+    A Verified close writes `walk_verified` instead, and says nothing about the base.
+    """
+    return attestation.get("adapter") == OWNER_CLOSE_ADAPTER and any(
+        isinstance(q, dict) and q.get("name") == "on_base" and q.get("passed") is True
+        for q in attestation.get("predicates") or [])
 
 
 def owner_close(db: Session, item_id: str, *, closer: dict, commit: str,
