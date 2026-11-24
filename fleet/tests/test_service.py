@@ -1097,3 +1097,20 @@ def test_last_run_reads_a_newest_record_longer_than_the_window(tmp_path, monkeyp
                        "resolutions": ["x" * 1000] * 200})
     (tmp_path / "logs" / "d.log").write_text('{"reason": "idle"}\n' + big + "\n")
     assert service.last_run("d") == ("unready", 2, "")
+
+
+def test_last_notice_status_lines(monkeypatch, tmp_path):
+    """GRPH-1916: drained prints its time; a held stall prints items and reasons."""
+    monkeypatch.setattr(service, "CONFIG_DIR", tmp_path)
+    assert service.last_notice("d") is None
+    assert service.notice_lines(None) == []
+    service.record_notice("d", {"prd": "P", "outcome": "drained", "open": [],
+                                "sent_at": "2026-11-24T10:00:00+00:00"})
+    got = service.last_notice("d")
+    assert service.notice_lines(got) == ["  last notice: drained, sent 2026-11-24T10:00:00+00:00"]
+    service.record_notice("d", {"prd": "P", "outcome": "stalled", "sent_at": "T",
+                                "open": [{"item": "GRPH-1", "reason": "held"}]})
+    lines = service.notice_lines(service.last_notice("d"))
+    assert lines[0] == "  last notice: stalled (held), sent T"
+    assert lines[1] == "    GRPH-1: held"
+    assert not any("silent" in line for line in lines)
