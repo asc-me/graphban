@@ -581,6 +581,35 @@ def test_c1_fails_a_test_that_still_passes_with_the_change_reverted(repo, tmp_pa
     assert c1["verdict"] == "fail" and "reverted" in c1["reason"]
 
 
+def _runner_says(monkeypatch, returncode, out, exc=None):
+    """Make the project's runner answer `out` (or raise `exc`) for the child's test files."""
+    from gbfleet.bench import run as run_mod
+
+    real = subprocess.run
+
+    def fake(argv, **kw):
+        if "tests/test_mine.py" not in " ".join(map(str, argv)):
+            return real(argv, **kw)
+        if exc:
+            raise exc
+        return subprocess.CompletedProcess(argv, returncode, stdout="", stderr=out)
+
+    monkeypatch.setattr(run_mod.subprocess, "run", fake)
+
+
+def test_c1_is_red_when_the_runner_collects_nothing_from_the_childs_test(repo, tmp_path, monkeypatch):
+    _runner_says(monkeypatch, 5, "Ran 0 tests in 0.000s\n\nNO TESTS RAN")
+    c1 = c1_of(repo, tmp_path, MINE)
+    assert c1["verdict"] == "fail"
+    assert c1["reason"] == "child's tests are not collected by the project's runner"
+
+
+def test_c1_stays_excluded_when_the_runner_cannot_start(repo, tmp_path, monkeypatch):
+    _runner_says(monkeypatch, 0, "", exc=FileNotFoundError("python3"))
+    c1 = c1_of(repo, tmp_path, MINE)
+    assert c1["verdict"] == "excluded" and "FileNotFoundError" in c1["reason"]
+
+
 def test_c1_excluded_when_the_child_wrote_no_test(repo, tmp_path):
     server = FakeServer(["t1"])
     drive(repo, tmp_path, [leafy(repo, ("C1",))], server, solve)

@@ -178,6 +178,9 @@ def diff_paths(repo: Path, branch: str, base: str) -> list[str] | None:
     return None if done.returncode != 0 else [p for p in done.stdout.splitlines() if p]
 
 
+NOT_COLLECTED = "child's tests are not collected by the project's runner"
+
+
 def _run_tests(repo: Path, tree: Path, task: Task, tests: list[str]) -> tuple[bool | None, str]:
     """Run the child's own tests in `tree` the way the task's check runs: True green,
     False red, None when they could not be run (with the reason)."""
@@ -187,9 +190,15 @@ def _run_tests(repo: Path, tree: Path, task: Task, tests: list[str]) -> tuple[bo
                               timeout=validate_mod.CHECK_TIMEOUT_S, env=validate_mod.check_env(tree / cwd))
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         return None, f"cannot run the child's test: {type(exc).__name__}"
+    out = done.stdout + done.stderr
+    if done.returncode != 0 and not re.search(r"usage:|ERROR: (file or directory|not found)|unrecognized arguments", out) \
+            and re.search(r"Ran 0 tests|NO TESTS RAN|no tests ran", out):
+        # The runner started and the child's files exist, but it collected nothing from them:
+        # the child wrote a test the project never runs. That miss is the child's.
+        return False, NOT_COLLECTED
     if done.returncode != 0 and re.search(
             r"usage:|ERROR: (file or directory|not found)|"
-            r"Ran 0 tests|NO TESTS RAN|no tests ran|collection error|errors during collection|"
+            r"collection error|errors during collection|"
             r"unrecognized arguments|Error: (Cannot find|No test)", done.stdout + done.stderr):
         # Not a test failure the child owns: the runner could not collect what it was handed.
         return None, "cannot collect the child's tests: " + (done.stderr or done.stdout).strip()[-120:]
@@ -216,7 +225,7 @@ def _c1(repo: Path, branch: str, task: Task, paths: list[str]) -> dict:
             if green is None:
                 return _verdict(None, why)
             if not green:
-                return _verdict(False, "child's test fails with its change in place")
+                return _verdict(False, why or "child's test fails with its change in place")
             for rel in source:
                 if _git(tree, "cat-file", "-e", f"{task.base_sha}:{rel}").returncode == 0:
                     _git(tree, "checkout", task.base_sha, "--", rel)
