@@ -2506,7 +2506,7 @@ def _clusters(planner: Graphban, prd: str | None, line: str | None = None, **kw)
     from the items' own `line_id`. A cluster left with no members is dropped. A `--prd` or
     unscoped wave sends exactly what it sent before.
     """
-    got = planner.call("collision_clusters", **_scope(prd), **kw)
+    got = _lift_stale_review_holds(planner, planner.call("collision_clusters", **_scope(prd), **kw))
     if not line:
         return got
     keys = _line_keys(planner, line)
@@ -2518,6 +2518,101 @@ def _clusters(planner: Graphban, prd: str | None, line: str | None = None, **kw)
         if members:
             out.append({**c, "items": members})
     return {**(got or {}), "clusters": out, "total": len(out)}
+
+
+#: A review hold whose item has left `review` (a bounce sends it to `next`): it holds nothing.
+HOLD_GONE = "gone"
+#: A review hold whose item is in review with no live reviewer and no review claim. Its areas
+#: stay occupied, but nobody is working it: the wait is for a reviewer the review branch
+#: staffs, not contention on another agent.
+HOLD_UNSTAFFED = "unstaffed"
+
+#: Reported once per change, not every poll (the GRPH-817 rule).
+_stale_holds = _Repeats()
+
+
+def _stale_review_hold(planner: Graphban, hold: dict) -> tuple[str, str]:
+    """(kind, why) for a review hold no live agent owns, or ("", "") when it is held (GRPH-1832).
+
+    A hold the server names a live reviewer for is held. Otherwise the holding item is read
+    again — the hold is the server's answer about a row that may have moved since. One that
+    has left `review` is HOLD_GONE; one still in review that nobody has claimed is
+    HOLD_UNSTAFFED. A hold that names no item, or whose item cannot be read, stays held:
+    unknown is not free.
+    """
+    if hold.get("live_holder"):
+        return "", ""
+    item = str(hold.get("by") or "").strip()
+    if not item:
+        return "", ""
+    try:
+        row = planner.call("get_item_details", id=item)
+    except (ToolFailed, NotPermitted, ServerUnreachable):
+        return "", ""
+    if not isinstance(row, dict) or not row.get("status"):
+        return "", ""
+    status = str(row.get("status"))
+    if status != "review":
+        return HOLD_GONE, f"{item} is {status}, no longer in review"
+    if not review_held(row):
+        return HOLD_UNSTAFFED, f"{item} is in review with no live reviewer and no review claim"
+    return "", ""
+
+
+def _lift_stale_review_holds(planner: Graphban, got):
+    """Re-read every review hold no live agent owns, each cycle (GRPH-1832).
+
+    The supervisor sized its wave off the server's `held_by: ["review"]` and never asked
+    whether the review was still there. A reviewer bounced GRPH-1828 to `next`, the cluster
+    kept reading `held by no live reviewer`, and 49 cycles logged contention without
+    delegating the rebuild. A hold no live agent owns is not a hold:
+
+    - every review hold on a review-only cluster GONE: the cluster is offered like any
+      other, with the holder and the siblings its hold stripped back in `items`.
+      `_delegate_next` reads each member's own status, so it seeds from fresh rows.
+    - every one gone or UNSTAFFED, at least one unstaffed: still held (the review row
+      occupies its areas, and the review branch staffs it), but flagged
+      `review_unstaffed` so `_wanted_workers` does not report it as contention.
+
+    A cluster held by any reservation other than review is left as the server sent it.
+    """
+    if not isinstance(got, dict):
+        return got
+    out: list = []
+    changed = False
+    notes: list[str] = []
+    for cluster in got.get("clusters") or []:
+        holders = cluster.get("held_by") if isinstance(cluster, dict) else None
+        if not holders or set(holders) != {"review"}:
+            out.append(cluster)
+            continue
+        reviews = [h for h in cluster.get("held_because") or []
+                   if isinstance(h, dict) and h.get("reserved") == "review"]
+        read = [_stale_review_hold(planner, h) for h in reviews]
+        kinds = {k for k, _ in read}
+        if not reviews or "" in kinds:
+            out.append(cluster)
+            continue
+        notes.extend(w for _, w in read)
+        changed = True
+        if kinds != {HOLD_GONE}:
+            out.append({**cluster, "review_unstaffed": True})
+            continue
+        items = list(cluster.get("items") or [])
+        for h in reviews:
+            for key in [h.get("by"), *(h.get("held") or [])]:
+                if key and str(key) not in items:
+                    items.append(str(key))
+        freed = {k: v for k, v in cluster.items() if k not in ("held_by", "free_in")}
+        freed["items"] = items
+        freed["held_because"] = [h for h in cluster.get("held_because") or []
+                                 if h not in reviews]
+        out.append(freed)
+    if notes and _stale_holds.changed("; ".join(sorted(notes))):
+        observe.emit("review_hold_stale", detail="review hold not held: " + "; ".join(notes))
+    elif not notes:
+        _stale_holds.clear()
+    return {**got, "clusters": out} if changed else got
 
 
 #: Statuses a collision cluster can hold a member in: the claim pool plus `review`, which
@@ -3870,6 +3965,9 @@ def _wanted_workers(
     # arriving early.
     free, blocked = _free_and_blocked(clusters)
     total = len(free)
+    # GRPH-1832: a review hold nobody is reviewing is a wait for a reviewer, which the
+    # unheld-review branch staffs. It still spawns no builder, but it is not contention.
+    blocked = [c for c in blocked if not c.get("review_unstaffed")]
     if total <= 0:
         if blocked:
             # Reported ON CHANGE, not every tick (GRPH-817). This loop polls once a second, so
