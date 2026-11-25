@@ -185,6 +185,60 @@ def test_a_pr_receipt_without_a_url_does_not_count(client, auth, db):
         fleet_svc.bounce(db, item_id=item_id, agent_id="CORE-A73", reason="reopen it")
 
 
+#: The canonical receipt a planner writes when it opens a held-back branch's PR by hand
+#: (GRPH-1929). The Merger watches that PR as it watches a gbfleet one.
+_PLANNER_PR = {"kind": "url", "detail": "draft PR opened by planner for gb/line-408",
+               "url": "https://github.com/o/r/pull/2253"}
+
+
+def test_a_done_item_whose_planner_opened_pr_conflicts_can_be_bounced(client, auth, db):
+    """GRPH-1929. A planner opened the PR after declaring touchpoints, the item was signed
+    off, and a base change conflicted with it. The Merger tries to merge that PR. The gate
+    must agree a merge is pending and let the conflict send the item back.
+    Sabotage: match only `PR_RECEIPT_PREFIX` in `merger_holds` and this raises
+    NotInReview "opened no PR"."""
+    item_id = _done(db, client, auth, evidence=[_PLANNER_PR])
+
+    item = fleet_svc.bounce(db, item_id=item_id, agent_id="CORE-A73",
+                            reason="conflicts with the base in backend/app/services/prds.py")
+
+    assert item.status == "next"
+    assert item.bounce_pinned_to == "CORE-A71"
+
+
+def test_the_incident_planner_receipt_wording_is_recognised(client, auth, db):
+    """The row GRPH-1910 carried: the canonical head followed by an explanation."""
+    item_id = _done(db, client, auth, evidence=[{
+        "kind": "url", "url": "https://github.com/o/r/pull/2253",
+        "detail": "draft PR opened by planner for gb/line-408 after declaring its touchpoints"}])
+
+    assert fleet_svc.bounce(db, item_id=item_id, agent_id="CORE-A73",
+                            reason="conflict").status == "next"
+
+
+def test_a_planner_pr_whose_merge_landed_is_not_bounced(client, auth, db):
+    item_id = _done(db, client, auth, evidence=[_PLANNER_PR, {
+        "kind": "url", "detail": "merged by gbfleet: squash of #2253 landed as abcdef123456",
+        "url": "https://github.com/o/r/pull/2253", "commit": "abcdef1234567890"}])
+
+    with pytest.raises(fleet_svc.NotInReview, match="merge has landed"):
+        fleet_svc.bounce(db, item_id=item_id, agent_id="CORE-A73", reason="too late")
+
+
+def test_the_refusal_names_the_receipts_it_looked_for(client, auth, db):
+    """A PR link recorded in other words is not a pending merge. The refusal says what
+    would have been, so whoever recorded it can write the canonical row."""
+    item_id = _done(db, client, auth, evidence=[{
+        "kind": "url", "url": "https://github.com/o/r/pull/7", "detail": "the PR"}])
+
+    with pytest.raises(fleet_svc.NotInReview) as exc:
+        fleet_svc.bounce(db, item_id=item_id, agent_id="CORE-A73", reason="reopen it")
+    text = str(exc.value)
+    assert "opened no PR" in text
+    assert '"draft PR opened by gbfleet for <branch>"' in text
+    assert '"draft PR opened by planner for <branch>"' in text
+
+
 def test_work_in_progress_is_still_not_bounceable(client, auth, db):
     from app.models import Item
 

@@ -3916,6 +3916,12 @@ def _should_leave_done(got: "propose_mod.Merged") -> bool:
     return any(marker in reason for marker in _LEAVE_DONE_MARKERS)
 
 
+#: The words of the server's refusal when a `done` item carries no pending-PR receipt
+#: (backend/app/services/fleet.py `_require_bounceable`). That refusal is final for the
+#: item as recorded, unlike a transient one, so the Merger blocks rather than re-asks.
+NO_MERGE_PENDING = "no merge is pending"
+
+
 @dataclass
 class Merger:
     """Finishes the merge for items that reach `done` (GRPH-846, GRPH-880). Off unless asked.
@@ -4306,6 +4312,14 @@ class Merger:
             self.client.call("bounce", id=item_id, reason=got.reason, agent_id=self.agent_id)
             self.watching.pop(item_id, None)
         except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
+            if isinstance(exc, ToolFailed) and NO_MERGE_PENDING in str(exc):
+                # GRPH-1929. The server's gate found no pending-PR receipt it recognises
+                # (the PR was recorded with other wording). That answer does not change on
+                # the next tick, so asking again logs the same FAILED line every cycle while
+                # the ledger says `done` for work that is not on the base. Block the item
+                # with the reason, as `_leave_done` does, and stop watching it.
+                self._block(wave, item_id, got.reason, exc)
+                return
             wave.failures.append(f"{item_id}: {got.reason} (could not bounce: {exc})")
             return
         # GRPH-1577. `bounce` stores `bounce_reason` and sets `next`. That field is not
@@ -4320,6 +4334,21 @@ class Merger:
         except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
             wave.failures.append(
                 f"{item_id}: reopened to next but the note was not recorded ({exc})")
+
+    def _block(self, wave: Wave, item_id: str, reason: str, refused: Exception) -> None:
+        """Block a `done` item the server will not bounce (GRPH-1929). Reported once."""
+        try:
+            self.client.call("update_item", id=item_id, status="blocked", blocker=reason,
+                             evidence=[{
+                                 "kind": "note",
+                                 "detail": f"gbfleet: blocked, merge did not land — {reason}",
+                             }])
+        except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
+            wave.failures.append(
+                f"{item_id}: {reason} (could not bounce: {refused}; could not block: {exc})")
+            return
+        self.watching.pop(item_id, None)
+        wave.failures.append(f"{item_id}: {reason} (bounce refused, blocked instead: {refused})")
 
     def _covering(self, item_id: str, item: dict) -> list[str]:
         """Touchpoints of the OTHER done items on this item's branch whose sign-off names the
