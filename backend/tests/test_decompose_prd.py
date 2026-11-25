@@ -1025,6 +1025,84 @@ _P92_GRAPH = [
      "summary": "Generated-file markers."},
     {"path": ".github/workflows/ci.yml", "kind": "config", "name": "ci.yml",
      "summary": "The CI workflows."},
+    # GRPH-1937: the files whose entries MENTION the rule ids P92 names, and what they
+    # import. Summaries and edges live at revision 47f3f7b0 (2026-11-25). Each mention is a
+    # test or a consumer; the ids are defined in `rule_toggles.py`, whose entry names none.
+    {"path": "backend/tests/test_done_predicates_rule.py", "kind": "file",
+     "name": "test_done_predicates_rule.py",
+     "summary": "GRPH-1426: the `merge.done_predicates` rule — per-project predicates `done` "
+                "requires."},  # live
+    {"path": "backend/tests/test_exclusive_areas_rule.py", "kind": "file",
+     "name": "test_exclusive_areas_rule.py",
+     "summary": "GRPH-1423: the `plan.exclusive_areas` rule — which file areas are exclusive, "
+                "per project."},  # live
+    {"path": "backend/tests/test_rule_distinct_vendor.py", "kind": "file",
+     "name": "test_rule_distinct_vendor.py",
+     "summary": "PRD-P63 §6 primitive 2/7 (GRPH-1269): `review.distinct_vendor`, the "
+                "`reviewer_property` primitive bound to a library rule."},  # live
+    {"path": "fleet/src/gbfleet/supervisor.py", "kind": "file", "name": "supervisor",
+     "summary": "The fleet supervisor. _generated_rule returns the configured "
+                "build.generated_files paths, whether the rule is observing, and why it was "
+                "not read. The undeclared-file hold still applies the built-in list while "
+                "the rule is observing."},  # live
+    {"path": "fleet/tests/test_generated_files_rule.py", "kind": "file",
+     "name": "test_generated_files_rule.py",
+     "summary": "The undeclared-file hold and check-touchpoints agree on "
+                "build.generated_files."},  # live (first sentence)
+    {"path": "backend/app/services/rules.py", "kind": "file", "name": "rules",
+     "summary": "The refusal rule registry. review.dependencies_done is the sign-off refusal "
+                "for an open dependency link."},  # live
+    {"path": "backend/app/services/rule_pack.py", "kind": "file", "name": "rule_pack.py",
+     "summary": "Signed rule packs."},
+    {"path": "backend/app/services/items.py", "kind": "file", "name": "items.py",
+     "summary": "Items."},
+    {"path": "backend/app/services/fleet.py", "kind": "file", "name": "fleet.py",
+     "summary": "The fleet."},
+    {"path": "backend/app/db.py", "kind": "file", "name": "db.py", "summary": "Sessions."},
+    {"path": "backend/app/config.py", "kind": "file", "name": "config.py",
+     "summary": "Settings."},
+    {"path": "backend/app/models/__init__.py", "kind": "file", "name": "__init__.py",
+     "summary": "The ORM models."},
+    {"path": "backend/app/routers/rules.py", "kind": "file", "name": "rules.py",
+     "summary": "The rules routes."},
+    {"path": "fleet/src/gbfleet/touchpoints.py", "kind": "file", "name": "touchpoints",
+     "summary": "Touchpoint matching."},
+    {"path": "fleet/src/gbfleet/cli.py", "kind": "file", "name": "cli",
+     "summary": "The gbfleet command line."},
+]
+
+# Live at 47f3f7b0: each mention's own imports, and the registry building on the toggles.
+_P92_EDGES = [
+    *({"src": "backend/tests/test_done_predicates_rule.py", "dst": d, "type": "imports"}
+      for d in ("backend/app/config.py", "backend/app/db.py", "backend/app/services/__init__.py",
+                "backend/app/services/items.py", "backend/app/services/rule_toggles.py",
+                "backend/app/services/rules.py")),
+    *({"src": "backend/tests/test_rule_engine_evidence.py", "dst": d, "type": "imports"}
+      for d in ("backend/app/models/__init__.py", "backend/app/services/items.py",
+                "backend/app/services/rule_pack.py", "backend/app/services/rule_toggles.py",
+                "backend/app/services/rules.py")),
+    *({"src": "backend/tests/test_exclusive_areas_rule.py", "dst": d, "type": "imports"}
+      for d in ("backend/app/db.py", "backend/app/services/fleet.py",
+                "backend/app/services/rule_toggles.py", "backend/app/services/rules.py")),
+    *({"src": "backend/tests/test_rule_distinct_vendor.py", "dst": d, "type": "imports"}
+      for d in ("backend/app/models/__init__.py", "backend/app/services/fleet.py",
+                "backend/app/services/rule_pack.py", "backend/app/services/rule_toggles.py",
+                "backend/app/services/rules.py")),
+    *({"src": "fleet/tests/test_generated_files_rule.py", "dst": d, "type": "imports"}
+      for d in ("fleet/src/gbfleet/supervisor.py", "fleet/src/gbfleet/touchpoints.py",
+                "fleet/src/gbfleet/cli.py")),
+    {"src": "fleet/src/gbfleet/supervisor.py", "dst": "fleet/tests/test_generated_files_rule.py",
+     "type": "tested_by"},
+    {"src": "fleet/src/gbfleet/supervisor.py", "dst": "fleet/src/gbfleet/touchpoints.py",
+     "type": "imports"},
+    *({"src": "backend/app/services/rules.py", "dst": d, "type": "imports"}
+      for d in ("backend/app/services/items.py", "backend/app/services/rule_toggles.py")),
+    *({"src": "backend/app/services/rule_toggles.py", "dst": d, "type": "imports"}
+      for d in ("backend/app/config.py", "backend/app/services/rule_pack.py")),
+    *({"src": "backend/app/services/rule_pack.py", "dst": d, "type": "imports"}
+      for d in ("backend/app/services/rule_toggles.py", "backend/app/services/rules.py")),
+    {"src": "backend/app/services/items.py", "dst": "backend/app/services/rule_toggles.py",
+     "type": "imports"},
 ]
 
 _P92_READ_ONLY = ("AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", ".gitattributes",
@@ -1043,13 +1121,13 @@ def _quiet_semantic(monkeypatch):
     monkeypatch.setattr("app.services.code_graph.search_code", lambda *a, **k: [])
 
 
-def _describe(pid, nodes):
+def _describe(pid, nodes, edges=None):
     from app.db import SessionLocal
     from app.services import code_graph
 
     db = SessionLocal()
     try:
-        code_graph.describe_code(db, project_id=pid, nodes=nodes)
+        code_graph.describe_code(db, project_id=pid, nodes=nodes, edges=edges or [])
     finally:
         db.close()
 
@@ -1067,6 +1145,11 @@ def _project_of(prd_id):
 def _ns(path, kind="file", name="", summary=""):
     """A code-graph node, the shape `list_nodes` hands `propose_touchpoints`."""
     return SimpleNamespace(path=path, kind=kind, name=name, summary=summary)
+
+
+def _es(src, dst, type_="imports"):
+    """A code-graph edge, the shape `list_edges` hands `propose_touchpoints`."""
+    return SimpleNamespace(src=src, dst=dst, type=type_)
 
 
 def test_p92_real_body_files_a_touchpoint_for_every_section(client, auth, monkeypatch):
@@ -1087,7 +1170,7 @@ def test_p92_real_body_files_a_touchpoint_for_every_section(client, auth, monkey
 
     prd = client.post("/api/prds", json={"title": "P92 real", "body": _P92_BODY},
                       headers=auth).json()
-    _describe(_project_of(prd["id"]), _P92_GRAPH)
+    _describe(_project_of(prd["id"]), _P92_GRAPH, _P92_EDGES)
     dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
     by = {p["section"]: p for p in dry["proposals"]}
     assert set(by) == {_D1, _D2, _D3, _D4, _D5}
@@ -1117,10 +1200,13 @@ def test_p92_real_body_files_a_touchpoint_for_every_section(client, auth, monkey
     assert "create" in created["evidence"] and "cli/src/gban" in created["evidence"]
     assert "cli/src/gban/rules.py" in by[_D5]["touchpoints"]
 
-    # A rule id resolves through the graph too, with the id in its evidence.
+    # A rule id resolves through the graph too, with the id in its evidence — to the file
+    # its mentions depend on, not to the test that mentions it (GRPH-1937).
     d2 = {e["path"]: e for e in by[_D2]["touchpoint_evidence"]}
-    assert any("build.engine_evidence" in e["evidence"] and "code graph's entry" in e["evidence"]
-               for e in d2.values()), d2
+    toggles = d2["backend/app/services/rule_toggles.py"]
+    assert any(f"`{rule_id}`" in toggles["evidence"] for rule_id in (
+        "build.engine_evidence", "merge.done_predicates", "plan.exclusive_areas")), toggles
+    assert "code graph's entry" in toggles["evidence"], toggles
 
     # D3 names no path and nothing backticked: the page it draws the report on places it.
     d3 = {e["path"]: e for e in by[_D3]["touchpoint_evidence"]}
@@ -1177,14 +1263,17 @@ def test_a_backticked_name_resolves_to_the_file_that_defines_it():
     # summary: dropping the symbol lookup has to be visible in what the evidence says.
     assert "a symbol this file defines" in out[0][2]
 
-    # A rule id the graph describes in a module and in its test lands on the module — and
-    # the test's path is the SHORTER of the two, so this is the ranking deciding, not length.
+    # A rule id the graph describes in a module and in its test lands on the module the
+    # test imports — and the test's path is the SHORTER of the two, so this is the edge
+    # deciding, not length.
     ranked = prd_svc._resolve_named_things([
         _ns("backend/tests/test_engine_evidence.py", name="test_engine_evidence.py",
             summary="`build.engine_evidence` refusals."),
         _ns("backend/app/services/rule_engine_evidence.py", name="rule_engine_evidence.py",
             summary="Item moves, including the `build.engine_evidence` gate."),
-    ], "A tighter `build.engine_evidence` for `db/`.")
+    ], "A tighter `build.engine_evidence` for `db/`.", [
+        _es("backend/tests/test_engine_evidence.py",
+            "backend/app/services/rule_engine_evidence.py")])
     assert [path for _o, path, _e, _c in ranked] == [
         "backend/app/services/rule_engine_evidence.py"]
     assert "code graph's entry" in ranked[0][2]
@@ -1351,3 +1440,92 @@ def test_a_backticked_container_name_yields_to_a_file_named_under_it(client, aut
         "The drain reports through `app`.\n\n## Acceptance\n- it reports\n",
         "Container alone", "Drain")
     assert alone["touchpoints"] == ["backend/app"]
+
+
+# ── GRPH-1937: a mention is not a definition, and a record needs a backend home ─────────
+
+
+def _p92_dry(client, auth, monkeypatch):
+    _quiet_semantic(monkeypatch)
+    prd = client.post("/api/prds", json={"title": "P92 real", "body": _P92_BODY},
+                      headers=auth).json()
+    _describe(_project_of(prd["id"]), _P92_GRAPH, _P92_EDGES)
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    return {p["section"]: p for p in dry["proposals"]}
+
+
+def _all_paths(proposal):
+    paths = set(proposal["touchpoints"]) | {e["path"] for e in proposal["touchpoint_evidence"]}
+    for sub in proposal.get("sub_items") or []:
+        paths |= set(sub["touchpoints"])
+    return paths
+
+
+def test_a_rule_id_resolves_to_the_file_that_defines_it_not_a_test_that_mentions_it():
+    """`merge.done_predicates` is named only by its test's entry; the test imports the toggles.
+
+    The control is the same graph read as mentions: every one of these ids came back as the
+    `test_*_rule.py` naming it before this item. `rules.py` is imported by the same tests and
+    shares the word `rule`, so the tie is broken by `rules.py` importing `rule_toggles.py`.
+    """
+    nodes = [_ns(n["path"], n["kind"], n["name"], n["summary"]) for n in _P92_GRAPH]
+    edges = [_es(e["src"], e["dst"], e["type"]) for e in _P92_EDGES]
+    for token in ("build.engine_evidence", "merge.done_predicates", "plan.exclusive_areas",
+                  "reviewer_property"):
+        out = prd_svc._resolve_named_things(nodes, f"A tighter `{token}`.", edges)
+        assert [(path, create) for _o, path, _e, create in out] == [
+            ("backend/app/services/rule_toggles.py", False)], (token, out)
+        assert token in out[0][2] and "code graph's entry" in out[0][2]
+
+    # A consumer that mentions an id, and a test that tests that consumer, place nothing:
+    # neither the supervisor nor any file it is tested by shares a word with the rule.
+    assert prd_svc._resolve_named_things(nodes, "Tighten `build.generated_files`.", edges) == []
+    # And with no edges at all a mention is only a mention.
+    assert prd_svc._resolve_named_things(nodes, "A tighter `merge.done_predicates`.") == []
+
+
+def test_p92_proposes_no_rule_test_and_no_supervisor(client, auth, monkeypatch):
+    """On P92's real body no proposal lists a `backend/tests/test_*_rule.py` or the supervisor."""
+    by = _p92_dry(client, auth, monkeypatch)
+    for section, proposal in by.items():
+        paths = _all_paths(proposal)
+        assert "fleet/src/gbfleet/supervisor.py" not in paths, section
+        assert not [p for p in paths if p.startswith("backend/tests/")], (section, paths)
+    d1 = {e["path"]: e for e in by[_D1]["touchpoint_evidence"]}
+    assert "backend/app/services/rule_toggles.py" in d1, sorted(d1)
+
+
+def test_a_section_that_defines_a_record_gets_its_backend_home(client, auth, monkeypatch):
+    """P92's D3 opens "**An import run is a record:**" and used to get only the Rules page.
+
+    Its builder adds a model, a migration, a service and a route; each is a create beside the
+    graph's own, so the touchpoint gate lets the work through. The control is D4, which
+    defines no record and gets none of them.
+    """
+    by = _p92_dry(client, auth, monkeypatch)
+    d3 = {e["path"]: e for e in by[_D3]["touchpoint_evidence"]}
+    assert "web/src/features/rules/" in d3
+    for path in ("backend/app/services/import_runs.py", "backend/app/models/",
+                 "backend/alembic/versions/", "backend/app/routers/"):
+        assert path in d3, (path, sorted(d3))
+        assert d3[path]["create"] is True, d3[path]
+        assert "is a record" in d3[path]["evidence"], d3[path]
+        assert path in by[_D3]["touchpoints"]
+    d4 = {e["path"] for e in by[_D4]["touchpoint_evidence"]}
+    assert not d4 & {"backend/app/models/", "backend/alembic/versions/",
+                     "backend/app/routers/"}, sorted(d4)
+
+
+def test_record_homes_need_a_record_and_a_services_directory():
+    nodes = [_ns("backend/app/services/items.py"), _ns("backend/app/models/__init__.py"),
+             _ns("backend/alembic/versions/0001_init.py"), _ns("ml/models/a.py"),
+             _ns("ml/models/b.py"), _ns("web/src/models/x.ts")]
+    homes = prd_svc._record_homes(nodes, "**A bench run is a record:** vendor, model.")
+    assert [(p, c) for p, _e, c in homes] == [
+        ("backend/app/services/bench_runs.py", True),
+        # Nearest the services, not the denser `ml/models`, and never `web/`.
+        ("backend/app/models/", True),
+        ("backend/alembic/versions/", True)]
+    assert prd_svc._record_homes(nodes, "A bench run reads its records.") == []
+    assert prd_svc._record_homes([_ns("web/src/services/a.ts")],
+                                 "An import run is a record.") == []
