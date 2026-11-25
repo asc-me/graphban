@@ -151,6 +151,13 @@ DONE_PREDICATES_RULE = "merge.done_predicates"
 CI_FLOOR_PREDICATE = "suite_green"
 
 
+#: GRPH-1940: whether `done` needs an independent `fleet.sign_off` at the item's head. On means
+#: required. A box whose pack carries no template for it reads ON: the open path to `done` that
+#: a planner key with no fleet on it once had was not a rule anyone adopted. A person turns it
+#: off (project or org), or applies a profile that pins it off (`exploratory`).
+SIGN_OFF_BEFORE_DONE_RULE = "review.sign_off_before_done"
+
+
 def _choices(rule_id: str, param: str) -> tuple[str, ...] | None:
     if rule_id == MEMORY_WRITE_MODE_RULE and param == "mode":
         from app.services import memory  # memory imports this module lazily; keep it symmetric
@@ -469,6 +476,15 @@ def done_predicate_names(db: Session, project_id: str | None) -> list[str]:
     additions. `suite_green` for a linked PR is the cooldown's own gate, not repeated here."""
     return [p["name"] for p in done_predicate_list(db, project_id, enforced=True)
             if "when" not in p]
+
+
+def sign_off_before_done(db: Session, project_id: str | None) -> bool:
+    """Does `done` need an independent sign-off in this project (GRPH-1940)? Read like the
+    other `review.*` rules: the layered `resolve`, project -> org -> platform default. Absent
+    from the loaded pack, or no project to read it for, reads True — refuse is the default."""
+    if SIGN_OFF_BEFORE_DONE_RULE not in LIBRARY or not project_id:
+        return True
+    return bool(resolve(db, SIGN_OFF_BEFORE_DONE_RULE, project_id)["on"]["value"])
 
 
 def effective(db: Session, project_id: str | None) -> list[dict]:

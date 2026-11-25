@@ -1848,6 +1848,36 @@ def refuse_if_predicates_missing(db, item, merged, head) -> None:
         )
 
 
+#: The adapter `fleet.sign_off` writes its receipt under.
+SIGN_OFF_ADAPTER = "fleet.sign_off"
+
+
+def signed_off_at(evidence, head: str | None) -> bool:
+    """A passing `fleet.sign_off` receipt bound to `head` (any commit when no head is known)."""
+    return any(a.get("adapter") == SIGN_OFF_ADAPTER
+               for a in valid_attestations(evidence, commit=head or None))
+
+
+def refuse_if_unreviewed(db, item, merged, head) -> None:
+    """Raise MissingAttestation when `done` has no independent sign-off at `head` and the
+    project's `review.sign_off_before_done` rule is on (GRPH-1940; on unless a person turned it
+    off). The message names the rule and the way to loosen it — a recommendation an agent can
+    relay, not a switch it can flip: agents only tighten (GRPH-P91)."""
+    from app.services import rule_toggles
+    if signed_off_at(merged, head):
+        return
+    if not rule_toggles.sign_off_before_done(db, item.project_id):
+        return
+    rule = rule_toggles.SIGN_OFF_BEFORE_DONE_RULE
+    detail = f"no independent sign-off ({rule} is on)."
+    record_refusal(db, item, predicate="sign_off_missing", detail=detail)
+    raise MissingAttestation(
+        f"{item.key} cannot move to done: {detail} A reviewer signs it off, or a person "
+        "closes it with owner-close; to allow done without review, a person can switch this "
+        "project to the exploratory level on the Rules page."
+    )
+
+
 def ci_run_in_progress(evidence, commits) -> dict | None:
     """GRPH-1416. The newest CI run announced as started at one of `commits` and not answered since.
 
@@ -2344,7 +2374,7 @@ def owner_close(db: Session, item_id: str, *, closer: dict, commit: str,
     if url and not verified and not (item.github_url or "").strip():
         item.github_url = url
     db.flush()
-    out = update_item(db, item.id, defer=defer, status="done")
+    out = update_item(db, item.id, defer=defer, status="done", closed_by_owner=True)
     if out is None:
         return None
     from app.services import delegation as delegation_svc
@@ -2396,7 +2426,7 @@ def _check_fix_transition(db: Session, item: Item, fields: dict) -> None:
 
 
 def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None = None,
-                **fields) -> Item | None:
+                *, closed_by_owner: bool = False, **fields) -> Item | None:
     """Patch fields or advance status.
 
     `submitted_by` is who is making THIS call — an agent id, or `key:<name>` for a bare
@@ -2573,6 +2603,13 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         # run, because "attestation_missing" would send them looking for an adapter that is
         # already working.
         refuse_if_predicates_missing(db, item, merged_for_gate, head)
+        # THE REVIEW (GRPH-1940). Attested is not reviewed: a planner key with no fleet on it
+        # took an item from `review` to `done` with nobody signing it off, while the same call
+        # on a fleet key was refused — so whether review was skipped depended on the key, not
+        # on a rule the project adopted. `owner_close` passes `closed_by_owner`; a resolution
+        # close and `fleet.sign_off` never reach this line.
+        if not closed_by_owner:
+            refuse_if_unreviewed(db, item, merged_for_gate, head)
         # THE PR COOLDOWN (GRPH-567, PRD-26). Shared with `fleet.sign_off` — that path
         # used to write `done` directly and skip this, which is the reviewer CALL the
         # bounce found. Incoming evidence is read as well as the stored stamp so linking

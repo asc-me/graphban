@@ -167,6 +167,24 @@ re-checked. A predicate that did not run is not a pass, and it must be attested 
 - **Audit:** `GET /api/rules/toggles` returns `effective_predicates` for this rule — each name
   with its source (`deployment` or `project`). The rule history records who set the list and why.
 
+## `review.sign_off_before_done` — `done` needs an independent sign-off (GRPH-1940)
+
+Stage Review, enforced in `items.update_item`. On means `update_item` (MCP or REST `PATCH`) to
+`done` is refused `409` / `conflict` unless the item carries a passing `fleet.sign_off` receipt
+at its head — however many done predicates are attested, and whichever key calls. Attested is
+not reviewed: before this rule a planner key with no fleet on it could close an item nobody
+reviewed, while the same call on a fleet key was refused.
+
+- **Default: on.** A project that never set it is refused, and a box whose pack carries no
+  template for the rule reads it as on.
+- **Always open:** `sign_off` itself, `owner-close` by a person (`POST /api/items/{id}/owner-close`,
+  verified or hand-merged), a `resolution` close (duplicate / superseded), and a typed wait
+  cleared by the operator.
+- **Loosening it is a person's act.** The refusal names the rule and recommends it: "a person
+  can switch this project to the exploratory level on the Rules page". An agent can relay that
+  recommendation; it cannot flip the switch (agents only tighten, GRPH-P91). A person turns it
+  off per project or org, or applies a strictness profile that pins it off (`exploratory`).
+
 ## `gitops.merge_method` — how the supervisor merges (GRPH-1428)
 
 `squash` (default when unset), `merge` or `rebase`. Set it on the gitops PATCH like the other
