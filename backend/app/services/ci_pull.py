@@ -114,20 +114,28 @@ def last_error() -> str | None:
     return row.body
 
 
-def refusal_clause(commits: list[str], db: Session | None = None) -> str:
+def refusal_clause(commits: list[str], db: Session | None = None, *,
+                   item=None, evidence=None) -> str:
     """What the done gate should add when this loop has looked at `commits` and
     written no `suite_green`. Empty when it has not looked — the old sentence
     stays the whole refusal.
 
     An empty `commits` is the item that recorded no head at all, which is the
     item the loop had to find one for; what it could not find is the reason that
-    refusal has no attestation (GRPH-1925).
+    refusal has no attestation (GRPH-1925). Only the notes for pull requests
+    `item` itself carries (its recorded PR, and PR urls in its evidence or in
+    `evidence`, the receipts arriving with the call) answer it: a note for some
+    other item's PR is not this refusal's reason, and an item that carries no PR
+    gets no clause at all (GRPH-1944).
 
     `db` is the caller's session. The note was committed by the leader, so any
     worker's session sees it; reading on the caller's connection is what keeps
     a SQLite write transaction from locking the lookup out.
     """
     wanted = [(c or "").strip() for c in commits if (c or "").strip()]
+    pulls = set() if wanted else _carried_pull_keys(item, evidence)
+    if not wanted and not pulls:
+        return ""
     own = db is None
     if own:
         from app.db import SessionLocal
@@ -142,17 +150,32 @@ def refusal_clause(commits: list[str], db: Session | None = None) -> str:
         if own and db is not None:
             db.close()
     if not wanted:
-        # No head to match a row against, so the rows keyed by pull request are
-        # the only answer this caller can get. Each names the PR it was looking
-        # for, so a reader can tell one that is not theirs.
+        # No head to match a row against, so the rows keyed by this item's own
+        # pull requests are the only answer this caller can get.
         return "; ".join(dict.fromkeys(
-            row.body for row in rows
-            if row.key.startswith(PULL_KEY_PREFIX) and row.body))
+            row.body for row in rows if row.key in pulls and row.body))
     for row in rows:
         sha = row.key.rsplit("@", 1)[-1]
         if any(items_svc.same_commit(sha, c) for c in wanted):
             return row.body
     return ""
+
+
+def _carried_pull_keys(item, evidence=None) -> set[str]:
+    """The `_pull_key`s of every GitHub PR `item` carries: its recorded PR and
+    the PR urls in its evidence, plus those in `evidence` (incoming receipts)."""
+    urls: list[str] = []
+    if item is not None:
+        urls.append(items_svc.recorded_pr_url(item) or "")
+        urls.extend(str(e.get("url") or "") for e in (item.evidence or [])
+                    if isinstance(e, dict))
+    urls.extend(str(e.get("url") or "") for e in (evidence or []) if isinstance(e, dict))
+    keys = set()
+    for url in urls:
+        match = _GH_PR.search(url)
+        if match:
+            keys.add(_pull_key(match.group(1), match.group(2), match.group(3)))
+    return keys
 
 
 def reset_state() -> None:
