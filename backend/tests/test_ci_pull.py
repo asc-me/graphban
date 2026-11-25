@@ -964,6 +964,47 @@ def test_a_headless_pr_with_no_token_is_told_the_token_is_missing(db, client, mo
     assert error in str(exc.value)
 
 
+def _seed_pull_note(db, owner, repo, number, body):
+    from app.models import CiPullNote
+    db.add(CiPullNote(key=ci_pull._pull_key(owner, repo, number), body=body,
+                      updated_at=utcnow()))
+    db.commit()
+
+
+def test_a_headless_refusal_names_only_its_own_pull_requests_note(db):
+    """GRPH-1944: other items' PR notes on the box are not this refusal's reason."""
+    item = _headless(db)
+    _seed_pull_note(db, "asc-me", "super-arc", "1053",
+                    "GitHub answered 403 on GET /pulls/1053 for asc-me/super-arc/pull/1053")
+    _seed_pull_note(db, "asc-me", "republiq", "731",
+                    "GitHub answered 403 on GET /pulls/731 for asc-me/republiq/pull/731")
+    _seed_pull_note(db, "asc-me", "p74-walk", "1",
+                    f"{ci_pull.HEAD_NOT_FOUND}: own note for {PULL_URL}")
+    assert ci_pull.refusal_clause([], db, item=item) == (
+        f"{ci_pull.HEAD_NOT_FOUND}: own note for {PULL_URL}")
+    with pytest.raises(items_svc.MissingAttestation) as exc:
+        items_svc.update_item(db, item.id, status="done")
+    text = str(exc.value)
+    assert f"own note for {PULL_URL}" in text
+    assert "super-arc" not in text and "republiq" not in text
+
+
+def test_an_item_with_no_pr_and_no_head_gets_no_ci_pull_clause(db):
+    item = items_svc.create_item(db, project_id="core", title="no pr", status="review")
+    _seed_pull_note(db, "asc-me", "super-arc", "1053",
+                    f"{ci_pull.HEAD_NOT_FOUND}: asc-me/super-arc/pull/1053")
+    _seed_pull_note(db, "asc-me", "graphban-control", "319",
+                    f"{ci_pull.HEAD_NOT_FOUND}: asc-me/graphban-control/pull/319")
+    assert ci_pull.refusal_clause([], db, item=item) == ""
+    assert ci_pull.refusal_clause([], db) == ""
+    with pytest.raises(items_svc.MissingAttestation) as exc:
+        items_svc.update_item(db, item.id, status="done")
+    text = str(exc.value)
+    assert "nothing has attested it." in text
+    assert ci_pull.HEAD_NOT_FOUND not in text
+    assert "pull/1053" not in text and "pull/319" not in text
+
+
 def test_the_head_lookup_and_its_optional_permission_are_documented():
     flat = " ".join((ROOT / "docs" / "ci-runners.md").read_text().split())
     assert "never told is polled all the same" in flat
