@@ -144,3 +144,80 @@ def test_a_reservation_hold_is_left_as_sent(events):
     server = _Server(status="next", reviewer="")
     sent = {"clusters": [{"items": ["X"], "held_by": ["GRPH-A2"], "free_in": 30}]}
     assert until._lift_stale_review_holds(server, sent) is sent
+
+
+# --- GRPH-1947: the freed cluster gets back the siblings the hold stripped -----------------
+#
+# `collision.py` writes `holds` (the reviewer's touch-areas) AND `held` (the sibling item keys
+# the hold took out of the cluster). Only `held` restores those siblings. The fake server
+# above emits only `holds` on a one-item cluster, so the restoration never ran under test.
+#
+# Sabotage: in `_lift_stale_review_holds`, iterate `[h.get("by")]` instead of
+# `[h.get("by"), *(h.get("held") or [])]` (restore only the holder's own key) → both tests
+# below fail: the siblings are missing from `items` and nothing is delegated.
+
+RUNNING = "GRPH-1900"   # left in the cluster by the server; in progress, not a seed
+SIBLING = "GRPH-1901"   # stripped by the hold; ready
+SIBLING2 = "GRPH-1902"  # stripped by the hold; ready
+
+
+class _HeldServer:
+    """A two-item cluster held by a review whose `held` names the siblings it stripped.
+    The holder has since left review (signed off), so the hold is gone."""
+
+    STATUS = {HOLDER: "done", RUNNING: "in_progress", SIBLING: "next", SIBLING2: "next"}
+
+    def __init__(self, items=(RUNNING, SIBLING2)):
+        self.items = list(items)
+        self.delegated: list[str] = []
+
+    def call(self, tool, **kw):
+        if tool == "collision_clusters":
+            return {"clusters": [{
+                "items": list(self.items),
+                "held_by": ["review"],
+                "free_in": 240,
+                "held_because": [{
+                    "reserved": "review", "by": HOLDER,
+                    "holds": ["fleet/src/gbfleet/until.py"],
+                    # By default SIBLING2 is already in `items`: restored once, not twice.
+                    "held": [SIBLING, SIBLING2],
+                    "live_holder": None, "lapse": "age", "lapses_in": None,
+                }],
+            }], "total": 1}
+        if tool == "get_item_details":
+            status = self.STATUS[kw["id"]]
+            return {"id": kw["id"], "status": status, "brief": _brief(),
+                    "blocker": "", "review_claimed_by": "", "claimed_by": "",
+                    "touchpoints": [f"fleet/{kw['id']}.py"]}
+        if tool == "related_work":
+            return {"results": []}
+        if tool == "delegate":
+            self.delegated.append(kw["id"])
+            return {"enrolment_code": "WORKER-X", "bound_only": True}
+        if tool == "fleet_status":
+            return {"agents": []}
+        raise AssertionError(tool)
+
+
+def test_a_freed_cluster_restores_the_siblings_its_review_hold_stripped(events):
+    server = _HeldServer()
+
+    got = until._lift_stale_review_holds(server, server.call("collision_clusters"))
+
+    (freed,) = got["clusters"]
+    assert "held_by" not in freed and "free_in" not in freed
+    assert freed["items"] == [RUNNING, SIBLING2, HOLDER, SIBLING]
+    assert freed["held_because"] == []
+
+
+def test_delegate_next_seeds_the_freed_cluster_from_a_restored_sibling(tmp_path, events):
+    """The siblings are what make the freed cluster buildable: the server's own member is in
+    progress and the holder is done, so without `held` there is nothing to seed."""
+    server = _HeldServer(items=[RUNNING])
+
+    seed, _code, _want = until._delegate_next(
+        server, "GRPH-A1", "w", set(), None, repo=tmp_path, base="", bound_out={})
+
+    assert seed in (SIBLING, SIBLING2)
+    assert server.delegated and server.delegated[0] == seed
