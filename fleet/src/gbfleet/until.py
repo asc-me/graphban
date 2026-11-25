@@ -1901,10 +1901,17 @@ def notify_outcome(planner: Graphban, wave: Wave, reason: str, prd: str, *,
     except (NotPermitted, ToolFailed, ServerUnreachable, ObservationRefused) as exc:
         observe.emit("drain_notice_failed", detail=str(exc))
         return None
-    if not got.get("changed") or found.state == outcome_mod.WORKING:
+    if not got.get("changed"):
         return None
     notice = {"prd": prd, "outcome": found.state, "open": open_items,
               "sent_at": datetime.now(timezone.utc).isoformat()}
+    drain = service_drain(prd)
+    if drain is not None:
+        from . import service as service_mod
+
+        service_mod.record_notice(drain["service"], notice)  # `working` too: it supersedes
+    if found.state == outcome_mod.WORKING:
+        return None
     if on_notice is not None:
         try:
             on_notice(notice)
