@@ -1904,7 +1904,8 @@ def _prd_open_items(planner: Graphban, prd: str, holds: list[dict] | None = None
             id=item_id, status=status,
             walk=bool(tags & {"walk", "planner-only"}),
             ready=ready,
-            live=bool(row.get("claimed_by") or row.get("review_claimed_by"))))
+            live=bool(row.get("claimed_by") or row.get("review_claimed_by")),
+            blocker=str(row.get("blocker") or "")))
     return items
 
 

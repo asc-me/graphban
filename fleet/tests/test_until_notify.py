@@ -232,3 +232,15 @@ def test_an_item_whose_dependencies_are_done_stays_working():
     s.items = [_item("B", "next")]
     _cycle(s, [])
     assert s.notices == []
+
+
+def test_a_stall_notice_carries_the_blocked_items_blocker():
+    # GRPH-1945. The reason posted names what a person must do, from the row's blocker.
+    s, hooks = FakeServer(), []
+    s.items = [_item("A", "blocked", blocker="Needs a person: read-only check on staging")]
+    _cycle(s, hooks)
+    assert len(s.notices) == 1
+    outcome, open_items = s.notices[0]
+    assert outcome == "stalled"
+    assert open_items == (("A", "not ready: blocked: Needs a person: read-only check on staging"),)
+    assert "Needs a person" in hooks[0]["open"][0]["reason"]

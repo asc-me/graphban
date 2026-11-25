@@ -1386,3 +1386,42 @@ def test_a_merge_of_a_repo_with_no_versions_directory_records_heads_none(gh, git
     assert got.ok and got.commit == MERGE_OID
     assert "alembic-heads=none" in got.checked
     assert "alembic-heads=1" not in got.checked
+
+
+# ---- GRPH-1920: a forge transient on `gh pr ready` is a hold, not a refusal ----------------
+
+def test_forge_transient_names_github_failures_and_not_refusals():
+    transient = [
+        "GraphQL: Something went wrong while executing your query. Please include "
+        "`E04A:199DC2:1959BEE:4FFF9CF:6B05C41E` when reporting this issue.",
+        "HTTP 502: Bad Gateway (https://api.github.com/graphql)",
+        "HTTP 503 (https://api.github.com/graphql)",
+        "Post \"https://api.github.com/graphql\": net/http: TLS handshake timeout",
+        "read tcp 10.0.0.1:5000->140.82.112.6:443: read: connection reset by peer",
+    ]
+    terminal = [
+        "HTTP 403: Resource not accessible by integration (https://api.github.com/graphql)",
+        "GraphQL: Pull request Pull request is in clean status (markPullRequestReadyForReview)",
+        "could not mark ready",
+        "HTTP 404: Not Found",
+        "",
+    ]
+    assert all(propose_mod.forge_transient(t) for t in transient)
+    assert not any(propose_mod.forge_transient(t) for t in terminal)
+
+
+class _ReadyBlip(_Forge):
+    def __call__(self, argv, **kw):
+        if " ".join(argv[1:3]) == "pr ready":
+            self.calls.append(argv)
+            return subprocess.CompletedProcess(
+                argv, 1, "", "GraphQL: Something went wrong while executing your query.")
+        return super().__call__(argv, **kw)
+
+
+def test_a_graphql_blip_on_pr_ready_is_not_final(gh):
+    got = _merge(_ReadyBlip(draft=True), gh)
+
+    assert not got.ok and not got.skipped and not got.final
+    assert got.reason.startswith("gh pr ready hit a forge transient")
+    assert "gh pr ready failed" not in got.reason

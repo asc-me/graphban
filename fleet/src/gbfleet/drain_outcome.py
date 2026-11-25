@@ -31,6 +31,19 @@ class OpenItem:
     ready: bool = False
     #: Held by a live child (claimed, or its review is being read).
     live: bool = False
+    #: The row's free-text `blocker` (GRPH-1945): what a person must do to clear it.
+    blocker: str = ""
+
+
+#: The most of an item's blocker a stall reason carries (GRPH-1945).
+BLOCKER_LIMIT = 200
+
+
+def _short_blocker(text: str) -> str:
+    flat = " ".join(str(text or "").split())
+    if len(flat) <= BLOCKER_LIMIT:
+        return flat
+    return flat[:BLOCKER_LIMIT - 1].rstrip() + "\u2026"
 
 
 @dataclass(frozen=True)
@@ -62,6 +75,9 @@ def _reason_for(item: OpenItem, held: list[dict], dependency_holds: list[dict],
             return line.split(":", 1)[1].strip()
     if item.status == "review":
         return "in review, no live reviewer"
+    blocker = _short_blocker(item.blocker)
+    if blocker:
+        return f"not ready: {item.status}: {blocker}"
     return f"not ready: status {item.status}"
 
 
