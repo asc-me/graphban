@@ -462,6 +462,32 @@ def _account_limit(child: Child) -> str:
     return adapter.account_limit(child.stdout_text(), child.tail(_STDERR, 200))
 
 
+#: GRPH-1040. Words a vendor prints when the ACCOUNT, not the adapter, stopped a child before
+#: it registered. Matched as exact tokens (case-sensitive), never the bare word "limit": a
+#: real crash that says "recursion limit" stays a crash. `insufficient_quota` is the
+#: measured DashScope 429; `rate_limit` is the API error-type token; `Not logged in` is the
+#: vendor CLI's own auth refusal.
+_VENDOR_QUOTA_MARKS = ("insufficient_quota", "rate_limit")
+_VENDOR_AUTH_MARKS = ("Not logged in",)
+VENDOR_QUOTA = "vendor_quota"
+VENDOR_AUTH = "vendor_auth"
+
+
+def unregistered_exit_reason(stdout: str, stderr: str) -> tuple[str, str]:
+    """`(reason, line)` for a child that exited before `register_agent` (GRPH-1040).
+
+    `reason` is `vendor_quota`, `vendor_auth` or `never_registered`; `line` is the vendor's
+    own line that decided it, or "". Quota outranks auth: an exhausted plan is the clock an
+    operator waits on, and a login prompt printed beside it is not the cause.
+    """
+    for reason, marks in ((VENDOR_QUOTA, _VENDOR_QUOTA_MARKS), (VENDOR_AUTH, _VENDOR_AUTH_MARKS)):
+        for stream in (stdout or "", stderr or ""):
+            for line in stream.splitlines():
+                if any(mark in line for mark in marks):
+                    return reason, line.strip()
+    return Reason.NEVER_REGISTERED.value, ""
+
+
 #: A row the server still lists, and that cannot be a child that just started (GRPH-1088).
 #: `offline` is derived from `last_seen_at`; `quarantined` is a stored refusal. Either way
 #: the process we just spawned is not that row.
@@ -623,6 +649,15 @@ def await_registration(
             # read `child exited 1 before registering. stderr tail:` followed by nothing, and
             # sent the operator to debug a CLI that was working perfectly.
             said = _account_limit(child)
+            # GRPH-1040. Said on the log as its own class, so a seat whose child the vendor
+            # refused reads as the vendor's doing — the seat was never redeemed and is still
+            # good for a replacement child inside its expiry.
+            why, line = unregistered_exit_reason(child.stdout_text(), child.tail(_STDERR, 200))
+            observe.emit("child_exit_unregistered", adapter=child.adapter, pid=child.pid,
+                         exit_code=code, reason=why, said=line[:240],
+                         seat_redeemable=True)
+            if not said and why == VENDOR_QUOTA:
+                said = line
             if said:
                 raise VendorLimit(
                     f"adapter {child.adapter!r}: the vendor account is out of quota, so no "
