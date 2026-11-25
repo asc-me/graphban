@@ -4727,6 +4727,24 @@ def _sibling_extension(nodes, directory: str) -> str:
     return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
 
 
+def _shadowed_directory(path: str, proposed) -> bool:
+    """True when `path` is a container and a file under it is already proposed.
+
+    A directory reaches the set two ways: the section names its path, which is also a
+    prefix of every file named under it, and a resolved name places one — "the Rules page"
+    lands on `web/src/features/rules/`, a bare backticked `app` on `backend/app` through its
+    stem. With a file beneath it proposed, the container is the same mention answered less
+    narrowly, and it should not hold a slot the file already holds (GRPH-1930).
+    """
+    directory = (path or "").rstrip("/")
+    if not directory:
+        return False
+    prefix = f"{directory}/"
+    # `other != path`: a resolved directory carries its own trailing slash, so without the
+    # exclusion it would be a prefix of itself and every surface name would drop out.
+    return any(other != path and other.startswith(prefix) for other in proposed)
+
+
 def _resolve_named_things(nodes, text: str) -> list[tuple[int, str, str, bool]]:
     """`(order, path, evidence, create)` for the names in `text` the graph can place.
 
@@ -4811,7 +4829,9 @@ def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[
     a whole token; a name the section uses that the graph can place, including a module it
     has to create (GRPH-1906); then semantic search. A search hit at or above
     `_TP_SCORE_FLOOR` stands alone. Below that floor it is kept only when the section also
-    names the path. A bare directory name is not a file-name match.
+    names the path. A bare directory name is not a file-name match. A directory the set
+    already holds a file under is not proposed either, whichever tier placed it
+    (GRPH-1930).
 
     Each entry carries `create`: True on a path the section has to make, which does not
     exist yet, so a caller that reads only `path` would look for a file that is not there.
@@ -4848,7 +4868,9 @@ def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[
         elif _text_names_path(raw, path):
             add(path, (f"code search matched the section (score {score:.2f}); "
                        "kept because the section also names the path"))
-    return list(found.values())[:_TP_MAX]
+    paths = list(found)
+    kept = [entry for path, entry in found.items() if not _shadowed_directory(path, paths)]
+    return kept[:_TP_MAX]
 
 
 # GRPH-1691. One section became one item, including sections that are more than

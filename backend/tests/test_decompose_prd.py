@@ -925,3 +925,81 @@ def test_a_name_the_section_only_reads_is_not_a_touchpoint(client, auth, monkeyp
     sources = {p["section"]: p for p in dry["proposals"]}["Sources"]
     assert sources["touchpoints"] == []
     assert sources["touchpoint_evidence"] == []
+
+
+def _proposal_for(client, auth, nodes, body, title, section):
+    """The decompose proposal for one section of a PRD described over `nodes`."""
+    prd = client.post("/api/prds", json={"title": title, "body": body}, headers=auth).json()
+    _describe(_project_of(prd["id"]), nodes)
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    return {p["section"]: p for p in dry["proposals"]}[section]
+
+
+def test_a_resolved_page_yields_to_a_file_the_section_named_under_it(client, auth,
+                                                                     monkeypatch):
+    """"The Rules page" places a directory; a file named under it is the narrower answer.
+
+    GRPH-1930. The section names `web/src/features/rules/RulesPage.tsx` verbatim, and the
+    page it draws on resolves to the directory that file sits in. Both reached the proposal
+    set, so a container held a slot its own file already held. The control is the same
+    section with the file unnamed, where the directory still stands: what the first half
+    asserts is the shadowing, not the surface tier going quiet.
+    """
+    _quiet_semantic(monkeypatch)
+    nodes = [
+        {"path": "web/src/features/rules/RulesPage.tsx", "kind": "file", "name": "",
+         "summary": "The rules page."},
+        {"path": "web/src/features/rules/StageProposals.tsx", "kind": "file", "name": "",
+         "summary": "One row per stage."},
+    ]
+
+    named = _proposal_for(
+        client, auth, nodes,
+        "# Spec\n\n## Report\n"
+        "The report on the Rules page groups findings, in "
+        "`web/src/features/rules/RulesPage.tsx`.\n\n## Acceptance\n- it renders\n",
+        "Page and its file", "Report")
+    assert "web/src/features/rules/RulesPage.tsx" in named["touchpoints"]
+    assert "web/src/features/rules/" not in named["touchpoints"]
+    assert not [p for p in named["touchpoints"] if p.endswith("/")], named["touchpoints"]
+
+    alone = _proposal_for(
+        client, auth, nodes,
+        "# Spec\n\n## Report\n"
+        "The report on the Rules page groups findings.\n\n## Acceptance\n- it renders\n",
+        "Page alone", "Report")
+    assert alone["touchpoints"] == ["web/src/features/rules/"]
+
+
+def test_a_backticked_container_name_yields_to_a_file_named_under_it(client, auth,
+                                                                     monkeypatch):
+    """A bare `app` reaches the directory `backend/app` through its stem.
+
+    GRPH-1930's second case, and the one that needs no surface word: the section names
+    `backend/app/routers/fleet.py`, so the container is both the same mention answered less
+    narrowly and a prefix of a path already proposed. The control names the container alone,
+    where nothing under it is proposed and `backend/app` still stands.
+    """
+    _quiet_semantic(monkeypatch)
+    nodes = [
+        {"path": "backend/app", "kind": "module", "name": "app",
+         "summary": "The backend application package."},
+        {"path": "backend/app/routers/fleet.py", "kind": "file", "name": "fleet.py",
+         "summary": "Fleet routes."},
+    ]
+
+    named = _proposal_for(
+        client, auth, nodes,
+        "# Spec\n\n## Drain\n"
+        "The drain reports through `app`, in `backend/app/routers/fleet.py`.\n\n"
+        "## Acceptance\n- it reports\n",
+        "Container and its file", "Drain")
+    assert "backend/app/routers/fleet.py" in named["touchpoints"]
+    assert "backend/app" not in named["touchpoints"]
+
+    alone = _proposal_for(
+        client, auth, nodes,
+        "# Spec\n\n## Drain\n"
+        "The drain reports through `app`.\n\n## Acceptance\n- it reports\n",
+        "Container alone", "Drain")
+    assert alone["touchpoints"] == ["backend/app"]
