@@ -1,7 +1,8 @@
 """`.gbfleet/servers` is checked against the harness that runs the children (GRPH-1038).
 
 A grok wave used to refuse because `browser` was absent from `~/.claude.json`, while
-`~/.grok/config.toml` already defined it. These tests set HOME to a temp dir and go
+`~/.grok/config.toml` already defined it. grok merges both files, so a name in either is
+granted (the grok stanza winning) and a refusal names both. These tests set HOME to a temp dir and go
 through `gbfleet until --adapter`, which is the call that picks the file. A correct
 `source_for` that `_shared_servers` never asks would leave every one of them green.
 """
@@ -118,10 +119,10 @@ def test_grok_grants_a_server_defined_only_in_the_grok_config(tmp_path, monkeypa
     assert "gmail" not in child["mcp_servers"]
 
 
-def test_grok_refuses_a_name_absent_from_the_grok_config_and_names_that_file(
-        tmp_path, monkeypatch, capsys):
-    """The name IS in the Claude file. Reading that file would grant it and this would
-    not refuse. The refusal has to name the grok path."""
+def test_grok_grants_a_server_defined_only_in_claude_json(tmp_path, monkeypatch):
+    """grok 1.0.25+ merges ~/.claude.json too, and that cannot be switched off. This
+    repo's required `context7` lives only there. Sabotage: read only the grok config
+    for grok; this test must fail with a refusal before spawn."""
     home = _home(
         tmp_path,
         grok="[mcp_servers.other]\ncommand = \"something-else\"\n",
@@ -129,7 +130,51 @@ def test_grok_refuses_a_name_absent_from_the_grok_config_and_names_that_file(
     )
     repo = _repo(tmp_path, f"{SERVER}\n")
     seen, argv = _wave(monkeypatch, home, repo, "grok")
-    grok_path = str(home / ".grok" / "config.toml")
+
+    assert cli.main(argv) == 0
+    assert seen["called"], "the wave was refused before spawn"
+    assert seen["shared"][SERVER]["url"] == CLAUDE_URL
+    assert "other" not in seen["shared"]
+
+    child = _child_toml(tmp_path, seen["shared"])
+    assert child["mcp_servers"][SERVER]["url"] == CLAUDE_URL
+
+
+def test_grok_prefers_the_grok_stanza_when_both_files_define_the_name(tmp_path, monkeypatch):
+    home = _home(
+        tmp_path,
+        grok=f"[mcp_servers.{SERVER}]\ncommand = \"{GROK_COMMAND}\"\nenabled = true\n",
+        claude={"mcpServers": {SERVER: {"type": "http", "url": CLAUDE_URL}}},
+    )
+    repo = _repo(tmp_path, f"{SERVER}\n")
+    seen, argv = _wave(monkeypatch, home, repo, "grok")
+
+    assert cli.main(argv) == 0
+    assert seen["shared"][SERVER] == {"command": GROK_COMMAND}
+
+
+def test_grok_grants_from_claude_json_when_there_is_no_grok_config(tmp_path, monkeypatch):
+    """No ~/.grok/config.toml at all: grok loads nothing from it, and still merges Claude's."""
+    home = _home(
+        tmp_path, grok="",
+        claude={"mcpServers": {SERVER: {"type": "http", "url": CLAUDE_URL}}},
+    )
+    (home / ".grok" / "config.toml").unlink()
+    repo = _repo(tmp_path, f"{SERVER}\n")
+    seen, argv = _wave(monkeypatch, home, repo, "grok")
+
+    assert cli.main(argv) == 0
+    assert seen["shared"][SERVER]["url"] == CLAUDE_URL
+
+
+def test_grok_refuses_a_name_in_neither_file_and_names_both(tmp_path, monkeypatch, capsys):
+    home = _home(
+        tmp_path,
+        grok="[mcp_servers.other]\ncommand = \"something-else\"\n",
+        claude={"mcpServers": {"gmail": {"type": "http", "url": "http://mail"}}},
+    )
+    repo = _repo(tmp_path, f"{SERVER}\n")
+    seen, argv = _wave(monkeypatch, home, repo, "grok")
 
     with pytest.raises(SystemExit) as exc:
         cli.main(argv)
@@ -137,9 +182,10 @@ def test_grok_refuses_a_name_absent_from_the_grok_config_and_names_that_file(
     err = capsys.readouterr().err
     assert exc.value.code == 2
     assert seen["called"] is False
-    assert grok_path in err
-    assert ".claude.json" not in err
+    assert str(home / ".grok" / "config.toml") in err
+    assert str(home / ".claude.json") in err
     assert SERVER in err
+    assert "gmail" not in err and "other" not in err
     assert "Refusing rather than spawning without it" in err
 
 
