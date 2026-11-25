@@ -35,7 +35,7 @@ wheels = [
 
 [[package]]
 name = "graphban-fleet"
-version = "0.18.40"
+version = "0.18.41"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },

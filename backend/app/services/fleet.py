@@ -2406,6 +2406,60 @@ WITHHELD_OUT_OF_SCOPE = "outside_seat_scope"
 WITHHELD_CAPABILITY = "missing_capability"
 WITHHELD_PR_UNLINKED = "pr_unlinked"
 WITHHELD_DEPENDENCY = "dependencies_open"
+WITHHELD_BRANCH_GONE = "branch_gone"
+
+
+#: The `detail` prefix gbfleet writes when a review row's branch is no longer a head on its
+#: remote (GRPH-1010) — `until._record_branch_gone`. GitHub deletes a branch when its PR
+#: merges, so the artefact `claim_review` names is gone for exactly the items that did best.
+#: A `url` row carries the merge commit gbfleet found in the base; a `note` row says it found
+#: none. The branch is the token after the prefix, so the receipt names what is gone.
+BRANCH_GONE_PREFIX = "gbfleet: branch gone:"
+_BRANCH_GONE = re.compile(r"^gbfleet: branch gone: (\S+) is not on ")
+
+
+def branch_gone(item: Item) -> tuple[str, str] | None:
+    """(branch, merge commit or "") when gbfleet recorded this item's branch gone (GRPH-1010).
+
+    None when the branch is not known gone. Only a receipt naming the item's CURRENT branch
+    counts, and only while nothing later says the branch carried new work: a builder's
+    `gbfleet: committed` note or a CI attestation on that branch both mean it was pushed
+    again, so the old receipt no longer describes it.
+
+    The merge commit is the newest one a gone receipt names, else the gbfleet Merger's own
+    merge receipt. Empty means nobody found one, and there is nothing for a reviewer to read.
+    """
+    branch = (item.branch or "").strip()
+    if not branch:
+        return None
+    gone = False
+    commit = ""
+    for e in item.evidence or []:
+        if not isinstance(e, dict):
+            continue
+        detail = str(e.get("detail") or "")
+        m = _BRANCH_GONE.match(detail)
+        if m and m.group(1) == branch:
+            gone = True
+            if e.get("kind") == "url" and str(e.get("commit") or "").strip():
+                commit = str(e.get("commit")).strip()
+            continue
+        if not gone:
+            continue
+        pushed_again = items_svc.COMMITTED_MARKER in detail or (
+            e.get("kind") == "attestation"
+            and str(e.get("branch") or "").strip() == branch)
+        if pushed_again:
+            gone, commit = False, ""
+    if not gone:
+        return None
+    if not commit:
+        for e in item.evidence or []:
+            if (isinstance(e, dict) and e.get("kind") == "url"
+                    and str(e.get("commit") or "").strip()
+                    and str(e.get("detail") or "").startswith(MERGE_RECEIPT_PREFIX)):
+                commit = str(e.get("commit")).strip()
+    return branch, commit
 
 
 def unfinished_dependencies(db: Session, item: Item) -> list[str]:
@@ -2502,6 +2556,16 @@ def review_withholding(db: Session, it: Item, *, agent_id: str, me: Agent | None
     # defects went unreviewed. Rows that predate the `update_item` gate land here.
     if not items_svc.reviewable_handoff(it):
         return WITHHELD_NOTHING_TO_READ, "it has no branch and no PR url to read"
+    # GRPH-1010: and the branch it names still exists, or its merge is known. A merged PR's
+    # branch is deleted, and a reviewer handed it can only report it unreadable — a loop that
+    # spawned nine such children in three cycles is how this was found. With a merge commit
+    # recorded the item IS offered: the reviewer reads that commit, and `claim_review` says so.
+    gone = branch_gone(it)
+    if gone is not None and not gone[1]:
+        return WITHHELD_BRANCH_GONE, (
+            f"its branch {gone[0]} is gone from the remote and no merge commit is recorded, "
+            "so there is nothing to read. Released when a merge commit is recorded on the item "
+            "(a `url` receipt with `commit`); work merged by hand is closed by its owner")
     # GRPH-1730. A pushed branch with no linked PR is readable and still not reviewable:
     # sign_off refuses `pr_missing`, and a reviewer who takes the row holds it for the
     # lease. `review_held` then hides it from the supervisor, so the PR open is never
