@@ -1856,3 +1856,171 @@ def test_a_wave_that_cut_children_without_a_recorded_base_says_so(tmp_path: Path
     # children without resolving a base.
     assert not any(line.startswith("BASE") for line in quiet.getvalue().splitlines())
 
+
+
+# --- the build outcome reaches the item (GRPH-1021) ------------------------------
+
+
+def _dead_child(git_repo: Path, workspace: Path, *, item: str, work: str):
+    """A child that has exited, holding `item`, after doing `work` to its tree.
+
+    `work` is `dirty` (wrote a file, never committed), `committed` (wrote and committed),
+    or `nothing` (touched nothing).
+    """
+    import subprocess
+
+    workspace.mkdir(exist_ok=True)
+    tree = create(git_repo, workspace / "wave-1", "wave", "1")
+    if work in ("dirty", "committed"):
+        (tree.path / "feature.py").write_text("print('work')\n", encoding="utf-8")
+    if work == "committed":
+        subprocess.run(["git", "add", "feature.py"], cwd=tree.path, check=True)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm",
+                        "the work"], cwd=tree.path, check=True)
+
+    class _Dead:
+        pid = 4242
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+    child = Child(adapter="fake", worktree=tree.path, branch=tree.branch, base=tree.base,
+                  seat_path=workspace / "seat.json", process=_Dead(),
+                  started_at=time.monotonic() - 30, log_dir=workspace / "logs",
+                  agent_id="GRPH-A123")
+    child.held_items = [item]
+    return child
+
+
+def _outcomes(client) -> list[dict]:
+    return [c.kwargs for c in client.post_observation.call_args_list
+            if c.kwargs.get("kind") == "build_outcome"]
+
+
+@pytest.mark.parametrize("reaper", ["exited", "all"])
+@pytest.mark.parametrize("work,expected", [
+    ("dirty", "stranded"), ("committed", "committed"), ("nothing", "nothing"),
+])
+def test_the_item_carries_what_its_child_left_behind(
+    git_repo: Path, tmp_path: Path, reaper: str, work: str, expected: str
+):
+    """The three endings are three different outcomes ON THE ITEM, not one reap line.
+
+    A dirty tree is `stranded`; a committed one is `committed` — the control, so the
+    signal is not always-on — and a clean tree at its base is `nothing`. Both reapers
+    post it, because `until`/`mcp` reap on exit and `up` reaps at the end.
+
+    Sabotage: drop the `_observe` call in `_record_build_outcome` and every case fails —
+    no `build_outcome` reaches the client.
+    """
+    from unittest.mock import MagicMock
+
+    from gbfleet.supervisor import _reap_all, _reap_exited
+
+    client = MagicMock(spec=Graphban)
+    client.allowed = frozenset()
+    client.call = MagicMock(return_value={})
+    client.post_observation = MagicMock(return_value={"recorded": True})
+    child = _dead_child(git_repo, tmp_path / "ws", item="GRPH-1021", work=work)
+    wave = Wave()
+
+    (_reap_exited if reaper == "exited" else _reap_all)(wave, [child], client=client)
+
+    posted = _outcomes(client)
+    assert [p["outcome"] for p in posted] == [expected], posted
+    assert posted[0]["item_id"] == "GRPH-1021"
+    assert posted[0]["branch"] == child.branch
+    if expected == "nothing":
+        assert posted[0]["commit"] is None
+    else:
+        assert posted[0]["commit"], "a stranded or committed outcome names the head"
+
+
+@pytest.mark.parametrize("work,expected", [
+    ("committed", "committed"), ("nothing", "nothing"), ("dirty", "stranded"),
+])
+def test_every_held_item_carries_an_outcome(
+    git_repo: Path, tmp_path: Path, work: str, expected: str
+):
+    """A child holding several items leaves an outcome on EACH, not only the first.
+
+    Only a salvage is split onto per-item branches; a committed or empty child built
+    every item on its one branch, so the sibling carries that branch. A salvaged sibling
+    is named on its own split branch, never the first item's.
+
+    Sabotage: skip every item after the first and the sibling assertion fails.
+    """
+    from unittest.mock import MagicMock
+
+    from gbfleet.supervisor import _reap_all
+
+    client = MagicMock(spec=Graphban)
+    client.allowed = frozenset()
+    client.call = MagicMock(return_value={})
+    client.post_observation = MagicMock(return_value={"recorded": True})
+    child = _dead_child(git_repo, tmp_path / "ws", item="GRPH-1021", work=work)
+    child.held_items = ["GRPH-1021", "GRPH-1022"]
+    wave = Wave()
+
+    _reap_all(wave, [child], client=client)
+
+    posted = {p["item_id"]: p for p in _outcomes(client)}
+    assert set(posted) == {"GRPH-1021", "GRPH-1022"}, (posted, wave.failures)
+    assert {p["outcome"] for p in posted.values()} == {expected}
+    assert posted["GRPH-1021"]["branch"] == child.branch
+    if expected == "stranded":
+        assert posted["GRPH-1022"]["branch"] != child.branch
+    else:
+        assert posted["GRPH-1022"]["branch"] == child.branch
+
+
+def test_a_salvaged_sibling_without_its_branch_is_a_failure(git_repo: Path, tmp_path: Path):
+    """A salvaged sibling whose split branch was not cut gets no note on the first item's
+    branch (GRPH-1053) — and the gap is a wave failure, not silence."""
+    from unittest.mock import MagicMock
+
+    from gbfleet.supervisor import _record_build_outcome
+    from gbfleet.worktree import Reaped
+
+    tree = create(git_repo, tmp_path / "wave-1", "wave", "1")
+    client = MagicMock(spec=Graphban)
+    client.post_observation = MagicMock(return_value={"recorded": True})
+    wave = Wave()
+    _record_build_outcome(wave, client, tree, ["GRPH-1021", "GRPH-1022"],
+                          Reaped(disposition=Disposition.SALVAGED, branch=tree.branch))
+    posted = [c.kwargs["item_id"] for c in client.post_observation.call_args_list
+              if c.kwargs.get("kind") == "build_outcome"]
+    assert posted == ["GRPH-1021"]
+    assert any("GRPH-1022" in f and "build outcome not recorded" in f for f in wave.failures)
+
+
+def test_only_credential_is_not_read_as_stranded(git_repo: Path, tmp_path: Path):
+    """`only_credential` keeps its meaning: the tree held only the seat file. That is not
+    a stranded build, and the branch — not the disposition — says what was built."""
+    from gbfleet.supervisor import build_outcome
+    from gbfleet.worktree import Reaped
+
+    tree = create(git_repo, tmp_path / "wave-1", "wave", "1")
+    reaped = Reaped(disposition=Disposition.ONLY_CREDENTIAL, branch=tree.branch)
+    assert build_outcome(tree, reaped) == ("nothing", "")
+    left = Reaped(disposition=Disposition.LEFT_DIRTY, branch=tree.branch)
+    assert build_outcome(tree, left)[0] == "stranded"
+
+
+def test_an_unknown_base_is_a_failure_not_nothing(git_repo: Path, tmp_path: Path):
+    """Without a base the supervisor cannot count commits; it says so on the wave rather
+    than posting `nothing`, which is the reassuring answer."""
+    from unittest.mock import MagicMock
+
+    from gbfleet.supervisor import _record_build_outcome
+    from gbfleet.worktree import Reaped
+
+    tree = create(git_repo, tmp_path / "wave-1", "wave", "1")
+    blind = Worktree(path=tree.path, branch=tree.branch, repo=tree.repo, base="")
+    client = MagicMock(spec=Graphban)
+    wave = Wave()
+    _record_build_outcome(wave, client, blind, ["GRPH-1021"],
+                          Reaped(disposition=Disposition.CLEAN, branch=tree.branch))
+    assert not client.post_observation.called
+    assert any("build outcome not measured" in f for f in wave.failures)

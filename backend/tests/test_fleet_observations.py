@@ -309,6 +309,34 @@ def test_an_unpushed_branch_is_said_without_claiming_a_push(client, auth, db):
     assert "pushed `" not in note["detail"]
 
 
+def test_the_three_build_outcomes_are_told_apart_on_the_item(client, auth, db):
+    """GRPH-1021: committed, stranded and nothing-built each leave a distinct note on the
+    item, led by `BUILD_OUTCOME_MARKER` and the outcome word. An outcome outside the three
+    is refused, so a typo cannot land as a note nobody can read."""
+    proj, hand, planner = _project(client, auth)
+    marker = fleet_svc.BUILD_OUTCOME_MARKER
+    words = {}
+    for outcome in fleet_svc.BUILD_OUTCOMES:
+        _worker, item = _item(client, hand, title=f"outcome {outcome}")
+        _bind(db, proj, item, wave="wave-1")
+        got = _post(client, planner, item_id=item, kind="build_outcome", branch="gb/o",
+                    outcome=outcome, commit=None if outcome == "nothing" else HEAD)
+        assert got.status_code == 200, got.text
+        [note] = _notes(client, hand, item)
+        assert note["detail"].startswith(f"{marker}{outcome} — "), note
+        words[outcome] = note["detail"]
+    assert len(set(words.values())) == 3
+    assert "not proposed as a PR" in words["stranded"]
+    assert HEAD[:12] in words["committed"]
+
+    _worker, item = _item(client, hand, title="outcome bad")
+    _bind(db, proj, item, wave="wave-1")
+    bad = _post(client, planner, item_id=item, kind="build_outcome", branch="gb/o",
+                outcome="merged")
+    assert bad.status_code == 422, bad.text
+    assert _notes(client, hand, item) == []
+
+
 def test_the_server_composes_each_receipt_and_refuses_a_kind_it_does_not_record_yet(
         client, auth, db):
     """The caller sends facts. The bytes on the item are the ones the readers already know.

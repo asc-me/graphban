@@ -2146,6 +2146,7 @@ def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = No
             target, why = wave.diverted.get(tree.branch, (tree.branch, ""))
             _note_salvage(wave, client, tree.repo, target, held, reaped.siblings,
                           commit or "", base=tree.base, reason=why)
+        _record_build_outcome(wave, client, tree, held, reaped)
         _record_reaped(wave, child, reaped)
 
 
@@ -4894,10 +4895,75 @@ def _reap_all(wave: Wave, children: list[Child], *, client: Graphban | None = No
             target, why = wave.diverted.get(tree.branch, (tree.branch, ""))
             _note_salvage(wave, client, tree.repo, target, held, reaped.siblings,
                           commit or "", base=tree.base, reason=why)
+        _record_build_outcome(wave, client, tree, held, reaped)
         if not _inside(child.seat_path, child.worktree):
             seat_mod.remove(child.seat_path)
 
         _record_reaped(wave, child, reaped)
+
+
+def build_outcome(tree: Worktree, reaped: Reaped) -> tuple[str, str]:
+    """What the child left at reap, as `(outcome, reason)` (GRPH-1021).
+
+    `stranded` is a dirty tree at exit: `salvaged` (the supervisor committed it onto a
+    branch nobody proposes) or `left_dirty` (not even that). Otherwise the branch decides —
+    a commit beyond the base is `committed`, none is `nothing`. `only_credential` is NOT
+    stranded: the one file in the tree was the seat, which is a different fact, and the
+    branch still answers whether the child committed. `("", why)` when the base is unknown,
+    because guessing `nothing` there is the reassuring answer this exists to stop.
+    """
+    if reaped.disposition is wt_mod.Disposition.SALVAGED:
+        return "stranded", "salvaged by gbfleet"
+    if reaped.disposition is wt_mod.Disposition.LEFT_DIRTY:
+        return "stranded", "left in the worktree, not salvaged"
+    if not tree.base:
+        return "", "no base recorded for the branch"
+    try:
+        ahead = wt_mod.commits_beyond_base(tree.repo, tree.branch, tree.base)
+    except Exception as exc:  # noqa: BLE001 — unmeasured is reported, never fatal
+        return "", f"could not count commits beyond the base ({exc})"
+    return ("committed" if ahead else "nothing"), ""
+
+
+def _record_build_outcome(wave: Wave, client: Graphban | None, tree: Worktree,
+                          held: list[str], reaped: Reaped) -> None:
+    """Put the build outcome on each held item, not only in the reap disposition (GRPH-1021).
+
+    Three endings read the same from the board before this — committed and merged,
+    built and stranded on an unproposed branch, nothing built at all. Measured across two
+    waves on PRD-47: 14 children, no merged work, and items at `done` with +891 lines on a
+    branch nobody proposed, indistinguishable from one with nothing behind it.
+
+    Posted for every ending, `committed` included, so the absence of a `stranded` note is
+    never the signal. A sibling item is named on its own salvage branch (GRPH-948).
+    Only a salvage is split per item; otherwise every held item was built on the child's
+    one branch and carries it. A salvaged sibling whose branch was not cut is a wave
+    failure, never a silent skip — an item with no note is the ambiguity this removes.
+    """
+    if not held:
+        return
+    outcome, why = build_outcome(tree, reaped)
+    if not outcome:
+        wave.failures.append(f"{tree.branch}: build outcome not measured ({why})")
+        return
+    target, divert = wave.diverted.get(tree.branch, (tree.branch, ""))
+    sibling = dict(reaped.siblings or ())
+    for index, item in enumerate(held):
+        if index == 0:
+            branch = target
+        elif reaped.disposition is wt_mod.Disposition.SALVAGED:
+            branch = sibling.get(item, "")
+        else:
+            branch = target
+        if not branch:
+            wave.failures.append(
+                f"{item}: build outcome not recorded; its salvage branch was not cut")
+            continue
+        commit = _branch_head(tree.repo, branch) if outcome != "nothing" else ""
+        reason = "; ".join(r for r in (why, divert if index == 0 else "") if r)
+        _observe(wave, client, item, "build outcome not recorded",
+                 kind="build_outcome", branch=branch, outcome=outcome,
+                 commit=commit or None, reason=reason or None)
 
 
 def _record_reaped(wave: Wave, child: Child, reaped: Reaped) -> None:
