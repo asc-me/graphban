@@ -4771,3 +4771,212 @@ def test_a_run_without_the_flag_sends_no_acknowledge_reach(
     assert result.reason == "idle", result.detail
     assert delegations, "the run delegated nothing, so the absence is not evidence"
     assert all("acknowledge_reach" not in d for d in delegations)
+
+
+# ---- GRPH-1919: a live child whose lease lapsed is the work; an exited one is settled --------
+
+
+class _LapsingServer:
+    """The lease route answers `extended: false`; the item is still `in_progress`; the roster
+    lists the child's holding as stale (or not at all), as the server does after a lapse."""
+
+    def __init__(self, agents):
+        self.agents = agents
+        self.posts: list[dict] = []
+
+    def post_observation(self, **payload):
+        self.posts.append(payload)
+        return {"item_id": payload["item_id"], "kind": "lease", "extended": False}
+
+    def call(self, tool, **args):
+        if tool == "fleet_status":
+            return {"agents": self.agents}
+        if tool == "get_item_details":
+            return {"id": args["id"], "status": "in_progress"}
+        raise AssertionError(tool)
+
+
+def test_a_live_child_whose_lease_lapsed_keeps_the_cycle_open_and_is_not_stopped(
+    monkeypatch, tmp_path: Path,
+):
+    """GRPH-1919. Two children of the line drain committed work, their leases lapsed while
+    their processes lived, and `until` summarised `idle` and SIGTERMed both. The lapse is
+    reported, the keep-alive re-posts on the next interval, the cycle is not idle, and
+    `_leave` stops nothing. Sabotage: drop the `lapsed_under_live` check from
+    `_child_currently_holds` and `_idle_blocked` is False and the child is stopped."""
+    import gbfleet.until as until_mod
+    from gbfleet import heartbeat
+    from gbfleet.supervisor import Wave as _Wave
+
+    child = _Held("GRPH-A47578", str(tmp_path / "line-406"))
+    child.adapter = "qwen"
+    child.branch = "gb/line-406"
+    child.held_items = ["GRPH-1905"]
+    child.process = type("P", (), {"pid": 97011})()
+    child.lease_kept_at = 0.0
+    server = _LapsingServer([{"id": "GRPH-A47578", "worktree": child.worktree,
+                              "holdings": [{"id": "GRPH-1905", "phase": "stale"}]}])
+    wave = _Wave()
+    monkeypatch.setattr(heartbeat, "branch_commit", lambda _c: None)
+
+    heartbeat.keep(wave, [child], server, now=1000.0)
+    assert wave.lease_lapsed_live == [
+        "GRPH-1905: lease not extended for live child pid 97011 (GRPH-A47578)"]
+    assert heartbeat.lapsed_under_live(child) == ["GRPH-1905"]
+
+    stopped = []
+    monkeypatch.setattr(until_mod, "stop",
+                        lambda c, reason, grace=0: stopped.append((c, reason)))
+    monkeypatch.setattr(until_mod, "_reap_all", lambda *_a, **_k: None)
+    monkeypatch.setattr(until_mod, "_report_exits", lambda *_a, **_k: None)
+
+    assert until_mod._idle_blocked(server, [child]) is True
+    until_mod._stop_children_holding_nothing(wave, [child], server, server, "main")
+    assert stopped == [] and child.running is True and child.stopped_because is None
+
+    # The next interval posts the lease again: the cycle keeps asking, and re-reports nothing.
+    heartbeat.keep(wave, [child], server, now=1000.0 + heartbeat.FALLBACK_INTERVAL)
+    assert [p["item_id"] for p in server.posts] == ["GRPH-1905", "GRPH-1905"]
+    assert len(wave.lease_lapsed_live) == 1
+
+    # Once the process is gone, the lapse is no longer a live child's.
+    child.running = False
+    assert heartbeat.lapsed_under_live(child) == []
+    assert until_mod._idle_blocked(server, []) is False
+
+
+class _ExitServer:
+    def __init__(self, rows):
+        self.rows = rows
+        self.updates: list[dict] = []
+
+    def call(self, tool, **args):
+        if tool == "get_item_details":
+            return self.rows[args["id"]]
+        if tool == "update_item":
+            self.updates.append(args)
+            self.rows[args["id"]]["status"] = args.get("status", self.rows[args["id"]]["status"])
+            return self.rows[args["id"]]
+        raise AssertionError(tool)
+
+
+class _Exited:
+    def __init__(self, item, branch):
+        self.adapter = "qwen"
+        self.pid = 2480
+        self.agent_id = "GRPH-A47583"
+        self.branch = branch
+        self.running = False
+        self.held_items = [item]
+        self.ever_held = [item]
+        self.review_items: list = []
+        self.assigned = {"item": item, "state": "claimed"}
+
+
+def _exited_repo(tmp_path: Path) -> tuple[Path, str]:
+    import subprocess as sp
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for args in (["init", "-q", "-b", "main"], ["config", "user.email", "t@t"],
+                 ["config", "user.name", "t"], ["commit", "-q", "--allow-empty", "-m", "base"],
+                 ["checkout", "-q", "-b", "gb/line-407"],
+                 ["commit", "-q", "--allow-empty", "-m", "work"]):
+        sp.run(["git", *args], cwd=repo, check=True)
+    head = sp.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+                  capture_output=True, text=True).stdout.strip()
+    return repo, head
+
+
+def test_an_exited_childs_green_in_progress_item_is_moved_to_review(
+    monkeypatch, tmp_path: Path,
+):
+    """GRPH-1919. A child exits without its status call; its PR's head carries suite_green.
+    `until` moves the item to review with a note naming the child and the head, and stops
+    tracking it. Sabotage: drop the `_hand_exited_to_review` call and no update is made."""
+    import gbfleet.until as until_mod
+    from gbfleet.supervisor import Wave as _Wave
+
+    repo, head = _exited_repo(tmp_path)
+    url = "https://github.com/o/r/pull/2250"
+    rows = {"GRPH-1905": {
+        "id": "GRPH-1905", "status": "in_progress", "branch": "gb/line-407",
+        "evidence": [{"kind": "url", "url": url, "detail": "draft PR opened by gbfleet"},
+                     {"kind": "attestation", "commit": head,
+                      "predicates": [{"name": "suite_green", "passed": True}]}]}}
+    server = _ExitServer(rows)
+    monkeypatch.setattr(until_mod, "ci_verdict",
+                        lambda *_a: (_ for _ in ()).throw(AssertionError("gh asked")))
+    exited: dict = {}
+    until_mod._track_exits(exited, [_Exited("GRPH-1905", "gb/line-407")])
+    lines, pending = until_mod._settle_exited(server, exited, _Wave(), repo, "GRPH-A1")
+
+    assert lines == [] and pending is False
+    assert exited == {}
+    assert len(server.updates) == 1
+    update = server.updates[0]
+    assert update["id"] == "GRPH-1905" and update["status"] == "review"
+    note = update["evidence"][0]["detail"]
+    assert "qwen pid 2480 (GRPH-A47583)" in note and head[:12] in note and url in note
+
+
+def test_an_exited_childs_item_waits_on_ci_and_holds_the_cycle_while_it_runs(
+    monkeypatch, tmp_path: Path,
+):
+    """Not green yet: a wait, and the cycle stays open while the run is in progress."""
+    import gbfleet.until as until_mod
+    from gbfleet.supervisor import Wave as _Wave
+
+    repo, head = _exited_repo(tmp_path)
+    rows = {"GRPH-1901": {
+        "id": "GRPH-1901", "status": "in_progress", "branch": "gb/line-407",
+        "evidence": [{"kind": "url", "url": "https://github.com/o/r/pull/2244"}]}}
+    server = _ExitServer(rows)
+    monkeypatch.setattr(until_mod, "ci_verdict", lambda *_a: ("pending", head, ""))
+    exited: dict = {}
+    until_mod._track_exits(exited, [_Exited("GRPH-1901", "gb/line-407")])
+    lines, pending = until_mod._settle_exited(server, exited, _Wave(), repo, "GRPH-A1")
+    assert pending is True and server.updates == []
+    assert lines and lines[0].startswith("GRPH-1901: in_progress after its child")
+    assert "waits on suite_green" in lines[0]
+    # Moved on by somebody else: forgotten.
+    rows["GRPH-1901"]["status"] = "review"
+    assert until_mod._settle_exited(server, exited, _Wave(), repo, "GRPH-A1") == ([], False)
+    assert exited == {}
+
+
+def test_an_exited_childs_gated_branch_is_named_under_the_gate(monkeypatch, tmp_path: Path):
+    """GRPH-1919. GRPH-1910's branch was pushed and held by the touchpoint gate; the cycle
+    read idle over it. The item is named under the gate's reason, and `waits` is not empty,
+    so the exit is not `idle`."""
+    import gbfleet.until as until_mod
+    from gbfleet.supervisor import Wave as _Wave
+
+    repo, _head = _exited_repo(tmp_path)
+    rows = {"GRPH-1910": {"id": "GRPH-1910", "status": "in_progress",
+                          "branch": "gb/line-407", "evidence": []}}
+    server = _ExitServer(rows)
+    wave = _Wave()
+    wave.unproposed["gb/line-407"] = "changes files outside every declared touchpoint: a.py"
+    monkeypatch.setattr(until_mod, "ci_verdict",
+                        lambda *_a: (_ for _ in ()).throw(AssertionError("gh asked")))
+    exited: dict = {}
+    until_mod._track_exits(exited, [_Exited("GRPH-1910", "gb/line-407")])
+    lines, pending = until_mod._settle_exited(server, exited, wave, repo, "GRPH-A1")
+    assert pending is False and server.updates == []
+    assert lines == [(
+        "GRPH-1910: in_progress after its child qwen pid 2480 (GRPH-A47583) exited; "
+        "gb/line-407 not proposed — changes files outside every declared touchpoint: a.py")]
+    assert "GRPH-1910" in exited
+
+
+def test_an_exited_childs_item_with_no_pr_and_no_gate_is_left_to_the_server(tmp_path: Path):
+    import gbfleet.until as until_mod
+    from gbfleet.supervisor import Wave as _Wave
+
+    repo, _head = _exited_repo(tmp_path)
+    server = _ExitServer({"GRPH-7": {"id": "GRPH-7", "status": "in_progress",
+                                     "branch": "gb/line-407", "evidence": []}})
+    exited: dict = {}
+    until_mod._track_exits(exited, [_Exited("GRPH-7", "gb/line-407")])
+    assert until_mod._settle_exited(server, exited, _Wave(), repo, "") == ([], False)
+    assert exited == {} and server.updates == []

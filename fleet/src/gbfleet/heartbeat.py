@@ -134,12 +134,40 @@ def keep(wave, children, client, *, now: float | None = None) -> None:
                 payload["commit"] = commit
             try:
                 reply = client.post_observation(**payload)
-                if (isinstance(reply, dict) and reply.get("extended") is False
-                        and _still_in_progress(client, item_id)):
-                    _note_lapsed_live(wave, child, item_id)
             except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missed beat
                 note_refused(wave, item_id, "lease not extended", exc)
+                continue
+            if (isinstance(reply, dict) and reply.get("extended") is False
+                    and _still_in_progress(client, item_id)):
+                _note_lapsed_live(wave, child, item_id)
+                _lapsed(child).add(item_id)
+            else:
+                _lapsed(child).discard(item_id)
         child.lease_kept_at = moment
+
+
+def _lapsed(child) -> set:
+    """GRPH-1919. Items whose lease the server would not extend while this process lives.
+
+    Kept on the child, not only as report lines on the wave: `until` reads it to decide
+    that the child is still the work. A lapsed lease leaves the item `in_progress` with no
+    claimer, so the roster lists no fresh holding for the child, and reading only the
+    roster called a building child idle and stopped it. An extension, or the item moving
+    on from `in_progress`, takes the item back off.
+    """
+    got = getattr(child, "lapsed_live", None)
+    if not isinstance(got, set):
+        got = set()
+        child.lapsed_live = got
+    return got
+
+
+def lapsed_under_live(child) -> list[str]:
+    """Items a RUNNING child still builds after its server lease lapsed (GRPH-1919)."""
+    if not getattr(child, "running", False):
+        return []
+    got = getattr(child, "lapsed_live", None)
+    return sorted(str(i) for i in got) if isinstance(got, set) else []
 
 
 def _still_in_progress(client, item_id: str) -> bool:
