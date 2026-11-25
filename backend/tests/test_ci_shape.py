@@ -29,9 +29,58 @@ GATE = "ci"
 # visible decision rather than a quiet widening of the guard below.
 NOT_GATED = {"security-scans"}
 
+# Jobs that are not suites: the filter, the gate, the pure-AST refusal ratchet and the
+# scan/attestation job. Everything else installs something and runs tests, so everything
+# else has to bound itself. Named, like NOT_GATED, so widening it is a visible decision —
+# and a NEW job defaults to being a suite, which is the direction that fails safe.
+NOT_SUITES = {"changes", "ci", "refusal-ratchet", "security-scans"}
+
+# GitHub's own default is 360 minutes, and longer on a self-hosted runner. A bound at that
+# ceiling is the default wearing a costume, so the guard refuses it: the incident this
+# exists for (GRPH-1928) was a shard that sat in `pytest -q -n auto` for over two hours.
+MAX_TIMEOUT_MINUTES = 60
+
 
 def _workflow() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+
+def test_every_suite_job_bounds_itself():
+    """GRPH-1928: a hung pytest held a drain for hours because no job set a timeout.
+
+    CI run 45505794524 (PR #2272) left `Backend tests (Postgres + pgvector) (1/3)` in
+    `pytest -q -n auto` from 22:59Z until a person cancelled it at 01:14Z. The other two
+    shards had finished in minutes. Nothing in the workflow bounded the job, so the only
+    limit was GitHub's default, and the drain read the whole wait as
+    `review_waits_on_ci ... in_progress` — neither red nor green, just still going.
+
+    Each job's number is ~2x its measured duration with the measurement in a comment; this
+    guard is what keeps a new suite job from arriving without one.
+
+    Sabotage: delete `timeout-minutes` from any suite job, or set one to 360.
+    """
+    jobs = _workflow()["jobs"]
+    suites = set(jobs) - NOT_SUITES
+    assert suites, "no suite jobs left — this guard would assert nothing"
+    # An exemption that names a job that no longer exists hides a rename.
+    assert NOT_SUITES <= set(jobs), f"NOT_SUITES names missing job(s): {sorted(NOT_SUITES - set(jobs))}"
+
+    unbounded = sorted(n for n in suites if not jobs[n].get("timeout-minutes"))
+    assert not unbounded, (
+        f"job(s) {unbounded} run tests with no `timeout-minutes`, so a hang is bounded only "
+        f"by GitHub's 360-minute default (longer on a self-hosted runner) and the drain waits "
+        f"the whole time (GRPH-1928). Set one at ~2x the job's measured duration and cite "
+        f"the measurement in a comment."
+    )
+    oversized = sorted(
+        (n, jobs[n]["timeout-minutes"]) for n in suites
+        if not isinstance(jobs[n]["timeout-minutes"], int)
+        or not 1 <= jobs[n]["timeout-minutes"] <= MAX_TIMEOUT_MINUTES
+    )
+    assert not oversized, (
+        f"job(s) {oversized} are bounded by something that is not an integer minute count in "
+        f"1..{MAX_TIMEOUT_MINUTES}. A bound at GitHub's own 360-minute default is no bound."
+    )
 
 
 def test_ci_gate_covers_every_job():
