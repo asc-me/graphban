@@ -29,7 +29,10 @@ local run is right only when the failure cannot be pinned to named tests (a coll
 error, a hang, a whole job that died). If your brief states no mode, use `agent_and_pr`.
 
 ```bash
-# Backend (from backend/; venv via `uv venv --python 3.12 .venv && uv pip install -e ".[dev]"`)
+# Backend (from backend/; venv via `uv venv --python 3.12 .venv`, then install HELD TO uv.lock:
+# `python3 scripts/lock_constraints.py write uv.lock /tmp/lc.txt && uv pip install -e ".[dev]" -c /tmp/lc.txt`.
+# A bare `uv pip install -e ".[dev]"` floats on pyproject's ranges — measured fastapi 0.165.0
+# where the lock, CI and every deployment pin 0.139.2. See docs/development.md, GRPH-1932.)
 ./.venv/bin/python -m pytest -q          # SQLite; the full run takes 20-40 min under load. pytest is NOT on the host PATH.
 
 # Backend against real Postgres+pgvector (what production runs — CI runs both):

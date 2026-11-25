@@ -40,9 +40,98 @@ NOT_SUITES = {"changes", "ci", "refusal-ratchet", "security-scans"}
 # exists for (GRPH-1928) was a shard that sat in `pytest -q -n auto` for over two hours.
 MAX_TIMEOUT_MINUTES = 60
 
+# Backend jobs, keyed on their working directory rather than a job list so a NEW one defaults
+# to being covered — the direction that fails safe. `BACKEND_SUITES` run pytest;
+# `backend-packaging` installs the wheel and runs import checks, so it is held to the lock by
+# the same guard without being asked to run a suite it does not have.
+BACKEND_WORKDIR = "backend"
+BACKEND_SUITES = {"backend-sqlite", "backend-postgres"}
+BACKEND_INSTALLS = BACKEND_SUITES | {"backend-packaging"}
+LOCK_WRITE = "lock_constraints.py write uv.lock"
+LOCK_CHECK = "lock_constraints.py check uv.lock"
+
 
 def _workflow() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+
+def _backend_installs() -> dict[str, list[tuple[int, str]]]:
+    """`{job: [(step index, run script)]}` for every job that pip-installs the backend."""
+    out: dict[str, list[tuple[int, str]]] = {}
+    for name, job in _workflow()["jobs"].items():
+        defaults = (job.get("defaults") or {}).get("run") or {}
+        if defaults.get("working-directory") != BACKEND_WORKDIR:
+            continue
+        steps = [(i, step.get("run") or "") for i, step in enumerate(job.get("steps", []))]
+        if any("uv pip install" in run for _, run in steps):
+            out[name] = steps
+    return out
+
+
+def test_every_backend_install_is_held_to_the_lock():
+    """GRPH-1932: the test jobs floated while the shipped installs were held to uv.lock.
+
+    Every backend suite job ran a bare `uv pip install -e ".[dev]"`, which resolves from
+    pyproject's specifiers and never reads `backend/uv.lock`. Measured 2026-11-25: that
+    install gave fastapi 0.165.0 / starlette 1.10.0, while the lock — what pip-audit scans,
+    what `backend/Dockerfile` installs and what a deploy runs — pins 0.139.2 / 1.3.1. The one
+    job that did install under the lock ran no pytest. So `suite_green` attested a dependency
+    set no deployment runs and nothing said so: a regression at the pinned versions shipped
+    untested, and a red suite could arrive from an upstream release with no commit here. Two
+    absences reading as a clean result, which is why the fix is a gate and not a comment.
+
+    GRPH-1615 faced the same fork on the install side and chose to hold the install to the
+    lock rather than move the scan. This is that decision on the test side, enforced with the
+    same three moves: `lock_constraints.py write` → `uv pip install -c` → `check`.
+
+    Sabotage: drop `-c` from a backend `uv pip install`; drop a `write` or `check` step;
+    point `-c` at a path no step wrote; move `check` above the install; drop the pytest step
+    from a suite job; or add a backend job that installs without any of it.
+    """
+    jobs = _backend_installs()
+    assert jobs, f"no job pip-installs under {BACKEND_WORKDIR}/ — this guard asserts nothing"
+    # Named, so a job losing `working-directory: backend` fails here instead of silently
+    # leaving the selector and taking the guard's coverage with it.
+    missing = sorted(BACKEND_INSTALLS - set(jobs))
+    assert not missing, f"no longer selected as a backend install job: {missing}"
+
+    for name, steps in sorted(jobs.items()):
+        installs = [(i, run) for i, run in steps if "uv pip install" in run]
+        wrote = [(i, run) for i, run in steps if LOCK_WRITE in run]
+        checked = [(i, run) for i, run in steps if LOCK_CHECK in run]
+
+        assert wrote, (
+            f"{name}: no step runs `{LOCK_WRITE}`, so nothing derives pip constraints from the "
+            "lock and the install resolves from pyproject's specifiers (GRPH-1932).")
+        assert checked, (
+            f"{name}: nothing runs `{LOCK_CHECK}`, so the install is pointed at the lock but "
+            "never held to it — a version that disagreed would pass unnoticed (GRPH-1615).")
+        assert wrote[0][0] < checked[0][0], f"{name}: `{LOCK_CHECK}` runs before the write"
+
+        for i, run in installs:
+            assert " -c " in run, (
+                f"{name} step {i} installs with no `-c` constraints: {run.strip()!r}. It "
+                "resolves from pyproject's specifiers and floats on every upstream release, so "
+                "the suite attests a dependency set no deployment runs (GRPH-1932).")
+            # The path `-c` names must be the path the `write` step produced, or the install is
+            # constrained by a stale file that happens to still exist.
+            arg = run.split(" -c ", 1)[1].strip()
+            assert arg and arg in wrote[0][1], (
+                f"{name} step {i} constrains from {arg!r}, which its `{LOCK_WRITE}` step does "
+                f"not write: {wrote[0][1].strip()!r}")
+            assert wrote[0][0] < i, f"{name}: step {i} installs before the constraints are written"
+
+        assert installs[-1][0] < checked[0][0], (
+            f"{name}: `{LOCK_CHECK}` runs before the install it is supposed to check, so it "
+            "attests an empty venv and passes whatever the install then does.")
+
+        if name in BACKEND_SUITES:
+            # Without this the job could hold a venv to the lock, run nothing in it, and still
+            # report green — the same absence the item exists to remove, one level up.
+            suite = [i for i, run in steps if "pytest" in run]
+            assert suite and suite[-1] > checked[0][0], (
+                f"{name} runs no pytest after `{LOCK_CHECK}`, so it proves the venv matches the "
+                "lock and attests nothing about the suite that ran in it.")
 
 
 def test_every_suite_job_bounds_itself():
