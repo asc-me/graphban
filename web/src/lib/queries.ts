@@ -881,6 +881,18 @@ export function usePromoteRule(projectId: string) {
   });
 }
 
+/** A person removes a custom rule (GRPH-1939): it leaves the custom lists, the map and the toggles. */
+export function useRemoveCustomRule(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { ruleId: string; reason: string }) => api.removeCustomRule(projectId, v.ruleId, v.reason),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["rule-observations"] });
+      invalidateProposals(qc);
+    },
+  });
+}
+
 export function useCustomRules(projectId: string) {
   return useQuery({
     queryKey: ["custom-rules", projectId],

@@ -1344,6 +1344,12 @@ export const api = {
       `/projects/${encodeURIComponent(projectId)}/rules/${encodeURIComponent(ruleId)}/promote`,
       { method: "POST", body: JSON.stringify({ reason }) },
     ),
+  /** A project owner/admin removes a custom rule with a reason (GRPH-1939). Would-have rows and history stay. */
+  removeCustomRule: (projectId: string, ruleId: string, reason: string) =>
+    request<{ rule_id: string; project_id: string; removed: boolean; state: string; reason: string; org_rule_holds: boolean }>(
+      `/projects/${encodeURIComponent(projectId)}/rules/custom/${encodeURIComponent(ruleId)}/remove`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
   /** The would-have rows of one rule. */
   ruleObservations: (projectId: string, ruleId: string) =>
     request<import("@/lib/types").RuleObservation[]>(

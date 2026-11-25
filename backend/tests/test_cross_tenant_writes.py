@@ -248,3 +248,14 @@ def test_org_handle_write_blocks_another_org(client, tenants):
     r = client.patch(f"/api/orgs/{tenants['org_b']}/me/handle", json={"handle": "probe-handle"},
                      headers=tenants["alex"])
     assert _blocked(r.status_code), r.text
+
+
+def test_custom_rule_remove_is_in_the_sweep(client, tenants):
+    """GRPH-1939: removing a custom rule is a project write; the sweep enumerates it, and a
+    stranger naming another org's project is blocked."""
+    found = _project_scoped_writes(client)
+    name = "POST /api/projects/{project_id}/rules/custom/{rule_id}/remove"
+    assert name in found, sorted(k for k in found if "rules" in k)
+    r = client.post(f"/api/projects/{tenants['p_b']}/rules/custom/custom.probe/remove",
+                    json={"reason": "probe"}, headers=tenants["alex"])
+    assert _blocked(r.status_code), r.text

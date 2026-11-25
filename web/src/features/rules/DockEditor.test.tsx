@@ -14,7 +14,7 @@ vi.mock("@/lib/api", () => ({
   api: {
     ruleToggles: vi.fn(), gitops: vi.fn(), me: vi.fn(), members: vi.fn(), syncStatus: vi.fn(), config: vi.fn(),
     customRules: vi.fn(), ruleProposals: vi.fn(), events: vi.fn(), ruleEffect: vi.fn(),
-    ruleObservations: vi.fn(),
+    ruleObservations: vi.fn(), removeCustomRule: vi.fn(),
   },
 }));
 vi.mock("@/features/ProjectContext", () => ({
@@ -104,7 +104,7 @@ describe("DockEditor custom rules", () => {
     const reason = screen.getByTestId("rules-readonly-reason");
     // This assertion fails when the state check is removed and the promote sentence stays.
     expect(reason).toHaveTextContent(
-      "Custom rule: it has no library switch. It is changed by proposal, not here.",
+      "Custom rule: it has no library switch. It is changed by proposal, or removed here.",
     );
     expect(reason).not.toHaveTextContent(/promote/i);
   });
@@ -166,5 +166,31 @@ describe("DockEditor custom rules", () => {
     expect(screen.getByTestId("would-have-record-custom.walk-docs-exclusive")).toHaveTextContent("WOULD-HAVE RECORD (1)");
     expect(api.ruleObservations).toHaveBeenCalledWith("core", "custom.walk-docs-exclusive");
     expect(screen.queryByTestId("rules-dock-state")).toBeNull();
+  });
+
+  it("offers Remove on an active custom rule's dock, with a reason (GRPH-1939)", async () => {
+    vi.mocked(api.customRules).mockResolvedValue([
+      { rule_id: "custom.walk-docs-exclusive", stage: "Plan", title: "Walk docs exclusive", state: "active", params: {}, source: "custom" },
+    ] as never);
+    vi.mocked(api.removeCustomRule).mockResolvedValue({ rule_id: "custom.walk-docs-exclusive", removed: true } as never);
+    const user = userEvent.setup();
+    view();
+    await user.click(screen.getByTestId("rules-dock-row-custom.walk-docs-exclusive"));
+    const btn = await screen.findByTestId("remove-custom.walk-docs-exclusive");
+    expect(btn).toBeDisabled();
+    await user.type(screen.getByLabelText("Remove reason for custom.walk-docs-exclusive"), "finished");
+    await user.click(btn);
+    expect(api.removeCustomRule).toHaveBeenCalledWith("core", "custom.walk-docs-exclusive", "finished");
+  });
+
+  it("offers no dock Remove for an org-owned custom rule", async () => {
+    vi.mocked(api.customRules).mockResolvedValue([
+      { rule_id: "custom.walk-docs-exclusive", stage: "Plan", title: "Walk docs exclusive", state: "active", params: {}, source: "org" },
+    ] as never);
+    const user = userEvent.setup();
+    view();
+    await user.click(screen.getByTestId("rules-dock-row-custom.walk-docs-exclusive"));
+    expect(await screen.findByTestId("rules-dock-state-badge")).toHaveTextContent("ACTIVE");
+    expect(screen.queryByTestId("remove-custom.walk-docs-exclusive")).toBeNull();
   });
 });
