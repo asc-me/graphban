@@ -407,6 +407,20 @@ def test_bounceable_follows_merge_landed(db):
     assert "merge has landed" not in str(exc.value)
 
 
+def test_a_hand_merge_over_a_planner_pr_still_refuses_the_bounce(db):
+    """GRPH-1929. A planner-opened PR receipt makes a `done` item bounceable, unless the
+    owner closed it as merged by hand. The merge attestation wins."""
+    from app.services import fleet as fleet_svc
+    merged = _closed(db, "merged")
+    merged.evidence = [*(merged.evidence or []), {
+        "kind": "url", "url": PR_URL,
+        "detail": f"{fleet_svc.PLANNER_PR_RECEIPT_PREFIX} for gb/line-408"}]
+    db.flush()
+    assert fleet_svc.merger_holds(merged) is True
+    with pytest.raises(fleet_svc.NotInReview, match="merge has landed"):
+        fleet_svc._require_bounceable(merged)
+
+
 def test_verified_receipt_does_not_bypass_the_pr_wait(db, monkeypatch):
     from app.services.items import PRCooldown
     monkeypatch.setattr(settings, "pr_cooldown_seconds", 600, raising=False)

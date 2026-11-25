@@ -59,6 +59,24 @@ has no line filter, so the run filters the clusters to the line's items itself.
 - Run the line drain in its own clone. There is one supervisor lock per checkout, unchanged,
   so do not start `--line` on a checkout a `--prd` drain holds.
 
+### Opening a held-back branch's PR by hand
+
+gbfleet opens no PR for a branch that changed files outside its item's touchpoints. A planner
+who declares those files and opens the PR itself records it on the item as a `url` row:
+
+    {"kind": "url", "url": "<the PR>", "detail": "draft PR opened by planner for <branch>"}
+
+That detail is the canonical wording. With it, the bounce gate treats the PR as a pending
+merge, the same as gbfleet's own `draft PR opened by gbfleet for <branch>` row (GRPH-1929).
+Once the item is signed off, the Merger watches the PR. If a base change conflicts with it,
+the item is bounced to `next`. An item with a merge receipt, or one an owner closed as merged
+by hand, still refuses the bounce.
+
+A PR link recorded in other words is not a pending merge. The bounce refusal names both
+receipts it looked for. When the Merger hits a conflict and the server refuses the bounce
+that way, it blocks the item with the conflict and stops watching it. It does not log the
+same failure on every cycle.
+
 ### Reading the last drain notice
 
 A `--prd` drain run as a service remembers the last notice `until` sent (one per change

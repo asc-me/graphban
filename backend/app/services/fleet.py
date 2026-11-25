@@ -4821,18 +4821,29 @@ MERGE_RECEIPT_PREFIX = "merged by gbfleet"
 #: means gbfleet proposed this item's PR, so the Merger is the one holding its merge.
 PR_RECEIPT_PREFIX = "draft PR opened by gbfleet"
 
+#: The canonical `detail` of the `url` row a planner writes when it opens an item's PR by
+#: hand — "draft PR opened by planner for <branch>" (GRPH-1929). gbfleet holds a branch back
+#: when it changes files outside the touchpoints. A planner then declares them and opens
+#: the PR itself. The Merger watches that PR like any other, so the bounce gate must treat
+#: it as a pending merge too.
+PLANNER_PR_RECEIPT_PREFIX = "draft PR opened by planner"
+
+#: Every receipt that says a merge is pending on an open PR, in the order the refusal names them.
+PENDING_PR_RECEIPT_PREFIXES = (PR_RECEIPT_PREFIX, PLANNER_PR_RECEIPT_PREFIX)
+
 
 def merger_holds(item: Item) -> bool:
-    """Did gbfleet open this item's PR? (GRPH-1389)
+    """Is this item's merge pending on a PR the Merger watches? (GRPH-1389, GRPH-1929)
 
-    Only then is a `done` item waiting on the Merger. A `done` item with no such receipt was
-    merged by hand, or before the Merger existed, or in a project that does not use it, and
+    Yes when a `url` row names the PR and carries a pending-PR receipt: gbfleet's
+    `pr_opened` receipt, or the canonical planner one. A `done` item with neither was merged
+    by hand, or before the Merger existed, or in a project that does not use it, and
     nothing about it is pending.
     """
     return any(
         isinstance(e, dict) and e.get("kind") == "url"
         and str(e.get("url") or "").strip()
-        and str(e.get("detail") or "").startswith(PR_RECEIPT_PREFIX)
+        and str(e.get("detail") or "").startswith(PENDING_PR_RECEIPT_PREFIXES)
         for e in item.evidence or [])
 
 
@@ -4854,7 +4865,7 @@ def merge_landed(item: Item) -> bool:
 
 
 def _require_bounceable(item: Item) -> None:
-    """`review`, or `done` with a gbfleet PR and no merge landed (GRPH-1389).
+    """`review`, or `done` with a pending PR receipt and no merge landed (GRPH-1389, GRPH-1929).
 
     A signed-off item whose PR hits a rebase conflict at merge time cannot land, and CI
     cannot run on it. The Merger only watches `done` items. If bounce refused `done`, every
@@ -4867,10 +4878,13 @@ def _require_bounceable(item: Item) -> None:
                 f"{item.key} is done and its merge has landed, so there is nothing to bounce — "
                 "file a new item for follow-up work")
         if not merger_holds(item):
-            # Shipped work merged by hand carries no merge receipt either. Without a gbfleet
-            # PR receipt nothing says a merge is pending, so a bounce would reopen it.
+            # Shipped work merged by hand carries no merge receipt either. Without a pending
+            # PR receipt (gbfleet's or a planner's) nothing says a merge is pending, so a
+            # bounce would reopen it.
+            looked_for = " or ".join(f'"{p} for <branch>"' for p in PENDING_PR_RECEIPT_PREFIXES)
             raise NotInReview(
                 f"{item.key} is done and gbfleet opened no PR for it, so no merge is pending "
+                f"(no `url` row with a PR link and the detail {looked_for}) "
                 "and there is nothing to bounce — file a new item for follow-up work")
         return
     _require_in_review(item, "bounce")
