@@ -47,3 +47,26 @@ def test_held_reason():
     out = classify("idle", [OpenItem("A")],
                    held=[{"items": ["A"], "held_by": ["SA-1"], "because": ["x.py"]}])
     assert out.reasons["A"] == "held by SA-1 (x.py)"
+
+
+def test_a_blocked_item_names_its_blocker():
+    # GRPH-1945. The stall notice says what clears the item, not only its status.
+    out = classify("idle", [OpenItem("A", status="blocked",
+                                     blocker="Needs a person:\n  check staging")])
+    assert out.state == STALLED
+    assert out.reasons["A"] == "not ready: blocked: Needs a person: check staging"
+
+
+def test_a_long_blocker_is_cut_to_the_limit():
+    out = classify("idle", [OpenItem("A", status="blocked", blocker="x" * 500)])
+    assert out.state == STALLED
+    prefix = "not ready: blocked: "
+    reason = out.reasons["A"]
+    assert reason.startswith(prefix)
+    part = reason[len(prefix):]
+    assert len(part) <= 200 and part.endswith("…")
+
+
+def test_no_blocker_keeps_the_status_reason():
+    out = classify("idle", [OpenItem("A", status="blocked", blocker="  ")])
+    assert out.reasons["A"] == "not ready: status blocked"
