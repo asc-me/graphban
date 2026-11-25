@@ -5,7 +5,9 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from sqlalchemy import text
+from starlette.routing import Match
 
 import logging
 
@@ -866,7 +868,10 @@ def health():
 #
 # MOUNTED LAST, deliberately. Every `/api/` route and `/health` is registered above, so the
 # catch-all below cannot shadow one — an ordering bug here would turn a real endpoint into
-# an HTML page and the failure would look like a frontend routing problem.
+# an HTML page and the failure would look like a frontend routing problem. "Last" is not
+# enough on its own, though: a greedy path still MATCHES an `/api/*` request that nothing
+# above handled, and a match on path without a match on method is a 405 the router produces
+# before any handler runs. `_SpaCatchAll` below is what makes the guarantee real.
 #
 # CONDITIONAL ON THE BUNDLE EXISTING, rather than on a setting. The api container has no
 # `web/dist`, so the Docker path is untouched BY CONSTRUCTION instead of by a flag somebody
@@ -905,6 +910,28 @@ def _safe_dist_file(dist: pathlib.Path, relative: str) -> pathlib.Path | None:
     return target
 
 
+class _SpaCatchAll(APIRoute):
+    """The SPA catch-all, declining every `/api/*` path instead of answering it.
+
+    A greedy `/{full_path:path}` still MATCHES the path of an API request nothing else
+    handled, and Starlette reports a path-match without a method-match as `405 Method Not
+    Allowed`. So on a deployment where the bundle is mounted — which is every deployment
+    that serves its own console, and every worktree where somebody ran `pnpm build` —
+    `PUT /api/orgs/x/rule-toggles/y` on a retired route answered 405 where the product says
+    the resource is gone, and a `/api/*` route appended after import was swallowed whole.
+
+    The exclusion has to be HERE rather than in the handler: a 405 is produced by the router
+    before any handler runs, so no response-body logic can prevent it. With `/api/*`
+    unmatched, those requests fall through to FastAPI's own JSON 404, which is the answer
+    an agent expects where it would otherwise get an HTML shell (GRPH-1931).
+    """
+
+    def matches(self, scope):
+        if scope.get("path", "").startswith("/api/"):
+            return Match.NONE, {}
+        return super().matches(scope)
+
+
 def _mount_spa(application: FastAPI, dist: pathlib.Path) -> None:
     """Serve the built SPA, matching what `web/nginx.conf.template` does today.
 
@@ -935,16 +962,10 @@ def _mount_spa(application: FastAPI, dist: pathlib.Path) -> None:
     application.mount("/assets", StaticFiles(directory=dist / "assets", html=False),
                       name="assets")
 
-    @application.get("/{full_path:path}", include_in_schema=False)
     async def _spa(full_path: str):
         """Anything not matched above is a client-side route."""
         from urllib.parse import unquote
 
-        # An unmatched `/api/*` is a MISSING ENDPOINT, and must stay JSON. Returning the SPA
-        # would hand an agent an HTML page where it expected an error object, and the 200
-        # would read as success.
-        if full_path.startswith("api/"):
-            return JSONResponse({"detail": "Not Found"}, status_code=404)
         if full_path:
             relative = unquote(full_path)
             if relative.startswith("/") or ".." in pathlib.PurePosixPath(relative).parts:
@@ -959,6 +980,18 @@ def _mount_spa(application: FastAPI, dist: pathlib.Path) -> None:
             dist / "index.html",
             headers={"Cache-Control": SPA_SHELL_CACHE_CONTROL},
         )
+
+    # `add_api_route` rather than the `@application.get` decorator because the decorator
+    # cannot take `route_class_override`, and `_SpaCatchAll` is what keeps an unmatched
+    # `/api/*` off this route entirely instead of letting the router answer it with a 405
+    # for every method it does not declare.
+    application.router.add_api_route(
+        "/{full_path:path}",
+        _spa,
+        methods=["GET"],
+        include_in_schema=False,
+        route_class_override=_SpaCatchAll,
+    )
 
 
 if _DIST.is_dir():  # pragma: no cover - exercised via `_mount_spa` against a fixture
