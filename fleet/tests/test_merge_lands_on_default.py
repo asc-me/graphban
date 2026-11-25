@@ -252,6 +252,102 @@ def test_a_draft_that_cannot_be_marked_ready_leaves_done(monkeypatch):
     assert left and "gh pr ready failed" in left[0]["detail"] and "SA-417" in left[0]["detail"]
 
 
+_GRAPHQL_BLIP = ("GraphQL: Something went wrong while executing your query. Please include "
+                 "`E04A:199DC2:1959BEE:4FFF9CF:6B05C41E` when reporting this issue.")
+
+
+class _ReadyFailsOnce(_Forge):
+    """`gh pr ready` fails once with `stderr`, then behaves."""
+
+    def __init__(self, stderr: str):
+        super().__init__(draft=True)
+        self.stderr, self.failed = stderr, False
+
+    def __call__(self, argv, **kw):
+        if " ".join(argv[1:3]) == "pr ready" and not self.failed:
+            self.calls.append(argv)
+            self.failed = True
+            return subprocess.CompletedProcess(argv, 1, "", self.stderr)
+        return super().__call__(argv, **kw)
+
+
+def _two_ticks(monkeypatch, fake):
+    gh = _forge(monkeypatch, fake)
+    events = []
+    real = observe.emit
+    observe.emit = lambda event, **kw: events.append((event, kw))
+    try:
+        ledger = _Strict({"SA-417": _with_pr("SA-417")})
+        merger = Merger(REPO, ledger, enabled=True, agent_id="GRPH-PLANNER")
+        wave = Wave()
+        clock = {"t": 1000.0}
+        merger.tick(wave, now=lambda: clock["t"])
+        first = wave.merged["SA-417"]
+        status_after_first = ledger.items["SA-417"]["status"]
+        clock["t"] += 61
+        merger.tick(wave, now=lambda: clock["t"])
+    finally:
+        observe.emit = real
+    return gh, ledger, wave, first, status_after_first, events
+
+
+def test_a_graphql_blip_on_pr_ready_stays_done_and_merges_next_tick(monkeypatch):
+    """GRPH-1920. GitHub's "Something went wrong" on `gh pr ready` is the forge failing,
+    not refusing. The item stays `done`, the next tick marks it ready and merges.
+
+    Sabotage: make `propose.forge_transient` return False. The first tick reads
+    "gh pr ready failed", a leave-done marker, and the item is bounced to `next`.
+    """
+    gh, ledger, wave, first, after_first, events = _two_ticks(
+        monkeypatch, _ReadyFailsOnce(_GRAPHQL_BLIP))
+
+    assert not first.ok and not first.skipped and not first.final
+    assert "forge transient" in first.reason and "Something went wrong" in first.reason
+    assert after_first == "done"
+    item = ledger.items["SA-417"]
+    assert item["status"] == "done", item["status"]
+    assert wave.merged["SA-417"].ok, wave.merged["SA-417"].reason
+    assert _merged_receipts(item)
+    assert ledger.wrote("bounce") == []
+    assert not any(kind == "merge_left_done" for kind, _kw in events)
+    assert gh.verbs().count("pr ready") == 2
+    assert "pr merge" in gh.verbs()
+
+
+def test_an_http_5xx_on_pr_ready_stays_done_and_merges_next_tick(monkeypatch):
+    _gh, ledger, wave, first, after_first, _events = _two_ticks(
+        monkeypatch, _ReadyFailsOnce("HTTP 502: Bad Gateway (https://api.github.com/graphql)"))
+
+    assert not first.final and "forge transient" in first.reason
+    assert after_first == "done"
+    assert ledger.items["SA-417"]["status"] == "done"
+    assert wave.merged["SA-417"].ok, wave.merged["SA-417"].reason
+
+
+def test_a_403_on_pr_ready_still_leaves_done(monkeypatch):
+    """A refusal is terminal as before: the item is bounced to `next` on the first tick."""
+    _forge(monkeypatch, _ReadyFailsOnce(
+        "HTTP 403: Resource not accessible by integration (https://api.github.com/graphql)"))
+    events = []
+    real = observe.emit
+    observe.emit = lambda event, **kw: events.append((event, kw))
+    try:
+        ledger = _Strict({"SA-417": _with_pr("SA-417")})
+        merger = Merger(REPO, ledger, enabled=True, agent_id="GRPH-PLANNER")
+        wave = Wave()
+        merger.tick(wave)
+    finally:
+        observe.emit = real
+
+    item = ledger.items["SA-417"]
+    assert item["status"] == "next", item["status"]
+    assert _merged_receipts(item) == []
+    assert "SA-417" not in merger.watching
+    left = [kw for kind, kw in events if kind == "merge_left_done"]
+    assert left and "gh pr ready failed" in left[0]["detail"]
+    assert "Resource not accessible" in left[0]["detail"]
+
+
 def test_a_pr_that_is_not_mergeable_yet_stays_watched(monkeypatch):
     """UNKNOWN/UNSTABLE is the forge's answer for a moment after a push. `_merge` reports
     it as "not mergeable yet" and does not skip, so the next tick can merge

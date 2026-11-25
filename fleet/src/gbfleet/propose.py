@@ -906,6 +906,23 @@ SCANS_PREDICATE = "scans_clean"
 _PR_FIELDS = ("number,url,title,body,state,isDraft,mergeable,mergeStateStatus,"
               "headRefOid,headRefName,baseRefName,isCrossRepository,mergeCommit")
 
+#: `gh` output that says GitHub failed, not that it refused (GRPH-1920). A `gh pr ready`
+#: that fails with one of these is retried next tick; anything else — `HTTP 403`,
+#: "Resource not accessible by integration", a validation refusal — stays terminal.
+_FORGE_TRANSIENT = re.compile(
+    r"something went wrong while executing your query"
+    r"|\bHTTP 5\d\d\b"
+    r"|\b5\d\d (?:Internal Server Error|Bad Gateway|Service Unavailable|Gateway Time-?out)\b"
+    r"|\btimed out\b|\btimeout\b|i/o timeout"
+    r"|connection reset|ECONNRESET|unexpected EOF",
+    re.IGNORECASE,
+)
+
+
+def forge_transient(text: str) -> bool:
+    """True when `gh`'s output names a GitHub-side failure worth retrying, not a refusal."""
+    return bool(text) and _FORGE_TRANSIENT.search(text) is not None
+
 
 @dataclass(frozen=True)
 class Merged:
@@ -1852,10 +1869,19 @@ def _merge(repo: Path, item_id: str, selector: str, *, reviewed: str, green: set
             return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
                           reason=f"gh could not run: {exc}")
         if done.returncode != 0:
-            tail = (done.stderr or done.stdout or "").strip().splitlines()
+            text = (done.stderr or done.stdout or "").strip()
+            tail = text.splitlines()
+            last = tail[-1][:200] if tail else str(done.returncode)
+            if forge_transient(text):
+                # GRPH-1920: GitHub's own blip, not a refusal. Neither skipped nor a
+                # leave-done marker, so the item stays `done` and the next tick retries.
+                return Merged(item=item_id, selector=selector, url=url,
+                              checked=tuple(checked),
+                              reason=f"gh pr ready hit a forge transient; retried next "
+                                     f"tick: {last}")
             return Merged(item=item_id, selector=selector, url=url, skipped=True,
                           checked=tuple(checked),
-                          reason=f"gh pr ready failed: {tail[-1][:200] if tail else done.returncode}")
+                          reason=f"gh pr ready failed: {last}")
         checked.append("marked-ready")
         # Re-read: the forge recomputes mergeability once a draft is ready, and the answer
         # a moment ago was about a draft.
