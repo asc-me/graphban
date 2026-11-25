@@ -40,6 +40,21 @@ def make_src(tmp_path: pathlib.Path, *, version: str = VER) -> pathlib.Path:
     (src / "web" / "package.json").write_text(
         f'{{\n  "name": "graphban-web",\n  "version": "{version}"\n}}\n',
         encoding="utf-8")
+    # A second package sorts before graphban-api on purpose: a stamp anchored on a bare
+    # `version = "…"` would rewrite that one instead, and this tree would not notice (GRPH-1933).
+    (src / "backend" / "uv.lock").write_text(
+        'version = 1\n'
+        '\n'
+        '[[package]]\n'
+        'name = "alembic"\n'
+        'version = "1.13.0"\n'
+        'source = { registry = "https://pypi.org/simple" }\n'
+        '\n'
+        '[[package]]\n'
+        'name = "graphban-api"\n'
+        f'version = "{version}"\n'
+        'source = { editable = "." }\n',
+        encoding="utf-8")
     (src / "fleet" / "pyproject.toml").write_text(
         '[project]\nname = "graphban-fleet"\nversion = "0.1.0"\n',
         encoding="utf-8")
@@ -141,20 +156,36 @@ def test_next_placeholder_starts_this_month():
     assert rel.next_calver("0.1.0", dt.date(2026, 9, 2), set()) == "2026.09.1"
 
 
-def test_stamp_writes_three_files_and_not_fleet(tmp_path):
+def test_stamp_writes_the_version_files_and_not_fleet(tmp_path):
     src = make_src(tmp_path)
     written = rel.stamp(src, NEXT)
     assert [p.as_posix() for p in written] == [
         "backend/app/version.py",
         "backend/pyproject.toml",
+        "backend/uv.lock",
         "web/package.json",
     ]
     assert rel.read_stamped(src) == NEXT
     assert f'version = "{NEXT}"' in (src / "backend/pyproject.toml").read_text()
     assert f'"version": "{NEXT}"' in (src / "web/package.json").read_text()
+    # GRPH-1933: the lock carries a copy of the same scalar, and stamping pyproject alone
+    # is what left `uv lock --check` red on main.
+    lock = (src / "backend/uv.lock").read_text(encoding="utf-8")
+    assert f'name = "graphban-api"\nversion = "{NEXT}"' in lock
+    assert 'name = "alembic"\nversion = "1.13.0"' in lock, "stamped a dependency, not the project"
     fleet = (src / "fleet/pyproject.toml").read_text(encoding="utf-8")
     assert 'version = "0.1.0"' in fleet
     assert NEXT not in fleet
+
+
+def test_stamp_refuses_a_tree_with_no_lock(tmp_path):
+    """A missing lock means the scalar cannot be kept in step. That is a refusal, not a
+    silent skip: an absence must not read as a stamped tree."""
+    src = make_src(tmp_path)
+    (src / "backend/uv.lock").unlink()
+    with pytest.raises(ValueError, match="uv.lock is missing"):
+        rel.stamp(src, NEXT)
+    assert rel.read_stamped(src) == VER, "wrote the other files before refusing"
 
 
 def test_stamp_refuses_placeholder(tmp_path):

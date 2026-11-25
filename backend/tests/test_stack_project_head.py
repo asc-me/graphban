@@ -190,3 +190,63 @@ def test_directory_nodes_without_content_do_not_unpin_the_map(db):
     d = db.query(CodeNode).filter_by(project_id=PID, path="src").one()
     assert not d.content_hash and not d.revision
     assert stack_svc.project_head_sha(db, PID) == R
+
+
+# GRPH-1845: a non-producer describe from a branch must not move the map's revision.
+P = "gban-codemap/test"
+
+
+def _file(path, h="sha256:" + "1" * 64):
+    return {"path": path, "kind": "file", "content_hash": h, "summary": "s"}
+
+
+def _rev(db, path):
+    return db.query(CodeNode).filter_by(project_id=PID, path=path).one()
+
+
+def test_non_producer_describe_keeps_producer_revision_and_head(db):
+    nodes = [_file(f"src/f{i}.py", "sha256:" + f"{i:064x}") for i in range(5)]
+    code_graph.describe_code(db, project_id=PID, nodes=nodes, revision=R, producer=P)
+    other = _file("src/f0.py", "sha256:" + "f" * 64)
+    other["summary"] = "branch summary"
+    r = code_graph.describe_code(db, project_id=PID, nodes=[other, _file("src/f1.py", "sha256:" + "e" * 64)], revision=R2)
+    assert r["kept_revision"] == ["src/f0.py", "src/f1.py"]
+    n = _rev(db, "src/f0.py")
+    assert n.revision == R and n.content_hash == "sha256:" + f"{0:064x}"
+    assert n.summary == "branch summary"
+    assert stack_svc.project_head_sha(db, PID) == R
+
+
+def test_non_producer_can_create_unstamped_and_describe_symbols(db):
+    code_graph.describe_code(db, project_id=PID, nodes=[_file("src/a.py")], revision=R, producer=P)
+    r = code_graph.describe_code(
+        db, project_id=PID, revision=R,
+        nodes=[_file("src/new.py"), {"path": "src/a.py::fn", "kind": "symbol"}])
+    assert r["kept_revision"] == []
+    assert _rev(db, "src/new.py").revision == R
+    assert _rev(db, "src/a.py::fn")
+
+
+def test_producer_batch_always_wins(db):
+    code_graph.describe_code(db, project_id=PID, nodes=[_file("src/a.py")], revision=R, producer=P)
+    code_graph.describe_code(db, project_id=PID, nodes=[_file("src/a.py")], revision=R2, producer=P)
+    assert _rev(db, "src/a.py").revision == R2
+
+
+def test_batches_without_producer_behave_as_before_on_unstamped_nodes(db):
+    code_graph.describe_code(db, project_id=PID, nodes=[_file("src/a.py")], revision=R)
+    r = code_graph.describe_code(db, project_id=PID, nodes=[_file("src/a.py", "sha256:" + "2" * 64)], revision=R2)
+    assert r["kept_revision"] == []
+    assert _rev(db, "src/a.py").revision == R2
+
+
+def test_reproduced_case_head_stays_at_producer_revision(db):
+    # 1975 producer nodes at A; a fleet child describes 2 files from its branch at B, one
+    # stamped by the producer and one new on the branch. The head stays A.
+    nodes = [_file(f"src/m{i}.py", "sha256:" + f"{i:064x}") for i in range(1975)]
+    code_graph.describe_code(db, project_id=PID, nodes=nodes, revision=R, producer=P)
+    code_graph.describe_code(
+        db, project_id=PID, revision=R2,
+        nodes=[_file("src/m0.py", "sha256:" + "f" * 64), _file("web/LineBadges.tsx")])
+    assert _rev(db, "src/m0.py").revision == R
+    assert stack_svc.project_head_sha(db, PID) == R

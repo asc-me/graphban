@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it, vi, type Mock } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { HarnessView } from "@/features/harness/HarnessView";
 import { ProjectProvider } from "@/features/ProjectContext";
@@ -37,15 +37,6 @@ function report(over: Partial<HarnessReport> = {}): HarnessReport {
 }
 
 const harness = vi.fn(async () => report());
-const probeCandidates = vi.fn(async () => ({
-  project_id: "core",
-  by_leaf: {},
-  by_family: {},
-  floor: 5,
-  estimated_tokens: { comparable: false, reported: 0, finished: 0, reason: "no probe history reported tokens" },
-  suggestions: [],
-})) as Mock<(...args: unknown[]) => Promise<unknown>>;
-const startProbeRun = vi.fn(async () => ({ run_id: "run-1" }));
 const harnessRecommendations = vi.fn(async () => ({
   project_id: "core", cards: [] as import("@/lib/types").HarnessCard[], rules: ["R1", "R2", "R3", "R4", "R5", "R6"],
   lessons_drafted: [], window_days: 90, floor: 5,
@@ -89,8 +80,6 @@ vi.mock("@/lib/api", () => ({
     projects: vi.fn(async () => [{ id: "core", name: "Core", tag: "GRPH" }]),
     harness: (...args: unknown[]) => harness(...(args as [])),
     harnessGuidance: (...args: unknown[]) => harnessGuidance(...(args as [])),
-    harnessProbeCandidates: (...args: unknown[]) => probeCandidates(...(args as [])),
-    startHarnessProbeRun: (...args: unknown[]) => startProbeRun(...(args as [])),
     harnessRecommendations: (...args: unknown[]) => harnessRecommendations(...(args as [])),
   },
 }));
@@ -201,6 +190,120 @@ describe("Harness page", () => {
       "below the floor — 3 of 5 attempts",
     );
     expect(screen.getByTestId("harness-floor-note")).toHaveTextContent("1 of 1 cells");
+  });
+
+  it("says no baseline when a cell has none", async () => {
+    harness.mockResolvedValueOnce(report());
+    show();
+    expect(await screen.findByTestId("harness-baseline")).toHaveTextContent("no baseline");
+  });
+
+  it("greys a baseline under the floor and shows its n, suite and version", async () => {
+    harness.mockResolvedValueOnce(
+      report({ cells: [cell({ baseline: { suite_id: "template", suite_version: "0.1.0", n: 2,
+                                           green: 1, rate: 0.5, below_floor: true } })] }),
+    );
+    show();
+    const thin = await screen.findByTestId("harness-baseline");
+    expect(thin).toHaveTextContent("n 2");
+    expect(thin).toHaveTextContent("template v0.1.0");
+    expect(thin).toHaveAttribute("data-below-floor", "true");
+    expect(thin).toHaveClass("text-faint");
+  });
+
+  it("shows the baseline's excluded count, with reasons in the title", async () => {
+    harness.mockResolvedValueOnce(
+      report({ cells: [cell({ baseline: { suite_id: "template", suite_version: "0.1.0", n: 3,
+                                           green: 3, rate: 1, below_floor: true, excluded: 4,
+                                           excluded_reasons: [{ task_id: "t9", reason: "never_registered" }] } })] }),
+    );
+    show();
+    const b = await screen.findByTestId("harness-baseline");
+    expect(b).toHaveTextContent("4 excluded");
+    expect(b.getAttribute("title")).toContain("never_registered");
+  });
+
+  it("shows the newest version's own baseline, never an older version's", async () => {
+    // Two binaries of one model pool into one row; only the older one has a baseline.
+    const old = cell({
+      key: { ...cell().key, binary_version: "0.9.0" },
+      versions_seen: ["0.9.0", "0.9.1"], is_current_version: false,
+      baseline: { suite_id: "template", suite_version: "0.1.0", binary_version: "0.9.0", n: 9,
+                  green: 9, rate: 1, below_floor: false },
+    });
+    const cur = cell({ versions_seen: ["0.9.0", "0.9.1"], is_current_version: true, baseline: null });
+    harness.mockResolvedValueOnce(report({ cells: [old, cur] }));
+    show();
+    const b = await screen.findByTestId("harness-baseline");
+    expect(b).toHaveTextContent("no baseline @ 0.9.1");
+    expect(b).not.toHaveTextContent("100%");
+    expect(b).toHaveAttribute("data-version", "0.9.1");
+  });
+
+  it("names the version a baseline was measured at", async () => {
+    const cur = cell({
+      versions_seen: ["0.9.0", "0.9.1"], is_current_version: true,
+      baseline: { suite_id: "template", suite_version: "0.1.0", binary_version: "0.9.1", n: 8,
+                  green: 6, rate: 0.75, below_floor: false },
+    });
+    const old = cell({ key: { ...cell().key, binary_version: "0.9.0" },
+                       versions_seen: ["0.9.0", "0.9.1"], is_current_version: false, baseline: null });
+    harness.mockResolvedValueOnce(report({ cells: [old, cur] }));
+    show();
+    const b = await screen.findByTestId("harness-baseline");
+    expect(b).toHaveTextContent("75% n 8 · template v0.1.0 @ 0.9.1");
+    expect(b).toHaveAttribute("data-below-floor", "false");
+  });
+
+  it("gives a family column a dash, not a false no baseline, and its leaf its own", async () => {
+    const leafBaseline = { suite_id: "template", suite_version: "0.1.0", binary_version: "0.9.1",
+                           n: 6, green: 3, rate: 0.5, below_floor: false };
+    harness.mockResolvedValueOnce(
+      report({
+        cells: [cell({
+          kind: "family", family: "B", label: "family rollup",
+          key: { ...cell().key, capability: "B" }, baseline: undefined,
+          leaves: [{ ...cell(), kind: "leaf", family: "B", label: "B5",
+                     key: { ...cell().key, capability: "B5" }, baseline: leafBaseline }],
+        })],
+      }),
+    );
+    show();
+    const fam = await screen.findByTestId("harness-baseline");
+    expect(fam).toHaveAttribute("data-family", "true");
+    expect(fam).not.toHaveTextContent("no baseline");
+    await userEvent.setup().click(screen.getByRole("button", { name: /^Expand B into/ }));
+    const lines = screen.getAllByTestId("harness-baseline");
+    expect(lines.map((l) => l.textContent)).toContain("50% n 6 · template v0.1.0 @ 0.9.1");
+  });
+
+  it("renders a baseline-only row for a model natural traffic never ran (GRPH-1876)", async () => {
+    // The server's shape for a baseline with no natural cell: a top-level leaf, layer baseline,
+    // natural n 0, and the baseline block. It is the only cell for this model.
+    const only: HarnessCell = {
+      key: { vendor: "anthropic", model: "sonnet", binary_version: "2.1.37", capability: "B5", size_band: "" },
+      kind: "leaf", family: "B", label: "B5", layer: "baseline",
+      finished: 0, signed_off: 0, bounced: 0, rate: null, below_floor: true,
+      sampling: { first_choice: 0, fallback: 0, explicit: 0, unknown: 0, probe: 0 },
+      skew: null, median_seconds: null,
+      cost: { comparable: false, reported: 0, finished: 0,
+              reason: "not comparable: 0 of 0 attempts reported tokens" },
+      series: [], versions_seen: ["2.1.37"], is_current_version: true,
+      baseline: { suite_id: "template", suite_version: "0.1.0", binary_version: "2.1.37",
+                  n: 6, green: 5, rate: 0.833, below_floor: false },
+    };
+    harness.mockResolvedValueOnce(report({
+      capability_set: { leaves: ["B3", "B5"], families: { B: ["B3", "B5"], other: [] },
+                        labels: { B: "Layer", B3: "Service", B5: "React component", other: "other" } },
+      cells: [only],
+    }));
+    show();
+    const fam = await screen.findByTestId("harness-baseline");
+    expect(fam).toHaveAttribute("data-family", "true");
+    expect(screen.getAllByText(/sonnet/).length).toBeGreaterThan(0);
+    await userEvent.setup().click(screen.getByRole("button", { name: /^Expand Layer into/ }));
+    const lines = screen.getAllByTestId("harness-baseline").map((l) => l.textContent);
+    expect(lines).toContain("83% n 6 · template v0.1.0 @ 2.1.37");
   });
 
   it("badges a lopsided cell without changing its rate", async () => {
@@ -597,8 +700,7 @@ describe("Harness tabs", () => {
     clipSpy.mockRestore();
   });
 
-  it("switches to the Changes tab and shows recommendations and the probe panel", async () => {
-    probeCandidates.mockResolvedValueOnce(probeData());
+  it("switches to the Changes tab and shows recommendations and no probe-start UI", async () => {
     harnessRecommendations.mockResolvedValue({
       project_id: "core",
       cards: [{
@@ -621,10 +723,10 @@ describe("Harness tabs", () => {
       project_id: "core", cards: [], rules: ["R1", "R2", "R3", "R4", "R5", "R6"],
       lessons_drafted: [], window_days: 90, floor: 5,
     });
-    expect(screen.getByTestId("harness-probe-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("harness-probe-panel")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("harness-probe-start")).not.toBeInTheDocument();
     expect(screen.getByText(/This page changes nothing/)).toBeInTheDocument();
     expect(screen.getByText(/R1 and R2 hand you evidence text/)).toBeInTheDocument();
-    expect(screen.getByTestId("harness-probe-purpose")).toHaveTextContent(/one model and one leaf at a time/i);
   });
 
   it("badges the Changes tab with the default-filter count and gives the total in its tooltip", async () => {
@@ -768,169 +870,7 @@ describe("Harness tabs", () => {
   });
 });
 
-const probeItems = [
-  { id: "item-1", key: "GRPH-1", title: "Fix auth bypass", capabilities: ["B5"], touchpoints: ["src/auth.ts"] },
-  { id: "item-2", key: "GRPH-2", title: "Add retry logic", capabilities: ["B5"], touchpoints: ["src/api.ts"] },
-  { id: "item-3", key: "GRPH-3", title: "Migrate schema", capabilities: ["B5"], touchpoints: ["src/db.ts"] },
-  { id: "item-4", key: "GRPH-4", title: "Extra candidate", capabilities: ["B5"], touchpoints: ["src/extra.ts"] },
-];
-
-function probeData(over: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    project_id: "core",
-    by_leaf: { B5: probeItems },
-    by_family: {
-      B: { leaf_ready: ["B5"], fallback: false, n: 4, items: probeItems, thin_leaves: [] },
-    },
-    floor: 5,
-    estimated_tokens: { comparable: true, reported: 3, finished: 5, tokens_per_attempt: 12000, tokens_in: 30000, tokens_out: 6000 },
-    suggestions: [
-      { trigger: "new_row", vendor: "anthropic", model: "sonnet", binary_version: "", reason: "no natural cell" },
-    ],
-    ...over,
-  };
-}
-
-describe("Harness probe panel", () => {
-  it("shows the estimated token cost before start", async () => {
-    probeCandidates.mockResolvedValueOnce(probeData());
-    harness.mockResolvedValueOnce(report({}));
-    show();
-    const user = userEvent.setup();
-    await screen.findAllByTestId("harness-grid-cell");
-    const tabs = screen.getAllByTestId("harness-tab");
-    await user.click(tabs[2]);
-    const estimate = await screen.findByTestId("harness-probe-estimate");
-    expect(estimate).toHaveTextContent("12,000 tokens per attempt");
-    expect(estimate).toHaveTextContent("3 reported");
-  });
-
-  it("renders candidates grouped by leaf with checkboxes", async () => {
-    probeCandidates.mockResolvedValueOnce(probeData());
-    harness.mockResolvedValueOnce(report({}));
-    show();
-    const user = userEvent.setup();
-    await screen.findAllByTestId("harness-grid-cell");
-    const tabs = screen.getAllByTestId("harness-tab");
-    await user.click(tabs[2]);
-    const group = await screen.findByTestId("harness-probe-group");
-    expect(group).toHaveTextContent("B5");
-    expect(group).toHaveTextContent("4 candidates");
-    const items = within(group).getAllByTestId("harness-probe-item");
-    expect(items).toHaveLength(4);
-  });
-
-  it("limits picks to three items across all groups", async () => {
-    probeCandidates.mockResolvedValueOnce(probeData());
-    harness.mockResolvedValueOnce(report({}));
-    show();
-    const user = userEvent.setup();
-    await screen.findAllByTestId("harness-grid-cell");
-    const tabs = screen.getAllByTestId("harness-tab");
-    await user.click(tabs[2]);
-    await screen.findByTestId("harness-probe-panel");
-    const checkboxes = screen.getAllByRole("checkbox");
-    await user.click(checkboxes[0]);
-    await user.click(checkboxes[1]);
-    await user.click(checkboxes[2]);
-    expect(checkboxes[3]).toBeDisabled();
-  });
-
-  it("shows the start button only when a suggestion and items are picked", async () => {
-    probeCandidates.mockResolvedValueOnce(probeData());
-    harness.mockResolvedValueOnce(report({
-      probe_suggestions: [{ trigger: "new_row", vendor: "anthropic", model: "sonnet", binary_version: "", estimated_tokens: { comparable: false, reported: 0, finished: 0, reason: "no history" }, reason: "no natural cell" }],
-    }));
-    show();
-    const user = userEvent.setup();
-    await screen.findAllByTestId("harness-grid-cell");
-    const tabs = screen.getAllByTestId("harness-tab");
-    await user.click(tabs[2]);
-    await screen.findByTestId("harness-probe-panel");
-    expect(screen.queryByTestId("harness-probe-start")).not.toBeInTheDocument();
-    const suggestionBtns = screen.getAllByTestId("harness-probe-suggestion");
-    await user.click(suggestionBtns[0]);
-    expect(screen.queryByTestId("harness-probe-start")).not.toBeInTheDocument();
-    const checkboxes = screen.getAllByRole("checkbox");
-    await user.click(checkboxes[0]);
-    expect(await screen.findByTestId("harness-probe-start")).toHaveTextContent("Start probe");
-    expect(screen.getByTestId("harness-probe-start")).toHaveTextContent("anthropic:sonnet");
-  });
-
-  it("calls startHarnessProbeRun with the picked items and suggestion", async () => {
-    probeCandidates.mockResolvedValueOnce(probeData());
-    harness.mockResolvedValueOnce(report({
-      probe_suggestions: [{ trigger: "new_row", vendor: "anthropic", model: "sonnet", binary_version: "", estimated_tokens: { comparable: false, reported: 0, finished: 0, reason: "no history" }, reason: "no natural cell" }],
-    }));
-    show();
-    const user = userEvent.setup();
-    await screen.findAllByTestId("harness-grid-cell");
-    const tabs = screen.getAllByTestId("harness-tab");
-    await user.click(tabs[2]);
-    await screen.findByTestId("harness-probe-panel");
-    await user.click(screen.getAllByTestId("harness-probe-suggestion")[0]);
-    const checkboxes = screen.getAllByRole("checkbox");
-    await user.click(checkboxes[0]);
-    await user.click(checkboxes[1]);
-    await user.click(await screen.findByTestId("harness-probe-start"));
-    expect(startProbeRun).toHaveBeenCalledWith({
-      project_id: "core",
-      vendor: "anthropic",
-      model: "sonnet",
-      capability: "B5",
-      item_ids: ["item-1", "item-2"],
-      trigger: "new_row",
-      binary_version: "",
-    });
-  });
-
-  it("shows a 409 as a visible refusal, not a silent no-op", async () => {
-    startProbeRun.mockRejectedValueOnce(new Error("a probe for this model is already running; one model and one leaf at a time"));
-    probeCandidates.mockResolvedValueOnce(probeData());
-    harness.mockResolvedValueOnce(report({
-      probe_suggestions: [{ trigger: "new_row", vendor: "anthropic", model: "sonnet", binary_version: "", estimated_tokens: { comparable: false, reported: 0, finished: 0, reason: "no history" }, reason: "no natural cell" }],
-    }));
-    show();
-    const user = userEvent.setup();
-    await screen.findAllByTestId("harness-grid-cell");
-    const tabs = screen.getAllByTestId("harness-tab");
-    await user.click(tabs[2]);
-    await screen.findByTestId("harness-probe-panel");
-    await user.click(screen.getAllByTestId("harness-probe-suggestion")[0]);
-    await user.click(screen.getAllByRole("checkbox")[0]);
-    await user.click(await screen.findByTestId("harness-probe-start"));
-    const err = await screen.findByTestId("harness-probe-error");
-    expect(err).toHaveTextContent("already running");
-  });
-
-  it("renders nothing when there are no candidates and no suggestions", async () => {
-    probeCandidates.mockResolvedValueOnce(probeData({ by_leaf: {}, by_family: {}, suggestions: [] }));
-    harness.mockResolvedValueOnce(report({ probe_suggestions: [] }));
-    show();
-    const user = userEvent.setup();
-    await screen.findAllByTestId("harness-grid-cell");
-    const tabs = screen.getAllByTestId("harness-tab");
-    await user.click(tabs[2]);
-    await screen.findByTestId("harness-no-cards");
-    expect(screen.queryByTestId("harness-probe-panel")).not.toBeInTheDocument();
-  });
-
-  it("groups at family level when all leaves are below the floor", async () => {
-    probeCandidates.mockResolvedValueOnce(probeData({
-      by_family: {
-        B: { leaf_ready: ["B5"], fallback: true, n: 4, items: probeItems, thin_leaves: ["B5"] },
-      },
-    }));
-    harness.mockResolvedValueOnce(report({}));
-    show();
-    const user = userEvent.setup();
-    await screen.findAllByTestId("harness-grid-cell");
-    const tabs = screen.getAllByTestId("harness-tab");
-    await user.click(tabs[2]);
-    const group = await screen.findByTestId("harness-probe-group");
-    expect(group).toHaveTextContent("family");
-  });
-
+describe("Harness grid", () => {
   describe("harness × function grid", () => {
     // The served shape (backend/app/services/harness.py `_as_grid`): one family rollup per
     // vendor, model, version, family and band, with the measured leaves nested under it.

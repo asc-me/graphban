@@ -630,3 +630,55 @@ def post_observation(body: ObservationIn, db: Session = Depends(get_db),
         raise HTTPException(exc.status, str(exc)) from exc
     db.commit()
     return out
+
+
+class DrainOpenItem(BaseModel):
+    item: str
+    reason: str = ""
+
+
+class DrainNoticeIn(BaseModel):
+    """A PRD drain's outcome, posted by `until` (GRPH-1913, P99 S3)."""
+
+    prd: str
+    outcome: str
+    project_id: str | None = None
+    #: For `stalled`: the open items and what holds each.
+    open_items: list[DrainOpenItem] = []
+
+
+@router.post("/drain-notices")
+def post_drain_notice(body: DrainNoticeIn, db: Session = Depends(get_db),
+                      key: ApiKey = Depends(get_agent_key)):
+    """The drain's `drained` / `stalled` / `working` notice, as an alert for the PRD owner.
+
+    Authenticated by the key, like `/attempts`. The project is the PRD record's own: a PRD that
+    does not resolve in a project this key can write answers 404 and alerts no one, the same
+    answer as a PRD that does not exist.
+    """
+    from app.models import Prd
+    from app.services import alerts as alerts_svc
+    from app.services import keys as keys_svc
+    from app.services import push as push_svc
+
+    if body.outcome not in alerts_svc.DRAIN_OUTCOMES:
+        raise HTTPException(422, f"outcome is one of {', '.join(alerts_svc.DRAIN_OUTCOMES)}")
+    writable = authz.key_writable_ids(db, key)
+    if body.project_id is not None and body.project_id not in writable:
+        raise HTTPException(404, "no such PRD")
+    prd_id = keys_svc.resolve_prd(db, body.prd) or body.prd
+    prd = db.get(Prd, prd_id)
+    if prd is None or prd.project_id not in writable \
+            or (body.project_id is not None and prd.project_id != body.project_id):
+        raise HTTPException(404, "no such PRD")
+    out = alerts_svc.post_drain_notice(db, prd.project_id, prd, body.outcome,
+                                       [o.model_dump() for o in body.open_items])
+    # After the commit; best-effort, so a push failure never fails the notice.
+    try:
+        push_svc.send_for_alerts(db, out["push"])
+    except Exception:  # noqa: BLE001
+        db.rollback()
+    # `changed` is false for a post identical to the server's last notice: the drain's
+    # `--on-notify` hook runs only when it is true (GRPH-1912).
+    return {"prd": prd.id, "outcome": body.outcome, "alerts": len(out["alerts"]),
+            "pushed": len(out["push"]), "changed": out["changed"]}

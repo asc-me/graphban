@@ -111,4 +111,4 @@ The hand change and the wizard's two saves appear on the same Activity page as `
 ## Open after the walk
 
 - **GRPH-1806** (re-applying the applied level drops its exceptions) and **GRPH-1804** (an unmeasured rule labelled "CHANGED BY HAND") were found on this walk and merged to main afterwards, as #2034 and #2019. Neither is in 2026.11.46, so neither was seen on the box.
-- **The two P74 gaps:** CI attestation from a LAN box, and a check of an undeclared generated file. See [acceptance-prd74.md](acceptance-prd74.md).
+- **The two P74 gaps:** CI attestation from a LAN box, and a check of an undeclared generated file. Both were closed after this walk: the undeclared generated file on 2026-11-21 ([caveat on 2b](acceptance-prd74.md#2-exclusive-areas-and-generated-files)), and CI attestation on 2026-11-25. See [acceptance-prd74.md, "Gaps closed after the walk"](acceptance-prd74.md#gaps-closed-after-the-walk-2026-11-25).

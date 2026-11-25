@@ -107,6 +107,8 @@ TOOL_TIERS: dict[str, str] = {
         "list_entitlements", "set_entitlement", "report_entitlement_event", "report_utilization",
         # PRD-35 D3: a lone agent never delegates; running a fleet is the tier.
         "delegate",
+        # GRPH-1856: opening a baseline run mints seats; running a fleet is the tier.
+        "bench",
     )},
 
     # ---- misc: rare, and none of it mid-task -----------------------------------------------

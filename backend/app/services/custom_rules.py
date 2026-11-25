@@ -46,6 +46,38 @@ def is_custom(rule_id: str) -> bool:
     return rule_id.startswith(PREFIX)
 
 
+#: GRPH-1873: the primitives the server evaluates for a CUSTOM rule where the primitive runs.
+#: Any other primitive would store a rule that silently holds nothing, so a draft naming one is
+#: refused (`refuse_unevaluated`). Add a primitive here only with the wiring and a test.
+EVALUATED = ("exclusive_areas",)
+
+
+def refuse_unevaluated(primitive: str) -> None:
+    """Refuse a custom-rule draft whose primitive no server path evaluates for custom rules."""
+    if primitive in rule_pack.PRIMITIVES and primitive not in EVALUATED:
+        raise Validation(
+            f"primitive {primitive!r} cannot be used by a custom rule yet: the server only "
+            f"evaluates {', '.join(EVALUATED)} for custom rules, so this rule would hold nothing",
+            hint="use a library rule's toggle for this primitive, or draft an "
+                 f"{EVALUATED[0]} rule")
+
+
+def exclusive_area_rules(db: Session, project_id: str | None
+                         ) -> tuple[list[tuple[str, list[str]]], list[tuple[str, list[str]]]]:
+    """`(active, observing)` custom `exclusive_areas` rules that hold for a project, each as
+    `(rule_id, paths)`. An unmeasured rule (its primitive no longer loads) is in neither."""
+    active: list[tuple[str, list[str]]] = []
+    observing: list[tuple[str, list[str]]] = []
+    for r in rows_for_project(db, project_id):
+        if r.primitive != "exclusive_areas" or unmeasured_reason(r):
+            continue
+        paths = (r.params or {}).get("paths")
+        if not isinstance(paths, list) or not all(isinstance(x, str) for x in paths):
+            continue
+        (observing if r.state == "observing" else active).append((r.rule_id, list(paths)))
+    return active, observing
+
+
 def _draft(row: CustomRule) -> dict:
     return {"id": row.rule_id, "stage": row.stage, "title": row.title, "summary": row.why,
             "primitive": row.primitive, "claims": row.claims, "params": row.params or {}}
@@ -218,6 +250,7 @@ def _validated(slug: str, primitive: str, title: str, why: str, params: dict | N
     if prim is None:
         raise Validation(f"primitive {primitive!r} does not exist in primitive API "
                          f"{rule_pack.PRIMITIVE_API}")
+    refuse_unevaluated(primitive)
     rule_id = PREFIX + slug
     draft = {"id": rule_id, "stage": prim.stage, "title": title.strip(), "summary": why.strip(),
              "primitive": primitive, "claims": claims or prim.level, "params": params or {}}
@@ -252,6 +285,46 @@ def create(db: Session, actor: object, project_id: str, *, slug: str, primitive:
                            meta={"primitive": primitive, "params": row.params, "reason": reason})
     db.commit()
     return row
+
+
+def remove(db: Session, actor: object, project_id: str, rule_id: str, reason: str) -> dict:
+    """A project owner/admin removes the project's own custom rule, observing or active
+    (GRPH-1939 / P91 D3, D5). A person's act with a reason: an agent key is refused naming
+    `rules.person_adopts`. The row goes, so the rule is no longer read by `rows_for_project`
+    and holds and records nothing; its would-have rows (`RuleObservation`) and its history
+    stay, and a `remove_custom_rule` event keeps what was removed and why. An org-owned rule is
+    an org admin's; a locked rule is refused naming `rules.org_lock_holds`."""
+    user = T._check_project_writer(db, actor, project_id)
+    why = T._reason(reason)
+    if not is_custom(rule_id):
+        raise Validation(f"{rule_id} is not a custom rule",
+                         hint="a library rule is turned off with its toggle, not removed")
+    refuse_if_locked(db, rule_id, project_id)
+    row = _row(db, rule_id, project_id)
+    if row is None:
+        if _org_row(db, rule_id, T._org_of(db, project_id)) is not None:
+            raise Validation(f"{rule_id} is owned by the org; an org admin removes it",
+                             hint="a project removes only a rule it holds itself")
+        raise NotFound(f"{rule_id!r} is not a custom rule of this project")
+    removed = {"rule_id": row.rule_id, "primitive": row.primitive, "params": row.params,
+               "state": row.state, "title": row.title, "why": row.why,
+               "author": _author(db, row), "created_at": row.created_at.isoformat()
+               if row.created_at else None}
+    from app.services import rule_observations
+    seen = (rule_observations.summary(db, project_id, rule_id, row.created_at)
+            if row.state == "observing" else None)
+    db.delete(row)
+    db.flush()
+    org_holds = _org_row(db, rule_id, T._org_of(db, project_id)) is not None
+    events_svc.record_user(
+        db, user, action="remove_custom_rule", target_type="rule", target_id=rule_id,
+        project_id=project_id,
+        meta={"reason": why, "removed": removed, "org_rule_holds": org_holds,
+              **({"would_hold": seen["would_hold"], "would_refuse": seen["would_refuse"]}
+                 if seen else {})})
+    db.commit()
+    return {"rule_id": rule_id, "project_id": project_id, "removed": True,
+            "state": removed["state"], "reason": why, "org_rule_holds": org_holds}
 
 
 # ---- org scope (GRPH-1779 / P91 D7) ------------------------------------------------------

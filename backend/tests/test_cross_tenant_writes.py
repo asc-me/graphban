@@ -35,6 +35,8 @@ PROBE_EXTRA: dict[str, dict] = {
     "PUT /api/projects/{project_id}/members/{user_id}": {"access": "read"},
     # The batch toggle write refuses a missing reason and an empty list before it looks at the
     # project, so the schema's bare minimum (no reason, no entries) never reaches the org check.
+    # The outcome is validated in the handler, not declared as an enum in the schema.
+    "POST /api/fleet/drain-notices": {"outcome": "stalled"},
     "PUT /api/rules/toggles": {"reason": "cross-tenant probe",
                                "toggles": [{"rule_id": "probe.rule", "on": True}]},
 }
@@ -245,4 +247,15 @@ def test_org_handle_write_blocks_another_org(client, tenants):
     above cannot see it. Probe it directly: alex is not in org B."""
     r = client.patch(f"/api/orgs/{tenants['org_b']}/me/handle", json={"handle": "probe-handle"},
                      headers=tenants["alex"])
+    assert _blocked(r.status_code), r.text
+
+
+def test_custom_rule_remove_is_in_the_sweep(client, tenants):
+    """GRPH-1939: removing a custom rule is a project write; the sweep enumerates it, and a
+    stranger naming another org's project is blocked."""
+    found = _project_scoped_writes(client)
+    name = "POST /api/projects/{project_id}/rules/custom/{rule_id}/remove"
+    assert name in found, sorted(k for k in found if "rules" in k)
+    r = client.post(f"/api/projects/{tenants['p_b']}/rules/custom/custom.probe/remove",
+                    json={"reason": "probe"}, headers=tenants["alex"])
     assert _blocked(r.status_code), r.text

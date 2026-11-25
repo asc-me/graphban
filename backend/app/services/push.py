@@ -140,6 +140,10 @@ def unsubscribe(db: Session, user_id: str, endpoint: str) -> int:
 
 
 def _payload(db: Session, alert: Alert) -> str:
+    if alert.prd_id:  # a drain notice (GRPH-1913): the title names the PRD and the outcome
+        first = (alert.body or "").strip().splitlines()[0] if (alert.body or "").strip() else ""
+        return json.dumps({"title": alert.title, "body": first, "project": alert.project_id,
+                           "url": _prd_url(db, alert.project_id, alert.prd_id), "alert": alert.id})
     wait = db.get(Item, alert.item_id)
     ticket = None
     if wait is not None:
@@ -163,6 +167,16 @@ def _triage_url(db: Session, project_id: str, key: str) -> str:
         if project is not None and project.tag:
             base = f"/p/{project.tag}/triage"
     return f"{base}?item={quote(key)}"
+
+
+def _prd_url(db: Session, project_id: str, prd_id: str) -> str:
+    """The PRD page a drain notice links to (`prds/:id` in web/src/App.tsx): hosted routes by
+    project tag, self-host's flat route resolves the project itself."""
+    from urllib.parse import quote
+
+    project = db.get(Project, project_id) if settings.hosted_mode else None
+    base = f"/p/{project.tag}/prds" if project is not None and project.tag else "/prds"
+    return f"{base}/{quote(prd_id)}"
 
 
 def _status_of(exc: WebPushException) -> int | None:

@@ -3,6 +3,8 @@
 **Harness** shows how each model has turned out on this project, per function and effort band.
 It is history for people and for gbfleet's guidance, not a chooser: nothing here auto-routes.
 
+> **Superseded by GRPH-P98.** The probe panel is retired: `GET /api/harness/probe/candidates` and `POST /api/harness/probe/runs` return 410, and `gbfleet bench run` replaces them. Existing probe rows stay as history under their `probe` label.
+
 ## Tabs
 
 - **Performance**: each cell is vendor × model × capability × size band. Under the floor of
@@ -12,7 +14,7 @@ It is history for people and for gbfleet's guidance, not a chooser: nothing here
 - **Guidance for gbfleet**: the routing guidance served to gbfleet and the grading rules
   (decided on the server; this page does not grade). It can say confidence was not served, or
   that the server sent no verdict rules.
-- **Changes & probes**: recommendation cards that suggest promoting, demoting or reweighting.
+- **Changes**: recommendation cards that suggest promoting, demoting or reweighting.
   Accepting one writes through the same profile or matrix commit a person would make. Also what
   each harness loads (skills and MCP server names posted by `gbfleet surface` or `gban doctor`;
   a harness that was not checked is said so, and a difference list is shown only once two

@@ -74,7 +74,7 @@ def spec_payload(db: Session, prd: Prd, project: Project) -> dict:
 
     grill = prd_svc.completion(db, prd.id)
     items = list(db.scalars(select(Item.id).where(Item.prd_id == prd.id).order_by(Item.id)))
-    return {
+    payload = {
         "project": (project.name or "").strip(),
         "prd_id": prd.id,
         "title": prd.title,
@@ -85,6 +85,10 @@ def spec_payload(db: Session, prd: Prd, project: Project) -> dict:
                   "outstanding": len(grill["outstanding"])},
         "items": items,
     }
+    version = (prd.version or "").strip()
+    if version:
+        payload["version"] = version
+    return payload
 
 
 def _post(base: str, api_key: str, body: dict) -> httpx.Response:

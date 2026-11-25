@@ -1,0 +1,3 @@
+# Refresh with the version bump whenever the template content changes.
+version = "1.0.1"
+content_hash = "a164c42846ecfe63ab43f0db427860f908267616207a819261d911adc742b847"

@@ -1148,10 +1148,12 @@ def report(db: Session, project_id: str, *, window_days: int | None = None,
     out = _shape(rows, window=window, versions=versions, facts=facts)
     out["project_id"] = project_id
     out["scope"] = "project"
+    from app.services import bench as bench_svc
+    bench_svc.attach_baselines(db, project_id, out["cells"], versions=versions)
     out["capability_set"] = capability_catalog()
     out["coverage"] = _coverage(db, [project_id], cutoff)
     out["review_cells"] = review_cells(db, [project_id])
-    out["probe_suggestions"] = probe_suggestions(db, project_id)
+    out["probe_suggestions"] = baseline_suggestions(db, project_id)
     out["unavailable"] = unavailable_rows(db, [project_id], cutoff)
     out["snapshot_at"] = latest_snapshot_at(db)
     out["surface"] = surface_svc.for_project(db, project_id)
@@ -2548,65 +2550,6 @@ def review_cells(db: Session, project_ids: list[str]) -> list[dict]:
 
 # ---- D7 / D8: probes ------------------------------------------------------------------------
 
-def probe_candidates(db: Session, project_id: str) -> dict:
-    """Closed items with a red sabotage, grouped by leaf, family fallback (criterion 8)."""
-    from app.models import Item
-
-    closed = db.scalars(select(Item).where(
-        Item.project_id == project_id, Item.status == "done")).all()
-    by_leaf: dict[str, list[dict]] = {leaf: [] for leaf in CAPABILITY_LEAVES}
-    for item in closed:
-        if not _red_sabotage(item):
-            continue
-        caps = [c for c in capabilities(item, None, {
-            "outcome": "signed_off", "evidence": item.evidence or []})
-                if c in CAPABILITY_LEAVES]
-        payload = {
-            "id": item.id,
-            "key": item.key if hasattr(item, "key") else item.id,
-            "title": item.title,
-            "capabilities": caps,
-            "touchpoints": list(item.touchpoints or []),
-        }
-        if not caps:
-            continue
-        for cap in caps:
-            by_leaf[cap].append(payload)
-    # Family fallback: a leaf with too few red-sabotage items is not a panel of its
-    # own. The page groups at family instead so a small instance still gets a cell.
-    families: dict[str, dict] = {}
-    for fam, leaves in FAMILIES.items():
-        if fam == FAMILY_OTHER:
-            continue
-        items = []
-        seen: set[str] = set()
-        thin = []
-        for leaf in leaves:
-            group = by_leaf[leaf]
-            if len(group) < FLOOR:
-                thin.append(leaf)
-            for it in group:
-                if it["id"] not in seen:
-                    seen.add(it["id"])
-                    items.append(it)
-        families[fam] = {
-            "leaf_ready": [leaf for leaf in leaves if len(by_leaf[leaf]) >= 1],
-            "fallback": len(items) > 0 and all(len(by_leaf[leaf]) < FLOOR for leaf in leaves),
-            "n": len(items),
-            "items": items,
-            "thin_leaves": thin,
-        }
-    estimate = _probe_cost_estimate(db, project_id)
-    return {
-        "project_id": project_id,
-        "by_leaf": {leaf: by_leaf[leaf] for leaf in CAPABILITY_LEAVES if by_leaf[leaf]},
-        "by_family": families,
-        "floor": FLOOR,
-        "estimated_tokens": estimate,
-        "suggestions": probe_suggestions(db, project_id),
-    }
-
-
 def _probe_cost_estimate(db: Session, project_id: str, *, vendor: str | None = None,
                          model: str | None = None, capability: str | None = None) -> dict:
     """Tokens the panel's history would lead a person to expect, shown BEFORE start."""
@@ -2632,8 +2575,11 @@ def _probe_cost_estimate(db: Session, project_id: str, *, vendor: str | None = N
             "tokens_out": sum(r.tokens_out or 0 for r in reported)}
 
 
-def probe_suggestions(db: Session, project_id: str) -> list[dict]:
-    """A newly declared vendor/model/version with no natural cell. Never on a schedule."""
+def baseline_suggestions(db: Session, project_id: str) -> list[dict]:
+    """A newly declared vendor/model/version with no natural cell. Never on a schedule.
+
+    Each suggestion carries the `gbfleet bench run` command that would take a baseline.
+    """
     from app.models import Agent, CapabilityProbeRun
 
     suggestions = []
@@ -2673,134 +2619,11 @@ def probe_suggestions(db: Session, project_id: str) -> list[dict]:
             "model": model,
             "binary_version": version,
             "estimated_tokens": estimate,
+            "command": f"gbfleet bench run --suite template --adapter {vendor}:{model}",
             "reason": ("a declared version has no natural cell yet" if trigger == "version_change"
                        else "a harness first resolved with no cell for it"),
         })
     return suggestions
-
-
-def start_probe_run(db: Session, *, project_id: str, user_id: str, vendor: str, model: str,
-                    capability: str, item_ids: list[str], trigger: str = "new_row",
-                    binary_version: str = "", api_key=None) -> dict:
-    """Create the scratch project, the run row, and delegations with sampled=probe.
-
-    One model and one leaf (or family) at a time, under the source project's caps.
-    The estimate is computed before anything is written so a person can see it.
-    """
-    from datetime import datetime, timezone
-
-    from app.models import Agent, CapabilityProbeRun, Item, Project
-    from app.services import delegation as delegation_svc
-    from app.services import fleet as fleet_svc
-    from app.services import items as items_svc
-    from app.services import keys as keys_svc
-    from app.services import projects as projects_svc
-
-    if trigger not in PROBE_TRIGGERS:
-        raise AttemptRefused(f"trigger must be one of {PROBE_TRIGGERS}", status=422)
-    if not (1 <= len(item_ids) <= 3):
-        raise AttemptRefused("choose one to three items", status=422)
-    cap = capability.strip()
-    if cap not in CAPABILITY_LEAVES and cap not in FAMILIES:
-        raise AttemptRefused(f"unknown capability {capability!r}", status=422)
-    open_run = db.scalar(select(CapabilityProbeRun).where(
-        CapabilityProbeRun.source_project_id == project_id,
-        CapabilityProbeRun.finished_at.is_(None),
-        CapabilityProbeRun.vendor == vendor,
-        CapabilityProbeRun.model == model))
-    if open_run is not None:
-        raise AttemptRefused(
-            "a probe for this model is already running; one model and one leaf at a time",
-            status=409)
-    items = []
-    for iid in item_ids:
-        item = db.get(Item, iid)
-        if item is None or item.project_id != project_id:
-            raise AttemptRefused(f"item not in project: {iid}", status=404)
-        if item.status != "done" or not _red_sabotage(item):
-            raise AttemptRefused(f"{iid} is not a closed item with a red sabotage", status=422)
-        items.append(item)
-    estimate = _probe_cost_estimate(db, project_id, vendor=vendor, model=model,
-                                    capability=cap if cap in CAPABILITY_LEAVES else None)
-    project = db.get(Project, project_id)
-    caps = ((project.fleet_policy or {}) if project is not None else {}).get("caps") or {}
-    per_attempt = caps.get("per_attempt_tokens")
-    if per_attempt and estimate.get("comparable") and estimate["tokens_per_attempt"] > per_attempt:
-        raise AttemptRefused(
-            f"per_attempt_tokens {per_attempt} is below the panel's estimated "
-            f"{estimate['tokens_per_attempt']} tokens", status=422)
-
-    scratch = projects_svc.create_project(
-        db, name=f"probe {vendor}:{model} {cap}", owner_user_id=user_id,
-        description=f"scratch project for a {cap} probe of {vendor}:{model}")
-    clones = []
-    for src in items:
-        clone = items_svc.create_item(
-            db, title=src.title, description=src.description or "",
-            tags=list(src.tags or []), touchpoints=list(src.touchpoints or []),
-            project_id=scratch.id, status="next", commit=False)
-        clone.evidence = list(src.evidence or [])
-        clones.append(clone)
-    db.flush()
-
-    # A JWT operator is not an API-key agent, so we mint a planner row on the scratch
-    # project rather than calling register_agent (which needs a key) or delegate(seat=True)
-    # (which needs mint_enrolment). The seat is still a real bound Enrolment and the
-    # launch post still sets sampled=probe — that is the path the cells read.
-    stored_id, number = keys_svc.mint(db, scratch.id, "agent")
-    now = datetime.now(timezone.utc)
-    agent = Agent(
-        id=stored_id, number=number, project_id=scratch.id,
-        label=f"probe:{vendor}:{model}",
-        capabilities={"vendor": vendor, "model": model, "binary_version": binary_version},
-        active_role="planner", role_assigned_at=now, role_acked_at=now,
-        state="idle", registered_at=now, last_seen_at=now,
-    )
-    db.add(agent)
-    db.flush()
-    run = CapabilityProbeRun(
-        id=f"cpr_{uuid.uuid4().hex[:12]}",
-        source_project_id=project_id,
-        project_id=scratch.id,
-        trigger=trigger,
-        vendor=vendor, model=model, binary_version=binary_version or "",
-        capability=cap,
-        item_ids=[c.id for c in clones],
-        estimated_tokens=(int(estimate["tokens_per_attempt"] * len(clones))
-                          if estimate.get("comparable") else None),
-        started_at=_now(),
-        summary={"estimated_tokens": estimate, "source_item_ids": item_ids},
-    )
-    db.add(run)
-    db.flush()
-    launched = []
-    for clone in clones:
-        row, _withdrew, _code = delegation_svc.delegate(
-            db, agent=agent, item=clone, lane="backend", tier="cheap",
-            note=f"probe {cap}", lease_seconds=600, seat=False, api_key=api_key)
-        seat, code = fleet_svc.issue_enrolment(
-            db, project_id=scratch.id, role="worker", minted_by=agent.id,
-            item_id=clone.id, delegation_id=row.id)
-        target = Target("seat", scratch.id, seat=seat)
-        record_launch(db, target=target, winner=f"{vendor}:{model}",
-                      source="probe", adapter="probe")
-        launched.append({"item_id": clone.id, "delegation_id": row.id,
-                         "enrolment_code": code})
-    db.flush()
-    return {
-        "id": run.id,
-        "project_id": scratch.id,
-        "source_project_id": project_id,
-        "trigger": trigger,
-        "vendor": vendor,
-        "model": model,
-        "binary_version": binary_version,
-        "capability": cap,
-        "item_ids": [c.id for c in clones],
-        "estimated_tokens": estimate,
-        "delegations": launched,
-        "sampled": "probe",
-    }
 
 
 def guidance(db: Session, project_id: str, *, caller_user_id: str | None = None,

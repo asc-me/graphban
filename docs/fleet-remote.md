@@ -158,9 +158,16 @@ tail -f ~/.config/gbfleet/logs/drain.err.log
 `until` exits when the backlog is empty. The last exit code is what separates the two:
 
 ```
-drain: idle between runs, last exit 0 (systemd, …)     ← healthy
-drain: NOT running, last exit 3 (systemd, …)           ← something is wrong
+drain: idle between runs, last exit 0 (systemd, …)                        ← healthy
+drain: NOT running, last exit 3 (systemd, …)                              ← something is wrong
+drain: installed but not loaded, so it will not restart (launchd, …)     ← will never start
 ```
+
+A unit file with no job behind it is not a drain between cycles. `launchctl` has no such
+label (a plist can sit in `~/Library/LaunchAgents` after the job was unloaded), and systemd
+reports the unit not loaded or not enabled. KeepAlive and `Restart=` never fire. `status`
+exits non-zero and names the fix: `gbfleet service install --name <name>` again. A job that
+is loaded and has exited keeps the exit line above; only the missing job is this state.
 
 `doctor` reads them the same way, and reports every drain installed on the box rather than the
 one whose name it guessed.

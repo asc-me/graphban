@@ -85,7 +85,9 @@ def test_agent_cannot_turn_off_and_loosening_tighten_refused(client, env):
     assert tight["structuredContent"]["direction"] == "tighten"
 
 
-def test_generated_files_loosening_agent_refused_import_accepted(client, env):
+def test_generated_files_loosening_agent_refused_import_accepted(client, env, monkeypatch):
+    # GRPH-1873: this test is about proposal mechanics, not evaluation of the primitive.
+    monkeypatch.setattr("app.services.custom_rules.EVALUATED", tuple(__import__("app.services.rule_pack", fromlist=["x"]).PRIMITIVES))
     args = {"kind": "new_rule",
             "draft": {"primitive": "generated_files", "slug": "gen", "title": "G", "why": "w",
                        "params": {"paths": ["x"]}},
@@ -125,7 +127,9 @@ def test_duplicate_folds_into_open_proposal(client, env):
     assert b["id"] == a["id"] and b["folded"] is True and len(b["citations"]) == 4
 
 
-def test_invalid_draft_and_no_comparator_refused(client, env):
+def test_invalid_draft_and_no_comparator_refused(client, env, monkeypatch):
+    # GRPH-1873: this test is about proposal mechanics, not evaluation of the primitive.
+    monkeypatch.setattr("app.services.custom_rules.EVALUATED", tuple(__import__("app.services.rule_pack", fromlist=["x"]).PRIMITIVES))
     r = _call(client, env["key"], "propose_rule", _new_rule(env, draft={"primitive": "nope", "slug": "areas", "title": "A", "why": "w"}))
     assert r["isError"] is True
     r = _call(client, env["key"], "propose_rule", _new_rule(env, draft={"primitive": "exclusive_areas", "slug": "areas", "title": "A",

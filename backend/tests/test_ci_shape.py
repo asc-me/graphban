@@ -12,12 +12,14 @@ This file is in the backend suite because the backend paths-filter already inclu
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
+BACKEND_PYPROJECT = REPO / "backend" / "pyproject.toml"
 
 # The gate itself, and the filter job the gate deliberately includes. Everything else
 # defined in the workflow is a suite whose result has to reach the gate.
@@ -29,9 +31,214 @@ GATE = "ci"
 # visible decision rather than a quiet widening of the guard below.
 NOT_GATED = {"security-scans"}
 
+# Jobs that are not suites: the filter, the gate, the pure-AST refusal ratchet and the
+# scan/attestation job. Everything else installs something and runs tests, so everything
+# else has to bound itself. Named, like NOT_GATED, so widening it is a visible decision —
+# and a NEW job defaults to being a suite, which is the direction that fails safe.
+NOT_SUITES = {"changes", "ci", "refusal-ratchet", "security-scans"}
+
+# GitHub's own default is 360 minutes, and longer on a self-hosted runner. A bound at that
+# ceiling is the default wearing a costume, so the guard refuses it: the incident this
+# exists for (GRPH-1928) was a shard that sat in `pytest -q -n auto` for over two hours.
+MAX_TIMEOUT_MINUTES = 60
+
+# The window the per-test ceiling in `[tool.pytest.ini_options]` has to sit inside
+# (GRPH-1934). A window and not the literal `300`, so retuning the ceiling stays a
+# pyproject edit; both ends are measured rather than round numbers.
+#   floor — `timeout = 0` is pytest-timeout's own "no ceiling", so it has to be refused as
+#     hard as an absent key, and anything under a minute turns the suite's own documented
+#     waits into red jobs: the heaviest FILE in tests/shard_weights.json is 29.33s of
+#     measured setup+call, and the longest explicit wait in a test is a `time.sleep(30)`
+#     inside a generated CHILD process.
+#   ceiling — exclusive, and derived from the job bound this file already enforces. At or
+#     above `MAX_TIMEOUT_MINUTES` the job-level `timeout-minutes` kills the shard first, so
+#     the per-test ceiling can never fire: it names no test and leaves exactly the
+#     unbounded hang GRPH-1928 was filed to remove, now wearing a configured-looking value.
+MIN_PER_TEST_SECONDS = 60
+MAX_PER_TEST_SECONDS = MAX_TIMEOUT_MINUTES * 60
+
+# Backend jobs, keyed on their working directory rather than a job list so a NEW one defaults
+# to being covered — the direction that fails safe. `BACKEND_SUITES` run pytest;
+# `backend-packaging` installs the wheel and runs import checks, so it is held to the lock by
+# the same guard without being asked to run a suite it does not have.
+BACKEND_WORKDIR = "backend"
+BACKEND_SUITES = {"backend-sqlite", "backend-postgres"}
+BACKEND_INSTALLS = BACKEND_SUITES | {"backend-packaging"}
+LOCK_WRITE = "lock_constraints.py write uv.lock"
+LOCK_CHECK = "lock_constraints.py check uv.lock"
+
 
 def _workflow() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+
+def _toml(path: Path) -> dict:
+    return tomllib.loads(path.read_text(encoding="utf-8"))
+
+
+def _backend_installs() -> dict[str, list[tuple[int, str]]]:
+    """`{job: [(step index, run script)]}` for every job that pip-installs the backend."""
+    out: dict[str, list[tuple[int, str]]] = {}
+    for name, job in _workflow()["jobs"].items():
+        defaults = (job.get("defaults") or {}).get("run") or {}
+        if defaults.get("working-directory") != BACKEND_WORKDIR:
+            continue
+        steps = [(i, step.get("run") or "") for i, step in enumerate(job.get("steps", []))]
+        if any("uv pip install" in run for _, run in steps):
+            out[name] = steps
+    return out
+
+
+def test_every_backend_install_is_held_to_the_lock():
+    """GRPH-1932: the test jobs floated while the shipped installs were held to uv.lock.
+
+    Every backend suite job ran a bare `uv pip install -e ".[dev]"`, which resolves from
+    pyproject's specifiers and never reads `backend/uv.lock`. Measured 2026-11-25: that
+    install gave fastapi 0.165.0 / starlette 1.10.0, while the lock — what pip-audit scans,
+    what `backend/Dockerfile` installs and what a deploy runs — pins 0.139.2 / 1.3.1. The one
+    job that did install under the lock ran no pytest. So `suite_green` attested a dependency
+    set no deployment runs and nothing said so: a regression at the pinned versions shipped
+    untested, and a red suite could arrive from an upstream release with no commit here. Two
+    absences reading as a clean result, which is why the fix is a gate and not a comment.
+
+    GRPH-1615 faced the same fork on the install side and chose to hold the install to the
+    lock rather than move the scan. This is that decision on the test side, enforced with the
+    same three moves: `lock_constraints.py write` → `uv pip install -c` → `check`.
+
+    Sabotage: drop `-c` from a backend `uv pip install`; drop a `write` or `check` step;
+    point `-c` at a path no step wrote; move `check` above the install; drop the pytest step
+    from a suite job; or add a backend job that installs without any of it.
+    """
+    jobs = _backend_installs()
+    assert jobs, f"no job pip-installs under {BACKEND_WORKDIR}/ — this guard asserts nothing"
+    # Named, so a job losing `working-directory: backend` fails here instead of silently
+    # leaving the selector and taking the guard's coverage with it.
+    missing = sorted(BACKEND_INSTALLS - set(jobs))
+    assert not missing, f"no longer selected as a backend install job: {missing}"
+
+    for name, steps in sorted(jobs.items()):
+        installs = [(i, run) for i, run in steps if "uv pip install" in run]
+        wrote = [(i, run) for i, run in steps if LOCK_WRITE in run]
+        checked = [(i, run) for i, run in steps if LOCK_CHECK in run]
+
+        assert wrote, (
+            f"{name}: no step runs `{LOCK_WRITE}`, so nothing derives pip constraints from the "
+            "lock and the install resolves from pyproject's specifiers (GRPH-1932).")
+        assert checked, (
+            f"{name}: nothing runs `{LOCK_CHECK}`, so the install is pointed at the lock but "
+            "never held to it — a version that disagreed would pass unnoticed (GRPH-1615).")
+        assert wrote[0][0] < checked[0][0], f"{name}: `{LOCK_CHECK}` runs before the write"
+
+        for i, run in installs:
+            assert " -c " in run, (
+                f"{name} step {i} installs with no `-c` constraints: {run.strip()!r}. It "
+                "resolves from pyproject's specifiers and floats on every upstream release, so "
+                "the suite attests a dependency set no deployment runs (GRPH-1932).")
+            # The path `-c` names must be the path the `write` step produced, or the install is
+            # constrained by a stale file that happens to still exist.
+            arg = run.split(" -c ", 1)[1].strip()
+            assert arg and arg in wrote[0][1], (
+                f"{name} step {i} constrains from {arg!r}, which its `{LOCK_WRITE}` step does "
+                f"not write: {wrote[0][1].strip()!r}")
+            assert wrote[0][0] < i, f"{name}: step {i} installs before the constraints are written"
+
+        assert installs[-1][0] < checked[0][0], (
+            f"{name}: `{LOCK_CHECK}` runs before the install it is supposed to check, so it "
+            "attests an empty venv and passes whatever the install then does.")
+
+        if name in BACKEND_SUITES:
+            # Without this the job could hold a venv to the lock, run nothing in it, and still
+            # report green — the same absence the item exists to remove, one level up.
+            suite = [i for i, run in steps if "pytest" in run]
+            assert suite and suite[-1] > checked[0][0], (
+                f"{name} runs no pytest after `{LOCK_CHECK}`, so it proves the venv matches the "
+                "lock and attests nothing about the suite that ran in it.")
+
+
+def test_every_suite_job_bounds_itself():
+    """GRPH-1928: a hung pytest held a drain for hours because no job set a timeout.
+
+    CI run 45505794524 (PR #2272) left `Backend tests (Postgres + pgvector) (1/3)` in
+    `pytest -q -n auto` from 22:59Z until a person cancelled it at 01:14Z. The other two
+    shards had finished in minutes. Nothing in the workflow bounded the job, so the only
+    limit was GitHub's default, and the drain read the whole wait as
+    `review_waits_on_ci ... in_progress` — neither red nor green, just still going.
+
+    Each job's number is ~2x its measured duration with the measurement in a comment; this
+    guard is what keeps a new suite job from arriving without one.
+
+    Sabotage: delete `timeout-minutes` from any suite job, or set one to 360.
+    """
+    jobs = _workflow()["jobs"]
+    suites = set(jobs) - NOT_SUITES
+    assert suites, "no suite jobs left — this guard would assert nothing"
+    # An exemption that names a job that no longer exists hides a rename.
+    assert NOT_SUITES <= set(jobs), f"NOT_SUITES names missing job(s): {sorted(NOT_SUITES - set(jobs))}"
+
+    unbounded = sorted(n for n in suites if not jobs[n].get("timeout-minutes"))
+    assert not unbounded, (
+        f"job(s) {unbounded} run tests with no `timeout-minutes`, so a hang is bounded only "
+        f"by GitHub's 360-minute default (longer on a self-hosted runner) and the drain waits "
+        f"the whole time (GRPH-1928). Set one at ~2x the job's measured duration and cite "
+        f"the measurement in a comment."
+    )
+    oversized = sorted(
+        (n, jobs[n]["timeout-minutes"]) for n in suites
+        if not isinstance(jobs[n]["timeout-minutes"], int)
+        or not 1 <= jobs[n]["timeout-minutes"] <= MAX_TIMEOUT_MINUTES
+    )
+    assert not oversized, (
+        f"job(s) {oversized} are bounded by something that is not an integer minute count in "
+        f"1..{MAX_TIMEOUT_MINUTES}. A bound at GitHub's own 360-minute default is no bound."
+    )
+
+
+def test_the_per_test_ceiling_is_still_configured():
+    """GRPH-1934: deleting `timeout = 300` left the whole backend suite green.
+
+    GRPH-1928 delivered two layers of bound and only the job-level one got a guard. The
+    per-test ceiling lives in `[tool.pytest.ini_options]`, and nothing read it: two
+    reviewers on separate seats deleted it at head 864f1256 and measured 126 and 459 tests
+    still passing at rc=0, the second across every backend test file that reads the workflow
+    or a pyproject — not a selection that happened to miss a guard, because there was none.
+
+    The silence is the trap. pytest-timeout stays installed (a dev extra, pinned 2.4.0 by
+    the lock), so pytest does not even warn `Unknown config option: timeout`. The plugin
+    loads, the suite goes fully green, and a hang has regained exactly the unbounded
+    behaviour GRPH-1928 was filed to remove — an absence reading as a clean result, which
+    is why this is a gate and not a comment. The mechanism itself is live when configured:
+    at the same head a scratch test sleeping five seconds under `-o timeout=2` ended at
+    3.10s with `Failed: Timeout (>2.0s) from pytest-timeout.` and named the stuck test.
+
+    The fleet distribution's own ceiling in fleet/pyproject.toml is asserted in
+    fleet/tests/test_packaging.py, not here: the `backend` paths-filter in
+    .github/workflows/ci.yml does not include fleet/pyproject.toml, so a fleet-only PR that
+    deleted it would never run this file and the guard would be silent about the one change
+    it exists for.
+
+    Sabotage: delete `timeout = 300` from backend/pyproject.toml; set it to 0; set it to
+    7200; quote it (`timeout = "300"`).
+    """
+    assert BACKEND_PYPROJECT.exists(), f"{BACKEND_PYPROJECT} is gone — this guard read nothing"
+    ini = _toml(BACKEND_PYPROJECT).get("tool", {}).get("pytest", {}).get("ini_options")
+    assert ini, (
+        "backend/pyproject.toml has no [tool.pytest.ini_options], so the per-test ceiling "
+        "is gone with it (GRPH-1934)."
+    )
+
+    timeout = ini.get("timeout")
+    assert timeout is not None, (
+        "backend/pyproject.toml's [tool.pytest.ini_options] sets no `timeout`, so there is no "
+        "per-test ceiling: a hung test is bounded only by the job-level `timeout-minutes`, "
+        "which kills the whole shard and names no test (GRPH-1934). pytest-timeout is still "
+        "installed, so pytest warns about nothing and the suite stays green without it."
+    )
+    assert isinstance(timeout, int) and MIN_PER_TEST_SECONDS <= timeout < MAX_PER_TEST_SECONDS, (
+        f"backend/pyproject.toml sets timeout = {timeout!r}, which is not an integer second "
+        f"count in {MIN_PER_TEST_SECONDS}..<{MAX_PER_TEST_SECONDS}. 0 is pytest-timeout's own "
+        "no-ceiling; at or above the job-level `timeout-minutes` the job dies first and names "
+        "no test (see MIN_PER_TEST_SECONDS / MAX_PER_TEST_SECONDS)."
+    )
 
 
 def test_ci_gate_covers_every_job():

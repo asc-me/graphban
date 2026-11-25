@@ -46,7 +46,7 @@ vi.mock("@/lib/api", () => ({
 
 function renderTracker() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const view = render(
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={["/tracker"]}>
         <ProjectProvider>
@@ -59,6 +59,7 @@ function renderTracker() {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...view, qc };
 }
 
 beforeEach(() => {
@@ -152,6 +153,28 @@ describe("tracker Maintenance filter (GRPH-1701)", () => {
     await waitFor(() => expect(screen.getByTestId("line-needs")).toHaveTextContent("needs acceptance · needs a file"));
   });
 
+  it("does not say needs acceptance for a parenthetical label with a bullet", async () => {
+    line = { id: "AL-L", title: "Maintenance" };
+    served = [item({
+      id: "AL-2",
+      title: "Labeled fix",
+      kind: "fix",
+      line_id: "AL-L",
+      description: "**Acceptance (D3):**\n- one",
+    })];
+    const user = userEvent.setup();
+    const { qc } = renderTracker();
+    await user.click(await chip());
+    await screen.findByText("Labeled fix");
+    await waitFor(() => {
+      const settled = qc.getQueryCache().getAll().some(
+        (q) => q.queryKey.includes("full") && q.state.status === "success",
+      );
+      expect(settled).toBe(true);
+    });
+    expect(screen.queryByText(/needs acceptance/)).not.toBeInTheDocument();
+  });
+
   it("labels an item blocked by a fix, and the fix says what it blocks", async () => {
     line = { id: "AL-L", title: "Maintenance" };
     served = [
@@ -174,8 +197,18 @@ describe("lineNeeds", () => {
   it("reads acceptance clauses", () => {
     expect(hasAcceptance("x\n## Acceptance\n- one")).toBe(true);
     expect(hasAcceptance("no clauses here")).toBe(false);
+    expect(hasAcceptance("**Acceptance (D3):**\n- one")).toBe(true);
+    expect(hasAcceptance("Acceptance (D3):\n- one")).toBe(true);
+    expect(hasAcceptance("**Acceptance.**\n- one")).toBe(true);
+    expect(hasAcceptance("**Acceptance (D3):**")).toBe(false);
+    expect(hasAcceptance("The acceptance of this is obvious.")).toBe(false);
+    expect(hasAcceptance("The acceptance of this is obvious.\n- one")).toBe(false);
     expect(lineNeeds(it0, "nothing")).toEqual(["needs acceptance"]);
     expect(lineNeeds(it0, "## Acceptance\n- ok")).toEqual([]);
+    expect(lineNeeds(it0, "**Acceptance (D3):**\n- one")).toEqual([]);
+    expect(lineNeeds(it0, "Acceptance (D3):\n- one")).toEqual([]);
+    expect(lineNeeds(it0, "**Acceptance.**\n- one")).toEqual([]);
+    expect(lineNeeds(it0, "The acceptance of this is obvious.")).toEqual(["needs acceptance"]);
     expect(lineNeeds({ ...it0, touchpoints: [] } as Item, "## Acceptance\n- ok")).toEqual(["needs a file"]);
     expect(lineNeeds({ ...it0, line_id: null } as Item, "")).toEqual([]);
   });

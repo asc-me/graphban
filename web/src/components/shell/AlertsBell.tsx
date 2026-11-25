@@ -98,6 +98,8 @@ function BrowserPush() {
 }
 
 function impactLabel(a: AlertRow): string {
+  if (a.kind === "drain_drained") return "Drained";
+  if (a.kind === "drain_stalled") return "Stalled";
   if (a.impact === "drain_waiting") return "Drain waiting";
   if (a.impact === "blocks" && a.ticket) return `Blocks ${a.ticket}`;
   return "Question";
@@ -128,8 +130,12 @@ export function AlertsBell() {
   const tagOf = (a: AlertRow) => projects.find((p) => p.id === a.project)?.tag ?? null;
   const hrefOf = (a: AlertRow) => {
     const tag = tagOf(a);
+    // A drain notice opens its PRD page, not a Triage row (P99).
+    if ((a.kind === "drain_drained" || a.kind === "drain_stalled") && a.prd) {
+      return hosted && tag ? projectPath(tag, `prds/${a.prd}`) : `/prds/${a.prd}`;
+    }
     const base = hosted && tag ? projectPath(tag, "triage") : "/triage";
-    return `${base}?item=${encodeURIComponent(a.ticket ?? a.wait)}`;
+    return `${base}?item=${encodeURIComponent(a.ticket ?? a.wait ?? "")}`;
   };
   const read = useReadAlert();
   const [open, setOpen] = React.useState(false);
@@ -213,6 +219,9 @@ export function AlertsBell() {
               </div>
               {a.title && a.title !== a.question && (
                 <div className="mt-0.5 line-clamp-2 text-[12px] text-muted">{a.question}</div>
+              )}
+              {a.body && (a.kind === "drain_drained" || a.kind === "drain_stalled") && (
+                <div data-testid="alert-body" className="mt-0.5 line-clamp-3 whitespace-pre-line text-[12px] text-muted">{a.body}</div>
               )}
               <div className="mt-0.5 font-mono text-[10.5px] text-faint">
                 {[a.project_tag, a.created_at && <span key="age" title={new Date(a.created_at).toLocaleString()}>{relTime(a.created_at)}</span>, a.prd, a.asked_by && `asked by ${a.asked_by}`]

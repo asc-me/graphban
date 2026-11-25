@@ -1,6 +1,6 @@
 /** Observing rules, would-have record, promote, nudge, guidance (GRPH-1782). */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -12,7 +12,7 @@ import { ObservingRules } from "./ObservingRules";
 vi.mock("@/lib/api", () => ({
   api: {
     ruleToggles: vi.fn(), customRules: vi.fn(), ruleGuidance: vi.fn(), ruleObservations: vi.fn(),
-    ruleProposals: vi.fn(), promoteRule: vi.fn(), events: vi.fn(),
+    ruleProposals: vi.fn(), promoteRule: vi.fn(), removeCustomRule: vi.fn(), events: vi.fn(),
   },
 }));
 vi.mock("@/features/ProjectContext", () => ({
@@ -129,6 +129,49 @@ describe("ObservingRules", () => {
     await userEvent.type(screen.getByLabelText("Promote reason for merge.x"), "held 3, all right");
     await userEvent.click(btn);
     expect(api.promoteRule).toHaveBeenCalledWith("core", "merge.x", "held 3, all right");
+  });
+
+  it("offers Remove beside Promote for the project's own observing custom rule (GRPH-1939)", async () => {
+    const id = "custom.nudge-docs-exclusive";
+    toggles([toggle({ rule_id: id, observation: obs({ decision_due: true, decision_due_reason: "10 would-have outcomes" }) })]);
+    vi.mocked(api.customRules).mockResolvedValue([
+      { rule_id: id, stage: "merge", title: "Docs", state: "observing", source: "custom" },
+    ] as never);
+    vi.mocked(api.removeCustomRule).mockResolvedValue({ rule_id: id, removed: true } as never);
+    view();
+    const btn = await screen.findByTestId(`remove-${id}`);
+    expect(screen.getByRole("button", { name: "Promote" })).toBeInTheDocument();
+    expect(btn).toBeDisabled();
+    await userEvent.type(screen.getByLabelText(`Promote reason for ${id}`), "walk is over");
+    await userEvent.click(btn);
+    expect(api.removeCustomRule).toHaveBeenCalledWith("core", id, "walk is over");
+    expect(api.promoteRule).not.toHaveBeenCalled();
+  });
+
+  it("offers no Remove for a library rule or an org-owned custom rule", async () => {
+    toggles([toggle({ observation: obs() }), toggle({ rule_id: "custom.org-rule", title: "Org", observation: obs() })]);
+    vi.mocked(api.customRules).mockResolvedValue([
+      { rule_id: "custom.org-rule", stage: "merge", title: "Org", state: "observing", source: "org" },
+    ] as never);
+    view();
+    await screen.findByTestId("observing-custom.org-rule");
+    await waitFor(() => expect(api.customRules).toHaveBeenCalled());
+    expect(screen.queryByTestId("remove-merge.x")).toBeNull();
+    expect(screen.queryByTestId("remove-custom.org-rule")).toBeNull();
+  });
+
+  it("names the refusal when a remove is refused", async () => {
+    const id = "custom.nudge-docs-exclusive";
+    toggles([toggle({ rule_id: id, observation: obs() })]);
+    vi.mocked(api.customRules).mockResolvedValue([
+      { rule_id: id, stage: "merge", title: "Docs", state: "observing", source: "custom" },
+    ] as never);
+    vi.mocked(api.removeCustomRule).mockRejectedValue(new Error("only a person sets a rule toggle"));
+    view();
+    const btn = await screen.findByTestId(`remove-${id}`);
+    await userEvent.type(screen.getByLabelText(`Promote reason for ${id}`), "x");
+    await userEvent.click(btn);
+    expect(await screen.findByTestId(`promote-error-${id}`)).toHaveTextContent(/refused|person/i);
   });
 
   it("shows the nudge when decision_due, and the would-have record", async () => {

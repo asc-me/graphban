@@ -58,12 +58,28 @@ def _push_result(mapping: SyncProject | None) -> str | None:
     return result
 
 
+def _reported_backfill(db: Session, project_id: str, level: str) -> dict:
+    """Full-sync progress only while the project is at ``sync``.
+
+    Local only and digests do not push. Leaving sync clears the manifest, and
+    ``backfill_status`` then counts every current entity as unconfirmed:
+    ``running``, confirmed 0 of N, which cannot move. ``off`` says this project
+    is not in a full-sync backfill. It is not an unread field. Returning
+    ``backfill_status`` here for a local project fails
+    ``test_local_with_purge_reports_backfill_off_not_running``.
+    """
+    if level != outbox.SYNC_LEVEL_SYNC:
+        return {"state": "off"}
+    return backfill.backfill_status(db, project_id)
+
+
 def project_view(db: Session, project_id: str) -> dict:
     """One local project's sync state. A missing row is local only, not digests.
 
     ``backlog_full`` is the whole outbox against ``CAP_BYTES`` (D11), not this
     project's own rows. An empty ``project_id`` was not scanned, so the flag is
-    null rather than false.
+    null rather than false. ``backfill`` is ``{state: off}`` unless the level
+    is ``sync``.
     """
     mapping = db.get(SyncProject, project_id)
     queue = outbox.project_queue(db, project_id)
@@ -80,7 +96,7 @@ def project_view(db: Session, project_id: str) -> dict:
         "project_id": project_id,
         "sync_level": level,
         "cloud_permission": permission,
-        "backfill": backfill.backfill_status(db, project_id),
+        "backfill": _reported_backfill(db, project_id, level),
         "queued": queue["queued"],
         "parked": {"count": queue["parked"], "reasons": queue["reasons"]},
         "backlog_bytes": queue["backlog_bytes"],

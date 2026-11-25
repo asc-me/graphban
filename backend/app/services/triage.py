@@ -94,18 +94,44 @@ def _request_rows(db: Session, project_id: str, now) -> list[dict]:
 
 def _nobody_alerted(db: Session, item: Item) -> bool:
     """The wait (or a wait this ticket depends on) was handed off with no one to alert."""
+    return item.id in _nobody_alerted_many(db, [item])
+
+
+def _nobody_alerted_many(db: Session, items: list[Item]) -> set[str]:
+    """`_nobody_alerted` for a whole list, in two statements whatever its length (GRPH-1901).
+
+    One query for the list's dependency edges, one for the dependencies. Returns the ids that
+    read True; an id absent from the set is the same answer as the single-item read returning
+    False, which is why the caller reads membership and not a lookup that could miss.
+    """
     from sqlalchemy import select
 
     from app.models import Link
 
-    if (item.decision or {}).get("nobody_alerted"):
-        return True
-    for dep_id in db.scalars(select(Link.b).where(Link.type == "dependency", Link.a == item.id)):
-        dep = db.get(Item, dep_id)
-        if dep is not None and (dep.decision or {}).get("nobody_alerted") and not (
-                dep.decision or {}).get("answer"):
-            return True
-    return False
+    alerted: set[str] = set()
+    need: list[str] = []
+    for item in items:
+        if (item.decision or {}).get("nobody_alerted"):
+            alerted.add(item.id)
+        else:
+            need.append(item.id)
+    if not need:
+        return alerted
+
+    dep_ids: dict[str, list[str]] = {iid: [] for iid in need}
+    for a, b in db.execute(select(Link.a, Link.b).where(
+            Link.type == "dependency", Link.a.in_(need))).all():
+        if b not in dep_ids[a]:
+            dep_ids[a].append(b)
+    wanted = {b for ids in dep_ids.values() for b in ids}
+    deps = {d.id: d for d in db.scalars(select(Item).where(Item.id.in_(wanted)))} if wanted else {}
+    for iid in need:
+        for dep in (deps.get(d) for d in dep_ids[iid]):
+            if dep is not None and (dep.decision or {}).get("nobody_alerted") and not (
+                    dep.decision or {}).get("answer"):
+                alerted.add(iid)
+                break
+    return alerted
 
 
 def _is_open_question(dep: Item) -> bool:
@@ -115,67 +141,110 @@ def _is_open_question(dep: Item) -> bool:
 
 def _blocks(db: Session, wait: Item) -> dict:
     """The ticket that depends on this wait (GRPH-1571): first by key, plus how many more."""
+    return _blocks_many(db, [wait]).get(wait.id) or {}
+
+
+def _blocks_many(db: Session, waits: list[Item]) -> dict[str, dict]:
+    """`_blocks` for a whole list, in two statements whatever its length (GRPH-1901).
+
+    One query for the dependant edges of every wait, one for the tickets. Keyed by wait id; a
+    wait nothing depends on is absent rather than mapped to `{}`, so `.get(id) or {}` is the
+    single-wait answer and a missing key cannot read as "blocks nothing" by accident.
+    """
     from sqlalchemy import select
 
     from app.models import Link
 
-    tickets = [t for t in (db.get(Item, i) for i in db.scalars(select(Link.a).where(
-        Link.type == "dependency", Link.b == wait.id))) if t is not None]
-    if not tickets:
+    ids = [w.id for w in waits]
+    if not ids:
         return {}
-    tickets.sort(key=lambda t: (t.number or 0, t.key))
-    out = {"blocks": {"id": tickets[0].key, "title": tickets[0].title}}
-    if len(tickets) > 1:
-        out["blocks_more"] = len(tickets) - 1
+    dependants: dict[str, list[str]] = {i: [] for i in ids}
+    for b, a in db.execute(select(Link.b, Link.a).where(
+            Link.type == "dependency", Link.b.in_(ids))).all():
+        if a not in dependants[b]:
+            dependants[b].append(a)
+    wanted = {a for ticket_ids in dependants.values() for a in ticket_ids}
+    tickets = ({t.id: t for t in db.scalars(select(Item).where(Item.id.in_(wanted)))}
+               if wanted else {})
+    out: dict[str, dict] = {}
+    for wid in ids:
+        mine = [t for t in (tickets.get(a) for a in dependants[wid]) if t is not None]
+        if not mine:
+            continue
+        mine.sort(key=lambda t: (t.number or 0, t.key))
+        row = {"blocks": {"id": mine[0].key, "title": mine[0].title}}
+        if len(mine) > 1:
+            row["blocks_more"] = len(mine) - 1
+        out[wid] = row
     return out
 
 
 def _blocker_rows(db: Session, project_id: str, now) -> list[dict]:
     ctx = prio.context(db, project_id)
-    rows = []
-    for b in waits_svc.triage_blockers(db, project_id, include_open_questions=True):
-        item = db.get(Item, keys.resolve_item(db, b["id"]) or b["id"])
-        if item is None:
-            continue
-        # One row per question: a ticket held only by decision waits is represented by the
-        # wait's row, which names it. One that also waits on something else keeps its row.
-        questions: list[Item] = []
-        others = 0
-        if not b.get("decision"):
-            for d in (ctx.item(i) for i in prio.blocked_by(ctx, item)):
-                if d is None:
+    # `triage_blockers` renders `it.key` for items it read with the same `list_items(project_id)`
+    # call `ctx` made, so a row's item is a key lookup rather than a resolve and a get of its own
+    # (GRPH-1901). Holding `ctx` for the whole render is what makes that safe: the identity map
+    # keeps objects weakly, and it is the render's own `item.key` reads that would otherwise
+    # re-query the project every row.
+    by_key = {it.key: it for it in ctx.items}
+    found = [(b, by_key[b["id"]]) for b in waits_svc.triage_blockers(
+        db, project_id, include_open_questions=True) if b["id"] in by_key]
+    items = [it for _, it in found]
+    # The three lookups a blocked row used to make on its own — its wait state, whether anyone
+    # was alerted, and what it blocks — are read once for the whole list inside the batch, so the
+    # statement count is what the shortest feed costs and not what the longest one does.
+    with waits_svc.batched(db, items):
+        states = {it.id: waits_svc.question_state(db, it) for it in items}
+        alerted = _nobody_alerted_many(db, [it for it in items if states[it.id]])
+        blocks = _blocks_many(db, [it for b, it in found if b.get("decision")])
+        rows = []
+        for b, item in found:
+            # One row per question: a ticket held only by decision waits is represented by the
+            # wait's row, which names it. One that also waits on something else keeps its row.
+            questions: list[Item] = []
+            others = 0
+            if not b.get("decision"):
+                for d in (ctx.item(i) for i in prio.blocked_by(ctx, item)):
+                    if d is None:
+                        continue
+                    if _is_open_question(d):
+                        questions.append(d)
+                    else:
+                        others += 1
+                if questions and not others:
                     continue
-                if _is_open_question(d):
-                    questions.append(d)
-                else:
-                    others += 1
-            if questions and not others:
-                continue
-        row = {
-            "id": item.key, "kind": "blocker", "title": item.title,
-            "age_seconds": _age(item.created_at, now),
-            "owner": item.claimed_by, "blocked_seconds": _age(item.updated_at, now),
-            "reason": item.blocker or "", "paths": list(item.touchpoints or []),
-        }
-        qs = waits_svc.question_state(db, item)
-        if qs:
-            row["question_state"] = qs
-        if qs and _nobody_alerted(db, item):
-            row["nobody_alerted"] = True
-        if questions:
-            questions.sort(key=lambda q: (q.number or 0, q.key))
-            row["also_questions"] = [
-                {"id": q.key, "question": (q.decision or {}).get("question") or q.title}
-                for q in questions]
-        if b.get("decision"):
-            row["decision"] = {"question": b["decision"]["question"],
-                               "options": b["decision"]["options"]}
-            row.update(_blocks(db, item))
-        else:
-            dep = next((d for d in (ctx.item(i) for i in prio.blocked_by(ctx, item)) if d), None)
-            if dep is not None:
-                row["waiting_on"] = {"id": dep.key, "title": dep.title, "status": dep.status}
-        rows.append(row)
+            row = {
+                "id": item.key, "kind": "blocker", "title": item.title,
+                "age_seconds": _age(item.created_at, now),
+                "owner": item.claimed_by, "blocked_seconds": _age(item.updated_at, now),
+                "reason": item.blocker or "", "paths": list(item.touchpoints or []),
+            }
+            qs = states[item.id]
+            if qs:
+                row["question_state"] = qs
+            if qs and item.id in alerted:
+                row["nobody_alerted"] = True
+            if questions:
+                questions.sort(key=lambda q: (q.number or 0, q.key))
+                row["also_questions"] = [
+                    {"id": q.key, "question": (q.decision or {}).get("question") or q.title}
+                    for q in questions]
+            if b.get("decision"):
+                row["decision"] = {"question": b["decision"]["question"],
+                                   "options": b["decision"]["options"]}
+                row.update(blocks.get(item.id) or {})
+            else:
+                deps = [d for d in (ctx.item(i) for i in prio.blocked_by(ctx, item)) if d]
+                if deps:
+                    # `ctx.deps` is appended in the order an unsorted Link scan returns, so
+                    # "the first dependency" was whichever row the engine happened to hand
+                    # back: the same graph could name a different one under another plan, on
+                    # another server, or after a restored dump. Sorted the way `_blocks_many`
+                    # and `questions` here already are (GRPH-1923).
+                    deps.sort(key=lambda d: (d.number or 0, d.key))
+                    row["waiting_on"] = {"id": deps[0].key, "title": deps[0].title,
+                                         "status": deps[0].status}
+            rows.append(row)
     return rows
 
 
@@ -289,9 +358,18 @@ def feed(db: Session, project_id: str) -> dict:
 # A manager decides in the console; the box that owns the item reads the decision on each sync,
 # applies it through the same service functions the box's own triage UI calls, and reports
 # `applied` or `refused` back. The box initiates both calls.
+#
+# The wire is the CONSOLE'S, not one this module invented (graphban-control
+# `server/src/triage-routes.ts` and `docs/contract.md`, GBC-173). A served decision is
+# `{id, target, decision, note, decided_at}`; `target` is an OBJECT — `{kind: "item", item_id}`
+# naming a row this box published in its digest, or `{kind: "request", request_id, title, body}`
+# for a public request routed here, which lands as a new item; and each result is reported by its
+# own `POST .../applied` carrying ONE `{decision_id, outcome, reason}`.
 
 DECISIONS_FEATURE_PATH = "/api/sync/triage-decisions"
-DECISION_TYPES = ("accept", "duplicate_of", "park", "decline", "assign_team")
+# The console serves `accept` | `decline` | `defer`. `duplicate_of`, `park` and `assign_team` are
+# the box's own names, kept for GRPH-1722 to map the console's onto — not removed here.
+DECISION_TYPES = ("accept", "decline", "defer", "duplicate_of", "park", "assign_team")
 APPLIED_ACTION = "triage_decision_applied"
 _TIMEOUT = 30.0
 
@@ -329,27 +407,52 @@ def _find_target(db: Session, key: str):
     return db.get(Item, iid or key)
 
 
+def _target_of(decision: dict) -> tuple[str, object]:
+    """Read the console's `target` OBJECT: `("item", item_id)` or `("request", the target)`.
+
+    `("", None)` for anything else. A target that is not the console's object names nothing on
+    this box: stringifying it and looking that up is what made every console decision read
+    `not_found`, so an unrecognised target is refused as malformed instead.
+    """
+    target = decision.get("target")
+    if not isinstance(target, dict):
+        return "", None
+    kind = str(target.get("kind") or "")
+    if kind == "item":
+        item_id = str(target.get("item_id") or "")
+        return ("item", item_id) if item_id else ("", None)
+    if kind == "request":
+        return "request", target
+    return "", None
+
+
 def _check_unmoved(target, decision: dict) -> None:
     """The decision was made against the status the console saw. If the item moved since,
-    the manager decided about something that no longer exists in that form."""
+    the manager decided about something that no longer exists in that form.
+
+    The console's decision payload carries no status — it serves `{id, target, decision, note,
+    decided_at}` — so there is nothing to compare and refusing here would leave every console
+    decision unapplied, which is the guarantee's opposite, not its defence. A payload that does
+    carry one is still checked, which is what keeps `item_moved` meaning something.
+    """
     seen = decision.get("status")
     if not seen:
-        # Without the status the console saw there is nothing to check the item against, and
-        # applying blind would bypass the item_moved guarantee.
-        raise DecisionRefused("no_status", "decision carries no status to check against")
+        return
     if seen != target.status:
         raise DecisionRefused("item_moved", f"{target.key} is now {target.status}, was {seen}")
 
 
 def _apply_one(db: Session, target, decision: dict) -> dict:
     kind = decision.get("decision")
-    reason = str(decision.get("reason") or "")
+    # The console's free text is `note`; `reason` is the box's older name for the same field.
+    reason = str(decision.get("note") or decision.get("reason") or "")
     if kind not in DECISION_TYPES:
         raise DecisionRefused("unknown_decision", f"unknown decision {kind!r}")
     _check_unmoved(target, decision)
     is_req = isinstance(target, Request)
     try:
-        if kind in ("accept", "park"):
+        if kind in ("accept", "park", "defer"):
+            # `defer` is the console's name for the box's `park`: off the queue, not declined.
             status = "next" if kind == "accept" else "backlog"
             if is_req:
                 req_svc.accept_request(db, target.id, status=status)
@@ -410,12 +513,39 @@ def _apply_duplicate(db: Session, target, decision: dict) -> None:
         db.commit()
 
 
+def _route_request(db: Session, target: dict, decision: dict, project_id: str | None) -> Item:
+    """A public request the console routed here becomes a NEW item on the pulled project.
+
+    The console delivers an accepted request to the box it was routed to (`route_to`) carrying
+    the request's own title and body, and it applies a request `decline`/`defer` itself without
+    ever serving it — so `accept` is the only decision that can arrive on this target.
+    """
+    if str(decision.get("decision") or "") != "accept":
+        raise DecisionRefused("unsupported_target",
+                              "a routed request is only ever served as accept")
+    if not project_id:
+        raise DecisionRefused("no_project", "a routed request needs the project it was pulled for")
+    title = str(target.get("title") or "").strip()
+    if not title:
+        raise DecisionRefused("bad_decision", "a routed request carries no title")
+    try:
+        return items_svc.create_item(db, title=title, description=str(target.get("body") or ""),
+                                     project_id=project_id, status="next")
+    except ValueError as e:
+        db.rollback()
+        raise DecisionRefused("refused", str(e))
+
+
 def apply_decision(db: Session, decision: dict, project_id: str | None = None) -> dict:
     """Apply one console decision. Returns the report row: `{id, result, reason?}`.
 
+    `target` is the console's object (see `_target_of`); `project_id` is the project the decision
+    was pulled for, which is where a routed request's new item lands and outside which an item
+    target is refused `wrong_project` and left untouched.
+
     Idempotent on the decision id: a retried sync that delivers it again reports `applied`
-    without touching the item a second time. With `project_id` (the project the decision was
-    pulled for), a target outside that project is refused `wrong_project` and left untouched.
+    without touching the item a second time — or, for a routed request, without creating a
+    second item.
     """
     from app.services import events as events_svc
 
@@ -424,13 +554,20 @@ def apply_decision(db: Session, decision: dict, project_id: str | None = None) -
         return {"id": did, "result": "refused", "reason": "bad_decision"}
     if _decision_applied_before(db, did):
         return {"id": did, "result": "applied"}
-    target = _find_target(db, str(decision.get("target") or ""))
-    if target is None:
-        return {"id": did, "result": "refused", "reason": "not_found"}
-    if project_id is not None and target.project_id != project_id:
-        return {"id": did, "result": "refused", "reason": "wrong_project"}
+    kind, payload = _target_of(decision)
+    if not kind:
+        return {"id": did, "result": "refused", "reason": "bad_decision"}
     try:
-        out = _apply_one(db, target, decision)
+        if kind == "request":
+            target = _route_request(db, payload, decision, project_id)
+            out = {"decision": str(decision.get("decision"))}
+        else:
+            target = _find_target(db, payload)
+            if target is None:
+                return {"id": did, "result": "refused", "reason": "not_found"}
+            if project_id is not None and target.project_id != project_id:
+                return {"id": did, "result": "refused", "reason": "wrong_project"}
+            out = _apply_one(db, target, decision)
     except DecisionRefused as e:
         return {"id": did, "result": "refused", "reason": e.reason}
     events_svc.record(
@@ -465,14 +602,23 @@ def pull_decisions(db: Session, *, cloud_url: str, api_key: str) -> dict:
         resp.raise_for_status()
         body = resp.json()
         rows = body.get("decisions") if isinstance(body, dict) else None
-        results = [apply_decision(db, d, project.id) for d in (rows or []) if isinstance(d, dict)]
-        if not results:
-            continue
-        try:
-            httpx.post(f"{base}/applied", headers=headers, timeout=_TIMEOUT,
-                       json={"project": name, "results": results}).raise_for_status()
-        except Exception as e:  # noqa: BLE001 — still pending on the console; retried next sync
-            out["errors"].append({"project": name, "error": f"{type(e).__name__}: {e}"})
-        for r in results:
-            out["applied" if r["result"] == "applied" else "refused"] += 1
+        for d in (rows or []):
+            if not isinstance(d, dict):
+                continue
+            r = apply_decision(db, d, project.id)
+            outcome = "applied" if r["result"] == "applied" else "refused"
+            reason = str(r.get("reason") or "").strip()
+            if outcome == "refused" and not reason:
+                reason = "refused"  # the console 422s a refusal that carries no reason
+            # ONE decision per call: the console answers a batch `{project, results: [...]}` with
+            # 422 `decision_id is required`, so a refusal it never hears about stays pending.
+            report = {"decision_id": r["id"], "outcome": outcome,
+                      "reason": reason if outcome == "refused" else ""}
+            try:
+                httpx.post(f"{base}/applied", params={"project": name}, headers=headers,
+                           timeout=_TIMEOUT, json=report).raise_for_status()
+            except Exception as e:  # noqa: BLE001 — still pending on the console; retried next sync
+                out["errors"].append({"project": name, "decision_id": r["id"],
+                                      "error": f"{type(e).__name__}: {e}"})
+            out["applied" if outcome == "applied" else "refused"] += 1
     return out

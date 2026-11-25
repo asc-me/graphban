@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import datetime as _dt
 import json
 import secrets
 import time
@@ -69,6 +70,7 @@ from app.services import tool_tiers
 from app.services import waits as waits_svc
 from app.services import delegation as delegation_svc
 from app.services import entitlements as entitlements_svc
+from app.services import bench as bench_svc
 from app.services import rule_proposals as rule_proposals_svc
 from app.services import rule_toggles as rule_toggles_svc
 from app.services import headroom as headroom_svc
@@ -455,9 +457,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "decompose_prd",
         "description": (
-            "One task per uncovered section. Missing acceptance or touchpoints: blocked. "
+            "One task per uncovered section. No acceptance/touchpoints: blocked. "
             "`depends_on` from the body. "
-            "`oversized`; `splits` files pieces blocked, linked, then backlog. "
+            "`oversized` or `split_refused`; `splits` files pieces blocked, linked, backlog. "
             "Needs approved (grill). Framing skipped unless `include_prose`."
         ),
         "inputSchema": {
@@ -896,6 +898,22 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "bench",
+        "description": (
+            "PLANNER ONLY. open_run: scratch project + seats. post_result: no telemetry. "
+            "*_tasks need expected_version."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["open_run", "post_result", "get_suite",
+                                                      "adopt_tasks", "remove_tasks"]},
+                "body": {"type": "object"},
+            },
+            "required": ["action", "body"],
+        },
+    },
+    {
         "name": "retire_wave",
         "description": (
             "PLANNER ONLY. Revoke the seats YOU minted and release what agents on them hold. Does "
@@ -992,8 +1010,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "describe_code",
         "description": (
-            "Upsert the codebase's structure as a graph of `nodes` and `edges`; you are the source of truth. Idempotent per path — re-describe a changed file with its new "
-            "`content_hash`. `revision` lets a reader tell whether the map is current. `prune=true` "
+            "Upsert the codebase's structure as `nodes` and `edges`. Idempotent per path — re-describe a changed file with its new "
+            "`content_hash`. `prune=true` "
             "after a whole subtree marks unseen nodes stale. An omitted "
             "`summary`/`name` is kept; `\"\"` clears. A contradicting `kind` is corrected in `kind_corrections`."
         ),
@@ -1039,6 +1057,10 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "prune": {"type": "boolean", "description": "Mark nodes absent from this batch stale."},
                 "stale": {"type": "array", "items": {"type": "string"}, "description": "Gone paths to mark stale."},
+                "producer": {
+                    "type": "string",
+                    "description": "`gban-codemap/<v>`; others cannot move its nodes' revision.",
+                },
             },
         },
     },
@@ -1619,7 +1641,7 @@ _PROJECT_SCOPED = {
 # trusting the set, so a NEW tool that starts reading `pid` fails until it is declared.
 _TAKES_PROJECT = _PROJECT_SCOPED | {
     "claim_cluster", "claim_review", "fleet_status", "get_context",
-    "mint_enrolment", "register_agent", "retire_wave", "sign_off",
+    "mint_enrolment", "register_agent", "retire_wave", "sign_off", "bench",
 }
 # Creates accept an idempotency key so a retried call returns the original resource.
 _IDEMPOTENT_CREATES = {"create_item", "add_memory", "link_items"}
@@ -1864,6 +1886,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     "list_entitlements": {"type": "object", "properties": {"entitlements": {"type": "array"}}},
     "get_rule_toggles": {"type": "object", "properties": {"toggles": {"type": "array"}}},
     "propose_rule": {"type": "object", "properties": {"id": {"type": "integer"}}},
+    "bench": {"type": "object", "properties": {"id": {"type": "string"}}},
     "set_entitlement": {"type": "object", "properties": {"id": {"type": "string"}}},
     "report_entitlement_event": {"type": "object", "properties": {"admitted": {"type": "boolean"}}},
     "report_utilization": {"type": "object", "properties": {"recorded": {"type": "boolean"}}},
@@ -2924,6 +2947,27 @@ def _scoped_item(db: Session, item_id: str, scope_ids: list[str]) -> Item:
     return item
 
 
+def _unregistered_planner_call(tool: str, project_id: str) -> errors.Validation:
+    """A delegation verb called on a connection that never registered (GRPH-1039).
+
+    Names the exact call rather than the missing precondition, and pins the project the
+    WORK belongs to. Both halves are load-bearing. An MCP connection is not an agent until
+    `register_agent` runs on it, so the refusal used to read as "delegation isn't enabled";
+    and on a key spanning several projects a bare `register_agent` resolves to whichever
+    project sorts first, so the blind retry registered somewhere the item is not even
+    readable. `project_id` here is the item's (or, with no item, the call's resolved one) —
+    never a guess the caller has to second-guess.
+    """
+    return errors.Validation(
+        f"{tool} needs a registered agent, and this connection never called "
+        f"register_agent. Call register_agent(role_hint=\"planner\", "
+        f"project_id=\"{project_id}\") first — that project_id is the one the work "
+        f"belongs to, which is not necessarily this key's default — then retry {tool} "
+        f"with the agent_id it returns.",
+        hint="an MCP connection is not an agent until register_agent runs on it; "
+             "delegation is planner work, so register as a planner on the work's project")
+
+
 # Retired tool names, kept dispatchable forever. NOT in TOOLS — an alias must not appear
 # in tools/list or inflate the counts asserted by tests/test_api.py and test_phase4.py.
 # Agents cache tool names in memory and in committed configs, so a name that ever worked
@@ -3671,8 +3715,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         item = _scoped_item(db, args["id"], readable)
         me = _agent_for_call(db, key, args, session_id)
         if not me:
-            raise errors.Validation("delegate needs a registered agent: pass agent_id, or "
-                                    "register_agent on this connection first")
+            raise _unregistered_planner_call("delegate", item.project_id)
         agent = db.get(Agent, me)
         try:
             if args.get("withdraw"):
@@ -4044,19 +4087,25 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 "or bind through delegate(seat=true)")
         item_id = None
         project_id = pid
+        item = None
         if item_key:
             item = _scoped_item(db, item_key, readable)
-            me = db.get(Agent, args.get("agent_id") or "")
-            if me is None:
-                raise errors.Validation("mint_enrolment needs a registered agent_id")
+            item_id = item.id
+            project_id = item.project_id
+        # GRPH-1039. Checked for EVERY mint, not only the bound one, and after the project is
+        # resolved so the refusal can name it. `mint_enrolment_as` records `minted_by` without
+        # ever resolving it, so an id naming no agent used to mint a real seat attributed to
+        # nothing — a live credential whose minter cannot be named later.
+        me = db.get(Agent, args.get("agent_id") or "")
+        if me is None:
+            raise _unregistered_planner_call("mint_enrolment", project_id)
+        if item is not None:
             try:
                 delegation_svc.refuse_bound_collision(db, agent=me, item=item)
             except delegation_svc.DelegationRefused as e:
                 detail = "; ".join(f"{k}={v}" for k, v in e.detail.items())
                 msg = f"{e} ({detail})" if detail else str(e)
                 raise errors.Conflict(msg, hint=e.hint)
-            item_id = item.id
-            project_id = item.project_id
         try:
             row, code = fleet_svc.mint_enrolment_as(
                 db, minter_id=args["agent_id"], project_id=project_id, role=args["role"],
@@ -4088,6 +4137,23 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 raise errors.Validation(str(e))
         got = fleet_svc.fleet_status(db, pid, minted_by=minted_by, caller_user_id=key.user_id)
         return fleet_svc.roster_view(got, args.get("view") or "lean")
+    if name == "bench":
+        try:
+            if args.get("action") == "open_run":
+                return bench_svc.open_run(db, project_id=pid, user_id=key.user_id,
+                                          body=args.get("body") or {})
+            if args.get("action") == "post_result":
+                return bench_svc.post_result(db, project_id=pid, body=args.get("body") or {})
+            if args.get("action") == "get_suite":
+                return bench_svc.get_suite(db, pid)
+            if args.get("action") == "adopt_tasks":
+                return bench_svc.adopt_tasks(db, project_id=pid, body=args.get("body") or {})
+            if args.get("action") == "remove_tasks":
+                return bench_svc.remove_tasks(db, project_id=pid, body=args.get("body") or {})
+        except bench_svc.AttemptRefused as e:
+            raise errors.Validation(str(e))
+        raise errors.Validation(
+            "action must be open_run, post_result, get_suite, adopt_tasks or remove_tasks")
     if name == "retire_wave":
         try:
             minter = fleet_svc.minter_for(db, args["agent_id"], key)
@@ -4480,6 +4546,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             prune=bool(args.get("prune", False)),
             revision=str(args.get("revision", "")),
             stale=[str(x) for x in (args.get("stale") or [])],
+            producer=str(args.get("producer") or ""),
         )
     if name == "get_code_map":
         # Bounded BY DEFAULT (GRPH-146). An agent that omits `limit` gets a page rather than
@@ -4927,10 +4994,20 @@ def _attach_resolved_project(result: Any, scope: dict) -> Any:
                                      "none — pass project_id to choose"}
 
 
+def _json_default(o: Any) -> Any:
+    """GRPH-1871: a service result may carry datetimes (e.g. an observing rule's `since`);
+    encode them as ISO 8601 at the MCP edge rather than 500 the whole call."""
+    if isinstance(o, (_dt.datetime, _dt.date)):
+        return o.isoformat()
+    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
+
+
 def _success(id_: Any, result: Any, modern: bool = False) -> dict:
     """Wrap a tool result. Objects are also returned as `structuredContent` (typed,
     no JSON-in-a-text-block); text mirrors it for back-compat (#8)."""
-    payload: dict[str, Any] = {"content": [{"type": "text", "text": json.dumps(result)}]}
+    text = json.dumps(result, default=_json_default)
+    result = json.loads(text)  # structuredContent must be the same JSON-safe value
+    payload: dict[str, Any] = {"content": [{"type": "text", "text": text}]}
     if isinstance(result, dict):
         payload["structuredContent"] = result
     if modern:

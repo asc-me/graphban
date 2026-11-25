@@ -172,7 +172,8 @@ def test_a_row_that_already_has_a_pr_is_not_opened_again(monkeypatch):
 
     ready, waiting = _open(row, _Planner())
 
-    assert ready == [row] and not waiting and gh.calls == []
+    assert ready == [row] and not waiting
+    assert not [c for c in gh.calls if c[:2] != ("pr", "view")]
 
 
 def test_a_pr_that_cannot_be_linked_is_not_treated_as_ready(monkeypatch):
@@ -273,3 +274,159 @@ def test_a_second_ready_row_does_not_let_the_reviewer_take_the_one_waiting_on_it
     waits = result.as_json().get("review_waits") or []
     assert any(w == "GRPH-WAIT: review waits on its PR being opened" for w in waits), waits
     assert result.reason == "review-unsigned"
+
+
+# ---- a rebuilt item's PR (GRPH-1881) ----------------------------------------------------------
+# Sabotage: drop `superseded` from the `_pr_opened` guard; this goes red.
+
+
+def test_a_rebuilt_item_gets_a_pr_for_its_new_branch(monkeypatch):
+    """The item's only PR heads the superseded gb/old. A PR opens for item.branch gb/new."""
+    old = "https://github.com/o/r/pull/5"
+    _wire(monkeypatch, _Gh())
+    closed = []
+    monkeypatch.setattr(propose_mod, "view", lambda repo, sel: (
+        {"headRefName": "gb/old", "headRefOid": "aaa"}, ""))
+    monkeypatch.setattr(propose_mod, "close_item_prs",
+                        lambda repo, item, keeper, **kw: closed.append((item, keeper)) or ())
+    monkeypatch.setattr(until, "_tip", lambda repo, b: "bbb")
+    monkeypatch.setattr(until.wt_mod, "is_ancestor", lambda *a: False)
+    planner = _Planner()
+    row = _row(branch="gb/new", evidence=[{"kind": "url", "url": old}])
+
+    ready, waiting = _open(row, planner)
+
+    assert ready == [row] and not waiting
+    assert planner.posts == [{"item_id": "GRPH-1", "kind": "pr_opened",
+                              "branch": "gb/new", "url": URL}]
+    assert ("GRPH-1", URL) in closed
+    assert until._linked_pr(row) == URL
+
+
+def test_a_rebuilt_item_stops_logging_review_branch_mismatch(monkeypatch):
+    """After the new PR is stamped, the review gate reads gb/new and names no mismatch.
+
+    The row holds the old PR (gb/old, which does not descend from gb/new) and, once
+    `_pr_opened` has run, the newly stamped pr_opened link for gb/new. `review_ci_branch`
+    resolves to gb/new and emits no `review_branch_mismatch` — the loop ends on the
+    first cycle instead of repeating every poll.
+
+    Sabotage: drop the `reversed(...)` in `_linked_pr`; the gate reads the old PR again
+    and emits `review_branch_mismatch item.branch gb/new pr gb/old`.
+    """
+    old = "https://github.com/o/r/pull/5"
+    heads = {old: {"headRefName": "gb/old", "headRefOid": "aaa"},
+             URL: {"headRefName": "gb/new", "headRefOid": "bbb"}}
+    _wire(monkeypatch, _Gh())
+    monkeypatch.setattr(propose_mod, "view", lambda repo, sel: (heads[sel], ""))
+    monkeypatch.setattr(propose_mod, "close_item_prs", lambda *a, **kw: ())
+    monkeypatch.setattr(until, "_tip", lambda repo, b: "bbb")
+    monkeypatch.setattr(until.wt_mod, "is_ancestor", lambda *a: False)
+    events: list[tuple] = []
+    monkeypatch.setattr(until.observe, "emit", lambda ev, **kw: events.append((ev, kw)))
+    row = _row(branch="gb/new", evidence=[{"kind": "url", "url": old}])
+    logged: set = set()
+
+    ready, waiting = _open(row, _Planner(), logged)
+    assert ready == [row] and not waiting
+
+    for _poll in range(2):
+        assert until.review_ci_branch(REPO, row, logged) == ("gb/new", "")
+    assert not [ev for ev, _ in events if ev == "review_branch_mismatch"], events
+
+
+# ---- a branch that was never pushed (GRPH-1891) -----------------------------------------------
+# Sabotage: drop `_publish_if_local_only` from `_pr_opened`; the create fails and these go red.
+
+
+class _LocalOnly(_Gh):
+    """`gh pr create` refuses until the branch has been pushed."""
+
+    def __init__(self):
+        super().__init__()
+        self.pushed = False
+
+    def __call__(self, repo, *args, timeout=60.0):
+        if args[:2] == ("pr", "create") and not self.pushed:
+            self.calls.append(args)
+            return _cp(1, err="Head sha can't be blank, Head ref must be a branch")
+        return super().__call__(repo, *args, timeout=timeout)
+
+
+def _local_only(monkeypatch, *, push_ok=True):
+    from gbfleet import worktree as wt
+    gh = _wire(monkeypatch, _LocalOnly())
+    monkeypatch.setattr(wt, "branch_exists", lambda r, b: True)
+    monkeypatch.setattr(wt, "remote_name",
+                        lambda r, b: wt.RemoteName(known=True, exists=gh.pushed))
+    pushes = []
+
+    def push(repo, branch, base):
+        pushes.append(branch)
+        if push_ok:
+            gh.pushed = True
+            return wt.Pushed(branch=branch, ok=True)
+        return wt.Pushed(branch=branch, reason="push refused: denied")
+
+    monkeypatch.setattr(wt, "push_branch", push)
+    return gh, pushes
+
+
+def test_a_local_only_branch_is_pushed_then_its_pr_is_opened(monkeypatch):
+    gh, pushes = _local_only(monkeypatch)
+    planner = _Planner()
+    row = _row()
+
+    ready, waiting = _open(row, planner)
+
+    assert pushes == ["gb/x"]
+    assert ready == [row] and not waiting
+    assert planner.posts == [{
+        "item_id": "GRPH-1", "kind": "pr_opened", "branch": "gb/x", "url": URL,
+    }]
+
+
+def test_a_failed_publish_is_withheld_on_the_item_not_retried_as_a_create(monkeypatch):
+    gh, pushes = _local_only(monkeypatch, push_ok=False)
+    planner = _Planner()
+    row = _row()
+
+    ready, waiting = _open(row, planner)
+
+    assert waiting == [row] and not ready
+    assert not [c for c in gh.calls if c[:2] == ("pr", "create")]
+    assert planner.posts == [{
+        "item_id": "GRPH-1", "kind": "unpushed", "branch": "gb/x",
+        "reason": "push refused: denied",
+    }]
+
+
+def test_a_push_that_keeps_failing_is_said_on_the_item_once(monkeypatch):
+    """`_pr_opened` runs every poll and the server appends every observation."""
+    gh, pushes = _local_only(monkeypatch, push_ok=False)
+    planner = _Planner()
+    events = []
+    monkeypatch.setattr(until.observe, "emit", lambda ev, **kw: events.append((ev, kw)))
+    row = _row()
+    logged: set = set()
+
+    for _poll in range(3):
+        ready, waiting = _open(row, planner, logged)
+        assert waiting == [row] and not ready
+
+    assert pushes == ["gb/x"] * 3
+    assert [p["kind"] for p in planner.posts] == ["unpushed"]
+    assert len([ev for ev, _ in events if ev == "review_waits_on_pr"]) == 1
+
+
+def test_a_lost_unpushed_note_is_logged_and_the_wait_still_names_it(monkeypatch):
+    gh, pushes = _local_only(monkeypatch, push_ok=False)
+    events = []
+    monkeypatch.setattr(until.observe, "emit", lambda ev, **kw: events.append((ev, kw)))
+    row = _row()
+
+    ready, waiting = _open(row, _Planner(fail=True))
+
+    assert waiting == [row] and not ready
+    assert [ev for ev, _ in events] == ["unpushed_note_lost", "review_waits_on_pr"]
+    assert "never pushed" in events[1][1]["detail"]

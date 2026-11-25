@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
-import { api } from "./api";
+import { api, type OwnerCloseBody } from "./api";
 import { httpsAddress, probeTrust } from "@/lib/https";
 import type { MyInvite, OnboardingMark, ProposalDecision, SetupConfirm } from "./types";
 import type { AutoUpdatePatch, EventsQuery, FleetPolicy, GitopsPatch, RoutingReplayProposal, Item, ItemCreateBody, ItemDetail, LessonFilters, LogExportPatch, Project, RequestItem, RuleProfileApplyWrite, RuleToggleBatchWrite, RuleToggleWrite, ShardClass } from "./types";
@@ -27,7 +27,6 @@ export const keys = {
   harnessCapacity: (projectId: string) => ["harness-capacity", projectId] as const,
   harnessLadder: (projectId: string) => ["harness-ladder", projectId] as const,
   harnessCards: (projectId: string) => ["harness-cards", projectId] as const,
-  harnessProbes: (projectId: string) => ["harness-probes", projectId] as const,
   lessons: (projectId: string, filters?: LessonFilters) =>
     ["lessons", projectId, filters ?? {}] as const,
   lesson: (projectId: string, id: string) => ["lesson", projectId, id] as const,
@@ -882,6 +881,18 @@ export function usePromoteRule(projectId: string) {
   });
 }
 
+/** A person removes a custom rule (GRPH-1939): it leaves the custom lists, the map and the toggles. */
+export function useRemoveCustomRule(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { ruleId: string; reason: string }) => api.removeCustomRule(projectId, v.ruleId, v.reason),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["rule-observations"] });
+      invalidateProposals(qc);
+    },
+  });
+}
+
 export function useCustomRules(projectId: string) {
   return useQuery({
     queryKey: ["custom-rules", projectId],
@@ -1343,8 +1354,7 @@ export function useUpdateItem() {
 export function useOwnerClose() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, commit, pr_url }: { id: string; commit: string; pr_url?: string }) =>
-      api.ownerClose(id, { commit, pr_url }),
+    mutationFn: ({ id, ...body }: { id: string } & OwnerCloseBody) => api.ownerClose(id, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.items }),
   });
 }
@@ -1721,28 +1731,6 @@ export function useHarnessCards(projectId?: string) {
     queryKey: keys.harnessCards(projectId ?? ""),
     queryFn: () => api.harnessRecommendations(projectId!),
     enabled: !!projectId,
-  });
-}
-
-export function useHarnessProbeCandidates(projectId?: string) {
-  return useQuery({
-    queryKey: keys.harnessProbes(projectId ?? ""),
-    queryFn: () => api.harnessProbeCandidates(projectId!),
-    enabled: !!projectId,
-  });
-}
-
-export function useStartHarnessProbeRun(projectId?: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (body: {
-      vendor: string; model: string; capability: string; item_ids: string[];
-      trigger?: string; binary_version?: string;
-    }) => api.startHarnessProbeRun({ project_id: projectId!, ...body }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: keys.harnessProbes(projectId ?? "") });
-      qc.invalidateQueries({ queryKey: ["harness", projectId] });
-    },
   });
 }
 

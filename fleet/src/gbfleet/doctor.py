@@ -654,10 +654,13 @@ def check_service(report: Report, name: str = "") -> None:
     fleet whose `until` died with an ssh session looks, from the ledger, exactly like a fleet
     with no ready work.
 
-    Three answers. `not installed` is a PASS, not a failure — running `until` in a terminal is
-    a legitimate and common way to work, and failing everyone who does it would make the check
-    noise. What is NOT a pass is a service that exists and is not running, or a host nobody
-    can ask.
+    Three answers, plus one fault that is not a dead job. `not installed` is a PASS, not a
+    failure — running `until` in a terminal is a legitimate and common way to work, and
+    failing everyone who does it would make the check noise. What is NOT a pass is a service
+    that exists and is not running, or a host nobody can ask. A unit file with no launchd or
+    systemd job is installed but not loaded: it will not restart, and the remedy is
+    `gbfleet service install --name` again — KeepAlive and Restart= never fire, so this is
+    not a crash loop (GRPH-1853). A loaded job that has exited keeps the not-running reading.
     """
     found = service_mod.host()
     if not found.kind:
@@ -685,6 +688,16 @@ def _one_service(report: Report, state) -> None:
         return
     if state.running is None:
         report.add(label, UNKNOWN, f"installed at {state.unit_path}, {state.detail}")
+        return
+    if state.not_loaded:
+        # The unit file is on disk and the supervisor has no job. The branch
+        # below would say the unit loads and dies, usually from a bad PATH.
+        # That is the wrong cause: nothing is loaded to die (GRPH-1853).
+        # `line()` is the sentence `gbfleet service status` already prints.
+        report.add(
+            label, FAIL, state.line(),
+            f"`gbfleet service install --name {state.name}` again",
+        )
         return
     if not state.path_env:
         # Checked BEFORE the run state, because it is a property of the unit rather than of
@@ -760,12 +773,12 @@ def _probe_suggestion_lines(report: Report, suggestions: list, *, looked_up: boo
     """
     if not looked_up:
         report.add(
-            "probe suggestions", UNKNOWN, "not looked up",
+            "baseline suggestions", UNKNOWN, "not looked up",
             "pass --server and set GBFLEET_API_KEY; nothing runs without a person starting it",
         )
         return
     if not suggestions:
-        report.add("probe suggestions", PASS, "none")
+        report.add("baseline suggestions", PASS, "none")
         return
     for sug in suggestions:
         if not isinstance(sug, dict):
@@ -775,11 +788,12 @@ def _probe_suggestion_lines(report: Report, suggestions: list, *, looked_up: boo
         trigger = sug.get("trigger") or "new_row"
         version = sug.get("binary_version") or ""
         report.add(
-            f"probe {vendor}:{model}",
+            f"baseline {vendor}:{model}",
             PASS,
             f"{trigger}"
             + (f" binary_version={version}" if version else "")
-            + " — nothing runs without a person starting it",
+            + f" — run `{sug.get('command') or f'gbfleet bench run --suite template --adapter {vendor}:{model}'}`"
+            + "; nothing runs without a person starting it",
         )
 
 

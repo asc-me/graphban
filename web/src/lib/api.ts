@@ -321,6 +321,16 @@ export interface AnswerWaitResult {
   drain?: DrainNote;
 }
 
+/** Body of POST /items/{id}/owner-close. `kind` omitted (or "merged") records the merge;
+ * "verified" records the revision checked, a required note and an optional url (GRPH-1909). */
+export interface OwnerCloseBody {
+  commit: string;
+  pr_url?: string;
+  kind?: "merged" | "verified";
+  note?: string;
+  url?: string;
+}
+
 export const api = {
   async login(email: string, password: string): Promise<User> {
     const data = await request<{ access_token: string; refresh_token: string }>(
@@ -811,7 +821,7 @@ export const api = {
     }),
   updateItem: (id: string, body: Partial<ItemDetail>) =>
     request<Item>(`/items/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
-  ownerClose: (id: string, body: { commit: string; pr_url?: string }) =>
+  ownerClose: (id: string, body: OwnerCloseBody) =>
     request<Item>(`/items/${id}/owner-close`, { method: "POST", body: JSON.stringify(body) }),
   resolveItem: (id: string, body: { kind: "duplicate" | "superseded"; of: string; reason?: string }) =>
     request<Item>(`/items/${id}/resolve`, { method: "POST", body: JSON.stringify(body) }),
@@ -940,22 +950,6 @@ export const api = {
       "/harness/recommendations/mark",
       { method: "POST", body: JSON.stringify(body) },
     ),
-  harnessProbeCandidates: (projectId: string) =>
-    request<{
-      project_id: string;
-      by_leaf: Record<string, { id: string; key: string; title: string; capabilities: string[]; touchpoints: string[] }[]>;
-      by_family: Record<string, { leaf_ready: string[]; fallback: boolean; n: number; items: { id: string; key: string; title: string; capabilities: string[]; touchpoints: string[] }[]; thin_leaves: string[] }>;
-      floor: number;
-      estimated_tokens: { comparable: boolean; reported: number; finished: number; tokens_per_attempt?: number; tokens_in?: number; tokens_out?: number; reason?: string };
-      suggestions: { trigger: string; vendor: string; model: string; binary_version: string; estimated_tokens: unknown; reason: string }[];
-    }>(`/harness/probe/candidates?project_id=${encodeURIComponent(projectId)}`),
-  startHarnessProbeRun: (body: {
-    project_id: string; vendor: string; model: string; capability: string;
-    item_ids: string[]; trigger?: string; binary_version?: string;
-  }) =>
-    request<Record<string, unknown>>("/harness/probe/runs", {
-      method: "POST", body: JSON.stringify(body),
-    }),
   lessons: (projectId: string, filters: LessonFilters = {}) => {
     const q = new URLSearchParams({ project_id: projectId });
     if (filters.trend) q.set("trend", filters.trend);
@@ -1348,6 +1342,12 @@ export const api = {
   promoteRule: (projectId: string, ruleId: string, reason: string) =>
     request<RuleToggle>(
       `/projects/${encodeURIComponent(projectId)}/rules/${encodeURIComponent(ruleId)}/promote`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
+  /** A project owner/admin removes a custom rule with a reason (GRPH-1939). Would-have rows and history stay. */
+  removeCustomRule: (projectId: string, ruleId: string, reason: string) =>
+    request<{ rule_id: string; project_id: string; removed: boolean; state: string; reason: string; org_rule_holds: boolean }>(
+      `/projects/${encodeURIComponent(projectId)}/rules/custom/${encodeURIComponent(ruleId)}/remove`,
       { method: "POST", body: JSON.stringify({ reason }) },
     ),
   /** The would-have rows of one rule. */

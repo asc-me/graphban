@@ -4,13 +4,32 @@
 everything runs: local runs and any job that does not ask are unaffected.
 
 Packing is largest-first onto the least-loaded shard, by the per-file seconds in
-`shard_weights.json` (measured setup+call on Postgres, 4 workers). A file that is not in the
-weights yet gets the median weight, so a new test file still lands in exactly one shard;
-refresh the weights when the split drifts out of balance. Every shard computes the same
-partition from the same collected file list, which is what makes "exactly one shard" hold
-without the shards talking to each other.
+`shard_weights.json` (measured setup+call in a SERIAL Postgres run — see REFRESHING below).
+A file that is not in the weights yet gets the median weight, so a new test file still lands
+in exactly one shard; refresh the weights when the split drifts out of balance. Every shard
+computes the same partition from the same collected file list, which is what makes "exactly
+one shard" hold without the shards talking to each other.
 
 By file, not by test, so a module's fixtures are built once per run, not once per shard.
+
+REFRESHING (GRPH-1903). Time one SERIAL Postgres process over a large selection of files,
+summing `report.duration` where `report.when in ("setup", "call")`, and keep the median of
+three passes. Two ways to get a number that looks measured and is not:
+
+- Not `-n 4`. This docstring used to say "4 workers", and that was never the committed
+  scale: three seats measured a small `-n 4` selection 2.4x-7.6x off the committed values
+  and not consistently in one direction, so it is contention noise, not a scale.
+- Not one file at a time. Session-scoped setup lands on whichever file pays it, so a file
+  measured ALONE reads heavy: `tests/test_stale_blocker.py` is 5.91s alone and 2.13s inside
+  a 35-file session. CI runs ~173 files per shard in one `-n auto` process, so the
+  in-session figure is the CI-faithful one.
+
+The committed numbers are not one scale. Against a 2026-11-24 refresh they run 0.56x-8.31x
+(`tests/test_prd_coverage.py` 0.93 committed vs 7.73 measured; the three lowest ratios are
+weights hand-committed during recent CI-red rebuilds, measured run-alone and so sitting
+above the in-session scale). That costs balance, never correctness. But appending today's
+measurements to the older ones is mixing scales, so when the split actually drifts,
+re-measure the whole file in one pass instead of appending to it.
 """
 from __future__ import annotations
 

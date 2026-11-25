@@ -207,6 +207,7 @@ def propose(db: Session, *, project_id: str, proposer_kind: str, proposer: str, 
         if prim is None:
             raise Validation(f"primitive {primitive!r} does not exist in primitive API "
                              f"{rule_pack.PRIMITIVE_API}")
+        custom_rules.refuse_unevaluated(primitive)
         rule_id = custom_rules.PREFIX + slug
         draft = {"id": rule_id, "stage": prim.stage, "title": (title or "").strip(),
                  "summary": (why or "").strip(), "primitive": primitive,

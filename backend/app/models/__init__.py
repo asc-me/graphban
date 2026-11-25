@@ -1973,6 +1973,10 @@ class CodeNode(Base):
     # this existed, or an agent that passed none — and unknown must stay distinguishable
     # from current, because a map that cannot say when it was taken reads like a fresh one.
     revision: Mapped[str] = mapped_column(String, default="", server_default="")
+    # The code map producer (`gban-codemap/<version>`) that last stamped this node's revision
+    # and content_hash (GRPH-1845). "" = never stamped by a producer. A describe without the
+    # producer marker does not move the revision or hash of a stamped node.
+    producer: Mapped[str] = mapped_column(String, default="", server_default="")
     embedding = mapped_column(EmbeddingType(settings.embed_dim), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -2413,6 +2417,27 @@ class SyncStorageConfig(Base):
                                                  nullable=False)
 
 
+class CiPullNote(Base):
+    """One sentence the CI pull loop stored for every worker (GRPH-1822).
+
+    The loop runs in the leader process. `GET /health` and the done refusal run
+    on whichever worker the request hits. A module global is true in one process
+    of N, so the sentence lives here.
+
+    `key` is `__last_error__` for the loop's last error, or `owner/repo@sha` for
+    one head. A missing last-error row means no pass has finished — not the same
+    as a row whose `body` is empty, which is a pass that read what it needed.
+    An observation row exists only while that head has a reason and no
+    `suite_green` yet.
+    """
+
+    __tablename__ = "ci_pull_notes"
+
+    key: Mapped[str] = mapped_column(String(300), primary_key=True)
+    body: Mapped[str] = mapped_column(Text, default="", server_default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class CodeSyncState(Base):
     """Per-project manifest of the code graph last pushed to the linked cloud tenant (AL-139):
     `manifest` is {path: content_hash} of what the cloud confirmed — the diff base for an
@@ -2751,6 +2776,11 @@ class Alert(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cleared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Drain notices (GRPH-1913, P99): `drain_drained` / `drain_stalled` rows carry the PRD and no
+    # wait (`item_id` is ""). NULL on every `response_needed` row. `pushed_at` is when Web Push
+    # last fired for this row, read by the 30-minute throttle.
+    prd_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    pushed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class PushSubscription(Base):
@@ -3378,6 +3408,94 @@ class CapabilityProbeRun(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class BenchRun(Base):
+    """One opened baseline run (GRPH-P98 §4, GRPH-1856).
+
+    The scratch project a run's children register on, so a baseline task is never an item or an
+    agent on the source project. Distinct from `CapabilityProbeRun`, which is retired.
+    """
+
+    __tablename__ = "bench_runs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    source_project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    vendor: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str] = mapped_column(String(64))
+    binary_version: Mapped[str] = mapped_column(String(32), default="")
+    suite_id: Mapped[str] = mapped_column(String(64))
+    suite_version: Mapped[str] = mapped_column(String(32))
+    #: The scratch items, in the order the tasks were named: `[{task_id, item_id}]`.
+    tasks: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class BenchBaseline(Base):
+    """One posted baseline result, keyed by vendor, model, binary_version, suite id and suite
+    version (GRPH-P98 §6, GRPH-1856).
+
+    Never written to `AttemptTelemetry` and never read into a natural or probe rate: a baseline
+    is shown beside the grid's cells under its own label.
+    """
+
+    __tablename__ = "bench_baselines"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    source_project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("bench_runs.id"), nullable=True)
+    vendor: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str] = mapped_column(String(64))
+    binary_version: Mapped[str] = mapped_column(String(32), default="")
+    suite_id: Mapped[str] = mapped_column(String(64))
+    suite_version: Mapped[str] = mapped_column(String(32))
+    #: Per-task outcomes: `[{task_id, outcome, capabilities, tokens, wall_seconds}]`.
+    outcomes: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    #: Per-capability rollups, computed by the server from `outcomes`.
+    rollups: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    #: Null when no task reported tokens: never a zero.
+    tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    wall_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    posted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class BenchSuite(Base):
+    """The repo suite's version counter for one project (GRPH-P98 §3, GRPH-1857).
+
+    The server is authoritative for the suite; a write carries `expected_version` and bumps
+    this by one. There is no merge model.
+    """
+
+    __tablename__ = "bench_suites"
+
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class BenchSuiteTask(Base):
+    """One adopted task of a project's repo suite: the GRPH-P98 §1 manifest fields."""
+
+    __tablename__ = "bench_suite_tasks"
+    __table_args__ = (UniqueConstraint("project_id", "task_id", name="uq_bench_suite_task"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    task_id: Mapped[str] = mapped_column(String(128))
+    kind: Mapped[str] = mapped_column(String(16))
+    base_sha: Mapped[str] = mapped_column(String(64))
+    title: Mapped[str] = mapped_column(String(256), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    acceptance: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    touchpoints: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    capabilities: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    size_band: Mapped[str] = mapped_column(String(32), default="")
+    check: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    reference: Mapped[str] = mapped_column(Text, default="")
+    expect: Mapped[str] = mapped_column(String(16), default="")
+    ref: Mapped[str] = mapped_column(String(128), default="")
+    adopted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class CapabilityPrior(Base):

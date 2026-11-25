@@ -59,6 +59,19 @@ has no line filter, so the run filters the clusters to the line's items itself.
 - Run the line drain in its own clone. There is one supervisor lock per checkout, unchanged,
   so do not start `--line` on a checkout a `--prd` drain holds.
 
+### Reading the last drain notice
+
+A `--prd` drain run as a service remembers the last notice `until` sent (one per change
+of state) under `~/.config/gbfleet/notice/<name>.json`. `gbfleet service status --name <prd>`
+prints it under the service line:
+
+- `last notice: drained, sent <time>` after a drained notice.
+- `last notice: stalled (held), sent <time>` followed by one `<item>: <reason>` line per open
+  item after a drain stall.
+
+"stalled (held)" is a drain stall. The existing `stalled (...)` service line is the
+`loop_silent` check (a supervisor that stopped writing) and keeps its own wording.
+
 ## Harness config
 
 - **Tier map**: harness × tier, editable for this deployment. An override is stored beside the
@@ -69,8 +82,83 @@ has no line filter, so the run filters the clusters to the line's items itself.
 - **Mix**: your share of recent spawns. Off means the scorer always picks the winner.
   Unregistered harnesses cannot take a share. Performance and rankings are on [harness.md](harness.md).
 
+## gbfleet bench
+
+A bench suite is a TOML manifest: a `[suite]` header (`id`, `version` as semver) and
+`[[task]]` rows. Each task has `id`, `kind` (`build` or `review`), `base_sha`, a `[task.brief]`
+(`title`, `description`, `acceptance`), `touchpoints`, `capabilities` (PRD-41 leaves, mirrored in
+`gbfleet.bench.suite.CAPABILITY_LEAVES`), and `size_band`.
+
+- **build**: `reference` (the reference solution's ref in the suite's repo, never copied into a
+  child's worktree) and `[task.check]` (`command`, `tests`).
+- **review**: `expect` (`bounce` or `sign_off`), `ref` (the planted-defect or clean ref) and a
+  `[task.check]`.
+
+The loader refuses a build task with no `base_sha` or `check`, a review task with no `expect`,
+and a capability that is not a leaf, naming the task id and the field.
+
+`gbfleet bench validate MANIFEST [--repo DIR]` runs each build task's check at `base_sha` (must
+fail; else `green_at_base`) and at the reference (must pass). A review task's planted-defect ref
+must make a check red and its clean ref must leave it green. A check command that cannot start
+(a missing binary) reports `check_unrunnable`, one that outlives the timeout `check_timed_out`, and
+test files that cannot be laid over `base_sha` from the reference `bad_overlay`; none counts as a red check. The command runs as argv, not through a
+shell: split POSIX-style, except on Windows, where backslashes in paths are kept. One line per task; exit 1 if
+any task does not discriminate.
+
+`gbfleet bench harvest [--repo DIR] [--branch B] [--since 180d] [--limit N] [--sabotage-items IDS]`
+scans first-parent commits (two-parent merges, and single-parent squash merges whose subject ends in `(#<n>)`, with the parent as base) and proposes candidate build tasks locally; it writes nothing to the
+server. A candidate's `base_sha` is the merge's first parent, and its check is the test files the
+merge added or modified (the PRD-41 test-path pattern, mirrored as `TEST_RE_SOURCE`), run with
+pytest (Python) or the package manager's runner (JS), from the component: the nearest ancestor of
+the test files holding `pyproject.toml` or `package.json` is the working directory and test paths
+are relative to it. Python uses that directory's `.venv/bin/python`, else `uv run python` when it
+has `uv.lock`, else gbfleet's interpreter; a src-layout component's `src/` goes first on
+`PYTHONPATH`, so an editable install of the repo's own checkout is not what gets tested. A repo overrides this per path prefix with
+`[[check]] prefix, cwd, command` in `.gbfleet/bench.toml`; `bench run --suite repo` resolves the same way. The check runs 3 times at the parent (all
+must be red) and 3 times at the merge (all must be green). Dropped merges print with a reason:
+`flaky`, `green_at_parent`, `red_at_merge` or `no_tests`. Items named by `--sabotage-items` (a
+red sabotage) rank first, then the most recent. Candidates are saved in the repo's git dir.
+
+`gbfleet bench adopt IDS --server URL --project P` posts chosen candidates to the repo suite
+with `expected_version` (read from the server, or `--expected-version N`). On a 409 it prints the
+suite's current version and exits 1.
+
+`gbfleet bench run --suite template|repo|all --adapter vendor[:model] --server URL --project P
+[--dry-run]` runs one baseline. It opens a bench run on the server (a scratch project and one bound
+seat per task), then for each build task cuts a worktree at `base_sha` with the check's test files
+held out (added files absent, modified files at their base version), spawns the child through the
+ordinary supervisor path (`start_one`: registration window, `--child-wall-clock`, reap and
+salvage), and on exit restores the held-out files and runs the check. Outcomes are
+`never_registered`, `no_branch`, `check_red`, `check_green`, `timed_out` or `harness_error`, and
+are posted to `/api/bench/results`. A failure to acquire seats records `harness_error` for every
+task. Review tasks are not run.
+
+The children register in the scratch project, not in `--project`, so they and the supervisor's
+roster reads use the credential the open-run reply carries in `api_key` (scoped to the scratch
+project). `$GBFLEET_API_KEY` is only for the source project: a project-scoped key cannot reach the
+scratch project. A reply without `api_key` records `harness_error` for every task and spawns nothing.
+
+`--dry-run` lists the tasks, adapter, model and an estimated token spend (by `size_band`) and
+spawns nothing. A task whose estimate exceeds a `fleet_policy.caps` value (`per_attempt_tokens`,
+`per_item_tokens`) is skipped with the cap named. `--suite repo` with no adopted tasks exits 2
+(`repo suite has 0 tasks; run gbfleet bench harvest or use --suite template`); `--suite all`
+reports an empty suite as 0 tasks and never skips it.
+
 ## Reading an empty result
 
 "No ready work to partition" means nothing is ready, not that everything is done. "Nothing
 waiting for a second pair of eyes" is about the review queue only. If no API key reaches the
 project, the page says so and points to Settings.
+
+## The local hook (`--on-notify`)
+
+`gbfleet service install --on-notify <command> -- --prd GRPH-Pxx ...` runs `<command>` once
+for each drain notice the server accepts as a change of state, with the notice as JSON on
+stdin: `{"prd", "outcome", "open", "sent_at"}`. It runs once per notice, not once
+per cycle. A hook that exits non-zero is logged (`drain_notice_hook_failed`) and the drain
+carries on; a hook still running after 30 seconds is killed. Without `--on-notify` nothing
+runs and the notice still reaches the server.
+
+The command is run directly, not through a shell: split like a shell command line on Linux
+and macOS, and handed to CreateProcess as is on Windows. For
+pipes or redirects, ask for the shell yourself: `--on-notify "sh -c 'jq .outcome >> ~/drains.log'"`.

@@ -49,7 +49,11 @@ router = APIRouter(prefix="/sync", tags=["sync"])
 
 def _status(db: Session, user: User) -> dict:
     """Assemble the Sync/Link page payload: instance link state + per-project sync state for
-    the projects this user can read, flagged with whether they can also push/purge them."""
+    the projects this user can read, flagged with whether they can also push/purge them.
+
+    Local rows only (GRPH-1896). The shell calls this on every page, so a console round-trip
+    here is a multi-second wait on every navigation, and the statement count must not grow
+    with the number of projects."""
     link = code_sync.link_status(db)
     maps = link_device.mappings(db)
     deployment = link_device.link_view(db, maps)

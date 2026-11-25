@@ -9,13 +9,14 @@ to change a preference, not an agent working inside one. The supervisor's own vi
 facts is `fleet_status.measured`, which it already reads, and `gbfleet doctor` prints.
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import User
 from app.security import authz
-from app.security.deps import get_agent_key, get_current_user
+from app.security.deps import get_agent_key, get_current_user, get_user_or_agent_key
 from app.services import events as events_svc
 from app.services import fleet_profiles as fleet_profiles_svc
 from app.services import items as items_svc
@@ -162,6 +163,27 @@ def post_surface(body: SurfaceIn, db: Session = Depends(get_db),
         raise HTTPException(422, str(exc)) from exc
     db.commit()
     return stored
+
+
+@router.get("/grid")
+def harness_grid(project_id: str, window_days: int | None = None,
+                 db: Session = Depends(get_db), who=Depends(get_user_or_agent_key)):
+    """The grid's cells for `gbfleet harness grid` (GRPH-1862). Same payload as the page
+    reads, with each cell's `baseline` beside its natural and probe numbers.
+
+    Either credential: a person may already read every cell here from `GET /api/harness`, so
+    the agent-key path widens nothing. A user is gated by `require_readable`; a key by the
+    projects it can write. 404 either way for a project the caller cannot reach.
+    """
+    if window_days is not None and (window_days < 1 or window_days > 1000):
+        raise HTTPException(422, "window_days must be between 1 and 1000")
+    if isinstance(who, User):
+        authz.require_readable(db, who.id, project_id)
+    elif project_id not in authz.key_writable_ids(db, who):
+        raise HTTPException(404, "no such project")
+    out = harness_svc.report(db, project_id, window_days=window_days)
+    db.commit()
+    return out
 
 
 @router.get("/recommendations")
@@ -341,46 +363,22 @@ def roll_snapshot(db: Session = Depends(get_db), key=Depends(get_agent_key)):
     return out
 
 
+_PROBE_RETIRED = {
+    "detail": "the probe panel is retired (GRPH-P98); run `gbfleet bench run` instead",
+    "use": "gbfleet bench run",
+}
+
+
 @router.get("/probe/candidates")
-def probe_candidates(project_id: str, db: Session = Depends(get_db),
-                     user: User = Depends(get_current_user)):
-    """Closed items with a red sabotage, grouped by leaf, family fallback (PRD-41 D7).
-
-    The estimated token cost from the panel's history is in the payload so a person can
-    see it before they start a run. Nothing here starts a probe.
-    """
-    authz.require_readable(db, user.id, project_id)
-    return harness_svc.probe_candidates(db, project_id)
-
-
-class ProbeRunIn(BaseModel):
-    project_id: str
-    vendor: str
-    model: str
-    capability: str
-    item_ids: list[str]
-    trigger: str = "new_row"
-    binary_version: str = ""
+def probe_candidates(user: User = Depends(get_current_user)):
+    """Retired: the probe panel is folded into the bench baseline (GRPH-P98 §9)."""
+    return JSONResponse(status_code=410, content=_PROBE_RETIRED)
 
 
 @router.post("/probe/runs")
-def start_probe_run(body: ProbeRunIn, db: Session = Depends(get_db),
-                    user: User = Depends(get_current_user)):
-    """Start a probe panel: scratch project, delegations with `sampled = probe`.
-
-    One model and one leaf at a time, under the project's caps. Refused if a run for
-    that model is already open.
-    """
-    authz.require_writable(db, user.id, body.project_id)
-    try:
-        out = harness_svc.start_probe_run(
-            db, project_id=body.project_id, user_id=user.id, vendor=body.vendor,
-            model=body.model, capability=body.capability, item_ids=body.item_ids,
-            trigger=body.trigger, binary_version=body.binary_version)
-    except harness_svc.AttemptRefused as e:
-        raise HTTPException(e.status, str(e))
-    db.commit()
-    return out
+def start_probe_run(user: User = Depends(get_current_user)):
+    """Retired: the probe panel is folded into the bench baseline (GRPH-P98 §9)."""
+    return JSONResponse(status_code=410, content=_PROBE_RETIRED)
 
 
 @router.post("/review-checks/run")

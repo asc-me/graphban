@@ -274,6 +274,26 @@ def create_custom_rule(project_id: str, body: CustomRuleWrite, db: Session = Dep
 
 
 # ---- rule proposals (GRPH-1775 / P91 D2) -------------------------------------------------
+class CustomRuleRemoveOut(BaseModel):
+    rule_id: str
+    project_id: str
+    removed: bool
+    state: str
+    reason: str
+    org_rule_holds: bool
+
+
+@router.post("/projects/{project_id}/rules/custom/{rule_id}/remove",
+             response_model=CustomRuleRemoveOut)
+def remove_custom_rule(project_id: str, rule_id: str, body: RulePromote,
+                       db: Session = Depends(get_db), principal=Depends(get_user_or_agent_key)):
+    """A project owner/admin removes a custom rule (observing or active) with a reason
+    (GRPH-1939 / P91 D3, D5). It stops being evaluated; its would-have rows and history stay.
+    Either credential reaches here only so an agent key is refused by name
+    (`rules.person_adopts`), not by a bare 401."""
+    return _adoption(custom_rules.remove, db, principal, project_id, rule_id, body.reason)
+
+
 @router.get("/projects/{project_id}/rules/proposals", response_model=list[RuleProposalOut])
 def list_rule_proposals(project_id: str, status: str | None = None,
                         db: Session = Depends(get_db), user: User = Depends(get_current_user)):

@@ -50,6 +50,10 @@ os.environ["SYNC_FLUSH_SECONDS"] = "0"
 # `project_sync_proposals.run_due` on a fake clock. A live tick would call the
 # console, or the absence of one, in the middle of unrelated tests.
 os.environ["PROPOSAL_POLL_SECONDS"] = "0"
+# The CI pull loop is OFF for the suite (GRPH-1822). Its tests drive `ci_pull.run_once`
+# on a fake clock and a fake GitHub. A timer that reached api.github.com mid-test — or
+# wrote an attestation onto a fixture item — would be a flake.
+os.environ["CI_PULL_SECONDS"] = "0"
 # bcrypt at its minimum cost. Set before the templates are built so the SEEDED user's hash
 # is cheap too: `checkpw` reads the cost from the stored hash, and at the production 12 every
 # `auth` login cost ~180 ms — the single largest fixture cost in the suite (measured
@@ -157,6 +161,8 @@ def pytest_configure(config):
     # value instead of minting a second one nobody reads.
     os.environ.setdefault(schema_probe.ENV_DIR, schema_probe.make_dir())
     schema_probe.install()
+    config.addinivalue_line(
+        "markers", "sign_off_gate: run `review.sign_off_before_done` as production does (on)")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -228,6 +234,19 @@ def _no_ci_deployment(monkeypatch):
     from app.config import settings
 
     monkeypatch.setattr(settings, "pr_cooldown_seconds", 0, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _no_sign_off_gate(monkeypatch, request):
+    # GRPH-1940: production refuses `done` without an independent `fleet.sign_off` unless the
+    # project's `review.sign_off_before_done` rule is off. Most tests close an item with a CI
+    # receipt to exercise something else, so the suite runs as a project that turned the rule
+    # off. Tests ABOUT the gate mark themselves `sign_off_gate` and get the real default (on).
+    if request.node.get_closest_marker("sign_off_gate") is None:
+        from app.services import rule_toggles
+
+        monkeypatch.setattr(rule_toggles, "sign_off_before_done", lambda db, project_id: False)
     yield
 
 

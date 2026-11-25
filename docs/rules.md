@@ -167,6 +167,24 @@ re-checked. A predicate that did not run is not a pass, and it must be attested 
 - **Audit:** `GET /api/rules/toggles` returns `effective_predicates` for this rule — each name
   with its source (`deployment` or `project`). The rule history records who set the list and why.
 
+## `review.sign_off_before_done` — `done` needs an independent sign-off (GRPH-1940)
+
+Stage Review, enforced in `items.update_item`. On means `update_item` (MCP or REST `PATCH`) to
+`done` is refused `409` / `conflict` unless the item carries a passing `fleet.sign_off` receipt
+at its head — however many done predicates are attested, and whichever key calls. Attested is
+not reviewed: before this rule a planner key with no fleet on it could close an item nobody
+reviewed, while the same call on a fleet key was refused.
+
+- **Default: on.** A project that never set it is refused, and a box whose pack carries no
+  template for the rule reads it as on.
+- **Always open:** `sign_off` itself, `owner-close` by a person (`POST /api/items/{id}/owner-close`,
+  verified or hand-merged), a `resolution` close (duplicate / superseded), and a typed wait
+  cleared by the operator.
+- **Loosening it is a person's act.** The refusal names the rule and recommends it: "a person
+  can switch this project to the exploratory level on the Rules page". An agent can relay that
+  recommendation; it cannot flip the switch (agents only tighten, GRPH-P91). A person turns it
+  off per project or org, or applies a strictness profile that pins it off (`exploratory`).
+
 ## `gitops.merge_method` — how the supervisor merges (GRPH-1428)
 
 `squash` (default when unset), `merge` or `rebase`. Set it on the gitops PATCH like the other
@@ -301,6 +319,7 @@ An observing rule is on and measured but not enforced. Where a primitive the **s
 
 - Nothing is re-evaluated in bulk on adopt, promote or lock; the value is read at the next check. Any direct toggle write from the Rules page is immediate and ends observing.
 - **Promote** is a person's REST act with a reason (`POST /api/projects/{id}/rules/{rule_id}/promote`): the rule becomes `active` at the primitive's real level. An agent key is refused naming `rules.person_adopts`. Would-have rows are the rule's history, kept for the life of the project; promotion or removal never purges them, and they are attributed to the rule, never to its proposer.
+- **Remove** (GRPH-1939) is the nudge's other answer, and the same kind of act: a project owner/admin removes the project's own custom rule, observing or active, with a reason (`POST /api/projects/{id}/rules/custom/{rule_id}/remove`), from **Remove** beside Promote on an observing rule or in an active custom rule's dock. An agent key is refused naming `rules.person_adopts`. The rule's row goes, so it is no longer evaluated: it holds and records nothing, and it leaves the Custom rules lists. Its would-have rows and its history stay readable — a `remove_custom_rule` event keeps the reason and what was removed. An org-owned rule is an org admin's to remove, and a locked one is refused naming `rules.org_lock_holds`.
 - **Nudge**: `decision_due` is reported once 14 days have passed or 10 would-have outcomes exist, whichever comes first. It never promotes itself; the rule stays observing until a person acts.
 - **D6**: evaluation never reads the proposer or the adopter; the agent that proposed a rule is held and recorded like any other.
 
