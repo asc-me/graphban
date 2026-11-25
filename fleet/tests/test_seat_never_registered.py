@@ -54,7 +54,11 @@ def test_an_exit_before_registering_is_logged_with_its_class(
     """Sabotage: return `never_registered` unconditionally from `unregistered_exit_reason` and
     every vendor row fails; match the bare word "limit" and the crash row reads as quota."""
     child = _fake_adapter_child(
-        scripts, tmp_path, log_dir, f"import sys\nprint({said!r}, file={stream})\nsys.exit(0)\n")
+        scripts, tmp_path, log_dir,
+        # A vendor CLI writes UTF-8 (the `·` in Claude Code's login line); a Python child on
+        # Windows would otherwise write cp1252 and the row would test the codec, not the class.
+        f"import sys\n{stream}.reconfigure(encoding='utf-8')\n"
+        f"print({said!r}, file={stream})\nsys.exit(0)\n")
 
     with caplog.at_level(logging.INFO, logger="gbfleet"):
         with pytest.raises(LaunchFailed) as exc:
