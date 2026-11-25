@@ -291,6 +291,24 @@ def test_a_sibling_is_covered_by_who_consumed_the_seat(client, auth, db):
                       "every declared touchpoint: web/src/App.tsx")
 
 
+def test_an_unpushed_branch_is_said_without_claiming_a_push(client, auth, db):
+    """GRPH-1891: the drain could not publish a local-only review branch. `withheld`
+    renders "pushed `{branch}`", which this note must not say."""
+    proj, hand, planner = _project(client, auth)
+    _worker, item = _item(client, hand, title="unpushed")
+    _bind(db, proj, item, wave="wave-1")
+
+    empty = _post(client, planner, item_id=item, kind="unpushed", branch="gb/x", reason=" ")
+    assert empty.status_code == 422, empty.text
+    got = _post(client, planner, item_id=item, kind="unpushed", branch="gb/x",
+                reason="push refused: denied")
+    assert got.status_code == 200, got.text
+    [note] = _notes(client, hand, item)
+    assert note["detail"] == ("gbfleet: `gb/x` was never pushed and the push failed; "
+                              "not proposed as a PR — push refused: denied")
+    assert "pushed `" not in note["detail"]
+
+
 def test_the_server_composes_each_receipt_and_refuses_a_kind_it_does_not_record_yet(
         client, auth, db):
     """The caller sends facts. The bytes on the item are the ones the readers already know.

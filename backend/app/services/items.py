@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import re
 
+from contextlib import contextmanager
 from datetime import timedelta, timezone
 
 from sqlalchemy import delete, func, or_, select, update
@@ -312,6 +313,27 @@ def list_items(db: Session, project_id: str | None = None, status: str | None = 
         stmt = stmt.where(Item.status == status)
     stmt = stmt.order_by(Item.sort_order.asc(), Item.created_at.desc())
     return list(db.scalars(stmt).all())
+
+
+@contextmanager
+def batched_row_lookups(db: Session, items: list[Item]):
+    """Hold what a rendered row looks up, for the length of the render (GRPH-1898).
+
+    A list row renders `prd_id` as the PRD's key and `question_state` from the row's
+    dependency waits. Read a row at a time, each costs statements of its own: a 400-row
+    project measured 135 of them for one page — 80 PRD lookups and 51 link queries — against
+    the 7 a flat read needs.
+
+    Yields the referenced PRDs, and holding them IS the fix rather than a formality: the
+    identity map keeps objects weakly, so a PRD nothing else references is collected the
+    moment its key is rendered and the next row queries it again.
+    """
+    from app.services import waits as waits_svc
+
+    prd_ids = {i.prd_id for i in items if i.prd_id}
+    held = list(db.scalars(select(Prd).where(Prd.id.in_(prd_ids)))) if prd_ids else []
+    with waits_svc.batched(db, items):
+        yield held
 
 
 def get_item(db: Session, item_id: str) -> Item | None:
@@ -1842,6 +1864,36 @@ def refuse_if_predicates_missing(db, item, merged, head) -> None:
         )
 
 
+#: The adapter `fleet.sign_off` writes its receipt under.
+SIGN_OFF_ADAPTER = "fleet.sign_off"
+
+
+def signed_off_at(evidence, head: str | None) -> bool:
+    """A passing `fleet.sign_off` receipt bound to `head` (any commit when no head is known)."""
+    return any(a.get("adapter") == SIGN_OFF_ADAPTER
+               for a in valid_attestations(evidence, commit=head or None))
+
+
+def refuse_if_unreviewed(db, item, merged, head) -> None:
+    """Raise MissingAttestation when `done` has no independent sign-off at `head` and the
+    project's `review.sign_off_before_done` rule is on (GRPH-1940; on unless a person turned it
+    off). The message names the rule and the way to loosen it — a recommendation an agent can
+    relay, not a switch it can flip: agents only tighten (GRPH-P91)."""
+    from app.services import rule_toggles
+    if signed_off_at(merged, head):
+        return
+    if not rule_toggles.sign_off_before_done(db, item.project_id):
+        return
+    rule = rule_toggles.SIGN_OFF_BEFORE_DONE_RULE
+    detail = f"no independent sign-off ({rule} is on)."
+    record_refusal(db, item, predicate="sign_off_missing", detail=detail)
+    raise MissingAttestation(
+        f"{item.key} cannot move to done: {detail} A reviewer signs it off, or a person "
+        "closes it with owner-close; to allow done without review, a person can switch this "
+        "project to the exploratory level on the Rules page."
+    )
+
+
 def ci_run_in_progress(evidence, commits) -> dict | None:
     """GRPH-1416. The newest CI run announced as started at one of `commits` and not answered since.
 
@@ -1953,7 +2005,7 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
     # An owner.close receipt is the owner saying the work is already on the base.
     # The cooldown waits for CI after a PR is linked; that wait does not apply to a
     # human closing something they already merged (GRPH-1030).
-    if any(a.get("adapter") == OWNER_CLOSE_ADAPTER for a in valid_attestations(merged)):
+    if any(is_owner_close_merge(a) for a in valid_attestations(merged)):
         return []
     commits = pr_commits(merged, commit, item.head_commit)
     if any(CI_PREDICATE in attested_predicates(merged, commit=c) for c in commits):
@@ -1988,6 +2040,14 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
                + ("passed there" if ok else f"did not pass {CI_PREDICATE}"))
     else:
         run = f"no CI run has reported {CI_PREDICATE} for it yet"
+    # GRPH-1822. The pull loop writes no receipt while checks are absent, still
+    # running, or unreadable, so this sentence is the only place that state shows.
+    # Empty when the loop has not looked at this head: the old wording stays, and
+    # a head nobody asked GitHub about does not grow a reason the box never had.
+    from app.services import ci_pull
+    clause = ci_pull.refusal_clause(commits, db, item=item, evidence=incoming_evidence)
+    if clause:
+        run = f"{run}. {clause}"
     # CI ran the suite at the PR's head and it did not pass: that is an answer, not silence,
     # so there is nothing to wait for (GRPH-1345).
     failed_at_head = [a for a in runs
@@ -2222,8 +2282,23 @@ def resolve_item(db: Session, item_id: str, *, kind: str, of: str, reason: str =
     return out
 
 
+OWNER_CLOSE_KINDS = ("merged", "verified")
+OWNER_CLOSE_NOTE_MAX = 200
+
+
+def is_owner_close_merge(attestation: dict) -> bool:
+    """An `owner.close` attestation that carries a passed `on_base` predicate (GRPH-1908).
+
+    A Verified close writes `walk_verified` instead, and says nothing about the base.
+    """
+    return attestation.get("adapter") == OWNER_CLOSE_ADAPTER and any(
+        isinstance(q, dict) and q.get("name") == "on_base" and q.get("passed") is True
+        for q in attestation.get("predicates") or [])
+
+
 def owner_close(db: Session, item_id: str, *, closer: dict, commit: str,
-                pr_url: str | None = None, defer=None) -> Item | None:
+                pr_url: str | None = None, defer=None, kind: str | None = None,
+                note: str | None = None, url: str | None = None) -> Item | None:
     """Close an item whose work is on the base, as a signed-in project owner (GRPH-1030).
 
     Not `fleet.sign_off`. Completes through `update_item` so the completion gate is the
@@ -2234,7 +2309,26 @@ def owner_close(db: Session, item_id: str, *, closer: dict, commit: str,
     `closer` is `{id, handle, name}` of the JWT user, passed in rather than looked up:
     services stay principal-free. Authority (project owner, not an agent key) is the
     REST boundary.
+
+    `kind` is `merged` (default) or `verified`. Verified records that the owner checked the
+    work somewhere other than the base: it needs a one-line `note` naming where, takes an
+    optional `url` (a walk log or artifact, never a PR url), and writes `walk_verified`
+    in place of `on_base`.
     """
+    kind = (kind or "merged").strip().lower()
+    if kind not in OWNER_CLOSE_KINDS:
+        raise ValueError(f"kind must be one of {', '.join(OWNER_CLOSE_KINDS)}, not {kind!r}")
+    verified = kind == "verified"
+    note_text = (note or "").strip()
+    if verified:
+        if not note_text:
+            raise ValueError("note is required for a verified close: one line naming where "
+                             "the check happened")
+        if "\n" in note_text or "\r" in note_text:
+            raise ValueError("note must be a single line")
+        if len(note_text) > OWNER_CLOSE_NOTE_MAX:
+            raise ValueError(f"note is {len(note_text)} characters; the limit is "
+                             f"{OWNER_CLOSE_NOTE_MAX}")
     item = get_item(db, item_id)
     if item is None:
         return None
@@ -2243,17 +2337,21 @@ def owner_close(db: Session, item_id: str, *, closer: dict, commit: str,
     sha = (commit or "").strip().lower()
     if not _COMMIT.fullmatch(sha):
         raise ValueError(
-            "owner close needs the merge commit as 7–40 hex characters — the revision "
-            "that landed on the base, not a branch name"
+            "commit must be 7–40 hex characters — the revision "
+            + ("that was checked" if verified else "that landed on the base")
+            + ", not a branch name (owner close needs the merge commit)"
         )
-    url = (pr_url or "").strip()
-    if url and not is_pr_url(url):
-        raise ValueError(f"{url!r} is not a pull/merge request URL")
+    if verified:
+        url = (url or "").strip()
+    else:
+        url = (pr_url or "").strip()
+        if url and not is_pr_url(url):
+            raise ValueError(f"{url!r} is not a pull/merge request URL")
     cut = cut_from_commits(item.evidence)
     if any(same_commit(sha, base) for base in cut):
         raise ValueError(
-            f"{item.key}: {sha[:12]} is the commit this branch was cut from, so it "
-            "carries none of the merge — name the commit that landed on the base"
+            f"{item.key}: commit {sha[:12]} is the commit this branch was cut from, so it "
+            "carries none of the work — name a later commit"
         )
     handle = str(closer.get("handle") or closer.get("name") or closer.get("id") or "owner")
     uid = str(closer.get("id") or "").strip()
@@ -2263,13 +2361,18 @@ def owner_close(db: Session, item_id: str, *, closer: dict, commit: str,
         "",
     )
     pr_detail = existing_pr or "no PR url recorded"
+    if verified:
+        first = {"name": "walk_verified", "passed": True,
+                 "detail": f"verified by {handle}: {note_text}"}
+    else:
+        first = {"name": "on_base", "passed": True,
+                 "detail": f"owner {handle} closed as merged at {sha[:12]}; PR {pr_detail}"}
     receipt = {
         "kind": "attestation",
         "adapter": OWNER_CLOSE_ADAPTER,
         "commit": sha,
         "predicates": [
-            {"name": "on_base", "passed": True,
-             "detail": f"owner {handle} closed as merged at {sha[:12]}; PR {pr_detail}"},
+            first,
             {"name": "owner_close", "passed": True,
              "detail": (f"closed by {handle}"
                         + (f" ({uid})" if uid else "")
@@ -2280,13 +2383,14 @@ def owner_close(db: Session, item_id: str, *, closer: dict, commit: str,
     if url:
         incoming.append({
             "kind": "url", "url": url, "commit": sha,
-            "detail": f"merge recorded by owner {handle}",
+            "detail": (f"walk log recorded by owner {handle}" if verified
+                       else f"merge recorded by owner {handle}"),
         })
     item.evidence = append_evidence(item.evidence, incoming)
-    if url and not (item.github_url or "").strip():
+    if url and not verified and not (item.github_url or "").strip():
         item.github_url = url
     db.flush()
-    out = update_item(db, item.id, defer=defer, status="done")
+    out = update_item(db, item.id, defer=defer, status="done", closed_by_owner=True)
     if out is None:
         return None
     from app.services import delegation as delegation_svc
@@ -2338,7 +2442,7 @@ def _check_fix_transition(db: Session, item: Item, fields: dict) -> None:
 
 
 def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None = None,
-                **fields) -> Item | None:
+                *, closed_by_owner: bool = False, **fields) -> Item | None:
     """Patch fields or advance status.
 
     `submitted_by` is who is making THIS call — an agent id, or `key:<name>` for a bare
@@ -2493,6 +2597,17 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
                     f"its attestation reports {', '.join(failed_names)} as failing.")
             else:
                 predicate, detail = "attestation_missing", "nothing has attested it."
+            # GRPH-1822. An item with no passing receipt never reaches the cooldown,
+            # so the pull loop's reason has to be on THIS refusal. Empty when the
+            # loop has not looked: the old sentence stays, and a head nobody asked
+            # GitHub about does not grow a reason the box never had.
+            if predicate == "attestation_missing":
+                from app.services import ci_pull
+                clause = ci_pull.refusal_clause(
+                    [head] if head else [], db, item=item,
+                    evidence=fields.get("evidence") or [])
+                if clause:
+                    detail = f"{detail} {clause}"
             record_refusal(db, item, predicate=predicate, detail=detail)
             raise MissingAttestation(
                 f"{item.key} cannot move to done: {detail} `done` needs an "
@@ -2518,6 +2633,13 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         # run, because "attestation_missing" would send them looking for an adapter that is
         # already working.
         refuse_if_predicates_missing(db, item, merged_for_gate, head)
+        # THE REVIEW (GRPH-1940). Attested is not reviewed: a planner key with no fleet on it
+        # took an item from `review` to `done` with nobody signing it off, while the same call
+        # on a fleet key was refused — so whether review was skipped depended on the key, not
+        # on a rule the project adopted. `owner_close` passes `closed_by_owner`; a resolution
+        # close and `fleet.sign_off` never reach this line.
+        if not closed_by_owner:
+            refuse_if_unreviewed(db, item, merged_for_gate, head)
         # THE PR COOLDOWN (GRPH-567, PRD-26). Shared with `fleet.sign_off` — that path
         # used to write `done` directly and skip this, which is the reviewer CALL the
         # bounce found. Incoming evidence is read as well as the stored stamp so linking
@@ -2564,6 +2686,9 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
                 "severity"):
         if key in fields and fields[key] is not None:
             setattr(item, key, fields[key])
+    if "blocker" in fields:
+        # GRPH-1867. Links derived from the old text go when the new text no longer names them.
+        drop_stale_blocker_dependencies(db, item)
     if "blocker" in fields and (item.blocker or "").strip():
         # GRPH-1530. The text is not the only record: item ids named in it become
         # dependency links in this same commit, so a later `done` can clear the block.
@@ -3729,6 +3854,44 @@ def _hold_live(item: Item) -> bool:
     return claimed is not None and claimed >= cutoff
 
 
+def drop_stale_blocker_dependencies(db: Session, item: Item) -> int:
+    """Remove this item's `blocker`-reason dependency links its blocker text no longer names.
+
+    Links with any other reason are left alone (GRPH-1867).
+    """
+    named: set[str] = set()
+    for token in keys_named_in((item.blocker or "").strip()):
+        stored = keys.resolve_item(db, token)
+        if stored:
+            named.add(stored)
+    stale = db.scalars(select(Link).where(
+        Link.type == "dependency", Link.a == item.id,
+        Link.reason == BLOCKER_DEP_REASON)).all()
+    dropped = 0
+    for link in stale:
+        if link.b not in named:
+            db.delete(link)
+            dropped += 1
+    return dropped
+
+
+def _depends_through_links(db: Session, start: str, target: str) -> bool:
+    """True when `start` reaches `target` through dependency links."""
+    seen = {start}
+    frontier = [start]
+    while frontier:
+        nxt = db.scalars(select(Link.b).where(
+            Link.type == "dependency", Link.a.in_(frontier))).all()
+        frontier = []
+        for b in nxt:
+            if b == target:
+                return True
+            if b not in seen:
+                seen.add(b)
+                frontier.append(b)
+    return False
+
+
 def record_blocker_dependencies(db: Session, item: Item) -> list[str]:
     """Link this item to every item its blocker text names (GRPH-1530).
 
@@ -3755,6 +3918,9 @@ def record_blocker_dependencies(db: Session, item: Item) -> list[str]:
         existing = db.scalar(select(Link).where(
             Link.type == "dependency", Link.a == item.id, Link.b == other.id))
         if existing is None:
+            # GRPH-1867. A link that closes a cycle would stall the drain: skip it.
+            if _depends_through_links(db, other.id, item.id):
+                continue
             db.add(Link(
                 project_id=item.project_id, a=item.id, b=other.id,
                 type="dependency", reason=BLOCKER_DEP_REASON, confidence=1.0,

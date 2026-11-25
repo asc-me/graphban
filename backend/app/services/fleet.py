@@ -1537,6 +1537,9 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     # `claim_next` two entries up, so a planner has NO AUTHORED WORK TO LAUNDER. If this ever
     # gains a second role, that argument evaporates silently; a test asserts it does not.
     "mint_enrolment": ("planner",),
+    # GRPH-1856. A planner opens a bench run: it mints seats on a scratch project, as it does
+    # for a wave. A worker has no seats to mint.
+    "bench": ("planner",),
     "create_prd": ("planner",),
     # GRPH-1681. Opening the project's one maintenance line is planner work over MCP; a
     # person does it through REST with the permission that accepts a request.
@@ -2441,7 +2444,7 @@ def _review_pr_unlinked(it: Item) -> bool:
         return False
     if not (it.branch or "").strip() and not (getattr(it, "head_commit", "") or "").strip():
         return False
-    if any(a.get("adapter") == items_svc.OWNER_CLOSE_ADAPTER
+    if any(items_svc.is_owner_close_merge(a)
            for a in items_svc.valid_attestations(evidence)):
         return False
     refusals = [str(e.get("detail") or "") for e in evidence
@@ -2593,6 +2596,10 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
     if project_id:
         stmt = stmt.where(Item.project_id == project_id)
     declined = {s for s in (skip or [])}
+    from app.services import bench as bench_svc
+    bench_only = bench_svc.review_restriction(db, agent_id)
+    if bench_only is not None:
+        stmt = stmt.where(Item.id.in_(bench_only)) if bench_only else stmt.where(False)
     candidates = [
         it for it in db.scalars(stmt.order_by(Item.sort_order, Item.number)).all()
         # Declined this round — see `claim_next`. A reviewer that must refuse the top item
@@ -2826,22 +2833,38 @@ class UnreadableAcceptance(MissingAcceptanceCoverage):
 # are what planners actually write when nobody told them it (GRPH-893: SA-498).
 _ACCEPTANCE_HEADINGS = {"tests", "acceptance", "acceptance criteria"}
 _HEADING = re.compile(r"^(#{2,3})\s+(.*?)\s*#*$")
-# An `Acceptance:` label as prose — `Acceptance: the gate names…`, `**Acceptance:** …`.
+# A parenthetical qualifier on the label: `Acceptance (D3)`, `Acceptance criteria (draft)`.
+# It is not a different word. Without it, `**Acceptance (D3):**` matches none of the
+# patterns below and the gate records "no clauses written" (GRPH-1289).
+_ACCEPTANCE_QUALIFIER = r"(?:\s*\([^)\n]{1,60}\))?"
+# An `Acceptance:` / `Acceptance.` label — `Acceptance: the gate names…`,
+# `**Acceptance:**`, `**Acceptance (D3):**`, `**Acceptance.**`, `Acceptance (D3):`.
+# The trailing `.` is the same terminator as `:`. Prose after it stays inline
+# (group 1), which the walker reports as unreadable rather than as clauses.
 _ACCEPTANCE_LABEL = re.compile(
-    r"^[\W_]*acceptance(?:\s+criteria)?[*_]*\s*:[*_]*\s*(.*)$", re.IGNORECASE)
+    rf"^[\W_]*acceptance(?:\s+criteria)?{_ACCEPTANCE_QUALIFIER}[*_]*\s*[:.][*_]*\s*(.*)$",
+    re.IGNORECASE)
 # A bold or underscore label with nothing after it — `**Acceptance**`,
-# `**Acceptance criteria**`, `__Acceptance__`. The colon form is already
-# `_ACCEPTANCE_LABEL` (`**Acceptance:**`). Without this branch a planner's
-# `**Acceptance**` plus a checklist parses to nothing, and the gate records a
-# pass (GRPH-1062).
+# `**Acceptance criteria**`, `__Acceptance__`, `**Acceptance (D3)**`,
+# `__Acceptance.__`. The colon and period forms are already `_ACCEPTANCE_LABEL`.
+# Without this branch a planner's `**Acceptance**` plus a checklist parses to
+# nothing, and the gate records a pass (GRPH-1062, GRPH-1289).
 _ACCEPTANCE_BOLD = re.compile(
-    r"^[*_]+acceptance(?:\s+criteria)?[*_]*\s*:?\s*$", re.IGNORECASE)
+    rf"^[*_]+acceptance(?:\s+criteria)?{_ACCEPTANCE_QUALIFIER}[*_]*\s*[:.]?\s*[*_]*\s*$",
+    re.IGNORECASE)
+# A plain label whose only decoration is the parenthetical — `Acceptance (D3)` —
+# with nothing after it. Bold and punctuated forms are the patterns above. A
+# bare `Acceptance` does not match: that stays unopened (GRPH-1062).
+_ACCEPTANCE_QUALIFIED = re.compile(
+    rf"^[\W_]*acceptance(?:\s+criteria)?\s*\([^)\n]{{1,60}}\)[*_]*\s*[:.]?[*_]*\s*$",
+    re.IGNORECASE)
 # A label-shaped line neither pattern opened. `Acceptance` alone, `# Acceptance`,
 # `Acceptance criteria` — the word first, a few words, optional colon and wrapping
 # marks. A sentence that merely contains the word does not match: "The acceptance
 # of this is obvious." is the control that must stay "no clauses written".
 _UNOPENED_ACCEPTANCE = re.compile(
-    r"^(?:[#>*_~\s`]+)?acceptance\b(?:\s+[A-Za-z][A-Za-z-]*){0,4}\s*:?\s*[*_`]*\s*$",
+    r"^(?:[#>*_~\s`]+)?acceptance\b(?:\s+criteria)?"
+    r"(?:\s*\([^)\n]{1,60}\))?(?:\s+[A-Za-z][A-Za-z-]*){0,4}\s*:?\s*[*_`]*\s*$",
     re.IGNORECASE)
 _LIST_ITEM = re.compile(r"^(?:[-*+]|\d+[.)])\s+(.*)$")
 #: Task-list prefix on a list item (`- [x] the gate names the clause`). Stripped so the
@@ -2882,6 +2905,17 @@ def split_clause_needs(text: str) -> tuple[str, frozenset[str]]:
     return rest, frozenset(needs)
 
 
+def _acceptance_heading_key(raw: str) -> str:
+    """Map a heading's text onto `_ACCEPTANCE_HEADINGS`.
+
+    A parenthetical qualifier and a trailing `.` or `:` are not a different
+    heading: `## Acceptance (D3):` and `## Acceptance.` are `## Acceptance`
+    (GRPH-1289). The same decorations on a label are the label patterns above.
+    """
+    name = re.sub(r"\s*\([^)]*\)", "", (raw or "").strip().lower())
+    return name.strip("*_ ").rstrip(":.").strip("*_ ")
+
+
 def _checklist_follows(lines: list[str], index: int) -> bool:
     """True when a checklist is the next thing after `lines[index]`.
 
@@ -2916,10 +2950,10 @@ def _walk_acceptance(description: str) -> tuple[list[tuple[str, frozenset[str]]]
         stripped = line.strip()
         heading = _HEADING.match(stripped)
         if heading:
-            level, name = heading.group(1), heading.group(2).strip().rstrip(":").lower()
-            if name in _ACCEPTANCE_HEADINGS:
+            level, raw_name = heading.group(1), heading.group(2).strip()
+            if _acceptance_heading_key(raw_name) in _ACCEPTANCE_HEADINGS:
                 close()
-                in_section, section_label, section_count = True, f"`{level} {heading.group(2).strip()}`", 0
+                in_section, section_label, section_count = True, f"`{level} {raw_name}`", 0
             elif level == "##":
                 # A `###` that is not an acceptance heading is a sub-heading of whatever
                 # section it sits in; a `##` ends it.
@@ -2936,9 +2970,12 @@ def _walk_acceptance(description: str) -> tuple[list[tuple[str, frozenset[str]]]
             else:
                 in_section, section_label, section_count = True, "`Acceptance:`", 0
             continue
-        # GRPH-1062. A bold label is not a heading and has no colon, so neither branch
-        # above opens it. Checked before the unopened scan: this shape IS readable.
-        if _ACCEPTANCE_BOLD.match(stripped) and not _LIST_ITEM.match(stripped):
+        # GRPH-1062 / GRPH-1289. A bold label, or a plain label whose parenthetical
+        # is the whole decoration, is not a heading. Checked before the unopened
+        # scan: these shapes ARE readable. A following list is the clauses; no
+        # list is `unreadable`, which sign_off raises as UnreadableAcceptance.
+        if ((_ACCEPTANCE_BOLD.match(stripped) or _ACCEPTANCE_QUALIFIED.match(stripped))
+                and not _LIST_ITEM.match(stripped)):
             close()
             in_section, section_label, section_count = True, f"`{stripped}`", 0
             continue
@@ -2965,11 +3002,14 @@ def parse_acceptance(description: str) -> tuple[list[str], list[str]]:
     """Read the acceptance clauses in an item description, and what could not be read.
 
     Returns `(clauses, unreadable)`. A clause is a markdown list item under a `## Tests`,
-    `## Acceptance` or `## Acceptance criteria` heading (`###` too), under a bare
-    `Acceptance:` label line, or under a bold/underscore label (`**Acceptance**`,
-    `**Acceptance:**`, `**Acceptance criteria**`, `__Acceptance__`). `unreadable` names
-    acceptance text that is there but is not in that shape: an `Acceptance:` label with
-    prose after it, an acceptance heading with no list under it, or a label-shaped line
+    `## Acceptance` or `## Acceptance criteria` heading (`###` too; a parenthetical
+    qualifier and a trailing `.` or `:` still count, as in `## Acceptance (D3):`),
+    under a bare `Acceptance:` / `Acceptance.` label (including `Acceptance (D3):` and
+    `**Acceptance.**`), or under a bold/underscore label (`**Acceptance**`,
+    `**Acceptance:**`, `**Acceptance criteria**`, `__Acceptance__`,
+    `**Acceptance (D3)**`). `unreadable` names acceptance text that is there but is
+    not in that shape: an `Acceptance:` label with prose after it, an acceptance
+    heading or opened label with no list under it, or a label-shaped line
     (`Acceptance`, `# Acceptance`) that a checklist follows and that opened no section.
 
     `unreadable` is the half GRPH-893 added, and it is why this returns two things rather than
@@ -4416,7 +4456,7 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     if commit:
         attestation = items_svc.normalize_evidence([{
             "kind": "attestation",
-            "adapter": "fleet.sign_off",
+            "adapter": items_svc.SIGN_OFF_ADAPTER,
             "commit": commit,
             "predicates": [
                 _predicate(
@@ -4633,7 +4673,7 @@ def merge_landed(item: Item) -> bool:
         if (e.get("kind") == "url" and str(e.get("commit") or "").strip()
                 and str(e.get("detail") or "").startswith(MERGE_RECEIPT_PREFIX)):
             return True
-    return any(a.get("adapter") == items_svc.OWNER_CLOSE_ADAPTER
+    return any(items_svc.is_owner_close_merge(a)
                for a in items_svc.valid_attestations(item.evidence or []))
 
 
@@ -5408,13 +5448,28 @@ def _hard_paths(paths) -> tuple[str, ...]:
 def project_hard_areas(db: Session, project_id: str | None) -> tuple[str, ...]:
     """The project's exclusive areas: its resolved `plan.exclusive_areas` `paths`, in place of
     `HARD_AREAS` (GRPH-1423). A box whose pack lacks the rule reads the default."""
-    from app.services import rule_toggles
+    from app.services import custom_rules, rule_toggles
+    # GRPH-1873: an ACTIVE custom `exclusive_areas` rule adds its paths; an observing one holds
+    # nothing (`claim_cluster` records what it would have).
+    custom = tuple(p for _, paths in custom_rules.exclusive_area_rules(db, project_id)[0]
+                   for p in paths)
     if rule_toggles.EXCLUSIVE_AREAS_RULE not in rule_toggles.LIBRARY:
-        return HARD_AREAS
+        return HARD_AREAS + custom
     # GRPH-1777: an observing rule holds nothing; `claim_cluster` records what it would have.
     if rule_toggles.observing_since(db, rule_toggles.EXCLUSIVE_AREAS_RULE, project_id):
-        return ()
-    return rule_toggles.exclusive_paths(db, project_id)
+        return custom
+    return rule_toggles.exclusive_paths(db, project_id) + custom
+
+
+def custom_hold_rules(db: Session, project_id: str | None,
+                      pairs: list[tuple[str, str]]) -> list[str]:
+    """Ids of ACTIVE custom `exclusive_areas` rules whose paths hold any of `pairs`."""
+    from app.services import custom_rules
+    out: list[str] = []
+    for rid, paths in custom_rules.exclusive_area_rules(db, project_id)[0]:
+        if any(hard_collide([m], [t], paths) for m, t in pairs) and rid not in out:
+            out.append(rid)
+    return out
 
 
 def hard_collide(a: list[str], b: list[str],
@@ -5586,10 +5641,18 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     tier_blocks: list[dict] = []
     hards = project_hard_areas(db, project_id)
     # GRPH-1777: the paths an OBSERVING `plan.exclusive_areas` would hold, else none.
+    from app.services import custom_rules as custom_rules_mod
     from app.services import rule_toggles as rule_toggles_mod
-    observed = (rule_toggles_mod.exclusive_paths(db, project_id)
-                if not hards and rule_toggles_mod.observing_since(
-                    db, rule_toggles_mod.EXCLUSIVE_AREAS_RULE, project_id) else ())
+    #: (rule id, paths) for each OBSERVING exclusive-areas rule: the library rule and, GRPH-1873,
+    #: every observing custom one.
+    observed: list[tuple[str, tuple[str, ...]]] = []
+    if rule_toggles_mod.EXCLUSIVE_AREAS_RULE in rule_toggles_mod.LIBRARY and \
+            rule_toggles_mod.observing_since(
+                db, rule_toggles_mod.EXCLUSIVE_AREAS_RULE, project_id):
+        observed.append((rule_toggles_mod.EXCLUSIVE_AREAS_RULE,
+                         rule_toggles_mod.exclusive_paths(db, project_id)))
+    observed += [(rid, tuple(paths)) for rid, paths in
+                 custom_rules_mod.exclusive_area_rules(db, project_id)[1]]
 
     for cluster in collision_svc.clusters_for_project(db, project_id,
                                                        lease_seconds=lease_seconds,
@@ -5599,15 +5662,17 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
         free = set().union(*[o for o in overrides if members <= o]) if overrides else set()
         blocked = [r.area for r in taken if r.agent_id != agent_id and r.item_id not in free]
         overlap = hard_collide(cluster.get("areas") or [], blocked, hards)
-        if not overlap and observed:
-            would = hard_collide(cluster.get("areas") or [], blocked, observed)
-            if would:
+        if not overlap:
+            for obs_rule, obs_paths in observed:
+                would = hard_collide(cluster.get("areas") or [], blocked, obs_paths)
+                if not would:
+                    continue
                 from app.services import rule_observations
                 for r in taken:
                     if r.agent_id != agent_id and r.item_id not in free and hard_collide(
-                            cluster.get("areas") or [], [r.area], observed):
+                            cluster.get("areas") or [], [r.area], obs_paths):
                         rule_observations.record(
-                            db, project_id, rule_toggles_mod.EXCLUSIVE_AREAS_RULE, "would_hold",
+                            db, project_id, obs_rule, "would_hold",
                             item_id=(cluster.get("items") or [None])[0],
                             detail={"areas": would, "held_by": r.agent_id,
                                     "held_item": r.item_id})
@@ -5670,6 +5735,8 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
         reason = ("all ready clusters collide with areas held by "
                   + ", ".join(held)
                   + (f" ({describe_pairs(collided)})" if collided else "")
+                  + (f" under {', '.join(hold_rules)}" if (hold_rules := custom_hold_rules(
+                      db, project_id, collided)) else "")
                   + (f" — the earliest frees in {free_in}s" if free_in is not None else ""))
     elif tier_blocks and not held and not collided:
         # The board is not empty. Every ready item this sweep could see asked for a tier
@@ -6822,9 +6889,11 @@ def park(db: Session, attempt, *, agent_id: str | None = None,
 #: `behind_conflict`, the one kind that also moves the item (`_send_back_behind`).
 #: GRPH-1591 adds `undeclared_held`: the touchpoint gate refused the PR, so a `review` item
 #: goes back to `in_progress` for its builder, with a directive naming the files.
+#: GRPH-1891 adds `unpushed`: the drain found a review item's branch only in its own clone
+#: and could not push it. Not `withheld`, whose note says the branch WAS pushed.
 OBSERVATION_KINDS = ("cut_from", "pr_opened", "salvage", "withheld", "merged_trunk",
                      "behind_conflict", "undeclared_warned", "undeclared_held",
-                     "rule_would_have")
+                     "rule_would_have", "unpushed")
 OBSERVATION_LATER = ("pushed_head",)
 
 _CUT_BASE = re.compile(r"^[0-9a-f]{7,40}$")
@@ -7054,6 +7123,13 @@ def _observation_receipt(kind: str, *, branch: str, base: str | None, url: str |
             raise ObservationError(422, "withheld names why the PR was not proposed")
         return {"kind": "note",
                 "detail": f"pushed `{branch}`; not proposed as a PR — {why}"}
+    if kind == "unpushed":
+        why = (reason or "").strip()
+        if not why:
+            raise ObservationError(422, "unpushed names why the push failed")
+        return {"kind": "note", "detail": (
+            f"gbfleet: `{branch}` was never pushed and the push failed; "
+            f"not proposed as a PR — {why}")}
     if kind == "merged_trunk":
         why = (reason or "").strip()
         if not why:

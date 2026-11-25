@@ -25,11 +25,12 @@ jobs:
       fleet: ${{ steps.filter.outputs.fleet }}
       cli: ${{ steps.filter.outputs.cli }}
       # `true` when the diff is precisely a release stamp: one version string in each of
-      # backend/app/version.py, backend/pyproject.toml and web/package.json, agreeing,
-      # CalVer, and nothing else. Decided from the diff by scripts/stamp_only.py — never
-      # from the branch name — and strict in the safe direction: anything more answers
-      # `false` and every suite runs. A stamp used to pay for both backend suites, the
-      # frontend build and the fleet suite (~15 min wall) to test that a string changed.
+      # backend/app/version.py, backend/pyproject.toml, backend/uv.lock and
+      # web/package.json, agreeing, CalVer, and nothing else. Decided from the diff by
+      # scripts/stamp_only.py — never from the branch name — and strict in the safe
+      # direction: anything more answers `false` and every suite runs. A stamp used to pay
+      # for both backend suites, the frontend build and the fleet suite (~15 min wall) to
+      # test that a string changed.
       # The wheel install is the one job a stamp can break, and it is not gated on this.
       stamp_only: ${{ steps.stamp.outputs.stamp_only }}
     steps:
@@ -130,11 +131,34 @@ jobs:
       - uses: actions/checkout@v4
       - run: python3 scripts/refusal_ratchet.py check
 
+  # Every suite job below bounds itself with `timeout-minutes` (GRPH-1928). Before this the
+  # only limit was GitHub's own default — 360 minutes, and longer on a self-hosted runner —
+  # so one hung `pytest` held a runner and a drain for hours while reading as
+  # `review_waits_on_ci … in_progress`: not red, not green, just still going. The per-test
+  # ceilings in backend/pyproject.toml and fleet/pyproject.toml name a stuck test first;
+  # these bounds are the backstop for a wedge no per-test timer can reach (a worker that
+  # never returns to a bytecode boundary, a hung install, a service container that never
+  # comes up). `test_every_suite_job_bounds_itself` in backend/tests/test_ci_shape.py is what
+  # keeps the next suite job from arriving without one.
+  #
+  # Each number is ~2x a measured duration, cited in the job's own comment. The measurements
+  # were taken 2026-11-25 on one darwin seat with warm uv/pnpm caches: the self-hosted Linux
+  # runners were not reachable from it (`gh` is refused inside a fleet child, so no run
+  # history was readable either), and a number that is not measured says so instead of
+  # implying one. Where the measured work is smaller than the checkout + setup + install a
+  # job pays before it starts, the bound is a stated 10-minute floor rather than 2x nothing.
   backend-sqlite:
     name: Backend tests (SQLite)
     needs: changes
     if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.stamp_only != 'true'
     runs-on: [self-hosted, graphban-ci]
+    # Measured 190.36s (3.2 min) for `.venv/bin/python -m pytest -q -n auto` with
+    # PYTEST_XDIST_AUTO_NUM_WORKERS=4 — 8419 passed, 44 skipped — plus under a minute of
+    # `uv venv` + `uv pip install -e ".[dev]"`. 2x is ~6.4 min; the bound is 15 because
+    # these hosts run up to six jobs at once (docs/ci-runners.md), a contention factor a
+    # quiet-seat measurement cannot contain. No single test came near the 300s per-test
+    # ceiling: the slowest was 23.98s.
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: backend
@@ -149,7 +173,21 @@ jobs:
           enable-cache: true
           cache-dependency-glob: backend/pyproject.toml
       - run: uv venv --python 3.12 .venv
-      - run: uv pip install -e ".[dev]"
+      # Held to uv.lock, the set the SHIPPED installs use (GRPH-1615 held the Dockerfile and
+      # the native host; GRPH-1932 is the same fork on the test side). Without `-c` this
+      # resolves from pyproject's specifiers and floats on every upstream release: measured
+      # 2026-11-25, a bare `uv pip install -e ".[dev]"` gave fastapi 0.165.0 / starlette
+      # 1.10.0 while uv.lock — what pip-audit scans and what a deploy installs — pins
+      # 0.139.2 / 1.3.1. So `suite_green` attested a dependency set no deployment runs, and a
+      # red suite could arrive from an upstream release with no commit in this repo.
+      - run: python3 scripts/lock_constraints.py write uv.lock "$RUNNER_TEMP/lock-constraints.txt"
+      - run: uv pip install -e ".[dev]" -c "$RUNNER_TEMP/lock-constraints.txt"
+      # Strict, like the wheel job: `uv venv` made this venv empty, so a package the lock does
+      # not name has the same "the scan never saw it" meaning here as it does in the image.
+      # It is also the only thing that catches a dev extra added to pyproject.toml without a
+      # relock — `-c` cannot pin what the lock does not contain.
+      - name: The suite's venv equals uv.lock
+        run: .venv/bin/python scripts/lock_constraints.py check uv.lock --strict
       # -n auto: one worker per core, each with its own database (see tests/conftest.py).
       # The suite is serial otherwise and the runner has cores going spare.
       - run: .venv/bin/python -m pytest -q -n auto
@@ -161,6 +199,15 @@ jobs:
     needs: changes
     if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.stamp_only != 'true'
     runs-on: [self-hosted, graphban-ci]
+    # This is the job that hung: shard 1/3 of run 45505794524 sat in `pytest -q -n auto`
+    # from 22:59Z to a human cancelling it at 01:14Z, and the drain read the whole wait as
+    # in-progress. Measured 215.00s (3.6 min) for `GRAPHBAN_TEST_SHARD=1/3 pytest -q -n auto`
+    # against pgvector/pgvector:pg16 — 2593 passed, slowest single test 6.22s against the
+    # 300s per-test ceiling — plus ~4s for the container to accept connections. 2x is ~7.3
+    # min; the bound is 15 because the job also pays checkout, venv, install and the service
+    # container's health checks, none of which are in that measurement, on hosts that run up
+    # to six jobs at once. Per matrix leg, so one wedged shard cannot spend another's budget.
+    timeout-minutes: 15
     # Three runners, one third of the test FILES each (tests/sharding.py packs them by measured
     # time). The three shards run in parallel on separate self-hosted runners. A
     # shard is not a full run, so the every-tool ratchet (GRPH-495) is left to the unsharded
@@ -210,7 +257,14 @@ jobs:
           enable-cache: true
           cache-dependency-glob: backend/pyproject.toml
       - run: uv venv --python 3.12 .venv
-      - run: uv pip install -e ".[dev]"
+      # Held to uv.lock exactly like backend-sqlite; the comment there says why the test jobs
+      # no longer float on pyproject's specifiers (GRPH-1932). This leg matters most: it is
+      # the one that runs the real Alembic chain and the pgvector `<=>` search path, so it is
+      # the attestation a Postgres deploy actually relies on.
+      - run: python3 scripts/lock_constraints.py write uv.lock "$RUNNER_TEMP/lock-constraints.txt"
+      - run: uv pip install -e ".[dev]" -c "$RUNNER_TEMP/lock-constraints.txt"
+      - name: The suite's venv equals uv.lock
+        run: .venv/bin/python scripts/lock_constraints.py check uv.lock --strict
       # -n auto: one worker per core, each with its own database (see tests/conftest.py).
       # The suite is serial otherwise and the runner has cores going spare.
       - run: .venv/bin/python -m pytest -q -n auto
@@ -231,6 +285,13 @@ jobs:
     needs: changes
     if: needs.changes.outputs.backend == 'true'
     runs-on: [self-hosted, graphban-ci]
+    # No suite here: one non-editable wheel install and four import checks. Measured 6s of
+    # its own work on this seat against a warm uv cache — `uv venv` 0s, `uv pip install .
+    # -c <lock constraints>` 1s, `lock_constraints.py check uv.lock --strict` clean, the
+    # import checks 5s. 2x six seconds is not a bound for a job whose real cost is the
+    # checkout and a cold dependency download this seat cannot measure, so it takes the
+    # workflow's 10-minute floor. A hang here is a wedged wheel build or a stalled index.
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: backend
@@ -298,6 +359,14 @@ jobs:
     needs: changes
     if: needs.changes.outputs.frontend == 'true' && needs.changes.outputs.stamp_only != 'true'
     runs-on: [self-hosted, graphban-ci]
+    # 54s measured for the three phases a seat can run: `pnpm test --maxWorkers=4` 39s (191
+    # files, 2531 tests), `pnpm typecheck` 6s, `pnpm build` 8s, with `pnpm install
+    # --frozen-lockfile` 1s against a warm store. NOT measured: the Canvas bench's
+    # `playwright install chromium`, a network fetch whose cost this seat cannot speak for —
+    # an absence here is not a zero. 15 covers the measured minute several times over and
+    # leaves the download room, while a wedged vitest worker still fails in a quarter of the
+    # hour instead of holding the runner for six.
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: web
@@ -335,6 +404,11 @@ jobs:
     needs: changes
     if: needs.changes.outputs.fleet == 'true' && needs.changes.outputs.stamp_only != 'true'
     runs-on: [self-hosted, graphban-ci]
+    # 15.2 min measured: 45s of `uv venv` + `uv pip install -e ".[dev]"`, then 869.87s for
+    # `pytest -q` (2610 passed, 11 skipped). 2x → 30. This is the job where a hang is most
+    # likely — it drives real child processes and real vendor binaries — so the 600s
+    # per-test ceiling in fleet/pyproject.toml fires first and names the stuck test.
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: fleet
@@ -355,6 +429,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.cli == 'true' && needs.changes.outputs.stamp_only != 'true'
     runs-on: [self-hosted, graphban-ci]
+    # 0.5 min measured: `pytest -q` 26.95s for 480 passed, slowest single test 1.12s, and the
+    # venv install under a second against a warm uv cache. 2x that is one minute, which is
+    # less than the checkout and install this job pays before pytest even starts, so the
+    # bound is this workflow's 10-minute floor for a small suite job — still 1/36th of the
+    # 360-minute default it replaces.
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: cli
@@ -382,6 +462,14 @@ jobs:
       (needs.changes.outputs.fleet == 'true' || needs.changes.outputs.cli == 'true')
       && needs.changes.outputs.stamp_only != 'true'
     runs-on: windows-latest
+    # Derived, not measured, and the comment says so rather than implying a number nobody
+    # took: no seat that can reach this job runs Windows. The two suites it runs measured
+    # 15.2 min (fleet, 869.87s of pytest) and 0.5 min (cli, 26.95s) on 2026-11-25, and this
+    # job pays both plus two venv installs on a GitHub-hosted runner slower than the
+    # self-hosted Linux hosts those figures came from. 2x the measured 15.7 min is 31; 40
+    # leaves room for the platform difference this seat cannot measure. Note the fleet suite
+    # here runs pytest-timeout's timer-thread method: Windows has no SIGALRM.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

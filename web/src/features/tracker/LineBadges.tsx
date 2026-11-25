@@ -1,12 +1,20 @@
 import type { GraphLink, Item } from "@/lib/types";
 
-/** Acceptance clauses the server would parse: a list item under an Acceptance/Tests heading or label. */
+/**
+ * Acceptance clauses the server would parse: a list item under an Acceptance/Tests
+ * heading or label. A parenthetical qualifier and a trailing `.` are the same label
+ * (`**Acceptance (D3):**`, `Acceptance (D3):`, `**Acceptance.**`). A sentence that
+ * only contains the word is not one.
+ */
+const ACCEPTANCE_HEADING =
+  /^(#{1,4}\s*)?(\*\*|__)?(tests|acceptance( criteria)?)(\s*\([^)\n]{1,60}\))?[:.]?(\*\*|__)?[:.]?\s*$/i;
+
 export function hasAcceptance(description: string): boolean {
   const lines = description.split("\n");
   let inSection = false;
   for (const raw of lines) {
     const line = raw.trim();
-    if (/^(#{1,4}\s*)?(\*\*|__)?(tests|acceptance( criteria)?)(:)?(\*\*|__)?:?\s*$/i.test(line)) {
+    if (ACCEPTANCE_HEADING.test(line)) {
       inSection = true;
       continue;
     }

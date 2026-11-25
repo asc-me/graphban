@@ -19,8 +19,8 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import (
-    ApiKey, CodeSyncState, Membership, OrgMembership, Organization, PlatformConfig, Project,
-    SyncLink, SyncProject, Team, User, utcnow,
+    ApiKey, CodeNode, CodeSyncState, Membership, OrgMembership, Organization, PlatformConfig,
+    Project, SyncLink, SyncProject, Team, User, utcnow,
 )
 from app.security import authz, secrets
 from app.services import code_graph, link_device, quotas
@@ -357,21 +357,43 @@ def project_states(db: Session, project_ids: list[str]) -> list[dict]:
     time, whether the project opted out of pushing (`sync_graph`), and a rolled-up status.
 
     All derived from local truth — the manifest + current node hashes — so this reflects
-    exactly what the next push would send without calling the cloud."""
+    exactly what the next push would send without calling the cloud.
+
+    Three statements for any number of projects (GRPH-1896). `GET /api/sync/status` runs on
+    every page, and `CodeNode` carries an embedding: selecting the row would pull that vector
+    for every node just to read `path` and `content_hash`."""
+    if not project_ids:
+        return []
+    # Preserve the caller's order, including a repeated id. The lookups below are by id.
+    ids = list(project_ids)
+    local: dict[str, dict[str, str]] = {pid: {} for pid in ids}
+    for project_id, path, content_hash in db.execute(
+        select(CodeNode.project_id, CodeNode.path, CodeNode.content_hash)
+        .where(CodeNode.project_id.in_(ids))
+    ):
+        local[project_id][path] = content_hash or ""
+    states = {
+        row.project_id: row
+        for row in db.scalars(select(CodeSyncState).where(CodeSyncState.project_id.in_(ids)))
+    }
+    sync_graphs = dict(db.execute(
+        select(PlatformConfig.project_id, PlatformConfig.sync_graph)
+        .where(PlatformConfig.project_id.in_(ids))
+    ).all())
+
     out: list[dict] = []
-    for pid in project_ids:
-        nodes = code_graph.list_nodes(db, pid)
-        local = {n.path: (n.content_hash or "") for n in nodes}
-        state = db.get(CodeSyncState, pid)
+    for pid in ids:
+        hashes = local[pid]
+        state = states.get(pid)
         pushed = dict(state.manifest or {}) if state is not None else {}
-        changed, removed = compute_diff(local, pushed)
+        changed, removed = compute_diff(hashes, pushed)
         pending = len(changed) + len(removed)
-        cfg = db.get(PlatformConfig, pid)
-        sync_graph = cfg.sync_graph if cfg is not None else True
+        # A project with no platform row has not opted out. Same as `db.get` missing.
+        sync_graph = sync_graphs.get(pid, True)
 
         if not sync_graph:
             status = "paused"
-        elif not local:
+        elif not hashes:
             status = "empty"
         elif pending == 0 and pushed:
             status = "live"
@@ -383,7 +405,7 @@ def project_states(db: Session, project_ids: list[str]) -> list[dict]:
         out.append({
             "project_id": pid,
             "sync_graph": sync_graph,
-            "total_nodes": len(local),
+            "total_nodes": len(hashes),
             "synced_nodes": len(pushed),
             "pending": pending,
             "last_synced_at": state.last_synced_at if state is not None else None,

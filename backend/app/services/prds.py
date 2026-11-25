@@ -4195,34 +4195,68 @@ def dangling_refs(text: str) -> list[str]:
 #: `_section_key`s of the sections that hold the PRD's acceptance list (GRPH-1688).
 _ACCEPTANCE_SECTION_KEYS = ("acceptancecriteria", "acceptance", "donecriteria")
 _AC_SUBHEADING = re.compile(r"^(?:#{3,6}\s+(.*?)\s*#*|\*\*(.+?)\*\*:?|__(.+?)__:?)\s*$")
-_AC_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.*\S)\s*$")
+_AC_ITEM = re.compile(r"^(?P<indent>[ \t]*)(?:[-*+]|\d+[.)])\s+(?P<text>.*\S)\s*$")
+#: A markdown table row, dropped from the text a clause is matched against (GRPH-1905).
+_AC_TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
 
 
 def acceptance_clauses(body: str) -> list[tuple[str, str]]:
     """`(clause, group)` for every list item in the PRD's acceptance section(s).
 
     `group` is the sub-heading (`### X` or a bold label) the clause sits under, or "".
+
+    One list item is one clause, however many lines it spans: an indented sub-list and a
+    continuation paragraph stay attached to the item they belong to (GRPH-1905). P92's
+    first clause ends "`gban rules import` files:" and then lists the five proposals the
+    run files. Read as five clauses of their own, each child named no section, so all five
+    came back in `unassigned_clauses` while their parent reached the task truncated at
+    "files:" — the requirement was filed without the list of what it requires. Children
+    keep their relative indentation, so `_compose_task` renders the nested list the PRD
+    had rather than flattening it.
     """
     out: list[tuple[str, str]] = []
     for title, text in section_bodies(body).items():
         if _section_key(title) not in _ACCEPTANCE_SECTION_KEYS:
             continue
         group = ""
+        opened = ""
         in_fence = False
+        lines: list[str] | None = None
+        indent = 0
+
+        def flush() -> None:
+            nonlocal lines
+            if lines is not None:
+                out.append(("\n".join(lines), opened))
+            lines = None
+
         for line in text.splitlines():
             stripped = line.strip()
             if stripped.startswith("```"):
+                flush()
                 in_fence = not in_fence
                 continue
             if in_fence:
                 continue
             item = _AC_ITEM.match(line)
             if item:
-                out.append((item.group(1).strip(), group))
+                depth = len(item.group("indent").expandtabs(4))
+                if lines is not None and depth > indent:
+                    lines.append(" " * (depth - indent) + stripped)
+                    continue
+                flush()
+                opened = group
+                lines = [item.group("text")]
+                indent = depth
                 continue
             sub = _AC_SUBHEADING.match(stripped)
             if sub:
+                flush()
                 group = next(g for g in sub.groups() if g).strip()
+                continue
+            if lines is not None and stripped:
+                lines.append(f"  {stripped}")
+        flush()
     return out
 
 
@@ -4245,25 +4279,221 @@ def _clause_title_pattern(title: str) -> re.Pattern[str] | None:
     return re.compile(rf"(?<![A-Za-z0-9]){inner}(?![A-Za-z0-9])", re.IGNORECASE)
 
 
-def _clause_section(clause: str, group: str, titles: list[str]) -> str | None:
-    """The section a clause belongs to: its sub-heading names it, else the clause does."""
-    def named(text: str) -> str | None:
+# A heading's subject is what a flat acceptance clause names. Slice labels ("D4") and
+# function words are not the subject: "D4. The skill" is the word "skill", and a clause
+# that says "the skill" belongs to that section even though it never writes the label
+# or the whole heading (GRPH-1895). "three" is a count, not a subject, so "Three buckets"
+# is the word "buckets".
+#
+# Pronouns stay IN. Dropping "them" from "D1. Sources and who reads them" reads like the
+# same cleanup, and on the real GRPH-P92 it is not: D1's subject then ties D5's at 1 hit
+# in 2 words for "A rescan … files a source-gone notice", the tie breaks on title length,
+# and the rescan clause moves from D5 to D1 — a wrong assignment bought with a shorter
+# stop list (GRPH-1895, measured against body_hash 49ef50d796f3048e). Adding a word here
+# needs a real-PRD decompose, not a reading of the heading.
+_SUBJECT_STOP = frozenset(
+    "the a an and or who of to for its their with from that this into over per by on in as at "
+    "be is are not one two three four five six seven eight nine ten".split()
+)
+_SLICE_PREFIX = re.compile(
+    r"^\s*(?:(?:AC|PRD)-\d{1,3}|[DEGS]-?\d{1,2})\b[.)\s:—–-]*",
+    re.IGNORECASE,
+)
+
+
+def _subject_words(title: str) -> list[str]:
+    """Content words of a heading, after its slice label and leading number are gone."""
+    cleaned = _SLICE_PREFIX.sub("", title or "")
+    cleaned = re.sub(r"\(.*?\)", " ", _SECTION_NUMBER.sub("", cleaned))
+    words: list[str] = []
+    seen: set[str] = set()
+    for raw in re.split(r"[^A-Za-z0-9]+", cleaned):
+        low = raw.lower()
+        if not low or low in _SUBJECT_STOP or low in seen:
+            continue
+        if re.fullmatch(r"[degs]\d{1,2}", low):
+            continue
+        seen.add(low)
+        words.append(low)
+    return words
+
+
+def _word_in(word: str, text: str) -> bool:
+    """Whole-token match. A trailing s stems when the stem is at least 3 letters, so
+    "source" names "sources", "reports" names "report", and the heading "Runs" names a
+    clause that says "run".
+
+    The floor used to be 4, which left every 4-letter plural — Docs, Logs, Keys, Runs,
+    Bugs — matching nothing while Reports, Buckets and Sources worked, so those sections
+    came back blocked for "no acceptance" (GRPH-1895). Two- and three-letter words still
+    never stem: "as", "is" and "us" are not plurals of anything.
+    """
+    forms = [word]
+    if word.endswith("s") and len(word) > 3:
+        forms.append(word[:-1])
+    elif len(word) >= 4:
+        forms.append(word + "s")
+    for form in forms:
+        if re.search(rf"(?<![A-Za-z0-9]){re.escape(form)}(?![A-Za-z0-9])", text or "", re.I):
+            return True
+    return False
+
+
+def _best_subject_section(text: str, titles: list[str]) -> str | None:
+    """The section whose subject the text names most completely.
+
+    Ratio first, so "tokens" is the Tokens section and not half of "Auth tokens".
+    Hit count then breaks a tie where every word of a longer title is present, which
+    is how "Auth tokens" still beats "Auth" when the clause says both words. The
+    full-title pattern runs before this and is unchanged.
+    """
+    scored: list[tuple[float, int, int, str]] = []
+    for title in titles:
+        words = _subject_words(title)
+        if not words:
+            continue
+        hits = sum(1 for word in words if _word_in(word, text))
+        if hits:
+            scored.append((hits / len(words), hits, len(title), title))
+    if not scored:
+        return None
+    scored.sort(reverse=True)
+    return scored[0][3]
+
+
+def _subject_ratio(title: str, text: str) -> float:
+    """How much of `title`'s subject `text` names. 1.0 is the whole subject, so the text
+    cannot be about anything else the heading covers."""
+    words = _subject_words(title)
+    if not words:
+        return 0.0
+    return sum(1 for w in words if _word_in(w, text)) / len(words)
+
+
+def _stem(word: str) -> str:
+    """Cheap singulariser, so a clause and a section agree on "express"/"expresses".
+
+    `_word_in` stems in one direction only: it lets the heading word "source" find
+    "sources" in a clause. Matching a whole clause against a whole section needs both
+    directions, and on the real P92 the missing one is decisive — D2 says "no primitive
+    can express it", the acceptance clause says "no primitive expresses", and without this
+    the layering clause ties D1 and lands nowhere (GRPH-1905).
+    """
+    if word.endswith("es") and len(word) > 4:
+        return word[:-2]
+    if word.endswith("s") and len(word) > 3:
+        return word[:-1]
+    return word
+
+
+def _content_words(text: str, prose_only: bool = False) -> set[str]:
+    """The stemmed content words of `text`, as a set.
+
+    `prose_only` drops markdown table rows. A row lists examples rather than stating
+    behaviour, and P92's D1 names every source and every primitive it can propose in one
+    table: counted, that table claims clauses about behaviour the section's prose never
+    states. Dropping it is what separates D2 — which defines the three buckets in prose —
+    from D1 for the layering clause (GRPH-1905: 0.64 against 0.36).
+    """
+    if prose_only:
+        text = "\n".join(line for line in (text or "").splitlines()
+                         if not _AC_TABLE_ROW.match(line))
+    out: set[str] = set()
+    for raw in re.split(r"[^A-Za-z0-9]+", text or ""):
+        low = raw.lower()
+        if low and low not in _SUBJECT_STOP:
+            out.add(_stem(low))
+    return out
+
+
+#: How much of a clause a section's own prose has to restate before the clause moves to it
+#: on that evidence alone. A third is the line, not a tuned value: below it the section is
+#: echoing one word back, which is coincidence rather than ownership. Measured on the real
+#: GRPH-P92 (body_hash 49ef50d796f3048e) the weakest clause that does belong to a section
+#: covers 0.34 of its own words, and a clause that belongs nowhere covers 0.00.
+_BODY_COVER_FLOOR = 1 / 3
+
+
+def _body_cover(clause: str, titles: list[str], bodies: dict[str, str]) -> str | None:
+    """The section whose own prose restates `clause`, or None when the text does not say.
+
+    The heading subject is what a clause names when the author wrote the acceptance list
+    against the headings. A real PRD does not: P92's D1 is "Sources and who reads them"
+    and the clause that exercises it reads "with a token that cannot read branch
+    protection … the run does not report clean" — one subject word, which D3's heading
+    also carries and outranks, so the clause went to D3 and D1 came back blocked for
+    `no_acceptance` (GRPH-1905). The section's prose is the stronger evidence: it is where
+    the behaviour the clause asserts is specified.
+
+    A tie returns None. Two sections covering the clause equally means the text does not
+    decide, and picking one would decide it by section name.
+    """
+    want = _content_words(clause)
+    if not want:
+        return None
+    scored = sorted(
+        ((len(want & _content_words(f"{t}\n{bodies.get(t, '')}", prose_only=True)) / len(want), t)
+         for t in titles),
+        reverse=True,
+    )
+    best = scored[0]
+    runner_up = scored[1][0] if len(scored) > 1 else 0.0
+    if best[0] < _BODY_COVER_FLOOR or best[0] <= runner_up:
+        return None
+    return best[1]
+
+
+def _clause_section(clause: str, group: str, titles: list[str],
+                    bodies: dict[str, str] | None = None) -> str | None:
+    """The section a clause belongs to: its sub-heading names it, else the clause does.
+
+    A clause that names a section outright — its key, its whole title, or every word of
+    its subject — belongs to that section and nothing else is consulted. Otherwise the
+    section whose prose restates the clause wins, when `bodies` is given and one section
+    clearly does (GRPH-1905).
+
+    A clause under a sub-heading is never matched against section prose: its group says
+    which piece of a section it belongs to, and `claim_subheading_clauses` is what routes
+    it there. Letting a piece's clause land on the whole section is how a split section
+    loses the clauses that justified splitting it.
+    """
+    def named(text: str) -> tuple[str | None, float]:
         key = _section_key(text)
         hits = [t for t in titles if key and _section_key(t) == key]
         if not hits:
             hits = [t for t in titles
                     if (pat := _clause_title_pattern(t)) is not None and pat.search(text or "")]
-        # Longest title wins, so "Auth tokens" is not claimed by a section called "Auth".
-        return max(hits, key=len) if hits else None
-    return (named(group) if group else None) or named(clause)
+        if hits:
+            # Longest title wins, so "Auth tokens" is not claimed by a section called "Auth".
+            return max(hits, key=len), 1.0
+        # A flat list names the subject ("the skill", "a rescan") and not the heading.
+        best = _best_subject_section(text, titles)
+        return best, (_subject_ratio(best, text) if best is not None else 0.0)
+
+    if group:
+        return named(group)[0] or named(clause)[0]
+    hit, ratio = named(clause)
+    if hit is not None and ratio >= 1.0:
+        return hit
+    if bodies is None:
+        return hit
+    return _body_cover(clause, titles, bodies) or hit
 
 
-def assign_acceptance(body: str, titles: list[str]) -> tuple[dict[str, list[str]], list[str]]:
-    """Per-section acceptance clauses, and the clauses that map to no section."""
+def assign_acceptance(body: str, titles: list[str],
+                      bodies: dict[str, str] | None = None,
+                      ) -> tuple[dict[str, list[str]], list[str]]:
+    """Per-section acceptance clauses, and the clauses that map to no section.
+
+    `bodies` is `section_bodies(body)` when the caller already has it, so a decompose
+    parses the PRD once.
+    """
+    if bodies is None:
+        bodies = section_bodies(body)
     by_section: dict[str, list[str]] = {}
     unassigned: list[str] = []
     for clause, group in acceptance_clauses(body):
-        target = _clause_section(clause, group, titles)
+        target = _clause_section(clause, group, titles, bodies)
         if target is None:
             unassigned.append(clause)
         else:
@@ -4271,8 +4501,22 @@ def assign_acceptance(body: str, titles: list[str]) -> tuple[dict[str, list[str]
     return by_section, unassigned
 
 
-_TP_MIN_SCORE = 0.6
+# GRPH-1895. P92's false touchpoints scored 0.61–0.66 and the section named none of
+# those paths. The floor sits above that band: a search hit at or above it is proposed
+# on its own. Below it, the hit is proposed only with a second signal — the section
+# also names the path. A path the section names only as something it reads is not a
+# write touchpoint either way.
+_TP_SCORE_FLOOR = 0.75
 _TP_MAX = 5
+_READ_CUE = re.compile(r"\b(?:reads?|reading)\b", re.IGNORECASE)
+_WRITE_CUE = re.compile(
+    r"\b(?:creates?|creating|writes?|writing|edits?|editing|changes?|changing|"
+    r"updates?|updating|modif(?:y|ies|ying)|adds?|adding|implements?|implementing|"
+    r"replaces?|replacing|deletes?|deleting)\b",
+    re.IGNORECASE,
+)
+# Straight or curly double quotes, on one line. Text inside them is being quoted.
+_QUOTED_SPAN = re.compile(r'"[^"\n]*"|\u201c[^\u201d\n]*\u201d')
 
 
 def _file_name_in_text(base: str, text: str) -> bool:
@@ -4288,32 +4532,553 @@ def _file_name_in_text(base: str, text: str) -> bool:
     return re.search(rf"(?<![A-Za-z0-9]){re.escape(base)}(?![A-Za-z0-9])", text) is not None
 
 
-def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[dict]:
-    """Code-graph paths a section likely touches, each with the evidence that matched.
+def _mention_cues(text: str) -> list[tuple[int, str]]:
+    """`(offset, 'read'|'write')` for every verb in `text`, sorted, quoted spans skipped.
 
-    Two signals: a node's path named verbatim in the section text, or its file name
-    named as a whole token; and semantic search over the title and body, kept above
-    a score floor. A bare directory name is not a file-name match."""
+    A double-quoted span is text the section is quoting, not something the work does:
+    P92's D1 lists `"DO NOT EDIT" headers` as a marker a parser looks for, and that
+    "edit" was the nearest cue for every path the section named after it (GRPH-1895).
+    """
+    quoted = [(m.start(), m.end()) for m in _QUOTED_SPAN.finditer(text)]
+    out: list[tuple[int, str]] = []
+    for pattern, kind in ((_WRITE_CUE, "write"), (_READ_CUE, "read")):
+        for m in pattern.finditer(text):
+            if not any(start <= m.start() < end for start, end in quoted):
+                out.append((m.start(), kind))
+    out.sort()
+    return out
+
+
+def _mention_role(text: str, needle: str) -> str:
+    """'read' when every mention of `needle` is a read, 'write' otherwise, '' if absent.
+
+    The cue is the nearest verb before the mention, however far back it sits, so
+    "reads `AGENTS.md` and change parser.py" does not paint both paths with one
+    sentence. A mention no verb precedes is a write: the section named the path.
+
+    The window used to stop 80 characters back, and the cap did no work the
+    nearest-verb rule was not already doing. P92's D1 names its sources in a markdown
+    table row and says two paragraphs later that agent guidance files "are read, never
+    replaced"; inside 80 characters the row carried no evidence at all, so `AGENTS.md`,
+    `CLAUDE.md`, `.cursorrules` and `CONTRIBUTING.md` all defaulted to write and came
+    back as the section's only touchpoints — the symptom this item was filed for.
+    """
+    if not needle:
+        return ""
+    raw = text or ""
+    low = raw.lower()
+    needle_l = needle.lower()
+    cues = _mention_cues(raw)
+    roles: list[str] = []
+    start = 0
+    while True:
+        i = low.find(needle_l, start)
+        if i < 0:
+            break
+        after = i + len(needle_l)
+        before_ok = i == 0 or not low[i - 1].isalnum()
+        after_ok = after >= len(low) or not low[after].isalnum()
+        if before_ok and after_ok:
+            role = "write"
+            for pos, kind in cues:
+                if pos >= i:
+                    break
+                role = kind
+            roles.append(role)
+        start = after or i + 1
+    if not roles:
+        return ""
+    return "read" if all(role == "read" for role in roles) else "write"
+
+
+def _is_read_only_path(text: str, path: str) -> bool:
+    """True when the section names `path` (or its file name) only as something it reads."""
+    role = _mention_role(text, path)
+    if not role:
+        base = path.rsplit("/", 1)[-1]
+        if base and base != path:
+            role = _mention_role(text, base)
+    return role == "read"
+
+
+def _text_names_path(text: str, path: str) -> bool:
+    """Whether the section text names `path` or its file, the second touchpoint signal."""
+    low = (text or "").lower()
+    if path.lower() in low:
+        return True
+    return _file_name_in_text(path.rsplit("/", 1)[-1].lower(), low)
+
+
+#: What may follow a directory prefix for the rest to be a path and not prose.
+_PATH_CHAR = r"[A-Za-z0-9_.\-]"
+
+
+def _shadowed_directory(path: str, text_low: str, matched: list[str]) -> bool:
+    """Whether `path` is a container the section names something under (GRPH-1910).
+
+    A directory node satisfies `path in text` as a prefix of every file named beneath
+    it, so P99's "3. The server alert" proposed `backend/alembic`,
+    `backend/alembic/versions`, `backend/app`, `backend/app/routers`,
+    `backend/app/routers/fleet.py` — five slots, four of them containers — and
+    `_TP_MAX` truncated the files the section actually named.
+
+    Two signals, because a file under it is named either way: another matched path
+    sits under it, or the text goes on past `path/` with a path character. The second
+    catches a file that is not a node yet. A container with nothing named under it
+    stays — "a migration in `backend/alembic/versions/`" is the write target, and
+    dropping it would leave the section with no touchpoint at all.
+
+    A container also reaches the set without the section naming its path at all: a
+    resolved name places one, where "the Rules page" lands on `web/src/features/rules/`
+    and a bare backticked `app` on `backend/app` through its stem. Neither passes the
+    lexical tier, so `propose_touchpoints` asks again over the whole set at its return
+    (GRPH-1930).
+    """
+    prefix = (path or "").rstrip("/")
+    if not prefix:
+        return False
+    # `other != path`: a resolved directory carries its own trailing slash, so without the
+    # exclusion it would be a prefix of itself and every surface name would drop out.
+    if any(other != path and other.startswith(f"{prefix}/") for other in matched):
+        return True
+    return re.search(re.escape(f"{prefix}/".lower()) + _PATH_CHAR, text_low) is not None
+
+
+# GRPH-1906. P92's sections name what they change — `propose_rule`, `build.engine_evidence`,
+# `gban rules import`, the Rules page — and not one of those names is a path, so neither
+# lexical tier saw anything and the semantic tier could not carry them: on the live graph
+# (revision 61bf37fa) even an exact symbol-name query scores 0.72, under `_TP_SCORE_FLOOR`,
+# and a rule id scores 0.70 on its own test file. All five sections came back
+# `touchpoints: []` and blocked. A name the graph can place is a sharper signal than a
+# whole-section similarity score, and it does not depend on which embedder the box runs.
+_BACKTICK_SPAN = re.compile(r"`([^`\n]+)`")
+_FENCED_BLOCK = re.compile(r"```.*?```", re.DOTALL)
+#: `gban rules import --prose` → the program `gban` and the subcommand `rules`.
+_CLI_COMMAND = re.compile(r"^([A-Za-z][\w.-]*)\s+([a-z][\w-]*)")
+#: A symbol, rule id or file name: `propose_rule`, `build.engine_evidence`, `AGENTS.md`.
+#: No hyphen and no slash on purpose: a git attribute (`linguist-generated`) is not a name
+#: the graph holds, and a path belongs to the tiers that already read paths.
+_CODE_NAME = re.compile(r"^[A-Za-z_][\w.]*$")
+#: A capitalized product surface and the UI word after it: "the Rules page", "a Live view".
+_SURFACE_NAME = re.compile(r"\b([A-Z][\w-]*)\s+(page|view|screen|panel|board|dialog)\b")
+#: A path that tests, fixtures or migrates a definition rather than holding it.
+_TESTISH_PATH = re.compile(r"(?:^|/)(?:tests?|__tests__|fixtures)/|\.test\.|(?:^|/)test_[^/]*$")
+_MIGRATION_PATH = re.compile(r"(?:^|/)(?:alembic/versions|migrations)/")
+
+
+def _node_file(node) -> str:
+    """The file a node lives in. A symbol node's path is `file::name`."""
+    return (getattr(node, "path", "") or "").split("::", 1)[0]
+
+
+def _node_stem(path: str) -> str:
+    """`backend/app/services/rules.py` → `rules`; `AGENTS.md` → `AGENTS`."""
+    base = (path or "").rsplit("/", 1)[-1]
+    return base.rsplit(".", 1)[0] if "." in base else base
+
+
+def _dir_of(path: str) -> str:
+    """The directory a path sits in, or "" when it sits at the root."""
+    return path.rsplit("/", 1)[0] if "/" in path else ""
+
+
+def _definition_rank(path: str) -> int:
+    """0 for a path that can hold a definition, higher for a migration or a test of it.
+
+    Resolving a name is for naming the file the work changes, so a rule id the graph
+    describes in two places lands on the module and not on its test.
+    """
+    if _TESTISH_PATH.search(path or ""):
+        return 2
+    if _MIGRATION_PATH.search(path or ""):
+        return 1
+    return 0
+
+
+def _whole_token(text: str, token: str) -> bool:
+    """Whether lowercased `token` occurs in lowercased `text` as one whole token."""
+    return re.search(rf"(?<![a-z0-9_]){re.escape(token)}(?![a-z0-9_])", text) is not None
+
+
+def _named_things(text: str) -> list[tuple[str, str]]:
+    """`(token, kind)` for the names a section uses that the code graph may be able to place.
+
+    `kind` is "command" for a backticked `gban rules import`, "name" for a backticked
+    symbol, rule id or file name, and "surface" for a product page the section draws on.
+    Text inside a fenced block is code the section quotes, not a name it uses.
+    """
+    body = _FENCED_BLOCK.sub(" ", text or "")
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for span in _BACKTICK_SPAN.finditer(body):
+        token = " ".join(span.group(1).split())
+        low = token.lower()
+        if not token or low in seen or "/" in token or "*" in token:
+            continue
+        if _CLI_COMMAND.match(token):
+            kind = "command"
+        elif _CODE_NAME.match(token):
+            kind = "name"
+        else:
+            continue
+        seen.add(low)
+        out.append((token, kind))
+    for match in _SURFACE_NAME.finditer(body):
+        name = match.group(1)
+        if name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        out.append((f"{name} {match.group(2)}", "surface"))
+    return out
+
+
+def _sibling_dirs(nodes, name: str) -> list[str]:
+    """Directories in the graph whose own name is `name`, densest first.
+
+    Density is what makes a directory the nearest existing sibling of a module that does
+    not exist yet: the place the graph already holds the most of that kind of file in.
+    """
+    counts: dict[str, int] = {}
+    for n in nodes:
+        directory = _dir_of(_node_file(n))
+        if directory and directory.rsplit("/", 1)[-1].lower() == name.lower():
+            counts[directory] = counts.get(directory, 0) + 1
+    return [d for d, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+
+def _sibling_extension(nodes, directory: str) -> str:
+    """The extension `directory`'s files mostly use, so a create looks like its siblings."""
+    counts: dict[str, int] = {}
+    for n in nodes:
+        path = _node_file(n)
+        if _dir_of(path) != directory:
+            continue
+        base = path.rsplit("/", 1)[-1]
+        if "." in base:
+            ext = base[base.index("."):]
+            counts[ext] = counts.get(ext, 0) + 1
+    if not counts:
+        return ""
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+
+
+#: Edge types that say a file depends on another: a mention's own reads.
+_DEPENDS_EDGES = frozenset({"imports", "calls", "references"})
+#: Path words too common to say two files are about the same thing.
+_PATH_STOP = frozenset({"test", "tests", "init", "spec", "index", "main", "util", "utils"})
+
+
+def _name_word(word: str) -> str:
+    """A plural file-name word made singular: `rules` → `rule`, `toggles` → `toggle`.
+
+    Not `_stem`, which drops `es` and so reads `rules` as `rul`: the registry `rules.py`
+    then shared no word with `test_done_predicates_rule.py` and fell out of the candidates.
+    """
+    return word[:-1] if word.endswith("s") and not word.endswith("ss") and len(word) > 3 else word
+
+
+def _path_words(path: str) -> set[str]:
+    """The words of a path's file stem: `test_done_predicates_rule.py` → done, predicate, rule."""
+    return {_name_word(w) for w in re.split(r"[^a-z0-9]+", _node_stem(path).lower())
+            if len(w) > 2 and w not in _PATH_STOP}
+
+
+def _dependency_map(edges) -> dict[str, set[str]]:
+    """`src → {dst}` for every edge that says src depends on dst.
+
+    A `tested_by` edge runs module → test, so it is read backwards: the test depends on
+    the module it tests.
+    """
+    out: dict[str, set[str]] = {}
+    for e in edges or ():
+        src, dst = getattr(e, "src", "") or "", getattr(e, "dst", "") or ""
+        kind = getattr(e, "type", "") or "imports"
+        if not src or not dst or src == dst:
+            continue
+        if kind == "tested_by":
+            out.setdefault(dst, set()).add(src)
+        elif kind in _DEPENDS_EDGES:
+            out.setdefault(src, set()).add(dst)
+    return out
+
+
+def _definition_of_mention(token: str, mentioners: list[str],
+                           depends: dict[str, set[str]]) -> tuple[str, str] | None:
+    """`(path, mentioner)` for the file that defines what `mentioners` only name (GRPH-1937).
+
+    A graph entry that names `merge.done_predicates` is a mention, not a definition: on
+    P92's D1 and D2 that tier proposed `test_done_predicates_rule.py`,
+    `test_exclusive_areas_rule.py` and `test_rule_engine_evidence.py`, and
+    `fleet/src/gbfleet/supervisor.py` for `build.generated_files` — tests and a consumer.
+    The ids are defined in `backend/app/services/rule_toggles.py`, which no entry names.
+
+    What a mention can say is what it depends on. A candidate is a file a mentioner
+    imports, calls, references or is tested by that shares a word with the mentioner's
+    own name or with the token (`test_done_predicates_rule` → `rule_toggles`, `rules`;
+    not `items`, `db` or `config`) and is not itself a test, a migration or a package
+    `__init__`. Ranked by how many mentioners depend on it, then by how many other
+    candidates depend on it — `rules.py` imports `rule_toggles.py`, so the toggles are the
+    definition the registry builds on. A mention with no such candidate places nothing:
+    `supervisor.py` shares no word with `test_generated_files_rule`, so the rule id it
+    reads is not proposed through it.
+    """
+    token_words = {_name_word(w) for w in re.split(r"[^a-z0-9]+", token.lower()) if len(w) > 2}
+    votes: dict[str, set[str]] = {}
+    for m in mentioners:
+        words = _path_words(m) | token_words
+        for dst in depends.get(m, ()):
+            if _definition_rank(dst) or _node_stem(dst) == "__init__":
+                continue
+            if _path_words(dst) & words:
+                votes.setdefault(dst, set()).add(m)
+    if not votes:
+        return None
+    candidates = set(votes)
+
+    def built_on(path: str) -> int:
+        return sum(1 for other in candidates if other != path and path in depends.get(other, ()))
+
+    best = min(candidates, key=lambda p: (-len(votes[p]), -built_on(p), len(p), p))
+    return best, sorted(votes[best])[0]
+
+
+def _resolve_named_things(nodes, text: str, edges=None) -> list[tuple[int, str, str, bool]]:
+    """`(order, path, evidence, create)` for the names in `text` the graph can place.
+
+    A backticked name resolves to a symbol node of that name, then to a file whose name or
+    stem is that name, then — when only a file's entry in the graph names it — to the file
+    those mentions depend on (`_definition_of_mention`): a test or a consumer that names a
+    rule id is not where the work goes (GRPH-1937). A command or a surface the graph holds
+    no module for becomes a create beside its closest existing siblings: the section says
+    the work exists, and the graph says where its kind lives.
+    """
+    symbols: dict[str, list[str]] = {}
+    stems: dict[str, list[str]] = {}
+    described: list[tuple[str, str]] = []
+    for n in nodes:
+        path = _node_file(n)
+        if not path:
+            continue
+        if (getattr(n, "kind", "") or "") == "symbol" and (getattr(n, "name", "") or "").strip():
+            symbols.setdefault(n.name.strip().lower(), []).append(path)
+        for key in (_node_stem(path).lower(), path.rsplit("/", 1)[-1].lower()):
+            if key:
+                stems.setdefault(key, []).append(path)
+        described.append((path, f" {getattr(n, 'name', '') or ''} "
+                                f"{getattr(n, 'summary', '') or ''} ".lower()))
+
+    def best(paths: list[str]) -> str:
+        return min(paths, key=lambda p: (_definition_rank(p), len(p), p))
+
+    depends: dict[str, set[str]] | None = None
+    out: list[tuple[int, str, str, bool]] = []
+    for token, kind in _named_things(text):
+        if kind == "name":
+            low = token.lower()
+            tier, hits = 0, symbols.get(low, [])
+            if not hits:
+                tier, hits = 1, sorted(set(stems.get(low, [])))
+            if not hits:
+                mentioners = sorted({p for p, entry in described if _whole_token(entry, low)})
+                if depends is None:
+                    depends = _dependency_map(edges)
+                found = _definition_of_mention(token, mentioners, depends)
+                if not found:
+                    continue
+                path, via = found
+                out.append((2, path, (f"the section names `{token}`; the code graph's entry "
+                                      f"for `{via}` names it, and that file depends on this "
+                                      "one"), False))
+                continue
+            why = {
+                0: f"the section names `{token}`, a symbol this file defines",
+                1: f"the section names `{token}`, which is this file",
+            }[tier]
+            out.append((tier, best(hits), why, False))
+        elif kind == "command":
+            match = _CLI_COMMAND.match(token)
+            program, sub = match.group(1), match.group(2)
+            dirs = _sibling_dirs(nodes, program)
+            if not dirs:
+                continue
+            existing = [p for p in stems.get(sub.lower(), []) if _dir_of(p) in dirs]
+            if existing:
+                out.append((3, best(existing),
+                            f"the section names the command `{token}`, which this file "
+                            "defines", False))
+                continue
+            directory = dirs[0]
+            out.append((4, f"{directory}/{sub}{_sibling_extension(nodes, directory)}",
+                        f"create: the section names the command `{token}`; `{directory}` "
+                        "holds its closest existing siblings", True))
+        else:
+            name = token.split()[0]
+            dirs = _sibling_dirs(nodes, name)
+            # The surface word is a UI word, so a UI directory wins over a same-named one
+            # elsewhere in the repo (`web/src/features/rules`, not `.cursor/rules`).
+            web = [d for d in dirs if _is_web_touchpoint(d)]
+            directory = (web or dirs)[0] if dirs else ""
+            if not directory:
+                continue
+            out.append((5, f"{directory}/",
+                        f"the section names the {token}, which the code graph puts here",
+                        False))
+    out.sort(key=lambda row: (row[0], row[1]))
+    return out
+
+
+#: "An import run is a record", "each finding is a stored record": a section defining one.
+_RECORD_PHRASE = re.compile(
+    r"\b(?:an?|the|one|each)\s+((?:[a-z][a-z0-9-]*\s+){0,2}?[a-z][a-z0-9-]*)\s+is\s+an?\s+"
+    r"(?:new\s+|stored\s+|durable\s+)?record\b",
+    re.IGNORECASE,
+)
+
+
+def _home_dir(nodes, names: tuple[str, ...], anchor: str = "") -> str:
+    """The graph's directory named one of `names`, nearest `anchor`, then densest, never web.
+
+    Nearest is the longest shared leading path: a record's model sits beside the services
+    that use it (`backend/app/models` for `backend/app/services`), not in whichever other
+    `models/` directory the repo happens to hold more files in.
+    """
+    dirs: list[str] = []
+    for name in names:
+        dirs.extend(d for d in _sibling_dirs(nodes, name) if not _is_web_touchpoint(d))
+    if not dirs:
+        return ""
+    anchor_parts = anchor.split("/") if anchor else []
+
+    def shared(d: str) -> int:
+        n = 0
+        for a, b in zip(d.split("/"), anchor_parts):
+            if a != b:
+                break
+            n += 1
+        return n
+
+    order = {d: i for i, d in enumerate(dirs)}
+    return min(dirs, key=lambda d: (-shared(d), order[d]))
+
+
+def _record_homes(nodes, text: str) -> list[tuple[str, str, bool]]:
+    """`(path, evidence, create)` for the backend a record the section defines needs (GRPH-1937).
+
+    P92's D3 opens "**An import run is a record:** project, commit, sources read and
+    unread…" and was proposed only `web/src/features/rules/`. Its builder has to add a
+    model, a migration, a service and a route, and the touchpoint gate refuses every one
+    of them. A section that says a thing is a record names its storage, and the graph says
+    where storage lives: the services directory, and the models, migrations and routers
+    nearest it. Nothing here is a path the graph already holds a file for, so each is a
+    create — the service module by the record's name, the rest as the directory it lands in.
+    """
+    match = _RECORD_PHRASE.search(_FENCED_BLOCK.sub(" ", text or ""))
+    if not match:
+        return []
+    phrase = " ".join(match.group(1).split()).lower()
+    services = _home_dir(nodes, ("services",))
+    if not services:
+        return []
+    words = [w for w in re.split(r"[^a-z0-9]+", phrase) if w]
+    name = "_".join(words)
+    if name and not name.endswith("s"):
+        name += "s"
+    known = {_node_file(n) for n in nodes}
+    why = f"the section says {match.group(0).strip()!r}"
+    out: list[tuple[str, str, bool]] = []
+    for names, what in ((("models",), "its model"),
+                        (("versions", "migrations"), "its migration"),
+                        (("routers", "routes"), "its route")):
+        directory = _home_dir(nodes, names, services)
+        if what == "its migration" and directory.rsplit("/", 1)[-1] == "versions" \
+                and "alembic" not in directory:
+            directory = ""
+        if directory:
+            out.append((f"{directory}/", f"create: {why}; {what} goes in `{directory}/`", True))
+    service = f"{services}/{name}{_sibling_extension(nodes, services) or '.py'}"
+    if service in known:
+        out.insert(0, (service, f"{why}; this file is its service", False))
+    else:
+        out.insert(0, (service, f"create: {why}; its service is a new module beside "
+                                f"`{services}`'s others", True))
+    return out
+
+
+def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[dict]:
+    """Code-graph paths a section likely changes, each with the evidence that matched.
+
+    A path named only as input to read ("reads `AGENTS.md`") is not a write
+    touchpoint. Otherwise, strongest signal first: the path verbatim, or its file name as
+    a whole token; a name the section uses that the graph can place, including a module it
+    has to create (GRPH-1906); then semantic search. A search hit at or above
+    `_TP_SCORE_FLOOR` stands alone. Below that floor it is kept only when the section also
+    names the path. A bare directory name is not a file-name match, and a directory the
+    section names a file under is not proposed either (`_shadowed_directory`, GRPH-1910) —
+    asked again over the whole set at the return, because a resolved name places a
+    container the lexical tier never saw, so it holds whichever tier put it there
+    (GRPH-1930). A name only a graph entry mentions resolves through what that entry's
+    file depends on, never to the mentioning test or consumer, and a section that says a
+    thing "is a record" gets creates for the record's service, model, migration and route
+    (GRPH-1937).
+
+    What the section named is collected before search runs and keeps its order, so
+    `_TP_MAX` truncation cuts search hits first and the named files last.
+
+    Each entry carries `create`: True on a path the section has to make, which does not
+    exist yet, so a caller that reads only `path` would look for a file that is not there.
+    """
     from app.services import code_graph
 
-    text = f"{section}\n{body}".lower()
-    found: dict[str, str] = {}
-    for n in code_graph.list_nodes(db, prd.project_id):
-        path = n.path.split("::", 1)[0]
+    raw = f"{section}\n{body}"
+    text = raw.lower()
+    nodes = list(code_graph.list_nodes(db, prd.project_id))
+    found: dict[str, dict] = {}
+
+    def add(path: str, evidence: str, create: bool = False) -> None:
+        if not path or path in found or _is_read_only_path(raw, path):
+            return
+        found[path] = {"path": path, "evidence": evidence, "create": create}
+
+    named: dict[str, str] = {}
+    for n in nodes:
+        path = _node_file(n)
+        if not path or _is_read_only_path(raw, path):
+            continue
         base = path.rsplit("/", 1)[-1]
         if path.lower() in text:
-            found.setdefault(path, f"path `{path}` named in the section")
+            named.setdefault(path, f"path `{path}` named in the section")
         elif _file_name_in_text(base.lower(), text):
-            found.setdefault(path, f"file name `{base}` named in the section")
+            named.setdefault(path, f"file name `{base}` named in the section")
+    matched = list(named)
+    for path, evidence in named.items():
+        if not _shadowed_directory(path, text, matched):
+            add(path, evidence)
     try:
-        hits = code_graph.search_code(db, f"{section}\n{body}"[:2000], prd.project_id, top_k=_TP_MAX)
+        edges = code_graph.list_edges(db, prd.project_id)
+    except Exception:  # noqa: BLE001 - edges only sharpen a mention; without them it places nothing
+        edges = []
+    for _order, path, evidence, create in _resolve_named_things(nodes, raw, edges):
+        add(path, evidence, create)
+    for path, evidence, create in _record_homes(nodes, raw):
+        add(path, evidence, create)
+    try:
+        hits = code_graph.search_code(db, raw[:2000], prd.project_id, top_k=_TP_MAX)
     except Exception:  # noqa: BLE001 - semantic search is best effort; lexical hits still stand
         hits = []
     for node, score in hits:
-        if score >= _TP_MIN_SCORE:
-            found.setdefault(node.path.split("::", 1)[0],
-                             f"code search matched the section (score {score:.2f})")
-    return [{"path": k, "evidence": v} for k, v in list(found.items())[:_TP_MAX]]
+        path = _node_file(node)
+        # `named`, not `found`: a container dropped for shadowing must not come back
+        # on a score, which would put the crowding GRPH-1910 was filed for back.
+        if path in named:
+            continue
+        if score >= _TP_SCORE_FLOOR:
+            add(path, f"code search matched the section (score {score:.2f})")
+        elif _text_names_path(raw, path):
+            add(path, (f"code search matched the section (score {score:.2f}); "
+                       "kept because the section also names the path"))
+    paths = list(found)
+    kept = [entry for path, entry in found.items() if not _shadowed_directory(path, text, paths)]
+    return kept[:_TP_MAX]
 
 
 # GRPH-1691. One section became one item, including sections that are more than
@@ -4350,8 +5115,13 @@ _SPLIT_HOLD = "split forming: linked before a drain can claim it"
 _SUBHEADING = re.compile(r"^#{3,6}\s+(.*?)\s*#*\s*$")
 # A line that OPENS with a bold label is a piece even when prose follows on the
 # same line. GRPH-P86 writes its pieces that way ("**On the line.** ..."), not as
-# `###` headings. A bold word later in a line is emphasis, not a piece.
-_BOLD_GROUP = re.compile(r"^\*\*(.+?)\*\*\.?:?\s*(.*)$")
+# `###` headings. A list item that opens with the same label is a piece too
+# ("- **Parsers.** ...", "1. **Proposed rule.** ..."): P92's sections are written
+# that way, and without it an oversized section came back with nothing to split
+# (GRPH-1895). A bold word later in a line is emphasis, not a piece.
+_BOLD_GROUP = re.compile(
+    r"^(?:(?:[-*+]|\d+[.)])\s+)?\*\*(.+?)\*\*\.?:?\s*(.*)$"
+)
 
 
 def touchpoint_area(path: str) -> str:
@@ -4432,13 +5202,13 @@ def claim_subheading_clauses(
     to that piece. Leaving it unassigned made the section read as having no
     acceptance, which is the opposite of a section that is too big because of its
     clauses. The ##-level clauses are also returned on their own so a split can
-    copy them onto every piece — they apply to the whole section.
+    place each on the piece that exercises it (`place_level_clauses`).
     """
     indexed = list(acceptance_clauses(body))
-    section_level, _unassigned = assign_acceptance(body, titles)
+    section_level, _unassigned = assign_acceptance(body, titles, section_texts)
     assigned: set[int] = set()
     for i, (clause, group) in enumerate(indexed):
-        if _clause_section(clause, group, titles) is not None:
+        if _clause_section(clause, group, titles, section_texts) is not None:
             assigned.add(i)
     per_heading: dict[tuple[str, str], list[str]] = {}
     groups_of = {title: section_groups(section_texts.get(title, "")) for title in titles}
@@ -4460,6 +5230,24 @@ def claim_subheading_clauses(
             break
     unassigned = [clause for i, (clause, _group) in enumerate(indexed) if i not in assigned]
     return combined, section_level, per_heading, unassigned
+
+
+def place_level_clauses(clauses: list[str], pieces: list[tuple[str, str]]) -> dict[str, list[str]]:
+    """Each section-level clause onto the one piece whose own text exercises it.
+
+    `pieces` is `(heading, body)` without the section's preamble: the preamble belongs to
+    every piece, so counting it decides nothing. Placement is `_body_cover` run over the
+    pieces instead of the sections — the clause moves to the piece whose prose restates a
+    third of it and restates it more than any other piece. A clause that clears no piece,
+    or ties two, is under key `""`: unplaced, reported, never copied onto all of them.
+    That copy is GRPH-1938 — on P92 D2 five pieces each carried the same three clauses.
+    """
+    titles = [heading for heading, _body in pieces]
+    bodies = dict(pieces)
+    out: dict[str, list[str]] = {}
+    for clause in clauses:
+        out.setdefault(_body_cover(clause, titles, bodies) or "", []).append(clause)
+    return out
 
 
 def _compose_task(prd: Prd, body: str, clauses: list[str], context: str, gate_text: str,
@@ -4499,16 +5287,32 @@ def _compose_task(prd: Prd, body: str, clauses: list[str], context: str, gate_te
     return described
 
 
-def _piece_blocker(prd_key: str, no_clause: bool, no_touchpoints: bool, gate_blocker: str) -> str:
+#: The two reasons a piece can come back with no touchpoint, which are not the same
+#: absence: the graph had nothing to propose, or the caller's own list named nothing
+#: this piece could claim. Only the second one is actionable from the reply alone
+#: (GRPH-1910), so it says where the paths went and what to type instead.
+_NO_TP_PROPOSED = (
+    "no touchpoints: the code graph proposed none for this section, so the "
+    "planner cannot cluster it and gbfleet cannot open its PR. Set "
+    "`touchpoints` (files it changes) on the item."
+)
+_NO_TP_UNNAMED_BY_PIECE = (
+    "no touchpoints: none of the paths given for this section is named by this "
+    "piece, so nothing was copied onto it — `unassigned_touchpoints` on the "
+    "proposal names them. Give this piece its own with "
+    "`touchpoints={\"<section> \u2014 <piece heading>\": [...]}`."
+)
+
+
+def _piece_blocker(prd_key: str, no_clause: bool, no_touchpoints: bool, gate_blocker: str,
+                   no_touchpoints_msg: str = "") -> str:
     blocker = gate_blocker
     if no_clause:
         msg = (f"no acceptance clause in {prd_key} maps to this section; sign-off "
                "refuses an item with no `## Acceptance` list. Add the clauses.")
         blocker = f"{blocker}\n{msg}".strip()
     if no_touchpoints:
-        msg = ("no touchpoints: the code graph proposed none for this section, so the "
-               "planner cannot cluster it and gbfleet cannot open its PR. Set "
-               "`touchpoints` (files it changes) on the item.")
+        msg = no_touchpoints_msg or _NO_TP_PROPOSED
         blocker = f"{blocker}\n{msg}".strip()
     return blocker
 
@@ -4531,6 +5335,33 @@ def _accepted_headings(splits: dict | None, section: str, headings: list[str]) -
         return []
     accepted = {_section_key(str(h)) for h in raw if isinstance(h, str) and str(h).strip()}
     return [h for h in headings if _section_key(h) in accepted]
+
+
+def _piece_override(overrides: dict | None, section: str, heading: str) -> list[str] | None:
+    """The caller's own touchpoints for one piece, keyed `"<section> — <piece heading>"`.
+
+    Matched on `_section_key`, so the dash, the spacing and the section number are the
+    caller's to write: "3. The server alert — Bell", "3. The server alert - Bell" and
+    "the server alert—bell" are one key. The list wins for that piece, empty included —
+    it is what the caller typed. None means the caller gave this piece nothing, and the
+    section-level list is distributed instead.
+    """
+    want = _section_key(f"{section} — {heading}")
+    for key, value in (overrides or {}).items():
+        if _section_key(str(key)) == want:
+            return [t for t in (value or []) if isinstance(t, str) and t.strip()]
+    return None
+
+
+def _piece_given(piece_text: str, given: list[str]) -> list[str]:
+    """The section-level paths this piece names, in the order the caller gave them.
+
+    A piece's own text decides, not the section's preamble: the preamble belongs to
+    every piece, so counting it would hand the same paths to all of them, which is the
+    copy this exists to stop (GRPH-1910). A path the preamble alone names is reported
+    in `unassigned_touchpoints` for the caller to place with `_piece_override`.
+    """
+    return [t for t in given if _text_names_path(piece_text, t)]
 
 
 def _file_split(db: Session, prd: Prd, section: str, fidelity: str, subs: list[dict]) -> list[str]:
@@ -4579,24 +5410,20 @@ def _file_split(db: Session, prd: Prd, section: str, fidelity: str, subs: list[d
 # start "Draining the line" before "The line" existed; the ordering had to be added by hand
 # afterwards, which is the step most likely to be skipped or reversed.
 #
-# Both signals below are drawn from the document's own text rather than guessed, which is
-# what makes them worth proposing at all. A wrong link that quotes the sentence it came from
-# is a link a caller can check and drop, and `drop_links` exists for exactly that.
+# A heading named outright is one signal. The other is a record or a route the section
+# defines and another consumes ("an import run is a record", `POST /api/imports`).
+# A slice label ("pipeline D4") and a command both sections mention (`gban rules import`)
+# are not dependencies: on GRPH-P92 those mentions ran the edges backwards (GRPH-1895).
+# A wrong link that quotes the sentence it came from is a link a caller can check and
+# drop, and `drop_links` exists for exactly that.
 
 #: A heading shorter than this matches ordinary prose ("A", "In", "One"), and a false
 #: dependency is worse than a missing one — it silently reorders somebody's drain.
 _MIN_HEADING_CHARS = 4
 
-_BACKTICK_TERM = re.compile(r"`([^`\n]{3,60})`")
 #: Loose, so "Non-goals", "Non Goals" and "nongoals" are the same heading.
 _HEADING_JOIN = r"[\s\-_/]*"
-
-#: An identifier more sections than this share is vocabulary, not a handoff. Measured across
-#: this repo's fifteen `docs/prd-*.md` documents: 1456 distinct backticked terms, of which
-#: 1205 appear in one section, 190 in two, and 61 in three or more — and the false edges all
-#: came out of that last group, because `reviewer`, `heartbeat` and `offline` are the language
-#: every section of a fleet PRD speaks rather than something one section hands the next.
-_MAX_TERM_SECTIONS = 2
+_ROUTE_DEF = re.compile(r"`((?:GET|POST|PUT|PATCH|DELETE)\s+/[^`\n]+)`", re.IGNORECASE)
 
 
 def _heading_matcher(title: str) -> re.Pattern[str] | None:
@@ -4614,45 +5441,72 @@ def _heading_matcher(title: str) -> re.Pattern[str] | None:
     return re.compile(rf"(?<![A-Za-z0-9]){inner}(?![A-Za-z0-9])", re.IGNORECASE)
 
 
-def _section_label(title: str) -> str | None:
-    """The slice label a heading carries — `S1`, `D8`, `E3`, `AC-18` — if it has exactly one.
+def _defined_names(body: str) -> list[tuple[str, str]]:
+    """`(name, kind)` records and routes `body` defines.
 
-    A real heading here reads `## S1 — The state floor`, and later sections cite `S1`, not
-    that sentence. Reuses `_SLICE_LABEL` so this and `unlinked_work` agree on which
-    citations are real.
+    "An import run is a record" defines the record `import run`. A backticked HTTP
+    method and path defines a route. A command in backticks is neither: two sections
+    that both mention `gban rules import` are not handing work to each other.
+
+    A record name is two or more words, or one word the author backticked. "An item is
+    a record with a status" and "Ours is a record of a codebase" define no record:
+    `item` and `ours` are ordinary words, and taking them as names made every later
+    section whose prose happened to say them depend on this one (GRPH-1895). A false
+    dependency is worse than a missing one — it silently reorders somebody's drain, and
+    at create=True it is written as a real link.
     """
-    found = {m.group(1).upper() for m in _SLICE_LABEL.finditer(title or "")}
-    return found.pop() if len(found) == 1 else None
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"\bis a record\b", body or "", re.IGNORECASE):
+        before = (body or "")[:match.start()]
+        chunk = re.split(r"[\n.;:]|\*\*", before)[-1]
+        chunk = chunk.strip()
+        quoted = "`" in chunk
+        chunk = chunk.strip("*_`").strip()
+        chunk = re.sub(r"^(?:an?|the)\s+", "", chunk, count=1, flags=re.IGNORECASE).strip()
+        words = re.findall(r"[A-Za-z][\w-]*", chunk)
+        if not words:
+            continue
+        name = " ".join(words[-4:])
+        name = re.sub(r"^(?:an?|the)\s+", "", name, count=1, flags=re.IGNORECASE)
+        key = name.lower()
+        if len(key) < 3 or key in seen:
+            continue
+        if len(name.split()) < 2 and not quoted:
+            continue
+        seen.add(key)
+        out.append((name, "record"))
+    for match in _ROUTE_DEF.finditer(body or ""):
+        name = re.sub(r"\s+", " ", match.group(1).strip())
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((name, "route"))
+    return out
 
 
-def _code_terms(body: str) -> set[str]:
-    """Identifiers `body` carries in backticks — the terms a section can define for others.
-
-    Bold prose is deliberately not a term. Emphasis and a definition look the same in
-    markup, and common bold words linked every section that used that English word.
-    """
-    return {m.group(1).strip() for m in _BACKTICK_TERM.finditer(body or "")
-            if len(m.group(1).strip()) >= 3 and any(c.isalpha() for c in m.group(1))}
+def _name_pattern(name: str) -> re.Pattern[str]:
+    parts = [p for p in name.split() if p]
+    inner = _HEADING_JOIN.join(re.escape(p) for p in parts)
+    return re.compile(rf"(?<![A-Za-z0-9]){inner}(?![A-Za-z0-9])", re.IGNORECASE)
 
 
-def _reference(text: str, target: str, matcher, label_rx, term_res) -> tuple[str, str] | None:
-    """`(why, matched)` for the strongest way `text` refers to `target`, else None.
+def _reference(text: str, target: str, matcher, defined) -> tuple[str, str] | None:
+    """`(why, matched)` for the strongest way `text` builds on `target`, else None.
 
-    Naming a section outright beats citing its label, which beats reusing one of its
-    identifiers. The strongest match is the `why` a caller reads.
+    Naming the heading beats consuming a record or route that target defines. A slice
+    label and a bare command are not ways of building on a section.
     """
     if matcher:
-        m = matcher.search(text)
-        if m:
-            return f'body names the section heading "{target}"', m.group(0)
-    if label_rx:
-        m = label_rx.search(text)
-        if m:
-            return f'body names "{target}" by its slice label', m.group(0)
-    for term, rx in term_res:
-        m = rx.search(text)
-        if m:
-            return f'body uses "{term}", which "{target}" defines', m.group(0)
+        found = matcher.search(text)
+        if found:
+            return f'body names the section heading "{target}"', found.group(0)
+    for name, kind, pattern in defined:
+        found = pattern.search(text)
+        if found:
+            noun = "a record" if kind == "record" else "a route"
+            return f'body uses "{name}", which "{target}" defines as {noun}', found.group(0)
     return None
 
 
@@ -4662,44 +5516,27 @@ def propose_section_links(
     """`(edges, skipped)` — dependency edges between a PRD's implementable sections.
 
     `order` is those sections in document order. An edge reads **`section` DEPENDS ON
-    `depends_on`**: the section whose body does the naming is the one that builds on the
-    other, so "Draining the line" naming "The line" makes the drain the dependent.
+    `depends_on`**: the section whose body names the other's heading, or consumes a
+    record or route the other defines. "Draining the line" naming "The line" makes the
+    drain the dependent. D4 filing into the import run D3 defines makes D4 the dependent.
 
-    An edge whose far end is not being created is returned in `skipped` with a reason
-    rather than dropped: a proposal that silently omits a reference it saw is the same
-    quiet absence the rest of this module reports.
+    Mentioning a slice label or a command is not an edge. An edge whose far end is not
+    being created is returned in `skipped` with a reason rather than dropped: a proposal
+    that silently omits a reference it saw is the same quiet absence the rest of this
+    module reports.
     """
-    terms = {s: _code_terms(bodies.get(s, "")) for s in order}
-    # Who owns a term: the FIRST section in document order that carries it. A dependent
-    # section writes the identifier in backticks too, so "exactly one section" would throw
-    # the signal away. Spread past `_MAX_TERM_SECTIONS` is vocabulary, not a handoff.
-    spread: Counter = Counter()
-    for s in order:
-        for t in terms[s]:
-            spread[t.lower()] += 1
-    owner: dict[str, tuple[str, str]] = {}
-    for s in order:
-        for t in sorted(terms[s]):
-            if spread[t.lower()] <= _MAX_TERM_SECTIONS:
-                owner.setdefault(t.lower(), (t, s))
-    term_res: dict[str, list[tuple[str, re.Pattern[str]]]] = {s: [] for s in order}
-    for t, s in owner.values():
-        term_res[s].append(
-            (t, re.compile(rf"(?<![A-Za-z0-9_]){re.escape(t)}(?![A-Za-z0-9_])")))
-    for s in order:
-        term_res[s].sort(key=lambda pair: pair[0])
-
-    # A label two sections both carry belongs to neither — the rule `_clause_section`
-    # applies to an ambiguous title.
-    label_owner: dict[str, str | None] = {}
-    for s in order:
-        lab = _section_label(s)
-        if lab:
-            label_owner[lab] = None if lab in label_owner else s
-    label_res: dict[str, re.Pattern[str]] = {}
-    for lab, s in label_owner.items():
-        if s is not None:
-            label_res[s] = re.compile(rf"(?<![A-Za-z0-9]){re.escape(lab)}(?![A-Za-z0-9])")
+    # First section in document order owns a name. A later section that also says
+    # "is a record" is not a second definition; it consumes the first if it names it,
+    # which the loop below still sees because the name occurs in its body.
+    owner: dict[str, tuple[str, str, str]] = {}
+    for section in order:
+        for name, kind in _defined_names(bodies.get(section, "")):
+            owner.setdefault(name.lower(), (name, kind, section))
+    defined: dict[str, list[tuple[str, str, re.Pattern[str]]]] = {s: [] for s in order}
+    for name, kind, section in owner.values():
+        defined[section].append((name, kind, _name_pattern(name)))
+    for section in order:
+        defined[section].sort(key=lambda triple: triple[0].lower())
     matchers = {s: _heading_matcher(s) for s in order}
 
     edges: list[dict] = []
@@ -4712,8 +5549,7 @@ def propose_section_links(
         for target in order:
             if target == dep or (dep, target) in seen:
                 continue
-            hit = _reference(text, target, matchers[target], label_res.get(target),
-                             term_res[target])
+            hit = _reference(text, target, matchers[target], defined[target])
             if hit is None:
                 continue
             seen.add((dep, target))
@@ -4853,12 +5689,18 @@ def apply_link_overrides(
 _INFERRED_LINK_CONFIDENCE = 0.7
 
 
+#: The heading of the offered piece that carries a split's unplaced clauses (GRPH-1946).
+_REMAINDER_HEADING = "remainder"
+
+
 def _remainder_piece(prd: Prd, pr: dict, left: list[dict], context: str) -> dict:
     """One item for the suggested pieces a partial split did not name.
 
     Coverage counts by ``prd_section``. Filing only the accepted pieces marks the
     section covered, and a later decompose never offers the rest — their bodies and
-    clauses have to land on an item in this same call, or they are gone.
+    clauses have to land on an item in this same call, or they are gone. The section's
+    unplaced clauses (``_level_clauses``, GRPH-1938) land here too, and are the only
+    section-level clauses that do: a placed one is already on its piece.
     """
     from app.services.fleet import parse_acceptance
 
@@ -4886,6 +5728,13 @@ def _remainder_piece(prd: Prd, pr: dict, left: list[dict], context: str) -> dict
             if path not in seen_paths:
                 seen_paths.add(path)
                 touchpoints.append(path)
+    if pr.get("_level_clauses"):
+        # Unplaced section-level clauses (GRPH-1938): no piece claimed them, so the
+        # section's own paths are where they land — over-reserved, the safe direction —
+        # with any piece folded in keeping its own (GRPH-1946).
+        touchpoints = list(dict.fromkeys([*(pr.get("touchpoints") or []), *touchpoints]))
+    elif not touchpoints and clauses:
+        touchpoints = list(pr.get("touchpoints") or [])
     no_clause = not clauses and not parse_acceptance(body)[0]
     return {
         "title": f"Implement: {pr['section']} — remainder",
@@ -4901,7 +5750,8 @@ def _remainder_piece(prd: Prd, pr: dict, left: list[dict], context: str) -> dict
 def _strip_split_scratch(proposals: list[dict]) -> None:
     """Drop the piece text the filing loop needed. It is not part of the proposal."""
     for pr in proposals:
-        for key in ("_preamble", "_level_clauses", "_gate_text", "_design_text", "_gate_blocker"):
+        for key in ("_preamble", "_level_clauses", "_remainder_pieces", "_gate_text",
+                    "_design_text", "_gate_blocker"):
             pr.pop(key, None)
         for sub in pr.get("sub_items") or []:
             sub.pop("_gbody", None)
@@ -4947,17 +5797,28 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
 
     Each proposal carries ``depends_on``: the other sections this one builds on, each with
     the text that said so (GRPH-1690). Direction is this section DEPENDS ON the named one.
-    ``create=True`` writes those as dependency links. ``drop_links`` / ``add_links`` are the
-    caller's corrections, per section, as ``[{"section", "depends_on"}]``. A cycle is
-    reported and cut rather than created.
+    A heading name, or a record or route the other section defines, is a dependency. A
+    slice label or a command is not (GRPH-1895). ``create=True`` writes those as dependency
+    links. ``drop_links`` / ``add_links`` are the caller's corrections, per section, as
+    ``[{"section", "depends_on"}]``. A cycle is reported and cut rather than created.
 
     A section whose acceptance clauses, touchpoint areas, or body length exceed the
-    measured constants is ``oversized``, naming the signal and its value, with suggested
-    sub-items (one per sub-heading or bold piece). ``splits={section: [headings]}`` with
+    measured constants and that has two or more pieces is ``oversized``, naming the signal
+    and its value, with suggested sub-items (one per sub-heading or bold piece, including
+    a list item that opens with a bold label). An oversized section with nothing to split
+    is refused in ``split_refused`` and is not reported ``oversized`` with empty
+    ``sub_items``. ``splits={section: [headings]}`` with
     create=True files those pieces instead of the one item: blocked, linked, then backlog.
+    A piece of a split gets only the ``touchpoints`` its own text names, not the section's
+    whole list; a key of ``"<section> — <piece heading>"`` gives one piece a list of its
+    own, and that list wins. ``unassigned_touchpoints`` names the section's given paths no
+    piece claimed, and is null when the section was not split — nothing was distributed
+    then, which is not the same answer as an empty list.
     A partial list also files one remainder carrying every other suggested piece's body
     and clauses. Coverage counts by section, so the omitted pieces would otherwise never
-    be offered again. ``split_remainders`` names those headings. ``unfiled_pieces`` lists
+    be offered again. ``split_remainders`` names those headings. Section-level clauses no
+    piece's text exercises are offered on a ``remainder`` sub-item in the dry run and filed
+    on it at create; a clause-less piece is never offered (GRPH-1946). ``unfiled_pieces`` lists
     any suggested piece whose clauses landed on no created item; it is null when
     ``create`` is false, because nothing was filed and an empty list would read as a
     clean pass. A section dependency is written onto each filed piece."""
@@ -5054,35 +5915,179 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
         preamble = next((text for heading, text in groups if heading == ""), "")
         real = [(heading, text) for heading, text in groups if heading]
         sub_items: list[dict] = []
+        # What each piece claimed of the caller's list, read before the UI filter strips
+        # web/ off it, so a path the UI twin took is not also reported as unclaimed.
+        claimed_by_pieces: list[list[str]] = []
         level = section_level.get(p["section"], [])
         # Suggested only once the section is already too big. A short section with two
         # headings is still one child; the caller is not offered a split it did not need.
+        # Filled only when a split was offered: the section-level clauses no piece's text
+        # exercises, and the pieces folded into every other piece as framing. Null when
+        # the section was not split — nothing was distributed then.
+        unplaced: list[str] | None = None
+        folded: list[str] | None = None
+        remainder_pieces: list[dict] = []
+        split_framing = preamble
+        no_partition = ""
         if size["oversized"] and len(real) >= 2:
+            # GRPH-1938. A section-level clause goes to the ONE piece whose own text
+            # restates it, not onto every piece. Copied onto all of them, five children
+            # raced the same acceptance, which partitions nothing.
+            placed = place_level_clauses(level, real)
+            unplaced = placed.pop("", [])
+            drafts: list[dict] = []
             for heading, gbody in real:
                 piece = "\n\n".join(part for part in (preamble, gbody) if part)
-                own = list(per_heading.get((p["section"], heading), []))
-                sub_clauses = level + own
-                if given:
-                    sub_tps = list(given)
+                own = list(per_heading.get((p["section"], heading), [])) + placed.get(heading, [])
+                # GRPH-1910. The caller's section-level list is DISTRIBUTED, not copied:
+                # a piece gets the given paths its own text names, or the list the caller
+                # keyed to that piece. Copying all of it onto every piece is why the Bell
+                # child could edit the migration and the Server child the bell.
+                override = _piece_override(overrides, p["section"], heading)
+                unnamed_by_piece = False
+                inherited = False
+                if override is not None:
+                    sub_tps = override
+                elif given:
+                    sub_tps = _piece_given(f"{heading}\n{gbody}", given)
+                    unnamed_by_piece = not sub_tps
                 else:
                     sub_tps = [e["path"] for e in propose_touchpoints(
                         db, prd, f"{p['section']} {heading}", piece)]
+                    # GRPH-1906. A piece names less of the world than the section it was
+                    # cut out of, and "this piece resolved nothing" must not read as
+                    # "nobody knows where this work lands" — the section does. The
+                    # inherited paths over-reserve the piece's area, the safe direction for
+                    # the collision divvy; `touchpoints_inherited` says they were borrowed.
+                    inherited = not sub_tps
+                    if inherited:
+                        sub_tps = list(tps)
+                # Clauses the piece's own text lists (`Acceptance:` inline) are its own
+                # too — `parse_acceptance` reads them at filing time.
+                inline = list(parse_acceptance(gbody)[0])
+                drafts.append({"heading": heading, "gbody": gbody, "own": own,
+                               "acceptance": own + inline,
+                               "tps": sub_tps, "inherited": inherited,
+                               "unnamed": unnamed_by_piece,
+                               # A path of its own: resolved from its text, or typed for
+                               # it. Borrowed from the section, or none, is not its own.
+                               "own_tp": bool(sub_tps) and not inherited})
+            # GRPH-1938. A piece with no clause and no path of its own is a constraint on
+            # the others ("EXTERNAL states configuration, not safety"), not work: offered,
+            # it is a child that races its siblings' files against no acceptance. It is
+            # carried as framing on every piece that remains.
+            # GRPH-1946. A path of its own does not make a clause-less piece reviewable:
+            # it is never offered. When the split has unplaced clauses it rides on the
+            # remainder that carries them (its text and its paths are work); otherwise
+            # it is framing like the rest.
+            kept = [d for d in drafts if d["acceptance"]]
+            to_remainder = [d for d in drafts
+                            if unplaced and not d["acceptance"] and d["own_tp"]]
+            folded = [d["heading"] for d in drafts
+                      if not d["acceptance"] and d not in to_remainder]
+            # The unplaced clauses are offered as one more piece, so they land on an item
+            # in the dry run as well as at filing (GRPH-1946), and it counts as a piece.
+            offered = len(kept) + (1 if unplaced else 0)
+            if offered < 2:
+                no_partition = (
+                    f"{size['oversized_reason']}; only {len(kept)} of {len(drafts)} pieces "
+                    "has a clause of its own"
+                    + (" (plus a remainder for the clauses none restates)" if unplaced else "")
+                    + ", so a split partitions nothing"
+                )
+            elif len(kept) >= 2 and len(
+                    {(tuple(d["acceptance"]), tuple(sorted(d["tps"]))) for d in kept}) == 1:
+                no_partition = (
+                    f"{size['oversized_reason']}; every piece would carry the same "
+                    "clauses and the same touchpoints, so a split partitions nothing"
+                )
+            if no_partition:
+                # Offered whole: the section's own item already carries every clause and
+                # path. `split_refused` says why it did not split.
+                unplaced = folded = None
+                kept = []
+                to_remainder = []
+            framing = "\n\n".join(
+                f"### {d['heading']}" + (f"\n{d['gbody']}" if d["gbody"] else "")
+                for d in drafts if d["heading"] in (folded or []))
+            split_framing = "\n\n".join(part for part in (preamble, framing) if part)
+            for d in kept:
+                heading, gbody, sub_clauses, sub_tps = d["heading"], d["gbody"], d["own"], d["tps"]
+                piece = "\n\n".join(part for part in (split_framing, gbody) if part)
+                claimed_by_pieces.append(list(sub_tps))
                 if split_ui:
                     sub_tps = [t for t in sub_tps if not _is_web_touchpoint(t)]
-                sub_no_clause = not sub_clauses and not parse_acceptance(piece)[0]
+                sub_no_clause = not sub_clauses and not parse_acceptance(gbody)[0]
                 sub_items.append({
                     "heading": heading,
                     "title": f"Implement: {p['section']} — {heading}",
                     "clauses": sub_clauses,
                     "touchpoints": sub_tps,
+                    "touchpoints_inherited": d["inherited"],
                     "description": _compose_task(
                         prd, piece, sub_clauses, context, gate_text, design_text),
                     "blocker": _piece_blocker(
-                        prd.key, sub_no_clause, not sub_tps, gate["blocker"] if gate else ""),
+                        prd.key, sub_no_clause, not sub_tps,
+                        gate["blocker"] if gate else "",
+                        _NO_TP_UNNAMED_BY_PIECE if d["unnamed"] else ""),
                     # Piece text the remainder is built from. Stripped before the reply.
                     "_gbody": gbody,
-                    "_own_clauses": own,
+                    "_own_clauses": sub_clauses,
                 })
+            if unplaced:
+                # GRPH-1946. The clauses no piece's text exercises, offered as the piece
+                # that will file them, with any clause-less piece that had paths of its
+                # own. Filing builds the same remainder from the same scratch.
+                for d in to_remainder:
+                    rem_tps = list(d["tps"])
+                    if split_ui:
+                        rem_tps = [t for t in rem_tps if not _is_web_touchpoint(t)]
+                    remainder_pieces.append({
+                        "heading": d["heading"], "_gbody": d["gbody"],
+                        "_own_clauses": [], "touchpoints": rem_tps,
+                    })
+                    claimed_by_pieces.append(list(d["tps"]))
+                rem = _remainder_piece(prd, {
+                    "section": p["section"], "touchpoints": tps,
+                    "_preamble": split_framing, "_level_clauses": list(unplaced),
+                    "_gate_text": gate_text, "_design_text": design_text,
+                    "_gate_blocker": gate["blocker"] if gate else "",
+                }, remainder_pieces, context)
+                sub_items.append({
+                    "heading": _REMAINDER_HEADING,
+                    "title": rem["title"],
+                    "clauses": list(unplaced),
+                    "touchpoints": rem["touchpoints"],
+                    "touchpoints_inherited": not remainder_pieces,
+                    "description": rem["description"],
+                    "blocker": rem["blocker"],
+                    # Filed whether or not `splits` names it: its clauses are on no other
+                    # piece. `carries` names the clause-less pieces folded into it.
+                    "remainder": True,
+                    "carries": [d["heading"] for d in remainder_pieces],
+                    "_gbody": "",
+                    "_own_clauses": list(unplaced),
+                })
+        # Null when the section was not split: every given path is on the section's own
+        # item then, and an empty list would read as "distributed, nothing left over".
+        unassigned_tps: list[str] | None = None
+        if claimed_by_pieces:
+            claimed = {t for tps in claimed_by_pieces for t in tps}
+            unassigned_tps = [t for t in given if t not in claimed]
+        # Oversized with nothing to split used to come back `oversized: true` and
+        # `sub_items: []`, which reads as a split nobody made (GRPH-1895). Refuse it
+        # instead, and do not advertise an oversized flag the caller cannot act on.
+        # `size` still shows the signal that exceeded. Empty `split_refused` means we
+        # looked: the section was not oversized, or it split.
+        split_refused = no_partition
+        if size["oversized"] and not sub_items and not no_partition:
+            split_refused = (
+                f"{size['oversized_reason']}; no sub-heading or bold piece to split on"
+            )
+            blocker = (
+                f"{blocker}\noversized section refused: {split_refused}"
+            ).strip()
+        offered_split = bool(sub_items)
         # Named pages (inline or the set's external artifact) mean the prototype
         # already exists (GRPH-1692). The section is then specifiable against that
         # reference, so it is low even when the heading is a UI term. The UI item
@@ -5095,7 +6100,11 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             "description": described,
             "touchpoints": tps,
             "touchpoint_evidence": tp_evidence,
-            "blocked": bool(gate and gate["blocked"]) or no_clause or no_tp,
+            # A split refused for having no pieces blocks: nobody can do a wall of text as
+            # one child. One refused because its pieces partition nothing is offered whole
+            # (GRPH-1938) — the section's item carries every clause and path already.
+            "blocked": (bool(gate and gate["blocked"]) or no_clause or no_tp
+                        or (bool(split_refused) and not no_partition)),
             "blocker": blocker,
             "acceptance": clauses,
             "fidelity": reading["fidelity"],
@@ -5105,19 +6114,37 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             # This section DEPENDS ON each named one (GRPH-1690). Always present: [] means
             # the body named no other section this decompose is filing.
             "depends_on": depends_by_section.get(p["section"], []),
-            # Always present. False means every signal was measured and none exceeded.
-            "oversized": size["oversized"],
-            "oversized_reason": size["oversized_reason"],
+            # Always present. False means every signal was measured and none exceeded,
+            # or the section exceeded one and was refused because it has no pieces.
+            "oversized": size["oversized"] and offered_split,
+            "oversized_reason": size["oversized_reason"] if offered_split else "",
+            "split_refused": split_refused,
             "size": size["size"],
             "sub_items": sub_items,
+            # Given paths no piece claimed, so the caller can key them to one. Null when
+            # the section was not split — nothing was distributed, which is not the same
+            # answer as "distributed and nothing was left over".
+            "unassigned_touchpoints": unassigned_tps,
+            # GRPH-1938. Section-level clauses no piece's own text exercises: reported here,
+            # never copied onto every piece, and filed on the split's remainder. Pieces with
+            # no clause and no path of their own, carried as framing on every other piece.
+            # Both null when the section was not split.
+            "unplaced_clauses": unplaced,
+            "folded_pieces": folded,
             # Filing scratch, stripped before the reply. The remainder is built at create
             # time, once `splits` says which pieces were not named.
-            "_preamble": preamble,
-            "_level_clauses": list(level),
+            "_preamble": split_framing,
+            "_level_clauses": list(unplaced or []),
+            "_remainder_pieces": remainder_pieces,
             "_gate_text": gate_text,
             "_design_text": design_text,
             "_gate_blocker": gate["blocker"] if gate else "",
         })
+        # GRPH-1946. A clause unplaced inside a split and carried by no offered piece
+        # belongs to no item; the top-level count says so rather than reading 0.
+        for clause in unplaced or []:
+            if not any(clause in s["clauses"] for s in sub_items) and clause not in unassigned:
+                unassigned.append(clause)
         if split_ui and design is not None:
             ui_items.append({
                 "section": p["section"],
@@ -5166,15 +6193,22 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
         behaviour_ids: dict[str, list[str]] = {}
         unfiled_pieces = []
         for pr in proposals:
+            pieces = [s for s in pr["sub_items"] if not s.get("remainder")]
             accepted = _accepted_headings(
-                splits, pr["section"], [s["heading"] for s in pr["sub_items"]])
+                splits, pr["section"], [s["heading"] for s in pieces])
             if accepted:
-                chosen = [s for s in pr["sub_items"] if s["heading"] in accepted]
-                left = [s for s in pr["sub_items"] if s["heading"] not in accepted]
+                chosen = [s for s in pieces if s["heading"] in accepted]
+                # The offered remainder is rebuilt below from the same scratch, with
+                # whatever else this call did not name (GRPH-1946).
+                left = [s for s in pieces if s["heading"] not in accepted]
+                left = [*left, *pr["_remainder_pieces"]]
                 # A partial list used to file only `chosen`. One item on the section is
                 # enough for coverage to skip it next time, so Two and Three were gone
                 # and the reply did not say so.
-                if chosen and left:
+                # Unplaced section-level clauses (GRPH-1938) are on no piece, so they
+                # need the remainder even when every piece was accepted.
+                remainder = bool(chosen) and bool(left or pr["_level_clauses"])
+                if remainder:
                     chosen = [*chosen, _remainder_piece(prd, pr, left, context)]
                 if chosen:
                     ids = _file_split(
@@ -5184,7 +6218,7 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                     filed[pr["section"]] = [
                         (row.id, row.key) for iid in ids if (row := db.get(Item, iid))
                     ]
-                    if left:
+                    if remainder:
                         split_remainders.append({
                             "section": pr["section"],
                             "headings": [s["heading"] for s in left],

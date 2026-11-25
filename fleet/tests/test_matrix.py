@@ -915,8 +915,8 @@ def test_doctor_without_a_server_says_the_resolutions_assume_nothing(git_repo: P
     report = doctor_mod.run(repo=git_repo, out=io.StringIO())
     by = {f.name: f for f in report.findings}
     assert by["matrix preferences"].status == "UNKNOWN" and "no profile" in by["matrix preferences"].detail
-    assert by["probe suggestions"].status == "UNKNOWN"
-    assert "not looked up" in by["probe suggestions"].detail
+    assert by["baseline suggestions"].status == "UNKNOWN"
+    assert "not looked up" in by["baseline suggestions"].detail
 
 
 def test_doctor_prints_probe_suggestions_from_fleet_status(git_repo: Path, monkeypatch):
@@ -935,10 +935,11 @@ def test_doctor_prints_probe_suggestions_from_fleet_status(git_repo: Path, monke
     monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (True, "")))
     report = doctor_mod.run(repo=git_repo, out=io.StringIO(), server="http://gb.invalid",
                             api_key="k", project="p")
-    hit = next(f for f in report.findings if f.name == "probe acme:nova")
+    hit = next(f for f in report.findings if f.name == "baseline acme:nova")
     assert hit.status == "PASS"
     assert "new_row" in hit.detail
     assert "person starting it" in hit.detail
+    assert "gbfleet bench run --suite template --adapter acme:nova" in hit.detail
 
 
 def test_doctor_empty_probe_suggestions_are_none_only_after_a_lookup(
@@ -954,8 +955,8 @@ def test_doctor_empty_probe_suggestions_are_none_only_after_a_lookup(
     report = doctor_mod.run(repo=git_repo, out=io.StringIO(), server="http://gb.invalid",
                             api_key="k")
     by = {f.name: f for f in report.findings}
-    assert by["probe suggestions"].status == "PASS"
-    assert by["probe suggestions"].detail == "none"
+    assert by["baseline suggestions"].status == "PASS"
+    assert by["baseline suggestions"].detail == "none"
 
 
 # ---- GRPH-732: the child is told what to declare, because only the supervisor knows ------------

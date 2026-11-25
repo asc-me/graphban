@@ -59,7 +59,12 @@ class Server:
         if tool == "collision_clusters":
             return {"clusters": [{"items": ["SEED", "SIB"]}]}
         if tool == "get_item_details":
-            return dict(self.details[kw["id"]])
+            if kw["id"] == self.dep["id"]:
+                return {"id": self.dep["id"], "status": self.dep["status"]}
+            got = dict(self.details[kw["id"]])
+            if kw["id"] == "SIB":
+                got["links"] = [{"type": "dependency", "a": "SIB", "b": self.dep["id"]}]
+            return got
         if tool == "related_work":
             return {"results": [self.dep] if kw["id"] == "SIB" else []}
         if tool == "delegate":

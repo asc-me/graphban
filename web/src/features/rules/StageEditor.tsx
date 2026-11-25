@@ -40,7 +40,8 @@ export const FIXED_RULE_REASONS: Record<string, string> = {
   "gate.approval_earned_by_grill": "Earned: approval comes from finishing the grill. No setting grants it.",
 };
 
-const isEditableLibrary = (r: RuleFlowRule) => r.control === "toggle" && !r.unmeasured_reason && !r.locked;
+const isCustom = (r: RuleFlowRule) => r.id.startsWith("custom.");
+const isEditableLibrary = (r: RuleFlowRule) => !isCustom(r) && r.control === "toggle" && !r.unmeasured_reason && !r.locked;
 const isGitops = (r: RuleFlowRule) => r.id in GITOPS_RULE_FIELDS;
 
 /** Whether a stage has anything a person can change in a draft. */
@@ -310,6 +311,8 @@ export function StageEditor({
                   />
                 ))}
               </>
+            ) : isCustom(r) ? (
+              <ReadOnlyReason>Custom rule (custom/project): it is changed by proposal, not here. Promote it from the rule's own view.</ReadOnlyReason>
             ) : r.locked ? (
               <ReadOnlyReason>Locked: the org set this for every project; change it on the org console.</ReadOnlyReason>
             ) : r.unmeasured_reason ? (

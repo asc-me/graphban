@@ -908,3 +908,87 @@ def test_all_clean_with_computable_coverage_is_all_clean(db):
     out = scans_svc.scans_due(db, "core", head_sha="h1")
     assert out["due_count"] == 0, out["due"]
     assert out["empty_reason"] == "all_clean_or_not_applicable"
+
+
+# --- GRPH-1846: a scanner that no longer applies is retired, not held at its last row ---
+
+_SEC = "backend/pyproject.toml"
+
+
+def _rec(db, scanner, sha, result, findings=None):
+    scans_svc.record_scan(
+        db, project_id="core", scanner_id=scanner, path=_SEC, scanned_sha=sha,
+        findings=findings or [], result=result,
+    )
+
+
+def _incomplete_pip_audit(db):
+    _rec(db, "pip-audit", "shaA", "incomplete",
+         [{"severity": "info", "summary": "pip-audit did not finish"}])
+
+
+def test_retired_scanner_no_longer_decides_the_cell(db):
+    _incomplete_pip_audit(db)
+    assert _api_sec(db, "shaA")["categories"]["security"]["state"] == "incomplete"
+    _rec(db, "bandit", "shaB", "complete")
+    _rec(db, "pip-audit", "shaB", "retired")
+    assert _api_sec(db, "shaB")["categories"]["security"]["state"] == "clean_at_sha"
+    rows = scans_svc.scan_status(db, "core", path=_SEC, head_sha="shaB")["scans"]
+    pip = [r for r in rows if r["scanner_id"] == "pip-audit"]
+    assert len(pip) == 2 and not any(r["current"] for r in pip)  # history stays
+
+
+def test_a_cell_of_only_retired_scanners_is_never_scanned_not_clean(db):
+    _incomplete_pip_audit(db)
+    _rec(db, "pip-audit", "shaB", "retired")
+    assert _api_sec(db, "shaB")["categories"]["security"]["state"] == "never_scanned"
+
+
+def test_a_later_row_un_retires_the_scanner(db):
+    _incomplete_pip_audit(db)
+    _rec(db, "pip-audit", "shaB", "retired")
+    _rec(db, "pip-audit", "shaC", "incomplete",
+         [{"severity": "info", "summary": "pip-audit did not finish"}])
+    assert _api_sec(db, "shaC")["categories"]["security"]["state"] == "incomplete"
+
+
+@pytest.mark.parametrize("result", ["tool_missing", "incomplete"])
+def test_a_failed_scanner_is_not_retired(db, result):
+    findings = [{"severity": "info", "summary": "x"}] if result == "incomplete" else None
+    _rec(db, "pip-audit", "shaA", result, findings)
+    assert _api_sec(db, "shaA")["categories"]["security"]["state"] == result
+
+
+def test_retired_with_findings_is_refused(db):
+    with pytest.raises(ValueError):
+        _rec(db, "pip-audit", "shaA", "retired", [{"severity": "info", "summary": "x"}])
+
+
+# --- GRPH-1851: retirement is only for gban scan's own scanners ---
+
+def test_retired_for_a_foreign_scanner_is_refused_and_names_it(db):
+    with pytest.raises(ValueError, match="stubscan"):
+        _rec(db, "stubscan", "shaA", "retired")
+
+
+def test_foreign_retired_row_is_ignored_on_read(db):
+    _rec(db, "stubscan", "shaA", "complete")
+    row = scans_svc.CodeScan(
+        id="cs_foreign00001", project_id="core", category="stub", scanner_id="stubscan",
+        scanner_version="", path=_SEC, scanned_sha="shaB",
+        scanned_at=scans_svc._utcnow(), reported_by="", note="", result="retired",
+    )
+    db.add(row)
+    db.commit()
+    rows = scans_svc.scan_status(db, "core", path=_SEC, head_sha="shaB")["scans"]
+    cur = [r for r in rows if r["scanner_id"] == "stubscan" and r["current"]]
+    assert len(cur) == 1 and cur[0]["scanned_sha"] == "shaA" and cur[0]["state"] == "stale"
+
+
+@pytest.mark.parametrize("head", ["shaB", "shaZ", ""])
+def test_retired_row_state_is_never_clean(db, head):
+    _incomplete_pip_audit(db)
+    _rec(db, "pip-audit", "shaB", "retired")
+    rows = scans_svc.scan_status(db, "core", path=_SEC, head_sha=head)["scans"]
+    retired = [r for r in rows if r["result"] == "retired"]
+    assert retired and all(r["state"] == "not_applicable" for r in retired)

@@ -1502,13 +1502,19 @@ export interface SyncMappingRow {
   last_push_reason: string | null;
 }
 
-/** One local project's sync state from `GET /api/sync/projects` `local` (GRPH-1739). */
-export interface SyncBackfill {
-  total: number;
-  confirmed: number;
-  parked: number;
-  state: "running" | "done" | "parked" | "refused";
-}
+/**
+ * Full-sync progress from `GET /api/sync/projects` (GRPH-1739).
+ * `off` is not a progress reading: the project is local or digests and is not pushing.
+ * A cleared manifest must not come back as `running`.
+ */
+export type SyncBackfill =
+  | { state: "off" }
+  | {
+      total: number;
+      confirmed: number;
+      parked: number;
+      state: "running" | "done" | "parked" | "refused";
+    };
 
 export interface LocalSyncProject {
   project_id: string;
@@ -3100,8 +3106,26 @@ export interface HarnessUtilization {
   };
 }
 
+/** A baseline suite result for a cell (GRPH-P98 §6). Never pooled with natural or probe. */
+export interface HarnessBaseline {
+  suite_id: string;
+  suite_version: string;
+  /** The binary the suite ran on; it always matches the cell's own key.binary_version. */
+  binary_version?: string;
+  n: number;
+  green: number;
+  rate: number | null;
+  below_floor: boolean;
+  /** Tasks left out of n as plumbing (never_registered, harness_error, no leaf verdict). */
+  excluded?: number;
+  excluded_reasons?: { task_id: string; reason: string }[];
+}
+
 export interface HarnessCell {
   key: HarnessCellKey;
+  baseline?: HarnessBaseline | null;
+  /** `baseline` on a row only a bench baseline covers: its natural n is 0. */
+  layer?: "baseline";
   kind?: "family" | "leaf" | "other";
   family?: string;
   /** `family rollup` for a family cell; the leaf id; or `other`. Criterion 3. */
@@ -3951,7 +3975,7 @@ export type FoundBugMode = "fix_in_build" | "file_ticket";
 /** One row of the bell's panel (GRPH-1527). */
 export interface AlertRow {
   id: string;
-  kind: "response_needed";
+  kind: "response_needed" | "drain_drained" | "drain_stalled";
   /** The project the wait lives in — the Triage row is there. */
   project: string;
   /** The project's tag, for the meta line. */
@@ -3959,12 +3983,13 @@ export interface AlertRow {
   /** The wait item's own title: the row headline. `question` is the secondary line. */
   title?: string;
   /** Derived impact (GRPH-1607): a live drain is held on it, a ticket is blocked, or neither. */
-  impact?: "drain_waiting" | "blocks" | "question";
+  impact?: "drain_waiting" | "blocks" | "question" | "drain";
   /** `live | scheduled | not_live | unknown` — the drain-status read behind `impact`. */
   drain?: "live" | "scheduled" | "not_live" | "unknown";
   question: string;
   body: string;
-  wait: string;
+  /** Empty on a drain notice (P99): it has no wait. */
+  wait: string | null;
   ticket: string | null;
   prd: string | null;
   asked_by: string | null;

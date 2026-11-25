@@ -112,6 +112,36 @@ describe("AlertsBell", () => {
     });
   });
 
+  describe("drain notices (P99)", () => {
+    const drain = (kind: string, title: string, body: string) => ({
+      id: "al_d", kind, project: "prj_other", project_tag: "OTH", title, question: title, body, wait: null,
+      ticket: null, prd: "OTH-P7", asked_by: null, created_at: null, read: false, impact: "drain", drain: "unknown",
+    });
+    const openFeed = async (alert: unknown) => {
+      state.feed = { unread: 1, alerts: [alert] };
+      mount();
+      await userEvent.click(await screen.findByRole("button", { name: /alerts/i }));
+    };
+
+    it("a drain_stalled row shows Stalled, the PRD key, the body and links to the PRD page", async () => {
+      await openFeed(drain("drain_stalled", "OTH-P7 stalled", "OTH-3: held by review"));
+      expect(await screen.findByTestId("alert-impact")).toHaveTextContent("Stalled");
+      expect(screen.getByTestId("alert-headline")).toHaveTextContent("OTH-P7");
+      expect(screen.getByTestId("alert-body")).toHaveTextContent("OTH-3: held by review");
+      await waitFor(() =>
+        expect(screen.getByTestId("alert-headline").closest("a")).toHaveAttribute("href", "/p/OTH/prds/OTH-P7"),
+      );
+    });
+
+    it("a drain_drained row shows Drained and links to the PRD page", async () => {
+      await openFeed(drain("drain_drained", "OTH-P7 drained", "The drain finished."));
+      expect(await screen.findByTestId("alert-impact")).toHaveTextContent("Drained");
+      await waitFor(() =>
+        expect(screen.getByTestId("alert-headline").closest("a")).toHaveAttribute("href", "/p/OTH/prds/OTH-P7"),
+      );
+    });
+  });
+
   it("refetches when the tab becomes visible again (GRPH-1654)", async () => {
     state.feed = { unread: 0, alerts: [] };
     mount();

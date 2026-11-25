@@ -32,6 +32,7 @@ from typing import Callable
 
 from . import adopt as adopt_mod
 from . import deps
+from . import drain_outcome as outcome_mod
 from . import worktree as wt_mod
 from . import observe
 from . import waits as wait_mod
@@ -315,6 +316,7 @@ def run(
     stall_after: float = watchdog_mod.STALL_AFTER_S,
     clock: Callable[[], float] = time.monotonic,
     acknowledge_reach: set[str] | None = None,
+    on_notice: Callable[[dict], None] | None = None,
 ) -> Report:
     """Hold the repo lock and run until idle, a cap, or a config refusal.
 
@@ -486,6 +488,7 @@ def run(
                 verified_merges=(
                     Path(state) / "verified-merges.json" if state is not None else None
                 ),
+                on_notice=on_notice,
               )
             except ToolFailed as exc:
                 # GRPH-1669. A roster read (`fleet_status`) answered with a tool error.
@@ -973,6 +976,7 @@ def _loop(
     wave_base: "WaveBase | None" = None,
     acknowledge_reach: set[str] | None = None,
     verified_merges: Path | None = None,
+    on_notice: Callable[[dict], None] | None = None,
 ) -> Report:
     from .mcp import _runner_up, read_preferences
     profile, policy, pref_note, measured, cap_measured, tier_map = read_preferences(supervisor)
@@ -1039,7 +1043,8 @@ def _loop(
         # nothing must not be left for the next cycle to adopt. A child that holds
         # an item stays; its lease is the work.
         _stop_children_holding_nothing(wave, children, supervisor, planner, base)
-        return _finish(wave, reason, code, minted, planner, prd=prd, line=line, **kw)
+        return _finish(wave, reason, code, minted, planner, prd=prd, line=line,
+                       on_notice=on_notice, **kw)
     # GRPH-846, GRPH-880. Built whether or not `merge` was asked for, and inert when it was not:
     # `enabled` is the flag, read once here, so the loop below has one call site and no
     # branch on it — the branch is inside, where a test can see it stay closed. `prd_id`
@@ -1165,9 +1170,13 @@ def _loop(
                             return "unstaffed"
                         owners[seed] = child
                         _forget_refused(wave, seed)
+                        # GRPH-1849. Present only when this seed jumped a backlog member.
+                        # An absent reason is the old walk: first ready member by id.
+                        jumped = flags.get("delegated_reason")
                         observe.emit(
                             "delegated", item=seed, tier=want or "",
                             bound=bool(seat.item),
+                            **({"reason": jumped} if jumped else {}),
                         )
                     if chosen[0] and chosen[0] not in wave.vendors_launched:
                         wave.vendors_launched.append(chosen[0])
@@ -1858,10 +1867,82 @@ def _stamp_service_exit(planner: Graphban, wave: Wave) -> None:
         pass
 
 
+def _prd_open_items(planner: Graphban, prd: str, holds: list[dict] | None = None,
+                    ) -> list[outcome_mod.OpenItem]:
+    got = planner.call("search_items", prd_id=prd, fields="full", limit=10_000)
+    rows = got.get("results") if isinstance(got, dict) else None
+    if not isinstance(rows, list):
+        raise ToolFailed("search_items", "error", "PRD listing carried no results list")
+    items = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "")
+        tags = set(row.get("tags") or [])
+        item_id = str(row.get("id") or "")
+        ready = status == "next" and not row.get("blocker")
+        if ready and item_id:
+            # GRPH-1942. `blocker` is free text; a dependency link never sets it. An item
+            # whose dependency is not done is held, as the server's clusters hold it.
+            waiting = _dependencies_not_done(planner, item_id)
+            if waiting:
+                ready = False
+                if holds is not None:
+                    holds.append({"item": item_id, "waiting_on": ", ".join(
+                        f"{w['id']} ({w['status']})" for w in waiting)})
+        items.append(outcome_mod.OpenItem(
+            id=item_id, status=status,
+            walk=bool(tags & {"walk", "planner-only"}),
+            ready=ready,
+            live=bool(row.get("claimed_by") or row.get("review_claimed_by"))))
+    return items
+
+
+def notify_outcome(planner: Graphban, wave: Wave, reason: str, prd: str, *,
+                   on_notice: Callable[[dict], None] | None = None) -> dict | None:
+    """Post this cycle's drain outcome (GRPH-1912). Returns the notice when one was written.
+
+    Stateless: the server holds the last notice and answers `changed: false` for a post
+    identical to it, so a service that restarts `until` every poll writes one notice per
+    change of state, and a restart resends nothing. A failed post is dropped; the next cycle
+    re-classifies from live state and posts again. `working` is posted too, to reset the
+    state. `on_notice` runs only when the server says the notice changed something.
+    """
+    try:
+        holds: list[dict] = []
+        found = outcome_mod.classify(
+            reason, _prd_open_items(planner, prd, holds), spawned=len(wave.spawned),
+            dependency_holds=holds,
+            review_waits=list(wave.review_waits), delegate_refused=list(wave.delegate_refused))
+        open_items = [{"item": i, "reason": why} for i, why in sorted(found.reasons.items())]
+        got = planner.post_drain_notice(prd=prd, outcome=found.state, open_items=open_items)
+    except (NotPermitted, ToolFailed, ServerUnreachable, ObservationRefused) as exc:
+        observe.emit("drain_notice_failed", detail=str(exc))
+        return None
+    if not got.get("changed"):
+        return None
+    notice = {"prd": prd, "outcome": found.state, "open": open_items,
+              "sent_at": datetime.now(timezone.utc).isoformat()}
+    drain = service_drain(prd)
+    if drain is not None:
+        from . import service as service_mod
+
+        service_mod.record_notice(drain["service"], notice)  # `working` too: it supersedes
+    if found.state == outcome_mod.WORKING:
+        return None
+    if on_notice is not None:
+        try:
+            on_notice(notice)
+        except Exception as exc:  # noqa: BLE001 - a hook never stops the drain
+            observe.emit("drain_notice_hook_failed", detail=str(exc))
+    return notice
+
+
 def _finish(
     wave: Wave, reason: str, exit_code: int, minted: int, planner: Graphban,
     *, review: list[str] | None = None, waits: list[str] | None = None,
     outside: list[str] | None = None, prd: str | None = None, line: str | None = None,
+    on_notice: Callable[[dict], None] | None = None,
 ) -> Report:
     _stamp_service_exit(planner, wave)
     if waits is None:
@@ -1886,6 +1967,8 @@ def _finish(
             outside = [str(r["id"]) for r in beyond]
         except (NotPermitted, ToolFailed, ServerUnreachable):
             review = []
+    if prd and not line:
+        notify_outcome(planner, wave, reason, prd, on_notice=on_notice)
     return Report(
         ok=exit_code == 0,
         reason=reason,
@@ -2483,6 +2566,26 @@ def _seed_ready(details: dict) -> bool:
     return True
 
 
+def _ready_rank(details: dict) -> int:
+    """`next` before `backlog` among clean seeds (GRPH-1849).
+
+    Anything else sorts after both. Clean candidates are only those two — `_seed_ready`
+    already refused the rest — so a bounce remainder (GRPH-1024) keeps the treatment it
+    had when it entered the candidate list. Ranking reorders that list; it does not
+    decide who is on it.
+    """
+    status = str(details.get("status") or "")
+    if status == "next":
+        return 0
+    if status == "backlog":
+        return 1
+    return 2
+
+
+#: Named on the `delegated` event when a `next` seed was offered ahead of a `backlog` one.
+NEXT_BEFORE_BACKLOG = "next before backlog"
+
+
 def _attested_here(entry: dict, branch: str) -> bool:
     """Is this evidence entry about `branch`? (GRPH-983, reading 2)
 
@@ -3052,19 +3155,31 @@ def _dependencies_not_done(planner: Graphban, item_id: str) -> list[dict]:
     "not done".
     """
     try:
-        related = planner.call("related_work", id=item_id) or {}
+        got = planner.call("get_item_details", id=item_id) or {}
     except (ToolFailed, NotPermitted, ServerUnreachable):
         return []
+    # A dependency link reads `a` depends on `b`. `related_work` returns both
+    # directions with no direction field, so it would count an item's dependents as
+    # its dependencies (GRPH-1866): only links where this item is `a` count.
     out: list[dict] = []
-    for row in (related.get("results") if isinstance(related, dict) else None) or []:
-        if not isinstance(row, dict):
+    seen: set[str] = set()
+    for link in (got.get("links") if isinstance(got, dict) else None) or []:
+        if not isinstance(link, dict) or link.get("type") != "dependency":
             continue
-        if "dependency" not in [str(t) for t in (row.get("link_types") or [])]:
+        if str(link.get("a") or "") != item_id:
             continue
-        status = row.get("status")
+        dep_id = str(link.get("b") or "")
+        if not dep_id or dep_id in seen:
+            continue
+        seen.add(dep_id)
+        try:
+            row = planner.call("get_item_details", id=dep_id) or {}
+        except (ToolFailed, NotPermitted, ServerUnreachable):
+            continue
+        status = row.get("status") if isinstance(row, dict) else None
         if not isinstance(status, str) or not status or status == "done":
             continue
-        out.append(row)
+        out.append({"id": dep_id, "status": status})
     return out
 
 
@@ -3233,6 +3348,10 @@ def _delegate_next(
     seed: str | None = None
     lane = "backend"
     want = str(request or "cheap")
+    # Prepared in server order, delegated after every cluster has a seed. A `next`
+    # seed in a later cluster has to be visible before the first `delegate` call,
+    # or the one free slot is already spent on an earlier backlog member (GRPH-1849).
+    prepared: list[dict] = []
     for cluster in clusters.get("clusters") or []:
         if not isinstance(cluster, dict) or cluster.get("held_by"):
             continue
@@ -3348,7 +3467,29 @@ def _delegate_next(
                 observe.emit("dependency_unresolved", item=candidate,
                              detail=f"{row['id']}'s commit is not in this clone; not checked")
             clean.append(candidate)
-        for candidate in clean:
+        # Server order, so a later stable sort keeps first-ready-by-id within one status.
+        prepared.append({"clean": list(clean), "details_for": details_for})
+    old_first: str | None = None
+    old_details: dict | None = None
+    for row in prepared:
+        # Stable: within one status the list stays in the server's order.
+        row["ranked"] = sorted(
+            row["clean"], key=lambda cid: _ready_rank(row["details_for"][cid]))
+        if old_first is None and row["clean"]:
+            # Who the old walk would have seeded: first clean member, first cluster.
+            old_first = row["clean"][0]
+            old_details = row["details_for"]
+    # A cluster with no clean seed sorts last and is skipped below. Same seed status
+    # keeps the server's cluster order.
+    ordered = sorted(
+        prepared,
+        key=lambda row: (
+            _ready_rank(row["details_for"][row["ranked"][0]]) if row["ranked"] else 2
+        ),
+    )
+    for row in ordered:
+        details_for = row["details_for"]
+        for candidate in row["ranked"]:
             details = details_for[candidate]
             brief = details.get("brief") if isinstance(details.get("brief"), dict) else {}
             lane = str(((brief.get("lane") or {}).get("value")) or "backend")
@@ -3424,7 +3565,18 @@ def _delegate_next(
             # seats for it. The "delegated" event waits until the child has actually
             # claimed: a bound seat that registers and is told `taken` is not staffed
             # (GRPH-1292). `failover` emits it, or logs the refusal and returns.
+            # The reason rides on `bound_out` until that emit: a `next` seed that was
+            # not the first ready member by id jumped a backlog one (GRPH-1849).
             delegated.add(seed)
+            if (
+                bound_out is not None
+                and old_first
+                and old_first != seed
+                and old_details is not None
+                and str(details_for[seed].get("status") or "") == "next"
+                and str(old_details[old_first].get("status") or "") == "backlog"
+            ):
+                bound_out["delegated_reason"] = NEXT_BEFORE_BACKLOG
             return seed, code, want
     # No cluster was delegable
     return None, None, None
@@ -3951,7 +4103,8 @@ def _linked_pr(row: dict) -> str:
     pr = row.get("pr")
     if isinstance(pr, dict) and _is_pr_url(str(pr.get("url") or "")):
         return str(pr["url"])
-    for ev in row.get("evidence") or []:
+    # The newest link wins (GRPH-1881): a rebuilt item's later PR supersedes the first.
+    for ev in reversed(row.get("evidence") or []):
         if isinstance(ev, dict) and _is_pr_url(str(ev.get("url") or "")):
             return str(ev["url"])
     return ""
@@ -4124,6 +4277,70 @@ def _note_pr_wait(logged: set, item: str, reason: str) -> None:
     observe.emit("review_waits_on_pr", item=item, detail=f"{item}: {reason}")
 
 
+def _linked_pr_is_superseded(repo: Path, row: dict, branch: str) -> bool:
+    """The row's recorded PR heads another branch than `item.branch` and does not carry it (GRPH-1881).
+
+    A rebuilt item keeps the first child's draft PR as its only link, so no PR is ever
+    opened for the new branch and the drain logs `review_branch_mismatch` forever. A PR
+    on a branch that descends from `item.branch` is still that item's PR (GRPH-1770).
+    """
+    url = _linked_pr(row)
+    if not url or not branch:
+        return False
+    from . import propose
+    try:
+        pr, _err = propose.view(repo, url)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    if not isinstance(pr, dict):
+        return False
+    pr_branch = str(pr.get("headRefName") or "").strip()
+    if not pr_branch or pr_branch == branch:
+        return False
+    item_head = _tip(repo, branch)
+    pr_head = str(pr.get("headRefOid") or "").strip()
+    if item_head and pr_head and wt_mod.is_ancestor(repo, item_head, pr_head):
+        return False
+    return True
+
+
+def _publish_if_local_only(repo: Path, branch: str, base: str, item: str, planner,
+                           logged: set) -> str:
+    """Push `branch` when it exists only in this clone (GRPH-1891). "" when fine, else why not.
+
+    `gh pr create` on an unpushed branch dies with `Head ref must be a branch`, and the
+    drain used to wait on that forever. Unknown remote state is not a refusal: the open
+    below reports whatever is really wrong.
+
+    A failed push is said on the item ONCE per (item, branch) for the life of `logged`.
+    `_pr_opened` runs every poll and the server appends every observation, so an
+    unguarded post grew a stuck item's evidence by one note per cycle. The kind is
+    `unpushed`, not `withheld`: the server renders `withheld` as "pushed `{branch}`".
+    """
+    try:
+        if not wt_mod.branch_exists(repo, branch):
+            return ""
+        remote = wt_mod.remote_name(repo, branch)
+        if not remote.known or remote.exists:
+            return ""
+        pushed = wt_mod.push_branch(repo, branch, base)
+    except (OSError, subprocess.SubprocessError, wt_mod.GitError):
+        return ""
+    if pushed.ok or pushed.skipped:
+        return ""
+    why = (pushed.reason or "").strip() or "the push failed"
+    key = ("unpushed", item, branch)
+    if planner is not None and item and key not in logged:
+        logged.add(key)
+        try:
+            planner.post_observation(item_id=item, kind="unpushed", branch=branch,
+                                     reason=why)
+        except Exception as exc:  # noqa: BLE001 — reported, never fatal
+            observe.emit("unpushed_note_lost", item=item,
+                         detail=f"{item}: unpushed note not recorded: {exc}")
+    return f"branch {branch} was never pushed and the push failed: {why}"
+
+
 def _pr_opened(rows: list[dict], repo: Path, base: str, logged: set, *,
                planner=None, agent_id: str = "") -> tuple[list[dict], list[dict]]:
     """Split unheld review rows into (has a linked PR, waiting for one) (GRPH-1730).
@@ -4147,8 +4364,16 @@ def _pr_opened(rows: list[dict], repo: Path, base: str, logged: set, *,
     for row in rows:
         branch = str(row.get("branch") or "")
         item = str(row.get("id") or "")
-        if not branch or _linked_pr(row) or not _pr_missing_is_the_only_refusal(row):
+        superseded = bool(branch and _linked_pr(row)
+                          and _linked_pr_is_superseded(repo, row, branch))
+        if not branch or (_linked_pr(row) and not superseded) or (
+                not superseded and not _pr_missing_is_the_only_refusal(row)):
             ready.append(row)
+            continue
+        unpushed = _publish_if_local_only(repo, branch, base, item, planner, logged)
+        if unpushed:
+            _note_pr_wait(logged, item, unpushed)
+            waiting.append(row)
             continue
         try:
             subject = propose.title_subject(repo, branch, base)
@@ -4164,6 +4389,14 @@ def _pr_opened(rows: list[dict], repo: Path, base: str, logged: set, *,
             # url is on the item, the next sign_off is still `pr_missing`.
             if _record_pr(planner, item, branch, got.url):
                 _stamp_link(row, branch, got.url)
+                if superseded and item:
+                    try:
+                        propose.close_item_prs(
+                            repo, item, got.url,
+                            comment=f"Superseded by {got.url} (item rebuilt on {branch})",
+                            older_drafts_only=True)
+                    except (OSError, subprocess.SubprocessError):
+                        pass
                 ready.append(row)
                 continue
             _note_pr_wait(logged, item, got.reason or "PR opened but not recorded on the item")

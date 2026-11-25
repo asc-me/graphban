@@ -58,11 +58,23 @@ ATTEMPTS_PATH = "/api/fleet/attempts"
 #: The same rule as attempts: a REST route on this credential is a deliberate widening,
 #: and the body is names only — the scanner drops URLs, headers and paths before posting.
 SURFACE_PATH = "/api/harness/surface"
+GRID_PATH = "/api/harness/grid"
+#: The repo suite (GRPH-P98 §3): read with `get_suite`, written with `adopt_suite`.
+SUITE_PATH = "/api/bench/suite"
+BENCH_RESULTS_PATH = "/api/bench/results"
+BENCH_SEAT_PATH = "/api/bench/seat"
+SUITE_ADOPT_PATH = "/api/bench/suite/adopt"
+#: A baseline run (GRPH-P98 §4): open it for a scratch project and seats, post its results.
+BENCH_RUNS_PATH = "/api/bench/runs"
+BENCH_RESULTS_PATH = "/api/bench/results"
 #: Facts only the supervisor knows about a tree it cut (GRPH-975): the base, the draft PR,
 #: a salvage, a withheld proposal. One route, so a later kind extends it rather than adding
 #: a path. The body is those facts; the server composes the note. Not a tool — widening
 #: `ALLOWED_TOOLS` for this is the thing PRD-22 §4 forbids.
 OBSERVATIONS_PATH = "/api/fleet/observations"
+#: A `--prd` drain's outcome (GRPH-P99): the server holds the last notice and answers
+#: `changed` false for a post identical to it.
+DRAIN_NOTICES_PATH = "/api/fleet/drain-notices"
 # GRPH-1346: the start-up probe of that route. It must be a body the route VALIDATES, or
 # FastAPI answers 422 before `record_observation` reaches its credential check and the probe
 # reads every key as fine. A real kind and an item id no key can resolve: a key that cannot
@@ -70,7 +82,9 @@ OBSERVATIONS_PATH = "/api/fleet/observations"
 # gate, and nothing is written either way. `gban.doctor.PROBE_BODY` is the same body.
 OBSERVATION_PROBE_ITEM = "__gbfleet_probe_no_such_item__"
 OBSERVATION_PROBE = {"item_id": OBSERVATION_PROBE_ITEM, "kind": "cut_from"}
-ALLOWED_PATHS: frozenset[str] = frozenset({ATTEMPTS_PATH, SURFACE_PATH, OBSERVATIONS_PATH})
+ALLOWED_PATHS: frozenset[str] = frozenset(
+    {ATTEMPTS_PATH, SURFACE_PATH, OBSERVATIONS_PATH, DRAIN_NOTICES_PATH, SUITE_ADOPT_PATH,
+     BENCH_RUNS_PATH, BENCH_RESULTS_PATH, BENCH_SEAT_PATH})
 
 #: Short on purpose. This is a measurement posted beside real work; a supervisor waiting on it
 #: is a supervisor not starting a child.
@@ -94,9 +108,11 @@ class ObservationRefused(RuntimeError):
     "this credential cannot supervise" and a dropped connection is not.
     """
 
-    def __init__(self, message: str = "", status: int | None = None) -> None:
+    def __init__(self, message: str = "", status: int | None = None, body: str = "") -> None:
         super().__init__(message)
         self.status = status
+        #: The reply body when the server answered (a 409 carries `current_version`).
+        self.body = body
 
 
 class ServerUnreachable(RuntimeError):
@@ -243,6 +259,94 @@ class Graphban:
         """
         return self._post(SURFACE_PATH, payload, timeout=10.0)
 
+    def get_grid(self, project_id: str, *, timeout: float = 20.0) -> dict:
+        """The Harness grid's cells, read with the agent key (`gbfleet harness grid`).
+
+        A read of one fixed path; raises ObservationRefused on any failure so the CLI can
+        name it. Not a door for other reads: the path is not a parameter.
+        """
+        url = self.base_url.rstrip("/") + GRID_PATH
+        try:
+            reply = self._client().get(url, params={"project_id": project_id}, timeout=timeout)
+        except httpx.HTTPError as exc:
+            raise ObservationRefused(f"{GRID_PATH}: {exc}") from exc
+        if reply.status_code >= 400:
+            raise ObservationRefused(f"{GRID_PATH}: HTTP {reply.status_code}: {reply.text[:300]}",
+                                     status=reply.status_code)
+        try:
+            parsed = reply.json()
+        except ValueError:
+            raise ObservationRefused(f"{GRID_PATH}: reply was not JSON")
+        if not isinstance(parsed, dict):
+            raise ObservationRefused(f"{GRID_PATH}: reply was not an object")
+        return parsed
+
+    def get_suite(self, project_id: str, *, timeout: float = 20.0) -> dict:
+        """The project's repo suite: `{version, tasks}`. A read of one fixed path."""
+        url = self.base_url.rstrip("/") + SUITE_PATH
+        try:
+            reply = self._client().get(url, params={"project_id": project_id}, timeout=timeout)
+        except httpx.HTTPError as exc:
+            raise ObservationRefused(f"{SUITE_PATH}: {exc}") from exc
+        if reply.status_code >= 400:
+            raise ObservationRefused(f"{SUITE_PATH}: HTTP {reply.status_code}: {reply.text[:300]}",
+                                     status=reply.status_code, body=reply.text)
+        try:
+            parsed = reply.json()
+        except ValueError:
+            raise ObservationRefused(f"{SUITE_PATH}: reply was not JSON")
+        if not isinstance(parsed, dict):
+            raise ObservationRefused(f"{SUITE_PATH}: reply was not an object")
+        return parsed
+
+    def list_bench_results(self, project_id: str, *, timeout: float = 20.0) -> list[dict]:
+        """The project's baseline records, newest first."""
+        url = self.base_url.rstrip("/") + BENCH_RESULTS_PATH
+        try:
+            reply = self._client().get(url, params={"project_id": project_id}, timeout=timeout)
+        except httpx.HTTPError as exc:
+            raise ObservationRefused(f"{BENCH_RESULTS_PATH}: {exc}") from exc
+        if reply.status_code >= 400:
+            raise ObservationRefused(
+                f"{BENCH_RESULTS_PATH}: HTTP {reply.status_code}: {reply.text[:300]}",
+                status=reply.status_code, body=reply.text)
+        try:
+            return list(reply.json().get("results") or [])
+        except (ValueError, AttributeError) as exc:
+            raise ObservationRefused(f"{BENCH_RESULTS_PATH}: not JSON") from exc
+
+    def adopt_suite(self, *, expected_version: int, tasks: list[dict],
+                    timeout: float = 30.0) -> dict:
+        """Adopt tasks into the repo suite. Raises ObservationRefused; a 409 has status 409
+        and the server's body (with `current_version`)."""
+        got = self._post(SUITE_ADOPT_PATH, {"expected_version": expected_version, "tasks": tasks},
+                         timeout=timeout, strict=True)
+        if not isinstance(got, dict):
+            raise ObservationRefused(f"{SUITE_ADOPT_PATH}: empty reply")
+        return got
+
+    def open_bench_run(self, body: dict, *, timeout: float = 60.0) -> dict:
+        """Open a baseline run: `{id, project_id, seats[]}`. Raises ObservationRefused."""
+        got = self._post(BENCH_RUNS_PATH, body, timeout=timeout, strict=True)
+        if not isinstance(got, dict):
+            raise ObservationRefused(f"{BENCH_RUNS_PATH}: empty reply")
+        return got
+
+    def bench_task_seat(self, run_id: str, task_id: str, *, timeout: float = 30.0) -> dict:
+        """A fresh seat for one task of an open run (GRPH-1888). Raises ObservationRefused."""
+        got = self._post(BENCH_SEAT_PATH, {"run_id": run_id, "task_id": task_id},
+                         timeout=timeout, strict=True)
+        if not isinstance(got, dict) or not got.get("enrolment_code"):
+            raise ObservationRefused(f"{BENCH_SEAT_PATH}: no seat in the reply")
+        return got
+
+    def post_bench_result(self, body: dict, *, timeout: float = 30.0) -> dict:
+        """Store one baseline record. Raises ObservationRefused."""
+        got = self._post(BENCH_RESULTS_PATH, body, timeout=timeout, strict=True)
+        if not isinstance(got, dict):
+            raise ObservationRefused(f"{BENCH_RESULTS_PATH}: empty reply")
+        return got
+
     def post_observation(self, *, timeout: float = 10.0, **payload: Any) -> dict:
         """One fact about a tree this supervisor cut (GRPH-975).
 
@@ -258,6 +362,13 @@ class Graphban:
         got = self._post(OBSERVATIONS_PATH, payload, timeout=timeout, strict=True)
         if not isinstance(got, dict):
             raise ObservationRefused(f"{OBSERVATIONS_PATH}: empty reply")
+        return got
+
+    def post_drain_notice(self, *, timeout: float = 10.0, **payload: Any) -> dict:
+        """One drain outcome (GRPH-1912). Raises ObservationRefused when it did not land."""
+        got = self._post(DRAIN_NOTICES_PATH, payload, timeout=timeout, strict=True)
+        if not isinstance(got, dict):
+            raise ObservationRefused(f"{DRAIN_NOTICES_PATH}: empty reply")
         return got
 
     def _post(self, path: str, payload: dict, *, timeout: float,
@@ -290,7 +401,7 @@ class Graphban:
             if strict:
                 raise ObservationRefused(
                     f"{path}: HTTP {reply.status_code}: {reply.text[:300]}",
-                    status=reply.status_code,
+                    status=reply.status_code, body=reply.text,
                 )
             return None
         try:

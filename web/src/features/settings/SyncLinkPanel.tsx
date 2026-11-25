@@ -201,6 +201,16 @@ function pushWord(result: LocalSyncProject["last_push_result"]): string {
   return "not pushed";
 }
 
+/** Confirmed of total, only while this project is actually syncing.
+ *  Local and digests answer `off`. Printing their cleared manifest is the
+ *  "0 of 15" that never moves. */
+function backfillFraction(row: LocalSyncProject): string | null {
+  if (row.sync_level !== "sync") return null;
+  const fill = row.backfill;
+  if (fill.state === "off") return null;
+  return `${fill.confirmed} of ${fill.total}`;
+}
+
 /** The project's own byte estimate, plus the table's cap. An unmeasured flag is
  *  not shown as a size: a number with no warning would read as under the cap. */
 function backlogText(row: LocalSyncProject): string {
@@ -288,6 +298,7 @@ function ProjectSyncRow({
   // Digests sends to a cloud project that already exists; it never creates one.
   const digestsBlocked = !mapped && target === CREATE;
   const where = mapped ? `☁ ${mapping?.cloud_project_tag || "?"}` : null;
+  const fraction = backfillFraction(row);
 
   return (
     <div className="mb-3 space-y-1 rounded-[8px] border border-line px-3 py-2">
@@ -348,7 +359,7 @@ function ProjectSyncRow({
         </select>
       </label>
       <p className="font-mono text-[10px] text-muted">
-        {row.backfill.confirmed} of {row.backfill.total} · queued {row.queued}
+        {fraction ? `${fraction} · ` : ""}queued {row.queued}
         {" · "}parked {row.parked.count}
         {row.parked.reasons.length ? ` (${row.parked.reasons.join(", ")})` : ""}
         {" · "}last push {pushWord(row.last_push_result)}

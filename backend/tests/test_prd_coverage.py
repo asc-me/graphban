@@ -288,9 +288,14 @@ def test_decompose_flags_an_oversized_section_and_splits_three_ways(client, auth
     from app.services.fleet import parse_acceptance
     from tests.prd_approve import approve_id
 
+    # Each piece names the path it is given: a split DISTRIBUTES the caller's list to the
+    # pieces whose own text names it instead of copying all of it onto every one
+    # (GRPH-1910), so a piece naming nothing would come back blocked for no touchpoints.
     body = (
         "# Spec\n\n## Small\none thing\n\n## Work\n"
-        "### One\ndo the first\n### Two\ndo the second\n### Three\ndo the third\n\n"
+        "### One\ndo the first in `backend/app/work.py`\n"
+        "### Two\ndo the second in `backend/app/work.py`\n"
+        "### Three\ndo the third in `backend/app/work.py`\n\n"
         "## Acceptance criteria\n### Small\n- small is done\n"
         "### One\n- first is done\n### Two\n- second is done\n### Three\n- third is done\n"
     )
@@ -382,9 +387,13 @@ def test_partial_split_files_the_omitted_pieces_as_a_remainder(client, auth):
     from app.services.fleet import parse_acceptance
     from tests.prd_approve import approve_id
 
+    # Pieces name the path they are given — see the note in
+    # test_decompose_flags_an_oversized_section_and_splits_three_ways (GRPH-1910).
     body = (
         "# Spec\n\n## Small\none thing\n\n## Work\n"
-        "### One\ndo the first\n### Two\ndo the second\n### Three\ndo the third\n\n"
+        "### One\ndo the first in `backend/app/work.py`\n"
+        "### Two\ndo the second in `backend/app/work.py`\n"
+        "### Three\ndo the third in `backend/app/work.py`\n\n"
         "## Acceptance criteria\n### Small\n- small is done\n"
         "### One\n- first is done\n### Two\n- second is done\n### Three\n- third is done\n"
     )
@@ -550,7 +559,11 @@ def test_a_split_section_carries_the_design_block_and_files_a_ui_item(client, au
         "# Spec\n\n## Work\n"
         "Design: https://claude.ai/artifact/abc\n"
         "Pages: Fix Dialog, Tracker - File a Fix\n\n"
-        "### One\ndo the first\n### Two\ndo the second\n### Three\ndo the third\n\n"
+        # Each piece names both given paths, so the split distributes them to it: the web
+        # one still goes to the UI twin and the backend one stays on the piece (GRPH-1910).
+        "### One\ndo the first in `backend/app/work.py` and `web/src/Work.tsx`\n"
+        "### Two\ndo the second in `backend/app/work.py` and `web/src/Work.tsx`\n"
+        "### Three\ndo the third in `backend/app/work.py` and `web/src/Work.tsx`\n\n"
         "## Acceptance criteria\n"
         "### One\n- first is done\n### Two\n- second is done\n### Three\n- third is done\n"
     )
@@ -665,13 +678,20 @@ def test_decompose_create_writes_the_link_in_the_same_direction(client, auth):
     assert rows[0].confidence == prd_svc._INFERRED_LINK_CONFIDENCE
 
 
-def test_decompose_links_a_term_one_section_defines_and_another_uses(client, auth):
+def test_decompose_links_a_record_or_route_and_not_a_command(client, auth):
+    """A command both sections mention is not a dependency. A defined record is.
+
+    GRPH-1895. `gbfleet until` used to link Wave runner to Supervisor because a
+    backtick was treated as a term one section defines. That is a command. The
+    import run is a record, and that is what the edge quotes.
+    """
     body = (
         "# Fleet\n\n"
         "## Supervisor\n"
-        "Adds `gbfleet until`, the drain loop.\n\n"
+        "Adds `gbfleet until`, the drain loop.\n"
+        "An import run is a record.\n\n"
         "## Wave runner\n"
-        "Calls `gbfleet until` once per PRD.\n\n"
+        "Calls `gbfleet until` once per PRD and files into the import run.\n\n"
         "## Acceptance criteria\n"
         "### Supervisor\n- the drain runs\n### Wave runner\n- a wave drains\n"
     )
@@ -680,7 +700,10 @@ def test_decompose_links_a_term_one_section_defines_and_another_uses(client, aut
     by = {p["section"]: p for p in dry["proposals"]}
     assert [d["section"] for d in by["Wave runner"]["depends_on"]] == ["Supervisor"]
     assert by["Supervisor"]["depends_on"] == []
-    assert by["Wave runner"]["depends_on"][0]["matched"] == "gbfleet until"
+    only = by["Wave runner"]["depends_on"][0]
+    assert only["matched"] == "import run"
+    assert "record" in only["why"]
+    assert "gbfleet until" not in only["why"]
 
 
 def test_decompose_reports_a_cycle_instead_of_creating_it(client, auth):
@@ -790,7 +813,12 @@ def test_mcp_decompose_create_writes_the_links_it_proposed(client, auth):
     assert rows == [(by_section["Draining the line"], by_section["The line"])]
 
 
-def test_decompose_links_a_slice_label_when_the_heading_is_not_quoted(client, auth):
+def test_a_slice_label_mention_is_not_a_dependency(client, auth):
+    """Naming S1 is a mention, not a dependency (GRPH-1895).
+
+    The heading is not quoted and no record is consumed, so nothing is linked.
+    Restoring label matching makes this assertion fail.
+    """
     body = (
         "# Spec\n\n"
         "## S1 — The line\n"
@@ -804,11 +832,8 @@ def test_decompose_links_a_slice_label_when_the_heading_is_not_quoted(client, au
     prd = client.post("/api/prds", json={"title": "Slices", "body": body}, headers=auth).json()
     dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
     by = {p["section"]: p for p in dry["proposals"]}
-    assert [d["section"] for d in by["S2 — Draining"]["depends_on"]] == ["S1 — The line"]
+    assert by["S2 — Draining"]["depends_on"] == []
     assert by["S1 — The line"]["depends_on"] == []
-    only = by["S2 — Draining"]["depends_on"][0]
-    assert only["matched"] == "S1"
-    assert "slice label" in only["why"]
     assert dry["link_cycles"] == []
 
 

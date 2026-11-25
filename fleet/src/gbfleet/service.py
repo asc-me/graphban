@@ -113,6 +113,18 @@ _NOT_BETWEEN_RUNS = (
     "", "unready", "stalled", "merge-pending", REASON_PRD_CLOSED, REASON_NO_OPEN,
 )
 
+#: Detail from `_running_launchd` / `_running_systemd` when the unit file is on disk
+#: and the supervisor has no job. Not a listed job whose exit code was unreadable:
+#: KeepAlive and Restart= never fire, so this must not read as "last exit unknown"
+#: (GRPH-1852).
+_NOT_LOADED = "not loaded"
+#: UnitFileState values that mean systemd will not start the unit. `enabled` and
+#: `static` are absent on purpose: a loaded, enabled unit that has exited is idle
+#: or dead, and that reading stays the exit line.
+_SYSTEMD_WILL_NOT_START = frozenset({
+    "disabled", "not-found", "masked", "masked-runtime", "bad", "invalid",
+})
+
 #: How long `install` waits before asking whether the job survived. Not tuning: `until`
 #: reaches the repo lock, the server and its first refusal in well under a second, so an
 #: immediate read reports "running" for a service that is already gone.
@@ -460,6 +472,70 @@ class Plan:
         return [self.binary, "until", *self.until_args]
 
 
+#: A hook that runs longer than this is killed (GRPH-1915).
+HOOK_TIMEOUT_S = 30.0
+
+
+class HookFailed(RuntimeError):
+    """The `--on-notify` command exited non-zero or ran past its time limit."""
+
+
+def run_hook(command: str, notice: dict, *, timeout: float = HOOK_TIMEOUT_S) -> None:
+    """Run the `--on-notify` command once with `notice` as JSON on stdin (GRPH-1915).
+
+    The command is never run through a shell. On POSIX it is split like a shell command
+    line (`shlex`) and run as an argv; on Windows the string goes to CreateProcess as is,
+    which splits it by the Windows rules (non-POSIX `shlex` would keep the quotes inside
+    each word). An operator who wants pipes or redirects names the shell themselves
+    (`sh -c '...'`). Raises `HookFailed` for a non-zero exit or a timeout; the caller logs
+    it and the drain carries on. On timeout the whole process group is killed, so a child
+    the hook started dies too.
+    """
+    import json
+    import shlex
+    import signal
+    import subprocess
+    posix = os.name == "posix"
+    argv: list[str] | str
+    if posix:
+        try:
+            argv = shlex.split(command)
+        except ValueError as exc:
+            raise HookFailed(f"hook command does not parse: {exc}: {command}") from exc
+    else:
+        argv = command.strip()
+    if not argv:
+        raise HookFailed("hook command is empty")
+    try:
+        proc = subprocess.Popen(
+            argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE, text=True, start_new_session=posix)
+    except OSError as exc:
+        raise HookFailed(f"hook could not run: {exc}") from exc
+    try:
+        _, err = proc.communicate(json.dumps(notice), timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        try:
+            if posix:
+                os.killpg(proc.pid, signal.SIGKILL)
+            else:
+                proc.kill()
+        except OSError:
+            pass
+        proc.communicate()
+        raise HookFailed(f"hook killed after {timeout:g}s: {command}") from exc
+    if proc.returncode != 0:
+        raise HookFailed(
+            f"hook exited {proc.returncode}: {command}: {(err or '').strip()[-300:]}")
+
+
+def hook_for(command: str | None):
+    """The `on_notice` callback for `until`, or None when no `--on-notify` was given."""
+    if not command:
+        return None
+    return lambda notice: run_hook(command, notice)
+
+
 def label_for(name: str) -> str:
     return f"{LABEL_PREFIX}.{name}"
 
@@ -528,6 +604,17 @@ def env_path_for(name: str) -> Path:
     return CONFIG_DIR / f"{name}.env"
 
 
+#: What `install` says when it has no `until` arguments and no unit of that name on disk.
+#: `install --name X` with no arguments reloads an existing unit instead (GRPH-1872); this
+#: refusal stays for a name nothing was ever written under, because a fresh install still
+#: has to be told what to run.
+_NOTHING_TO_RUN = (
+    "nothing to run: pass `until`'s own arguments after the command, e.g.\n"
+    "  gbfleet service install -- --repo /srv/graphban --server http://host:8080 "
+    "--project graphban --adapter claude --max-workers 2"
+)
+
+
 def make_plan(
     until_args: list[str],
     *,
@@ -536,6 +623,7 @@ def make_plan(
     binary: str | None = None,
     path_env: str | None = None,
     every: int = RESTART_SEC,
+    on_notify: str | None = None,
 ) -> Plan:
     """Work out what would be written, refusing anything that cannot be right.
 
@@ -550,10 +638,10 @@ def make_plan(
             f"--every must be at least 1 second (got {every}); a zero delay makes a unit that "
             "fails at startup respawn as fast as the supervisor can fork it")
     if not until_args:
-        raise Refused(
-            "nothing to run: pass `until`'s own arguments after the command, e.g.\n"
-            "  gbfleet service install -- --repo /srv/graphban --server http://host:8080 "
-            "--project graphban --adapter claude --max-workers 2")
+        raise Refused(_NOTHING_TO_RUN)
+    if on_notify:
+        # `until` runs the hook; the unit just carries the flag, quoted like any argument.
+        until_args = [*until_args, "--on-notify", on_notify]
     missing = [flag for flag in _REQUIRED_ARGS if flag not in until_args]
     if missing:
         raise Refused(
@@ -893,6 +981,89 @@ def write_env(plan: Plan, api_key: str) -> list[str]:
     return []
 
 
+def installed_unit_path(name: str, *, kind: str = "") -> Path:
+    """The unit file already written for `name`.
+
+    Refuses with ``nothing to run`` when that file is not there: `install --name X`
+    with no `until` arguments is a reload, and a reload of a unit nobody wrote is
+    still a fresh install that has not been told what to run (GRPH-1872).
+    """
+    found = host()
+    kind = kind or found.kind
+    if not kind:
+        raise Refused(found.why)
+    path = unit_path_for(name, kind)
+    if not path.is_file():
+        raise Refused(_NOTHING_TO_RUN)
+    return path
+
+
+def reload_installed(name: str, *, kind: str = "") -> Status:
+    """Load the unit already on disk for `name`, without rewriting it.
+
+    This is what `gbfleet service install --name X` does when no `until` arguments
+    follow. Status prints that command for a unit that is installed but not loaded;
+    the arguments are already in the unit, and asking for them again is why the
+    remedy used to refuse. launchd gets `bootstrap gui/<uid>`; systemd gets
+    `--user enable --now`. The file's bytes are not touched.
+    """
+    found = host()
+    kind = kind or found.kind
+    path = installed_unit_path(name, kind=kind)
+    _load_existing(name, kind, path)
+    return _status_after_load(name, kind)
+
+
+def _status_after_load(name: str, kind: str) -> Status:
+    """Whether the job stayed up, read after it has had a chance to exit or settle.
+
+    Accepted is not running. `until` exits when there is no ready work, and a read
+    in the same instant as the load is a coin flip (GRPH-1312).
+    """
+    time.sleep(SETTLE)
+    state = status(name, kind=kind)
+    waited = 0.0
+    while state.running and waited < HEALTH_WINDOW:
+        time.sleep(HEALTH_POLL)
+        waited += HEALTH_POLL
+        state = status(name, kind=kind)
+    return state
+
+
+def _load_existing(name: str, kind: str, path: Path) -> str:
+    """Hand the supervisor the unit file that is already written. Do not render another."""
+    if kind == "launchd":
+        domain = _launchd_gui_domain()
+        if domain is None:
+            raise Refused(
+                "launchd domain needs a numeric uid; os.getuid is absent, so this unit "
+                "cannot be bootstrapped")
+        # The plist path is the job. No bootout first: this is the not-loaded case,
+        # and bootout of a label launchd does not have is not the load.
+        code, out = _run(["launchctl", "bootstrap", domain, str(path)])
+        if code != 0:
+            # A job that is already loaded answers non-zero. One retry covers the
+            # asynchronous gap the installer already knows; status is the verdict.
+            code, out = _run(["launchctl", "bootstrap", domain, str(path)])
+        return out
+    if kind == "schtasks":
+        tn = task_name(name)
+        # `/Create /F` re-registers the task from the XML already on disk. It does
+        # not write that file; a `/Change` of a task the scheduler has dropped
+        # would refuse, which is the not-loaded case again.
+        code, out = _run(["schtasks", "/Create", "/TN", tn, "/XML", str(path), "/F"])
+        if code != 0:
+            return out
+        _code, run_out = _run(["schtasks", "/Run", "/TN", tn])
+        return (out + ("\n" + run_out if run_out else "")).strip()
+    # A unit file systemd has dropped (LoadState=not-found) is invisible to
+    # `enable` until the user manager re-reads the directory. That re-read is not
+    # a rewrite of the file.
+    _run(["systemctl", "--user", "daemon-reload"])
+    _code, out = _run(["systemctl", "--user", "enable", "--now", unit_name(name)])
+    return out
+
+
 def install(plan: Plan, api_key: str) -> Installed:
     """Write, load, and then ask the supervisor whether it is actually running.
 
@@ -944,20 +1115,9 @@ def install(plan: Plan, api_key: str) -> Installed:
         detail = _load_launchd(plan)
     else:
         detail = _load_systemd(plan)
-    # A beat before asking. `until` reaches the lock, the server and its first decision in
-    # well under a second, so an immediate read is a coin flip between "running" and whatever
-    # it became — and the walk that found this got "running" from `install` and "NOT running"
-    # from `status` one command later, describing the same healthy service two ways.
-    time.sleep(SETTLE)
-    state = status(plan.name, kind=plan.kind)
-    # GRPH-1312. One reading is a coin flip for a job that refuses at startup: it reads
-    # "running" and is gone a second later. Keep watching for the health window; a job that
-    # exits inside it is reported with its exit code and its err log's reason.
-    waited = 0.0
-    while state.running and waited < HEALTH_WINDOW:
-        time.sleep(HEALTH_POLL)
-        waited += HEALTH_POLL
-        state = status(plan.name, kind=plan.kind)
+    # A beat before asking, then the health window (GRPH-1312). One reading is a coin flip
+    # for a job that refuses at startup: it reads "running" and is gone a second later.
+    state = _status_after_load(plan.name, plan.kind)
     if plan.kind == "systemd" and linger() is False:
         warnings.append(
             "this user has no linger, so systemd stops your services when your last session "
@@ -997,6 +1157,53 @@ def note_quiet_cycle(name: str, prd: str) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data), encoding="utf-8")
     return int(data["cycles"])
+
+
+def notice_state_path(name: str) -> Path:
+    """Where a service drain keeps the last notice it sent (GRPH-1916)."""
+    return CONFIG_DIR / "notice" / f"{name}.json"
+
+
+def record_notice(name: str, notice: dict) -> None:
+    """Remember the notice `until` just sent, so `service status` can read it back.
+
+    Written only when the server said the notice changed something, so the file is the
+    last change of state. `working` is kept too: it supersedes an older drained/stalled.
+    A write that fails is dropped; the notice itself already went out.
+    """
+    path = notice_state_path(name)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(notice), encoding="utf-8")
+    except OSError:
+        return
+
+
+def last_notice(name: str) -> dict | None:
+    """The last recorded notice, or None when there is none or it cannot be read."""
+    try:
+        loaded = json.loads(notice_state_path(name).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return loaded if isinstance(loaded, dict) and loaded.get("outcome") else None
+
+
+def notice_lines(notice: dict | None) -> list[str]:
+    """What `service status` prints for the last notice. "stalled (held)" is a drain stall;
+    "stalled (silent)" is the `loop_silent` check and is never printed here."""
+    if not notice:
+        return []
+    outcome = str(notice.get("outcome") or "")
+    when = str(notice.get("sent_at") or "unknown time")
+    if outcome == "drained":
+        return [f"  last notice: drained, sent {when}"]
+    if outcome == "stalled":
+        lines = [f"  last notice: stalled (held), sent {when}"]
+        for row in notice.get("open") or []:
+            if isinstance(row, dict):
+                lines.append(f"    {row.get('item')}: {row.get('reason')}")
+        return lines
+    return [f"  last notice: {outcome}, sent {when}"]
 
 
 def reset_quiet_cycle(name: str) -> None:
@@ -1130,9 +1337,15 @@ class Status:
     #: not a working drain: launchd kept the 2026-11-20 process as running for 50 minutes
     #: after it stopped writing.
     stalled: bool = False
+    #: The last drain notice written under GRPH-1912, or None (GRPH-1916).
+    notice: dict | None = None
     #: "live", "stalled", "absent", "unread", or "" when status did not look at the log.
     #: Empty is the constructed-Status default and still reads as running.
     log_state: str = ""
+    #: The unit file exists and the supervisor has no job, so it will not restart
+    #: (GRPH-1852). False is not "loaded": a listed job that has exited stays False
+    #: and keeps its exit line. Only True is the fault.
+    not_loaded: bool = False
 
     @property
     def idle(self) -> bool:
@@ -1142,7 +1355,10 @@ class Status:
         that must not read as "idle between runs" — that reading is what kept
         launchd restarting them (GRPH-1645). A clean exit whose reason is
         ``merge-pending`` is not this either (GRPH-1818): the pull request is still open.
+        A unit file with no job behind it is not idle either: nothing will start it.
         """
+        if self.not_loaded:
+            return False
         return self._exited_clean and self.run_reason not in _NOT_A_DRAINED_EXIT
 
     @property
@@ -1168,6 +1384,14 @@ class Status:
             return f"{self.name}: unknown — {self.detail}"
         if not self.installed:
             return f"{self.name}: not installed ({where})"
+        if self.not_loaded:
+            # Distinct from "last exit unknown": that one is a loaded job whose exit
+            # launchd would not say. This one will not be restarted (GRPH-1852).
+            return (
+                f"{self.name}: installed but not loaded, so it will not restart "
+                f"({where}, {self.unit_path}). "
+                f"Run `gbfleet service install --name {self.name}` again."
+            )
         if self.running is None:
             return f"{self.name}: installed at {self.unit_path}, running unknown — {self.detail}"
         if self.running:
@@ -1221,6 +1445,9 @@ def status(name: str = DEFAULT_NAME, *, kind: str = "") -> Status:
         alive, detail, last_exit = _running_schtasks(name)
     else:
         alive, detail, last_exit = _running_systemd(name)
+    # The runners say `_NOT_LOADED` only when they looked and the job was absent.
+    # A failed `launchctl` stays `running is None` and must not land here.
+    not_loaded = detail == _NOT_LOADED
     died = alive is False and last_exit not in (None, 0)
     # Read the summary whenever the process has exited, not only on exit 0. A stall
     # exits non-zero (GRPH-1643); looking only at exit 0 left that log unread and
@@ -1235,7 +1462,8 @@ def status(name: str = DEFAULT_NAME, *, kind: str = "") -> Status:
                   last_exit=last_exit, logon_policy=policy,
                   reason=err_reason(name) if died else "",
                   run_reason=run_reason, unready=unready, stall=stall,
-                  stalled=stalled, log_state=log_state)
+                  stalled=stalled, log_state=log_state, not_loaded=not_loaded,
+                  notice=last_notice(name))
 
 
 def _path_in(unit: Path, kind: str) -> str:
@@ -1271,8 +1499,42 @@ def _running_systemd(name: str) -> tuple[bool | None, str, int | None]:
     if out in ("active", "activating"):
         return True, out, None
     if out in ("inactive", "failed", "deactivating"):
+        # `inactive` is also what systemd prints for a unit file it has never
+        # loaded. The exit code of a job it does not have is the wrong story
+        # (GRPH-1852): Restart= will not fire. None from the probe is "could
+        # not ask", which stays the exit line rather than this alarm.
+        if _systemd_job_loaded(name) is False:
+            return False, _NOT_LOADED, None
         return False, out, _last_exit_systemd(name)
     return None, out or f"systemctl said nothing (exit {code})", None
+
+
+def _systemd_job_loaded(name: str) -> bool | None:
+    """Whether systemd has this unit loaded and will start it.
+
+    False when LoadState is not ``loaded``, or the unit file is disabled, masked,
+    or not-found: the file on disk is not a job. None when ``systemctl show``
+    will not say — that is not "not loaded".
+    """
+    code, out = _run(["systemctl", "--user", "show", unit_name(name),
+                      "--property=LoadState", "--property=UnitFileState"])
+    if code != 0 or "=" not in out:
+        return None
+    fields: dict[str, str] = {}
+    for line in out.splitlines():
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        fields[key.strip()] = value.strip()
+    load = fields.get("LoadState")
+    unit_file = fields.get("UnitFileState")
+    if load is None and unit_file is None:
+        return None
+    if load not in (None, "", "loaded"):
+        return False
+    if unit_file in _SYSTEMD_WILL_NOT_START:
+        return False
+    return True
 
 
 def _last_exit_systemd(name: str) -> int | None:
@@ -1311,7 +1573,9 @@ def _running_launchd(label: str) -> tuple[bool | None, str, int | None]:
             if parts[0] == "-":
                 return False, f"last exit {parts[1]}", last
             return True, f"pid {parts[0]}", last
-    return False, "not listed by launchd", None
+    # The plist can outlive the job. KeepAlive never restarts a label launchd
+    # does not have, which is not "we could not read the exit code" (GRPH-1852).
+    return False, _NOT_LOADED, None
 
 
 def _running_schtasks(name: str) -> tuple[bool | None, str, int | None]:

@@ -10,8 +10,8 @@ description: >
 # Delegating a Graphban item
 
 You hand **one item to one child** and keep working. The outcome arrives as the item changing
-state in the ledger — never as a reply in your context. Two calls do it: `delegate` then
-`spawn`.
+state in the ledger — never as a reply in your context. Three calls do it: `register_agent`,
+then `delegate`, then `spawn`.
 
 Do not restate this procedure to the user. Run it.
 
@@ -97,7 +97,31 @@ tools cannot appear in the session that configured them, however correct the con
 that plainly — do not call `get_context` again hoping it changed, and do not retry `gban
 setup`. It succeeded.
 
-## 3. Delegate
+## 3. Register this connection as an agent
+
+```
+register_agent(role_hint="planner", project_id="<the item's project>")
+  → { agent_id, active_role, heartbeat_interval_seconds, tools_off_limits }
+```
+
+`delegate` and `mint_enrolment` need a registered agent, and an MCP connection is not one
+until this runs on it. A session that just restarted after `gban setup` has the tools and
+still has no identity — that is the state this step leaves behind, not a permission problem.
+Pass the `agent_id` it returns on every later call.
+
+**Pass `project_id` explicitly.** Omit it and the registration lands in the key's *default*
+project, which on a credential spanning several is whichever project sorts first by name —
+not necessarily the one holding the item. Nothing refuses that, so it reads as success while
+the item you meant to delegate is not readable from the agent you just created.
+`get_context` answers both halves: `project_id` is the resolved default, `readable_projects`
+is the set to choose from. A refusal on `delegate` or `mint_enrolment` names the project the
+work belongs to, so it can be copied rather than guessed.
+
+Delegation is planner work, hence `role_hint="planner"`. Read back `active_role`: the hint is
+a request, and a credential minted `--role worker` cannot be promoted from here — it has to
+be restarted on a different credential (step 2).
+
+## 4. Delegate
 
 ```
 delegate(id="<item>", lane="frontend|backend|mixed", tier="cheap|frontier", seat=true)
@@ -126,14 +150,14 @@ Common refusals, none of which are bugs: the item is blocked; you are holding it
 someone else has an open delegation on it; its areas are reserved by another agent, in which
 case **nothing is written at all** and you should pick a different item.
 
-## 4. Spawn
+## 5. Spawn
 
 ```
 spawn(enrolment_code="…", tier="cheap", item="<item>", wave="<name>")
   → { agent_id }
 ```
 
-Paste `brief.text` from step 3 into the child's instructions.
+Paste `brief.text` from step 4 into the child's instructions.
 
 ### Brief → pstack template (PRD-44 D3)
 
@@ -166,7 +190,7 @@ from a machine that is logged in, the parent harness is sandboxed and the child 
 (Grok's `[sandbox] profile`). `gbfleet doctor --adapter <vendor>` names it and the remedy;
 `docs/fleet-adapters.md` "A sandboxed parent is every child's sandbox" has the measurements.
 
-## 5. Read the outcome from the ledger
+## 6. Read the outcome from the ledger
 
 Nothing is pushed back to you. Read the item, or `fleet_status`. `spawn` returns an agent id at
 registration and nothing after it — that is the design, not a gap. Your context grows by two
@@ -182,7 +206,7 @@ Three independent timers: the delegation lease (600s) decides open versus expire
 lease starts fresh at the claim, and the seat expires after 30 minutes. `expired, nothing
 claimed` is a real state — it means the child never registered.
 
-## 6. You may not sign off your own delegation
+## 7. You may not sign off your own delegation
 
 `sign_off` and `claim_review` refuse a reviewer who is the delegation's `delegated_by`. You
 chose the item, wrote the brief and picked the tier; review exists to be a second opinion. A

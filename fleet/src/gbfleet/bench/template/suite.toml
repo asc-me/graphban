@@ -1,0 +1,269 @@
+[suite]
+id = "gbfleet-template"
+version = "1.0.1"
+
+[[task]]
+id = "build-slugify"
+kind = "build"
+base_sha = "root"
+reference = "m1-ref"
+size_band = "S"
+capabilities = ["A1", "A3", "A5", "C2", "C1", "E1", "E2", "H5"]
+touchpoints = ["pkg/m1.py", "tests/test_m1.py"]
+[task.brief]
+title = "Implement slugify(text)"
+description = "pkg/m1.py holds a stub that raises NotImplementedError. Implement `slugify(text)`: Lowercase `text`, turning each run of non-alphanumerics into one '-'. Add your own test in tests/test_m1.py."
+acceptance = ["slugify(text) behaves as described", "tests/test_m1.py exists and fails if the change to pkg/m1.py is reverted"]
+[task.check]
+command = "python3 -m unittest"
+tests = ["tests/test_m1.py"]
+
+[[task]]
+id = "build-clamp"
+kind = "build"
+base_sha = "root"
+reference = "m2-ref"
+size_band = "S"
+capabilities = ["A1", "A3", "A5", "C2", "C1", "E1", "E2", "H5"]
+touchpoints = ["pkg/m2.py", "tests/test_m2.py"]
+[task.brief]
+title = "Implement clamp(x, lo, hi)"
+description = "pkg/m2.py holds a stub that raises NotImplementedError. Implement `clamp(x, lo, hi)`: Limit `x` to the closed range [lo, hi]. Add your own test in tests/test_m2.py."
+acceptance = ["clamp(x, lo, hi) behaves as described", "tests/test_m2.py exists and fails if the change to pkg/m2.py is reverted"]
+[task.check]
+command = "python3 -m unittest"
+tests = ["tests/test_m2.py"]
+
+[[task]]
+id = "build-is_palindrome"
+kind = "build"
+base_sha = "root"
+reference = "m3-ref"
+size_band = "S"
+capabilities = ["A1", "A3", "A5", "C2", "C1", "E1", "E2", "H5"]
+touchpoints = ["pkg/m3.py", "tests/test_m3.py"]
+[task.brief]
+title = "Implement is_palindrome(s)"
+description = "pkg/m3.py holds a stub that raises NotImplementedError. Implement `is_palindrome(s)`: True when `s` reads the same reversed, ignoring case and punctuation. Add your own test in tests/test_m3.py."
+acceptance = ["is_palindrome(s) behaves as described", "tests/test_m3.py exists and fails if the change to pkg/m3.py is reverted"]
+[task.check]
+command = "python3 -m unittest"
+tests = ["tests/test_m3.py"]
+
+[[task]]
+id = "build-chunk"
+kind = "build"
+base_sha = "root"
+reference = "m4-ref"
+size_band = "S"
+capabilities = ["A1", "A3", "A5", "C2", "C1", "E1", "E2", "H5"]
+touchpoints = ["pkg/m4.py", "tests/test_m4.py"]
+[task.brief]
+title = "Implement chunk(xs, n)"
+description = "pkg/m4.py holds a stub that raises NotImplementedError. Implement `chunk(xs, n)`: Split `xs` into lists of at most `n`; ValueError when n < 1. Add your own test in tests/test_m4.py."
+acceptance = ["chunk(xs, n) behaves as described", "tests/test_m4.py exists and fails if the change to pkg/m4.py is reverted"]
+[task.check]
+command = "python3 -m unittest"
+tests = ["tests/test_m4.py"]
+
+[[task]]
+id = "build-word_count"
+kind = "build"
+base_sha = "root"
+reference = "m5-ref"
+size_band = "S"
+capabilities = ["A1", "A3", "A5", "C2", "C1", "E1", "E2", "H5"]
+touchpoints = ["pkg/m5.py", "tests/test_m5.py"]
+[task.brief]
+title = "Implement word_count(s)"
+description = "pkg/m5.py holds a stub that raises NotImplementedError. Implement `word_count(s)`: Map each lowercased whitespace-separated word of `s` to its count. Add your own test in tests/test_m5.py."
+acceptance = ["word_count(s) behaves as described", "tests/test_m5.py exists and fails if the change to pkg/m5.py is reverted"]
+[task.check]
+command = "python3 -m unittest"
+tests = ["tests/test_m5.py"]
+
+[[task]]
+id = "build-roman"
+kind = "build"
+base_sha = "root"
+reference = "m6-ref"
+size_band = "S"
+capabilities = ["A1", "A3", "A5", "C2", "C1", "E1", "E2", "H5"]
+touchpoints = ["pkg/m6.py", "tests/test_m6.py"]
+[task.brief]
+title = "Implement roman(n)"
+description = "pkg/m6.py holds a stub that raises NotImplementedError. Implement `roman(n)`: Roman numeral for 1..3999; ValueError outside that range. Add your own test in tests/test_m6.py."
+acceptance = ["roman(n) behaves as described", "tests/test_m6.py exists and fails if the change to pkg/m6.py is reverted"]
+[task.check]
+command = "python3 -m unittest"
+tests = ["tests/test_m6.py"]
+
+[[task]]
+id = "review-take_last-defect"
+kind = "review"
+base_sha = "root"
+ref = "r1-defect"
+expect = "bounce"
+size_band = "S"
+capabilities = ["F1"]
+touchpoints = ["pkg/r1.py"]
+[task.brief]
+title = "Review the change to take_last"
+description = "Review the commit that edits pkg/r1.py. Sign off if it is correct, bounce with a reason if it breaks behaviour."
+acceptance = ["the verdict matches the code"]
+[task.check]
+command = "python3 -m unittest"
+tests = ["tests/test_r1.py"]
+
+[[task]]
+id = "review-take_last-clean"
+kind = "review"
+base_sha = "root"
+ref = "r1-clean"
+expect = "sign_off"
+size_band = "S"
+capabilities = ["F2"]
+touchpoints = ["pkg/r1.py"]
+[task.brief]
+title = "Review the change to take_last"
+description = "Review the commit that edits pkg/r1.py. Sign off if it is correct, bounce with a reason if it breaks behaviour."
+acceptance = ["the verdict matches the code"]
+[task.check]
+command = "python3 -m unittest"
+tests = ["tests/test_r1.py"]
+
+[[task]]
+id = "review-average-defect"
+kind = "review"
+base_sha = "root"
+ref = "r2-defect"
+expect = "bounce"
+size_band = "S"
+capabilities = ["F1"]
+touchpoints = ["pkg/r2.py"]
+[task.brief]
+title = "Review the change to average"
+description = "Review the commit that edits pkg/r2.py. Sign off if it is correct, bounce with a reason if it breaks behaviour."
+acceptance = ["the verdict matches the code"]
+[task.check]
+command = "python3 -m unittest"
+tests = ["tests/test_r2.py"]
+
+[[task]]
+id = "review-average-clean"
+kind = "review"
+base_sha = "root"
+ref = "r2-clean"
+expect = "sign_off"
+size_band = "S"
+capabilities = ["F2"]
+touchpoints = ["pkg/r2.py"]
+[task.brief]
+title = "Review the change to average"
+description = "Review the commit that edits pkg/r2.py. Sign off if it is correct, bounce with a reason if it breaks behaviour."
+acceptance = ["the verdict matches the code"]
+[task.check]
+command = "python3 -m unittest"
+tests = ["tests/test_r2.py"]
+
+[[task]]
+id = "review-is_leap-defect"
+kind = "review"
+base_sha = "root"
+ref = "r3-defect"
+expect = "bounce"
+size_band = "S"
+capabilities = ["F1"]
+touchpoints = ["pkg/r3.py"]
+[task.brief]
+title = "Review the change to is_leap"
+description = "Review the commit that edits pkg/r3.py. Sign off if it is correct, bounce with a reason if it breaks behaviour."
+acceptance = ["the verdict matches the code"]
+[task.check]
+command = "python3 -m unittest"
+tests = ["tests/test_r3.py"]
+
+[[task]]
+id = "review-is_leap-clean"
+kind = "review"
+base_sha = "root"
+ref = "r3-clean"
+expect = "sign_off"
+size_band = "S"
+capabilities = ["F2"]
+touchpoints = ["pkg/r3.py"]
+[task.brief]
+title = "Review the change to is_leap"
+description = "Review the commit that edits pkg/r3.py. Sign off if it is correct, bounce with a reason if it breaks behaviour."
+acceptance = ["the verdict matches the code"]
+[task.check]
+command = "python3 -m unittest"
+tests = ["tests/test_r3.py"]
+
+[[task]]
+id = "review-dedupe-defect"
+kind = "review"
+base_sha = "root"
+ref = "r4-defect"
+expect = "bounce"
+size_band = "S"
+capabilities = ["F1"]
+touchpoints = ["pkg/r4.py"]
+[task.brief]
+title = "Review the change to dedupe"
+description = "Review the commit that edits pkg/r4.py. Sign off if it is correct, bounce with a reason if it breaks behaviour."
+acceptance = ["the verdict matches the code"]
+[task.check]
+command = "python3 -m unittest"
+tests = ["tests/test_r4.py"]
+
+[[task]]
+id = "review-dedupe-clean"
+kind = "review"
+base_sha = "root"
+ref = "r4-clean"
+expect = "sign_off"
+size_band = "S"
+capabilities = ["F2"]
+touchpoints = ["pkg/r4.py"]
+[task.brief]
+title = "Review the change to dedupe"
+description = "Review the commit that edits pkg/r4.py. Sign off if it is correct, bounce with a reason if it breaks behaviour."
+acceptance = ["the verdict matches the code"]
+[task.check]
+command = "python3 -m unittest"
+tests = ["tests/test_r4.py"]
+
+[[task]]
+id = "review-title_case-defect"
+kind = "review"
+base_sha = "root"
+ref = "r5-defect"
+expect = "bounce"
+size_band = "S"
+capabilities = ["F1"]
+touchpoints = ["pkg/r5.py"]
+[task.brief]
+title = "Review the change to title_case"
+description = "Review the commit that edits pkg/r5.py. Sign off if it is correct, bounce with a reason if it breaks behaviour."
+acceptance = ["the verdict matches the code"]
+[task.check]
+command = "python3 -m unittest"
+tests = ["tests/test_r5.py"]
+
+[[task]]
+id = "review-title_case-clean"
+kind = "review"
+base_sha = "root"
+ref = "r5-clean"
+expect = "sign_off"
+size_band = "S"
+capabilities = ["F2"]
+touchpoints = ["pkg/r5.py"]
+[task.brief]
+title = "Review the change to title_case"
+description = "Review the commit that edits pkg/r5.py. Sign off if it is correct, bounce with a reason if it breaks behaviour."
+acceptance = ["the verdict matches the code"]
+[task.check]
+command = "python3 -m unittest"
+tests = ["tests/test_r5.py"]

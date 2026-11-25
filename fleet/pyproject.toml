@@ -1,6 +1,6 @@
 [project]
 name = "graphban-fleet"
-version = "0.18.29"
+version = "0.18.40"
 description = "Fleet supervisor for Graphban — spawns and retires fleet members on the machine the agents actually run on"
 # Without this the PyPI project page is blank. The README's links are absolute for the
 # same reason: repo-relative paths render on GitHub and 404 on PyPI.
@@ -35,6 +35,12 @@ gbagent = "gbagent.cli:main"
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3",
+    # A hung test must fail the job naming the stuck test, not hold a drain until GitHub's
+    # own 360-minute default expires (GRPH-1928). This suite drives real child processes —
+    # `tests/conftest.py` writes children that sleep 300s and children that never exit — so
+    # a wait that never returns is a live failure mode here, not a hypothetical. The ceiling
+    # is under [tool.pytest.ini_options].
+    "pytest-timeout>=2.4",
 ]
 
 [build-system]
@@ -49,6 +55,16 @@ testpaths = ["tests"]
 markers = [
     "real_memory: read the host's actual free memory instead of the pinned test value",
 ]
+# A per-test ceiling (GRPH-1928), and a higher one than the backend's 300s because this
+# suite waits on real vendor binaries with patience of its own: `tests/test_grok_seat.py`
+# gives `grok mcp doctor` a `subprocess.run(timeout=180)`, and `tests/test_adopt.py` joins a
+# sweeper thread with `timeout=120`. A ceiling inside the suite's own documented patience
+# would turn a slow binary into a red job, which is a test defect, not a hang. 600s is over
+# 3x the longest legitimate wait here and still turns a two-hour hang into a ten-minute
+# failure that names the test. Method left at pytest-timeout's default — see the backend's
+# [tool.pytest.ini_options] for the measurement that decided it; on the Windows job, where
+# there is no SIGALRM, that default is the timer thread.
+timeout = 600
 
 # Read by `scripts/scan_ci.py` (`bandit -c pyproject.toml -r .`, GRPH-1110). Any other finding
 # is fixed or carries a line-level `# nosec <id>` with its reason.

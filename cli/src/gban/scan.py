@@ -458,6 +458,42 @@ def record(call, sha: str, row: dict, status: str, outcome: Outcome | None) -> N
     call("record_scan", args, timeout=RECORD_TIMEOUT)
 
 
+def retire_unplanned(call, sha: str, components: list[dict], rows: list[dict],
+                     out: Callable[[str], None]) -> int:
+    """Retire each scanner with a current row at a component path that this run did not plan.
+
+    A scanner that no longer applies (a component dropped Python, a scanner left SCANNERS)
+    would otherwise hold the cell at its last row forever (GRPH-1846). A planned scanner that
+    failed is never retired: it is in `rows`, whatever its outcome. Only scanners in
+    SCANNERS are retired; another producer's row (stubscan) is left alone (GRPH-1851).
+    """
+    planned = {(r["path"], r["scanner"].id) for r in rows}
+    own = {sc.id for sc in SCANNERS}  # another producer's rows are never ours to retire
+    retired = 0
+    for comp in components:
+        path = comp["path"]
+        try:
+            status = call("scan_status", {"path": path, "head_sha": sha}, timeout=RECORD_TIMEOUT)
+            seen: set[str] = set()
+            for s in status.get("scans", []):
+                sid = s.get("scanner_id")
+                if (not s.get("current") or not sid or sid in seen or (path, sid) in planned
+                        or sid not in own
+                        or s.get("result") == "retired" or not s.get("scan_id")):
+                    continue
+                seen.add(sid)
+                args = {"scanner_id": sid, "path": path, "scanned_sha": sha,
+                        "result": "retired", "note": f"{sid} no longer applies to {path}"}
+                if s.get("category"):
+                    args["category"] = s["category"]
+                call("record_scan", args, timeout=RECORD_TIMEOUT)
+                retired += 1
+                out(f"{path}\t{sid}\tretired")
+        except (codemap.MapError, TimedOut) as exc:
+            out(f"{path}\tretire check failed: {exc}")
+    return retired
+
+
 def run_scan(repo: Path, sha: str | None, call, *, dry_run: bool = False, run: Runner = run_process,
              timeout: int = DEFAULT_TIMEOUT, out: Callable[[str], None] = print) -> dict:
     """Plan and run every scanner at `sha`. Returns counts; raises ScanError/MapError when components or the worktree fail."""
@@ -491,4 +527,5 @@ def run_scan(repo: Path, sha: str | None, call, *, dry_run: bool = False, run: R
             counts["recorded"] += 1
             if status in ("tool_missing", "incomplete"):
                 counts[status] += 1
+        counts["retired"] = retire_unplanned(call, target, components, rows, out)
     return counts

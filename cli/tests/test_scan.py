@@ -31,6 +31,7 @@ class Server:
         self.records: list[dict] = []
         self.timeouts: list[tuple] = []
         self.due_timeouts = 0
+        self.current: list[dict] = []  # rows scan_status reports as the cell's current rows
 
     def __call__(self, tool, args, timeout=None):
         self.timeouts.append((tool, timeout))
@@ -39,6 +40,9 @@ class Server:
                 self.due_timeouts -= 1
                 raise TimedOut("could not reach: timed out", 120.0)
             return {"due": [{"component": "pkg", "path": p, "category": "security"} for p in self.paths]}
+        if tool == "scan_status":
+            return {"scans": [{"path": args["path"], "current": True, "scan_id": f"cs_{r['scanner_id']}",
+                               **r} for r in self.current]}
         assert tool == "record_scan"
         # Same rule as backend/app/services/scans.py _EMPTY_INCOMPLETE.
         if args["result"] == "incomplete" and not args.get("findings"):
@@ -489,3 +493,41 @@ def test_knip_bad_exit_code_is_incomplete(tmp_path, monkeypatch):
     srv = Server(paths=("web/",))
     scan.run_scan(repo, codemap.head(repo), srv, run=lambda a, c, t: (2, "", "boom"))
     assert _by(srv)["knip"]["result"] == "incomplete"
+
+
+def test_unplanned_scanner_with_a_current_row_is_retired(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _installed(monkeypatch, {"bandit"})
+    srv = Server()
+    srv.current = [{"scanner_id": "npm-audit", "category": "security", "result": "incomplete"},
+                   {"scanner_id": "bandit", "category": "security", "result": "complete"}]
+    counts = scan.run_scan(repo, codemap.head(repo), srv, run=_runner({
+        "bandit": (0, json.dumps({"results": []}), ""),
+        "vulture": (0, "", ""), "radon": (0, "{}", "")}))
+    retired = [r for r in srv.records if r["result"] == "retired"]
+    # npm-audit does not apply to a Python component; bandit is planned and so kept.
+    assert [r["scanner_id"] for r in retired] == ["npm-audit"]
+    assert counts["retired"] == 1
+
+
+def test_planned_scanner_that_failed_is_never_retired(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _installed(monkeypatch, set())  # every planned scanner is tool_missing
+    srv = Server()
+    srv.current = [{"scanner_id": "bandit", "category": "security", "result": "tool_missing"}]
+    counts = scan.run_scan(repo, codemap.head(repo), srv, run=_runner({}))
+    assert counts["retired"] == 0
+    assert not [r for r in srv.records if r["result"] == "retired"]
+
+
+def test_another_producers_row_is_never_retired(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    _installed(monkeypatch, {"bandit"})
+    srv = Server()
+    srv.current = [{"scanner_id": "stubscan", "category": "stub", "result": "complete"},
+                   {"scanner_id": "npm-audit", "category": "security", "result": "incomplete"}]
+    scan.run_scan(repo, codemap.head(repo), srv, run=_runner({
+        "bandit": (0, json.dumps({"results": []}), ""),
+        "vulture": (0, "", ""), "radon": (0, "{}", "")}))
+    retired = [r["scanner_id"] for r in srv.records if r["result"] == "retired"]
+    assert retired == ["npm-audit"]

@@ -42,6 +42,11 @@ color used consistently across the app:
   commit) instead of PATCHing `done`, which would 409 (GRPH-1030). Typed `wait:` tags and
   items that already carry a valid attestation still PATCH. Closing as merged triggers
   [auto-extraction](memory-and-chat.md#auto-extraction-on-done).
+- **Close as verified** — the same owner-close dialog has a **Verified** mode for work you
+  checked rather than merged. It takes the revision verified (commit), a required one-line
+  note (max 200 characters) naming where it was checked, and an optional URL (the walk log or
+  artifact), and sends `kind: "verified"` to owner-close. Nothing is recorded as merged. A
+  server 422 shows in the dialog.
 - **Reorder** — drag a row; the new order persists (`sort_order`).
 - **Filter** — the quick-filter chips (All / per-state) narrow the stream; the top-bar search
   filters by title or id.
@@ -67,7 +72,7 @@ color used consistently across the app:
 | PATCH | `/api/items/reorder` | Persist a new drag order (`{ordered_ids: [...]}`) |
 | GET | `/api/items/{id}` | Fetch one |
 | PATCH | `/api/items/{id}` | Update fields / advance status. `done` still needs an attestation (GRPH-543). |
-| POST | `/api/items/{id}/owner-close` | Project owner closes hand-merged work (`{commit, pr_url?}`). Distinct from `fleet.sign_off`. |
+| POST | `/api/items/{id}/owner-close` | Project owner closes hand-merged work (`{commit, pr_url?}`, or `{kind: "verified", commit, note, url?}` to close as verified). Distinct from `fleet.sign_off`. |
 
 Front-end mutations use optimistic updates (TanStack Query) so status changes and drags feel
 instant.

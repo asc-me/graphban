@@ -10,13 +10,15 @@ import argparse
 import json
 import os
 import sys
+import tempfile
+import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
 from . import __version__
 from . import adopt as adopt_mod
 from .adapters import ADAPTERS, AdapterError, Tuning, checked_tuning, resolve
-from .client import ALLOWED_TOOLS, Graphban, NotPermitted, ServerUnreachable, ToolFailed
+from .client import ALLOWED_TOOLS, Graphban, NotPermitted, ObservationRefused, ServerUnreachable, ToolFailed
 from . import doctor
 from . import service as service_mod
 from . import surface as surface_mod
@@ -82,6 +84,8 @@ SPAWN_READS: frozenset[str] = ALLOWED_TOOLS | frozenset(
 #: asked for the merge by name and the receipt is the half that makes the merge visible to
 #: the ledger. The server still bounds what that call may write by role.
 MERGE_TOOLS: frozenset[str] = frozenset({"get_item_details", "related_work", "update_item"})
+#: `bench run` reads a reviewer's verdict off its scratch item and does nothing else there.
+BENCH_VERDICT_READS: frozenset[str] = frozenset({"get_item_details"})
 
 _MERGE_HELP = (
     "finish the merge for items whose fleet.sign_off attestation names a commit — the "
@@ -279,7 +283,9 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Installs `gbfleet until` as a user-domain service. Everything after the "
             "subcommand is passed to `until` unchanged, so `gbfleet until --help` stays the "
-            "authority on its own flags.\n\n"
+            "authority on its own flags. `install --name X` with no arguments after it "
+            "reloads the unit already written for X — the command `status` prints when "
+            "that unit is installed but not loaded — and refuses when no such unit exists.\n\n"
             "The API key is read from $" + API_KEY_ENV + " at install time and written to an "
             "owner-only file the unit references. It is NEVER put in the unit itself: a unit "
             "file is world-readable.\n\n"
@@ -311,6 +317,11 @@ def build_parser() -> argparse.ArgumentParser:
              "`until` exits when the backlog is empty, so this is the polling interval — and "
              "every cycle registers one planner agent, which is why the default is minutes "
              "rather than seconds")
+    svc_install.add_argument(
+        "--on-notify", default=None, metavar="COMMAND",
+        help="run COMMAND (split like a shell line, not run through one) once per drain notice, with the notice as JSON on "
+             "stdin (prd, outcome, open, sent_at). A non-zero exit is logged and the drain "
+             "carries on; a hook still running after 30s is killed")
     svc_install.add_argument("rest", nargs=argparse.REMAINDER,
                              help="arguments for `gbfleet until`")
     svc_status = svc_do.add_parser("status", help="installed? running? and with which PATH?")
@@ -426,6 +437,10 @@ def build_parser() -> argparse.ArgumentParser:
              "and no child is live, so the service manager restarts the process; 0 disables "
              "(GRPH-1179). `kill -USR1 <pid>` dumps every thread's stack to the log",
     )
+    until.add_argument(
+        "--on-notify", default=None, metavar="COMMAND",
+        help="run COMMAND once per drain notice with the notice as JSON on stdin "
+             "(`gbfleet service install --on-notify` sets this)")
     until.add_argument("--merge", action="store_true", default=False, help=_MERGE_HELP)
     until.add_argument(
         "--base", default=None, metavar="BRANCH",
@@ -482,6 +497,28 @@ def build_parser() -> argparse.ArgumentParser:
     chk.add_argument("--item", default="", help="the item id, for the printed update_item call")
     chk.add_argument("--path", default=".", help="the checkout to measure (default: here)")
 
+    rec = sub.add_parser(
+        "recover",
+        help="rebase a salvaged-but-real branch onto the trunk and propose it for one item",
+        description=(
+            "The route back for work left on a salvage branch (GRPH-1022). No wave ever proposes\n"
+            "a salvage (GRPH-926); this is a person naming the item a branch's work belongs to.\n"
+            "The branch is judged by every commit since it left the trunk, not by its tip: one\n"
+            "whose commits name more than one item is refused, naming them. The source branch\n"
+            "is never moved — its commits are replayed onto the trunk on gb/recover--<item>,\n"
+            "which is pushed and opened as a draft PR. With no --branch, lists every unattended\n"
+            "gb/ branch that carries a salvage anywhere in its history."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    rec.add_argument("--branch", default="", help="the branch to recover")
+    rec.add_argument("--item", default="", help="the item its work belongs to")
+    rec.add_argument("--repo", default=".", help="the clone (default: here)")
+    rec.add_argument("--base", default="",
+                     help="the trunk ref to rebase onto (default: the remote's default branch)")
+    rec.add_argument("--dry-run", action="store_true",
+                     help="judge the branch and print what would be replayed; change nothing")
+
     ent = sub.add_parser(
         "entitlement",
         help="register the accounts this machine can launch (add, list, remove)",
@@ -501,6 +538,76 @@ def build_parser() -> argparse.ArgumentParser:
     ent_do.add_parser("list", help="print name, vendor, kind and handle")
     ent_rm = ent_do.add_parser("remove", help="delete one record, leaving the others")
     ent_rm.add_argument("name")
+
+    bench = sub.add_parser("bench", help="bench suites: manifest checks (validate)")
+    bench_do = bench.add_subparsers(dest="act", metavar="ACT")
+    bench_val = bench_do.add_parser(
+        "validate",
+        help="check that every task in a suite manifest discriminates",
+        description=(
+            "Build task: the check must fail at base_sha and pass at the reference solution.\n"
+            "Review task: the planted-defect ref must make a check red, the clean ref green.\n"
+            "One line per task; exit 1 if any task does not discriminate."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    bench_val.add_argument("manifest", help="the suite manifest (TOML)")
+    bench_val.add_argument("--repo", default=None,
+                           help="the suite's git repository (default: here; for the shipped "
+                                "template, a fixture repo built for this check)")
+    bench_do.add_parser("list", help="name the shipped template suite, its version and task count")
+    bench_har = bench_do.add_parser(
+        "harvest",
+        help="propose candidate tasks from the repo's merge history (writes nothing to the server)",
+        description="Each merge's added or modified test files run 3 times at the first parent "
+                    "(all red) and 3 times at the merge (all green). Dropped merges are listed "
+                    "with flaky, green_at_parent, red_at_merge or no_tests.",
+    )
+    bench_har.add_argument("--repo", default=".", help="the git repository (default: here)")
+    bench_har.add_argument("--branch", default="HEAD", help="the default branch to scan")
+    bench_har.add_argument("--since", default="180d", help="how far back, e.g. 180d, 4w")
+    bench_har.add_argument("--limit", type=int, default=50, help="most merges to scan")
+    bench_har.add_argument("--sabotage-items", default="",
+                           help="comma-separated item ids with a red sabotage: ranked first")
+    bench_cmp = bench_do.add_parser("compare", help="show two baseline runs side by side")
+    bench_cmp.add_argument("runs", nargs=2, metavar="RUN", help="two run ids (or record ids)")
+    bench_cmp.add_argument("--server", required=True, help="Graphban base URL")
+    bench_cmp.add_argument("--project", required=True, help="project id")
+    bench_ad = bench_do.add_parser("adopt", help="post chosen harvested candidates to the repo suite")
+    bench_ad.add_argument("ids", nargs="+", help="candidate ids from `bench harvest`")
+    bench_ad.add_argument("--repo", default=".", help="the git repository (default: here)")
+    bench_ad.add_argument("--server", required=True, help="Graphban base URL")
+    bench_ad.add_argument("--project", required=True, help="project id")
+    bench_ad.add_argument("--capability", default="B7", help="PRD-41 capability leaf for the tasks")
+    bench_ad.add_argument("--expected-version", type=int, default=None,
+                          help="suite version to write against (default: read the current one)")
+    bench_run = bench_do.add_parser(
+        "run", help="run an adapter against a bench suite and post the baseline",
+        description="Per build task: a worktree at base_sha with the check's tests held out, "
+                    "a child under ordinary supervision, then the check with the tests restored.",
+    )
+    bench_run.add_argument("--suite", choices=("template", "repo", "all"), required=True)
+    bench_run.add_argument("--adapter", required=True, help="vendor[:model]")
+    bench_run.add_argument("--dry-run", action="store_true",
+                           help="list tasks, adapter, model and estimated spend; spawn nothing")
+    bench_run.add_argument("--repo", default=".", help="the git repository (default: here)")
+    bench_run.add_argument("--server", required=True, help="Graphban base URL")
+    bench_run.add_argument("--project", required=True, help="project id")
+    bench_run.add_argument("--binary", default=None, help="path to the vendor binary")
+    bench_run.add_argument("--workspace", default=None, help="where worktrees go")
+    bench_run.add_argument("--child-wall-clock", type=float, default=3600.0)
+    bench_run.add_argument("--registration-window", type=float, default=None)
+
+    harn = sub.add_parser("harness", help="read the Harness page's numbers (grid)")
+    harn_do = harn.add_subparsers(dest="act", metavar="ACT")
+    harn_grid = harn_do.add_parser(
+        "grid",
+        help="print the grid's cells with n, layer and the baseline column",
+        description="Reads the project's Harness grid with $GBFLEET_API_KEY. The baseline is "
+                    "its own column: never pooled with the natural or probe rate.",
+    )
+    harn_grid.add_argument("--server", required=True, help="Graphban base URL")
+    harn_grid.add_argument("--project", required=True, help="project id")
 
     sub.add_parser(
         "gc",
@@ -574,6 +681,8 @@ def make_adapter_factory(name: str, binary: str | None, model: str = "",
             launch = with_foreign_variables_stripped(launch, entitlement)
         return replace(launch, binary_version=found.version)
 
+    # The version the supervisor stamps on natural attempts; `bench run` posts the same one.
+    factory.binary_version = found.version
     return factory
 
 
@@ -927,6 +1036,7 @@ def _until(args) -> int:
             entitlements=entitlements,
             stall_after=args.stall_after,
             acknowledge_reach=acknowledge,
+            on_notice=service_mod.hook_for(args.on_notify),
         )
     except RepoLocked as exc:
         print(f"gbfleet until: {exc}", file=sys.stderr)
@@ -1137,6 +1247,14 @@ def _shared_servers(args) -> dict:
     Unions with the project's `.gbfleet/servers` (GRPH-998), read from the repository ROOT:
     `--repo` may be a subdirectory, and reading beside it would find nothing and grant nothing
     — a mis-pointed flag passing as a project that listed no servers.
+
+    The files are the ones the child harness loads (GRPH-1038): `~/.grok/config.toml` and
+    then `~/.claude.json` for `--adapter grok` (grok merges both; its own stanza wins),
+    `~/.claude.json` for claude, and Claude's file again for an adapter with no known
+    user-level config. A command with no `--adapter` (stdio `mcp`) stays
+    on that default. Passing the paths in here, rather than inside `grants`, is the call
+    a wave actually makes — a correct `source_for` that this function never asks is a
+    check that still refuses grok for a missing Claude server.
     """
     from . import mcpshare
 
@@ -1146,7 +1264,12 @@ def _shared_servers(args) -> dict:
         print(f"gbfleet: {exc}", file=sys.stderr)
         raise SystemExit(2)
     try:
-        return mcpshare.grants(list(getattr(args, "mcp_server", []) or []), root)
+        adapter = getattr(args, "adapter", "") or ""
+        return mcpshare.grants(
+            list(getattr(args, "mcp_server", []) or []),
+            root,
+            mcpshare.source_for(adapter),
+        )
     except mcpshare.ShareRefused as exc:
         print(f"gbfleet: {exc}", file=sys.stderr)
         raise SystemExit(2)
@@ -1169,9 +1292,16 @@ def _service(args) -> int:
         if not names:
             print(f"no drain installed ({found.kind})")
             return 0
+        code = 0
         for one in names:
-            _service_status(service_mod.status(one, kind=found.kind))
-        return 0
+            state = service_mod.status(one, kind=found.kind)
+            _service_status(state)
+            # A unit file with no job will not restart. Exit 0 here read as a
+            # drain between cycles (GRPH-1852). Any other not-running state
+            # still exits 0: last exit is the signal, and idle is success.
+            if state.not_loaded:
+                code = 1
+        return code
 
     if act == "uninstall":
         try:
@@ -1186,8 +1316,15 @@ def _service(args) -> int:
         return 0
 
     rest = [a for a in (args.rest or []) if a != "--"]
+    # No until arguments is not "nothing to run" when that name already has a unit.
+    # Status tells the operator to run exactly `install --name X`, and that command
+    # has to load the unit as written (GRPH-1872). A name with no unit still falls
+    # through to the refusal inside this branch.
+    if not rest:
+        return _reload_named_service(args)
     try:
-        plan = service_mod.make_plan(rest, name=args.name, every=args.every)
+        plan = service_mod.make_plan(rest, name=args.name, every=args.every,
+                                      on_notify=args.on_notify)
     except service_mod.Refused as exc:
         print(f"gbfleet service: {exc}", file=sys.stderr)
         return 2
@@ -1247,6 +1384,33 @@ def _service(args) -> int:
     return 1
 
 
+def _reload_named_service(args) -> int:
+    """`install --name X` with no `until` arguments: load the unit already on disk.
+
+    Does not render a new unit and does not read a key. Both already belong to the
+    file this command is loading; rewriting either would need the arguments the
+    operator was not given.
+    """
+    try:
+        if args.dry_run:
+            path = service_mod.installed_unit_path(args.name)
+            print(f"# would load {path} without rewriting it")
+            return 0
+        state = service_mod.reload_installed(args.name)
+    except service_mod.Refused as exc:
+        print(f"gbfleet service: {exc}", file=sys.stderr)
+        return 2
+    print(f"loaded {state.unit_path} (existing arguments unchanged)")
+    _service_status(state)
+    # Still not loaded means the supervisor did not take the unit. A job we could
+    # not ask about is the same failure: reporting success would hide it.
+    if state.not_loaded or state.running is None:
+        return 1
+    if state.running or state.idle or state.unsettled:
+        return 0
+    return 1
+
+
 def _print_observations_warning(text: str) -> None:
     if text:
         print(f"WARNING {text}", file=sys.stderr)
@@ -1273,6 +1437,8 @@ def _observations_warning_for_plan(plan) -> str:
 def _service_status(state) -> None:
     """One drain, and the two facts that are invisible from anywhere else."""
     print(state.line())
+    for text in service_mod.notice_lines(state.notice):
+        print(text)
     if state.kind == "systemd":
         # Printed whatever the answer, because "no" here is the difference between a service
         # that survives your logout and one that does not, and it is invisible from every
@@ -1419,6 +1585,38 @@ def _generated_decision(client) -> tuple[tuple[str, ...], str]:
     return allowed, why
 
 
+def _recover(args) -> int:
+    """`gbfleet recover` (GRPH-1022). Exit 0 proposed (or listed / dry run), 1 refused."""
+    from . import supervisor as sup
+    from . import worktree as wt_mod
+
+    repo = Path(args.repo).resolve()
+    if not args.branch:
+        remote = wt_mod.remote_for(repo)
+        base = args.base or (wt_mod.default_ref(repo, remote) if remote else "")
+        if not base:
+            print("gbfleet recover: no trunk to judge against; pass --base", file=sys.stderr)
+            return 2
+        rows = [o for o in wt_mod.orphans(repo, base=base) if o.salvaged]
+        for o in rows:
+            print(f"{o.branch}\t{o.commit[:12]}\tsalvage of "
+                  f"{', '.join(o.item_keys) or '(no item named)'}\t{o.subject}")
+        if not rows:
+            print(f"no unattended gb/ branch carries a salvage beyond {base}")
+        return 0
+    got = sup.recover_branch(repo, args.branch, args.item, base=args.base,
+                             dry_run=args.dry_run)
+    if got.reason:
+        print(f"gbfleet recover: {args.branch}: {got.reason}", file=sys.stderr)
+        return 1
+    if got.dry_run:
+        print(f"{args.branch} -> {args.item}: would replay {len(got.commits)} commit(s), "
+              f"{len(got.salvages)} of them salvage")
+        return 0
+    print(f"{args.branch} -> {got.recovered}: {got.url}")
+    return 0
+
+
 def _check_touchpoints(args) -> int:
     from . import touchpoints as tp_mod
     from .supervisor import is_generated
@@ -1523,6 +1721,333 @@ def _entitlement(args) -> int:
     return 0
 
 
+def _bench_harvest(args: argparse.Namespace) -> int:
+    from .bench import harvest as harvest_mod
+
+    sab = frozenset(i.strip() for i in args.sabotage_items.split(",") if i.strip())
+    try:
+        found = harvest_mod.harvest(Path(args.repo), branch=args.branch, since=args.since,
+                                    limit=args.limit, red_sabotage=sab)
+        saved = harvest_mod.save(Path(args.repo), found)
+    except (RuntimeError, OSError) as exc:
+        print(f"gbfleet bench harvest: {exc}", file=sys.stderr)
+        return 1
+    for c in found.candidates:
+        mark = " [sabotage]" if c.sabotage else ""
+        print(f"{c.id}: {c.title} base={c.base_sha[:10]} check={c.command} {' '.join(c.tests)}{mark}")
+    for d in found.dropped:
+        print(f"dropped {d.merge_sha[:10]}: {d.reason}" + (f" ({d.detail})" if d.detail else ""))
+    print(f"{len(found.candidates)} candidate(s), {len(found.dropped)} dropped; "
+          f"nothing was sent to the server. Choose with `gbfleet bench adopt IDS` ({saved}).")
+    return 0
+
+
+def _bench_adopt(args: argparse.Namespace) -> int:
+    from .bench import harvest as harvest_mod
+
+    api_key = os.environ.get(API_KEY_ENV)
+    if not api_key:
+        print(f"gbfleet bench adopt: set ${API_KEY_ENV} to an agent key", file=sys.stderr)
+        return 2
+    cands = harvest_mod.load_candidates(Path(args.repo))
+    missing = [i for i in args.ids if i not in cands]
+    if missing:
+        print(f"gbfleet bench adopt: no harvested candidate {', '.join(missing)}; "
+              "run `gbfleet bench harvest` first", file=sys.stderr)
+        return 1
+    client = Graphban(args.server, api_key, project_id=args.project)
+    # Reading the named item is the one extra read adopt needs, on this instance only.
+    client.allowed = client.allowed | {"get_item_details"}
+
+    def fetch_item(item_id: str):
+        return client.call("get_item_details", id=item_id)
+
+    tasks = []
+    for i in args.ids:
+        spec = harvest_mod.resolve_spec(cands[i], fetch_item)
+        if spec is None:
+            print(f"dropped {i}: no_spec (no readable item description or merge body)")
+            continue
+        tasks.append(harvest_mod.to_task(cands[i], args.capability, spec))
+    if not tasks:
+        print("gbfleet bench adopt: nothing to adopt; every candidate had no_spec", file=sys.stderr)
+        return 1
+    try:
+        version = args.expected_version
+        if version is None:
+            version = int(client.get_suite(args.project).get("version", 0))
+        got = client.adopt_suite(expected_version=version, tasks=tasks)
+    except ObservationRefused as exc:
+        if exc.status == 409:
+            try:
+                current = json.loads(exc.body).get("current_version")
+            except (ValueError, AttributeError):
+                current = None
+            print(f"gbfleet bench adopt: the suite moved: expected_version {version} is stale; "
+                  f"current version is {current}. Re-run to adopt against it.", file=sys.stderr)
+            return 1
+        print(f"gbfleet bench adopt: {exc}", file=sys.stderr)
+        return 1
+    print(f"adopted {len(tasks)} task(s); suite is now version {got.get('version')}")
+    return 0
+
+
+def _bench_run(args: argparse.Namespace) -> int:
+    from . import supervisor as sup
+    from . import worktree as wt_mod
+    from .bench import review as review_mod
+    from .bench import run as run_mod
+    from .spawn import Reason, stop as stop_child
+
+    api_key = os.environ.get(API_KEY_ENV)
+    if not api_key:
+        print(f"gbfleet bench run: set ${API_KEY_ENV} to an agent key", file=sys.stderr)
+        return 2
+    vendor, _, model = args.adapter.partition(":")
+    client = Graphban(args.server, api_key, project_id=args.project)
+    tasks: list = []
+    counts: dict[str, int] = {}
+    ids: dict[str, str] = {}
+    tpl = None
+    if args.suite in ("template", "all"):
+        tpl = run_mod.template_suite()
+        got = list(tpl.tasks) if tpl else []
+        counts["template"] = len(got)
+        tasks += got
+        if tpl:
+            ids["template"] = f"{tpl.id}@{tpl.version}"
+    if args.suite in ("repo", "all"):
+        try:
+            suite_row = client.get_suite(args.project)
+        except ObservationRefused as exc:
+            print(f"gbfleet bench run: {exc}", file=sys.stderr)
+            return 1
+        got = [run_mod.task_from_row(r) for r in suite_row.get("tasks") or []]
+        counts["repo"] = len(got)
+        tasks += got
+        ids["repo"] = f"repo@{suite_row.get('version', 0)}"
+        if args.suite == "repo" and not got:
+            print(run_mod.EMPTY_REPO, file=sys.stderr)
+            return 2
+    suite_id = args.suite if args.suite != "all" else "all"
+    suite_version = "+".join(ids.values()) or "0"
+    _p, policy, _n, _m, _c, _t = read_preferences(client)
+    plan = run_mod.build_plan(tasks, adapter=args.adapter, model=model, suite_id=suite_id,
+                              suite_version=suite_version, caps=policy.caps, counts=counts)
+    for line in plan.describe():
+        print(line)
+    if args.dry_run:
+        print("dry run: nothing was spawned")
+        return 0
+    if not plan.tasks:
+        print("nothing to run")
+        return 0
+    try:
+        factory = make_adapter_factory(vendor, args.binary, model)
+    except AdapterError as exc:
+        print(f"gbfleet bench run: {exc}", file=sys.stderr)
+        return 2
+    # Template tasks live in the shipped fixture repo, built into the workspace; only
+    # repo-suite tasks need the user's repo (PRD-98 section 2: a template run needs no code).
+    template_ids = {id(t) for t in (tpl.tasks if tpl else ())}
+    needs_user = any(id(p.task) not in template_ids for p in plan.tasks)
+    user_repo = repo_root(Path(args.repo)) if needs_user else None
+    if args.workspace:
+        workspace = Path(args.workspace).expanduser().resolve()
+    elif user_repo is not None:
+        workspace = user_repo.parent / f"{user_repo.name}-bench"
+    else:
+        workspace = Path(tempfile.gettempdir()) / "gbfleet-bench"
+    fixture_repo = None
+    if any(id(p.task) in template_ids for p in plan.tasks):
+        try:
+            fixture_repo = run_mod.template_fixture(workspace)
+        except (OSError, RuntimeError) as exc:
+            print(f"gbfleet bench run: cannot build the template fixture: {exc}", file=sys.stderr)
+            return 1
+
+    def repo_for(task) -> Path:
+        return fixture_repo if id(task) in template_ids else user_repo
+
+    repo = user_repo or fixture_repo
+    wave = "bench"
+    # A per-run token in every branch/worktree name: a second run on the same repo never
+    # meets the first run's `gb/bench-*` branches (GRPH-1904).
+    run_tag = uuid.uuid4().hex[:6]
+    limits = Limits(max_workers=1, child_wall_clock=args.child_wall_clock,
+                    registration_window=args.registration_window)
+
+    def cut(task, base=None):
+        # `base` is a review task's ref: its reviewer reads the change at that commit.
+        return sup._tree_for(repo_for(task), workspace, wave, run_tag + "-" + "".join(
+            c if c.isalnum() else "-" for c in task.id), base=base or task.base_sha)
+
+    def start(tree, code, task, scratch, review_skip=()):
+        # The scratch client carries the scratch project's key; the source key cannot
+        # register a child there (it is scoped to the source project).
+        declare = {"vendor": vendor, "model": model, "tier": "cheap"}
+        if task.kind == "review":
+            # A review-only seat: the child gets the review instruction (claim_review, then
+            # sign_off or bounce), never the build one (GRPH-1874 bounce).
+            seat = Seat(code, args.server, scratch.api_key, role="reviewer", declare=declare,
+                        review_only=True, review_skip=tuple(review_skip))
+        else:
+            seat = Seat(code, args.server, scratch.api_key, declare=declare, bound_only=True)
+        return sup.start_one(tree, seat, factory, scratch, limits, sup.Partition(), workspace=workspace,
+                             wave_name=wave, slot="".join(
+                                 c if c.isalnum() else "-" for c in task.id))
+
+    def reap(tree):
+        wt_mod.reap_held(tree, vendor)
+
+    def stop(child):
+        stop_child(child, Reason.WALL_CLOCK)
+
+    def read_verdict(task, scratch, item_id):
+        """The reviewer's verdict on the task's own scratch item (`review.verdict_of`).
+
+        Read on a client that may call `get_item_details` and nothing else. The scratch
+        roster client carries the supervisor's allowlist, which reads no item.
+        """
+        reader = Graphban(args.server, scratch.api_key, project_id=getattr(scratch, "project_id", ""),
+                          allowed=BENCH_VERDICT_READS)
+        try:
+            return review_mod.verdict_of(reader.call("get_item_details", id=item_id))
+        finally:
+            reader.close()
+
+    posted = run_mod.run_plan(
+        plan, repo=repo, client=client, read_verdict=read_verdict,
+        open_scratch=lambda run: Graphban(args.server, run_mod.scratch_credential(run),
+                                          project_id=run["project_id"]),
+        start=start, cut=cut, limits=limits, stop=stop, reap=reap, wave=wave, repo_for=repo_for,
+        binary_version=getattr(factory, "binary_version", "") or "")
+    for r in posted.get("results", []):
+        print(f"{r.task_id}: {r.outcome}" + (f" ({r.detail})" if r.detail else ""))
+    results = posted.get("results", [])
+    print(f"posted {len(results)} outcome(s) for {args.adapter}")
+    if results and all(r.outcome in ("harness_error", "never_registered") for r in results):
+        print("gbfleet bench run: every task came back as plumbing (harness_error or "
+              "never_registered); this run measured nothing", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _bench_compare(args: argparse.Namespace) -> int:
+    from .bench import compare as compare_mod
+
+    api_key = os.environ.get(API_KEY_ENV)
+    if not api_key:
+        print(f"gbfleet bench compare: set ${API_KEY_ENV} to an agent key", file=sys.stderr)
+        return 2
+    client = Graphban(args.server, api_key, project_id=args.project)
+    try:
+        results = client.list_bench_results(args.project)
+        a = compare_mod.find_run(results, args.runs[0])
+        b = compare_mod.find_run(results, args.runs[1])
+        lines = compare_mod.compare(a, b)
+    except (ObservationRefused, compare_mod.CompareRefused) as exc:
+        print(f"gbfleet bench compare: {exc}", file=sys.stderr)
+        return 1
+    print("\n".join(lines))
+    return 0
+
+
+def _bench(args: argparse.Namespace) -> int:
+    from .bench import suite as suite_mod
+    from .bench import validate as validate_mod
+
+    if args.act == "run":
+        return _bench_run(args)
+    if args.act == "harvest":
+        return _bench_harvest(args)
+    if args.act == "adopt":
+        return _bench_adopt(args)
+    if args.act == "compare":
+        return _bench_compare(args)
+    if args.act == "list":
+        try:
+            tpl = suite_mod.load(suite_mod.template_manifest())
+        except suite_mod.SuiteError as exc:
+            print(f"gbfleet bench list: {exc}", file=sys.stderr)
+            return 1
+        print(f"template: {tpl.id} v{tpl.version} ({len(tpl.tasks)} tasks)")
+        return 0
+    if args.act != "validate":
+        print("gbfleet bench: say what to do. Try `gbfleet bench validate MANIFEST`.", file=sys.stderr)
+        return 2
+    try:
+        loaded = suite_mod.load(args.manifest)
+    except suite_mod.SuiteError as exc:
+        print(f"gbfleet bench validate: {exc}", file=sys.stderr)
+        return 1
+    problems = suite_mod.leaf_floor_problems(loaded) if loaded.id == suite_mod.TEMPLATE_ID else []
+    for line in problems:
+        print(f"gbfleet bench validate: {line}", file=sys.stderr)
+    if args.repo is None and loaded.id == suite_mod.TEMPLATE_ID:
+        from .bench.template import fixture
+
+        with tempfile.TemporaryDirectory(prefix="gbfleet-template-") as tmp:
+            try:
+                verdicts = validate_mod.validate(loaded, fixture.build(Path(tmp) / "repo"))
+            except (OSError, RuntimeError) as exc:
+                print(f"gbfleet bench validate: cannot build the template fixture: {exc}",
+                      file=sys.stderr)
+                return 1
+    else:
+        verdicts = validate_mod.validate(loaded, Path(args.repo or "."))
+    for v in verdicts:
+        print(v.line())
+    return 0 if all(v.ok for v in verdicts) and not problems else 1
+
+
+def _grid_baseline(b: dict | None) -> str:
+    if not b:
+        return "no baseline"
+    rate = "-" if b.get("rate") is None else f"{round(b['rate'] * 100)}%"
+    grey = " (below floor)" if b.get("below_floor") else ""
+    excl = f" excluded={b['excluded']}" if b.get("excluded") else ""
+    return f"{rate} n={b['n']}{excl} {b['suite_id']} v{b['suite_version']}{grey}"
+
+
+def _harness(args: argparse.Namespace) -> int:
+    if args.act != "grid":
+        print("gbfleet harness: say what to do. Try `gbfleet harness grid`.", file=sys.stderr)
+        return 2
+    api_key = os.environ.get(API_KEY_ENV)
+    if not api_key:
+        print(f"gbfleet harness grid: set ${API_KEY_ENV} to an agent key", file=sys.stderr)
+        return 2
+    try:
+        data = Graphban(args.server, api_key, project_id=args.project).get_grid(args.project)
+    except ObservationRefused as exc:
+        print(f"gbfleet harness grid: {exc}", file=sys.stderr)
+        return 1
+    print("cell\tn\tlayer\trate\tbaseline")
+    for cell in data.get("cells") or []:
+        for c in (cell.get("leaves") or [cell]):
+            k = c["key"]
+            samples = c.get("samples") or {}
+            if c.get("layer") == "baseline":
+                label = (f"{k['vendor']}:{k['model']}@{k.get('binary_version') or '?'} "
+                         f"{k['capability']} band {k.get('size_band') or '?'}")
+                print(f"{label}\t0\tbaseline\t-\t{_grid_baseline(c.get('baseline'))}")
+                continue
+            nat = samples.get("natural") or {"finished": c["finished"], "rate": c.get("rate")}
+            prb = samples.get("probe")
+            for layer, side in (("natural", nat), ("probe", prb)):
+                if side is None or (layer == "probe" and not side.get("finished")):
+                    continue
+                n = side.get("finished", side.get("n", 0))
+                rate = "-" if side.get("rate") is None else f"{round(side['rate'] * 100)}%"
+                floor = " (below floor)" if n < data.get("floor", 5) else ""
+                base = _grid_baseline(c.get("baseline")) if layer == "natural" else ""
+                label = (f"{k['vendor']}:{k['model']}@{k.get('binary_version') or '?'} "
+                         f"{k['capability']} band {k.get('size_band') or '?'}")
+                print(f"{label}\t{n}{floor}\t{layer}\t{rate}\t{base}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1564,8 +2089,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "check-touchpoints":
         return _check_touchpoints(args)
 
+    if args.command == "recover":
+        return _recover(args)
+
     if args.command == "entitlement":
         return _entitlement(args)
+
+    if args.command == "bench":
+        return _bench(args)
+
+    if args.command == "harness":
+        return _harness(args)
 
     if args.command == "teardown":
         return _teardown(args)

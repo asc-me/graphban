@@ -90,6 +90,15 @@ def test_fills_graph_at_head_and_skips_binaries(tmp_path):
     assert not any("prune" in args for _, args in graph.calls)
 
 
+def test_every_batch_carries_the_producer_marker(tmp_path):
+    repo = _repo(tmp_path)
+    graph = FakeGraph()
+    _run(repo, graph)
+    describes = [a for n, a in graph.calls if n == "describe_code"]
+    assert describes
+    assert all(a.get("producer", "").startswith("gban-codemap/") for a in describes)
+
+
 def test_python_and_ts_edges(tmp_path):
     graph = FakeGraph()
     _run(_repo(tmp_path), graph)

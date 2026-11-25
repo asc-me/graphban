@@ -2,7 +2,7 @@
 
 Graphban is an agent-native dev tool: linear tracker + pgvector agent memory +
 request triage + a code-structure graph, all operable by coding agents through
-81 MCP tools (`POST /api/mcp`, JSON-RPC) that share one service layer with the
+82 MCP tools (`POST /api/mcp`, JSON-RPC) that share one service layer with the
 REST API and web UI. Local-Docker-first; stays fully offline by default (stub
 embeddings/chat — real providers are opt-in env config).
 
@@ -29,7 +29,10 @@ local run is right only when the failure cannot be pinned to named tests (a coll
 error, a hang, a whole job that died). If your brief states no mode, use `agent_and_pr`.
 
 ```bash
-# Backend (from backend/; venv via `uv venv --python 3.12 .venv && uv pip install -e ".[dev]"`)
+# Backend (from backend/; venv via `uv venv --python 3.12 .venv`, then install HELD TO uv.lock:
+# `python3 scripts/lock_constraints.py write uv.lock /tmp/lc.txt && uv pip install -e ".[dev]" -c /tmp/lc.txt`.
+# A bare `uv pip install -e ".[dev]"` floats on pyproject's ranges — measured fastapi 0.165.0
+# where the lock, CI and every deployment pin 0.139.2. See docs/development.md, GRPH-1932.)
 ./.venv/bin/python -m pytest -q          # SQLite; the full run takes 20-40 min under load. pytest is NOT on the host PATH.
 
 # Backend against real Postgres+pgvector (what production runs — CI runs both):
@@ -109,7 +112,7 @@ needs a person's own terminal (`sudo`, an interactive login).
   functions in `backend/app/services/`. Never duplicate domain logic in a router
   or tool handler.
 - **Schema is owned by Alembic** on Postgres (`backend/alembic/versions/`,
-  currently 0001–0225). SQLite/tests use `create_all`. Never edit an applied
+  currently 0001–0230). SQLite/tests use `create_all`. Never edit an applied
   migration; add a new one.
 - **AI providers only via `backend/app/providers/`** (`Embedder`/`ChatModel`/
   `Extractor` protocols, selected by `EMBED_PROVIDER`/`CHAT_PROVIDER`). Offline
