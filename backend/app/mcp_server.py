@@ -1929,7 +1929,6 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
             "claimed": {"type": "boolean"}, "item": {"type": ["object", "null"]},
             "branch": {"type": "string"}, "worker_agent": {"type": ["string", "null"]},
             "reason": {"type": "string"}, "withheld": {"type": "array"},
-            "merge_commit": {"type": "string"}, "branch_gone": {"type": "boolean"},
         },
     },
     "sign_off": _ITEM_SCHEMA,
@@ -3830,18 +3829,19 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # GRPH-1652: and NAME what was withheld, by item and rule. An item in review that
             # nobody is handed is otherwise indistinguishable from an empty queue.
             return {"claimed": False, "item": None, "branch": "", "worker_agent": None,
-                    "merge_commit": "", "branch_gone": False,
+                    "merge_commit": "",
                     "reason": fleet_svc.review_block_reason(
                         db, agent_id=args.get("agent_id") or agent, project_id=pid),
                     "withheld": fleet_svc.review_withheld(
                         db, agent_id=agent, project_id=pid, skip=args.get("skip"))}
         # GRPH-1010: a branch gbfleet found gone is not the thing to read. Its merge commit
-        # is, and `sign_off` takes that commit — the reviewer is told which one.
+        # is, and `sign_off` takes that commit — the reviewer is told which one. Left out of
+        # the declared outputSchema: the manifest is at its token ceiling, and every key
+        # would pay for a field only a post-merge review ever fills.
         gone = fleet_svc.branch_gone(item)
         return {"claimed": True, "item": _item_dict(item), "branch": item.branch or "",
                 "worker_agent": item.claimed_by, "reason": "", "withheld": [],
-                "merge_commit": gone[1] if gone else "",
-                "branch_gone": bool(gone)}
+                "merge_commit": gone[1] if gone else ""}
     if name == "sign_off":
         _scoped_item(db, args["id"], allowed)
         agent = fleet_svc.caller_identity(args.get("agent_id"), key)

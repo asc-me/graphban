@@ -62,7 +62,7 @@ def test_a_receipt_for_another_branch_does_not_withhold(client, key, proj, db):
     reviewer = _reviewer(client, key, proj, db, planner, "reviewer")
     got = _ok(_mcp(client, key, "claim_review", {"agent_id": reviewer}))
     assert got["claimed"] and got["item"]["id"] == item, got
-    assert got["branch_gone"] is False and got["merge_commit"] == ""
+    assert got["merge_commit"] == ""
 
 
 def test_new_work_on_the_branch_clears_the_receipt(client, key, proj, db):
@@ -91,7 +91,6 @@ def test_merged_work_reaches_done_through_a_review_of_its_merge_commit(client, k
     reviewer = _reviewer(client, key, proj, db, planner, "reviewer")
     got = _ok(_mcp(client, key, "claim_review", {"agent_id": reviewer}))
     assert got["claimed"] and got["item"]["id"] == item, got
-    assert got["branch_gone"] is True
     assert got["merge_commit"] == MERGE, "the reviewer must be told what to read instead"
 
     out = _ok(_mcp(client, key, "sign_off", {
