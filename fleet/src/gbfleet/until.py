@@ -5432,20 +5432,43 @@ def _unready(planner: Graphban, line: str) -> list[dict]:
             rid = str(r.get("id"))
             if rid in pooled:
                 continue
-            has_accept = bool(_ACCEPT_RE.search(str(r.get("description") or "")))
+            description = _unready_description(planner, r)
+            has_accept = None if description is None else bool(_ACCEPT_RE.search(description))
             has_touch = bool([t for t in (r.get("touchpoints") or []) if str(t).strip()])
             # Ready, and out only because a review item holds its area.
             if rid in held_by and has_accept and has_touch:
                 out.append({"id": rid, "held_by": held_by[rid]})
                 continue
             missing = []
-            if not has_accept:
+            if has_accept is None:
+                missing.append("unknown")
+            elif not has_accept:
                 missing.append("acceptance")
             if not has_touch:
                 missing.append("touchpoints")
             if missing:
                 out.append({"id": rid, "missing": missing})
     return out
+
+
+def _unready_description(planner: Graphban, row: dict) -> str | None:
+    """The description of a line item left out of the claim pool (GRPH-1831).
+
+    `search_items(fields="full")` carries no `description` key at all, so reading it
+    from that row named "acceptance" missing for every left-out item. Only a row that
+    actually carries the key is trusted; otherwise it is read with `get_item_details`
+    (only left-out candidates reach here, so there are few). None means the read failed
+    or carried no description: the caller says "unknown" rather than naming acceptance.
+    """
+    if "description" in row:
+        return str(row.get("description") or "")
+    try:
+        got = planner.call("get_item_details", id=str(row.get("id")))
+    except (NotPermitted, ToolFailed, ServerUnreachable):
+        return None
+    if not isinstance(got, dict) or "description" not in got:
+        return None
+    return str(got.get("description") or "")
 
 
 def _wait_ids(planner: Graphban) -> list[str]:
