@@ -1319,7 +1319,25 @@ def fleet_status(db: Session, project_id: str | None = None, *,
         # it already makes. `{ref, source}`, never a bare null: `unmeasured` means no rule is
         # installed, and nothing here infers `main`.
         "release_ref": projects_svc.release_ref_view(db, project_id),
+        **_line_unready(db, project_id),
     }
+
+
+def _line_unready(db: Session, project_id: str | None) -> dict:
+    """`{"line_unready": [{id, missing}]}` for a project with a maintenance line (GRPH-1839).
+
+    The server already computes which line items are out of the claim pool for lacking an
+    acceptance clause or a touchpoint (`items.unready_line_items`), but returned it only on a
+    line seat's `claim_cluster`, which a planner and a supervisor never call. Four fixes sat
+    unclaimable for days with nothing a planner reads saying so. An empty list means it
+    looked and found none; the key is absent only when the project has no line (or the call
+    is not scoped to one project), so absence is never read as "all ready".
+    """
+    from app.services import lines as lines_svc
+
+    if not project_id or lines_svc.get_line(db, project_id) is None:
+        return {}
+    return {"line_unready": items_svc.unready_line_items(db, project_id)}
 
 
 def _routing_stamp() -> str:

@@ -5500,8 +5500,8 @@ def _unready(planner: Graphban, line: str) -> list[dict]:
     `[{id, held_by}]` when the item is ready and the only reason it is out of the
     pool is another item's review hold. Empty means it looked and found none.
 
-    The server computes the missing list (`items.unready_line_items`) but returns it
-    only on a line seat's `claim_cluster`, which a supervisor must not call. So WHICH
+    The server computes the missing list (`items.unready_line_items`). An older server
+    returns it only on a line seat's `claim_cluster`, which a supervisor must not call. So WHICH
     items are out is the server's verdict, read from its claim pool: a line item counts
     only when it is open, unclaimed and unblocked and `collision_clusters` left it out
     of `items`. A sibling stripped by a review hold lives in `held_because[].held`, not
@@ -5510,14 +5510,21 @@ def _unready(planner: Graphban, line: str) -> list[dict]:
     missing, and which no review hold names, is out of the pool for another reason (a
     dependency) and is not listed. A failed read is an empty list: the run is already
     finishing.
+
+    GRPH-1839: a server that carries `line_unready` on `fleet_status` has already said
+    which line items lack acceptance or touchpoints, so that list is reported as given
+    and nothing here re-derives it. Only a review hold on a ready item is added, from the
+    claim pool. The guess below runs only when the key is absent (an older server).
     """
+    server = _server_line_unready(planner)
     try:
         clusters = (planner.call("collision_clusters") or {}).get("clusters") or []
     except (NotPermitted, ToolFailed, ServerUnreachable):
-        return []
+        return list(server or [])
     pooled = {str(i) for c in clusters if isinstance(c, dict) for i in (c.get("items") or [])}
     held_by = _held_by_review(clusters)
-    out: list[dict] = []
+    named = {u["id"] for u in server} if server is not None else set()
+    out: list[dict] = list(server) if server is not None else []
     for status in ("backlog", "next"):
         try:
             got = planner.call("search_items", status=status, fields="full", limit=10_000)
@@ -5529,6 +5536,12 @@ def _unready(planner: Graphban, line: str) -> list[dict]:
                 continue
             rid = str(r.get("id"))
             if rid in pooled:
+                continue
+            if server is not None:
+                # The server's list already names every line item lacking acceptance or
+                # touchpoints; anything else held out by a review hold is ready.
+                if rid not in named and rid in held_by:
+                    out.append({"id": rid, "held_by": held_by[rid]})
                 continue
             description = _unready_description(planner, r)
             has_accept = None if description is None else bool(_ACCEPT_RE.search(description))
@@ -5546,6 +5559,25 @@ def _unready(planner: Graphban, line: str) -> list[dict]:
                 missing.append("touchpoints")
             if missing:
                 out.append({"id": rid, "missing": missing})
+    return out
+
+
+def _server_line_unready(planner: Graphban) -> list[dict] | None:
+    """The server's `fleet_status.line_unready`, or None when it carries none (GRPH-1839).
+
+    None means an older server, a project with no line, or a failed read: the caller falls
+    back to its own check. A list (even empty) is the server's verdict.
+    """
+    try:
+        roster = planner.call("fleet_status")
+    except (NotPermitted, ToolFailed, ServerUnreachable):
+        return None
+    if not isinstance(roster, dict) or not isinstance(roster.get("line_unready"), list):
+        return None
+    out = []
+    for u in roster["line_unready"]:
+        if isinstance(u, dict) and u.get("id"):
+            out.append({"id": str(u["id"]), "missing": [str(m) for m in u.get("missing") or []]})
     return out
 
 
