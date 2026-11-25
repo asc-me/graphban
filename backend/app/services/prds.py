@@ -4762,14 +4762,95 @@ def _sibling_extension(nodes, directory: str) -> str:
     return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
 
 
-def _resolve_named_things(nodes, text: str) -> list[tuple[int, str, str, bool]]:
+#: Edge types that say a file depends on another: a mention's own reads.
+_DEPENDS_EDGES = frozenset({"imports", "calls", "references"})
+#: Path words too common to say two files are about the same thing.
+_PATH_STOP = frozenset({"test", "tests", "init", "spec", "index", "main", "util", "utils"})
+
+
+def _name_word(word: str) -> str:
+    """A plural file-name word made singular: `rules` → `rule`, `toggles` → `toggle`.
+
+    Not `_stem`, which drops `es` and so reads `rules` as `rul`: the registry `rules.py`
+    then shared no word with `test_done_predicates_rule.py` and fell out of the candidates.
+    """
+    return word[:-1] if word.endswith("s") and not word.endswith("ss") and len(word) > 3 else word
+
+
+def _path_words(path: str) -> set[str]:
+    """The words of a path's file stem: `test_done_predicates_rule.py` → done, predicate, rule."""
+    return {_name_word(w) for w in re.split(r"[^a-z0-9]+", _node_stem(path).lower())
+            if len(w) > 2 and w not in _PATH_STOP}
+
+
+def _dependency_map(edges) -> dict[str, set[str]]:
+    """`src → {dst}` for every edge that says src depends on dst.
+
+    A `tested_by` edge runs module → test, so it is read backwards: the test depends on
+    the module it tests.
+    """
+    out: dict[str, set[str]] = {}
+    for e in edges or ():
+        src, dst = getattr(e, "src", "") or "", getattr(e, "dst", "") or ""
+        kind = getattr(e, "type", "") or "imports"
+        if not src or not dst or src == dst:
+            continue
+        if kind == "tested_by":
+            out.setdefault(dst, set()).add(src)
+        elif kind in _DEPENDS_EDGES:
+            out.setdefault(src, set()).add(dst)
+    return out
+
+
+def _definition_of_mention(token: str, mentioners: list[str],
+                           depends: dict[str, set[str]]) -> tuple[str, str] | None:
+    """`(path, mentioner)` for the file that defines what `mentioners` only name (GRPH-1937).
+
+    A graph entry that names `merge.done_predicates` is a mention, not a definition: on
+    P92's D1 and D2 that tier proposed `test_done_predicates_rule.py`,
+    `test_exclusive_areas_rule.py` and `test_rule_engine_evidence.py`, and
+    `fleet/src/gbfleet/supervisor.py` for `build.generated_files` — tests and a consumer.
+    The ids are defined in `backend/app/services/rule_toggles.py`, which no entry names.
+
+    What a mention can say is what it depends on. A candidate is a file a mentioner
+    imports, calls, references or is tested by that shares a word with the mentioner's
+    own name or with the token (`test_done_predicates_rule` → `rule_toggles`, `rules`;
+    not `items`, `db` or `config`) and is not itself a test, a migration or a package
+    `__init__`. Ranked by how many mentioners depend on it, then by how many other
+    candidates depend on it — `rules.py` imports `rule_toggles.py`, so the toggles are the
+    definition the registry builds on. A mention with no such candidate places nothing:
+    `supervisor.py` shares no word with `test_generated_files_rule`, so the rule id it
+    reads is not proposed through it.
+    """
+    token_words = {_name_word(w) for w in re.split(r"[^a-z0-9]+", token.lower()) if len(w) > 2}
+    votes: dict[str, set[str]] = {}
+    for m in mentioners:
+        words = _path_words(m) | token_words
+        for dst in depends.get(m, ()):
+            if _definition_rank(dst) or _node_stem(dst) == "__init__":
+                continue
+            if _path_words(dst) & words:
+                votes.setdefault(dst, set()).add(m)
+    if not votes:
+        return None
+    candidates = set(votes)
+
+    def built_on(path: str) -> int:
+        return sum(1 for other in candidates if other != path and path in depends.get(other, ()))
+
+    best = min(candidates, key=lambda p: (-len(votes[p]), -built_on(p), len(p), p))
+    return best, sorted(votes[best])[0]
+
+
+def _resolve_named_things(nodes, text: str, edges=None) -> list[tuple[int, str, str, bool]]:
     """`(order, path, evidence, create)` for the names in `text` the graph can place.
 
     A backticked name resolves to a symbol node of that name, then to a file whose name or
-    stem is that name, then to a file whose entry in the graph names it — the definition
-    site first at every tier. A command or a surface the graph holds no module for becomes
-    a create beside its closest existing siblings: the section says the work exists, and
-    the graph says where its kind lives.
+    stem is that name, then — when only a file's entry in the graph names it — to the file
+    those mentions depend on (`_definition_of_mention`): a test or a consumer that names a
+    rule id is not where the work goes (GRPH-1937). A command or a surface the graph holds
+    no module for becomes a create beside its closest existing siblings: the section says
+    the work exists, and the graph says where its kind lives.
     """
     symbols: dict[str, list[str]] = {}
     stems: dict[str, list[str]] = {}
@@ -4789,6 +4870,7 @@ def _resolve_named_things(nodes, text: str) -> list[tuple[int, str, str, bool]]:
     def best(paths: list[str]) -> str:
         return min(paths, key=lambda p: (_definition_rank(p), len(p), p))
 
+    depends: dict[str, set[str]] | None = None
     out: list[tuple[int, str, str, bool]] = []
     for token, kind in _named_things(text):
         if kind == "name":
@@ -4797,13 +4879,20 @@ def _resolve_named_things(nodes, text: str) -> list[tuple[int, str, str, bool]]:
             if not hits:
                 tier, hits = 1, sorted(set(stems.get(low, [])))
             if not hits:
-                tier, hits = 2, [p for p, entry in described if _whole_token(entry, low)]
-            if not hits:
+                mentioners = sorted({p for p, entry in described if _whole_token(entry, low)})
+                if depends is None:
+                    depends = _dependency_map(edges)
+                found = _definition_of_mention(token, mentioners, depends)
+                if not found:
+                    continue
+                path, via = found
+                out.append((2, path, (f"the section names `{token}`; the code graph's entry "
+                                      f"for `{via}` names it, and that file depends on this "
+                                      "one"), False))
                 continue
             why = {
                 0: f"the section names `{token}`, a symbol this file defines",
                 1: f"the section names `{token}`, which is this file",
-                2: f"the code graph's entry for this file names `{token}`",
             }[tier]
             out.append((tier, best(hits), why, False))
         elif kind == "command":
@@ -4838,6 +4927,83 @@ def _resolve_named_things(nodes, text: str) -> list[tuple[int, str, str, bool]]:
     return out
 
 
+#: "An import run is a record", "each finding is a stored record": a section defining one.
+_RECORD_PHRASE = re.compile(
+    r"\b(?:an?|the|one|each)\s+((?:[a-z][a-z0-9-]*\s+){0,2}?[a-z][a-z0-9-]*)\s+is\s+an?\s+"
+    r"(?:new\s+|stored\s+|durable\s+)?record\b",
+    re.IGNORECASE,
+)
+
+
+def _home_dir(nodes, names: tuple[str, ...], anchor: str = "") -> str:
+    """The graph's directory named one of `names`, nearest `anchor`, then densest, never web.
+
+    Nearest is the longest shared leading path: a record's model sits beside the services
+    that use it (`backend/app/models` for `backend/app/services`), not in whichever other
+    `models/` directory the repo happens to hold more files in.
+    """
+    dirs: list[str] = []
+    for name in names:
+        dirs.extend(d for d in _sibling_dirs(nodes, name) if not _is_web_touchpoint(d))
+    if not dirs:
+        return ""
+    anchor_parts = anchor.split("/") if anchor else []
+
+    def shared(d: str) -> int:
+        n = 0
+        for a, b in zip(d.split("/"), anchor_parts):
+            if a != b:
+                break
+            n += 1
+        return n
+
+    order = {d: i for i, d in enumerate(dirs)}
+    return min(dirs, key=lambda d: (-shared(d), order[d]))
+
+
+def _record_homes(nodes, text: str) -> list[tuple[str, str, bool]]:
+    """`(path, evidence, create)` for the backend a record the section defines needs (GRPH-1937).
+
+    P92's D3 opens "**An import run is a record:** project, commit, sources read and
+    unread…" and was proposed only `web/src/features/rules/`. Its builder has to add a
+    model, a migration, a service and a route, and the touchpoint gate refuses every one
+    of them. A section that says a thing is a record names its storage, and the graph says
+    where storage lives: the services directory, and the models, migrations and routers
+    nearest it. Nothing here is a path the graph already holds a file for, so each is a
+    create — the service module by the record's name, the rest as the directory it lands in.
+    """
+    match = _RECORD_PHRASE.search(_FENCED_BLOCK.sub(" ", text or ""))
+    if not match:
+        return []
+    phrase = " ".join(match.group(1).split()).lower()
+    services = _home_dir(nodes, ("services",))
+    if not services:
+        return []
+    words = [w for w in re.split(r"[^a-z0-9]+", phrase) if w]
+    name = "_".join(words)
+    if name and not name.endswith("s"):
+        name += "s"
+    known = {_node_file(n) for n in nodes}
+    why = f"the section says {match.group(0).strip()!r}"
+    out: list[tuple[str, str, bool]] = []
+    for names, what in ((("models",), "its model"),
+                        (("versions", "migrations"), "its migration"),
+                        (("routers", "routes"), "its route")):
+        directory = _home_dir(nodes, names, services)
+        if what == "its migration" and directory.rsplit("/", 1)[-1] == "versions" \
+                and "alembic" not in directory:
+            directory = ""
+        if directory:
+            out.append((f"{directory}/", f"create: {why}; {what} goes in `{directory}/`", True))
+    service = f"{services}/{name}{_sibling_extension(nodes, services) or '.py'}"
+    if service in known:
+        out.insert(0, (service, f"{why}; this file is its service", False))
+    else:
+        out.insert(0, (service, f"create: {why}; its service is a new module beside "
+                                f"`{services}`'s others", True))
+    return out
+
+
 def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[dict]:
     """Code-graph paths a section likely changes, each with the evidence that matched.
 
@@ -4850,7 +5016,10 @@ def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[
     section names a file under is not proposed either (`_shadowed_directory`, GRPH-1910) —
     asked again over the whole set at the return, because a resolved name places a
     container the lexical tier never saw, so it holds whichever tier put it there
-    (GRPH-1930).
+    (GRPH-1930). A name only a graph entry mentions resolves through what that entry's
+    file depends on, never to the mentioning test or consumer, and a section that says a
+    thing "is a record" gets creates for the record's service, model, migration and route
+    (GRPH-1937).
 
     What the section named is collected before search runs and keeps its order, so
     `_TP_MAX` truncation cuts search hits first and the named files last.
@@ -4884,7 +5053,13 @@ def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[
     for path, evidence in named.items():
         if not _shadowed_directory(path, text, matched):
             add(path, evidence)
-    for _order, path, evidence, create in _resolve_named_things(nodes, raw):
+    try:
+        edges = code_graph.list_edges(db, prd.project_id)
+    except Exception:  # noqa: BLE001 - edges only sharpen a mention; without them it places nothing
+        edges = []
+    for _order, path, evidence, create in _resolve_named_things(nodes, raw, edges):
+        add(path, evidence, create)
+    for path, evidence, create in _record_homes(nodes, raw):
         add(path, evidence, create)
     try:
         hits = code_graph.search_code(db, raw[:2000], prd.project_id, top_k=_TP_MAX)
