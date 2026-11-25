@@ -17,7 +17,9 @@ A deeper map is in [Architecture](ARCHITECTURE.md).
 ```bash
 cd backend
 uv venv --python 3.12 .venv && source .venv/bin/activate
-uv pip install -e ".[dev]"           # add ".[dev,cloud]" for the Anthropic SDK
+# Held to uv.lock — the set CI and every deployment install (see below).
+python3 scripts/lock_constraints.py write uv.lock /tmp/lock-constraints.txt
+uv pip install -e ".[dev]" -c /tmp/lock-constraints.txt   # ".[dev,cloud]" for the Anthropic SDK
 
 # zero-infra (SQLite, create_all + seed on boot):
 export DATABASE_URL="sqlite:///./dev.db"
@@ -27,6 +29,30 @@ export DATABASE_URL="sqlite:///./dev.db"
 uvicorn app.main:app --reload        # http://localhost:8000, OpenAPI at /docs
 pytest                               # full backend suite (runs on SQLite, offline)
 ```
+
+### Dependencies: `uv.lock` is the truth, `pyproject.toml` is the range
+
+`backend/pyproject.toml` carries ranges (`fastapi>=0.115`); `backend/uv.lock` carries the
+versions that ship. Nothing installs from the ranges. `backend/Dockerfile`,
+`scripts/graphban_host.py` and every backend CI job write pip constraints out of the lock
+(`backend/scripts/lock_constraints.py`), install under them, and then run
+`lock_constraints.py check uv.lock --strict` so an install that drifted fails instead of
+passing quietly — GRPH-1615 for the shipped installs, GRPH-1932 for the test jobs.
+
+That makes a bare `uv pip install -e ".[dev]"` the one install path that still floats: it
+resolves from the specifiers and never reads the lock. Measured 2026-11-25 it gave fastapi
+0.165.0 / starlette 1.10.0 where the lock pins 0.139.2 / 1.3.1 — not what CI runs and not
+what a deployment runs, so a venv built that way can disagree with a green suite and cost you
+the afternoon. Install under the constraints above. If you inherited a venv and want to know
+which side of that gap you are on, ask it:
+
+```bash
+.venv/bin/python scripts/lock_constraints.py check uv.lock   # empty output = you match the lock
+```
+
+Adding or bumping a dependency is two steps, and the second is the one that ships: edit
+`backend/pyproject.toml`, then `cd backend && uv lock`. Until the lock moves, the new version
+is installed nowhere and `check --strict` reports it as a package the lock never named.
 
 The test suite is fully offline and deterministic (it uses the stub providers and a temp
 SQLite DB). Tests are organized by phase in `backend/tests/`.

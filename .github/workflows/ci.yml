@@ -172,7 +172,21 @@ jobs:
           enable-cache: true
           cache-dependency-glob: backend/pyproject.toml
       - run: uv venv --python 3.12 .venv
-      - run: uv pip install -e ".[dev]"
+      # Held to uv.lock, the set the SHIPPED installs use (GRPH-1615 held the Dockerfile and
+      # the native host; GRPH-1932 is the same fork on the test side). Without `-c` this
+      # resolves from pyproject's specifiers and floats on every upstream release: measured
+      # 2026-11-25, a bare `uv pip install -e ".[dev]"` gave fastapi 0.165.0 / starlette
+      # 1.10.0 while uv.lock — what pip-audit scans and what a deploy installs — pins
+      # 0.139.2 / 1.3.1. So `suite_green` attested a dependency set no deployment runs, and a
+      # red suite could arrive from an upstream release with no commit in this repo.
+      - run: python3 scripts/lock_constraints.py write uv.lock "$RUNNER_TEMP/lock-constraints.txt"
+      - run: uv pip install -e ".[dev]" -c "$RUNNER_TEMP/lock-constraints.txt"
+      # Strict, like the wheel job: `uv venv` made this venv empty, so a package the lock does
+      # not name has the same "the scan never saw it" meaning here as it does in the image.
+      # It is also the only thing that catches a dev extra added to pyproject.toml without a
+      # relock — `-c` cannot pin what the lock does not contain.
+      - name: The suite's venv equals uv.lock
+        run: .venv/bin/python scripts/lock_constraints.py check uv.lock --strict
       # -n auto: one worker per core, each with its own database (see tests/conftest.py).
       # The suite is serial otherwise and the runner has cores going spare.
       - run: .venv/bin/python -m pytest -q -n auto
@@ -242,7 +256,14 @@ jobs:
           enable-cache: true
           cache-dependency-glob: backend/pyproject.toml
       - run: uv venv --python 3.12 .venv
-      - run: uv pip install -e ".[dev]"
+      # Held to uv.lock exactly like backend-sqlite; the comment there says why the test jobs
+      # no longer float on pyproject's specifiers (GRPH-1932). This leg matters most: it is
+      # the one that runs the real Alembic chain and the pgvector `<=>` search path, so it is
+      # the attestation a Postgres deploy actually relies on.
+      - run: python3 scripts/lock_constraints.py write uv.lock "$RUNNER_TEMP/lock-constraints.txt"
+      - run: uv pip install -e ".[dev]" -c "$RUNNER_TEMP/lock-constraints.txt"
+      - name: The suite's venv equals uv.lock
+        run: .venv/bin/python scripts/lock_constraints.py check uv.lock --strict
       # -n auto: one worker per core, each with its own database (see tests/conftest.py).
       # The suite is serial otherwise and the runner has cores going spare.
       - run: .venv/bin/python -m pytest -q -n auto
