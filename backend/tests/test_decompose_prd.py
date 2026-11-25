@@ -1152,6 +1152,146 @@ def test_p92_real_body_files_a_touchpoint_for_every_section(client, auth, monkey
         assert subs[heading]["touchpoints"] == by[_D2]["touchpoints"], heading
 
 
+# ── GRPH-1938: every piece of a split carried the section's whole clause list ─────────
+#
+# The dry run on P92 v1.1 offered D2 as five pieces, each carrying the same three
+# section-level clauses, four of them the same borrowed paths. A split whose pieces share
+# every clause and every path partitions nothing.
+
+_D2_LAYERING = "A `CONTRIBUTING.md` line requiring a layering rule"
+_D2_FIXTURE_REPO = "On a fixture repo"
+_D2_SELF_MERGE = "A `CONTRIBUTING.md` line allowing self-merge"
+_D2_FOLDED = ["Proposed rule", "EXTERNAL states configuration, not safety"]
+
+
+def _p92_dry(client, auth, monkeypatch):
+    _quiet_semantic(monkeypatch)
+    prd = client.post("/api/prds", json={"title": "P92 real", "body": _P92_BODY},
+                      headers=auth).json()
+    _describe(_project_of(prd["id"]), _P92_GRAPH)
+    return prd, client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+
+
+def _starting(clauses, prefix):
+    return [c for c in clauses if c.startswith(prefix)]
+
+
+def test_p92_d2_places_each_section_clause_on_one_piece(client, auth, monkeypatch):
+    """Each of D2's three section-level clauses lands on the piece its text exercises.
+
+    The fixture-repo clause lists what a run files by primitive — the piece that says a
+    proposal targets only what the server evaluates. The layering clause is the "no
+    primitive expresses it" bucket. The self-merge clause restates no piece's prose, so it
+    is reported, not copied. Copying level clauses onto every piece again fails here.
+    """
+    _prd, dry = _p92_dry(client, auth, monkeypatch)
+    d2 = {p["section"]: p for p in dry["proposals"]}[_D2]
+    assert d2["oversized"] is True and d2["split_refused"] == ""
+    subs = {s["heading"]: s for s in d2["sub_items"]}
+
+    placed = [c for s in subs.values() for c in s["clauses"]]
+    assert len(placed) == len(set(placed)), "a clause sits on two pieces"
+    target = "A proposed rule targets only what the server enforces today"
+    assert len(_starting(subs[target]["clauses"], _D2_FIXTURE_REPO)) == 1
+    assert len(_starting(subs["Guidance plus gap"]["clauses"], _D2_LAYERING)) == 1
+    assert not _starting(placed, _D2_SELF_MERGE)
+    assert len(_starting(d2["unplaced_clauses"], _D2_SELF_MERGE)) == 1
+    # Every one of the section's clauses is accounted for exactly once.
+    assert sorted(placed + d2["unplaced_clauses"]) == sorted(d2["acceptance"])
+
+    # The two decision bullets, and the bucket that resolved no path and got no clause,
+    # are constraints on the others: not offered, carried in every piece's text.
+    assert d2["folded_pieces"] == _D2_FOLDED
+    assert not set(_D2_FOLDED) & set(subs)
+    assert set(subs) == {"EXTERNAL rule", "Guidance plus gap", target}
+    for heading, sub in subs.items():
+        assert "Only a parser reading forge or CI configuration" in sub["description"], heading
+    # The pieces partition: no two share both clauses and paths.
+    assert len({(tuple(s["clauses"]), tuple(sorted(s["touchpoints"])))
+                for s in subs.values()}) == len(subs)
+    assert dry["unassigned_clauses"] == []
+
+
+def test_p92_d2_filed_whole_split_puts_the_unplaced_clause_on_a_remainder(
+        client, auth, monkeypatch):
+    """Every offered piece accepted, and the unplaced clause still lands on an item.
+
+    Coverage counts by section, so a clause on no filed item would never be offered again.
+    """
+    from app.db import SessionLocal
+    from app.services import items as items_svc
+    from tests.prd_approve import approve_id
+
+    prd, dry = _p92_dry(client, auth, monkeypatch)
+    d2 = {p["section"]: p for p in dry["proposals"]}[_D2]
+    approve_id(prd["id"])
+    db = SessionLocal()
+    try:
+        out = prd_svc.decompose(
+            db, prd_svc.get_prd(db, prd["id"]), create=True,
+            splits={_D2: [s["heading"] for s in d2["sub_items"]]})
+        rows = [db.get(items_svc.Item, i) for i in out["created"]]
+        d2_rows = [r for r in rows if r.prd_section == _D2]
+        assert len(d2_rows) == len(d2["sub_items"]) + 1
+        remainder = next(r for r in d2_rows if r.title.endswith("— remainder"))
+        assert _D2_SELF_MERGE in remainder.description
+        assert remainder.touchpoints == d2["touchpoints"]
+        others = [r for r in d2_rows if r is not remainder]
+        assert not any(_D2_SELF_MERGE in r.description for r in others)
+        rem = next(r for r in out["split_remainders"] if r["section"] == _D2)
+        assert rem["headings"] == [] and rem["item_id"] == remainder.id
+        assert out["unfiled_pieces"] == []
+    finally:
+        db.close()
+
+
+def _two_piece_section(client, auth, touchpoints):
+    body = (
+        "# Spec\n\n## Wide\nShared preamble.\n\n"
+        "- **Alpha.** zebra quokka\n"
+        "- **Beta.** narwhal okapi\n\n"
+        "## Acceptance\n"
+        "### Wide\n- wide stores the ledger\n- wide exports the ledger\n"
+        "- wide prints the ledger\n"
+    )
+    prd = client.post("/api/prds", json={"title": "Refuse", "body": body},
+                      headers=auth).json()
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        out = prd_svc.decompose(db, prd_svc.get_prd(db, prd["id"]),
+                                touchpoints=touchpoints)
+    finally:
+        db.close()
+    return {p["section"]: p for p in out["proposals"]}["Wide"]
+
+
+def test_a_split_whose_pieces_hold_nothing_of_their_own_is_offered_whole(client, auth):
+    """No piece restates a clause or names a given path: a split would partition nothing."""
+    wide = _two_piece_section(client, auth, {"Wide": ["backend/app/wide.py"]})
+    assert wide["sub_items"] == []
+    assert wide["oversized"] is False
+    assert "partitions nothing" in wide["split_refused"]
+    assert "acceptance_clauses 3 > 2" in wide["split_refused"]
+    assert wide["unplaced_clauses"] is None and wide["folded_pieces"] is None
+    # Offered whole: the section item has every clause and path, and is claimable.
+    assert len(wide["acceptance"]) == 3
+    assert wide["touchpoints"] == ["backend/app/wide.py"]
+    assert wide["blocked"] is False
+    assert "oversized section refused" not in (wide["blocker"] or "")
+
+
+def test_a_split_whose_pieces_share_every_clause_and_path_is_refused(client, auth):
+    """Two pieces typed the same paths and holding no clause: identical, so refused."""
+    same = ["backend/app/wide.py"]
+    wide = _two_piece_section(client, auth, {
+        "Wide": same, "Wide — Alpha": same, "Wide — Beta": same})
+    assert wide["sub_items"] == []
+    assert "same clauses and the same touchpoints" in wide["split_refused"]
+    assert wide["blocked"] is False
+
+
 def test_a_backticked_name_resolves_to_the_file_that_defines_it():
     """Symbol node, then file name, then the graph's own description of a file.
 

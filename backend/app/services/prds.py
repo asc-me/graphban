@@ -5027,7 +5027,7 @@ def claim_subheading_clauses(
     to that piece. Leaving it unassigned made the section read as having no
     acceptance, which is the opposite of a section that is too big because of its
     clauses. The ##-level clauses are also returned on their own so a split can
-    copy them onto every piece — they apply to the whole section.
+    place each on the piece that exercises it (`place_level_clauses`).
     """
     indexed = list(acceptance_clauses(body))
     section_level, _unassigned = assign_acceptance(body, titles, section_texts)
@@ -5055,6 +5055,24 @@ def claim_subheading_clauses(
             break
     unassigned = [clause for i, (clause, _group) in enumerate(indexed) if i not in assigned]
     return combined, section_level, per_heading, unassigned
+
+
+def place_level_clauses(clauses: list[str], pieces: list[tuple[str, str]]) -> dict[str, list[str]]:
+    """Each section-level clause onto the one piece whose own text exercises it.
+
+    `pieces` is `(heading, body)` without the section's preamble: the preamble belongs to
+    every piece, so counting it decides nothing. Placement is `_body_cover` run over the
+    pieces instead of the sections — the clause moves to the piece whose prose restates a
+    third of it and restates it more than any other piece. A clause that clears no piece,
+    or ties two, is under key `""`: unplaced, reported, never copied onto all of them.
+    That copy is GRPH-1938 — on P92 D2 five pieces each carried the same three clauses.
+    """
+    titles = [heading for heading, _body in pieces]
+    bodies = dict(pieces)
+    out: dict[str, list[str]] = {}
+    for clause in clauses:
+        out.setdefault(_body_cover(clause, titles, bodies) or "", []).append(clause)
+    return out
 
 
 def _compose_task(prd: Prd, body: str, clauses: list[str], context: str, gate_text: str,
@@ -5501,7 +5519,9 @@ def _remainder_piece(prd: Prd, pr: dict, left: list[dict], context: str) -> dict
 
     Coverage counts by ``prd_section``. Filing only the accepted pieces marks the
     section covered, and a later decompose never offers the rest — their bodies and
-    clauses have to land on an item in this same call, or they are gone.
+    clauses have to land on an item in this same call, or they are gone. The section's
+    unplaced clauses (``_level_clauses``, GRPH-1938) land here too, and are the only
+    section-level clauses that do: a placed one is already on its piece.
     """
     from app.services.fleet import parse_acceptance
 
@@ -5529,6 +5549,10 @@ def _remainder_piece(prd: Prd, pr: dict, left: list[dict], context: str) -> dict
             if path not in seen_paths:
                 seen_paths.add(path)
                 touchpoints.append(path)
+    if not touchpoints and clauses:
+        # Only unplaced section-level clauses (GRPH-1938): no piece claimed them, so the
+        # section's own paths are where they land — over-reserved, the safe direction.
+        touchpoints = list(pr.get("touchpoints") or [])
     no_clause = not clauses and not parse_acceptance(body)[0]
     return {
         "title": f"Implement: {pr['section']} — remainder",
@@ -5712,11 +5736,23 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
         level = section_level.get(p["section"], [])
         # Suggested only once the section is already too big. A short section with two
         # headings is still one child; the caller is not offered a split it did not need.
+        # Filled only when a split was offered: the section-level clauses no piece's text
+        # exercises, and the pieces folded into every other piece as framing. Null when
+        # the section was not split — nothing was distributed then.
+        unplaced: list[str] | None = None
+        folded: list[str] | None = None
+        split_framing = preamble
+        no_partition = ""
         if size["oversized"] and len(real) >= 2:
+            # GRPH-1938. A section-level clause goes to the ONE piece whose own text
+            # restates it, not onto every piece. Copied onto all of them, five children
+            # raced the same acceptance, which partitions nothing.
+            placed = place_level_clauses(level, real)
+            unplaced = placed.pop("", [])
+            drafts: list[dict] = []
             for heading, gbody in real:
                 piece = "\n\n".join(part for part in (preamble, gbody) if part)
-                own = list(per_heading.get((p["section"], heading), []))
-                sub_clauses = level + own
+                own = list(per_heading.get((p["section"], heading), [])) + placed.get(heading, [])
                 # GRPH-1910. The caller's section-level list is DISTRIBUTED, not copied:
                 # a piece gets the given paths its own text names, or the list the caller
                 # keyed to that piece. Copying all of it onto every piece is why the Bell
@@ -5740,25 +5776,63 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                     inherited = not sub_tps
                     if inherited:
                         sub_tps = list(tps)
+                # Clauses the piece's own text lists (`Acceptance:` inline) are its own
+                # too — `parse_acceptance` reads them at filing time.
+                inline = list(parse_acceptance(gbody)[0])
+                drafts.append({"heading": heading, "gbody": gbody, "own": own,
+                               "acceptance": own + inline,
+                               "tps": sub_tps, "inherited": inherited,
+                               "unnamed": unnamed_by_piece,
+                               # A path of its own: resolved from its text, or typed for
+                               # it. Borrowed from the section, or none, is not its own.
+                               "own_tp": bool(sub_tps) and not inherited})
+            # GRPH-1938. A piece with no clause and no path of its own is a constraint on
+            # the others ("EXTERNAL states configuration, not safety"), not work: offered,
+            # it is a child that races its siblings' files against no acceptance. It is
+            # carried as framing on every piece that remains.
+            kept = [d for d in drafts if d["acceptance"] or d["own_tp"]]
+            folded = [d["heading"] for d in drafts if not (d["acceptance"] or d["own_tp"])]
+            if len(kept) < 2:
+                no_partition = (
+                    f"{size['oversized_reason']}; only {len(kept)} of {len(drafts)} pieces "
+                    "has a clause or a touchpoint of its own, so a split partitions nothing"
+                )
+            elif len({(tuple(d["acceptance"]), tuple(sorted(d["tps"]))) for d in kept}) == 1:
+                no_partition = (
+                    f"{size['oversized_reason']}; every piece would carry the same "
+                    "clauses and the same touchpoints, so a split partitions nothing"
+                )
+            if no_partition:
+                # Offered whole: the section's own item already carries every clause and
+                # path. `split_refused` says why it did not split.
+                unplaced = folded = None
+                kept = []
+            framing = "\n\n".join(
+                f"### {d['heading']}" + (f"\n{d['gbody']}" if d["gbody"] else "")
+                for d in drafts if d["heading"] in (folded or []))
+            split_framing = "\n\n".join(part for part in (preamble, framing) if part)
+            for d in kept:
+                heading, gbody, sub_clauses, sub_tps = d["heading"], d["gbody"], d["own"], d["tps"]
+                piece = "\n\n".join(part for part in (split_framing, gbody) if part)
                 claimed_by_pieces.append(list(sub_tps))
                 if split_ui:
                     sub_tps = [t for t in sub_tps if not _is_web_touchpoint(t)]
-                sub_no_clause = not sub_clauses and not parse_acceptance(piece)[0]
+                sub_no_clause = not sub_clauses and not parse_acceptance(gbody)[0]
                 sub_items.append({
                     "heading": heading,
                     "title": f"Implement: {p['section']} — {heading}",
                     "clauses": sub_clauses,
                     "touchpoints": sub_tps,
-                    "touchpoints_inherited": inherited,
+                    "touchpoints_inherited": d["inherited"],
                     "description": _compose_task(
                         prd, piece, sub_clauses, context, gate_text, design_text),
                     "blocker": _piece_blocker(
                         prd.key, sub_no_clause, not sub_tps,
                         gate["blocker"] if gate else "",
-                        _NO_TP_UNNAMED_BY_PIECE if unnamed_by_piece else ""),
+                        _NO_TP_UNNAMED_BY_PIECE if d["unnamed"] else ""),
                     # Piece text the remainder is built from. Stripped before the reply.
                     "_gbody": gbody,
-                    "_own_clauses": own,
+                    "_own_clauses": sub_clauses,
                 })
         # Null when the section was not split: every given path is on the section's own
         # item then, and an empty list would read as "distributed, nothing left over".
@@ -5771,8 +5845,8 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
         # instead, and do not advertise an oversized flag the caller cannot act on.
         # `size` still shows the signal that exceeded. Empty `split_refused` means we
         # looked: the section was not oversized, or it split.
-        split_refused = ""
-        if size["oversized"] and not sub_items:
+        split_refused = no_partition
+        if size["oversized"] and not sub_items and not no_partition:
             split_refused = (
                 f"{size['oversized_reason']}; no sub-heading or bold piece to split on"
             )
@@ -5792,7 +5866,11 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             "description": described,
             "touchpoints": tps,
             "touchpoint_evidence": tp_evidence,
-            "blocked": bool(gate and gate["blocked"]) or no_clause or no_tp or bool(split_refused),
+            # A split refused for having no pieces blocks: nobody can do a wall of text as
+            # one child. One refused because its pieces partition nothing is offered whole
+            # (GRPH-1938) — the section's item carries every clause and path already.
+            "blocked": (bool(gate and gate["blocked"]) or no_clause or no_tp
+                        or (bool(split_refused) and not no_partition)),
             "blocker": blocker,
             "acceptance": clauses,
             "fidelity": reading["fidelity"],
@@ -5813,10 +5891,16 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             # the section was not split — nothing was distributed, which is not the same
             # answer as "distributed and nothing was left over".
             "unassigned_touchpoints": unassigned_tps,
+            # GRPH-1938. Section-level clauses no piece's own text exercises: reported here,
+            # never copied onto every piece, and filed on the split's remainder. Pieces with
+            # no clause and no path of their own, carried as framing on every other piece.
+            # Both null when the section was not split.
+            "unplaced_clauses": unplaced,
+            "folded_pieces": folded,
             # Filing scratch, stripped before the reply. The remainder is built at create
             # time, once `splits` says which pieces were not named.
-            "_preamble": preamble,
-            "_level_clauses": list(level),
+            "_preamble": split_framing,
+            "_level_clauses": list(unplaced or []),
             "_gate_text": gate_text,
             "_design_text": design_text,
             "_gate_blocker": gate["blocker"] if gate else "",
@@ -5877,7 +5961,10 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                 # A partial list used to file only `chosen`. One item on the section is
                 # enough for coverage to skip it next time, so Two and Three were gone
                 # and the reply did not say so.
-                if chosen and left:
+                # Unplaced section-level clauses (GRPH-1938) are on no piece, so they
+                # need the remainder even when every piece was accepted.
+                remainder = bool(chosen) and bool(left or pr["_level_clauses"])
+                if remainder:
                     chosen = [*chosen, _remainder_piece(prd, pr, left, context)]
                 if chosen:
                     ids = _file_split(
@@ -5887,7 +5974,7 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                     filed[pr["section"]] = [
                         (row.id, row.key) for iid in ids if (row := db.get(Item, iid))
                     ]
-                    if left:
+                    if remainder:
                         split_remainders.append({
                             "section": pr["section"],
                             "headings": [s["heading"] for s in left],
