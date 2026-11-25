@@ -14,8 +14,11 @@ WORKING = "working"
 
 #: Exits that mean the PRD has nothing left to do.
 _DRAINED_REASONS = frozenset({"no-open-items", "prd-closed"})
-#: Exits that are stalled outright.
-_STALLED_REASONS = frozenset({"stalled", "review-unsigned"})
+#: Exits that are stalled outright. `review-needs-person` (GRPH-1830) waits on a person: no
+#: further cycle can move it, so it is a stall to report, not work in flight.
+_STALLED_REASONS = frozenset({"stalled", "review-unsigned", "review-needs-person"})
+#: The wait-line prefix `until.needs_person_line` writes (GRPH-1830).
+NEEDS_PERSON = "review-needs-person: "
 #: Exits that are stalled only when open build items remain.
 _IDLE_REASONS = frozenset({"idle", "idle-with-waits"})
 
@@ -71,6 +74,8 @@ def _reason_for(item: OpenItem, held: list[dict], dependency_holds: list[dict],
             because = "; ".join(str(b) for b in row.get("because") or [])
             return f"held by {who}" + (f" ({because})" if because else "")
     for line in review_waits:
+        if line.startswith(f"{NEEDS_PERSON}{item.id}:"):
+            return "needs a person: " + line[len(f"{NEEDS_PERSON}{item.id}:"):].strip()
         if line.startswith(f"{item.id}:"):
             return line.split(":", 1)[1].strip()
     if item.status == "review":
