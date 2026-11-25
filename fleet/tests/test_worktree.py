@@ -768,3 +768,188 @@ def test_up_and_until_derive_through_the_same_function(tmp_path):
     for fn in (supervisor.up, until.run):
         assert "_rooted(repo, workspace)" in inspect.getsource(fn), (
             f"{fn.__qualname__} derives its workspace some other way")
+
+
+# --- a branch is judged by every commit, not its tip (GRPH-1022) ------------------------------
+#
+# Sabotage: make `branch_history` count only the tip subject as a salvage and the
+# resumed-worktree tests below go red — the buried salvage stops being seen.
+
+from gbfleet import propose as propose_mod  # noqa: E402
+from gbfleet import worktree as wt_mod  # noqa: E402
+from gbfleet.worktree import branch_history, salvage_refusal  # noqa: E402
+
+
+def _commit_file(repo: Path, path: str, subject: str) -> str:
+    (repo / path).parent.mkdir(parents=True, exist_ok=True)
+    (repo / path).write_text(subject + "\n", encoding="utf-8")
+    _git(repo, "add", path)
+    _git(repo, "commit", "-qm", subject)
+    return _git(repo, "rev-parse", "HEAD").strip()
+
+
+@pytest.fixture
+def published(git_repo: Path, tmp_path: Path) -> Path:
+    bare = tmp_path / "origin.git"
+    _git(tmp_path, "init", "-q", "--bare", str(bare))
+    _git(git_repo, "remote", "add", "origin", str(bare))
+    _git(git_repo, "push", "-q", "origin", "main:main")
+    _git(git_repo, "fetch", "-q", "origin")
+    return git_repo
+
+
+@pytest.fixture
+def forge(monkeypatch):
+    opened: list[tuple[str, str, str, str]] = []
+    monkeypatch.setattr(wt_mod, "default_ref", lambda repo, remote: "origin/main")
+
+    def propose(repo, branch, base, *, title, body, **_kw):
+        opened.append((branch, base, title, body))
+        return propose_mod.Proposed(branch=branch, url=f"https://x/pull/{len(opened)}", ok=True)
+
+    monkeypatch.setattr(propose_mod, "propose", propose)
+    return opened
+
+
+def _branch(repo: Path, name: str, commits: list[tuple[str, str]]) -> None:
+    """`name` cut from main carrying `(path, subject)` commits, then main checked out again."""
+    _git(repo, "checkout", "-q", "-b", name, "main")
+    for path, subject in commits:
+        _commit_file(repo, path, subject)
+    _git(repo, "checkout", "-q", "main")
+
+
+#: `gb/p47c-1` as it was found: GRPH-961's salvage, GRPH-981's finished work on top, and a tip
+#: subject naming only its PRD.
+P47C = [("ui/triage.tsx", "WIP: salvaged by gbfleet (qwen-code) items=GRPH-961"),
+        ("ui/approval.tsx", "PRD-47 S4 tail: earned-approval copy")]
+
+
+def test_a_salvage_buried_under_a_real_commit_is_still_a_salvage(git_repo: Path):
+    """The resumed-worktree case. The tip reads clean; the history does not."""
+    _branch(git_repo, "gb/w-1", [("a.txt", "WIP: salvaged by gbfleet (claude) items=GRPH-7"),
+                                 ("b.txt", "GRPH-7: finish the work")])
+    history = branch_history(git_repo, "gb/w-1", "main")
+
+    assert not is_salvage_subject(_git(git_repo, "log", "-1", "--format=%s", "gb/w-1"))
+    assert history.carries_salvage and not history.bare_salvage
+    assert [keys for _sha, keys in history.salvages] == [("GRPH-7",)]
+    assert history.items == ("GRPH-7",)
+    # Its own item's salvage, finished: the ordinary resume, which proposes.
+    assert salvage_refusal(history, ["GRPH-7"]) == ""
+
+
+def test_orphans_judged_against_a_base_see_the_buried_salvage(git_repo: Path):
+    _branch(git_repo, "gb/p47c-1", P47C)
+    by_tip = {o.branch: o for o in orphans(git_repo)}["gb/p47c-1"]
+    by_history = {o.branch: o for o in orphans(git_repo, base="main")}["gb/p47c-1"]
+
+    assert by_tip.salvaged is False  # what `up`'s resume still asks
+    assert by_history.salvaged is True and by_history.item_keys == ("GRPH-961",)
+
+
+def test_a_branch_naming_two_items_is_refused_naming_both(git_repo: Path):
+    _branch(git_repo, "gb/p47c-1", P47C)
+    reason = salvage_refusal(branch_history(git_repo, "gb/p47c-1", "main", ["GRPH-981"]),
+                             ["GRPH-981"])
+    assert "GRPH-961" in reason and "GRPH-981" in reason
+
+
+def test_prose_ids_from_another_tag_are_not_items(git_repo: Path):
+    """`PRD-47` in a subject is prose; only the items' own tag counts."""
+    _branch(git_repo, "gb/w-2", [("a.txt", "WIP: salvaged by gbfleet (x) items=GRPH-7"),
+                                 ("b.txt", "PRD-47 S4: GRPH-7 tail")])
+    assert branch_history(git_repo, "gb/w-2", "main").items == ("GRPH-7",)
+
+
+def test_a_salvage_naming_no_item_is_refused(git_repo: Path):
+    _branch(git_repo, "gb/w-3", [("a.txt", "WIP: salvaged by gbfleet (x)"),
+                                 ("b.txt", "GRPH-7: finish")])
+    assert "names no item" in salvage_refusal(
+        branch_history(git_repo, "gb/w-3", "main", ["GRPH-7"]), ["GRPH-7"])
+
+
+def test_propose_refuses_the_laundered_salvage(published: Path, forge):
+    """`gb/p47c-1` reads clean at its tip; proposing it for GRPH-981 is refused, not opened."""
+    from gbfleet.supervisor import Wave, propose_branch
+
+    _branch(published, "gb/p47c-1", P47C)
+    wave = Wave()
+    propose_branch(wave, published, "gb/p47c-1", ["GRPH-981"], client=None)
+
+    assert forge == []
+    reason = wave.unproposed["gb/p47c-1"]
+    assert "GRPH-961" in reason and "GRPH-981" in reason
+
+
+def test_propose_opens_a_finished_resume_titled_after_the_build_not_the_salvage(
+        published: Path, forge):
+    from gbfleet.supervisor import Wave, propose_branch
+
+    _branch(published, "gb/w-1", [("a.txt", "WIP: salvaged by gbfleet (claude) items=GRPH-7"),
+                                  ("b.txt", "GRPH-7: finish the work")])
+    propose_branch(Wave(), published, "gb/w-1", ["GRPH-7"], client=None)
+
+    assert [(b, t) for b, _base, t, _body in forge] == [("gb/w-1", "GRPH-7: finish the work")]
+
+
+def test_a_bare_salvage_is_still_never_proposed(published: Path, forge):
+    """GRPH-926 preserved."""
+    from gbfleet.supervisor import Wave, propose_branch
+
+    _branch(published, "gb/w-4", [("a.txt", "WIP: salvaged by gbfleet (claude) items=GRPH-7")])
+    wave = Wave()
+    propose_branch(wave, published, "gb/w-4", ["GRPH-7"], client=None)
+
+    assert forge == []
+    assert wave.proposed["gb/w-4"].reason == "salvage commit is not proposed as a PR"
+
+
+# --- the route back: `recover_branch` --------------------------------------------------------
+
+
+def test_recover_rebases_a_salvage_onto_the_trunk_and_proposes_it(published: Path, forge):
+    from gbfleet.supervisor import recover_branch
+
+    _branch(published, "gb/p47b-1",
+            [("ui/memory.tsx", "WIP: salvaged by gbfleet (qwen-code) items=GRPH-959")])
+    source_tip = _git(published, "rev-parse", "gb/p47b-1").strip()
+    # The trunk moves on after the salvage was cut: the recovery must rebase onto it.
+    _commit_file(published, "later.txt", "GRPH-1: later trunk work")
+    _git(published, "push", "-q", "origin", "main:main")
+    _git(published, "fetch", "-q", "origin")
+
+    got = recover_branch(published, "gb/p47b-1", "GRPH-959")
+
+    assert got.reason == "" and got.url
+    assert got.recovered == "gb/recover--GRPH-959"
+    assert _git(published, "rev-parse", "gb/p47b-1").strip() == source_tip  # not moved
+    assert wt_mod.is_ancestor(published, "origin/main", got.recovered)
+    assert _git(published, "show", f"{got.recovered}:ui/memory.tsx").strip()
+    assert _git(published, "ls-remote", "origin", got.recovered).strip()
+    (branch, _base, title, body), = forge
+    assert branch == got.recovered
+    assert title.startswith("GRPH-959") and "WIP" not in title
+    assert "Attests: GRPH-959" in body and got.salvages[0][:12] in body
+
+
+def test_recover_refuses_a_branch_naming_two_items(published: Path, forge):
+    from gbfleet.supervisor import recover_branch
+
+    _branch(published, "gb/p47c-1", P47C)
+    got = recover_branch(published, "gb/p47c-1", "GRPH-981")
+
+    assert forge == [] and not got.recovered
+    assert "GRPH-961" in got.reason and "GRPH-981" in got.reason
+    assert not wt_mod.branch_exists(published, "gb/recover--GRPH-981")
+
+
+def test_recover_dry_run_changes_nothing(published: Path, forge):
+    from gbfleet.supervisor import recover_branch
+
+    _branch(published, "gb/w-5", [("a.txt", "WIP: salvaged by gbfleet (x) items=GRPH-5"),
+                                  ("b.txt", "GRPH-5: done")])
+    got = recover_branch(published, "gb/w-5", "GRPH-5", dry_run=True)
+
+    assert got.dry_run and got.reason == "" and len(got.commits) == 2 and len(got.salvages) == 1
+    assert forge == [] and not wt_mod.branch_exists(published, "gb/recover--GRPH-5")

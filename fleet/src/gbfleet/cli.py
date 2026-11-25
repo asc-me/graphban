@@ -497,6 +497,28 @@ def build_parser() -> argparse.ArgumentParser:
     chk.add_argument("--item", default="", help="the item id, for the printed update_item call")
     chk.add_argument("--path", default=".", help="the checkout to measure (default: here)")
 
+    rec = sub.add_parser(
+        "recover",
+        help="rebase a salvaged-but-real branch onto the trunk and propose it for one item",
+        description=(
+            "The route back for work left on a salvage branch (GRPH-1022). No wave ever proposes\n"
+            "a salvage (GRPH-926); this is a person naming the item a branch's work belongs to.\n"
+            "The branch is judged by every commit since it left the trunk, not by its tip: one\n"
+            "whose commits name more than one item is refused, naming them. The source branch\n"
+            "is never moved — its commits are replayed onto the trunk on gb/recover--<item>,\n"
+            "which is pushed and opened as a draft PR. With no --branch, lists every unattended\n"
+            "gb/ branch that carries a salvage anywhere in its history."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    rec.add_argument("--branch", default="", help="the branch to recover")
+    rec.add_argument("--item", default="", help="the item its work belongs to")
+    rec.add_argument("--repo", default=".", help="the clone (default: here)")
+    rec.add_argument("--base", default="",
+                     help="the trunk ref to rebase onto (default: the remote's default branch)")
+    rec.add_argument("--dry-run", action="store_true",
+                     help="judge the branch and print what would be replayed; change nothing")
+
     ent = sub.add_parser(
         "entitlement",
         help="register the accounts this machine can launch (add, list, remove)",
@@ -1563,6 +1585,38 @@ def _generated_decision(client) -> tuple[tuple[str, ...], str]:
     return allowed, why
 
 
+def _recover(args) -> int:
+    """`gbfleet recover` (GRPH-1022). Exit 0 proposed (or listed / dry run), 1 refused."""
+    from . import supervisor as sup
+    from . import worktree as wt_mod
+
+    repo = Path(args.repo).resolve()
+    if not args.branch:
+        remote = wt_mod.remote_for(repo)
+        base = args.base or (wt_mod.default_ref(repo, remote) if remote else "")
+        if not base:
+            print("gbfleet recover: no trunk to judge against; pass --base", file=sys.stderr)
+            return 2
+        rows = [o for o in wt_mod.orphans(repo, base=base) if o.salvaged]
+        for o in rows:
+            print(f"{o.branch}\t{o.commit[:12]}\tsalvage of "
+                  f"{', '.join(o.item_keys) or '(no item named)'}\t{o.subject}")
+        if not rows:
+            print(f"no unattended gb/ branch carries a salvage beyond {base}")
+        return 0
+    got = sup.recover_branch(repo, args.branch, args.item, base=args.base,
+                             dry_run=args.dry_run)
+    if got.reason:
+        print(f"gbfleet recover: {args.branch}: {got.reason}", file=sys.stderr)
+        return 1
+    if got.dry_run:
+        print(f"{args.branch} -> {args.item}: would replay {len(got.commits)} commit(s), "
+              f"{len(got.salvages)} of them salvage")
+        return 0
+    print(f"{args.branch} -> {got.recovered}: {got.url}")
+    return 0
+
+
 def _check_touchpoints(args) -> int:
     from . import touchpoints as tp_mod
     from .supervisor import is_generated
@@ -2034,6 +2088,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "check-touchpoints":
         return _check_touchpoints(args)
+
+    if args.command == "recover":
+        return _recover(args)
 
     if args.command == "entitlement":
         return _entitlement(args)
