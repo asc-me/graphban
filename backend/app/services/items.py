@@ -3216,6 +3216,13 @@ def item_dict(item: Item) -> dict:
         out["review_claimed_by"] = hold["holder"]
         if hold["lapse"]:
             out["review_claim_lapse"] = hold["lapse"]
+    if item.status == "review":
+        # GRPH-1830. Present only when set: the row waits on a person, and a supervisor must
+        # start no reviewer for it. Reply-only, like `review_claim_lapse`.
+        from app.services.fleet import review_needs_person
+        why = review_needs_person(item)
+        if why:
+            out["review_needs_person"] = why
     if item.decision:
         # The agent's question and options, and the answer once given (GRPH-1137). Present
         # only on a decision wait; `notify` bookkeeping stays server-side. Reply-only.
@@ -4364,10 +4371,13 @@ def _record_handback(db: Session, item: Item, agent_id: str, reason: str | None,
         # say) has no reason to give, and requiring one would send it back to the only verb that
         # does not ask — `bounce`, the punitive one. The count survives either way.
         return
-    item.evidence = append_evidence(item.evidence, [{
-        "kind": "note",
-        "detail": f"{'NOT YET' if review else 'RELEASED'} ({agent_id}): {text}",
-    }])
+    detail = f"{'NOT YET' if review else 'RELEASED'} ({agent_id}): {text}"
+    if review:
+        # GRPH-1830: the head and acceptance this verdict was given on, so the review queue
+        # can stop re-issuing an item nobody can move on until one of them changes.
+        from app.services import fleet as fleet_svc
+        detail += fleet_svc.not_yet_suffix(item)
+    item.evidence = append_evidence(item.evidence, [{"kind": "note", "detail": detail}])
 
 
 def release_refusal(db: Session, item_id: str) -> tuple[str, str]:

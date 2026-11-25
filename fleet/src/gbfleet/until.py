@@ -1290,7 +1290,8 @@ def _loop(
             except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
                 watchdog_mod.current.retry("review_rows(reap)", exc)
                 rows_for_reap = []
-            unheld_at_reap = [r for r in rows_for_reap if not review_held(r)]
+            unheld_at_reap = [r for r in rows_for_reap
+                              if not review_held(r) and not review_needs_person(r)]
             for child in finished:
                 if unheld_at_reap and not child.held_items:
                     review_fails += 1
@@ -1343,6 +1344,11 @@ def _loop(
             # report it unreadable. Taken out of what can spawn a reviewer unless its merge
             # commit is in the base, in which case that commit is what gets reviewed.
             rows, gone_waits = _gone_branches(planner, rows, repo, base, gone_seen, agent_id)
+            # GRPH-1830. A blocker on a review row, or NOT YET twice on an unchanged head: the
+            # server withholds it from `claim_review`, so a reviewer spawned for it can only
+            # exit holding nothing. It waits on a person and starts no review child.
+            needs_person = [r for r in rows if review_needs_person(r)]
+            rows = [r for r in rows if not review_needs_person(r)]
             # GRPH-1409: a row whose newest refusal is a post-cooldown `pr_ci_not_green` cannot
             # be cleared by another reviewer, so it is taken out of what can spawn one.
             ci_stuck = [r for r in rows if ci_unattestable(r)]
@@ -1358,7 +1364,7 @@ def _loop(
             reviews = [str(r["id"]) for r in rows + ci_stuck]
             outside = [str(r["id"]) for r in rows_outside]
             waits = _wait_ids(planner)
-            for wait_line in gone_waits:
+            for wait_line in gone_waits + [needs_person_line(r) for r in needs_person]:
                 if wait_line not in waits:
                     waits.append(wait_line)
                 if wait_line not in wave.review_waits:
@@ -1816,6 +1822,14 @@ def _loop(
                 report = _finish(wave, "review-ci-unattestable", 1, minted, planner,
                                  review=reviews, waits=waits, outside=outside)
                 report.detail = "; ".join(ci_stuck_detail(r) for r in ci_stuck)
+                return report
+            if needs_person and not rows:
+                # GRPH-1830. Not `review-unsigned`: no reviewer can sign these, and a restart
+                # that spawns reviewers for them is how GRPH-1825 was handed out 52 times.
+                wave.reason = "review-needs-person"
+                report = _leave("review-needs-person", 0, review=reviews, waits=waits,
+                                outside=outside)
+                report.detail = "; ".join(needs_person_line(r) for r in needs_person)
                 return report
             # GRPH-1356: a row still in review is unsigned work, held or not. A hold with no
             # live child of ours is a reviewer that may have exited between polls; after the
@@ -5238,6 +5252,21 @@ def review_held(row: dict) -> bool:
     server has not said otherwise.
     """
     return bool(row.get("review_claimed_by")) and not row.get("review_claim_lapse")
+
+
+def review_needs_person(row: dict) -> str:
+    """The server's reason no agent review can move this row on, or "" (GRPH-1830).
+
+    `review_needs_person` on the row: a blocker is set, or two reviewers said NOT YET on the
+    same head and acceptance. `claim_review` withholds it, so spawning a reviewer for it is a
+    seat that can only exit. An older server sends nothing, and the row reads as reviewable.
+    """
+    return str(row.get("review_needs_person") or "").strip()
+
+
+def needs_person_line(row: dict) -> str:
+    """The wait line for a row waiting on a person: `review-needs-person: <item>: <reason>`."""
+    return f"review-needs-person: {row.get('id')}: {review_needs_person(row)[:400]}"
 
 
 def _review_rows(planner: Graphban) -> list[dict]:
