@@ -4627,10 +4627,18 @@ def _shadowed_directory(path: str, text_low: str, matched: list[str]) -> bool:
     catches a file that is not a node yet. A container with nothing named under it
     stays — "a migration in `backend/alembic/versions/`" is the write target, and
     dropping it would leave the section with no touchpoint at all.
+
+    A container also reaches the set without the section naming its path at all: a
+    resolved name places one, where "the Rules page" lands on `web/src/features/rules/`
+    and a bare backticked `app` on `backend/app` through its stem. Neither passes the
+    lexical tier, so `propose_touchpoints` asks again over the whole set at its return
+    (GRPH-1930).
     """
     prefix = (path or "").rstrip("/")
     if not prefix:
         return False
+    # `other != path`: a resolved directory carries its own trailing slash, so without the
+    # exclusion it would be a prefix of itself and every surface name would drop out.
     if any(other != path and other.startswith(f"{prefix}/") for other in matched):
         return True
     return re.search(re.escape(f"{prefix}/".lower()) + _PATH_CHAR, text_low) is not None
@@ -4839,7 +4847,10 @@ def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[
     has to create (GRPH-1906); then semantic search. A search hit at or above
     `_TP_SCORE_FLOOR` stands alone. Below that floor it is kept only when the section also
     names the path. A bare directory name is not a file-name match, and a directory the
-    section names a file under is not proposed either (`_shadowed_directory`, GRPH-1910).
+    section names a file under is not proposed either (`_shadowed_directory`, GRPH-1910) —
+    asked again over the whole set at the return, because a resolved name places a
+    container the lexical tier never saw, so it holds whichever tier put it there
+    (GRPH-1930).
 
     What the section named is collected before search runs and keeps its order, so
     `_TP_MAX` truncation cuts search hits first and the named files last.
@@ -4890,7 +4901,9 @@ def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[
         elif _text_names_path(raw, path):
             add(path, (f"code search matched the section (score {score:.2f}); "
                        "kept because the section also names the path"))
-    return list(found.values())[:_TP_MAX]
+    paths = list(found)
+    kept = [entry for path, entry in found.items() if not _shadowed_directory(path, text, paths)]
+    return kept[:_TP_MAX]
 
 
 # GRPH-1691. One section became one item, including sections that are more than
