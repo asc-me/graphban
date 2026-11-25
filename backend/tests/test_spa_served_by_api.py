@@ -109,6 +109,44 @@ def test_real_routes_are_not_shadowed_by_the_catch_all(client):
     assert client.get("/health").json() == {"status": "ok"}
 
 
+# ---- the catch-all's boundary with the API surface (GRPH-1931) -----------------------------
+
+def test_an_unmatched_api_path_is_404_for_every_method_not_405(bundle):
+    """A 405 claims the endpoint exists and the method does not. On a path nothing handles
+    that is a lie, and it is one the router tells on its own: the greedy catch-all matched
+    the PATH, so a method it does not declare became `405 Method Not Allowed` before `_spa`
+    could answer anything. A retired org rule-toggle read as still-present-but-PUT-less.
+
+    `_SpaCatchAll` declines `/api/*` in `matches()`, which is the only place this can be
+    fixed — by the time a handler could return a body, the router has already chosen 405.
+    """
+    app = FastAPI()
+    _mount_spa(app, bundle)
+    client = TestClient(app)
+    for method in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+        r = client.request(method, "/api/orgs/x/rule-toggles/y")
+        assert r.status_code == 404, (method, r.status_code, r.text)
+        assert r.headers["content-type"].startswith("application/json"), (method, r.text)
+
+
+def test_an_api_route_appended_after_the_mount_still_answers(bundle):
+    """Starlette matches in registration order, and a fixture that appends a route runs
+    AFTER this mount. `scratch_routes` in tests/test_refusals.py does exactly that, so its
+    403 came back as the catch-all's JSON 404 — which reads as "the refusal was never
+    raised", the opposite of what the test is about. tests/test_llm_meter.py hand-moves its
+    probe to the front of the route list for the same reason; that probe is not under
+    `/api/`, so it still needs to.
+    """
+    app = FastAPI()
+    _mount_spa(app, bundle)
+
+    @app.get("/api/_t/appended-later")
+    def _late():
+        return {"reached": True}
+
+    assert TestClient(app).get("/api/_t/appended-later").json() == {"reached": True}
+
+
 # ---- the headers, and that they survive an error ------------------------------------------
 
 @pytest.mark.parametrize("header", sorted(SPA_SECURITY_HEADERS))

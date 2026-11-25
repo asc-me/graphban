@@ -1402,6 +1402,8 @@ def _observations_warning_for_plan(plan) -> str:
 def _service_status(state) -> None:
     """One drain, and the two facts that are invisible from anywhere else."""
     print(state.line())
+    for text in service_mod.notice_lines(state.notice):
+        print(text)
     if state.kind == "systemd":
         # Printed whatever the answer, because "no" here is the difference between a service
         # that survives your logout and one that does not, and it is invisible from every

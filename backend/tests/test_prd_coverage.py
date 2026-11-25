@@ -288,9 +288,14 @@ def test_decompose_flags_an_oversized_section_and_splits_three_ways(client, auth
     from app.services.fleet import parse_acceptance
     from tests.prd_approve import approve_id
 
+    # Each piece names the path it is given: a split DISTRIBUTES the caller's list to the
+    # pieces whose own text names it instead of copying all of it onto every one
+    # (GRPH-1910), so a piece naming nothing would come back blocked for no touchpoints.
     body = (
         "# Spec\n\n## Small\none thing\n\n## Work\n"
-        "### One\ndo the first\n### Two\ndo the second\n### Three\ndo the third\n\n"
+        "### One\ndo the first in `backend/app/work.py`\n"
+        "### Two\ndo the second in `backend/app/work.py`\n"
+        "### Three\ndo the third in `backend/app/work.py`\n\n"
         "## Acceptance criteria\n### Small\n- small is done\n"
         "### One\n- first is done\n### Two\n- second is done\n### Three\n- third is done\n"
     )
@@ -382,9 +387,13 @@ def test_partial_split_files_the_omitted_pieces_as_a_remainder(client, auth):
     from app.services.fleet import parse_acceptance
     from tests.prd_approve import approve_id
 
+    # Pieces name the path they are given — see the note in
+    # test_decompose_flags_an_oversized_section_and_splits_three_ways (GRPH-1910).
     body = (
         "# Spec\n\n## Small\none thing\n\n## Work\n"
-        "### One\ndo the first\n### Two\ndo the second\n### Three\ndo the third\n\n"
+        "### One\ndo the first in `backend/app/work.py`\n"
+        "### Two\ndo the second in `backend/app/work.py`\n"
+        "### Three\ndo the third in `backend/app/work.py`\n\n"
         "## Acceptance criteria\n### Small\n- small is done\n"
         "### One\n- first is done\n### Two\n- second is done\n### Three\n- third is done\n"
     )
@@ -550,7 +559,11 @@ def test_a_split_section_carries_the_design_block_and_files_a_ui_item(client, au
         "# Spec\n\n## Work\n"
         "Design: https://claude.ai/artifact/abc\n"
         "Pages: Fix Dialog, Tracker - File a Fix\n\n"
-        "### One\ndo the first\n### Two\ndo the second\n### Three\ndo the third\n\n"
+        # Each piece names both given paths, so the split distributes them to it: the web
+        # one still goes to the UI twin and the backend one stays on the piece (GRPH-1910).
+        "### One\ndo the first in `backend/app/work.py` and `web/src/Work.tsx`\n"
+        "### Two\ndo the second in `backend/app/work.py` and `web/src/Work.tsx`\n"
+        "### Three\ndo the third in `backend/app/work.py` and `web/src/Work.tsx`\n\n"
         "## Acceptance criteria\n"
         "### One\n- first is done\n### Two\n- second is done\n### Three\n- third is done\n"
     )

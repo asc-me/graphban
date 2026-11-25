@@ -514,6 +514,354 @@ def test_a_route_one_section_defines_is_what_the_caller_depends_on(client, auth)
     assert "route" in only["why"]
 
 
+# The real GRPH-P99 §3, verbatim (`get_prd GRPH-P99` v1.0, body_hash 8947bf5b1c8e645f) —
+# the section GRPH-1910 was filed from. Two `###` pieces, Server (backend + docs) and Bell
+# (web), and a preamble that names no path: every path a piece can claim, its piece names.
+_P99_S3_HEADING = "3. The server alert"
+_P99_S3 = """\
+Recipients: the PRD owner, falling back to the project's planners. The project is the PRD record's own; a PRD id that does not resolve in the caller's project is refused and alerts no one. There is at most one live drain alert per PRD (D6). The alert clears on `working` (D7): any open item ready or a live child.
+
+### Server
+
+`until` posts the notice as a fleet event (`POST /api/fleet/drain-notices` in `backend/app/routers/fleet.py`), naming the PRD, the outcome, and for a stall the open items with their reasons. The server turns it into an Alert with kind `drain_drained` or `drain_stalled`, on the same bell and Web Push path as `response_needed` (`backend/app/services/alerts.py`, `backend/app/services/push.py`). A drain alert has no wait item, so the `alerts` row gains a nullable `prd_id` (migration in `backend/alembic/versions/`), and `alert_dict` returns the PRD key for it. A new notice, including a reason change over the same open items, updates the live row in place. Web Push fires only when the outcome kind changes or 30 minutes after the last push for that PRD. A post identical to the server's last notice changes nothing. The route is listed in `docs/api-reference.md` and probed in `backend/tests/test_cross_tenant_writes.py`.
+
+Acceptance:
+- Posting a `drained` event writes one `drain_drained` alert for the PRD owner, returned by `GET /api/me/alerts` and sent by Web Push.
+- Posting a `stalled` event writes a `drain_stalled` alert whose body lists each open item and its reason.
+- Posting the same `stalled` event twice leaves one alert and sends one push.
+- A `stalled` event with the same items but a changed reason updates the live alert body and sends no push inside 30 minutes.
+- `stalled` → `drained` replaces the row and pushes.
+- A later `working` event for the same PRD sets `cleared_at` on the live drain alert.
+- A PRD with no owner alerts the project planners.
+- An agent key from another project cannot post a drain event for this PRD.
+- Backend suite on SQLite and Postgres passes. The migration adds the nullable column and leaves existing `response_needed` rows unchanged.
+
+### Bell
+
+`web/src/components/shell/AlertsBell.tsx` renders a drain alert with its outcome ("Drained" or "Stalled") and links it to the PRD page instead of a Triage item. `web/src/lib/types.ts` gains the two kinds.
+
+Acceptance:
+- A `drain_stalled` row in the bell shows "Stalled", the PRD key and the body, and its link opens the PRD page.
+- A `drain_drained` row shows "Drained" and links to the PRD page.
+- A `response_needed` row still links to Triage as before (`web/src/__tests__/alerts.test.tsx`).
+- `pnpm typecheck` and the web tests pass."""
+
+# The caller's list, as one decompose got it: thirteen paths across three trees, in an
+# order that interleaves them so "in the order given" is a real assertion.
+_P99_GIVEN = [
+    "backend/app/routers/fleet.py",
+    "web/src/components/shell/AlertsBell.tsx",
+    "backend/app/services/alerts.py",
+    "docs/api-reference.md",
+    "web/src/lib/types.ts",
+    "backend/app/services/push.py",
+    "backend/app/models/__init__.py",
+    "backend/alembic/versions/",
+    "web/src/__tests__/alerts.test.tsx",
+    "backend/tests/test_cross_tenant_writes.py",
+    "docs/mcp.md",
+    "web/src/lib/api.ts",
+    "backend/tests/test_alerts.py",
+]
+# What each piece's own text names, in `_P99_GIVEN` order.
+_P99_SERVER = [
+    "backend/app/routers/fleet.py",
+    "backend/app/services/alerts.py",
+    "docs/api-reference.md",
+    "backend/app/services/push.py",
+    "backend/alembic/versions/",
+    "backend/tests/test_cross_tenant_writes.py",
+]
+_P99_BELL = [
+    "web/src/components/shell/AlertsBell.tsx",
+    "web/src/lib/types.ts",
+    "web/src/__tests__/alerts.test.tsx",
+]
+# Named by no piece: reported, and on neither child.
+_P99_UNPLACED = [
+    "backend/app/models/__init__.py",
+    "docs/mcp.md",
+    "web/src/lib/api.ts",
+    "backend/tests/test_alerts.py",
+]
+
+
+def _p99_prd(client, auth) -> dict:
+    body = f"# Drain outcome notices\n\n## {_P99_S3_HEADING}\n{_P99_S3}\n"
+    return client.post("/api/prds", json={"title": "P99 §3", "body": body},
+                       headers=auth).json()
+
+
+def _p99_section(client, auth, touchpoints: dict) -> dict:
+    """§3's proposal, decomposed as a service call because REST takes no `touchpoints`."""
+    from app.db import SessionLocal
+
+    prd = _p99_prd(client, auth)
+    db = SessionLocal()
+    try:
+        out = prd_svc.decompose(db, prd_svc.get_prd(db, prd["id"]),
+                                touchpoints=touchpoints)
+    finally:
+        db.close()
+    return next(p for p in out["proposals"] if p["section"] == _P99_S3_HEADING)
+
+
+def test_p99_pieces_get_only_the_given_paths_their_own_text_names(client, auth):
+    """Server gets backend + docs, Bell gets web, and neither gets the other's.
+
+    Both sub_items used to come back with all thirteen paths (`sub_tps = list(given)`),
+    which is why the split existed and still did no work: the Bell child could edit the
+    migration and the Server child the bell. A given path no piece names is reported on
+    the proposal rather than copied onto every piece.
+    """
+    s3 = _p99_section(client, auth, {_P99_S3_HEADING: _P99_GIVEN})
+    assert s3["oversized"] is True
+    assert [s["heading"] for s in s3["sub_items"]] == ["Server", "Bell"]
+    by = {s["heading"]: s for s in s3["sub_items"]}
+
+    assert by["Server"]["touchpoints"] == _P99_SERVER
+    assert by["Bell"]["touchpoints"] == _P99_BELL
+    assert not (set(by["Server"]["touchpoints"]) & set(_P99_BELL))
+    assert not (set(by["Bell"]["touchpoints"]) & set(_P99_SERVER))
+    assert s3["unassigned_touchpoints"] == _P99_UNPLACED
+
+    # Each piece is claimable on its own: its own paths, and the acceptance list its own
+    # text carries (`Acceptance:` inline, which `parse_acceptance` reads at filing time).
+    assert by["Server"]["blocker"] == "" and by["Bell"]["blocker"] == ""
+    assert "Posting a `drained` event" in by["Server"]["description"]
+    assert "renders a drain alert" in by["Bell"]["description"]
+    # The section's own proposal still carries every path the caller gave, so a caller
+    # that files the section whole loses nothing by the split being offered.
+    assert s3["touchpoints"] == _P99_GIVEN
+
+
+def test_filing_a_split_gives_each_item_only_its_own_paths(client, auth):
+    """create=True: the distribution has to reach the filed rows, not only the proposal.
+
+    The defect was read off a dry run, but the harm is on the item a child claims — the
+    Bell child holding the migration path is what lets it edit another tree.
+    """
+    from app.db import SessionLocal
+    from app.services import items as items_svc
+    from tests.prd_approve import approve_id
+
+    prd = _p99_prd(client, auth)
+    approve_id(prd["id"])
+    db = SessionLocal()
+    out = prd_svc.decompose(
+        db, prd_svc.get_prd(db, prd["id"]), create=True,
+        splits={_P99_S3_HEADING: ["Server", "Bell"]},
+        touchpoints={_P99_S3_HEADING: _P99_GIVEN})
+    rows = {r.title: r for r in (db.get(items_svc.Item, i) for i in out["created"])}
+    server = rows[f"Implement: {_P99_S3_HEADING} — Server"]
+    bell = rows[f"Implement: {_P99_S3_HEADING} — Bell"]
+    assert server.touchpoints == _P99_SERVER
+    assert bell.touchpoints == _P99_BELL
+    assert not (set(server.touchpoints) & set(_P99_BELL))
+    assert not (set(bell.touchpoints) & set(_P99_SERVER))
+    # Claimable, and split-linked to each other, so the drain takes them one at a time.
+    assert {server.status, bell.status} == {"backlog"}
+    assert {server.blocker, bell.blocker} == {""}
+    db.close()
+
+
+def test_a_piece_key_gives_one_piece_its_own_paths(client, auth):
+    """`touchpoints={"<section> — <piece heading>": [...]}` wins for that piece.
+
+    The pieces with no key of their own are still served from the section-level list, so
+    the key is a correction and not a switch that turns distribution off. A given path
+    the override displaces is reported: it is on no item, which the reply has to say.
+    """
+    # The key is matched on `_section_key`, so the dash, the spacing and the section
+    # number are the caller's to write. A section-level key is not a piece key.
+    assert prd_svc._piece_override(
+        {"3. The server alert - Bell": ["web/src/Bell.tsx"]},
+        _P99_S3_HEADING, "Bell") == ["web/src/Bell.tsx"]
+    assert prd_svc._piece_override(
+        {"the server alert—server": ["backend/app/x.py"]},
+        _P99_S3_HEADING, "Server") == ["backend/app/x.py"]
+    assert prd_svc._piece_override({_P99_S3_HEADING: _P99_GIVEN},
+                                   _P99_S3_HEADING, "Bell") is None
+
+    own = ["web/src/features/alerts/DrainAlert.tsx"]
+    s3 = _p99_section(client, auth, {
+        _P99_S3_HEADING: _P99_GIVEN,
+        f"{_P99_S3_HEADING} — Bell": own,
+    })
+    by = {s["heading"]: s for s in s3["sub_items"]}
+    assert by["Bell"]["touchpoints"] == own
+    assert by["Server"]["touchpoints"] == _P99_SERVER
+    assert s3["unassigned_touchpoints"] == [
+        "web/src/components/shell/AlertsBell.tsx",
+        "web/src/lib/types.ts",
+        "backend/app/models/__init__.py",
+        "web/src/__tests__/alerts.test.tsx",
+        "docs/mcp.md",
+        "web/src/lib/api.ts",
+        "backend/tests/test_alerts.py",
+    ]
+
+
+def test_a_piece_no_given_path_names_says_where_they_went(client, auth):
+    """A piece left with nothing is blocked for the reason that is true.
+
+    "the code graph proposed none" is a different absence from "the caller gave paths
+    and this piece named none of them", and only the second one is actionable from the
+    reply: it names `unassigned_touchpoints` and the key that places them.
+    """
+    s3 = _p99_section(client, auth, {
+        # Three trees, so the section is oversized and the split is offered; only the
+        # Bell piece names none of them.
+        _P99_S3_HEADING: ["backend/app/routers/fleet.py", "docs/api-reference.md",
+                          "web/src/lib/api.ts"],
+    })
+    by = {s["heading"]: s for s in s3["sub_items"]}
+    assert by["Bell"]["touchpoints"] == []
+    assert by["Bell"]["blocker"]
+    assert "none of the paths given for this section is named by this piece" in by["Bell"]["blocker"]
+    assert "unassigned_touchpoints" in by["Bell"]["blocker"]
+    # The piece that did name a path is not blocked, so the message is not blanket prose.
+    assert by["Server"]["blocker"] == ""
+    assert by["Server"]["touchpoints"] == [
+        "backend/app/routers/fleet.py", "docs/api-reference.md"]
+
+
+def test_unassigned_touchpoints_is_null_when_nothing_was_distributed(client, auth):
+    """No split, no distribution: null, not an empty list that reads as all-placed.
+
+    The section item carries every given path here. `[]` would say the pieces claimed
+    them all, and there are no pieces.
+    """
+    body = (
+        "# Spec\n\n## Small\none thing, in `backend/app/small.py`\n\n"
+        "## Acceptance\n### Small\n- small is done\n"
+    )
+    prd = client.post("/api/prds", json={"title": "No split", "body": body},
+                      headers=auth).json()
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        out = prd_svc.decompose(db, prd_svc.get_prd(db, prd["id"]), touchpoints={
+            "Small": ["backend/app/small.py", "web/src/Small.tsx"]})
+    finally:
+        db.close()
+    small = out["proposals"][0]
+    assert small["sub_items"] == []
+    assert small["unassigned_touchpoints"] is None
+    assert small["touchpoints"] == ["backend/app/small.py", "web/src/Small.tsx"]
+
+
+def test_a_directory_node_does_not_crowd_out_the_files_named_under_it(client, auth, monkeypatch):
+    """P99 §3's graph shape: five slots, four of them containers (GRPH-1910).
+
+    A directory node satisfies `path in text` as a prefix of every file named beneath it,
+    so the proposal was [`backend/alembic`, `backend/alembic/versions`, `backend/app`,
+    `backend/app/routers`, `backend/app/routers/fleet.py`] and `_TP_MAX` truncated the
+    files the section actually named. A container with nothing named under it is still
+    proposed — "a migration in `backend/alembic/versions/`" is the write target.
+    """
+    from app.db import SessionLocal
+    from app.services import code_graph
+
+    monkeypatch.setattr("app.services.code_graph.search_code", lambda *_a, **_k: [])
+
+    # The predicate on its own, with the control that keeps it from being "drop every
+    # directory": the second path is the same shape and must survive.
+    assert prd_svc._shadowed_directory("backend/app", "in `backend/app/routers/fleet.py`", [])
+    assert not prd_svc._shadowed_directory(
+        "backend/alembic/versions", "a migration in `backend/alembic/versions/`", [])
+    # A matched node under it is the other signal: `docs` matches on the bare word, and
+    # the file under it is what the section named.
+    assert prd_svc._shadowed_directory(
+        "docs", "see docs and `api-reference.md`", ["docs/api-reference.md"])
+
+    body = (
+        "# Drain notices\n\n## Alert\n"
+        "`until` posts to `backend/app/routers/fleet.py`, on the alert path in "
+        "`backend/app/services/alerts.py`. A migration in `backend/alembic/versions/`. "
+        "The route is listed in `docs/api-reference.md`.\n\n"
+        "## Acceptance\n- the route posts an alert\n"
+    )
+    prd = client.post("/api/prds", json={"title": "Dirs", "body": body}, headers=auth).json()
+    db = SessionLocal()
+    pid = db.get(prd_svc.Prd, prd["id"]).project_id
+    code_graph.describe_code(db, project_id=pid, nodes=[
+        {"path": "backend/alembic", "kind": "module", "summary": "migrations"},
+        {"path": "backend/alembic/versions", "kind": "module", "summary": "migration files"},
+        {"path": "backend/app", "kind": "module", "summary": "the app"},
+        {"path": "backend/app/routers", "kind": "module", "summary": "routers"},
+        {"path": "backend/app/routers/fleet.py", "kind": "file", "summary": "fleet routes"},
+        {"path": "backend/app/services/alerts.py", "kind": "file", "summary": "alerts"},
+        {"path": "docs/api-reference.md", "kind": "doc", "summary": "the REST surface"},
+    ])
+    db.close()
+
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    alert = {p["section"]: p for p in dry["proposals"]}["Alert"]
+    assert set(alert["touchpoints"]) == {
+        "backend/alembic/versions",
+        "backend/app/routers/fleet.py",
+        "backend/app/services/alerts.py",
+        "docs/api-reference.md",
+    }
+
+
+def test_truncation_keeps_named_files_ahead_of_search_hits(client, auth, monkeypatch):
+    """`_TP_MAX` cuts the weakest signal first, and a score cannot smuggle a shadow back.
+
+    Four named files, one container the section named only as their prefix, and three
+    search hits over the floor. Every named file keeps its slot; the container is out —
+    including on a 0.99 score, which is how it would otherwise come straight back — and
+    the one leftover slot goes to a search hit.
+    """
+    from app.db import SessionLocal
+    from app.services import code_graph
+
+    def fake_search(_db, _query, _project_id, top_k=5):
+        return [
+            (SimpleNamespace(path="backend/app"), 0.99),
+            (SimpleNamespace(path="fleet/src/gbfleet/until.py"), 0.95),
+            (SimpleNamespace(path="web/src/lib/api.ts"), 0.91),
+        ][:top_k]
+
+    monkeypatch.setattr("app.services.code_graph.search_code", fake_search)
+
+    body = (
+        "# Drain notices\n\n## Alert\n"
+        # No backticked `until`: since GRPH-1906 that name resolves to until.py on its own
+        # and fills the last slot, so the score guard would go untested.
+        "The drain posts to `backend/app/routers/fleet.py`. The server writes an alert in "
+        "`backend/app/services/alerts.py` and pushes it from `backend/app/services/push.py`, "
+        "probed in `backend/tests/test_cross_tenant_writes.py`.\n\n"
+        "## Acceptance\n- the route posts an alert\n"
+    )
+    prd = client.post("/api/prds", json={"title": "Slots", "body": body}, headers=auth).json()
+    db = SessionLocal()
+    pid = db.get(prd_svc.Prd, prd["id"]).project_id
+    code_graph.describe_code(db, project_id=pid, nodes=[
+        {"path": "backend/app", "kind": "module", "summary": "the app"},
+        {"path": "backend/app/routers/fleet.py", "kind": "file", "summary": "fleet routes"},
+        {"path": "backend/app/services/alerts.py", "kind": "file", "summary": "alerts"},
+        {"path": "backend/app/services/push.py", "kind": "file", "summary": "web push"},
+        {"path": "backend/tests/test_cross_tenant_writes.py", "kind": "file", "summary": "probes"},
+        {"path": "fleet/src/gbfleet/until.py", "kind": "file", "summary": "the drain loop"},
+        {"path": "web/src/lib/api.ts", "kind": "file", "summary": "api client"},
+    ])
+    db.close()
+
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    touch = {p["section"]: p for p in dry["proposals"]}["Alert"]["touchpoints"]
+    assert "backend/app" not in touch
+    assert touch[:4] == [
+        "backend/app/routers/fleet.py",
+        "backend/app/services/alerts.py",
+        "backend/app/services/push.py",
+        "backend/tests/test_cross_tenant_writes.py",
+    ]
+    assert touch[4:] == ["fleet/src/gbfleet/until.py"]
+
+
 def test_the_p92_fixture_is_the_real_p92_body():
     """`_P92_BODY` is GRPH-P92 v1.1 byte for byte, not a shape that resembles it.
 

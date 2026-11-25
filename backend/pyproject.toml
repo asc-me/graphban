@@ -1,6 +1,6 @@
 [project]
 name = "graphban-api"
-version = "2026.11.65"
+version = "2026.11.66"
 description = "Graphban backend — linear tracker + agent memory + MCP tools"
 license = "LicenseRef-FSL-1.1-Apache-2.0"
 requires-python = ">=3.12"
@@ -45,6 +45,10 @@ dev = [
     # to install pyyaml today, but a test depending on a transitive of a runtime extra is
     # a green suite waiting on someone else's dependency change.
     "pyyaml>=6.0",
+    # A hung test used to hold a drain for hours: the only limit was GitHub's 6-hour job
+    # default, and cancelling the job reports no test name (GRPH-1928). This names the
+    # stuck test and dumps its stack instead. Configured under [tool.pytest.ini_options].
+    "pytest-timeout>=2.4",
 ]
 
 [build-system]
@@ -67,6 +71,23 @@ artifacts = ["app/data/refusal_coverage.json", "app/data/gban_skills.json", "app
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+# A per-test ceiling, not a suite budget (GRPH-1928). CI run 45505794524 sat in
+# `pytest -q -n auto` for over two hours and only a human cancelling the job ended it — and
+# a cancelled job names no test, so a drain cannot tell a hang from a slow suite and waits.
+# 300s is ~10x the heaviest FILE in tests/shard_weights.json (29.33s of measured setup+call
+# covering every test in it), and the longest explicit wait anywhere in the suite is a
+# `time.sleep(30)` inside a generated CHILD process, not in a test body — so no legitimate
+# test is near the ceiling, and a stuck one is named with its stack five minutes in.
+# The method is left at pytest-timeout's default (SIGALRM where the platform has it, a timer
+# thread where it does not). Measured against three hangs — `time.sleep`, a wait on a lock
+# nobody releases, and ~19s of exponential backtracking inside the `re` C loop — SIGALRM
+# ended all three at the limit, serial and under `-n 2`, with `Failed: Timeout (>5.0s) from
+# pytest-timeout.` and the nodeid, and the rest of the run continued. Forcing
+# `timeout_method = "thread"` is worse here: it ends a timeout with `os._exit(1)`, so under
+# `-n auto` the worker dies and takes its remaining tests with it (`worker 'gw0' crashed
+# while running …`). A wedge SIGALRM cannot reach at all is what the job-level
+# `timeout-minutes` in .github/workflows/ci.yml is for — neither bound alone is the fix.
+timeout = 300
 
 # Read by `scripts/scan_ci.py` (`bandit -c pyproject.toml -r .`, GRPH-1110). No rule is skipped
 # here: each finding in `app/` is fixed or carries a line-level `# nosec <id>` with its reason.
