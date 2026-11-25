@@ -706,7 +706,9 @@ def title_subject(repo: Path, branch: str, base: str) -> str:
     if done.returncode != 0:
         return ""
     for line in (done.stdout or "").splitlines():
-        if line.strip():
+        # GRPH-1022: a resumed salvage under the build is not the build. Titled after it,
+        # the PR reads `WIP: salvaged by gbfleet`, the title GRPH-926 exists to keep off main.
+        if line.strip() and not line.strip().startswith("WIP: salvaged by gbfleet"):
             return line.strip()
     return ""
 
