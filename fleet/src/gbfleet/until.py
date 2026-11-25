@@ -1863,7 +1863,8 @@ def _stamp_service_exit(planner: Graphban, wave: Wave) -> None:
         pass
 
 
-def _prd_open_items(planner: Graphban, prd: str) -> list[outcome_mod.OpenItem]:
+def _prd_open_items(planner: Graphban, prd: str, holds: list[dict] | None = None,
+                    ) -> list[outcome_mod.OpenItem]:
     got = planner.call("search_items", prd_id=prd, fields="full", limit=10_000)
     rows = got.get("results") if isinstance(got, dict) else None
     if not isinstance(rows, list):
@@ -1874,10 +1875,21 @@ def _prd_open_items(planner: Graphban, prd: str) -> list[outcome_mod.OpenItem]:
             continue
         status = str(row.get("status") or "")
         tags = set(row.get("tags") or [])
+        item_id = str(row.get("id") or "")
+        ready = status == "next" and not row.get("blocker")
+        if ready and item_id:
+            # GRPH-1942. `blocker` is free text; a dependency link never sets it. An item
+            # whose dependency is not done is held, as the server's clusters hold it.
+            waiting = _dependencies_not_done(planner, item_id)
+            if waiting:
+                ready = False
+                if holds is not None:
+                    holds.append({"item": item_id, "waiting_on": ", ".join(
+                        f"{w['id']} ({w['status']})" for w in waiting)})
         items.append(outcome_mod.OpenItem(
-            id=str(row.get("id") or ""), status=status,
+            id=item_id, status=status,
             walk=bool(tags & {"walk", "planner-only"}),
-            ready=status == "next" and not row.get("blocker"),
+            ready=ready,
             live=bool(row.get("claimed_by") or row.get("review_claimed_by"))))
     return items
 
@@ -1893,8 +1905,10 @@ def notify_outcome(planner: Graphban, wave: Wave, reason: str, prd: str, *,
     state. `on_notice` runs only when the server says the notice changed something.
     """
     try:
+        holds: list[dict] = []
         found = outcome_mod.classify(
-            reason, _prd_open_items(planner, prd), spawned=len(wave.spawned),
+            reason, _prd_open_items(planner, prd, holds), spawned=len(wave.spawned),
+            dependency_holds=holds,
             review_waits=list(wave.review_waits), delegate_refused=list(wave.delegate_refused))
         open_items = [{"item": i, "reason": why} for i, why in sorted(found.reasons.items())]
         got = planner.post_drain_notice(prd=prd, outcome=found.state, open_items=open_items)
