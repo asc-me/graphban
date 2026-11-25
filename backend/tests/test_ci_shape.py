@@ -12,12 +12,14 @@ This file is in the backend suite because the backend paths-filter already inclu
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
+BACKEND_PYPROJECT = REPO / "backend" / "pyproject.toml"
 
 # The gate itself, and the filter job the gate deliberately includes. Everything else
 # defined in the workflow is a suite whose result has to reach the gate.
@@ -40,6 +42,21 @@ NOT_SUITES = {"changes", "ci", "refusal-ratchet", "security-scans"}
 # exists for (GRPH-1928) was a shard that sat in `pytest -q -n auto` for over two hours.
 MAX_TIMEOUT_MINUTES = 60
 
+# The window the per-test ceiling in `[tool.pytest.ini_options]` has to sit inside
+# (GRPH-1934). A window and not the literal `300`, so retuning the ceiling stays a
+# pyproject edit; both ends are measured rather than round numbers.
+#   floor — `timeout = 0` is pytest-timeout's own "no ceiling", so it has to be refused as
+#     hard as an absent key, and anything under a minute turns the suite's own documented
+#     waits into red jobs: the heaviest FILE in tests/shard_weights.json is 29.33s of
+#     measured setup+call, and the longest explicit wait in a test is a `time.sleep(30)`
+#     inside a generated CHILD process.
+#   ceiling — exclusive, and derived from the job bound this file already enforces. At or
+#     above `MAX_TIMEOUT_MINUTES` the job-level `timeout-minutes` kills the shard first, so
+#     the per-test ceiling can never fire: it names no test and leaves exactly the
+#     unbounded hang GRPH-1928 was filed to remove, now wearing a configured-looking value.
+MIN_PER_TEST_SECONDS = 60
+MAX_PER_TEST_SECONDS = MAX_TIMEOUT_MINUTES * 60
+
 # Backend jobs, keyed on their working directory rather than a job list so a NEW one defaults
 # to being covered — the direction that fails safe. `BACKEND_SUITES` run pytest;
 # `backend-packaging` installs the wheel and runs import checks, so it is held to the lock by
@@ -53,6 +70,10 @@ LOCK_CHECK = "lock_constraints.py check uv.lock"
 
 def _workflow() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+
+def _toml(path: Path) -> dict:
+    return tomllib.loads(path.read_text(encoding="utf-8"))
 
 
 def _backend_installs() -> dict[str, list[tuple[int, str]]]:
@@ -169,6 +190,54 @@ def test_every_suite_job_bounds_itself():
     assert not oversized, (
         f"job(s) {oversized} are bounded by something that is not an integer minute count in "
         f"1..{MAX_TIMEOUT_MINUTES}. A bound at GitHub's own 360-minute default is no bound."
+    )
+
+
+def test_the_per_test_ceiling_is_still_configured():
+    """GRPH-1934: deleting `timeout = 300` left the whole backend suite green.
+
+    GRPH-1928 delivered two layers of bound and only the job-level one got a guard. The
+    per-test ceiling lives in `[tool.pytest.ini_options]`, and nothing read it: two
+    reviewers on separate seats deleted it at head 864f1256 and measured 126 and 459 tests
+    still passing at rc=0, the second across every backend test file that reads the workflow
+    or a pyproject — not a selection that happened to miss a guard, because there was none.
+
+    The silence is the trap. pytest-timeout stays installed (a dev extra, pinned 2.4.0 by
+    the lock), so pytest does not even warn `Unknown config option: timeout`. The plugin
+    loads, the suite goes fully green, and a hang has regained exactly the unbounded
+    behaviour GRPH-1928 was filed to remove — an absence reading as a clean result, which
+    is why this is a gate and not a comment. The mechanism itself is live when configured:
+    at the same head a scratch test sleeping five seconds under `-o timeout=2` ended at
+    3.10s with `Failed: Timeout (>2.0s) from pytest-timeout.` and named the stuck test.
+
+    The fleet distribution's own ceiling in fleet/pyproject.toml is asserted in
+    fleet/tests/test_packaging.py, not here: the `backend` paths-filter in
+    .github/workflows/ci.yml does not include fleet/pyproject.toml, so a fleet-only PR that
+    deleted it would never run this file and the guard would be silent about the one change
+    it exists for.
+
+    Sabotage: delete `timeout = 300` from backend/pyproject.toml; set it to 0; set it to
+    7200; quote it (`timeout = "300"`).
+    """
+    assert BACKEND_PYPROJECT.exists(), f"{BACKEND_PYPROJECT} is gone — this guard read nothing"
+    ini = _toml(BACKEND_PYPROJECT).get("tool", {}).get("pytest", {}).get("ini_options")
+    assert ini, (
+        "backend/pyproject.toml has no [tool.pytest.ini_options], so the per-test ceiling "
+        "is gone with it (GRPH-1934)."
+    )
+
+    timeout = ini.get("timeout")
+    assert timeout is not None, (
+        "backend/pyproject.toml's [tool.pytest.ini_options] sets no `timeout`, so there is no "
+        "per-test ceiling: a hung test is bounded only by the job-level `timeout-minutes`, "
+        "which kills the whole shard and names no test (GRPH-1934). pytest-timeout is still "
+        "installed, so pytest warns about nothing and the suite stays green without it."
+    )
+    assert isinstance(timeout, int) and MIN_PER_TEST_SECONDS <= timeout < MAX_PER_TEST_SECONDS, (
+        f"backend/pyproject.toml sets timeout = {timeout!r}, which is not an integer second "
+        f"count in {MIN_PER_TEST_SECONDS}..<{MAX_PER_TEST_SECONDS}. 0 is pytest-timeout's own "
+        "no-ceiling; at or above the job-level `timeout-minutes` the job dies first and names "
+        "no test (see MIN_PER_TEST_SECONDS / MAX_PER_TEST_SECONDS)."
     )
 
 
