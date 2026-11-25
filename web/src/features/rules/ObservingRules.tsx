@@ -2,7 +2,8 @@
  * Observing rules and adopted guidance for one stage (GRPH-1782 / P91 S10). An observing rule is
  * drawn ADVISORY: on and measured, not enforced. It shows "observing since <date>: would have
  * held N items" (UNMEASURED when nothing was measured, never 0), a nudge once `decision_due`, the
- * would-have record, who proposed and adopted it, and a Promote button that needs a reason.
+ * would-have record, who proposed and adopted it, and a Promote button that needs a reason. A custom
+ * rule also offers Remove beside it, under the same reason (GRPH-1939): the nudge's "or remove it".
  * Adopted guidance sits under the stage as ADVISORY text with its citations.
  */
 import * as React from "react";
@@ -16,6 +17,7 @@ import {
   useAdoptedProposals,
   useCustomRules,
   usePromoteRule,
+  useRemoveCustomRule,
   useProposalDecisions,
   useRuleGuidance,
   useRuleObservations,
@@ -92,6 +94,11 @@ export function ObservingRow({
   const [reason, setReason] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   const promote = usePromoteRule(projectId);
+  const remove = useRemoveCustomRule(projectId);
+  const custom = ruleId.startsWith("custom.");
+  const { data: customRules } = useCustomRules(projectId);
+  // The project's own custom rule: an org-owned one is an org admin's to remove.
+  const removable = custom && (customRules ?? []).some((c) => c.rule_id === ruleId && c.source !== "org");
   const { data: rows } = useRuleObservations(projectId, ruleId, true);
   const { data: adopted } = useAdoptedProposals(projectId);
   // The proposals list omits decided_by / decided_reason. The adopt event carries them (GRPH-1811).
@@ -136,7 +143,7 @@ export function ObservingRow({
       <div className="mt-1 flex flex-wrap items-center gap-2">
         <Input
           aria-label={`Promote reason for ${ruleId}`}
-          placeholder="Reason to promote"
+          placeholder={removable ? "Reason to promote or remove" : "Reason to promote"}
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           className="h-7 max-w-xs"
@@ -151,6 +158,20 @@ export function ObservingRow({
         >
           Promote
         </Button>
+        {removable && (
+          <Button
+            size="sm"
+            variant="outline"
+            data-testid={`remove-${ruleId}`}
+            disabled={!why || remove.isPending}
+            onClick={() => {
+              setError(null);
+              remove.mutate({ ruleId, reason: why }, { onError: (e) => setError(errorDetail(e, "Remove refused")) });
+            }}
+          >
+            Remove
+          </Button>
+        )}
         <button type="button" className="text-[11.5px] text-accent underline" onClick={() => setOpen(!open)}>
           {open ? "Hide would-have record" : `Would-have record (${rows?.length ?? 0})`}
         </button>
@@ -172,6 +193,47 @@ export function ObservingRow({
         </ol>
       )}
     </li>
+  );
+}
+
+/**
+ * Remove an active custom rule, with a reason (GRPH-1939 / P91 D3). A person's act: the server
+ * refuses an agent key naming rules.person_adopts. The would-have record and history stay.
+ */
+export function RemoveCustomRule({ ruleId, projectId }: { ruleId: string; projectId: string }) {
+  const [reason, setReason] = React.useState("");
+  const [error, setError] = React.useState<string | null>(null);
+  const remove = useRemoveCustomRule(projectId);
+  const why = reason.trim();
+  return (
+    <div className="flex flex-col gap-1" data-testid={`remove-custom-${ruleId}`}>
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          aria-label={`Remove reason for ${ruleId}`}
+          placeholder="Reason to remove"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          className="h-7 max-w-xs"
+        />
+        <Button
+          size="sm"
+          variant="outline"
+          data-testid={`remove-${ruleId}`}
+          disabled={!why || remove.isPending}
+          onClick={() => {
+            setError(null);
+            remove.mutate({ ruleId, reason: why }, { onError: (e) => setError(errorDetail(e, "Remove refused")) });
+          }}
+        >
+          Remove
+        </Button>
+      </div>
+      {error && (
+        <p role="alert" className="text-small text-danger" data-testid={`remove-error-${ruleId}`}>
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 

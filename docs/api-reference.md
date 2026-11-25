@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 404 of the 404. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 405 of the 405. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -174,6 +174,7 @@ box, a platform operator. Anyone else is refused `403` with `rule_id: sync.link_
 | GET / POST | `/api/orgs/{id}/rules/custom` | JWT (org admin, premium) | List / create the org's custom rules (same body as the project route). Locking an org rule that is still `observing` is 422 naming `observing`; promote it first |
 | GET | `/api/projects/{id}/rules/guidance` | JWT (project reader) | Guidance filed for the project (GRPH-1780, P91 D8), optional `?status=open\|adopted\|dismissed`. Guidance is filed with `kind: guidance` (`stage`, `label`, `text`, `citations`) on the proposals POST |
 | POST | `/api/projects/{id}/rules/guidance/{gid}/{decision}` | JWT (project writer, a person) | `decision` is `adopt` or `dismiss`. Adopted guidance is advisory text in the delegation brief of an item in its stage. An agent key cannot reach it (`rules.person_adopts`) |
+| POST | `/api/projects/{id}/rules/custom/{rule_id}/remove` | JWT (project owner/admin) | A person removes the project's own custom rule `{reason}`, observing or active (GRPH-1939, P91 D3/D5). Returns `{rule_id, project_id, removed, state, reason, org_rule_holds}`. The rule leaves the custom lists and toggles and holds and records nothing after; its would-have rows (`GET /api/projects/{id}/rules/{rule_id}/observations`) and history (a `remove_custom_rule` event with the reason and what was removed) stay. An agent key is 403 naming `rules.person_adopts`; another project's caller is refused; 404 for an unknown custom rule; 422 for a missing reason, a library rule (turn it off with its toggle), or an org-owned rule (an org admin's); 409 naming `rules.org_lock_holds` when the org has locked it. Removing a project override of an org rule leaves the org's rule holding (`org_rule_holds: true`) |
 | POST | `/api/projects/{id}/rules/{rule_id}/promote` | JWT (project owner/admin) | A person promotes an observing rule `{reason}` to `active` (GRPH-1777, P91 D5); returns the rule's toggle. 422 when the rule is not observing; an agent key is 403 naming `rules.person_adopts`. Would-have history is kept |
 | GET | `/api/projects/{id}/rules/{rule_id}/observations` | JWT (project reader) | The rule's would-have outcomes `{id, rule_id, outcome: would_hold\|would_refuse, item_id, commit, detail, at}`, kept for the life of the project |
 | GET | `/api/rules/pack` | JWT | The installed rule pack: `{installed, loaded, name, version, sha256, installed_at, installed_by, reason}`. `reason` is the server's own words for an empty or refused state (nothing installed, or the persisted pack no longer verifies or needs a newer server); `/api/rules/toggles` carries the same as `library_reason` |

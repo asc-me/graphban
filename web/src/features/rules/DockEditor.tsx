@@ -31,7 +31,7 @@ import {
 } from "./levels";
 import { cleanParams, FOUND_BUG_DEFAULT, FOUND_BUG_RULE, MEMORY_WRITE_MODES, MemoryWriteModeControl, useCanWriteRules } from "./LibraryRuleControls";
 import { AdminGitopsLink, BudgetCapEditor, currentValue, GITOPS_RULE_FIELDS, toPatch, useOrgNameOrNull } from "./RuleEditors";
-import { ObservingRow, WouldHaveRecord } from "./ObservingRules";
+import { ObservingRow, RemoveCustomRule, WouldHaveRecord } from "./ObservingRules";
 import { RuleHistory } from "./RuleHistory";
 import { RuleLevelIcon } from "./RuleLevelIcon";
 import { relTime } from "@/lib/relTime";
@@ -64,7 +64,7 @@ function customReadOnlyReason(state: string | undefined): string {
     return "Custom rule: it has no library switch. Promote it while it observes.";
   }
   if (state === "active") {
-    return "Custom rule: it has no library switch. It is changed by proposal, not here.";
+    return "Custom rule: it has no library switch. It is changed by proposal, or removed here.";
   }
   return "Custom rule: it has no library switch. State not read.";
 }
@@ -713,6 +713,9 @@ export function DockEditor({
               />
             )}
             {customRule && customRule.state !== "observing" && <WouldHaveRecord ruleId={rule.id} projectId={activeId} />}
+            {customRule?.state === "active" && customRule.source !== "org" && (
+              <RemoveCustomRule ruleId={rule.id} projectId={activeId} />
+            )}
             <ReadOnlyReason>{customReadOnlyReason(customRule?.state)}</ReadOnlyReason>
           </div>
         )}

@@ -287,6 +287,46 @@ def create(db: Session, actor: object, project_id: str, *, slug: str, primitive:
     return row
 
 
+def remove(db: Session, actor: object, project_id: str, rule_id: str, reason: str) -> dict:
+    """A project owner/admin removes the project's own custom rule, observing or active
+    (GRPH-1939 / P91 D3, D5). A person's act with a reason: an agent key is refused naming
+    `rules.person_adopts`. The row goes, so the rule is no longer read by `rows_for_project`
+    and holds and records nothing; its would-have rows (`RuleObservation`) and its history
+    stay, and a `remove_custom_rule` event keeps what was removed and why. An org-owned rule is
+    an org admin's; a locked rule is refused naming `rules.org_lock_holds`."""
+    user = T._check_project_writer(db, actor, project_id)
+    why = T._reason(reason)
+    if not is_custom(rule_id):
+        raise Validation(f"{rule_id} is not a custom rule",
+                         hint="a library rule is turned off with its toggle, not removed")
+    refuse_if_locked(db, rule_id, project_id)
+    row = _row(db, rule_id, project_id)
+    if row is None:
+        if _org_row(db, rule_id, T._org_of(db, project_id)) is not None:
+            raise Validation(f"{rule_id} is owned by the org; an org admin removes it",
+                             hint="a project removes only a rule it holds itself")
+        raise NotFound(f"{rule_id!r} is not a custom rule of this project")
+    removed = {"rule_id": row.rule_id, "primitive": row.primitive, "params": row.params,
+               "state": row.state, "title": row.title, "why": row.why,
+               "author": _author(db, row), "created_at": row.created_at.isoformat()
+               if row.created_at else None}
+    from app.services import rule_observations
+    seen = (rule_observations.summary(db, project_id, rule_id, row.created_at)
+            if row.state == "observing" else None)
+    db.delete(row)
+    db.flush()
+    org_holds = _org_row(db, rule_id, T._org_of(db, project_id)) is not None
+    events_svc.record_user(
+        db, user, action="remove_custom_rule", target_type="rule", target_id=rule_id,
+        project_id=project_id,
+        meta={"reason": why, "removed": removed, "org_rule_holds": org_holds,
+              **({"would_hold": seen["would_hold"], "would_refuse": seen["would_refuse"]}
+                 if seen else {})})
+    db.commit()
+    return {"rule_id": rule_id, "project_id": project_id, "removed": True,
+            "state": removed["state"], "reason": why, "org_rule_holds": org_holds}
+
+
 # ---- org scope (GRPH-1779 / P91 D7) ------------------------------------------------------
 
 def _org_admin(db: Session, actor: object, org_id: str) -> User:
