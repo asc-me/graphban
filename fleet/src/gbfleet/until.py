@@ -32,6 +32,7 @@ from typing import Callable
 
 from . import adopt as adopt_mod
 from . import deps
+from . import drain_outcome as outcome_mod
 from . import worktree as wt_mod
 from . import observe
 from . import waits as wait_mod
@@ -315,6 +316,7 @@ def run(
     stall_after: float = watchdog_mod.STALL_AFTER_S,
     clock: Callable[[], float] = time.monotonic,
     acknowledge_reach: set[str] | None = None,
+    on_notice: Callable[[dict], None] | None = None,
 ) -> Report:
     """Hold the repo lock and run until idle, a cap, or a config refusal.
 
@@ -486,6 +488,7 @@ def run(
                 verified_merges=(
                     Path(state) / "verified-merges.json" if state is not None else None
                 ),
+                on_notice=on_notice,
               )
             except ToolFailed as exc:
                 # GRPH-1669. A roster read (`fleet_status`) answered with a tool error.
@@ -973,6 +976,7 @@ def _loop(
     wave_base: "WaveBase | None" = None,
     acknowledge_reach: set[str] | None = None,
     verified_merges: Path | None = None,
+    on_notice: Callable[[dict], None] | None = None,
 ) -> Report:
     from .mcp import _runner_up, read_preferences
     profile, policy, pref_note, measured, cap_measured, tier_map = read_preferences(supervisor)
@@ -1039,7 +1043,8 @@ def _loop(
         # nothing must not be left for the next cycle to adopt. A child that holds
         # an item stays; its lease is the work.
         _stop_children_holding_nothing(wave, children, supervisor, planner, base)
-        return _finish(wave, reason, code, minted, planner, prd=prd, line=line, **kw)
+        return _finish(wave, reason, code, minted, planner, prd=prd, line=line,
+                       on_notice=on_notice, **kw)
     # GRPH-846, GRPH-880. Built whether or not `merge` was asked for, and inert when it was not:
     # `enabled` is the flag, read once here, so the loop below has one call site and no
     # branch on it — the branch is inside, where a test can see it stay closed. `prd_id`
@@ -1858,10 +1863,68 @@ def _stamp_service_exit(planner: Graphban, wave: Wave) -> None:
         pass
 
 
+def _prd_open_items(planner: Graphban, prd: str) -> list[outcome_mod.OpenItem]:
+    got = planner.call("search_items", prd_id=prd, fields="full", limit=10_000)
+    rows = got.get("results") if isinstance(got, dict) else None
+    if not isinstance(rows, list):
+        raise ToolFailed("search_items", "error", "PRD listing carried no results list")
+    items = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        status = str(row.get("status") or "")
+        tags = set(row.get("tags") or [])
+        items.append(outcome_mod.OpenItem(
+            id=str(row.get("id") or ""), status=status,
+            walk=bool(tags & {"walk", "planner-only"}),
+            ready=status == "next" and not row.get("blocker"),
+            live=bool(row.get("claimed_by") or row.get("review_claimed_by"))))
+    return items
+
+
+def notify_outcome(planner: Graphban, wave: Wave, reason: str, prd: str, *,
+                   on_notice: Callable[[dict], None] | None = None) -> dict | None:
+    """Post this cycle's drain outcome (GRPH-1912). Returns the notice when one was written.
+
+    Stateless: the server holds the last notice and answers `changed: false` for a post
+    identical to it, so a service that restarts `until` every poll writes one notice per
+    change of state, and a restart resends nothing. A failed post is dropped; the next cycle
+    re-classifies from live state and posts again. `working` is posted too, to reset the
+    state. `on_notice` runs only when the server says the notice changed something.
+    """
+    try:
+        found = outcome_mod.classify(
+            reason, _prd_open_items(planner, prd), spawned=len(wave.spawned),
+            review_waits=list(wave.review_waits), delegate_refused=list(wave.delegate_refused))
+        open_items = [{"item": i, "reason": why} for i, why in sorted(found.reasons.items())]
+        got = planner.post_drain_notice(prd=prd, outcome=found.state, open_items=open_items)
+    except (NotPermitted, ToolFailed, ServerUnreachable, ObservationRefused) as exc:
+        observe.emit("drain_notice_failed", detail=str(exc))
+        return None
+    if not got.get("changed"):
+        return None
+    notice = {"prd": prd, "outcome": found.state, "open": open_items,
+              "sent_at": datetime.now(timezone.utc).isoformat()}
+    drain = service_drain(prd)
+    if drain is not None:
+        from . import service as service_mod
+
+        service_mod.record_notice(drain["service"], notice)  # `working` too: it supersedes
+    if found.state == outcome_mod.WORKING:
+        return None
+    if on_notice is not None:
+        try:
+            on_notice(notice)
+        except Exception as exc:  # noqa: BLE001 - a hook never stops the drain
+            observe.emit("drain_notice_hook_failed", detail=str(exc))
+    return notice
+
+
 def _finish(
     wave: Wave, reason: str, exit_code: int, minted: int, planner: Graphban,
     *, review: list[str] | None = None, waits: list[str] | None = None,
     outside: list[str] | None = None, prd: str | None = None, line: str | None = None,
+    on_notice: Callable[[dict], None] | None = None,
 ) -> Report:
     _stamp_service_exit(planner, wave)
     if waits is None:
@@ -1886,6 +1949,8 @@ def _finish(
             outside = [str(r["id"]) for r in beyond]
         except (NotPermitted, ToolFailed, ServerUnreachable):
             review = []
+    if prd and not line:
+        notify_outcome(planner, wave, reason, prd, on_notice=on_notice)
     return Report(
         ok=exit_code == 0,
         reason=reason,

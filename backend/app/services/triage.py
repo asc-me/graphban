@@ -234,10 +234,16 @@ def _blocker_rows(db: Session, project_id: str, now) -> list[dict]:
                                    "options": b["decision"]["options"]}
                 row.update(blocks.get(item.id) or {})
             else:
-                dep = next((d for d in (ctx.item(i)
-                                        for i in prio.blocked_by(ctx, item)) if d), None)
-                if dep is not None:
-                    row["waiting_on"] = {"id": dep.key, "title": dep.title, "status": dep.status}
+                deps = [d for d in (ctx.item(i) for i in prio.blocked_by(ctx, item)) if d]
+                if deps:
+                    # `ctx.deps` is appended in the order an unsorted Link scan returns, so
+                    # "the first dependency" was whichever row the engine happened to hand
+                    # back: the same graph could name a different one under another plan, on
+                    # another server, or after a restored dump. Sorted the way `_blocks_many`
+                    # and `questions` here already are (GRPH-1923).
+                    deps.sort(key=lambda d: (d.number or 0, d.key))
+                    row["waiting_on"] = {"id": deps[0].key, "title": deps[0].title,
+                                         "status": deps[0].status}
             rows.append(row)
     return rows
 
@@ -352,9 +358,18 @@ def feed(db: Session, project_id: str) -> dict:
 # A manager decides in the console; the box that owns the item reads the decision on each sync,
 # applies it through the same service functions the box's own triage UI calls, and reports
 # `applied` or `refused` back. The box initiates both calls.
+#
+# The wire is the CONSOLE'S, not one this module invented (graphban-control
+# `server/src/triage-routes.ts` and `docs/contract.md`, GBC-173). A served decision is
+# `{id, target, decision, note, decided_at}`; `target` is an OBJECT — `{kind: "item", item_id}`
+# naming a row this box published in its digest, or `{kind: "request", request_id, title, body}`
+# for a public request routed here, which lands as a new item; and each result is reported by its
+# own `POST .../applied` carrying ONE `{decision_id, outcome, reason}`.
 
 DECISIONS_FEATURE_PATH = "/api/sync/triage-decisions"
-DECISION_TYPES = ("accept", "duplicate_of", "park", "decline", "assign_team")
+# The console serves `accept` | `decline` | `defer`. `duplicate_of`, `park` and `assign_team` are
+# the box's own names, kept for GRPH-1722 to map the console's onto — not removed here.
+DECISION_TYPES = ("accept", "decline", "defer", "duplicate_of", "park", "assign_team")
 APPLIED_ACTION = "triage_decision_applied"
 _TIMEOUT = 30.0
 
@@ -392,27 +407,52 @@ def _find_target(db: Session, key: str):
     return db.get(Item, iid or key)
 
 
+def _target_of(decision: dict) -> tuple[str, object]:
+    """Read the console's `target` OBJECT: `("item", item_id)` or `("request", the target)`.
+
+    `("", None)` for anything else. A target that is not the console's object names nothing on
+    this box: stringifying it and looking that up is what made every console decision read
+    `not_found`, so an unrecognised target is refused as malformed instead.
+    """
+    target = decision.get("target")
+    if not isinstance(target, dict):
+        return "", None
+    kind = str(target.get("kind") or "")
+    if kind == "item":
+        item_id = str(target.get("item_id") or "")
+        return ("item", item_id) if item_id else ("", None)
+    if kind == "request":
+        return "request", target
+    return "", None
+
+
 def _check_unmoved(target, decision: dict) -> None:
     """The decision was made against the status the console saw. If the item moved since,
-    the manager decided about something that no longer exists in that form."""
+    the manager decided about something that no longer exists in that form.
+
+    The console's decision payload carries no status — it serves `{id, target, decision, note,
+    decided_at}` — so there is nothing to compare and refusing here would leave every console
+    decision unapplied, which is the guarantee's opposite, not its defence. A payload that does
+    carry one is still checked, which is what keeps `item_moved` meaning something.
+    """
     seen = decision.get("status")
     if not seen:
-        # Without the status the console saw there is nothing to check the item against, and
-        # applying blind would bypass the item_moved guarantee.
-        raise DecisionRefused("no_status", "decision carries no status to check against")
+        return
     if seen != target.status:
         raise DecisionRefused("item_moved", f"{target.key} is now {target.status}, was {seen}")
 
 
 def _apply_one(db: Session, target, decision: dict) -> dict:
     kind = decision.get("decision")
-    reason = str(decision.get("reason") or "")
+    # The console's free text is `note`; `reason` is the box's older name for the same field.
+    reason = str(decision.get("note") or decision.get("reason") or "")
     if kind not in DECISION_TYPES:
         raise DecisionRefused("unknown_decision", f"unknown decision {kind!r}")
     _check_unmoved(target, decision)
     is_req = isinstance(target, Request)
     try:
-        if kind in ("accept", "park"):
+        if kind in ("accept", "park", "defer"):
+            # `defer` is the console's name for the box's `park`: off the queue, not declined.
             status = "next" if kind == "accept" else "backlog"
             if is_req:
                 req_svc.accept_request(db, target.id, status=status)
@@ -473,12 +513,39 @@ def _apply_duplicate(db: Session, target, decision: dict) -> None:
         db.commit()
 
 
+def _route_request(db: Session, target: dict, decision: dict, project_id: str | None) -> Item:
+    """A public request the console routed here becomes a NEW item on the pulled project.
+
+    The console delivers an accepted request to the box it was routed to (`route_to`) carrying
+    the request's own title and body, and it applies a request `decline`/`defer` itself without
+    ever serving it — so `accept` is the only decision that can arrive on this target.
+    """
+    if str(decision.get("decision") or "") != "accept":
+        raise DecisionRefused("unsupported_target",
+                              "a routed request is only ever served as accept")
+    if not project_id:
+        raise DecisionRefused("no_project", "a routed request needs the project it was pulled for")
+    title = str(target.get("title") or "").strip()
+    if not title:
+        raise DecisionRefused("bad_decision", "a routed request carries no title")
+    try:
+        return items_svc.create_item(db, title=title, description=str(target.get("body") or ""),
+                                     project_id=project_id, status="next")
+    except ValueError as e:
+        db.rollback()
+        raise DecisionRefused("refused", str(e))
+
+
 def apply_decision(db: Session, decision: dict, project_id: str | None = None) -> dict:
     """Apply one console decision. Returns the report row: `{id, result, reason?}`.
 
+    `target` is the console's object (see `_target_of`); `project_id` is the project the decision
+    was pulled for, which is where a routed request's new item lands and outside which an item
+    target is refused `wrong_project` and left untouched.
+
     Idempotent on the decision id: a retried sync that delivers it again reports `applied`
-    without touching the item a second time. With `project_id` (the project the decision was
-    pulled for), a target outside that project is refused `wrong_project` and left untouched.
+    without touching the item a second time — or, for a routed request, without creating a
+    second item.
     """
     from app.services import events as events_svc
 
@@ -487,13 +554,20 @@ def apply_decision(db: Session, decision: dict, project_id: str | None = None) -
         return {"id": did, "result": "refused", "reason": "bad_decision"}
     if _decision_applied_before(db, did):
         return {"id": did, "result": "applied"}
-    target = _find_target(db, str(decision.get("target") or ""))
-    if target is None:
-        return {"id": did, "result": "refused", "reason": "not_found"}
-    if project_id is not None and target.project_id != project_id:
-        return {"id": did, "result": "refused", "reason": "wrong_project"}
+    kind, payload = _target_of(decision)
+    if not kind:
+        return {"id": did, "result": "refused", "reason": "bad_decision"}
     try:
-        out = _apply_one(db, target, decision)
+        if kind == "request":
+            target = _route_request(db, payload, decision, project_id)
+            out = {"decision": str(decision.get("decision"))}
+        else:
+            target = _find_target(db, payload)
+            if target is None:
+                return {"id": did, "result": "refused", "reason": "not_found"}
+            if project_id is not None and target.project_id != project_id:
+                return {"id": did, "result": "refused", "reason": "wrong_project"}
+            out = _apply_one(db, target, decision)
     except DecisionRefused as e:
         return {"id": did, "result": "refused", "reason": e.reason}
     events_svc.record(
@@ -528,14 +602,23 @@ def pull_decisions(db: Session, *, cloud_url: str, api_key: str) -> dict:
         resp.raise_for_status()
         body = resp.json()
         rows = body.get("decisions") if isinstance(body, dict) else None
-        results = [apply_decision(db, d, project.id) for d in (rows or []) if isinstance(d, dict)]
-        if not results:
-            continue
-        try:
-            httpx.post(f"{base}/applied", headers=headers, timeout=_TIMEOUT,
-                       json={"project": name, "results": results}).raise_for_status()
-        except Exception as e:  # noqa: BLE001 — still pending on the console; retried next sync
-            out["errors"].append({"project": name, "error": f"{type(e).__name__}: {e}"})
-        for r in results:
-            out["applied" if r["result"] == "applied" else "refused"] += 1
+        for d in (rows or []):
+            if not isinstance(d, dict):
+                continue
+            r = apply_decision(db, d, project.id)
+            outcome = "applied" if r["result"] == "applied" else "refused"
+            reason = str(r.get("reason") or "").strip()
+            if outcome == "refused" and not reason:
+                reason = "refused"  # the console 422s a refusal that carries no reason
+            # ONE decision per call: the console answers a batch `{project, results: [...]}` with
+            # 422 `decision_id is required`, so a refusal it never hears about stays pending.
+            report = {"decision_id": r["id"], "outcome": outcome,
+                      "reason": reason if outcome == "refused" else ""}
+            try:
+                httpx.post(f"{base}/applied", params={"project": name}, headers=headers,
+                           timeout=_TIMEOUT, json=report).raise_for_status()
+            except Exception as e:  # noqa: BLE001 — still pending on the console; retried next sync
+                out["errors"].append({"project": name, "decision_id": r["id"],
+                                      "error": f"{type(e).__name__}: {e}"})
+            out["applied" if outcome == "applied" else "refused"] += 1
     return out

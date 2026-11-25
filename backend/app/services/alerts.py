@@ -79,7 +79,7 @@ def post_drain_notice(db: Session, project_id: str, prd: Prd, outcome: str,
         for row in live:
             row.cleared_at = now
         db.commit()
-        return {"alerts": [], "cleared": len(live), "push": []}
+        return {"alerts": [], "cleared": len(live), "push": [], "changed": bool(live)}
     kind = DRAIN_KINDS[outcome]
     project = db.get(Project, prd.project_id)
     title, body = _drain_text(tagging.render(project.tag, "prd", prd.number), outcome,
@@ -90,6 +90,7 @@ def post_drain_notice(db: Session, project_id: str, prd: Prd, outcome: str,
     for row in live:
         by_user.setdefault(row.user_id, []).append(row)
     ids, push = [], []
+    changed = False
     for row in live:  # no longer a recipient, or a duplicate beyond the one live row
         if row.user_id not in users or by_user[row.user_id][0] is not row:
             row.cleared_at = now
@@ -100,6 +101,7 @@ def post_drain_notice(db: Session, project_id: str, prd: Prd, outcome: str,
             if row.title == title and row.body == body:
                 continue  # identical to the last notice: nothing changes
             row.title, row.body = title, body
+            changed = True
             last = _aware(row.pushed_at)
             if last is None or now - last >= DRAIN_PUSH_GAP:
                 row.pushed_at = now
@@ -110,10 +112,11 @@ def post_drain_notice(db: Session, project_id: str, prd: Prd, outcome: str,
         new = Alert(id="al_" + uuid.uuid4().hex[:12], user_id=uid, project_id=prd.project_id,
                     kind=kind, item_id="", prd_id=prd.id, title=title, body=body, pushed_at=now)
         db.add(new)
+        changed = True
         ids.append(new.id)
         push.append(new.id)
     db.commit()
-    return {"alerts": ids, "push": push}
+    return {"alerts": ids, "push": push, "changed": changed}
 
 
 def _askers(db: Session, wait_ids: list[str]) -> dict[str, Item]:

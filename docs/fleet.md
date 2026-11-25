@@ -59,6 +59,19 @@ has no line filter, so the run filters the clusters to the line's items itself.
 - Run the line drain in its own clone. There is one supervisor lock per checkout, unchanged,
   so do not start `--line` on a checkout a `--prd` drain holds.
 
+### Reading the last drain notice
+
+A `--prd` drain run as a service remembers the last notice `until` sent (one per change
+of state) under `~/.config/gbfleet/notice/<name>.json`. `gbfleet service status --name <prd>`
+prints it under the service line:
+
+- `last notice: drained, sent <time>` after a drained notice.
+- `last notice: stalled (held), sent <time>` followed by one `<item>: <reason>` line per open
+  item after a drain stall.
+
+"stalled (held)" is a drain stall. The existing `stalled (...)` service line is the
+`loop_silent` check (a supervisor that stopped writing) and keeps its own wording.
+
 ## Harness config
 
 - **Tier map**: harness × tier, editable for this deployment. An override is stored beside the
@@ -136,3 +149,16 @@ reports an empty suite as 0 tasks and never skips it.
 "No ready work to partition" means nothing is ready, not that everything is done. "Nothing
 waiting for a second pair of eyes" is about the review queue only. If no API key reaches the
 project, the page says so and points to Settings.
+
+## The local hook (`--on-notify`)
+
+`gbfleet service install --on-notify <command> -- --prd GRPH-Pxx ...` runs `<command>` once
+for each drain notice the server accepts as a change of state, with the notice as JSON on
+stdin: `{"prd", "outcome", "open", "sent_at"}`. It runs once per notice, not once
+per cycle. A hook that exits non-zero is logged (`drain_notice_hook_failed`) and the drain
+carries on; a hook still running after 30 seconds is killed. Without `--on-notify` nothing
+runs and the notice still reaches the server.
+
+The command is run directly, not through a shell: split like a shell command line on Linux
+and macOS, and handed to CreateProcess as is on Windows. For
+pipes or redirects, ask for the shell yourself: `--on-notify "sh -c 'jq .outcome >> ~/drains.log'"`.

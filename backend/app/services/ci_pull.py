@@ -15,6 +15,17 @@ falls through to `GET /actions/runs?head_sha={sha}` and each run's `/jobs`,
 which Actions: Read does cover. Both routes write the same attestation under the
 same adapter; a 403 on both names the missing permission rather than going quiet.
 
+A pull request whose head the server was never told is polled all the same
+(GRPH-1925): `_head` answers "" for it, so the loop asks GitHub instead of
+dropping the item. `GET /pulls/{n}` answers `head.sha` and wants Pull requests:
+Read, which a fine-grained token need not have, so a 403 or a 404 there falls
+through to `GET /actions/runs?event=pull_request` and the newest run whose
+`pull_requests[]` lists that PR number — Actions: Read covers that route too.
+The head is looked up again on every poll gap, so a push after a red run is
+seen. A head that cannot be found is a sentence naming the PR it was looking
+for, on the done refusal and on `/health`: an item the loop will never poll must
+not read as one waiting for CI.
+
 Zero check-runs is not a green suite. A missing token, a 401 and a 404 are
 not silence — `last_error` is what `/health` reports, and `refusal_clause` is
 what the done gate appends. A head is polled at most every 60 seconds, less
@@ -34,6 +45,7 @@ import logging
 import re
 import threading
 import time
+from urllib.parse import quote
 
 import httpx
 from sqlalchemy import delete, select
@@ -52,7 +64,7 @@ MAX_PAGES = 10
 _PAGE_SIZE = 100
 _FETCH_TIMEOUT = 10.0
 _GH_PR = re.compile(
-    r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/\d+",
+    r"https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/(\d+)",
     re.IGNORECASE,
 )
 _SHA = re.compile(r"^[0-9a-fA-F]{7,40}$")
@@ -73,6 +85,11 @@ _next_poll: dict[str, float] = {}
 #: different, and an empty string must not be the only answer.
 LAST_ERROR_KEY = "__last_error__"
 _UNREADABLE = "the box could not read the stored CI pull observation"
+#: Rows for a pull request whose head the loop could not find (GRPH-1925). They
+#: carry no commit, so they are keyed by the PR and not by a head, and
+#: `refusal_clause` reads them for an item that has no head of its own to match.
+PULL_KEY_PREFIX = "pull/"
+HEAD_NOT_FOUND = "the box could not find the pull request's head commit"
 
 
 def last_error() -> str | None:
@@ -102,13 +119,15 @@ def refusal_clause(commits: list[str], db: Session | None = None) -> str:
     written no `suite_green`. Empty when it has not looked — the old sentence
     stays the whole refusal.
 
+    An empty `commits` is the item that recorded no head at all, which is the
+    item the loop had to find one for; what it could not find is the reason that
+    refusal has no attestation (GRPH-1925).
+
     `db` is the caller's session. The note was committed by the leader, so any
     worker's session sees it; reading on the caller's connection is what keeps
     a SQLite write transaction from locking the lookup out.
     """
     wanted = [(c or "").strip() for c in commits if (c or "").strip()]
-    if not wanted:
-        return ""
     own = db is None
     if own:
         from app.db import SessionLocal
@@ -122,6 +141,13 @@ def refusal_clause(commits: list[str], db: Session | None = None) -> str:
     finally:
         if own and db is not None:
             db.close()
+    if not wanted:
+        # No head to match a row against, so the rows keyed by pull request are
+        # the only answer this caller can get. Each names the PR it was looking
+        # for, so a reader can tell one that is not theirs.
+        return "; ".join(dict.fromkeys(
+            row.body for row in rows
+            if row.key.startswith(PULL_KEY_PREFIX) and row.body))
     for row in rows:
         sha = row.key.rsplit("@", 1)[-1]
         if any(items_svc.same_commit(sha, c) for c in wanted):
@@ -176,21 +202,69 @@ def _poll_gap() -> float:
 def _poll(db: Session, clock: float) -> None:
     if clock < _read_backoff():
         return
-    candidates = _candidates(db)
+    candidates, headless = _candidates(db)
     token = (settings.github_token or "").strip()
     if not token:
         # Unauthenticated REST is 60 calls/hour shared with the update check.
         # Falling through to it would spend that budget and, on a private repo,
         # look the same as a green silence. No token is a stated reason.
-        if candidates:
-            _blame_all(db, candidates, "the box could not read GitHub checks: no token is set")
-            _set_last_error(db, "the box could not read GitHub checks: no token is set")
+        if candidates or headless:
+            sentence = "the box could not read GitHub checks: no token is set"
+            _blame_all(db, candidates, sentence)
+            _blame_pulls(db, headless, sentence)
+            _set_last_error(db, sentence)
         else:
             _set_last_error(db, "")
         return
-    if not candidates:
+    if not candidates and not headless:
         _set_last_error(db, "")
         return
+
+    problems: list[str] = []
+    looked = False
+    # A PR the server was never told the head of is asked about first, so the
+    # head it answers is polled in the same pass rather than the next one. Two
+    # items can share one PR, so the lookup is per PR and every item on it gets
+    # the head it answered — one call, not one per item.
+    found: list[tuple[Item, str, str, str]] = []
+    by_pull: dict[str, list[tuple]] = {}
+    pull_order: list[str] = []
+    for row in headless:
+        key = _pull_key(row[1], row[2], row[3])
+        if key not in by_pull:
+            by_pull[key] = []
+            pull_order.append(key)
+        by_pull[key].append(row)
+    for index, key in enumerate(pull_order):
+        rows = by_pull[key]
+        item, owner, repo, number, url = rows[0]
+        if not _due(key, clock):
+            continue
+        looked = True
+        _mark_polled(key, clock)
+        sha, fault = _lookup_head(owner, repo, number, (item.branch or "").strip(), url,
+                                  token)
+        if sha:
+            # The reason it once had is stale, and a head already answered stays
+            # answered whatever it took to find it.
+            _clear_observation(db, key)
+            for row in rows:
+                if not _answered(row[0], sha):
+                    found.append((row[0], sha, owner, repo))
+            continue
+        problem = fault.problem
+        if fault.backoff:
+            _set_backoff(clock + fault.backoff)
+        _blame_pulls(db, rows, problem)
+        problems.append(problem)
+        if fault.stop or fault.backoff:
+            # A rejected token or a spent budget answers the same for every PR
+            # still waiting: they get the sentence, and none of them the call.
+            waiting = [row for later in pull_order[index + 1:] for row in by_pull[later]]
+            _blame_pulls(db, waiting, problem)
+            _set_last_error(db, problems[0])
+            return
+    candidates = candidates + found
 
     groups: dict[str, list[tuple[Item, str]]] = {}
     order: list[str] = []
@@ -203,8 +277,6 @@ def _poll(db: Session, clock: float) -> None:
             repos[key] = (owner, repo, exact.lower())
         groups[key].append((item, exact))
 
-    problems: list[str] = []
-    looked = False
     for key in order:
         if not _due(key, clock):
             continue
@@ -247,7 +319,8 @@ def _poll(db: Session, clock: float) -> None:
 class _Fetched:
     def __init__(self, *, runs: list | None = None, problem: str = "",
                  backoff: float = 0.0, stop: bool = False, forbidden: bool = False,
-                 noun: str = "check-runs", one: str = "check", run_ref: str = ""):
+                 noun: str = "check-runs", one: str = "check", run_ref: str = "",
+                 status: int = 0):
         self.runs = runs
         self.problem = problem
         self.backoff = backoff
@@ -261,6 +334,9 @@ class _Fetched:
         self.noun = noun
         self.one = one
         self.run_ref = run_ref
+        #: What GitHub answered, 0 for a fault before any answer. The head
+        #: lookup reads it to tell a wrong route (403, 404) from a spent budget.
+        self.status = status
 
 
 #: The one thing a fine-grained token has for a 403 on BOTH routes is a missing
@@ -269,6 +345,14 @@ class _Fetched:
 _BOTH_REFUSED = (
     "the box could not read GitHub checks: the token can read neither check-runs "
     "nor Actions runs (a fine-grained token needs Actions: Read on the repository)")
+
+#: The same, for the head lookup: Pull requests: Read is the permission the
+#: first route wants and the one an operator would go and grant, so the sentence
+#: says that Actions: Read is enough and the other is optional.
+_NO_ACTIONS_FOR_HEAD = (
+    "the box could not find the pull request's head commit: the token can read "
+    "neither pulls nor Actions runs (a fine-grained token needs Actions: Read on "
+    "the repository; Pull requests: Read is optional)")
 
 
 def _fetch(owner: str, repo: str, sha: str, token: str) -> _Fetched:
@@ -366,24 +450,28 @@ def _send(url: str, token: str):
         try:
             body = resp.json()
         except (ValueError, TypeError):
-            return None, _Fetched(problem="the box could not read GitHub checks: bad response")
+            return None, _Fetched(problem="the box could not read GitHub checks: bad response",
+                                  status=200)
         if not isinstance(body, dict):
-            return None, _Fetched(problem="the box could not read GitHub checks: bad response")
+            return None, _Fetched(problem="the box could not read GitHub checks: bad response",
+                                  status=200)
         return (body, headers), None
     if status == 401:
         return None, _Fetched(
-            problem="the box could not read GitHub checks: GitHub answered 401", stop=True)
+            problem="the box could not read GitHub checks: GitHub answered 401", stop=True,
+            status=401)
     if status == 404:
-        return None, _Fetched(problem="the box could not read GitHub checks: GitHub answered 404")
+        return None, _Fetched(problem="the box could not read GitHub checks: GitHub answered 404",
+                              status=404)
     if status in (403, 429):
         wait = _backoff_seconds(headers)
         if status == 429 or wait:
             return None, _Fetched(
                 problem="the box could not read GitHub checks: rate limited",
-                backoff=wait or 60.0)
+                backoff=wait or 60.0, status=status)
     return None, _Fetched(
         problem=f"the box could not read GitHub checks: GitHub answered {status}",
-        forbidden=status == 403)
+        forbidden=status == 403, status=status)
 
 
 def _fetch_actions(owner: str, repo: str, sha: str, token: str) -> _Fetched:
@@ -462,6 +550,103 @@ def _fetch_actions(owner: str, repo: str, sha: str, token: str) -> _Fetched:
     return _Fetched(runs=entries, noun="jobs", one="job", run_ref=ref)
 
 
+def _lookup_head(owner: str, repo: str, number: str, branch: str, url: str,
+                 token: str) -> tuple[str, _Fetched | None]:
+    """The head of pull request `number`, over whichever route this token reads.
+
+    `GET /pulls/{n}` is one call and answers `head.sha`, but it wants Pull
+    requests: Read — which a fine-grained token need not have, and answers 403
+    with `x-accepted-github-permissions: pull_requests=read; contents=read`. A
+    404 is the same story from a token that cannot see the PR at all. Either way
+    the head is still on the route Actions: Read covers: a `pull_request`
+    workflow run lists the PRs it ran for, each with its own `head.sha`.
+
+    One page of runs is the whole search, deliberately: GitHub answers newest
+    first, so a PR whose run is not among the newest hundred is old enough that
+    recording its head is the fix, and ten calls a minute to find out is not.
+    The sentence says how much was searched rather than claiming there is none.
+
+    Returns `("", fault)` when there is no head to poll, and `fault.problem` is
+    then the sentence for the done refusal and `/health`. It names the PR: a head
+    the box could not find must not read as a head still waiting for CI.
+    """
+    got, fault = _send(f"https://api.github.com/repos/{owner}/{repo}/pulls/{number}", token)
+    if fault is None:
+        body, _ = got
+        sha = _nested_sha(body.get("head"))
+        if sha:
+            return sha, None
+        refused = f"GET /pulls/{number} answered no head sha"
+    elif fault.stop or fault.backoff or fault.status not in (403, 404):
+        # A rejected token or a spent budget is the answer, not a wrong route:
+        # Actions would spend the same budget and report nothing it had read.
+        return "", fault
+    else:
+        refused = f"GitHub answered {fault.status} on GET /pulls/{number}"
+    query = f"event=pull_request&per_page={_PAGE_SIZE}"
+    if branch:
+        # A branch name may carry `#` or `&`, which would end the query early.
+        query += f"&branch={quote(branch, safe='/')}"
+    got, fault = _send(
+        f"https://api.github.com/repos/{owner}/{repo}/actions/runs?{query}", token)
+    if fault is not None:
+        if fault.status == 403 and not fault.backoff:
+            return "", _Fetched(problem=_NO_ACTIONS_FOR_HEAD, status=403)
+        return "", fault
+    body, _ = got
+    runs = body.get("workflow_runs")
+    if not isinstance(runs, list):
+        return "", _Fetched(problem="the box could not read GitHub checks: bad response",
+                            status=200)
+    wanted = _as_int(number)
+    for run in runs:
+        sha = _pr_run_head(run, wanted)
+        if sha:
+            return sha, None
+    scope = f" on branch {branch}" if branch else ""
+    total = body.get("total_count")
+    if isinstance(total, int) and not isinstance(total, bool) and total > len(runs):
+        tail = f"the newest {len(runs)} pull_request Actions runs{scope} did not list it"
+    else:
+        tail = f"no pull_request Actions run{scope} listed it"
+    return "", _Fetched(problem=f"{HEAD_NOT_FOUND}: {refused} and {tail} ({url})", status=200)
+
+
+def _pr_run_head(run, wanted: int | None) -> str:
+    """The head a workflow run records for pull request `wanted`, else "".
+
+    A run for a DIFFERENT pull request on the same branch is not this PR's head,
+    so the number has to match — the branch alone is not the answer.
+    """
+    if wanted is None or not isinstance(run, dict):
+        return ""
+    for entry in run.get("pull_requests") or []:
+        if not isinstance(entry, dict) or _as_int(entry.get("number")) != wanted:
+            continue
+        sha = _nested_sha(entry.get("head"))
+        if sha:
+            return sha
+    return ""
+
+
+def _nested_sha(value) -> str:
+    """A `head` object's sha when it is one GitHub would recognise, else ""."""
+    if not isinstance(value, dict):
+        return ""
+    sha = str(value.get("sha") or "").strip()
+    return sha if _SHA.fullmatch(sha) else ""
+
+
+def _as_int(value) -> int | None:
+    """A PR number as an int. `True` is not 1 here: it is not a number."""
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 class _Verdict:
     def __init__(self, kind: str, detail: str = "", run_ref: str = "", sentence: str = ""):
         self.kind = kind
@@ -519,20 +704,41 @@ def _name(run, default: str = "check") -> str:
     return str(run.get("name") or default)
 
 
-def _candidates(db: Session) -> list[tuple[Item, str, str, str]]:
-    """Review items with a linked GitHub PR, a recorded head, and no `suite_green` yet."""
+def _candidates(db: Session) -> tuple[list[tuple[Item, str, str, str]], list[tuple]]:
+    """Review items with a linked GitHub PR and no `suite_green` yet, split by
+    whether the server knows the head.
+
+    The first list is `(item, head, owner, repo)` — what gets polled. The second
+    is `(item, owner, repo, number, url)` for a PR whose head was never recorded,
+    which `_lookup_head` asks GitHub about first (GRPH-1925). Dropping those was
+    the defect: a PR that would never be polled looked exactly like one waiting
+    for CI.
+    """
     rows = db.scalars(select(Item).where(Item.status == "review")).all()
-    out = []
+    known: list[tuple[Item, str, str, str]] = []
+    unknown: list[tuple] = []
     for item in rows:
         url = _pull_url(item)
         match = _GH_PR.search(url or "")
         if match is None:
             continue
         sha = _head(item)
-        if not sha or _answered(item, sha):
+        if not sha:
+            unknown.append((item, match.group(1), match.group(2), match.group(3), url))
             continue
-        out.append((item, sha, match.group(1), match.group(2)))
-    return out
+        if _answered(item, sha):
+            continue
+        known.append((item, sha, match.group(1), match.group(2)))
+    return known, unknown
+
+
+def _pull_key(owner: str, repo: str, number: str) -> str:
+    """The observation key for a PR whose head is unknown, and its poll key.
+
+    It carries no commit, so it can never be read as one: `refusal_clause`
+    matches a head row on the text after the last `@`, and this has none.
+    """
+    return f"{PULL_KEY_PREFIX}{owner.lower()}/{repo.lower()}#{number}"
 
 
 def _pull_url(item) -> str:
@@ -629,6 +835,16 @@ def _blame_all(db: Session, candidates, sentence: str) -> None:
     for item, exact, owner, repo in candidates:
         key = f"{owner.lower()}/{repo.lower()}@{exact.lower()}"
         groups.setdefault(key, []).append((item, exact))
+    _blame_groups(db, groups, sentence)
+
+
+def _blame_pulls(db: Session, headless, sentence: str) -> None:
+    """The same for a PR whose head the loop could not find: keyed by the PR,
+    because there is no commit to key it by."""
+    if not headless:
+        return
+    groups = {_pull_key(owner, repo, number): []
+              for _item, owner, repo, number, _url in headless}
     _blame_groups(db, groups, sentence)
 
 

@@ -232,3 +232,36 @@ def test_a_404_on_purge_keeps_the_row_for_a_console_that_serves_specs(client, au
     console.status["status"] = 404
     assert _sync(db) is None
     assert db.get(SpecPublish, prd["id"]) is not None  # purged once the console serves it
+
+
+def test_the_version_label_rides_with_the_spec(client, auth, db, console):
+    _, prd = _setup(client, auth)
+    row = db.get(Prd, prd["id"])
+    row.version = "v1.0"
+    db.commit()
+    _sync(db)
+    assert console.mine()[0][1]["version"] == "v1.0"
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_blank_version_sends_no_version_key(client, auth, db, console, blank):
+    _, prd = _setup(client, auth)
+    row = db.get(Prd, prd["id"])
+    row.version = blank
+    db.commit()
+    _sync(db)
+    assert "version" not in console.mine()[0][1]
+
+
+def test_a_version_change_alone_does_not_resend(client, auth, db, console):
+    _, prd = _setup(client, auth)
+    _sync(db)
+    sent = console.mine()[0]
+    assert sent[2]["Idempotency-Key"] == spec_publish.idempotency_key(
+        prd["id"], sent[1]["base_hash"])
+    console.clear()
+    row = db.get(Prd, prd["id"])
+    row.version = "v9.9"
+    db.commit()
+    _sync(db)
+    assert console.mine() == []

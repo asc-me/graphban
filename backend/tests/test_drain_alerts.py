@@ -164,3 +164,13 @@ def test_a_key_from_another_project_cannot_post(client, auth, prd, db, pushes):
 
 def test_an_unknown_outcome_is_422(client, key, prd):
     assert _post(client, key, prd, "bogus").status_code == 422
+
+
+def test_reply_says_whether_the_notice_changed_anything(client, key, prd, db, pushes):
+    """GRPH-1912: the drain's hook runs only on `changed`."""
+    changed = [_post(client, key, prd, "stalled", [("GRPH-1", "hold")]).json()["changed"],
+               _post(client, key, prd, "stalled", [("GRPH-1", "hold")]).json()["changed"],
+               _post(client, key, prd, "stalled", [("GRPH-1", "other")]).json()["changed"],
+               _post(client, key, prd, "working").json()["changed"],
+               _post(client, key, prd, "working").json()["changed"]]
+    assert changed == [True, False, True, True, False]

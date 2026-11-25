@@ -4636,26 +4636,233 @@ def _shadowed_directory(path: str, text_low: str, matched: list[str]) -> bool:
     return re.search(re.escape(f"{prefix}/".lower()) + _PATH_CHAR, text_low) is not None
 
 
+# GRPH-1906. P92's sections name what they change — `propose_rule`, `build.engine_evidence`,
+# `gban rules import`, the Rules page — and not one of those names is a path, so neither
+# lexical tier saw anything and the semantic tier could not carry them: on the live graph
+# (revision 61bf37fa) even an exact symbol-name query scores 0.72, under `_TP_SCORE_FLOOR`,
+# and a rule id scores 0.70 on its own test file. All five sections came back
+# `touchpoints: []` and blocked. A name the graph can place is a sharper signal than a
+# whole-section similarity score, and it does not depend on which embedder the box runs.
+_BACKTICK_SPAN = re.compile(r"`([^`\n]+)`")
+_FENCED_BLOCK = re.compile(r"```.*?```", re.DOTALL)
+#: `gban rules import --prose` → the program `gban` and the subcommand `rules`.
+_CLI_COMMAND = re.compile(r"^([A-Za-z][\w.-]*)\s+([a-z][\w-]*)")
+#: A symbol, rule id or file name: `propose_rule`, `build.engine_evidence`, `AGENTS.md`.
+#: No hyphen and no slash on purpose: a git attribute (`linguist-generated`) is not a name
+#: the graph holds, and a path belongs to the tiers that already read paths.
+_CODE_NAME = re.compile(r"^[A-Za-z_][\w.]*$")
+#: A capitalized product surface and the UI word after it: "the Rules page", "a Live view".
+_SURFACE_NAME = re.compile(r"\b([A-Z][\w-]*)\s+(page|view|screen|panel|board|dialog)\b")
+#: A path that tests, fixtures or migrates a definition rather than holding it.
+_TESTISH_PATH = re.compile(r"(?:^|/)(?:tests?|__tests__|fixtures)/|\.test\.|(?:^|/)test_[^/]*$")
+_MIGRATION_PATH = re.compile(r"(?:^|/)(?:alembic/versions|migrations)/")
+
+
+def _node_file(node) -> str:
+    """The file a node lives in. A symbol node's path is `file::name`."""
+    return (getattr(node, "path", "") or "").split("::", 1)[0]
+
+
+def _node_stem(path: str) -> str:
+    """`backend/app/services/rules.py` → `rules`; `AGENTS.md` → `AGENTS`."""
+    base = (path or "").rsplit("/", 1)[-1]
+    return base.rsplit(".", 1)[0] if "." in base else base
+
+
+def _dir_of(path: str) -> str:
+    """The directory a path sits in, or "" when it sits at the root."""
+    return path.rsplit("/", 1)[0] if "/" in path else ""
+
+
+def _definition_rank(path: str) -> int:
+    """0 for a path that can hold a definition, higher for a migration or a test of it.
+
+    Resolving a name is for naming the file the work changes, so a rule id the graph
+    describes in two places lands on the module and not on its test.
+    """
+    if _TESTISH_PATH.search(path or ""):
+        return 2
+    if _MIGRATION_PATH.search(path or ""):
+        return 1
+    return 0
+
+
+def _whole_token(text: str, token: str) -> bool:
+    """Whether lowercased `token` occurs in lowercased `text` as one whole token."""
+    return re.search(rf"(?<![a-z0-9_]){re.escape(token)}(?![a-z0-9_])", text) is not None
+
+
+def _named_things(text: str) -> list[tuple[str, str]]:
+    """`(token, kind)` for the names a section uses that the code graph may be able to place.
+
+    `kind` is "command" for a backticked `gban rules import`, "name" for a backticked
+    symbol, rule id or file name, and "surface" for a product page the section draws on.
+    Text inside a fenced block is code the section quotes, not a name it uses.
+    """
+    body = _FENCED_BLOCK.sub(" ", text or "")
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for span in _BACKTICK_SPAN.finditer(body):
+        token = " ".join(span.group(1).split())
+        low = token.lower()
+        if not token or low in seen or "/" in token or "*" in token:
+            continue
+        if _CLI_COMMAND.match(token):
+            kind = "command"
+        elif _CODE_NAME.match(token):
+            kind = "name"
+        else:
+            continue
+        seen.add(low)
+        out.append((token, kind))
+    for match in _SURFACE_NAME.finditer(body):
+        name = match.group(1)
+        if name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        out.append((f"{name} {match.group(2)}", "surface"))
+    return out
+
+
+def _sibling_dirs(nodes, name: str) -> list[str]:
+    """Directories in the graph whose own name is `name`, densest first.
+
+    Density is what makes a directory the nearest existing sibling of a module that does
+    not exist yet: the place the graph already holds the most of that kind of file in.
+    """
+    counts: dict[str, int] = {}
+    for n in nodes:
+        directory = _dir_of(_node_file(n))
+        if directory and directory.rsplit("/", 1)[-1].lower() == name.lower():
+            counts[directory] = counts.get(directory, 0) + 1
+    return [d for d, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+
+def _sibling_extension(nodes, directory: str) -> str:
+    """The extension `directory`'s files mostly use, so a create looks like its siblings."""
+    counts: dict[str, int] = {}
+    for n in nodes:
+        path = _node_file(n)
+        if _dir_of(path) != directory:
+            continue
+        base = path.rsplit("/", 1)[-1]
+        if "." in base:
+            ext = base[base.index("."):]
+            counts[ext] = counts.get(ext, 0) + 1
+    if not counts:
+        return ""
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+
+
+def _resolve_named_things(nodes, text: str) -> list[tuple[int, str, str, bool]]:
+    """`(order, path, evidence, create)` for the names in `text` the graph can place.
+
+    A backticked name resolves to a symbol node of that name, then to a file whose name or
+    stem is that name, then to a file whose entry in the graph names it — the definition
+    site first at every tier. A command or a surface the graph holds no module for becomes
+    a create beside its closest existing siblings: the section says the work exists, and
+    the graph says where its kind lives.
+    """
+    symbols: dict[str, list[str]] = {}
+    stems: dict[str, list[str]] = {}
+    described: list[tuple[str, str]] = []
+    for n in nodes:
+        path = _node_file(n)
+        if not path:
+            continue
+        if (getattr(n, "kind", "") or "") == "symbol" and (getattr(n, "name", "") or "").strip():
+            symbols.setdefault(n.name.strip().lower(), []).append(path)
+        for key in (_node_stem(path).lower(), path.rsplit("/", 1)[-1].lower()):
+            if key:
+                stems.setdefault(key, []).append(path)
+        described.append((path, f" {getattr(n, 'name', '') or ''} "
+                                f"{getattr(n, 'summary', '') or ''} ".lower()))
+
+    def best(paths: list[str]) -> str:
+        return min(paths, key=lambda p: (_definition_rank(p), len(p), p))
+
+    out: list[tuple[int, str, str, bool]] = []
+    for token, kind in _named_things(text):
+        if kind == "name":
+            low = token.lower()
+            tier, hits = 0, symbols.get(low, [])
+            if not hits:
+                tier, hits = 1, sorted(set(stems.get(low, [])))
+            if not hits:
+                tier, hits = 2, [p for p, entry in described if _whole_token(entry, low)]
+            if not hits:
+                continue
+            why = {
+                0: f"the section names `{token}`, a symbol this file defines",
+                1: f"the section names `{token}`, which is this file",
+                2: f"the code graph's entry for this file names `{token}`",
+            }[tier]
+            out.append((tier, best(hits), why, False))
+        elif kind == "command":
+            match = _CLI_COMMAND.match(token)
+            program, sub = match.group(1), match.group(2)
+            dirs = _sibling_dirs(nodes, program)
+            if not dirs:
+                continue
+            existing = [p for p in stems.get(sub.lower(), []) if _dir_of(p) in dirs]
+            if existing:
+                out.append((3, best(existing),
+                            f"the section names the command `{token}`, which this file "
+                            "defines", False))
+                continue
+            directory = dirs[0]
+            out.append((4, f"{directory}/{sub}{_sibling_extension(nodes, directory)}",
+                        f"create: the section names the command `{token}`; `{directory}` "
+                        "holds its closest existing siblings", True))
+        else:
+            name = token.split()[0]
+            dirs = _sibling_dirs(nodes, name)
+            # The surface word is a UI word, so a UI directory wins over a same-named one
+            # elsewhere in the repo (`web/src/features/rules`, not `.cursor/rules`).
+            web = [d for d in dirs if _is_web_touchpoint(d)]
+            directory = (web or dirs)[0] if dirs else ""
+            if not directory:
+                continue
+            out.append((5, f"{directory}/",
+                        f"the section names the {token}, which the code graph puts here",
+                        False))
+    out.sort(key=lambda row: (row[0], row[1]))
+    return out
+
+
 def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[dict]:
     """Code-graph paths a section likely changes, each with the evidence that matched.
 
     A path named only as input to read ("reads `AGENTS.md`") is not a write
-    touchpoint. Otherwise: the path verbatim, or its file name as a whole token; and
-    semantic search. A search hit at or above `_TP_SCORE_FLOOR` stands alone. Below
-    that floor it is kept only when the section also names the path. A bare directory
-    name is not a file-name match, and a directory the section names a file under is
-    not proposed either (`_shadowed_directory`).
+    touchpoint. Otherwise, strongest signal first: the path verbatim, or its file name as
+    a whole token; a name the section uses that the graph can place, including a module it
+    has to create (GRPH-1906); then semantic search. A search hit at or above
+    `_TP_SCORE_FLOOR` stands alone. Below that floor it is kept only when the section also
+    names the path. A bare directory name is not a file-name match, and a directory the
+    section names a file under is not proposed either (`_shadowed_directory`, GRPH-1910).
 
     What the section named is collected before search runs and keeps its order, so
-    `_TP_MAX` truncation cuts search hits first and the named files last."""
+    `_TP_MAX` truncation cuts search hits first and the named files last.
+
+    Each entry carries `create`: True on a path the section has to make, which does not
+    exist yet, so a caller that reads only `path` would look for a file that is not there.
+    """
     from app.services import code_graph
 
     raw = f"{section}\n{body}"
     text = raw.lower()
+    nodes = list(code_graph.list_nodes(db, prd.project_id))
+    found: dict[str, dict] = {}
+
+    def add(path: str, evidence: str, create: bool = False) -> None:
+        if not path or path in found or _is_read_only_path(raw, path):
+            return
+        found[path] = {"path": path, "evidence": evidence, "create": create}
+
     named: dict[str, str] = {}
-    for n in code_graph.list_nodes(db, prd.project_id):
-        path = n.path.split("::", 1)[0]
-        if _is_read_only_path(raw, path):
+    for n in nodes:
+        path = _node_file(n)
+        if not path or _is_read_only_path(raw, path):
             continue
         base = path.rsplit("/", 1)[-1]
         if path.lower() in text:
@@ -4663,25 +4870,27 @@ def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[
         elif _file_name_in_text(base.lower(), text):
             named.setdefault(path, f"file name `{base}` named in the section")
     matched = list(named)
-    found = {p: e for p, e in named.items() if not _shadowed_directory(p, text, matched)}
+    for path, evidence in named.items():
+        if not _shadowed_directory(path, text, matched):
+            add(path, evidence)
+    for _order, path, evidence, create in _resolve_named_things(nodes, raw):
+        add(path, evidence, create)
     try:
         hits = code_graph.search_code(db, raw[:2000], prd.project_id, top_k=_TP_MAX)
     except Exception:  # noqa: BLE001 - semantic search is best effort; lexical hits still stand
         hits = []
     for node, score in hits:
-        path = node.path.split("::", 1)[0]
+        path = _node_file(node)
         # `named`, not `found`: a container dropped for shadowing must not come back
-        # on a score, which would put the crowding this item was filed for back.
-        if path in named or _is_read_only_path(raw, path):
+        # on a score, which would put the crowding GRPH-1910 was filed for back.
+        if path in named:
             continue
         if score >= _TP_SCORE_FLOOR:
-            found[path] = f"code search matched the section (score {score:.2f})"
+            add(path, f"code search matched the section (score {score:.2f})")
         elif _text_names_path(raw, path):
-            found[path] = (
-                f"code search matched the section (score {score:.2f}); "
-                "kept because the section also names the path"
-            )
-    return [{"path": k, "evidence": v} for k, v in list(found.items())[:_TP_MAX]]
+            add(path, (f"code search matched the section (score {score:.2f}); "
+                       "kept because the section also names the path"))
+    return list(found.values())[:_TP_MAX]
 
 
 # GRPH-1691. One section became one item, including sections that are more than
@@ -5501,6 +5710,7 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                 # child could edit the migration and the Server child the bell.
                 override = _piece_override(overrides, p["section"], heading)
                 unnamed_by_piece = False
+                inherited = False
                 if override is not None:
                     sub_tps = override
                 elif given:
@@ -5509,6 +5719,14 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                 else:
                     sub_tps = [e["path"] for e in propose_touchpoints(
                         db, prd, f"{p['section']} {heading}", piece)]
+                    # GRPH-1906. A piece names less of the world than the section it was
+                    # cut out of, and "this piece resolved nothing" must not read as
+                    # "nobody knows where this work lands" — the section does. The
+                    # inherited paths over-reserve the piece's area, the safe direction for
+                    # the collision divvy; `touchpoints_inherited` says they were borrowed.
+                    inherited = not sub_tps
+                    if inherited:
+                        sub_tps = list(tps)
                 claimed_by_pieces.append(list(sub_tps))
                 if split_ui:
                     sub_tps = [t for t in sub_tps if not _is_web_touchpoint(t)]
@@ -5518,6 +5736,7 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                     "title": f"Implement: {p['section']} — {heading}",
                     "clauses": sub_clauses,
                     "touchpoints": sub_tps,
+                    "touchpoints_inherited": inherited,
                     "description": _compose_task(
                         prd, piece, sub_clauses, context, gate_text, design_text),
                     "blocker": _piece_blocker(

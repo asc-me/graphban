@@ -317,6 +317,11 @@ def build_parser() -> argparse.ArgumentParser:
              "`until` exits when the backlog is empty, so this is the polling interval — and "
              "every cycle registers one planner agent, which is why the default is minutes "
              "rather than seconds")
+    svc_install.add_argument(
+        "--on-notify", default=None, metavar="COMMAND",
+        help="run COMMAND (split like a shell line, not run through one) once per drain notice, with the notice as JSON on "
+             "stdin (prd, outcome, open, sent_at). A non-zero exit is logged and the drain "
+             "carries on; a hook still running after 30s is killed")
     svc_install.add_argument("rest", nargs=argparse.REMAINDER,
                              help="arguments for `gbfleet until`")
     svc_status = svc_do.add_parser("status", help="installed? running? and with which PATH?")
@@ -432,6 +437,10 @@ def build_parser() -> argparse.ArgumentParser:
              "and no child is live, so the service manager restarts the process; 0 disables "
              "(GRPH-1179). `kill -USR1 <pid>` dumps every thread's stack to the log",
     )
+    until.add_argument(
+        "--on-notify", default=None, metavar="COMMAND",
+        help="run COMMAND once per drain notice with the notice as JSON on stdin "
+             "(`gbfleet service install --on-notify` sets this)")
     until.add_argument("--merge", action="store_true", default=False, help=_MERGE_HELP)
     until.add_argument(
         "--base", default=None, metavar="BRANCH",
@@ -1005,6 +1014,7 @@ def _until(args) -> int:
             entitlements=entitlements,
             stall_after=args.stall_after,
             acknowledge_reach=acknowledge,
+            on_notice=service_mod.hook_for(args.on_notify),
         )
     except RepoLocked as exc:
         print(f"gbfleet until: {exc}", file=sys.stderr)
@@ -1278,7 +1288,8 @@ def _service(args) -> int:
     if not rest:
         return _reload_named_service(args)
     try:
-        plan = service_mod.make_plan(rest, name=args.name, every=args.every)
+        plan = service_mod.make_plan(rest, name=args.name, every=args.every,
+                                      on_notify=args.on_notify)
     except service_mod.Refused as exc:
         print(f"gbfleet service: {exc}", file=sys.stderr)
         return 2
@@ -1391,6 +1402,8 @@ def _observations_warning_for_plan(plan) -> str:
 def _service_status(state) -> None:
     """One drain, and the two facts that are invisible from anywhere else."""
     print(state.line())
+    for text in service_mod.notice_lines(state.notice):
+        print(text)
     if state.kind == "systemd":
         # Printed whatever the answer, because "no" here is the difference between a service
         # that survives your logout and one that does not, and it is invisible from every

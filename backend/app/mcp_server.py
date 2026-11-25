@@ -2947,6 +2947,27 @@ def _scoped_item(db: Session, item_id: str, scope_ids: list[str]) -> Item:
     return item
 
 
+def _unregistered_planner_call(tool: str, project_id: str) -> errors.Validation:
+    """A delegation verb called on a connection that never registered (GRPH-1039).
+
+    Names the exact call rather than the missing precondition, and pins the project the
+    WORK belongs to. Both halves are load-bearing. An MCP connection is not an agent until
+    `register_agent` runs on it, so the refusal used to read as "delegation isn't enabled";
+    and on a key spanning several projects a bare `register_agent` resolves to whichever
+    project sorts first, so the blind retry registered somewhere the item is not even
+    readable. `project_id` here is the item's (or, with no item, the call's resolved one) —
+    never a guess the caller has to second-guess.
+    """
+    return errors.Validation(
+        f"{tool} needs a registered agent, and this connection never called "
+        f"register_agent. Call register_agent(role_hint=\"planner\", "
+        f"project_id=\"{project_id}\") first — that project_id is the one the work "
+        f"belongs to, which is not necessarily this key's default — then retry {tool} "
+        f"with the agent_id it returns.",
+        hint="an MCP connection is not an agent until register_agent runs on it; "
+             "delegation is planner work, so register as a planner on the work's project")
+
+
 # Retired tool names, kept dispatchable forever. NOT in TOOLS — an alias must not appear
 # in tools/list or inflate the counts asserted by tests/test_api.py and test_phase4.py.
 # Agents cache tool names in memory and in committed configs, so a name that ever worked
@@ -3694,8 +3715,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         item = _scoped_item(db, args["id"], readable)
         me = _agent_for_call(db, key, args, session_id)
         if not me:
-            raise errors.Validation("delegate needs a registered agent: pass agent_id, or "
-                                    "register_agent on this connection first")
+            raise _unregistered_planner_call("delegate", item.project_id)
         agent = db.get(Agent, me)
         try:
             if args.get("withdraw"):
@@ -4067,19 +4087,25 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 "or bind through delegate(seat=true)")
         item_id = None
         project_id = pid
+        item = None
         if item_key:
             item = _scoped_item(db, item_key, readable)
-            me = db.get(Agent, args.get("agent_id") or "")
-            if me is None:
-                raise errors.Validation("mint_enrolment needs a registered agent_id")
+            item_id = item.id
+            project_id = item.project_id
+        # GRPH-1039. Checked for EVERY mint, not only the bound one, and after the project is
+        # resolved so the refusal can name it. `mint_enrolment_as` records `minted_by` without
+        # ever resolving it, so an id naming no agent used to mint a real seat attributed to
+        # nothing — a live credential whose minter cannot be named later.
+        me = db.get(Agent, args.get("agent_id") or "")
+        if me is None:
+            raise _unregistered_planner_call("mint_enrolment", project_id)
+        if item is not None:
             try:
                 delegation_svc.refuse_bound_collision(db, agent=me, item=item)
             except delegation_svc.DelegationRefused as e:
                 detail = "; ".join(f"{k}={v}" for k, v in e.detail.items())
                 msg = f"{e} ({detail})" if detail else str(e)
                 raise errors.Conflict(msg, hint=e.hint)
-            item_id = item.id
-            project_id = item.project_id
         try:
             row, code = fleet_svc.mint_enrolment_as(
                 db, minter_id=args["agent_id"], project_id=project_id, role=args["role"],

@@ -472,6 +472,70 @@ class Plan:
         return [self.binary, "until", *self.until_args]
 
 
+#: A hook that runs longer than this is killed (GRPH-1915).
+HOOK_TIMEOUT_S = 30.0
+
+
+class HookFailed(RuntimeError):
+    """The `--on-notify` command exited non-zero or ran past its time limit."""
+
+
+def run_hook(command: str, notice: dict, *, timeout: float = HOOK_TIMEOUT_S) -> None:
+    """Run the `--on-notify` command once with `notice` as JSON on stdin (GRPH-1915).
+
+    The command is never run through a shell. On POSIX it is split like a shell command
+    line (`shlex`) and run as an argv; on Windows the string goes to CreateProcess as is,
+    which splits it by the Windows rules (non-POSIX `shlex` would keep the quotes inside
+    each word). An operator who wants pipes or redirects names the shell themselves
+    (`sh -c '...'`). Raises `HookFailed` for a non-zero exit or a timeout; the caller logs
+    it and the drain carries on. On timeout the whole process group is killed, so a child
+    the hook started dies too.
+    """
+    import json
+    import shlex
+    import signal
+    import subprocess
+    posix = os.name == "posix"
+    argv: list[str] | str
+    if posix:
+        try:
+            argv = shlex.split(command)
+        except ValueError as exc:
+            raise HookFailed(f"hook command does not parse: {exc}: {command}") from exc
+    else:
+        argv = command.strip()
+    if not argv:
+        raise HookFailed("hook command is empty")
+    try:
+        proc = subprocess.Popen(
+            argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE, text=True, start_new_session=posix)
+    except OSError as exc:
+        raise HookFailed(f"hook could not run: {exc}") from exc
+    try:
+        _, err = proc.communicate(json.dumps(notice), timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        try:
+            if posix:
+                os.killpg(proc.pid, signal.SIGKILL)
+            else:
+                proc.kill()
+        except OSError:
+            pass
+        proc.communicate()
+        raise HookFailed(f"hook killed after {timeout:g}s: {command}") from exc
+    if proc.returncode != 0:
+        raise HookFailed(
+            f"hook exited {proc.returncode}: {command}: {(err or '').strip()[-300:]}")
+
+
+def hook_for(command: str | None):
+    """The `on_notice` callback for `until`, or None when no `--on-notify` was given."""
+    if not command:
+        return None
+    return lambda notice: run_hook(command, notice)
+
+
 def label_for(name: str) -> str:
     return f"{LABEL_PREFIX}.{name}"
 
@@ -559,6 +623,7 @@ def make_plan(
     binary: str | None = None,
     path_env: str | None = None,
     every: int = RESTART_SEC,
+    on_notify: str | None = None,
 ) -> Plan:
     """Work out what would be written, refusing anything that cannot be right.
 
@@ -574,6 +639,9 @@ def make_plan(
             "fails at startup respawn as fast as the supervisor can fork it")
     if not until_args:
         raise Refused(_NOTHING_TO_RUN)
+    if on_notify:
+        # `until` runs the hook; the unit just carries the flag, quoted like any argument.
+        until_args = [*until_args, "--on-notify", on_notify]
     missing = [flag for flag in _REQUIRED_ARGS if flag not in until_args]
     if missing:
         raise Refused(
@@ -1091,6 +1159,53 @@ def note_quiet_cycle(name: str, prd: str) -> int:
     return int(data["cycles"])
 
 
+def notice_state_path(name: str) -> Path:
+    """Where a service drain keeps the last notice it sent (GRPH-1916)."""
+    return CONFIG_DIR / "notice" / f"{name}.json"
+
+
+def record_notice(name: str, notice: dict) -> None:
+    """Remember the notice `until` just sent, so `service status` can read it back.
+
+    Written only when the server said the notice changed something, so the file is the
+    last change of state. `working` is kept too: it supersedes an older drained/stalled.
+    A write that fails is dropped; the notice itself already went out.
+    """
+    path = notice_state_path(name)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(notice), encoding="utf-8")
+    except OSError:
+        return
+
+
+def last_notice(name: str) -> dict | None:
+    """The last recorded notice, or None when there is none or it cannot be read."""
+    try:
+        loaded = json.loads(notice_state_path(name).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return loaded if isinstance(loaded, dict) and loaded.get("outcome") else None
+
+
+def notice_lines(notice: dict | None) -> list[str]:
+    """What `service status` prints for the last notice. "stalled (held)" is a drain stall;
+    "stalled (silent)" is the `loop_silent` check and is never printed here."""
+    if not notice:
+        return []
+    outcome = str(notice.get("outcome") or "")
+    when = str(notice.get("sent_at") or "unknown time")
+    if outcome == "drained":
+        return [f"  last notice: drained, sent {when}"]
+    if outcome == "stalled":
+        lines = [f"  last notice: stalled (held), sent {when}"]
+        for row in notice.get("open") or []:
+            if isinstance(row, dict):
+                lines.append(f"    {row.get('item')}: {row.get('reason')}")
+        return lines
+    return [f"  last notice: {outcome}, sent {when}"]
+
+
 def reset_quiet_cycle(name: str) -> None:
     """The PRD has open items again. The empty-cycle count does not carry over."""
     try:
@@ -1222,6 +1337,8 @@ class Status:
     #: not a working drain: launchd kept the 2026-11-20 process as running for 50 minutes
     #: after it stopped writing.
     stalled: bool = False
+    #: The last drain notice written under GRPH-1912, or None (GRPH-1916).
+    notice: dict | None = None
     #: "live", "stalled", "absent", "unread", or "" when status did not look at the log.
     #: Empty is the constructed-Status default and still reads as running.
     log_state: str = ""
@@ -1345,7 +1462,8 @@ def status(name: str = DEFAULT_NAME, *, kind: str = "") -> Status:
                   last_exit=last_exit, logon_policy=policy,
                   reason=err_reason(name) if died else "",
                   run_reason=run_reason, unready=unready, stall=stall,
-                  stalled=stalled, log_state=log_state, not_loaded=not_loaded)
+                  stalled=stalled, log_state=log_state, not_loaded=not_loaded,
+                  notice=last_notice(name))
 
 
 def _path_in(unit: Path, kind: str) -> str:

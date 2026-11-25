@@ -829,7 +829,9 @@ def test_truncation_keeps_named_files_ahead_of_search_hits(client, auth, monkeyp
 
     body = (
         "# Drain notices\n\n## Alert\n"
-        "`until` posts to `backend/app/routers/fleet.py`. The server writes an alert in "
+        # No backticked `until`: since GRPH-1906 that name resolves to until.py on its own
+        # and fills the last slot, so the score guard would go untested.
+        "The drain posts to `backend/app/routers/fleet.py`. The server writes an alert in "
         "`backend/app/services/alerts.py` and pushes it from `backend/app/services/push.py`, "
         "probed in `backend/tests/test_cross_tenant_writes.py`.\n\n"
         "## Acceptance\n- the route posts an alert\n"
@@ -965,3 +967,309 @@ def test_p92_real_body_leaves_no_clause_unassigned_and_no_section_unfed(client, 
     described = by[holder]["description"]
     assert "  - an EXTERNAL rule for two reviews;" in described
     assert "  Each cites file, lines and commit." in described
+# ── GRPH-1906: on P92's real body every proposal was blocked for "no touchpoints" ────
+#
+# These run on `_P92_BODY` above: the whole real GRPH-P92 v1.1 body (body_hash
+# 49ef50d796f3048e), not a shape beside it. The dry run that filed the item ran on that
+# body, and a synthetic fixture is what let the previous pass report green while the real
+# PRD still filed nothing claimable.
+
+# The graph the dry run had. Paths are this repo's, and the summaries marked "live" were read
+# back off the instance at revision 61bf37fa on 2026-11-24. Two groups are not live and say
+# so: the `propose_rule` SYMBOL node, which the instance does not describe yet and which is
+# the shape `describe_code` writes for one, and the CLI siblings a `gban rules` create is
+# placed beside. The read-only paths D1 names are here so their exclusion is measured.
+_P92_GRAPH = [
+    {"path": "backend/app/services/rule_proposals.py", "kind": "file", "name": "",
+     "summary": "Rule proposals: a cited, direction-checked suggestion a project can adopt "
+                "(GRPH-1775 / P91 D2, D3)."},  # live
+    {"path": "backend/app/services/rule_toggles.py", "kind": "file", "name": "rule_toggles.py",
+     "summary": "Library rule toggles (GRPH-1262 / PRD-P63 §8, S2a): state and params, "
+                "layered."},  # live
+    {"path": "backend/app/services/rules_recommend.py", "kind": "file",
+     "name": "rules_recommend.py",
+     "summary": "Recommended rules (GRPH-1160 / PRD-P61 §5): rules a project's own evidence "
+                "implies."},  # live
+    {"path": "backend/tests/test_rule_engine_evidence.py", "kind": "file",
+     "name": "test_rule_engine_evidence.py",
+     "summary": "PRD-P63 §6 primitive 4/7 (GRPH-1271): `build.engine_evidence`, the "
+                "`evidence_required` primitive bound to a library rule."},  # live
+    {"path": "backend/alembic/versions/0167_rule_toggles.py", "kind": "file",
+     "name": "0167_rule_toggles.py",
+     "summary": "`rule_toggles`: per-scope state and params for library rules (GRPH-1262, "
+                "PRD-P63 D4)."},  # live
+    {"path": "web/src/features/rules/StageProposals.tsx", "kind": "file", "name": "",
+     "summary": "One row per stage: how many proposals are open for it, with a link to the "
+                "proposals strip"},  # live
+    {"path": "web/src/features/rules/LibraryRuleControls.tsx", "kind": "file",
+     "name": "LibraryRuleControls.tsx",
+     "summary": "Library rule toggles on the Rules inspector (GRPH-1268 / PRD-P63 §8, "
+                "S2c)."},  # live
+    # Not live: the instance describes few symbols. This is the node `describe_code` writes
+    # for one, and it is what D4's `propose_rule` resolves through when the graph has it.
+    {"path": "backend/app/services/rule_proposals.py::propose_rule", "kind": "symbol",
+     "name": "propose_rule", "summary": "File a cited proposal for a rule."},
+    # Not live summaries; real paths. The package a `gban rules` module is created beside.
+    {"path": "cli/src/gban/cli.py", "kind": "file", "name": "cli.py",
+     "summary": "The `gban` command line: one act, one module."},
+    {"path": "cli/src/gban/scan.py", "kind": "file", "name": "scan.py",
+     "summary": "`gban scan`: run the code-health scanners and record the result."},
+    # What D1 reads. Each must stay out of the proposal.
+    {"path": "AGENTS.md", "kind": "doc", "name": "AGENTS.md", "summary": "Agent guide."},
+    {"path": "CLAUDE.md", "kind": "doc", "name": "CLAUDE.md", "summary": "Agent guide."},
+    {"path": "CONTRIBUTING.md", "kind": "doc", "name": "CONTRIBUTING.md",
+     "summary": "Contributor guide."},
+    {"path": ".cursorrules", "kind": "config", "name": ".cursorrules",
+     "summary": "Editor agent rules."},
+    {"path": ".gitattributes", "kind": "config", "name": ".gitattributes",
+     "summary": "Generated-file markers."},
+    {"path": ".github/workflows/ci.yml", "kind": "config", "name": "ci.yml",
+     "summary": "The CI workflows."},
+]
+
+_P92_READ_ONLY = ("AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", ".gitattributes",
+                  ".cursorrules", ".github/copilot-instructions.md",
+                  ".github/workflows/ci.yml")
+
+
+def _quiet_semantic(monkeypatch):
+    """Empty semantic hits, which is what the live box gives P92.
+
+    Measured 2026-11-24 on the instance at revision 61bf37fa: a whole-section query peaks at
+    0.71, and even an exact symbol-name query (`area_matches`) peaks at 0.72 — under
+    `_TP_SCORE_FLOOR`, and none of those paths is named in the section, so the tier proposes
+    nothing. An empty hit list is that result without an embedder in the test.
+    """
+    monkeypatch.setattr("app.services.code_graph.search_code", lambda *a, **k: [])
+
+
+def _describe(pid, nodes):
+    from app.db import SessionLocal
+    from app.services import code_graph
+
+    db = SessionLocal()
+    try:
+        code_graph.describe_code(db, project_id=pid, nodes=nodes)
+    finally:
+        db.close()
+
+
+def _project_of(prd_id):
+    from app.db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        return db.get(prd_svc.Prd, prd_id).project_id
+    finally:
+        db.close()
+
+
+def _ns(path, kind="file", name="", summary=""):
+    """A code-graph node, the shape `list_nodes` hands `propose_touchpoints`."""
+    return SimpleNamespace(path=path, kind=kind, name=name, summary=summary)
+
+
+def test_p92_real_body_files_a_touchpoint_for_every_section(client, auth, monkeypatch):
+    """The dry run that filed GRPH-1906, on the body it was filed from.
+
+    Every proposal came back `blocked: true` with `touchpoints: []`, which hands the split
+    back to a person. Each section names something the graph can place — D1 `rules_recommend`
+    and `build.engine_evidence`, D2 the same rule id, D3 the Rules page (it names no path and
+    nothing backticked at all), D4 `propose_rule` and `gban rules import`, D5 that command
+    again — and nothing it names only to read is proposed.
+
+    Acceptance-clause assignment is GRPH-1905's item, so `blocked` itself is not asserted
+    here: this test owns the "no touchpoints" half of it.
+    """
+    _quiet_semantic(monkeypatch)
+    # The fixture really is the PRD: its D1 slice is the D1 the last pass pinned verbatim.
+    assert prd_svc.section_bodies(_P92_BODY)[_P92_D1_HEADING].strip() == _P92_D1.strip()
+
+    prd = client.post("/api/prds", json={"title": "P92 real", "body": _P92_BODY},
+                      headers=auth).json()
+    _describe(_project_of(prd["id"]), _P92_GRAPH)
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    by = {p["section"]: p for p in dry["proposals"]}
+    assert set(by) == {_D1, _D2, _D3, _D4, _D5}
+    assert dry["no_touchpoints"] == []
+    for section, proposal in by.items():
+        assert proposal["touchpoints"], section
+        assert "no touchpoints" not in (proposal["blocker"] or ""), section
+        assert not (set(proposal["touchpoints"]) & set(_P92_READ_ONLY)), section
+        assert not ({e["path"] for e in proposal["touchpoint_evidence"]}
+                    & set(_P92_READ_ONLY)), section
+
+    # A backticked symbol resolves to the file that defines it, and the evidence names it.
+    d4 = {e["path"]: e for e in by[_D4]["touchpoint_evidence"]}
+    defined = d4["backend/app/services/rule_proposals.py"]
+    assert "propose_rule" in defined["evidence"]
+    assert "a symbol this file defines" in defined["evidence"]
+    assert defined["create"] is False
+    # D1's `rules_recommend` is the file-name tier, and D2's rule id the graph-entry tier:
+    # each tier says which of them placed the path, so dropping one is visible.
+    d1 = {e["path"]: e for e in by[_D1]["touchpoint_evidence"]}
+    assert "which is this file" in d1["backend/app/services/rules_recommend.py"]["evidence"]
+
+    # The module the command needs does not exist: a create beside its existing siblings,
+    # marked as a create so a caller does not go looking for a file that is not there.
+    created = d4["cli/src/gban/rules.py"]
+    assert created["create"] is True
+    assert "create" in created["evidence"] and "cli/src/gban" in created["evidence"]
+    assert "cli/src/gban/rules.py" in by[_D5]["touchpoints"]
+
+    # A rule id resolves through the graph too, with the id in its evidence.
+    d2 = {e["path"]: e for e in by[_D2]["touchpoint_evidence"]}
+    assert any("build.engine_evidence" in e["evidence"] and "code graph's entry" in e["evidence"]
+               for e in d2.values()), d2
+
+    # D3 names no path and nothing backticked: the page it draws the report on places it.
+    d3 = {e["path"]: e for e in by[_D3]["touchpoint_evidence"]}
+    assert "web/src/features/rules/" in d3
+    assert "Rules page" in d3["web/src/features/rules/"]["evidence"]
+    assert d3["web/src/features/rules/"]["create"] is False
+
+    # D2 is over the clause signal, so it splits — and some of its pieces name no path, no
+    # symbol and no page of their own. Filed with nothing they would be blocked for "no
+    # touchpoints", which is this item's symptom one level down: a piece is part of the
+    # section, and the section knows where the work lands. `touchpoints_inherited` says the
+    # paths were borrowed rather than resolved, so a caller can narrow them per piece.
+    # Which section splits is GRPH-1905's clause assignment, not this item's: it folded a
+    # clause's sub-list into that clause and re-placed the sections' prose, so the split
+    # this measured moved from D3 (now one clause) to D2.
+    subs = {s["heading"]: s for s in by[_D2]["sub_items"]}
+    assert len(subs) >= 2, by[_D2]["oversized_reason"]
+    for heading, sub in subs.items():
+        assert sub["touchpoints"], heading
+        assert "no touchpoints" not in (sub["blocker"] or ""), heading
+    borrowed = {h for h, s in subs.items() if s["touchpoints_inherited"]}
+    resolved = {h for h, s in subs.items() if not s["touchpoints_inherited"]}
+    # The marker is not a constant: one piece resolved its own path, another could not and
+    # says it borrowed the section's. A piece that borrowed carries exactly the section's.
+    assert borrowed and resolved, (sorted(borrowed), sorted(resolved))
+    assert "EXTERNAL rule" in resolved, sorted(resolved)
+    assert "Guidance plus gap" in borrowed, sorted(borrowed)
+    for heading in borrowed:
+        assert subs[heading]["touchpoints"] == by[_D2]["touchpoints"], heading
+
+
+def test_a_backticked_name_resolves_to_the_file_that_defines_it():
+    """Symbol node, then file name, then the graph's own description of a file.
+
+    No path appears in the section, so the two tiers GRPH-1895 left see nothing and the name
+    does all the work. Within a tier the definition site wins over a test or a migration of
+    it, because the point is to name the file the work changes.
+    """
+    nodes = [
+        _ns("backend/tests/test_rule_proposals.py", name="test_rule_proposals.py",
+            summary="`propose_rule` refusals and folding."),
+        _ns("backend/app/services/rule_proposals.py",
+            summary="Rule proposals: a cited suggestion a project can adopt."),
+        _ns("backend/app/services/rule_proposals.py::propose_rule", kind="symbol",
+            name="propose_rule", summary="File a cited proposal."),
+        _ns("backend/alembic/versions/0218_rule_proposals.py", name="0218_rule_proposals.py",
+            summary="The `rule_proposals` table."),
+    ]
+    out = prd_svc._resolve_named_things(nodes, "D4. The skill\nIt files only through `propose_rule`.")
+    assert [(path, create) for _o, path, _e, create in out] == [
+        ("backend/app/services/rule_proposals.py", False)]
+    assert "propose_rule" in out[0][2]
+    # The symbol tier, not the graph-entry tier that would also reach this file by its
+    # summary: dropping the symbol lookup has to be visible in what the evidence says.
+    assert "a symbol this file defines" in out[0][2]
+
+    # A rule id the graph describes in a module and in its test lands on the module — and
+    # the test's path is the SHORTER of the two, so this is the ranking deciding, not length.
+    ranked = prd_svc._resolve_named_things([
+        _ns("backend/tests/test_engine_evidence.py", name="test_engine_evidence.py",
+            summary="`build.engine_evidence` refusals."),
+        _ns("backend/app/services/rule_engine_evidence.py", name="rule_engine_evidence.py",
+            summary="Item moves, including the `build.engine_evidence` gate."),
+    ], "A tighter `build.engine_evidence` for `db/`.")
+    assert [path for _o, path, _e, _c in ranked] == [
+        "backend/app/services/rule_engine_evidence.py"]
+    assert "code graph's entry" in ranked[0][2]
+
+    # A name only a file's own name carries takes the file-name tier.
+    by_name = prd_svc._resolve_named_things(
+        [_ns("backend/app/services/rule_toggles.py", name="rule_toggles.py",
+             summary="State and params, layered.")],
+        "A tighter value resolved by `rule_toggles`.")
+    assert [path for _o, path, _e, _c in by_name] == [
+        "backend/app/services/rule_toggles.py"]
+    assert "which is this file" in by_name[0][2]
+
+    # Control: a name the graph holds nowhere resolves to nothing. An empty list here is the
+    # honest answer, and it is why the tier is not "propose something for every backtick".
+    assert prd_svc._resolve_named_things(nodes, "Tighten `build.generated_files`.") == []
+
+
+def test_a_command_with_no_module_is_a_create_beside_its_siblings():
+    """`gban rules import` names a module that does not exist; its siblings say where it goes.
+
+    The control is the point of the test: `gban scan` resolves to the module that already
+    defines it and is NOT a create, so the marker is not a constant, and a program the graph
+    holds no directory for places nothing at all rather than inventing one.
+    """
+    nodes = [
+        _ns("cli/src/gban/cli.py", name="cli.py", summary="The `gban` acts."),
+        _ns("cli/src/gban/scan.py", name="scan.py", summary="`gban scan`."),
+        _ns("cli/src/gban/doctor.py", name="doctor.py", summary="`gban doctor`."),
+    ]
+    created = prd_svc._resolve_named_things(nodes, "Run `gban rules import --prose`.")
+    assert [(path, create) for _o, path, _e, create in created] == [
+        ("cli/src/gban/rules.py", True)]
+    assert "create" in created[0][2] and "cli/src/gban" in created[0][2]
+
+    existing = prd_svc._resolve_named_things(nodes, "Run `gban scan --all`.")
+    assert [(path, create) for _o, path, _e, create in existing] == [
+        ("cli/src/gban/scan.py", False)]
+
+    assert prd_svc._resolve_named_things(nodes, "Run `docker compose up`.") == []
+
+
+def test_a_named_page_resolves_to_where_the_graph_puts_it():
+    """"The report on the Rules page" places D3, which names no path and no symbol.
+
+    `.cursor/rules` holds more nodes than the Rules page's own directory, so this is the UI
+    word deciding, not density: a page is drawn somewhere under `web/`.
+    """
+    nodes = [
+        _ns("web/src/features/rules/StageProposals.tsx", summary="One row per stage."),
+        _ns("web/src/features/rules/ProposalsStrip.tsx", summary="The proposals strip."),
+        _ns(".cursor/rules/graphban.mdc", kind="config", name="graphban.mdc",
+            summary="Editor rules."),
+        _ns(".cursor/rules/ledger.mdc", kind="config", name="ledger.mdc",
+            summary="Editor rules."),
+        _ns(".cursor/rules/fleet.mdc", kind="config", name="fleet.mdc",
+            summary="Editor rules."),
+    ]
+    out = prd_svc._resolve_named_things(
+        nodes, "D3. The import run and its report\nThe report on the Rules page groups findings.")
+    assert [(path, create) for _o, path, _e, create in out] == [
+        ("web/src/features/rules/", False)]
+    assert "Rules page" in out[0][2]
+
+    # Control: a surface the graph has no directory for places nothing.
+    assert prd_svc._resolve_named_things(nodes, "Drawn on the Billing page.") == []
+
+
+def test_a_name_the_section_only_reads_is_not_a_touchpoint(client, auth, monkeypatch):
+    """The name tier goes through the same read-only guard the path tier does.
+
+    A section that resolves `AGENTS.md` by name and only reads it must not gain a write
+    touchpoint just because the resolver is new.
+    """
+    _quiet_semantic(monkeypatch)
+    body = (
+        "# Spec\n\n## Sources\n"
+        "The skill reads `AGENTS.md` and files what it finds.\n\n"
+        "## Acceptance\n- each source is read\n"
+    )
+    prd = client.post("/api/prds", json={"title": "Reads by name", "body": body},
+                      headers=auth).json()
+    _describe(_project_of(prd["id"]), [{"path": "AGENTS.md", "kind": "doc",
+                                        "name": "AGENTS.md", "summary": "Agent guide."}])
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    sources = {p["section"]: p for p in dry["proposals"]}["Sources"]
+    assert sources["touchpoints"] == []
+    assert sources["touchpoint_evidence"] == []
