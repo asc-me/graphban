@@ -1013,6 +1013,7 @@ def _loop(
     ci_stuck: list[dict] = []
     ci_logged: set[tuple[str, str, str]] = set()  # GRPH-1392: events already logged
     builder_ci_logged: set[tuple[str, str, str]] = set()  # GRPH-1708
+    gone_seen: dict = {}  # GRPH-1010: review branches found gone, and when a head was seen
     review_spawned: list = []  # GRPH-1374: children this loop spawned for review rows
     # GRPH-842. One gate for the whole run, not one per spawn: a child spawned seconds ago
     # is not in the kernel's numbers yet, and a fresh reading per seat cannot know that. Its
@@ -1338,6 +1339,10 @@ def _loop(
             # GRPH-1843. An empty branch cannot open a PR. Release it before this
             # cycle reads collision again, so its areas are not held for the poll.
             rows = _release_empty_branches(planner, rows, repo, base, agent_id)
+            # GRPH-1010. A merged PR's branch is deleted, and a reviewer handed it can only
+            # report it unreadable. Taken out of what can spawn a reviewer unless its merge
+            # commit is in the base, in which case that commit is what gets reviewed.
+            rows, gone_waits = _gone_branches(planner, rows, repo, base, gone_seen, agent_id)
             # GRPH-1409: a row whose newest refusal is a post-cooldown `pr_ci_not_green` cannot
             # be cleared by another reviewer, so it is taken out of what can spawn one.
             ci_stuck = [r for r in rows if ci_unattestable(r)]
@@ -1353,6 +1358,11 @@ def _loop(
             reviews = [str(r["id"]) for r in rows + ci_stuck]
             outside = [str(r["id"]) for r in rows_outside]
             waits = _wait_ids(planner)
+            for wait_line in gone_waits:
+                if wait_line not in waits:
+                    waits.append(wait_line)
+                if wait_line not in wave.review_waits:
+                    wave.review_waits.append(wait_line)
             builder_ci_pending = False
             try:
                 misblocked = _builder_ci_misblocked_rows(planner, prd, line)
@@ -4295,6 +4305,136 @@ def _release_empty_branches(planner, rows: list[dict], repo: Path, base: str,
         if not _release_empty_review(planner, row, reason, agent_id):
             kept.append(row)
     return kept
+
+
+#: The receipt prefix the server reads as "this branch is gone" (GRPH-1010) —
+#: `fleet.BRANCH_GONE_PREFIX`. The branch is the token after it.
+BRANCH_GONE_PREFIX = "gbfleet: branch gone:"
+#: How long a branch seen on the remote is trusted before `ls-remote` is asked again.
+GONE_RECHECK_SECONDS = 120
+_ITEM_KEY = re.compile(r"[A-Za-z][A-Za-z0-9]*-\d+")
+
+
+def _branch_gone(row: dict, repo: Path, seen: dict, now: float) -> str:
+    """The remote `row`'s branch is gone from, or "" (GRPH-1010).
+
+    Only a row with a PR: a branch that was never pushed is `publish_pending`, not gone.
+    No remote, or an `ls-remote` that failed, is unknown — never gone. A branch seen on
+    the remote is not asked about again for GONE_RECHECK_SECONDS; one found gone stays gone.
+    """
+    branch = str(row.get("branch") or "").strip()
+    item = str(row.get("id") or "")
+    if not branch or not item or not str(row.get("pr") or "").strip():
+        return ""
+    key = (item, branch)
+    cached = seen.get(key)
+    if isinstance(cached, str):
+        return cached
+    if isinstance(cached, float) and now - cached < GONE_RECHECK_SECONDS:
+        return ""
+    answer = wt_mod.remote_name(repo, branch)
+    if not answer.known or not answer.remote:
+        return ""
+    if answer.exists:
+        seen[key] = now
+        return ""
+    seen[key] = answer.remote
+    return answer.remote
+
+
+def _merge_commit_for(row: dict, repo: Path, base: str) -> str:
+    """The commit in `base` that carries `row`'s work, or "" (GRPH-1010).
+
+    The gbfleet Merger's own receipt first. Then the squash subject GitHub writes,
+    `... (#<pr>)`, and the `<KEY>: ...` subject this repository uses.
+    """
+    for e in row.get("evidence") or []:
+        if (isinstance(e, dict) and e.get("kind") == "url"
+                and str(e.get("commit") or "").strip()
+                and str(e.get("detail") or "").startswith("merged by gbfleet")):
+            return str(e["commit"]).strip()
+    trunk = (base or "").strip() or "HEAD"
+    patterns = []
+    pr = re.search(r"/pull/(\d+)", str(row.get("pr") or ""))
+    if pr:
+        patterns.append(rf"\(#{pr.group(1)}\)$")
+    item = str(row.get("id") or "")
+    if _ITEM_KEY.fullmatch(item):
+        patterns.append(rf"^{item}[:( ]")
+    for pattern in patterns:
+        proc = subprocess.run(
+            ["git", "log", "-n", "1", "--format=%H", "-E", f"--grep={pattern}", trunk],
+            cwd=str(repo), capture_output=True, text=True)
+        sha = proc.stdout.strip() if proc.returncode == 0 else ""
+        if sha:
+            return sha
+    return ""
+
+
+def _record_branch_gone(planner, row: dict, branch: str, remote: str, commit: str,
+                        base: str, agent_id: str) -> None:
+    """Put the absence on the item, once, naming the branch (GRPH-1010).
+
+    With the merge commit it is a `url` receipt carrying `commit`: the server then offers
+    the row and tells the reviewer to read that commit. Without one it is a note, and the
+    server withholds the row as `branch_gone`. A refused write is reported; the loop still
+    keeps a row with nothing to read away from a reviewer.
+    """
+    item = str(row.get("id") or "")
+    head = f"{BRANCH_GONE_PREFIX} {branch} is not on {remote}"
+    for e in row.get("evidence") or []:
+        if not isinstance(e, dict) or not str(e.get("detail") or "").startswith(head):
+            continue
+        if not commit or str(e.get("commit") or "").strip() == commit:
+            return
+    trunk = (base or "").strip() or "HEAD"
+    if commit:
+        receipt = {"kind": "url", "url": str(row.get("pr") or ""), "commit": commit,
+                   "detail": f"{head}; its work is in {trunk} as {commit[:12]} — review that "
+                             "commit (GRPH-1010)"}
+    else:
+        receipt = {"kind": "note",
+                   "detail": f"{head}, and no merge commit for it was found in {trunk}; "
+                             "nothing for a reviewer to read (GRPH-1010)"}
+    args: dict = {"id": item, "evidence": [receipt]}
+    if agent_id:
+        args["agent_id"] = agent_id
+    try:
+        planner.call("update_item", **args)
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("review_branch_gone_unrecorded", item=item,
+                     detail=f"{item}: {head}; recording it was refused: {exc}")
+        return
+    observe.emit("review_branch_gone", item=item, detail=receipt["detail"])
+
+
+def _gone_branches(planner, rows: list[dict], repo: Path, base: str, seen: dict,
+                   agent_id: str, now: float | None = None) -> tuple[list[dict], list[str]]:
+    """(rows a reviewer can read, wait lines for the rest) — GRPH-1010.
+
+    A row whose branch is gone and whose merge commit is in the base stays: that commit is
+    what gets reviewed. A row whose branch is gone with no merge commit found leaves the
+    rows that can spawn a reviewer, and its wait line names the branch. Restoring
+    `kept.append(row)` for it spawns a reviewer into nothing again.
+    """
+    now = time.monotonic() if now is None else now
+    kept: list[dict] = []
+    waits: list[str] = []
+    for row in rows:
+        remote = _branch_gone(row, repo, seen, now)
+        if not remote:
+            kept.append(row)
+            continue
+        branch = str(row.get("branch") or "").strip()
+        commit = _merge_commit_for(row, repo, base)
+        _record_branch_gone(planner, row, branch, remote, commit, base, agent_id)
+        if commit:
+            kept.append(row)
+            continue
+        trunk = (base or "").strip() or "HEAD"
+        waits.append(f"{row.get('id')}: branch {branch} is gone from {remote} and no merge "
+                     f"commit for it is in {trunk}; nothing for a reviewer to read")
+    return kept, waits
 
 
 def _note_pr_wait(logged: set, item: str, reason: str) -> None:
