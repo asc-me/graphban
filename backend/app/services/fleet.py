@@ -2407,6 +2407,94 @@ WITHHELD_CAPABILITY = "missing_capability"
 WITHHELD_PR_UNLINKED = "pr_unlinked"
 WITHHELD_DEPENDENCY = "dependencies_open"
 WITHHELD_BRANCH_GONE = "branch_gone"
+WITHHELD_NEEDS_PERSON = "needs_person"
+WITHHELD_NOT_YET = "not_yet_unchanged"
+
+
+#: How many distinct reviewers may say NOT YET on one unchanged head before the item leaves
+#: the review queue (GRPH-1830). One reviewer's NOT YET can be a misread; a second independent
+#: one on the same head and the same acceptance is the most a head ever gets. A third
+#: reviewer learns nothing the first two did not — GRPH-1825 was handed to ~52 of them.
+NOT_YET_LIMIT = 2
+#: A note a person writes to put a parked item back in the queue on an unchanged head.
+REVIEW_REQUEUED = "review requeued"
+
+
+def acceptance_hash(item: Item) -> str:
+    """A short fingerprint of the item's description — where its acceptance lives (GRPH-1830).
+
+    A NOT YET note records it, so an acceptance edit (the fix when a clause was wrong) is
+    seen as a change and the item is reviewed again against the clauses it now has.
+    """
+    import hashlib
+    return hashlib.sha256((item.description or "").encode("utf-8")).hexdigest()[:16]
+
+
+def review_head(item: Item) -> tuple[str, str]:
+    """(the head a reviewer reads now, a fingerprint of every head the item is known by).
+
+    The head is the adapter-observed `head_commit`, else the last commit the record names,
+    else "none". The fingerprint moves when ANY new commit is recorded, so a push the
+    first read would miss still counts as a new revision.
+    """
+    import hashlib
+    heads = known_heads(item)
+    head = (getattr(item, "head_commit", "") or "").strip().lower() or (
+        heads[-1] if heads else "none")
+    revision = hashlib.sha256(",".join(sorted(heads)).encode()).hexdigest()[:12]
+    return head, revision
+
+
+#: The suffix a NOT YET handback note ends with (GRPH-1830). In the text, not as extra keys:
+#: `normalize_evidence` keeps only {kind, detail, url} on a note.
+_NOT_YET = re.compile(
+    r"^NOT YET \(([^)]+)\): .*\[on head (\S+), revision ([0-9a-f]+), acceptance ([0-9a-f]+)\]$",
+    re.S)
+
+
+def not_yet_suffix(item: Item) -> str:
+    """What a NOT YET note records about the revision it was given on (GRPH-1830)."""
+    head, revision = review_head(item)
+    return f" [on head {head}, revision {revision}, acceptance {acceptance_hash(item)}]"
+
+
+def review_needs_person(item: Item) -> str | None:
+    """Why no agent review can move this `review` row on, or None (GRPH-1830).
+
+    Two cases, one answer — it waits on a person, so `claim_review` withholds it and `until`
+    starts no reviewer for it:
+
+    - a `blocker` is set. On a review row that is a person-only step; a reviewer cannot clear it.
+    - `NOT_YET_LIMIT` distinct reviewers said NOT YET on the current head and the current
+      description, and no person wrote a `review requeued` note after them. A new head, an
+      acceptance edit, or that note releases it.
+    """
+    if item.status != "review":
+        return None
+    blocker = str(item.blocker or "").strip()
+    if blocker:
+        return f"review_skipped: blocked by a person-only step: {blocker[:300]}"
+    (head, revision), acc = review_head(item), acceptance_hash(item)
+    said: dict[str, str] = {}
+    for e in item.evidence or []:
+        if not isinstance(e, dict):
+            continue
+        detail = str(e.get("detail") or "")
+        if detail.lower().startswith(REVIEW_REQUEUED):
+            said = {}
+            continue
+        # A note from before GRPH-1830 names no head, so it cannot be matched to this one.
+        m = _NOT_YET.match(detail)
+        if m and m.group(3) == revision and m.group(4) == acc:
+            said.pop(m.group(1), None)
+            said[m.group(1)] = detail
+    if len(said) < NOT_YET_LIMIT:
+        return None
+    last = list(said.values())[-1].split("): ", 1)[-1].rsplit(" [on head ", 1)[0]
+    return (f"review_skipped: {len(said)} reviewers ({', '.join(sorted(said))}) said NOT YET "
+            f"on head {head[:12]} and its acceptance has not changed "
+            f"since: {last[:300]}. Released when the head changes, the description is edited, "
+            f"or a person writes a `{REVIEW_REQUEUED}` note")
 
 
 #: The `detail` prefix gbfleet writes when a review row's branch is no longer a head on its
@@ -2533,6 +2621,12 @@ def review_withholding(db: Session, it: Item, *, agent_id: str, me: Agent | None
     if holder is not None and holder != agent_id:
         return WITHHELD_HELD, (f"{holder} holds its review; the claim lapses "
                                f"{lease_seconds // 60} minutes after it was taken")
+    # GRPH-1830. A blocker on a review row, or NOT YET twice on an unchanged head: it waits
+    # on a person, and every reviewer handed it can only write NOT YET again.
+    needs_person = review_needs_person(it)
+    if needs_person is not None:
+        rule = WITHHELD_NEEDS_PERSON if str(it.blocker or "").strip() else WITHHELD_NOT_YET
+        return rule, needs_person
     # And separate enough for the review to mean anything (GRPH-361) — including from a
     # credential that sent the item without claiming it (GRPH-848). Same rule `sign_off`
     # applies, so a reviewer is never leased an item it will then be refused.
