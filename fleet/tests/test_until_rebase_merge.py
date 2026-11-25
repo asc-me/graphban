@@ -166,12 +166,15 @@ class _BounceLedger:
             # service refuses it.
             details = [str(e.get("detail") or "") for e in self.item.get("evidence") or []]
             merged = any(d.startswith("merged by gbfleet") for d in details)
-            proposed = any(d.startswith("draft PR opened by gbfleet") for d in details)
+            proposed = any(d.startswith(("draft PR opened by gbfleet",
+                                         "draft PR opened by planner")) for d in details)
             if not (self.item["status"] == "review"
                     or (self.item["status"] == "done" and proposed and not merged)):
                 from gbfleet.client import ToolFailed
-                raise ToolFailed("bounce", "conflict",
-                                 f"{kw['id']} is {self.item['status']}, not awaiting review")
+                why = ("is done and gbfleet opened no PR for it, so no merge is pending"
+                       if self.item["status"] == "done" and not merged
+                       else f"is {self.item['status']}, not awaiting review")
+                raise ToolFailed("bounce", "conflict", f"{kw['id']} {why}")
             self.bounces.append(kw)
             self.item["status"] = "next"
             return {"id": kw["id"], "status": "next"}
@@ -249,6 +252,48 @@ def test_a_bounce_the_server_refuses_is_reported_and_the_item_stays_watched(gh, 
     assert not ledger.bounces
     assert "SA-1390" in merger.watching  # asked again on a later tick
     assert wave.failures and "x.py" in wave.failures[0] and "could not bounce" in wave.failures[0]
+
+
+def test_a_planner_opened_pr_that_conflicts_is_bounced(gh, monkeypatch):
+    """GRPH-1929. The planner's canonical receipt is a pending merge on both sides."""
+    from gbfleet.supervisor import Merger, Wave
+
+    monkeypatch.setattr(propose_mod, "rebase_conflicts", lambda *a: ["prds.py"])
+    gh(_Behind(update_ok=False))
+    ledger = _BounceLedger("SA-1929")
+    ledger.item["evidence"][-1]["detail"] = (
+        f"draft PR opened by planner for {ledger.item['branch']}")
+    merger = Merger(REPO, ledger, enabled=True, agent_id="GRPH-A1")
+    wave = Wave()
+
+    merger.tick(wave)
+
+    assert [b["id"] for b in ledger.bounces] == ["SA-1929"]
+    assert ledger.item["status"] == "next"
+    assert not wave.failures
+
+
+def test_a_conflict_the_gate_says_has_no_pending_merge_is_blocked_once(gh, monkeypatch):
+    """GRPH-1929. A PR recorded in other words: the server says no merge is pending, and
+    it will say so on every tick. Block the item with the conflict and stop watching it,
+    rather than logging the same FAILED line every cycle while it reads `done`.
+    Sabotage: drop the `NO_MERGE_PENDING` branch in `_bounce` -> stays watched, not blocked."""
+    from gbfleet.supervisor import Merger, Wave
+
+    monkeypatch.setattr(propose_mod, "rebase_conflicts", lambda *a: ["prds.py"])
+    gh(_Behind(update_ok=False))
+    ledger = _BounceLedger("SA-1910")
+    ledger.item["evidence"][-1]["detail"] = "the PR, opened by hand"
+    merger = Merger(REPO, ledger, enabled=True, agent_id="GRPH-A1")
+    wave = Wave()
+
+    merger.tick(wave)
+
+    assert not ledger.bounces
+    blocked = [n for n in ledger.notes if n.get("status") == "blocked"]
+    assert blocked and "prds.py" in blocked[0]["blocker"]
+    assert "SA-1910" not in merger.watching
+    assert len(wave.failures) == 1 and "blocked instead" in wave.failures[0]
 
 
 # ---- a drain spawns alongside a soft lease, and says so -----------------------------------------
