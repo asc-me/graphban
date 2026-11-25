@@ -23,17 +23,45 @@ exact name per line and unions with `--mcp-server`, through the same `select` an
 refusals. It exists because a Harness rate compares vendors as if they had been handed the same
 build tools, and a grant that depends on someone remembering a flag is not that. Names only —
 credentials stay in the source file.
+
+**The files are the harness's, not always Claude's** (GRPH-1038). A name is checked
+against every user-level file the child harness loads. grok 1.0.25+ merges
+`~/.grok/config.toml` (`[mcp_servers.<name>]`) and then `~/.claude.json`, and the Claude
+merge cannot be switched off (adapters/grok.py) — so a grok wave grants a name found in
+either, and the grok stanza wins when both define it. `claude`, and any adapter with no
+known user-level file, read `~/.claude.json` only. A refusal names every file it checked.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import tomllib
+from collections.abc import Sequence
 from pathlib import Path
 
-#: Where Claude Code keeps its servers. Named as a DEFAULT rather than hardcoded, because the
+#: Where Claude Code keeps its servers. The default for an adapter whose own user-level
+#: file this module does not know. Named as a DEFAULT rather than hardcoded, because the
 #: point of this module is that the operator says what is shared, and that includes from where.
 DEFAULT_SOURCE = "~/.claude.json"
+
+#: The files the child harness actually loads, highest precedence first (GRPH-1038). A
+#: grok wave used to check Claude's file alone and refuse servers `~/.grok/config.toml`
+#: already defined; checking the grok file alone then refused this repo's `context7`, which
+#: lives only in `~/.claude.json` — a file grok merges whether asked to or not. An adapter
+#: missing from this map keeps DEFAULT_SOURCE, and the refusal still names that file.
+ADAPTER_SOURCES: dict[str, tuple[str, ...]] = {
+    "claude": ("~/.claude.json",),
+    "grok": ("~/.grok/config.toml", "~/.claude.json"),
+}
+
+#: A source is one path, or several in precedence order (first definition wins).
+Source = str | Sequence[str]
+
+#: Keys the seat writer will emit for a child. grok's user file also stores `enabled`,
+#: which the writer sets itself; copying it onto the grant makes the child's seat
+#: unrenderable, so the wave dies after the check that was meant to let it start.
+_GRANTABLE = ("type", "url", "headers", "command", "args", "env")
 
 #: Never shareable, whatever the operator types. `graphban` is written by the seat itself with
 #: the child's OWN credential; copying the operator's would hand a child a key with different
@@ -50,23 +78,42 @@ class ShareRefused(RuntimeError):
     """A named server could not be shared, and the wave should not start without it."""
 
 
+def source_for(adapter: str = "") -> tuple[str, ...]:
+    """The user-level MCP files `adapter` loads, highest precedence first. Unknown
+    adapters stay on Claude's."""
+    return ADAPTER_SOURCES.get((adapter or "").strip(), (DEFAULT_SOURCE,))
+
+
 def source_path(source: str = "") -> Path:
     return Path(os.path.expanduser(source or DEFAULT_SOURCE))
 
 
-def available(source: str = "") -> dict[str, dict]:
-    """Every server the source declares, global and per-project merged.
+def source_paths(source: Source = "") -> list[Path]:
+    """Every path a source names, in precedence order."""
+    if isinstance(source, str) or not source:
+        return [source_path(source or "")]
+    return [source_path(s) for s in source]
 
-    Reading the whole file to pick one entry out of it is deliberate and is the reason
-    `select` refuses patterns: the file is opened, but only exact names leave it.
-    """
-    path = source_path(source)
-    try:
-        blob = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise ShareRefused(f"could not read {path}: {exc}") from exc
-    if not isinstance(blob, dict):
-        raise ShareRefused(f"{path} is not a JSON object")
+
+def describe(source: Source = "") -> str:
+    """The files a refusal names — all of them, so the operator knows where was looked."""
+    paths = [str(p) for p in source_paths(source)]
+    return paths[0] if len(paths) == 1 else ", ".join(paths[:-1]) + " or " + paths[-1]
+
+
+def _toml_servers(blob: dict) -> dict[str, dict]:
+    """`[mcp_servers.<name>]` tables, in the shape the seat writer already accepts."""
+    raw = blob.get("mcp_servers") or {}
+    if not isinstance(raw, dict):
+        return {}
+    found = {}
+    for name, spec in raw.items():
+        if isinstance(spec, dict):
+            found[name] = {k: spec[k] for k in _GRANTABLE if k in spec}
+    return found
+
+
+def _json_servers(blob: dict) -> dict[str, dict]:
     found: dict[str, dict] = {}
     for entry in (blob.get("mcpServers") or {}).items():
         found[entry[0]] = entry[1]
@@ -77,7 +124,51 @@ def available(source: str = "") -> dict[str, dict]:
     return {k: v for k, v in found.items() if isinstance(v, dict)}
 
 
-def select(names: list[str], source: str = "", label: str = "--mcp-server") -> dict[str, dict]:
+def _read(path: Path) -> dict[str, dict]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ShareRefused(f"could not read {path}: {exc}") from exc
+    try:
+        blob = tomllib.loads(text) if path.suffix == ".toml" else json.loads(text)
+    except ValueError as exc:
+        raise ShareRefused(f"could not read {path}: {exc}") from exc
+    if not isinstance(blob, dict):
+        raise ShareRefused(f"{path} is not a JSON object")
+    if path.suffix == ".toml":
+        return _toml_servers(blob)
+    return _json_servers(blob)
+
+
+def available(source: Source = "") -> dict[str, dict]:
+    """Every server the source declares, global and per-project merged.
+
+    Reading the whole file to pick one entry out of it is deliberate and is the reason
+    `select` refuses patterns: the file is opened, but only exact names leave it.
+
+    A `.toml` source is grok's user config (`[mcp_servers.<name>]`). Anything else is
+    Claude's JSON, including the per-project `projects` map. The caller chooses the
+    file from the adapter (`source_for`); this only reads the paths it was given.
+
+    Several paths merge in order, the first definition of a name winning — the harness's
+    own precedence. Among several, a file that does not exist is one the harness loads
+    nothing from and is skipped; one that exists and cannot be parsed still refuses, and
+    so does a source none of whose files exist.
+    """
+    paths = source_paths(source)
+    if len(paths) == 1:
+        return _read(paths[0])
+    present = [p for p in paths if p.exists()]
+    if not present:
+        raise ShareRefused(f"could not read any of {', '.join(map(str, paths))}")
+    found: dict[str, dict] = {}
+    for path in present:
+        for name, spec in _read(path).items():
+            found.setdefault(name, spec)
+    return found
+
+
+def select(names: list[str], source: Source = "", label: str = "--mcp-server") -> dict[str, dict]:
     """The named servers, or a refusal naming the one that is missing.
 
     Deliberately does NOT list what was available. The file it just read is the one holding
@@ -103,7 +194,7 @@ def select(names: list[str], source: str = "", label: str = "--mcp-server") -> d
     missing = [n for n in wanted if n not in have]
     if missing:
         raise ShareRefused(
-            f"{label}: {', '.join(missing)} not in {source_path(source)}. Refusing rather than "
+            f"{label}: {', '.join(missing)} not in {describe(source)}. Refusing rather than "
             "spawning without it: a child missing the server it was meant to have reads as a "
             "model that is bad at the task")
     return {n: have[n] for n in wanted}
@@ -153,7 +244,7 @@ def split_optional(names: list[str]) -> tuple[list[str], list[str]]:
     return required, optional
 
 
-def grants(flag_names: list[str], repo: Path | str, source: str = "") -> dict[str, dict]:
+def grants(flag_names: list[str], repo: Path | str, source: Source = "") -> dict[str, dict]:
     """`--mcp-server` UNION the project file. Two `select` calls, not one concatenated list, so
     each refusal names the list it came from."""
     required, optional = split_optional(project_entries(repo))
@@ -169,5 +260,5 @@ def grants(flag_names: list[str], repo: Path | str, source: str = "") -> dict[st
                 got.setdefault(name, have[name])
             else:
                 log.warning("optional MCP server %r (%s) not in %s; skipped",
-                            name, label, source_path(source))
+                            name, label, describe(source))
     return got
