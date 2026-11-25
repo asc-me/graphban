@@ -211,3 +211,104 @@ def test_the_printed_install_names_a_package_that_is_actually_published():
     named = [w for w in INSTALL_SUPERVISOR.split() if w.startswith("graphban")]
     assert named, f"{INSTALL_SUPERVISOR!r} names no package at all"
     assert set(named) <= built, f"{named} is not built here; built are {sorted(built)}"
+
+
+def test_the_cli_suite_has_a_per_test_ceiling_the_job_bound_cannot_replace():
+    """GRPH-1935: this distribution had no per-test ceiling, so a hung cli test was bounded
+    only by the `cli-tests` job's `timeout-minutes: 10` — a cancelled job that names no test
+    and prints no stack. That is the failure shape GRPH-1928 removed for the backend and
+    fleet, and its absence here read as a clean result: 480 passing tests, no bound.
+
+    A WINDOW rather than the literal, so a legitimate retune does not have to edit this test.
+    Both ends are measured, and `cli/pyproject.toml` carries the derivation:
+
+    * `> 300` — 300s is the subprocess patience this suite really honours. `codemap._git`
+      runs real `git` under `timeout=300`, and `test_setup._built_wheel_names` really builds
+      a wheel under the same 300s, where a slow or absent builder degrades to `pytest.skip`.
+      A ceiling inside that patience turns a slow builder into a red job — a test defect,
+      not a hang.
+    * `<= 480` — the `cli-tests` job bound is 600s, so a ceiling at or near it lets the job
+      kill fire first and name nothing. 480s still leaves ~120s for checkout, the install and
+      the other 479 tests: over 4x the 26.95s the whole suite measured in that job.
+
+    Sabotage: delete `timeout` from `[tool.pytest.ini_options]` and this fails naming the
+    missing ceiling; raise it to the job's own 600s and it fails naming the bound it can no
+    longer beat. Both arms were run for this item.
+    """
+    spec = tomllib.loads((CLI / "pyproject.toml").read_text(encoding="utf-8"))
+    ini = spec.get("tool", {}).get("pytest", {}).get("ini_options", {})
+    ceiling = ini.get("timeout")
+    assert isinstance(ceiling, int), (
+        "cli/pyproject.toml's [tool.pytest.ini_options] sets no integer `timeout`, so a hung "
+        "cli test has NO per-test ceiling: it is bounded only by the `cli-tests` job's "
+        "`timeout-minutes: 10`, which cancels the job, names no test and prints no stack "
+        f"(GRPH-1935). Got {ceiling!r}.")
+    assert 300 < ceiling <= 480, (
+        f"`timeout = {ceiling}` is outside the window this suite was measured into. It must "
+        "exceed the 300s subprocess patience the tests really honour (`codemap._git`, and "
+        "the wheel build in `test_setup._built_wheel_names`), or a slow builder becomes a "
+        "red job instead of a skip; and it must stay well under the `cli-tests` job's own "
+        "600s bound, or the job kill fires first and names no test — the absence this "
+        "ceiling exists to remove.")
+
+
+def test_the_ceiling_is_enforced_by_a_plugin_that_is_declared_pinned_and_loaded(pytestconfig):
+    """An ini key that no installed plugin claims is IGNORED by pytest: one warning line in a
+    run that is green anyway. So `timeout = 420` in a venv without pytest-timeout is a
+    comment wearing a config key's clothes, and the suite reads as bounded while nothing
+    bounds it. Three links, each of which breaks on its own:
+
+    * declared in cli's dev extra at the SAME floor the other two distributions use —
+      derived from their pyprojects rather than retyped here, so a fourth answer cannot
+      appear silently (this file's own rule for the dependency denylist above);
+    * pinned in `cli/uv.lock`, which is what `uv sync` installs and what pip-audit scans
+      (`scripts/scan_ci.py` maps `cli/` to pip-audit and bandit);
+    * loaded in the very session the ceiling is supposed to bound, and reading the SAME
+      number back out of `cli/pyproject.toml` — the two links that cannot pass while the
+      ceiling is inert.
+
+    Sabotage: drop `pytest-timeout` from the dev extra and the first assert fails; block the
+    plugin (`-p no:timeout`) and the loaded-plugin assert fails. Both arms were run for this
+    item.
+    """
+    def _timeout_reqs(dev: list[str]) -> list[str]:
+        return [r for r in dev if _names([r]) == {"pytest-timeout"}]
+
+    spec = tomllib.loads((CLI / "pyproject.toml").read_text(encoding="utf-8"))
+    cli_dev = spec["project"]["optional-dependencies"]["dev"]
+    declared = _timeout_reqs(cli_dev)
+    assert declared, (
+        f"cli's dev extra declares no pytest-timeout, so the `timeout` ini key binds nothing "
+        f"and pytest ignores it: {cli_dev}")
+
+    others = {}
+    for dist in ("backend", "fleet"):
+        dev = tomllib.loads((REPO / dist / "pyproject.toml").read_text(encoding="utf-8")
+                            )["project"]["optional-dependencies"]["dev"]
+        others[dist] = _timeout_reqs(dev)
+    assert all(len(reqs) == 1 for reqs in others.values()), (
+        f"the distributions this one is meant to match do not each declare exactly one "
+        f"pytest-timeout, so this guard compared nothing: {others}")
+    assert declared[0] == others["backend"][0] == others["fleet"][0], (
+        f"cli declares {declared[0]!r} where backend declares {others['backend'][0]!r} and "
+        f"fleet declares {others['fleet'][0]!r} — three answers to one question, and the "
+        "lowest of them is the plugin version that actually enforces a ceiling")
+
+    lock = (CLI / "uv.lock").read_text(encoding="utf-8")
+    assert re.search(r'^name = "pytest-timeout"$', lock, re.M), (
+        "cli/uv.lock pins no pytest-timeout, so `uv sync` builds a venv in which the "
+        "`timeout` ini key is inert and pip-audit never sees the plugin it depends on")
+
+    assert pytestconfig.pluginmanager.has_plugin("timeout"), (
+        "pytest-timeout is NOT LOADED in this session, so the per-test ceiling is inert: "
+        "every test reads as bounded and nothing bounds it")
+
+    # The file is the callee; this is the call. pytest-timeout registers `timeout` as a
+    # STRING ini option, so the comparison is on the rendered text — which is also what makes
+    # it honest: it compares what pytest will enforce against what the guard above pinned.
+    declared_ceiling = spec.get("tool", {}).get("pytest", {}).get("ini_options", {}).get("timeout")
+    enforced = pytestconfig.getini("timeout")
+    assert str(enforced) == str(declared_ceiling), (
+        f"pytest reads `timeout = {enforced!r}` from {pytestconfig.inipath}, but "
+        f"cli/pyproject.toml declares {declared_ceiling!r}: the ceiling this suite's guard "
+        "pins is not the one pytest-timeout enforces")

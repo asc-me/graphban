@@ -31,7 +31,15 @@ Documentation = "https://github.com/asc-me/graphban/blob/main/cli/README.md"
 gban = "gban.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-cov>=5.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    # A hung cli test was bounded only by the `cli-tests` job's `timeout-minutes: 10`, which
+    # cancels the job and names no test (GRPH-1935) — the shape GRPH-1928 removed for the
+    # backend and fleet. pytest-timeout fails the one test and dumps its stack instead; the
+    # ceiling is under [tool.pytest.ini_options], where its sizing is measured.
+    "pytest-timeout>=2.4",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -43,6 +51,33 @@ packages = ["src/gban"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]
+# A per-test ceiling for the third distribution (GRPH-1935). GRPH-1928 gave one to the
+# backend (300s) and to fleet (600s); this suite had none, so a hung cli test was bounded
+# only by the `cli-tests` job's `timeout-minutes: 10` — a cancelled job that names no test
+# and prints no stack, indistinguishable from a slow suite. Sized between two bounds that
+# were both measured, and neither end is decorative:
+#   FLOOR — 300s is the patience this suite really honours in a test. `codemap._git` runs
+#   real `git` with `timeout=300` and dozens of tests call it (`test_this_repo_compose_maps_
+#   without_leaking_defaults` maps this repository), and `tests/test_setup.py::_built_wheel_
+#   names` really builds a wheel under `subprocess.run(timeout=300)`, where a slow or absent
+#   builder degrades to `pytest.skip`. A ceiling inside that patience turns a slow builder
+#   into a red job — a test defect, not a hang, which is the rule fleet/pyproject.toml states
+#   for its own 600s. The 600s patiences in `doctor.install_supervisor` and
+#   `scan.DEFAULT_TIMEOUT` do NOT bind here: every test that reaches them monkeypatches or
+#   fakes the call, so no test waits that long. 420s is 1.4x the patience that is real.
+#   CEILING — the `cli-tests` job bound is 600s, so a ceiling at or near it lets the job
+#   kill fire first and name nothing: the guard would pin a number that cannot do its job.
+#   420s leaves 180s for checkout, the venv install ("under a second against a warm uv
+#   cache") and the rest of the run, which that job measured at 26.95s for 480 passed with a
+#   slowest single test of 1.12s — over 6x the measured remainder, and 420s is ~375x the
+#   slowest legitimate test.
+# The method is left at pytest-timeout's default (SIGALRM where the platform has it, a timer
+# thread where it does not). The `windows` job runs this same suite where there is no
+# SIGALRM, so forcing `timeout_method = "signal"` would leave the second platform unbounded,
+# and forcing `"thread"` ends a timeout with `os._exit(1)`. backend/pyproject.toml's
+# [tool.pytest.ini_options] carries the measurement of three hang shapes against both
+# methods that decided it; nothing about this suite argues differently.
+timeout = 420
 
 # Read by `scripts/scan_ci.py` (`bandit -c pyproject.toml -r .`, GRPH-1110). Any other finding
 # is fixed or carries a line-level `# nosec <id>` with its reason.
