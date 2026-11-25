@@ -38,6 +38,9 @@ CALVER_RE = re.compile(r"^(\d{4})\.(\d{2})\.(\d+)$")
 PLACEHOLDERS = frozenset({"", "unknown", "0.1.0"})
 VERSION_PY = pathlib.Path("backend/app/version.py")
 PYPROJECT = pathlib.Path("backend/pyproject.toml")
+#: Mirrors `PYPROJECT`'s version. Not an identity file — a derived one, but derived by `uv`
+#: and checked in, so a stamp that skips it leaves `uv lock --check` red on main (GRPH-1933).
+UV_LOCK = pathlib.Path("backend/uv.lock")
 PACKAGE_JSON = pathlib.Path("web/package.json")
 FLEET_PYPROJECT = pathlib.Path("fleet/pyproject.toml")
 PACK_SCRIPT = pathlib.Path(__file__).resolve().parent / "graphban_pack.py"
@@ -49,6 +52,11 @@ RULE_DEFAULTS = {RULE_SCANS_CLEAN: False}
 _VERSION_PY_RE = re.compile(r'^__version__\s*=\s*"([^"]+)"', re.M)
 _PYPROJECT_VER_RE = re.compile(r'^version\s*=\s*"([^"]+)"', re.M)
 _PACKAGE_VER_RE = re.compile(r'"version"\s*:\s*"([^"]+)"')
+#: The project's own scalar in `uv.lock`, captured in group 1 like the three above. Every
+#: package in the lock has a `version = "…"` line, so the block naming it has to be part of
+#: the match — a bare version regex would rewrite whichever package sorts first. The
+#: lookbehind keeps the match to the scalar itself, so the replacement is just the version.
+_LOCK_VER_RE = re.compile(r'(?<=\[\[package\]\]\nname = "graphban-api"\nversion = ")([^"]+)')
 _V_PREFIX = re.compile(r"^v", re.I)
 
 
@@ -190,7 +198,12 @@ def _replace_one(path: pathlib.Path, pattern: re.Pattern[str], repl: str, *, lab
 
 
 def stamp(repo: pathlib.Path, version: str) -> list[pathlib.Path]:
-    """Write the three identity files. Does not commit, push, tag, or touch fleet."""
+    """Write the version files. Does not commit, push, tag, or touch fleet.
+
+    `backend/uv.lock` is written alongside `backend/pyproject.toml` because it carries a
+    copy of the same scalar: stamp one and not the other and `uv lock --check` is red on
+    main until someone re-locks by hand (GRPH-1933).
+    """
     if version in PLACEHOLDERS:
         raise ValueError(f"refusing placeholder {version!r}")
     parsed = parse_calver(version)
@@ -202,11 +215,15 @@ def stamp(repo: pathlib.Path, version: str) -> list[pathlib.Path]:
         raise ValueError(f"{version} is not after the stamped {current}")
     fleet_before = (repo / FLEET_PYPROJECT).read_text(encoding="utf-8") \
         if (repo / FLEET_PYPROJECT).is_file() else None
+    if not (repo / UV_LOCK).is_file():
+        raise ValueError(f"{UV_LOCK} is missing — the stamp cannot keep its version scalar in step")
 
     _replace_one(repo / VERSION_PY, _VERSION_PY_RE, f'__version__ = "{version}"',
                  label="__version__")
     _replace_one(repo / PYPROJECT, _PYPROJECT_VER_RE, f'version = "{version}"',
                  label="pyproject version")
+    _replace_one(repo / UV_LOCK, _LOCK_VER_RE, version,
+                 label="uv.lock graphban-api version")
     _replace_one(repo / PACKAGE_JSON, _PACKAGE_VER_RE, f'"version": "{version}"',
                  label="package.json version")
 
@@ -214,11 +231,12 @@ def stamp(repo: pathlib.Path, version: str) -> list[pathlib.Path]:
         fleet_after = (repo / FLEET_PYPROJECT).read_text(encoding="utf-8")
         if fleet_after != fleet_before:
             raise ValueError("stamp changed fleet — fleet stays 0.1.0")
-    written = [VERSION_PY, PYPROJECT, PACKAGE_JSON]
+    written = [VERSION_PY, PYPROJECT, UV_LOCK, PACKAGE_JSON]
     for rel in written:
         got = {
             VERSION_PY: _VERSION_PY_RE,
             PYPROJECT: _PYPROJECT_VER_RE,
+            UV_LOCK: _LOCK_VER_RE,
             PACKAGE_JSON: _PACKAGE_VER_RE,
         }[rel].search((repo / rel).read_text(encoding="utf-8"))
         if not got or got.group(1) != version:
@@ -796,7 +814,8 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("next", help="print the next YYYY.MM.N")
 
-    p_stamp = sub.add_parser("stamp", help="write version.py, pyproject, package.json")
+    p_stamp = sub.add_parser("stamp",
+                             help="write version.py, pyproject, uv.lock, package.json")
     p_stamp.add_argument("version", nargs="?", default="")
 
     p_notes = sub.add_parser(

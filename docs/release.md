@@ -37,7 +37,12 @@ Writes, and only these:
 
 - `backend/app/version.py`
 - `backend/pyproject.toml`
+- `backend/uv.lock`
 - `web/package.json`
+
+`backend/uv.lock` carries its own copy of the `[project].version` scalar. Stamping
+pyproject without it leaves `uv lock --check` red on main and `uv sync` dirtying whatever
+branch an agent happens to be standing in (GRPH-1933).
 
 ```bash
 python3 scripts/graphban_release.py next       # 2026.09.5
@@ -51,11 +56,12 @@ stamp commit if more work should ride on the cut — `publish` tags
 No `v` prefix. Tags are `2026.09.5`, not `v2026.09.5`.
 
 CI knows a stamp when it sees one. `What changed` runs `scripts/stamp_only.py` over the
-diff; when the change is precisely the three version lines, agreeing and CalVer, the suites
+diff; when the change is precisely the four version lines, agreeing and CalVer, the suites
 are skipped and only the non-editable wheel install runs — the one job a stamp can break. A
-stamp PR clears in about a minute instead of fifteen. Anything more than the three lines —
-a dependency bump riding in `pyproject.toml`, a fourth file — runs everything, because the
-decision is made from the diff, not the branch name.
+stamp PR clears in about a minute instead of fifteen. Anything more than the four lines —
+a dependency bump riding in `pyproject.toml`, a re-lock that moved a package in `uv.lock`,
+a fifth file — runs everything, because the decision is made from the diff, not the branch
+name.
 
 
 ## Publish
