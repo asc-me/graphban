@@ -2,7 +2,7 @@
 
 Walked on the real box against a project that is not this repository.
 
-- **Box:** `ubuntu-srv:8080`. The baseline was read on 2026.11.16 with pack 0.4.0. The drain ran on 2026.11.40.
+- **Box:** `ubuntu-srv:8080`. The baseline was read on 2026.11.16 with pack 0.4.0. The drain ran on 2026.11.40. Gap 2b was walked on 2026.11.46 (2026-11-21), and gaps 1 and 3b on 2026.11.66 (2026-11-25).
 - **Project:** `p74-walk` (key P74W), repo `asc-me/p74-walk`. Migrations live in `db/migrations/`, not `backend/alembic/versions`, and a generated client is checked in under `client/generated/`.
 - **Items:**
   - P74W-1 and P74W-2 each add a migration;
@@ -17,10 +17,10 @@ The walk was paused on 2026-11-13: the Rules page could not set list params (GRP
 |---|---|---|
 | 1 | A project that never set a rule behaves as before | **pass** |
 | 2a | Exclusive areas: two migration items do not build in parallel | **pass** |
-| 2b | Generated files: a regenerated client reaches a PR | **pass, with a caveat**: the generated-files rule itself was not exercised |
+| 2b | Generated files: a regenerated client reaches a PR | **pass**: an undeclared generated file reached a PR (2026-11-21) |
 | 3a | Dropping a deployment predicate is refused, naming it | **pass** |
-| 3b | An item without `scans_clean` is refused at done | **partial**: refused, but by the general attestation gate, which does not name `scans_clean` |
-| 3c | Run the drain to done | **not run to done**: p74-walk's CI cannot attest to the box |
+| 3b | An item without `scans_clean` is refused at done | **pass**: refused, naming `scans_clean` (2026-11-25) |
+| 3c | Run the drain to done | **not run to done by the drain**. The box now pulls p74-walk's CI result from GitHub (gap 1, 2026-11-25), and P74W-1 reached done by a planner call |
 
 ## 1. A project that never set these rules
 
@@ -50,7 +50,11 @@ Two defects turned up while setting them, and both were fixed before the drain r
 - **P74W-2** stayed `next` and was never claimed while P74W-1 was in progress. The log said: "P74W-1 holds db/migrations/0002_tags.sql, tests/test_app.py … Not spawning into work that cannot be claimed".
 - **P74W-3** was built on `gb/p74w2-2` @5094727 with `api.toml` and `client/generated/client.py`. It reached a PR (asc-me/p74-walk#2) with no undeclared-file hold.
 
-**Caveat on 2b.** The builder declared `client/generated/client.py` as a touchpoint. A declared file never meets the undeclared-file hold, so this run does not show that `build.generated_files` is what let it through. A separate check is still needed: a build that regenerates a file it did not declare.
+**Caveat on 2b, closed 2026-11-21 (wave p74w3, box 2026.11.46).** The build above declared `client/generated/client.py`, so it never met the undeclared-file hold. A second build did not declare its generated file. P74W-5 declared `api_admin.toml`, `scripts/gen_client.py` and `tests/test_gen_client.py`, and was built on `gb/p74w3-1` @b43dc4d. The branch also regenerated `client/generated/admin.py`, which P74W-5 did not declare. The supervisor logged:
+
+> {"event": "generated_files_allowed", "branch": "gb/p74w3-1", "detail": "client/generated/admin.py"}
+
+It then opened asc-me/p74-walk#3 with `admin.py` undeclared. The child-side `gbfleet check-touchpoints` disagreed: "touchpoint gate: 1 changed file(s) are outside every declared touchpoint and the supervisor will NOT open a PR for this branch: client/generated/admin.py". That check read only the default generated-files list. It was filed and fixed as GRPH-1823.
 
 **Side observations:**
 - P74W-1's first push was held for undeclared files: three `__pycache__/*.pyc` files. The walk repo's `.gitignore` had never been committed. That is the hold working, not a defect.
@@ -76,9 +80,30 @@ P74W-3 got the same refusal at 5094727. `until` exited with `review-ci-unattesta
 
 The item was refused. But the refusal comes from the general attestation gate, not the project's added predicate. Proving that a missing `scans_clean` is what refuses needs two things this walk did not have: an attestation that passes `suite_green` but lacks `scans_clean`, and a key with the gate scope to write it.
 
-## Gaps left open
+## Gaps closed after the walk (2026-11-25)
 
-- **CI attestation from a project on a LAN box:** p74-walk needs a tunnel or a self-hosted runner before any of its items can reach done.
-- **A check of an undeclared generated file:** closes caveat 2b.
-- **A done refusal that names the missing project predicate:** closes 3b.
-- The p74-walk `.gitignore` is still uncommitted.
+Walked by the planner session on the box, on 2026.11.66 (`1c6cad35`). The raw lines are in p74-walk's `.walklog/drain-observations.md`.
+
+**Gap 1: CI attestation from a project on a LAN box.** The box now pulls the result from GitHub; nothing connects in to the box. The box's `GITHUB_TOKEN` is a fine-grained token with Actions: Read on p74-walk. GitHub offers no Checks permission on a fine-grained token. P74W-1 never recorded its head commit, so the box looked it up in two steps:
+- `pulls/1` answered 403;
+- `actions/runs?event=pull_request&branch=gb/p74w2-1` answered 200, with PR 1 at 7f18c3db.
+
+The box then read the result:
+- `commits/7f18c3db…/check-runs` answered 403;
+- `actions/runs?head_sha=7f18c3db…` answered 200, and so did both runs' `jobs`.
+
+It wrote this receipt on P74W-1:
+
+> adapter `github-checks`, commit `7f18c3db80318f361d0d894be397a747109c496b`, `suite_green` passed: "all 2 jobs completed and none failed", run https://github.com/asc-me/p74-walk/actions/runs/44606654979
+
+P74W-5 got the same receipt at `b43dc4d7ff1bb14b0bbab4e5fa505860bc267d6b`.
+
+**Gap 3b: a done refusal that names the missing project predicate.** The project's predicates were `["suite_green", "scans_clean"]`, and only `suite_green` was attested. The planner sent `update_item status=done` on P74W-1 and was refused:
+
+> conflict: P74W-1 cannot move to done: this project requires the predicate(s) scans_clean. What IS attested: suite_green. nothing has attested scans_clean. That is a check nobody has run rather than a check that failed …
+
+A person then removed `scans_clean` on p74-walk's Rules page. `get_rule_toggles` read `merge.done_predicates` back as `{"predicates": ["suite_green"]}`, with source `project`. The same call then moved P74W-1 to `done`.
+
+**Seen on the way, not judged here.** P74W-1 reached done with no `sign_off`: `reviewed_by` is empty. The call came from a planner key with no fleet running on it. Earlier reviewers had passed 7f18c3d, but each was refused at sign-off for lack of CI.
+
+The p74-walk `.gitignore` was committed on 2026-11-21 (0a593e3).
