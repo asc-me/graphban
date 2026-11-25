@@ -161,6 +161,8 @@ def pytest_configure(config):
     # value instead of minting a second one nobody reads.
     os.environ.setdefault(schema_probe.ENV_DIR, schema_probe.make_dir())
     schema_probe.install()
+    config.addinivalue_line(
+        "markers", "sign_off_gate: run `review.sign_off_before_done` as production does (on)")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -232,6 +234,19 @@ def _no_ci_deployment(monkeypatch):
     from app.config import settings
 
     monkeypatch.setattr(settings, "pr_cooldown_seconds", 0, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _no_sign_off_gate(monkeypatch, request):
+    # GRPH-1940: production refuses `done` without an independent `fleet.sign_off` unless the
+    # project's `review.sign_off_before_done` rule is off. Most tests close an item with a CI
+    # receipt to exercise something else, so the suite runs as a project that turned the rule
+    # off. Tests ABOUT the gate mark themselves `sign_off_gate` and get the real default (on).
+    if request.node.get_closest_marker("sign_off_gate") is None:
+        from app.services import rule_toggles
+
+        monkeypatch.setattr(rule_toggles, "sign_off_before_done", lambda db, project_id: False)
     yield
 
 

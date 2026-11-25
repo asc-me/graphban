@@ -4422,7 +4422,7 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     if commit:
         attestation = items_svc.normalize_evidence([{
             "kind": "attestation",
-            "adapter": "fleet.sign_off",
+            "adapter": items_svc.SIGN_OFF_ADAPTER,
             "commit": commit,
             "predicates": [
                 _predicate(
