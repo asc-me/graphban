@@ -43,6 +43,7 @@ from .seat import Seat
 from .tiers import TierTable
 from . import matrix as matrix_mod
 from .spawn import Child, Reason, build_holdings, stop
+from .heartbeat import lapsed_under_live
 from . import spend as spend_mod
 from . import touchpoints as tp_mod
 from .spawn import LaunchFailed, VendorLimit
@@ -1015,6 +1016,8 @@ def _loop(
     builder_ci_logged: set[tuple[str, str, str]] = set()  # GRPH-1708
     gone_seen: dict = {}  # GRPH-1010: review branches found gone, and when a head was seen
     review_spawned: list = []  # GRPH-1374: children this loop spawned for review rows
+    # GRPH-1919: items an exited child left `in_progress`, until they are settled.
+    exited: dict[str, dict] = {}
     # GRPH-842. One gate for the whole run, not one per spawn: a child spawned seconds ago
     # is not in the kernel's numbers yet, and a fresh reading per seat cannot know that. Its
     # charges expire, so an hour-long loop does not slowly refuse everything.
@@ -1308,6 +1311,7 @@ def _loop(
             # where `watch_tick` already reported the child costs nothing.
             _report_exits(finished, supervisor, wave, ledger=planner)
             _reap_all(wave, finished, client=planner, base_branch=base)
+            _track_exits(exited, finished)
             _release_delegated(delegated, owners, finished, held)
             children[:] = [c for c in children if c.running]
             persist()
@@ -1398,6 +1402,12 @@ def _loop(
                 f"search_items unreachable; leftover review is unknown, not empty ({exc})",
             ) from exc
         wd.progress("review/waits read")
+        # GRPH-1919. An item its child left in_progress is not an empty board: it is
+        # handed to review once its head is green, or named under the gate holding it.
+        exit_lines, exit_ci_pending = _settle_exited(planner, exited, wave, repo, agent_id)
+        for wait_line in exit_lines:
+            if wait_line not in waits:
+                waits.append(wait_line)
 
         # GRPH-846, GRPH-880. The merger discovers candidates from the attestation, not from
         # observing departures. An item already `done` with a sign_off attestation is a
@@ -1797,8 +1807,9 @@ def _loop(
                     _leave("review-unsigned", 1, review=reviews, waits=waits,
                            outside=outside), ci_stuck)
 
-        if ci_pending:
+        if ci_pending or exit_ci_pending:
             # GRPH-1417: CI is still running for the head; no reviewer, no exit.
+            # GRPH-1919: the same for an exited child's PR, which is handed off once green.
             empty = 0
             sleep(poll)
             continue
@@ -3396,6 +3407,118 @@ def _offer_merged_for_review(planner: Graphban, item_id: str, details: dict, bas
         return False
     observe.emit("review_offered", item=item_id, detail=note)
     return True
+
+
+def _exited_build_items(child) -> list[str]:
+    """Items a child built or was bound to build. Review claims are not its build work."""
+    seen = list(getattr(child, "held_items", None) or [])
+    seen += list(getattr(child, "ever_held", None) or [])
+    got = getattr(child, "assigned", None)
+    if isinstance(got, dict) and got.get("state") == "claimed" and got.get("item"):
+        seen.append(got["item"])
+    reviews = {str(i) for i in (getattr(child, "review_items", None) or []) if i}
+    out: list[str] = []
+    for item in seen:
+        item = str(item or "")
+        if item and item not in reviews and item not in out:
+            out.append(item)
+    return out
+
+
+def _track_exits(exited: dict[str, dict], finished: list) -> None:
+    """GRPH-1919. Remember what each exited child built, so the drain can settle it.
+
+    A child that exits without its status call leaves its item `in_progress` with nobody
+    holding it. Every later poll read that as an empty board and the item sat for hours.
+    """
+    for child in finished:
+        label = f"{child.adapter} pid {child.pid} ({child.agent_id or 'unregistered'})"
+        for item in _exited_build_items(child):
+            exited.setdefault(item, {"child": label, "branch": str(child.branch or "")})
+
+
+def _hand_exited_to_review(planner: Graphban, item: str, seen: dict, head: str, url: str,
+                           agent_id: str) -> bool:
+    """Move an exited child's green item to `review`. False when the server refused."""
+    note = (f"gbfleet: child {seen['child']} exited with {item} still in_progress; "
+            f"its PR {url} head {head[:12]} carries suite_green, so the drain moved it to "
+            "review (GRPH-1919)")
+    args: dict = {"id": item, "status": "review",
+                  "evidence": [{"kind": "note", "detail": note, "url": url}]}
+    if agent_id:
+        args["agent_id"] = agent_id
+    try:
+        planner.call("update_item", **args)
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("exited_handoff_refused", item=item,
+                     detail=f"{item}: moving it to review after {seen['child']} exited was "
+                            f"refused: {exc}")
+        return False
+    observe.emit("exited_handoff", item=item, commit=head, detail=note)
+    return True
+
+
+def _settle_exited(planner: Graphban, exited: dict[str, dict], wave: Wave, repo: Path,
+                   agent_id: str) -> tuple[list[str], bool]:
+    """GRPH-1919. `(wait lines, CI still running)` for items an exited child left in_progress.
+
+    - Not `in_progress` any more: the child (or a person) moved it on. Forgotten.
+    - Its branch was not proposed (the touchpoint gate, a mixed branch, ...): a wait that
+      names the item under the gate's reason. The cycle is not `idle`.
+    - An open PR whose head carries a passing `suite_green`: moved to `review` with a note
+      naming the child and the head. That is the hand-off the child never made.
+    - An open PR whose CI has not attested yet: a wait. While a run is in progress the
+      cycle stays open, as it does for a review row whose CI is running (GRPH-1417).
+    - No PR and no gate: nothing for the drain to hand off; the server's lease lapse is
+      the answer. Forgotten, with one observe line.
+
+    An unreadable item is kept: unknown is not settled.
+    """
+    from . import propose
+    from .heartbeat import _same_commit
+
+    lines: list[str] = []
+    pending = False
+    for item, seen in list(exited.items()):
+        try:
+            row = planner.call("get_item_details", id=item)
+        except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
+            watchdog_mod.current.retry("get_item_details(exited)", exc)
+            continue
+        if not isinstance(row, dict) or row.get("status") != "in_progress":
+            exited.pop(item, None)
+            continue
+        branch = str(row.get("branch") or "").strip() or seen["branch"]
+        gate = wave.unproposed.get(branch) or wave.unproposed.get(seen["branch"])
+        if gate:
+            lines.append(f"{item}: in_progress after its child {seen['child']} exited; "
+                         f"{branch} not proposed — {gate}")
+            continue
+        url = _linked_pr(row)
+        if not url:
+            exited.pop(item, None)
+            observe.emit("exited_in_progress", item=item,
+                         detail=f"{item}: in_progress after {seen['child']} exited, with no "
+                                "PR to hand to review")
+            continue
+        head = _tip(repo, branch)
+        if head and any(_same_commit(head, c) for c in propose.green_commits(row)):
+            if _hand_exited_to_review(planner, item, seen, head, url, agent_id):
+                exited.pop(item, None)
+                continue
+            lines.append(f"{item}: in_progress after its child {seen['child']} exited; "
+                         f"{head[:12]} carries suite_green but moving it to review was refused")
+            continue
+        if head and any(_same_commit(head, c) for c in propose.red_commits(row)):
+            lines.append(f"{item}: in_progress after its child {seen['child']} exited; "
+                         f"CI is red at {head[:12]} ({url})")
+            continue
+        state, _ci_head, _job = ci_verdict(repo, branch)
+        if state == "pending":
+            pending = True
+        lines.append(f"{item}: in_progress after its child {seen['child']} exited; waits on "
+                     f"suite_green at {head[:12] or 'an unread head'} ({url})")
+    return lines, pending
 
 
 def _holds_sentence(item_id: str, areas: list[str]) -> str:
@@ -5670,6 +5793,12 @@ def _child_currently_holds(child: Child, agents: list[dict]) -> bool:
     decides whether the process is in the middle of something. An empty list
     is a child that registered and claimed nothing (GRPH-1401).
     """
+    if lapsed_under_live(child):
+        # GRPH-1919. The server would not extend this child's lease, so the roster shows
+        # no fresh holding — but the process is alive and its item is still `in_progress`.
+        # Reading that as "holds nothing" ended the cycle `idle` and SIGTERMed two
+        # children with committed work. The keep-alive goes on posting every interval.
+        return True
     agent = _agent_for_child(child, agents)
     return bool(agent and _fresh_holdings(agent))
 
