@@ -198,3 +198,37 @@ def test_a_one_off_until_records_nothing(monkeypatch, tmp_path):
     s.items = [_item("A")]
     _cycle(s, hooks)
     assert len(hooks) == 1 and not (tmp_path / "notice").exists()
+
+
+class DepServer(FakeServer):
+    """A server whose items carry dependency links, as `get_item_details` returns them."""
+
+    def __init__(self, details):
+        super().__init__()
+        self.details = details
+
+    def call(self, tool, /, **kw):
+        if tool == "get_item_details":
+            return self.details.get(kw["id"], {})
+        return super().call(tool, **kw)
+
+
+def _dep(item, on, status):
+    return {"links": [{"type": "dependency", "a": item, "b": on}]}, {on: {"status": status}}
+
+
+def test_an_item_held_on_an_open_dependency_is_a_stall_naming_it():
+    links, dep = _dep("B", "M1", "backlog")
+    s = DepServer({"B": links, **dep})
+    s.items = [_item("B", "next")]
+    _cycle(s, [])
+    assert s.notices and s.notices[0][0] == "stalled"
+    assert "M1 (backlog)" in s.notices[0][1][0][1]
+
+
+def test_an_item_whose_dependencies_are_done_stays_working():
+    links, dep = _dep("B", "M1", "done")
+    s = DepServer({"B": links, **dep})
+    s.items = [_item("B", "next")]
+    _cycle(s, [])
+    assert s.notices == []
