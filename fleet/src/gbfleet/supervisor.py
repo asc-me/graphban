@@ -4936,6 +4936,9 @@ def _record_build_outcome(wave: Wave, client: Graphban | None, tree: Worktree,
 
     Posted for every ending, `committed` included, so the absence of a `stranded` note is
     never the signal. A sibling item is named on its own salvage branch (GRPH-948).
+    Only a salvage is split per item; otherwise every held item was built on the child's
+    one branch and carries it. A salvaged sibling whose branch was not cut is a wave
+    failure, never a silent skip — an item with no note is the ambiguity this removes.
     """
     if not held:
         return
@@ -4946,8 +4949,15 @@ def _record_build_outcome(wave: Wave, client: Graphban | None, tree: Worktree,
     target, divert = wave.diverted.get(tree.branch, (tree.branch, ""))
     sibling = dict(reaped.siblings or ())
     for index, item in enumerate(held):
-        branch = target if index == 0 else sibling.get(item, "")
+        if index == 0:
+            branch = target
+        elif reaped.disposition is wt_mod.Disposition.SALVAGED:
+            branch = sibling.get(item, "")
+        else:
+            branch = target
         if not branch:
+            wave.failures.append(
+                f"{item}: build outcome not recorded; its salvage branch was not cut")
             continue
         commit = _branch_head(tree.repo, branch) if outcome != "nothing" else ""
         reason = "; ".join(r for r in (why, divert if index == 0 else "") if r)
