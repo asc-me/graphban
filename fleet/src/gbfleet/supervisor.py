@@ -3848,7 +3848,9 @@ def _merge_recorded(row: dict) -> bool:
 #: "not mergeable" is a substring of that hold (`not mergeable yet: mergeable=UNKNOWN`),
 #: so it is not a marker. A terminal miss still matches: no PR, a draft that cannot be
 #: marked ready, branch protection, a closed PR, a failed `gh pr merge`, a merge commit
-#: that is not an ancestor of the default branch.
+#: that is not an ancestor of the default branch. A `gh pr ready` that failed on a forge
+#: transient (GraphQL "Something went wrong", HTTP 5xx, a timeout) reads "gh pr ready hit
+#: a forge transient", which no marker matches: it is retried, not rebuilt (GRPH-1920).
 _LEAVE_DONE_MARKERS = (
     "no PR for",
     "names no PR",
