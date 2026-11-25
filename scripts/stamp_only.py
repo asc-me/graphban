@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """Is this change nothing but a release stamp? (CI decides what to run on the answer.)
 
-A stamp (`graphban_release.py stamp`) rewrites one version string in each of three files —
-`backend/app/version.py`, `backend/pyproject.toml`, `web/package.json` — and nothing else.
-Every path filter in CI fires on it, so a stamp PR paid for both backend suites, the frontend
-build and the fleet suite: ~15 minutes of wall clock and a self-hosted slot to test that a
-string changed. The wheel install is the one job a stamp can actually break, and it keeps
-running.
+A stamp (`graphban_release.py stamp`) rewrites one version string in each of four files —
+`backend/app/version.py`, `backend/pyproject.toml`, `backend/uv.lock`, `web/package.json` —
+and nothing else. Every path filter in CI fires on it, so a stamp PR paid for both backend
+suites, the frontend build and the fleet suite: ~15 minutes of wall clock and a self-hosted
+slot to test that a string changed. The wheel install is the one job a stamp can actually
+break, and it keeps running.
 
 Decided from the DIFF, never from the branch name or the PR title. `chore/stamp-*` is a
 convention, and a convention is a thing a later commit on the same branch can silently
 stop honouring. The rule here is strict in the safe direction: anything that is not
 precisely a stamp — one more file, one more line, a version that disagrees between the
-three, a placeholder, a non-CalVer — answers `false` and the full suites run.
+four, a placeholder, a non-CalVer — answers `false` and the full suites run.
 
 Usage in the workflow:  python3 scripts/stamp_only.py --base <sha> --head <sha>
 Writes `stamp_only=true|false` to $GITHUB_OUTPUT when set; prints the reason either way.
@@ -29,11 +29,17 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import graphban_release as rel  # noqa: E402
 
-#: The three identity files a stamp writes, each with the regex that matches its version line.
+#: The four version files a stamp writes, each with the regex that matches its version line.
 STAMPED = {
     str(rel.VERSION_PY): rel._VERSION_PY_RE,
     str(rel.PYPROJECT): rel._PYPROJECT_VER_RE,
     str(rel.PACKAGE_JSON): rel._PACKAGE_VER_RE,
+    # The lock's changed line is a bare `version = "…"`, the same shape as pyproject's: the
+    # `name = "graphban-api"` that identifies it is a CONTEXT line, and this parser reads
+    # only the +/− lines. What keeps that safe is the count guard below — a stamp moves
+    # exactly one line here, while a re-lock that also moved a dependency moves two and
+    # answers `false`.
+    str(rel.UV_LOCK): rel._PYPROJECT_VER_RE,
 }
 _FILE = re.compile(r"^diff --git a/(\S+) b/(\S+)$")
 
@@ -59,7 +65,7 @@ def stamp_only(diff: str) -> tuple[bool, str]:
         return False, f"touches {', '.join(extra)}"
     missing = sorted(set(STAMPED) - set(files))
     if missing:
-        return False, f"a stamp writes all three; {', '.join(missing)} unchanged"
+        return False, f"a stamp writes all four; {', '.join(missing)} unchanged"
     old: set[str] = set()
     new: set[str] = set()
     for path, hunks in files.items():
@@ -72,9 +78,9 @@ def stamp_only(diff: str) -> tuple[bool, str]:
         old.add(before.group(1))
         new.add(after.group(1))
     if len(new) != 1:
-        return False, f"the three files disagree on the new version: {sorted(new)}"
+        return False, f"the stamped files disagree on the new version: {sorted(new)}"
     if len(old) != 1:
-        return False, f"the three files disagreed on the old version: {sorted(old)}"
+        return False, f"the stamped files disagreed on the old version: {sorted(old)}"
     version = next(iter(new))
     if version in rel.PLACEHOLDERS or rel.parse_calver(version) is None:
         return False, f"{version!r} is not a CalVer release version"
