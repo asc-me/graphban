@@ -2,6 +2,9 @@
 
 `search_items(fields="full")` returns no `description` key, so reading acceptance from
 that row named "acceptance" missing for every item left out of the claim pool.
+
+GRPH-1839: a server whose `fleet_status` carries `line_unready` has already said which
+line items are unready; `_unready` reports that list and guesses nothing.
 """
 from __future__ import annotations
 
@@ -19,10 +22,14 @@ def _row(rid, touchpoints=("a.py",)):
 
 
 class _P:
-    def __init__(self, rows, details):
+    def __init__(self, rows, details, roster=None):
         self.rows, self.details, self.reads = rows, details, []
+        # An older server: `fleet_status` without `line_unready`.
+        self.roster = roster if roster is not None else {"agents": []}
 
     def call(self, tool, **kw):
+        if tool == "fleet_status":
+            return self.roster
         if tool == "collision_clusters":
             return {"clusters": [{"items": ["POOLED"]}]}
         if tool == "search_items":
@@ -64,3 +71,35 @@ def test_a_failed_description_read_is_unknown_not_missing_acceptance():
 def test_a_pooled_item_is_not_read():
     p = _P([_row("POOLED")], {})
     assert until._unready(p, "L") == [] and p.reads == []
+
+
+def test_the_servers_line_unready_is_reported_exactly_and_nothing_is_guessed():
+    server = [{"id": "B", "missing": ["touchpoints"]}, {"id": "Z", "missing": ["acceptance"]}]
+    # A and B are left out of the pool; A's description has no acceptance list, and the
+    # fallback would have named it. The server did not list A, so nothing names A.
+    p = _P([_row("A"), _row("B")],
+           {"A": {"id": "A", "description": "prose only"}, "B": {"id": "B"}},
+           roster={"agents": [], "line_unready": server})
+    got = until._unready(p, "L")
+    assert got == server
+    assert "A" not in {r["id"] for r in got}
+    assert p.reads == []
+
+
+def test_an_empty_server_list_is_the_servers_verdict_not_a_cue_to_guess():
+    p = _P([_row("A")], {"A": {"id": "A", "description": "prose only"}},
+           roster={"agents": [], "line_unready": []})
+    assert until._unready(p, "L") == [] and p.reads == []
+
+
+def test_a_review_hold_is_still_named_beside_the_servers_list():
+    class _Held(_P):
+        def call(self, tool, **kw):
+            if tool == "collision_clusters":
+                return {"clusters": [{"items": ["POOLED"], "held_because": [
+                    {"by": "R-1", "held": ["H"]}]}]}
+            return super().call(tool, **kw)
+
+    p = _Held([_row("H")], {}, roster={"line_unready": [{"id": "B", "missing": ["acceptance"]}]})
+    assert until._unready(p, "L") == [{"id": "B", "missing": ["acceptance"]},
+                                      {"id": "H", "held_by": "R-1"}]
