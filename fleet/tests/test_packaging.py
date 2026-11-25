@@ -1,8 +1,9 @@
 """What this package promises about itself, made falsifiable.
 
-PRD-22 D-e and G6. Three claims live here and each one is the sort that stops being
-true quietly: the version it reports, the size of what it drags onto a laptop, and
-its separation from the backend distribution it shares a repository with.
+PRD-22 D-e and G6. Four claims live here and each one is the sort that stops being
+true quietly: the version it reports, the size of what it drags onto a laptop,
+its separation from the backend distribution it shares a repository with, and the
+per-test ceiling its own suite runs under.
 """
 
 from __future__ import annotations
@@ -27,6 +28,24 @@ FLEET_SRC = REPO / "fleet" / "src"
 # The one dependency both distributions may share. Everything else in the backend's
 # list is the reason this package is not inside `backend/`.
 ALLOWED_SHARED = {"httpx"}
+
+# The window the per-test ceiling in fleet/pyproject.toml's `[tool.pytest.ini_options]` has
+# to sit inside (GRPH-1934). A window and not the literal `600`, so retuning the ceiling
+# stays a pyproject edit. Restated here rather than imported from backend/tests/
+# test_ci_shape.py, which owns the backend's equivalent: fleet must not import the backend
+# distribution (see test_no_fleet_module_imports_the_backend), and the two floors rest on
+# different measurements.
+#   floor — above this suite's longest documented wait, a `subprocess.run(timeout=180)`
+#     around `grok mcp doctor` in tests/test_grok_seat.py (tests/test_adopt.py joins a
+#     sweeper thread at 120s). Under it a slow vendor binary becomes a red job, which is a
+#     test defect and not a hang. `timeout = 0` is pytest-timeout's own "no ceiling", so the
+#     floor refuses it as hard as an absent key does.
+#   ceiling — exclusive, and one hour: the largest bound the job-level guard in
+#     backend/tests/test_ci_shape.py allows any suite job (MAX_TIMEOUT_MINUTES = 60). At or
+#     above the job's own `timeout-minutes`, CI kills the job first and names no test — the
+#     failure the per-test ceiling exists to prevent.
+MIN_PER_TEST_SECONDS = 200
+MAX_PER_TEST_SECONDS = 3600
 
 
 def _toml(path: Path) -> dict:
@@ -218,4 +237,51 @@ def test_the_readme_ships_and_none_of_its_links_are_repo_relative():
                 if not t.startswith(("http://", "https://", "mailto:", "#"))]
     assert not relative, (
         f"fleet/README.md ships to PyPI, where these resolve to nothing: {relative}"
+    )
+
+
+# --- the ceiling this suite runs under ---------------------------------------------
+
+
+def test_the_per_test_ceiling_is_still_configured():
+    """GRPH-1934: nothing asserted that this distribution still had a per-test ceiling.
+
+    GRPH-1928 added `timeout = 600` here and `timeout = 300` to backend/pyproject.toml.
+    Reviewers measuring the backend one found that deleting it left 459 tests green at
+    rc=0, and nothing read this one either.
+
+    The silence is the trap: pytest-timeout stays installed (a dev extra here, pinned 2.4.0
+    by fleet/uv.lock), so pytest does not even warn `Unknown config option: timeout`. The
+    plugin loads, the suite goes fully green, and a hang is bounded only by the job-level
+    `timeout-minutes` in .github/workflows/ci.yml — which kills the job and names no test,
+    the behaviour GRPH-1928 was filed to remove. An absence reading as a clean result.
+
+    This lives in the fleet suite rather than beside the backend's guard in
+    backend/tests/test_ci_shape.py because that is the only place it can fire: the `fleet`
+    paths-filter includes `fleet/**`, while the `backend` filter does not list
+    fleet/pyproject.toml, so a fleet-only PR that deleted the ceiling would never run the
+    backend suite. The constants above are restated rather than imported for the same
+    reason — see MIN_PER_TEST_SECONDS.
+
+    Sabotage: delete `timeout = 600` from fleet/pyproject.toml; set it to 0; set it to
+    7200; quote it (`timeout = "600"`).
+    """
+    ini = _toml(FLEET_PYPROJECT).get("tool", {}).get("pytest", {}).get("ini_options")
+    assert ini, (
+        "fleet/pyproject.toml has no [tool.pytest.ini_options], so the per-test ceiling is "
+        "gone with it (GRPH-1934)."
+    )
+
+    timeout = ini.get("timeout")
+    assert timeout is not None, (
+        "fleet/pyproject.toml's [tool.pytest.ini_options] sets no `timeout`, so there is no "
+        "per-test ceiling: a hung test is bounded only by the job-level `timeout-minutes`, "
+        "which kills the job and names no test (GRPH-1934). pytest-timeout is still "
+        "installed, so pytest warns about nothing and the suite stays green without it."
+    )
+    assert isinstance(timeout, int) and MIN_PER_TEST_SECONDS <= timeout < MAX_PER_TEST_SECONDS, (
+        f"fleet/pyproject.toml sets timeout = {timeout!r}, which is not an integer second "
+        f"count in {MIN_PER_TEST_SECONDS}..<{MAX_PER_TEST_SECONDS}. 0 is pytest-timeout's own "
+        "no-ceiling; at or above the job-level `timeout-minutes` the job dies first and names "
+        "no test (see MIN_PER_TEST_SECONDS / MAX_PER_TEST_SECONDS)."
     )
