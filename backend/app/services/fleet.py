@@ -6857,9 +6857,23 @@ def park(db: Session, attempt, *, agent_id: str | None = None,
 #: goes back to `in_progress` for its builder, with a directive naming the files.
 #: GRPH-1891 adds `unpushed`: the drain found a review item's branch only in its own clone
 #: and could not push it. Not `withheld`, whose note says the branch WAS pushed.
+#: GRPH-1021 adds `build_outcome`: what the child left at reap, posted for every reaped item
+#: so the three endings — committed, built-and-stranded, nothing built — are told apart
+#: on the item itself. The reap disposition (`only_credential`, `salvaged`) stays the
+#: wave's bookkeeping and keeps its meaning; this is the fact that reaches the ITEM.
 OBSERVATION_KINDS = ("cut_from", "pr_opened", "salvage", "withheld", "merged_trunk",
                      "behind_conflict", "undeclared_warned", "undeclared_held",
-                     "rule_would_have", "unpushed")
+                     "rule_would_have", "unpushed", "build_outcome")
+
+#: The prefix of every `build_outcome` note (GRPH-1021), followed by one of
+#: `BUILD_OUTCOMES`. A reader finds the outcome by this marker, not by the prose after it.
+BUILD_OUTCOME_MARKER = "gbfleet: build outcome: "
+
+#: `committed` — the branch carries a commit beyond its base and the child left the tree
+#: clean. `stranded` — the child exited on a dirty tree: it wrote work and never committed
+#: it (salvaged onto a branch nobody proposes, or left in the tree). `nothing` — no commit
+#: beyond the base and nothing left in the tree.
+BUILD_OUTCOMES = ("committed", "stranded", "nothing")
 OBSERVATION_LATER = ("pushed_head",)
 
 _CUT_BASE = re.compile(r"^[0-9a-f]{7,40}$")
@@ -7052,8 +7066,37 @@ def seat_supervision_warning(api_key) -> str | None:
             f"{SETUP_KEY_FIX}, and mint the seats there")
 
 
+def _build_outcome_receipt(*, branch: str, commit: str | None, outcome: str | None,
+                           reason: str | None) -> dict:
+    """The note naming what a reaped child left behind (GRPH-1021).
+
+    Three endings used to read the same from the item: built and committed, built and
+    never committed (salvaged onto a branch nobody proposes), and nothing built at all.
+    The outcome word comes straight after `BUILD_OUTCOME_MARKER` so it is read, not
+    inferred from the presence or absence of some other note.
+    """
+    named = (outcome or "").strip()
+    if named not in BUILD_OUTCOMES:
+        raise ObservationError(
+            422, f"build_outcome names one of {', '.join(BUILD_OUTCOMES)}")
+    short = (commit or "").strip()[:12]
+    at = f" `{short}`" if short else ""
+    if named == "committed":
+        detail = f"the child committed its work onto `{branch}`{at}"
+    elif named == "stranded":
+        detail = (f"the child exited on a dirty tree; its uncommitted work is on `{branch}`"
+                  f"{at} and is not proposed as a PR")
+    else:
+        detail = f"`{branch}` carries no commit beyond its base and the tree held no work"
+    why = (reason or "").strip()
+    if why:
+        detail += f" ({why})"
+    return {"kind": "note", "detail": f"{BUILD_OUTCOME_MARKER}{named} — {detail}"}
+
+
 def _observation_receipt(kind: str, *, branch: str, base: str | None, url: str | None,
-                         commit: str | None, reason: str | None) -> dict:
+                         commit: str | None, reason: str | None,
+                         outcome: str | None = None) -> dict:
     """The note or url receipt, composed here so the caller cannot supply one.
 
     A child holding the wave key could otherwise post an attestation-shaped receipt.
@@ -7096,6 +7139,9 @@ def _observation_receipt(kind: str, *, branch: str, base: str | None, url: str |
         return {"kind": "note", "detail": (
             f"gbfleet: `{branch}` was never pushed and the push failed; "
             f"not proposed as a PR — {why}")}
+    if kind == "build_outcome":
+        return _build_outcome_receipt(branch=branch, commit=commit, outcome=outcome,
+                                      reason=reason)
     if kind == "merged_trunk":
         why = (reason or "").strip()
         if not why:
@@ -7363,7 +7409,8 @@ def record_observation(db: Session, api_key, *, item_key: str, kind: str,
     if kind in OBSERVATION_KINDS and not cleaned:
         raise ObservationError(422, "an observation names the branch")
     receipt = _observation_receipt(
-        kind, branch=cleaned, base=base, url=url, commit=commit, reason=reason)
+        kind, branch=cleaned, base=base, url=url, commit=commit, reason=reason,
+        outcome=outcome)
     item.evidence = items_svc.append_evidence(item.evidence, [receipt])
     if kind == "behind_conflict":
         _send_back_behind(db, item, branch=cleaned, reason=(reason or "").strip())
