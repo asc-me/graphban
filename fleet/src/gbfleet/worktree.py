@@ -986,8 +986,13 @@ def registered_worktrees(repo: Path) -> set[Path]:
     }
 
 
-def orphans(repo: Path) -> list[Orphan]:
+def orphans(repo: Path, base: str = "") -> list[Orphan]:
     """Every `gb/` branch with no worktree on it.
+
+    `salvaged` and `item_keys` are read from the tip subject unless `base` is given; then
+    every commit from `base` to the tip is read (GRPH-1022), so a salvage buried under a
+    later real commit on a resumed worktree is still a salvage. `up`'s resume passes no base:
+    it resumes only a branch whose tip is the salvage.
 
     Mechanical and complete: which branches exist, and which are unattended. What is
     deliberately NOT here is any judgement about whether a half-finished diff is worth
@@ -1009,13 +1014,18 @@ def orphans(repo: Path) -> list[Orphan]:
         branch, commit, when, subject = (row.split("\t", 3) + ["", "", "", ""])[:4]
         if branch in attached:
             continue
+        salvaged, keys = is_salvage_subject(subject), _item_keys(subject)
+        if base:
+            history = branch_history(repo, branch, base)
+            salvaged = history.carries_salvage
+            keys = tuple(dict.fromkeys(k for _sha, ks in history.salvages for k in ks))
         found.append(
             Orphan(
                 branch=branch,
                 commit=commit,
                 subject=subject,
-                salvaged=subject.startswith("WIP: salvaged by gbfleet"),
-                item_keys=_item_keys(subject),
+                salvaged=salvaged,
+                item_keys=keys,
                 committed_at=int(when) if str(when).isdigit() else 0,
             )
         )
@@ -1214,6 +1224,104 @@ def is_salvage_subject(subject: str) -> bool:
     `salvage_message` is the only writer.
     """
     return (subject or "").startswith("WIP: salvaged by gbfleet")
+
+
+# ---- a branch judged by its whole history, not its tip (GRPH-1022) ----------------------------
+#
+# `is_salvage_subject(tip)` is the right question for a branch a reap just wrote, and the wrong
+# one for a RESUMED worktree. `gb/p47c-1` read clean at its tip (GRPH-981's finished work) with
+# GRPH-961's salvage buried beneath it, so the GRPH-926 suppression never fired and a PR from it
+# would have carried another item's unreviewed WIP. The mirror of the bug GRPH-926 fixed: there
+# a salvage hid real work, here real work launders a salvage.
+
+
+@dataclass(frozen=True)
+class BranchHistory:
+    """Every first-parent commit between a base and a branch tip, read for salvage and items."""
+
+    #: `(sha, subject)` oldest first, merges excluded.
+    commits: tuple[tuple[str, str], ...] = ()
+    #: `(sha, item keys)` of every salvage commit among them, oldest first. Keys are empty for
+    #: a salvage that named no item (pre-D9, or a child that held nothing).
+    salvages: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    #: Every item the history names — salvage `items=` keys and ids in real subjects, in order.
+    items: tuple[str, ...] = ()
+
+    @property
+    def carries_salvage(self) -> bool:
+        return bool(self.salvages)
+
+    @property
+    def bare_salvage(self) -> bool:
+        """Nothing but salvage commits: the case GRPH-926 never proposes."""
+        return bool(self.commits) and len(self.salvages) == len(self.commits)
+
+    @property
+    def real_subjects(self) -> list[str]:
+        return [s for _sha, s in self.commits if not is_salvage_subject(s)]
+
+
+def branch_history(repo: Path | str, branch: str, base: str,
+                   items=()) -> BranchHistory:
+    """`branch` read commit by commit from `base` (GRPH-1022). Empty when unreadable.
+
+    First parent and no merges, for the reason `attributed_commits` gives: a merge of the
+    trunk into the branch would otherwise walk the trunk's subjects, which name other items.
+
+    `items` are the items a caller is about to propose this branch for. They count as named
+    even when no subject says them — `gb/p47c-1`'s tip names its PRD, not GRPH-981 — and their
+    project tags are what an id in a real subject is read with, alongside the tags of every
+    salvage key, so `PRD-47` in prose is never taken for an item.
+    """
+    if not base:
+        return BranchHistory()
+    done = subprocess.run(
+        ["git", "log", "--first-parent", "--no-merges", "--reverse", "--format=%H%x09%s",
+         f"{base}..{branch}"],
+        cwd=str(repo), capture_output=True, text=True)
+    if done.returncode != 0:
+        return BranchHistory()
+    commits: list[tuple[str, str]] = []
+    salvages: list[tuple[str, tuple[str, ...]]] = []
+    named: list[str] = [i for i in dict.fromkeys(items) if i]
+    for line in (done.stdout or "").splitlines():
+        sha, _, subject = line.partition("\t")
+        if not sha:
+            continue
+        commits.append((sha, subject))
+        if is_salvage_subject(subject):
+            keys = _item_keys(subject)
+            salvages.append((sha, keys))
+            named += [k for k in keys if k not in named]
+    tags = {_tag(i) for i in named} - {""}
+    for _sha, subject in commits:
+        if not is_salvage_subject(subject):
+            named += [i for i in named_items(subject, tags) if i not in named]
+    return BranchHistory(commits=tuple(commits), salvages=tuple(salvages), items=tuple(named))
+
+
+def salvage_refusal(history: BranchHistory, items=()) -> str:
+    """Why a branch carrying a salvage must not be proposed for `items`, or "" (GRPH-1022).
+
+    Only a branch that CARRIES a salvage is judged here; real-work-only branches keep the
+    GRPH-1407 split and foreign-commit checks. A salvage of the proposed item, finished by a
+    later real commit, is the ordinary resume and proposes. Refused:
+
+    * the history names more than one item — the salvage is another item's WIP riding under
+      this one's title, and the reason names every item so a person knows what to split;
+    * a salvage that names no item — nothing shows it is this item's work.
+    """
+    if not history.carries_salvage:
+        return ""
+    if len(history.items) > 1:
+        shas = ", ".join(sha[:12] for sha, _ in history.salvages)
+        return (f"carries salvage {shas} and names more than one item "
+                f"({', '.join(history.items)}); one PR per item, so split it by hand")
+    unnamed = [sha[:12] for sha, keys in history.salvages if not keys]
+    if unnamed:
+        return (f"carries salvage {', '.join(unnamed)} that names no item; "
+                f"nothing shows it is {', '.join(items) or 'this branch'}'s work")
+    return ""
 
 
 def is_ancestor(repo: Path, ancestor: str, commit: str) -> bool:

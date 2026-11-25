@@ -3400,6 +3400,15 @@ def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
                 own = branch
             _record_salvage_receipt(wave, client, [item], own, _branch_head(repo, own))
         return
+    # GRPH-1022: the tip is not the whole branch. A resumed worktree's real commit on top of
+    # another item's salvage reads clean above; judged commit by commit it does not.
+    buried = wt_mod.salvage_refusal(wt_mod.branch_history(repo, branch, base, items), items)
+    if buried:
+        wave.proposed[branch] = propose_mod.Proposed(branch=branch, skipped=True, reason=buried)
+        wave.unproposed[branch] = buried
+        wave.failures.append(f"{branch}: not proposed — {buried}")
+        _record_withheld(wave, client, items, branch, buried)
+        return
     _merge_behind(wave, repo, branch, base, items, client=client)
     undeclared_mode = _undeclared_mode(client) if wave.undeclared.get(branch) else "hold"
     refused = _refuse_proposal(wave, branch, undeclared_mode=undeclared_mode)
@@ -3450,6 +3459,96 @@ def _carries_another_item(repo: Path, branch: str, base: str, items: list[str]) 
     shas = ", ".join(sha[:12] for sha, _ in foreign)
     return (f"proposed for {item} but carries commits for {', '.join(others)} ({shas}); "
             f"one PR per item, so {item}'s commits go on a branch of their own")
+
+
+@dataclass(frozen=True)
+class Recovered:
+    """What `recover_branch` did with a salvaged-but-real branch (GRPH-1022)."""
+
+    branch: str
+    item: str
+    #: The branch the rebased commits were put on, or "" when nothing was cut.
+    recovered: str = ""
+    url: str = ""
+    #: Why it was refused or not proposed. "" with a url is the success.
+    reason: str = ""
+    #: Source commits replayed, oldest first.
+    commits: tuple[str, ...] = ()
+    salvages: tuple[str, ...] = ()
+    dry_run: bool = False
+
+
+def recover_branch(repo: Path, branch: str, item: str, *, base: str = "",
+                   dry_run: bool = False) -> Recovered:
+    """Rebase `branch` onto the trunk and propose it for `item` (GRPH-1022).
+
+    The route back for work that ended on a salvage branch. GRPH-926 is untouched: no reap,
+    takeover or wave ever proposes a salvage. This is a person naming the item a branch's
+    work belongs to and asking for it to be reviewed, which is the act the automatic path
+    must never perform on its own.
+
+    The branch is judged by every commit from where it left the trunk to its tip, never by
+    its tip subject. One that names more than one item is refused and the reason names
+    them — `gb/p47c-1`, GRPH-981's finished work on top of GRPH-961's salvage, is that case.
+    The source branch is never moved: the commits are replayed onto the trunk on a new
+    `gb/recover--<item>` branch, which is what is pushed and proposed. The PR is titled from
+    the first real commit, never from a `WIP: salvaged` subject, and its body lists every
+    salvage commit it carries, because none of them was ever reviewed.
+    """
+    remote = wt_mod.remote_for(repo)
+    base = base or (wt_mod.default_ref(repo, remote) if remote else "")
+    if not base:
+        return Recovered(branch, item, reason="no trunk to rebase onto (no remote default ref; "
+                                              "pass --base)")
+    if not item:
+        return Recovered(branch, item, reason="name the item this branch's work belongs to")
+    tip = wt_mod._commit_sha(repo, branch)
+    if not tip and remote:
+        tip = wt_mod._commit_sha(repo, f"{remote}/{branch}")
+    if not tip:
+        return Recovered(branch, item, reason=f"{branch} is not a branch this clone has")
+    cut = wt_mod._git(repo, "merge-base", base, tip, check=False).strip()
+    if not cut:
+        return Recovered(branch, item, reason=f"{branch} shares no history with {base}")
+    history = wt_mod.branch_history(repo, tip, cut, [item])
+    commits = tuple(sha for sha, _ in history.commits)
+    salvages = tuple(sha for sha, _ in history.salvages)
+    if not commits:
+        return Recovered(branch, item, reason=f"{branch} carries nothing beyond {base}")
+    if len(history.items) > 1:
+        return Recovered(
+            branch, item, commits=commits, salvages=salvages,
+            reason=(f"{branch}'s commits name more than one item "
+                    f"({', '.join(history.items)}); one PR per item, so split it by hand "
+                    f"before recovering any of it"))
+    if dry_run:
+        return Recovered(branch, item, commits=commits, salvages=salvages, dry_run=True)
+    sha, why = propose_mod.replay_onto(repo, base, list(commits), item=item)
+    if why:
+        return Recovered(branch, item, commits=commits, salvages=salvages,
+                         reason=f"does not rebase onto {base}: {why}")
+    name = f"{wt_mod.BRANCH_PREFIX}recover{wt_mod.ITEM_BRANCH_SEP}{item}"
+    if wt_mod.branch_exists(repo, name) and wt_mod._commit_sha(repo, name) != sha:
+        name = f"{name}-{sha[:8]}"
+    if not wt_mod.branch_exists(repo, name):
+        wt_mod._git(repo, "branch", name, sha)
+    pushed = wt_mod.push_branch(repo, name, base)
+    if not pushed.ok:
+        return Recovered(branch, item, recovered=name, commits=commits, salvages=salvages,
+                         reason=f"rebased onto {name} but not pushed: {pushed.reason}")
+    real = history.real_subjects
+    subj = real[0] if real else f"recovered salvaged work from {branch}"
+    title, body = propose_mod.describe(name, [item], subj, attest=True)
+    body = body.rstrip() + "\n\n" + (
+        f"Recovered from `{branch}` at `{tip[:12]}` by `gbfleet recover`, replayed onto "
+        f"`{base}` ({len(commits)} commit(s)). The source branch was not moved.\n")
+    if salvages:
+        body += ("\nCarries salvage commit(s) " + ", ".join(f"`{s[:12]}`" for s in salvages)
+                 + ": work a reap committed when its child stopped, which nobody has "
+                   "reviewed. Read every commit, not only the last.\n")
+    got = propose_mod.propose(repo, name, base, title=title, body=body, head=sha, items=[item])
+    return Recovered(branch, item, recovered=name, url=got.url, commits=commits,
+                     salvages=salvages, reason="" if got.url else (got.reason or "not proposed"))
 
 
 def _recorded_merge(client: Graphban | None, item_id: str) -> str:

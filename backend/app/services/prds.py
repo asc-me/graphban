@@ -5689,6 +5689,10 @@ def apply_link_overrides(
 _INFERRED_LINK_CONFIDENCE = 0.7
 
 
+#: The heading of the offered piece that carries a split's unplaced clauses (GRPH-1946).
+_REMAINDER_HEADING = "remainder"
+
+
 def _remainder_piece(prd: Prd, pr: dict, left: list[dict], context: str) -> dict:
     """One item for the suggested pieces a partial split did not name.
 
@@ -5724,9 +5728,12 @@ def _remainder_piece(prd: Prd, pr: dict, left: list[dict], context: str) -> dict
             if path not in seen_paths:
                 seen_paths.add(path)
                 touchpoints.append(path)
-    if not touchpoints and clauses:
-        # Only unplaced section-level clauses (GRPH-1938): no piece claimed them, so the
-        # section's own paths are where they land — over-reserved, the safe direction.
+    if pr.get("_level_clauses"):
+        # Unplaced section-level clauses (GRPH-1938): no piece claimed them, so the
+        # section's own paths are where they land — over-reserved, the safe direction —
+        # with any piece folded in keeping its own (GRPH-1946).
+        touchpoints = list(dict.fromkeys([*(pr.get("touchpoints") or []), *touchpoints]))
+    elif not touchpoints and clauses:
         touchpoints = list(pr.get("touchpoints") or [])
     no_clause = not clauses and not parse_acceptance(body)[0]
     return {
@@ -5743,7 +5750,8 @@ def _remainder_piece(prd: Prd, pr: dict, left: list[dict], context: str) -> dict
 def _strip_split_scratch(proposals: list[dict]) -> None:
     """Drop the piece text the filing loop needed. It is not part of the proposal."""
     for pr in proposals:
-        for key in ("_preamble", "_level_clauses", "_gate_text", "_design_text", "_gate_blocker"):
+        for key in ("_preamble", "_level_clauses", "_remainder_pieces", "_gate_text",
+                    "_design_text", "_gate_blocker"):
             pr.pop(key, None)
         for sub in pr.get("sub_items") or []:
             sub.pop("_gbody", None)
@@ -5808,7 +5816,9 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
     then, which is not the same answer as an empty list.
     A partial list also files one remainder carrying every other suggested piece's body
     and clauses. Coverage counts by section, so the omitted pieces would otherwise never
-    be offered again. ``split_remainders`` names those headings. ``unfiled_pieces`` lists
+    be offered again. ``split_remainders`` names those headings. Section-level clauses no
+    piece's text exercises are offered on a ``remainder`` sub-item in the dry run and filed
+    on it at create; a clause-less piece is never offered (GRPH-1946). ``unfiled_pieces`` lists
     any suggested piece whose clauses landed on no created item; it is null when
     ``create`` is false, because nothing was filed and an empty list would read as a
     clean pass. A section dependency is written onto each filed piece."""
@@ -5916,6 +5926,7 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
         # the section was not split — nothing was distributed then.
         unplaced: list[str] | None = None
         folded: list[str] | None = None
+        remainder_pieces: list[dict] = []
         split_framing = preamble
         no_partition = ""
         if size["oversized"] and len(real) >= 2:
@@ -5965,14 +5976,27 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             # the others ("EXTERNAL states configuration, not safety"), not work: offered,
             # it is a child that races its siblings' files against no acceptance. It is
             # carried as framing on every piece that remains.
-            kept = [d for d in drafts if d["acceptance"] or d["own_tp"]]
-            folded = [d["heading"] for d in drafts if not (d["acceptance"] or d["own_tp"])]
-            if len(kept) < 2:
+            # GRPH-1946. A path of its own does not make a clause-less piece reviewable:
+            # it is never offered. When the split has unplaced clauses it rides on the
+            # remainder that carries them (its text and its paths are work); otherwise
+            # it is framing like the rest.
+            kept = [d for d in drafts if d["acceptance"]]
+            to_remainder = [d for d in drafts
+                            if unplaced and not d["acceptance"] and d["own_tp"]]
+            folded = [d["heading"] for d in drafts
+                      if not d["acceptance"] and d not in to_remainder]
+            # The unplaced clauses are offered as one more piece, so they land on an item
+            # in the dry run as well as at filing (GRPH-1946), and it counts as a piece.
+            offered = len(kept) + (1 if unplaced else 0)
+            if offered < 2:
                 no_partition = (
                     f"{size['oversized_reason']}; only {len(kept)} of {len(drafts)} pieces "
-                    "has a clause or a touchpoint of its own, so a split partitions nothing"
+                    "has a clause of its own"
+                    + (" (plus a remainder for the clauses none restates)" if unplaced else "")
+                    + ", so a split partitions nothing"
                 )
-            elif len({(tuple(d["acceptance"]), tuple(sorted(d["tps"]))) for d in kept}) == 1:
+            elif len(kept) >= 2 and len(
+                    {(tuple(d["acceptance"]), tuple(sorted(d["tps"]))) for d in kept}) == 1:
                 no_partition = (
                     f"{size['oversized_reason']}; every piece would carry the same "
                     "clauses and the same touchpoints, so a split partitions nothing"
@@ -5982,6 +6006,7 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                 # path. `split_refused` says why it did not split.
                 unplaced = folded = None
                 kept = []
+                to_remainder = []
             framing = "\n\n".join(
                 f"### {d['heading']}" + (f"\n{d['gbody']}" if d["gbody"] else "")
                 for d in drafts if d["heading"] in (folded or []))
@@ -6008,6 +6033,40 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                     # Piece text the remainder is built from. Stripped before the reply.
                     "_gbody": gbody,
                     "_own_clauses": sub_clauses,
+                })
+            if unplaced:
+                # GRPH-1946. The clauses no piece's text exercises, offered as the piece
+                # that will file them, with any clause-less piece that had paths of its
+                # own. Filing builds the same remainder from the same scratch.
+                for d in to_remainder:
+                    rem_tps = list(d["tps"])
+                    if split_ui:
+                        rem_tps = [t for t in rem_tps if not _is_web_touchpoint(t)]
+                    remainder_pieces.append({
+                        "heading": d["heading"], "_gbody": d["gbody"],
+                        "_own_clauses": [], "touchpoints": rem_tps,
+                    })
+                    claimed_by_pieces.append(list(d["tps"]))
+                rem = _remainder_piece(prd, {
+                    "section": p["section"], "touchpoints": tps,
+                    "_preamble": split_framing, "_level_clauses": list(unplaced),
+                    "_gate_text": gate_text, "_design_text": design_text,
+                    "_gate_blocker": gate["blocker"] if gate else "",
+                }, remainder_pieces, context)
+                sub_items.append({
+                    "heading": _REMAINDER_HEADING,
+                    "title": rem["title"],
+                    "clauses": list(unplaced),
+                    "touchpoints": rem["touchpoints"],
+                    "touchpoints_inherited": not remainder_pieces,
+                    "description": rem["description"],
+                    "blocker": rem["blocker"],
+                    # Filed whether or not `splits` names it: its clauses are on no other
+                    # piece. `carries` names the clause-less pieces folded into it.
+                    "remainder": True,
+                    "carries": [d["heading"] for d in remainder_pieces],
+                    "_gbody": "",
+                    "_own_clauses": list(unplaced),
                 })
         # Null when the section was not split: every given path is on the section's own
         # item then, and an empty list would read as "distributed, nothing left over".
@@ -6076,10 +6135,16 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             # time, once `splits` says which pieces were not named.
             "_preamble": split_framing,
             "_level_clauses": list(unplaced or []),
+            "_remainder_pieces": remainder_pieces,
             "_gate_text": gate_text,
             "_design_text": design_text,
             "_gate_blocker": gate["blocker"] if gate else "",
         })
+        # GRPH-1946. A clause unplaced inside a split and carried by no offered piece
+        # belongs to no item; the top-level count says so rather than reading 0.
+        for clause in unplaced or []:
+            if not any(clause in s["clauses"] for s in sub_items) and clause not in unassigned:
+                unassigned.append(clause)
         if split_ui and design is not None:
             ui_items.append({
                 "section": p["section"],
@@ -6128,11 +6193,15 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
         behaviour_ids: dict[str, list[str]] = {}
         unfiled_pieces = []
         for pr in proposals:
+            pieces = [s for s in pr["sub_items"] if not s.get("remainder")]
             accepted = _accepted_headings(
-                splits, pr["section"], [s["heading"] for s in pr["sub_items"]])
+                splits, pr["section"], [s["heading"] for s in pieces])
             if accepted:
-                chosen = [s for s in pr["sub_items"] if s["heading"] in accepted]
-                left = [s for s in pr["sub_items"] if s["heading"] not in accepted]
+                chosen = [s for s in pieces if s["heading"] in accepted]
+                # The offered remainder is rebuilt below from the same scratch, with
+                # whatever else this call did not name (GRPH-1946).
+                left = [s for s in pieces if s["heading"] not in accepted]
+                left = [*left, *pr["_remainder_pieces"]]
                 # A partial list used to file only `chosen`. One item on the section is
                 # enough for coverage to skip it next time, so Two and Three were gone
                 # and the reply did not say so.

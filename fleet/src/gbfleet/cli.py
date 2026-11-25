@@ -497,6 +497,28 @@ def build_parser() -> argparse.ArgumentParser:
     chk.add_argument("--item", default="", help="the item id, for the printed update_item call")
     chk.add_argument("--path", default=".", help="the checkout to measure (default: here)")
 
+    rec = sub.add_parser(
+        "recover",
+        help="rebase a salvaged-but-real branch onto the trunk and propose it for one item",
+        description=(
+            "The route back for work left on a salvage branch (GRPH-1022). No wave ever proposes\n"
+            "a salvage (GRPH-926); this is a person naming the item a branch's work belongs to.\n"
+            "The branch is judged by every commit since it left the trunk, not by its tip: one\n"
+            "whose commits name more than one item is refused, naming them. The source branch\n"
+            "is never moved — its commits are replayed onto the trunk on gb/recover--<item>,\n"
+            "which is pushed and opened as a draft PR. With no --branch, lists every unattended\n"
+            "gb/ branch that carries a salvage anywhere in its history."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    rec.add_argument("--branch", default="", help="the branch to recover")
+    rec.add_argument("--item", default="", help="the item its work belongs to")
+    rec.add_argument("--repo", default=".", help="the clone (default: here)")
+    rec.add_argument("--base", default="",
+                     help="the trunk ref to rebase onto (default: the remote's default branch)")
+    rec.add_argument("--dry-run", action="store_true",
+                     help="judge the branch and print what would be replayed; change nothing")
+
     ent = sub.add_parser(
         "entitlement",
         help="register the accounts this machine can launch (add, list, remove)",
@@ -1225,6 +1247,14 @@ def _shared_servers(args) -> dict:
     Unions with the project's `.gbfleet/servers` (GRPH-998), read from the repository ROOT:
     `--repo` may be a subdirectory, and reading beside it would find nothing and grant nothing
     — a mis-pointed flag passing as a project that listed no servers.
+
+    The files are the ones the child harness loads (GRPH-1038): `~/.grok/config.toml` and
+    then `~/.claude.json` for `--adapter grok` (grok merges both; its own stanza wins),
+    `~/.claude.json` for claude, and Claude's file again for an adapter with no known
+    user-level config. A command with no `--adapter` (stdio `mcp`) stays
+    on that default. Passing the paths in here, rather than inside `grants`, is the call
+    a wave actually makes — a correct `source_for` that this function never asks is a
+    check that still refuses grok for a missing Claude server.
     """
     from . import mcpshare
 
@@ -1234,7 +1264,12 @@ def _shared_servers(args) -> dict:
         print(f"gbfleet: {exc}", file=sys.stderr)
         raise SystemExit(2)
     try:
-        return mcpshare.grants(list(getattr(args, "mcp_server", []) or []), root)
+        adapter = getattr(args, "adapter", "") or ""
+        return mcpshare.grants(
+            list(getattr(args, "mcp_server", []) or []),
+            root,
+            mcpshare.source_for(adapter),
+        )
     except mcpshare.ShareRefused as exc:
         print(f"gbfleet: {exc}", file=sys.stderr)
         raise SystemExit(2)
@@ -1548,6 +1583,38 @@ def _generated_decision(client) -> tuple[tuple[str, ...], str]:
     # built-in list; an observing one still has to be swapped for it here.
     allowed = DEFAULT_GENERATED if observing else configured
     return allowed, why
+
+
+def _recover(args) -> int:
+    """`gbfleet recover` (GRPH-1022). Exit 0 proposed (or listed / dry run), 1 refused."""
+    from . import supervisor as sup
+    from . import worktree as wt_mod
+
+    repo = Path(args.repo).resolve()
+    if not args.branch:
+        remote = wt_mod.remote_for(repo)
+        base = args.base or (wt_mod.default_ref(repo, remote) if remote else "")
+        if not base:
+            print("gbfleet recover: no trunk to judge against; pass --base", file=sys.stderr)
+            return 2
+        rows = [o for o in wt_mod.orphans(repo, base=base) if o.salvaged]
+        for o in rows:
+            print(f"{o.branch}\t{o.commit[:12]}\tsalvage of "
+                  f"{', '.join(o.item_keys) or '(no item named)'}\t{o.subject}")
+        if not rows:
+            print(f"no unattended gb/ branch carries a salvage beyond {base}")
+        return 0
+    got = sup.recover_branch(repo, args.branch, args.item, base=args.base,
+                             dry_run=args.dry_run)
+    if got.reason:
+        print(f"gbfleet recover: {args.branch}: {got.reason}", file=sys.stderr)
+        return 1
+    if got.dry_run:
+        print(f"{args.branch} -> {args.item}: would replay {len(got.commits)} commit(s), "
+              f"{len(got.salvages)} of them salvage")
+        return 0
+    print(f"{args.branch} -> {got.recovered}: {got.url}")
+    return 0
 
 
 def _check_touchpoints(args) -> int:
@@ -2021,6 +2088,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "check-touchpoints":
         return _check_touchpoints(args)
+
+    if args.command == "recover":
+        return _recover(args)
 
     if args.command == "entitlement":
         return _entitlement(args)
