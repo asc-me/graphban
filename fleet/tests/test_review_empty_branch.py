@@ -114,6 +114,76 @@ def test_a_branch_with_commits_keeps_the_hold(git_repo):
     assert until._empty_branch_reason(row, git_repo, "main") == ""
 
 
+def _merged_branch(git_repo: Path, name: str) -> str:
+    """A branch with one commit, merged into main with a merge commit, then main moves on."""
+    _git(git_repo, "checkout", "-q", "-b", name)
+    (git_repo / "merged.txt").write_text("work\n", encoding="utf-8")
+    _git(git_repo, "add", "merged.txt")
+    _git(git_repo, "commit", "-qm", "work")
+    tip = _git(git_repo, "rev-parse", "HEAD")
+    _git(git_repo, "checkout", "-q", "main")
+    _git(git_repo, "merge", "-q", "--no-ff", "-m", "merge", name)
+    (git_repo / "later.txt").write_text("later\n", encoding="utf-8")
+    _git(git_repo, "add", "later.txt")
+    _git(git_repo, "commit", "-qm", "later")
+    return tip
+
+
+class _Recorder:
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def call(self, tool, **kw):
+        self.calls.append((tool, kw))
+        return {"id": kw.get("id")}
+
+
+def test_a_merged_branch_with_a_commit_receipt_is_not_bounced(git_repo):
+    """GRPH-1408 offers a git-merged, unsigned item for review. Its branch counts 0
+    beyond main, like an empty one, but a commit receipt says work existed."""
+    tip = _merged_branch(git_repo, "gb/merged")
+    assert int(_git(git_repo, "rev-list", "--count", "main..gb/merged")) == 0
+    row = {
+        "id": "GRPH-1408",
+        "branch": "gb/merged",
+        "evidence": [{"kind": "note", "detail": "already in main"},
+                     {"kind": "attestation", "commit": tip, "branch": "gb/merged"}],
+    }
+    assert until._empty_branch_reason(row, git_repo, "main") == ""
+    assert until._renew_review_hold(row, git_repo, "main") is True
+    planner = _Recorder()
+    kept = until._release_empty_branches(planner, [row], git_repo, "main", "GRPH-P1")
+    assert kept == [row]
+    assert planner.calls == []
+
+
+def test_a_merged_branch_with_a_pr_is_not_bounced(git_repo):
+    """A PR merged by hand before sign-off: no receipt yet, but the item's PR."""
+    _merged_branch(git_repo, "gb/by-hand")
+    row = {"id": "GRPH-2", "branch": "gb/by-hand", "evidence": [],
+           "pr": "https://github.com/o/r/pull/9"}
+    planner = _Recorder()
+    kept = until._release_empty_branches(planner, [row], git_repo, "main", "GRPH-P1")
+    assert kept == [row]
+    assert planner.calls == []
+
+
+def test_a_stale_receipt_from_an_earlier_attempt_does_not_hold_a_recut_branch(git_repo):
+    """A bounced item's branch cut again from main keeps its old receipt in evidence.
+    That commit is not in the new branch's history, so the empty branch is released."""
+    _git(git_repo, "checkout", "-q", "-b", "gb/old")
+    (git_repo / "old.txt").write_text("old\n", encoding="utf-8")
+    _git(git_repo, "add", "old.txt")
+    _git(git_repo, "commit", "-qm", "old attempt")
+    old = _git(git_repo, "rev-parse", "HEAD")
+    _git(git_repo, "checkout", "-q", "main")
+    _git(git_repo, "branch", "-D", "gb/old")
+    _git(git_repo, "branch", "gb/recut")
+    row = {"id": "GRPH-3", "branch": "gb/recut",
+           "evidence": [{"kind": "attestation", "commit": old, "branch": "gb/recut"}]}
+    assert "no commits" in until._empty_branch_reason(row, git_repo, "main")
+
+
 def test_an_unreadable_branch_is_not_treated_as_empty(git_repo):
     row = {"id": "GRPH-1", "branch": "gb/not-fetched"}
     assert until._renew_review_hold(row, git_repo, "main") is True

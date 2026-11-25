@@ -4199,7 +4199,34 @@ def _empty_branch_reason(row: dict, repo: Path, base: str) -> str:
         return ""
     if wt_mod.commits_beyond_base(repo, branch, trunk) > 0:
         return ""
+    # 0 beyond the base is also what a MERGED branch counts (GRPH-983 point 1), and
+    # GRPH-1408 puts a git-merged, unsigned item in review on purpose. Ancestry is
+    # necessary, not sufficient: a receipt that work existed on this branch keeps it.
+    if _work_receipt(row, repo, branch):
+        return ""
     return f"{item}: {branch} has no commits beyond {trunk}"
+
+
+def _work_receipt(row: dict, repo: Path, branch: str) -> str:
+    """The receipt that says `branch` carried work, or "" when there is none (GRPH-1843).
+
+    The item's PR, or a commit-bearing receipt about this branch whose commit is in
+    the branch's history. A receipt left by an earlier attempt on a branch that was
+    cut again from the base is not in its history, so it does not hold the new,
+    empty branch.
+    """
+    pr = str(row.get("pr") or "").strip()
+    if pr:
+        return f"pr {pr}"
+    for entry in row.get("evidence") or []:
+        if not isinstance(entry, dict):
+            continue
+        commit = str(entry.get("commit") or "").strip()
+        if not commit or not _attested_here(entry, branch):
+            continue
+        if wt_mod.is_ancestor(repo, commit, branch):
+            return f"commit receipt {commit}"
+    return ""
 
 
 def _renew_review_hold(row: dict, repo: Path, base: str) -> bool:
