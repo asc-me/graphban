@@ -1232,10 +1232,15 @@ def test_p92_real_body_files_a_touchpoint_for_every_section(client, auth, monkey
     # The marker is not a constant: one piece resolved its own path, another could not and
     # says it borrowed the section's. A piece that borrowed carries exactly the section's.
     assert borrowed and resolved, (sorted(borrowed), sorted(resolved))
-    assert "EXTERNAL rule" in resolved, sorted(resolved)
+    assert "A proposed rule targets only what the server enforces today" in resolved
     assert "Guidance plus gap" in borrowed, sorted(borrowed)
     for heading in borrowed:
         assert subs[heading]["touchpoints"] == by[_D2]["touchpoints"], heading
+    # "EXTERNAL rule" resolved a path of its own but holds no clause: it rides on the
+    # remainder (GRPH-1946), which keeps that path beside the section's.
+    assert "EXTERNAL rule" not in subs
+    assert subs["remainder"]["carries"] == ["EXTERNAL rule"]
+    assert "web/src/features/rules/" in subs["remainder"]["touchpoints"]
 
 
 # ── GRPH-1938: every piece of a split carried the section's whole clause list ─────────
@@ -1275,7 +1280,7 @@ def test_p92_d2_places_each_section_clause_on_one_piece(client, auth, monkeypatc
     assert d2["oversized"] is True and d2["split_refused"] == ""
     subs = {s["heading"]: s for s in d2["sub_items"]}
 
-    placed = [c for s in subs.values() for c in s["clauses"]]
+    placed = [c for s in subs.values() if not s.get("remainder") for c in s["clauses"]]
     assert len(placed) == len(set(placed)), "a clause sits on two pieces"
     target = "A proposed rule targets only what the server enforces today"
     assert len(_starting(subs[target]["clauses"], _D2_FIXTURE_REPO)) == 1
@@ -1289,7 +1294,7 @@ def test_p92_d2_places_each_section_clause_on_one_piece(client, auth, monkeypatc
     # are constraints on the others: not offered, carried in every piece's text.
     assert d2["folded_pieces"] == _D2_FOLDED
     assert not set(_D2_FOLDED) & set(subs)
-    assert set(subs) == {"EXTERNAL rule", "Guidance plus gap", target}
+    assert set(subs) == {"Guidance plus gap", target, "remainder"}
     for heading, sub in subs.items():
         assert "Only a parser reading forge or CI configuration" in sub["description"], heading
     # The pieces partition: no two share both clauses and paths.
@@ -1318,17 +1323,54 @@ def test_p92_d2_filed_whole_split_puts_the_unplaced_clause_on_a_remainder(
             splits={_D2: [s["heading"] for s in d2["sub_items"]]})
         rows = [db.get(items_svc.Item, i) for i in out["created"]]
         d2_rows = [r for r in rows if r.prd_section == _D2]
-        assert len(d2_rows) == len(d2["sub_items"]) + 1
+        # The dry run offered the remainder itself, so it is one of the sub_items.
+        assert len(d2_rows) == len(d2["sub_items"])
+        offered = next(s for s in d2["sub_items"] if s.get("remainder"))
         remainder = next(r for r in d2_rows if r.title.endswith("— remainder"))
         assert _D2_SELF_MERGE in remainder.description
-        assert remainder.touchpoints == d2["touchpoints"]
+        assert remainder.touchpoints == offered["touchpoints"]
+        assert set(d2["touchpoints"]) <= set(remainder.touchpoints)
         others = [r for r in d2_rows if r is not remainder]
         assert not any(_D2_SELF_MERGE in r.description for r in others)
         rem = next(r for r in out["split_remainders"] if r["section"] == _D2)
-        assert rem["headings"] == [] and rem["item_id"] == remainder.id
+        assert rem["headings"] == ["EXTERNAL rule"] and rem["item_id"] == remainder.id
         assert out["unfiled_pieces"] == []
     finally:
         db.close()
+
+
+# ── GRPH-1946: the unplaced clause went nowhere, and a clause-less piece was offered ──
+
+
+def test_p92_d2_every_clause_lands_on_exactly_one_offered_piece(client, auth, monkeypatch):
+    """The dry run itself puts the self-merge clause on an item, and counts what it cannot.
+
+    Before, the clause sat only in `unplaced_clauses`, no sub_item carried it, and the
+    top-level `unassigned_clauses` was 0 — an absence that read as clean. Dropping the
+    remainder again leaves the clause on no piece and fails here.
+    """
+    _prd, dry = _p92_split_dry(client, auth, monkeypatch)
+    d2 = {p["section"]: p for p in dry["proposals"]}[_D2]
+    offered = [c for s in d2["sub_items"] for c in s["clauses"]]
+    assert sorted(offered) == sorted(d2["acceptance"])
+    assert len(offered) == len(set(offered))
+    carriers = [s for s in d2["sub_items"] if _starting(s["clauses"], _D2_SELF_MERGE)]
+    assert [s["heading"] for s in carriers] == ["remainder"]
+    assert carriers[0]["remainder"] is True
+    assert _D2_SELF_MERGE in carriers[0]["description"]
+    assert dry["unassigned_clauses"] == []
+
+
+def test_p92_d2_offers_no_piece_without_a_clause(client, auth, monkeypatch):
+    """"EXTERNAL rule" has a path of its own and no clause: folded into the remainder."""
+    _prd, dry = _p92_split_dry(client, auth, monkeypatch)
+    d2 = {p["section"]: p for p in dry["proposals"]}[_D2]
+    for sub in d2["sub_items"]:
+        assert sub["clauses"], sub["heading"]
+        assert "no acceptance" not in (sub["blocker"] or ""), sub["heading"]
+    rem = next(s for s in d2["sub_items"] if s.get("remainder"))
+    assert rem["carries"] == ["EXTERNAL rule"]
+    assert "### EXTERNAL rule" in rem["description"]
 
 
 def _two_piece_section(client, auth, touchpoints):
@@ -1368,13 +1410,15 @@ def test_a_split_whose_pieces_hold_nothing_of_their_own_is_offered_whole(client,
     assert "oversized section refused" not in (wide["blocker"] or "")
 
 
-def test_a_split_whose_pieces_share_every_clause_and_path_is_refused(client, auth):
-    """Two pieces typed the same paths and holding no clause: identical, so refused."""
+def test_a_split_whose_pieces_hold_only_typed_paths_is_refused(client, auth):
+    """Two pieces typed the same paths and holding no clause: nothing to review, refused."""
     same = ["backend/app/wide.py"]
     wide = _two_piece_section(client, auth, {
         "Wide": same, "Wide — Alpha": same, "Wide — Beta": same})
     assert wide["sub_items"] == []
-    assert "same clauses and the same touchpoints" in wide["split_refused"]
+    # Typed paths do not make a clause-less piece reviewable (GRPH-1946): refused.
+    assert "has a clause of its own" in wide["split_refused"]
+    assert "partitions nothing" in wide["split_refused"]
     assert wide["blocked"] is False
 
 
