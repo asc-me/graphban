@@ -3561,12 +3561,14 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         # call get_backlog, so it stays; only the fat item fields are opt-in (AL-78).
         lean = not _full(args)
         shape = _lean_item if lean else _item_dict
-        ranking = ("ready", "blocked_by", "unblocks", "votes", "score")
+        ranking = ("ready", "blocked_by", "blocker", "unblocks", "votes", "score")
         rows = [
             {**shape(r["item"]), "ready": r["ready"],
              # A blocker in a project this key cannot read is listed as a placeholder, never
              # dropped: dropped, its dependent would read as unblocked (GRPH-1063).
              "blocked_by": [items_svc.render_ref(db, d, readable) for d in r["blocked_by"]],
+             # GRPH-1958. Why an item with no open dependency is still unready.
+             "blocker": r["blocker"],
              "unblocks": r["unblocks"], "votes": r["votes"], "score": r["score"]}
             for r in ranked
         ]
