@@ -35,8 +35,9 @@ class Citation:
     quote: str = ""
 
     def as_dict(self) -> dict:
-        return {"kind": "file", "ref": self.file, "lines": self.lines,
-                "commit": self.commit, "quote": self.quote}
+        # The shape `rule_proposals._resolve_citation` reads: a file citation's ref is an object.
+        return {"kind": "file", "ref": {"path": self.file, "commit": self.commit,
+                                        "lines": self.lines}, "quote": self.quote}
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,8 @@ class Finding:
     gap: str | None = None
     #: The document says to relax something. Never filed.
     loosens: bool = False
+    #: Why the rule exists; a `new_rule` needs one. Defaults to the cited quote, then the title.
+    why: str = ""
 
 
 @dataclass(frozen=True)
@@ -83,6 +86,7 @@ def _proposal(f: Finding) -> tuple[dict | None, str]:
             return None, (f"primitive {f.primitive!r} is not evaluated for custom rules, "
                           "so a rule on it would hold nothing")
         return {"kind": "new_rule", "slug": f.slug, "primitive": f.primitive, "title": f.title,
+                "why": f.why or f.citation.quote or f.title,
                 "params": dict(f.params), "citations": cites}, ""
     return None, "no library rule or evaluated primitive names it"
 
