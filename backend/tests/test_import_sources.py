@@ -18,18 +18,79 @@ OWNERS = "# c\ndb/migrations @a\n*.md @a @b\nhttps://x.example/y @z\n"
 
 
 def test_codeowners_area_gap_and_outside_repo():
-    f, u = S.parse_codeowners(OWNERS, "CODEOWNERS", commit="abc")
-    prop = next(x for x in f if x["bucket"] == "proposed")["proposal"]
-    assert prop["params"] == {"paths": ["db/migrations"]} and prop["rule_id"] == "plan.exclusive_areas"
+    owners = OWNERS + "api/ @org/team-b\nweb/ @a\n"
+    f, u = S.parse_codeowners(owners, "CODEOWNERS", commit="abc")
+    props = [x["proposal"] for x in f if x["bucket"] == "proposed"]
+    # One exclusive_areas CUSTOM rule per sole owner, never the library rule.
+    assert [(p["kind"], p["primitive"], p["slug"], p["params"]) for p in props] == [
+        ("new_rule", "exclusive_areas", "codeowners-a", {"paths": ["db/migrations", "web"]}),
+        ("new_rule", "exclusive_areas", "codeowners-org-team-b", {"paths": ["api"]})]
+    assert all(p["title"] and p["why"] for p in props)
     assert any(x["bucket"] == "gap" for x in f)
     assert u == [{"path": "CODEOWNERS:4", "reason": "outside this project's repo"}]
 
 
-def test_workflow_engine_evidence_and_bad_yaml_unread():
+def test_workflow_proposes_turn_on_never_a_path_glob_and_bad_yaml_unread():
     f, u = S.parse_workflow(WF, ".github/workflows/ci.yml", commit="abc")
-    assert f[0]["proposal"]["params"] == {"path": "backend/**", "engine": "postgres"}
+    props = [x["proposal"] for x in f if x["bucket"] == "proposed"]
+    assert props == [{"kind": "turn_on", "rule_id": "build.engine_evidence",
+                      "params": {"engine": "postgres"}, "why": props[0]["why"],
+                      "citations": S._cite(".github/workflows/ci.yml", "abc")}]
+    gap = next(x for x in f if x["bucket"] == "gap")
+    assert "backend/**" in gap["text"] and u == []
     f, u = S.parse_workflow("a: [", ".github/workflows/x.yml", commit="abc")
     assert f == [] and u and u[0]["path"] == ".github/workflows/x.yml"
+
+
+def test_one_engine_proposal_across_jobs_and_files():
+    two = WF + """  my:
+    runs-on: ubuntu-latest
+    services:
+      mysql: {image: "mysql:8"}
+    steps:
+      - run: pytest
+"""
+    out = S.read_sources({".github/workflows/a.yml": two, ".github/workflows/b.yml": WF},
+                         commit="abc")
+    props = [x for x in out["findings"] if x["bucket"] == "proposed"]
+    assert len(props) == 1 and props[0]["proposal"]["params"] == {"engine": "postgres"}
+    assert any(x.get("label") == "engine evidence engine" and "mysql" in x["text"]
+               for x in out["findings"])
+
+
+def test_already_on_engine_rule_is_no_difference():
+    out = S.read_sources({".github/workflows/ci.yml": WF}, commit="abc",
+                         current={"build.engine_evidence": {"engine": "postgres", "_on": True}})
+    assert not [x for x in out["findings"] if x["bucket"] == "proposed"]
+    out = S.read_sources({".github/workflows/ci.yml": WF}, commit="abc",
+                         current={"build.engine_evidence": {"engine": "mysql", "_on": True}})
+    assert any(x.get("label") == "engine evidence engine" for x in out["findings"])
+
+
+REMOTE = """
+on: [pull_request]
+jobs:
+  shared:
+    uses: other-org/ci/.github/workflows/test.yml@v2
+  local:
+    uses: ./.github/workflows/local.yml
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: other-org/actions/lint@main
+      - run: make
+"""
+
+
+def test_cross_repo_workflow_paths_are_unread_not_dropped():
+    f, u = S.parse_workflow(REMOTE, ".github/workflows/ci.yml", commit="abc")
+    assert [x["path"] for x in u] == [
+        ".github/workflows/ci.yml: jobs.shared uses other-org/ci/.github/workflows/test.yml@v2",
+        ".github/workflows/ci.yml: jobs.build.steps[1] uses other-org/actions/lint@main"]
+    assert all(x["reason"] == "outside this project's repo" for x in u)
+    out = S.read_sources({".github/workflows/ci.yml": REMOTE}, commit="abc")
+    assert out["clean"] is False
 
 
 def test_generated_markers():
@@ -70,12 +131,21 @@ def test_parsed_findings_file_through_the_pipeline(client, monkeypatch):
     from app.services import rule_toggles as T
     monkeypatch.setattr(T, "LIBRARY", {})
     T.register(T.LibraryRule(
+        id="build.engine_evidence", stage="build", title="Engine evidence", summary="s",
+        enforcement="enforced", enforcer=R.Enforcer("graphban_source", "app/services/items.py"),
+        default_on=False, default_params={"path": "alembic/versions/", "engine": "postgres"}))
+    monkeypatch.setattr(RP, "_PRIMITIVE_OF",
+                        {**RP._PRIMITIVE_OF, "build.engine_evidence": "evidence_required"})
+    T.register(T.LibraryRule(
         id="build.generated_files", stage="build", title="Generated files", summary="s",
         enforcement="checked", enforcer=R.Enforcer("supervisor", "gbfleet until"),
         default_on=True, default_params={"paths": ["old/**"]}))
     monkeypatch.setattr(RP, "FILE_READER", lambda repo, path, commit: path != "gone.md")
-    body = S.read_sources({".gitattributes": "web/dist/** linguist-generated\n"}, commit="abc123",
-                        current={"build.generated_files": {"paths": ["old/**"]}})
+    body = S.read_sources({".gitattributes": "web/dist/** linguist-generated\n",
+                           ".github/workflows/ci.yml": WF, "CODEOWNERS": OWNERS},
+                          commit="abc123",
+                          current={"build.generated_files": {"paths": ["old/**"]}})
+    body["findings"].sort(key=lambda f: f["source"]["path"] != ".gitattributes")
     body["findings"].append({"bucket": "proposed", "stage": "Build", "quote": "q",
                              "source": {"path": "gone.md"},
                              "proposal": {"kind": "tighten", "rule_id": "build.generated_files",
@@ -85,5 +155,14 @@ def test_parsed_findings_file_through_the_pipeline(client, monkeypatch):
     rep = client.post(f"/api/projects/{pid}/rules/import-runs", json=body, headers=h)
     assert rep.status_code == 201, rep.text
     fs = rep.json()["findings"]
-    assert fs[0]["proposal"]["loosens"] is True
-    assert "gone.md" in fs[1]["refused"] and "abc123" in fs[1]["refused"]
+    by_rule = {(f.get("proposal") or {}).get("rule_id"): f for f in fs if f.get("proposal")}
+    gone = next(f for f in fs if f["source"]["path"] == "gone.md")
+    assert "gone.md" in gone["refused"] and "abc123" in gone["refused"]
+    gen = next(f for f in fs if f["source"]["path"] == ".gitattributes")
+    assert gen["proposal"]["loosens"] is True and not gen["refused"]
+    # The workflow's turn_on and the CODEOWNERS custom rule FILE; neither is refused.
+    eng = by_rule["build.engine_evidence"]
+    assert not eng["refused"] and eng["proposal"]["direction"] == "tighten"
+    assert eng["proposal"]["params"]["path"] == "alembic/versions/"
+    area = by_rule["custom.codeowners-a"]
+    assert not area["refused"] and area["proposal"]["params"] == {"paths": ["db/migrations"]}

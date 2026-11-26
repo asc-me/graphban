@@ -20,6 +20,7 @@ _GENERATED_HEADER = re.compile(r"do not edit|code generated|@generated|auto-?gen
 LOCKFILES = ("uv.lock", "poetry.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
              "Cargo.lock", "Gemfile.lock", "go.sum", "composer.lock")
 _FORGE_TIMEOUT = 5.0
+ENGINE_RULE = "build.engine_evidence"
 
 
 def unread(path: str, reason: str) -> dict:
@@ -48,6 +49,12 @@ def _finding(bucket: str, stage: str, quote: str, path: str, repo: str | None, c
             "source": _source(path, repo, commit), **extra}
 
 
+def owner_slug(owner: str) -> str:
+    """A custom-rule slug for a CODEOWNERS owner: `@org/team-a` -> `codeowners-org-team-a`."""
+    body = re.sub(r"[^a-z0-9]+", "-", owner.lower()).strip("-") or "owner"
+    return ("codeowners-" + body)[:64].rstrip("-")
+
+
 # ---- CODEOWNERS --------------------------------------------------------------------------
 
 def parse_codeowners(text: str, path: str, *, commit: str, repo: str | None = None
@@ -55,7 +62,7 @@ def parse_codeowners(text: str, path: str, *, commit: str, repo: str | None = No
     """`(findings, unread_entries)`. A path owned by exactly one owner becomes one
     `exclusive_areas` proposal; ownership of review is guidance plus a `reviewer_property` gap.
     An entry pointing outside this repo is listed unread."""
-    areas: list[tuple[str, int]] = []
+    areas: dict[str, list[tuple[str, int]]] = {}
     skipped: list[dict] = []
     owned = 0
     for n, raw in enumerate(text.splitlines(), 1):
@@ -72,16 +79,19 @@ def parse_codeowners(text: str, path: str, *, commit: str, repo: str | None = No
         owned += 1
         concrete = pattern.strip("/")
         if len(owners) == 1 and concrete and not any(c in concrete for c in "*?["):
-            areas.append((concrete, n))
+            areas.setdefault(owners[0], []).append((concrete, n))
     findings: list[dict] = []
-    if areas:
-        lines = f"{areas[0][1]}-{areas[-1][1]}"
+    for owner, held in areas.items():
+        lines = f"{held[0][1]}-{held[-1][1]}"
         findings.append(_finding(
-            "proposed", "Plan", "; ".join(f"{p} owned by one owner" for p, _ in areas[:5]),
+            "proposed", "Plan", "; ".join(f"{p} owned only by {owner}" for p, _ in held[:5]),
             path, repo, commit,
-            proposal={"kind": "tighten", "rule_id": "plan.exclusive_areas",
-                      "params": {"paths": [p for p, _ in areas]},
-                      "why": "CODEOWNERS gives each of these paths a single owner",
+            proposal={"kind": "new_rule", "primitive": "exclusive_areas",
+                      "slug": owner_slug(owner),
+                      "title": f"Areas {owner} alone owns",
+                      "why": f"CODEOWNERS names {owner} as the only owner of these paths, so "
+                             "one drain at a time works in each",
+                      "params": {"paths": [p for p, _ in held]},
                       "citations": _cite(path, commit, lines)}))
     if owned:
         findings.append(_finding(
@@ -90,15 +100,54 @@ def parse_codeowners(text: str, path: str, *, commit: str, repo: str | None = No
             text="CODEOWNERS says who should review a path; no primitive binds a reviewer to "
                  "a path (`reviewer_property` takes a property, not an owner).",
             citations=_cite(path, commit)))
-    return findings, skipped
+    return _one_engine(findings), skipped
 
 
 # ---- GitHub Actions ----------------------------------------------------------------------
 
+#: A reusable workflow or action in ANOTHER repo: `owner/repo/path...@ref`. `./...` is local
+#: and `docker://` is an image. A bare published action (`actions/checkout@v4`) names no path.
+_REMOTE_PATH = re.compile(r"^[\w.-]+/[\w.-]+/[^@]+@\S+$")
+_TEST_RUN = re.compile(r"pytest|npm test|pnpm test|yarn test|go test|cargo test")
+ENGINES = ("postgres", "mysql")
+
+
+def _remote(uses: object) -> bool:
+    return isinstance(uses, str) and not uses.startswith(("./", "docker://")) and \
+        bool(_REMOTE_PATH.match(uses.strip()))
+
+
+def _one_engine(findings: list[dict]) -> list[dict]:
+    """`build.engine_evidence` has ONE engine, so the import proposes one `turn_on`: the first.
+    The same engine again is dropped; another engine is a gap a person settles."""
+    first: str | None = None
+    out = []
+    for f in findings:
+        p = f.get("proposal") or {}
+        if p.get("rule_id") != ENGINE_RULE:
+            out.append(f)
+            continue
+        engine = p["params"].get("engine")
+        if first is None:
+            first = engine
+            out.append(f)
+        elif engine != first:
+            out.append({k: v for k, v in f.items() if k != "proposal"} | {
+                "bucket": "gap", "label": "engine evidence engine",
+                "text": f"CI also runs the tests on {engine}; `{ENGINE_RULE}` takes one engine "
+                        f"and this import proposes {first}.",
+                "citations": p["citations"]})
+    return out
+
+
 def parse_workflow(text: str, path: str, *, commit: str, repo: str | None = None
                    ) -> tuple[list[dict], list[dict]]:
-    """A job that runs the tests against a Postgres service is evidence the tests run on that
-    engine: a tighter `build.engine_evidence` for the paths the workflow triggers on."""
+    """A job that runs the tests against a database service is evidence the tests run on that
+    engine: one `turn_on` of `build.engine_evidence` with that engine. The rule's `path` and
+    `engine` declare no comparator, so a parser never proposes a CHANGED `path` (it would be
+    `not_proposable`, and the gate matches it as a substring of a touchpoint, so a glob would
+    match nothing); the paths the workflow triggers on are reported as guidance instead.
+    A reusable workflow or action that lives in another repo is listed unread, never dropped."""
     try:
         import yaml
         doc = yaml.safe_load(text)
@@ -114,27 +163,47 @@ def parse_workflow(text: str, path: str, *, commit: str, repo: str | None = None
         for ev in ("pull_request", "push"):
             cfg = on.get(ev)
             if isinstance(cfg, dict) and isinstance(cfg.get("paths"), list):
-                trig_paths += [p for p in cfg["paths"] if isinstance(p, str)]
-    findings = []
+                trig_paths += [p for p in cfg["paths"] if isinstance(p, str)
+                               and p not in trig_paths]
+    skipped: list[dict] = []
+    seen: dict[str, str] = {}  # engine -> the first job that showed it
     for name, job in doc["jobs"].items():
         if not isinstance(job, dict):
             continue
+        if _remote(job.get("uses")):
+            skipped.append(unread(f"{path}: jobs.{name} uses {job['uses']}",
+                                  "outside this project's repo"))
+            continue
+        steps = [s for s in job.get("steps") or [] if isinstance(s, dict)]
+        for i, st in enumerate(steps):
+            if _remote(st.get("uses")):
+                skipped.append(unread(f"{path}: jobs.{name}.steps[{i}] uses {st['uses']}",
+                                      "outside this project's repo"))
         services = job.get("services") if isinstance(job.get("services"), dict) else {}
-        runs = " ".join(str(s.get("run", "")) for s in job.get("steps") or []
-                        if isinstance(s, dict))
-        for engine in ("postgres", "mysql"):
-            if any(engine in k.lower() or engine in str(v.get("image", "")).lower()
-                   for k, v in services.items() if isinstance(v, dict)) and \
-                    re.search(r"pytest|npm test|pnpm test|go test|cargo test", runs):
-                for glob in (trig_paths or ["**"])[:3]:
-                    findings.append(_finding(
-                        "proposed", "Build", f"job `{name}` runs tests against {engine}", path,
-                        repo, commit,
-                        proposal=_tighten("build.engine_evidence",
-                                          {"path": glob, "engine": engine},
-                                          f"CI job `{name}` runs the tests on {engine}", path,
-                                          commit, "1-1")))
-    return findings, []
+        runs = " ".join(str(s.get("run", "")) for s in steps)
+        if not _TEST_RUN.search(runs):
+            continue
+        for engine in ENGINES:
+            if engine not in seen and any(
+                    engine in k.lower() or engine in str(v.get("image", "")).lower()
+                    for k, v in services.items() if isinstance(v, dict)):
+                seen[engine] = name
+    findings = []
+    for engine, name in seen.items():
+        findings.append(_finding(
+            "proposed", "Build", f"job `{name}` runs tests against {engine}", path, repo,
+            commit, proposal={"kind": "turn_on", "rule_id": ENGINE_RULE,
+                              "params": {"engine": engine},
+                              "why": f"CI job `{name}` already runs the tests on {engine}",
+                              "citations": _cite(path, commit)}))
+        if trig_paths:
+            findings.append(_finding(
+                "gap", "Build", f"job `{name}` runs on {engine} for " + ", ".join(trig_paths),
+                path, repo, commit, label="engine evidence paths",
+                text=f"CI runs the {engine} tests for {', '.join(trig_paths)}. "
+                     f"`{ENGINE_RULE}` binds one path substring, set by a person.",
+                citations=_cite(path, commit)))
+    return findings, skipped
 
 
 # ---- Branch protection -------------------------------------------------------------------
@@ -248,17 +317,37 @@ def parse_generated_markers(files: dict[str, str], *, commit: str, repo: str | N
 
 # ---- Current values ----------------------------------------------------------------------
 
-LIST_RULES = ("plan.exclusive_areas", "build.generated_files", "merge.done_predicates")
+LIST_RULES = ("build.generated_files", "merge.done_predicates")
 
 
 def current_params(db, project_id: str) -> dict[str, dict]:
-    """The project's adopted params for the rules a parser tightens, read once per run."""
+    """The project's adopted params for the rules a parser proposes against, read once per run.
+    `build.engine_evidence` also carries `_on`, whether it is already on."""
     from app.services import rule_toggles as T
     out: dict[str, dict] = {}
-    for rid in (*LIST_RULES, "build.engine_evidence"):
+    for rid in (*LIST_RULES, ENGINE_RULE):
         if rid in T.LIBRARY:
-            out[rid] = dict(T.resolve(db, rid, project_id)["params"]["value"] or {})
+            st = T.resolve(db, rid, project_id)
+            out[rid] = dict(st["params"]["value"] or {})
+            if rid == ENGINE_RULE:
+                out[rid]["_on"] = bool(st["on"]["value"])
     return out
+
+
+def _engine_against_current(f: dict, cur: dict) -> dict | None:
+    """A `turn_on` of a rule that is already on is no difference: dropped when the engine
+    matches, a gap naming both engines when it does not (the param has no comparator, so only
+    a person changes it)."""
+    if not cur.get("_on"):
+        return f
+    want, have = f["proposal"]["params"].get("engine"), cur.get("engine") or "postgres"
+    if want == have:
+        return None
+    return {k: v for k, v in f.items() if k != "proposal"} | {
+        "bucket": "gap", "label": "engine evidence engine",
+        "text": f"CI runs the tests on {want}; `{ENGINE_RULE}` is on with engine {have}. "
+                "The engine has no comparator, so a person changes it.",
+        "citations": f["proposal"]["citations"]}
 
 
 def _against_current(findings: list[dict], current: dict[str, dict]) -> list[dict]:
@@ -267,8 +356,12 @@ def _against_current(findings: list[dict], current: dict[str, dict]) -> list[dic
     out = []
     for f in findings:
         p = f.get("proposal")
-        cur = current.get(p["rule_id"]) if p else None
-        if cur is not None and p["rule_id"] in LIST_RULES:
+        cur = current.get(p.get("rule_id")) if p else None
+        if cur is not None and p["rule_id"] == ENGINE_RULE:
+            f = _engine_against_current(f, cur)
+            if f is None:
+                continue
+        elif cur is not None and p["rule_id"] in LIST_RULES:
             key = "paths" if "paths" in p["params"] else "predicates"
             have = list(cur.get(key) or [])
             new = [x for x in p["params"][key] if x not in have]
@@ -303,6 +396,7 @@ def read_sources(files: dict[str, str], *, commit: str, repo: str | None = None,
         findings += f
         unreads += u
         read.append({"path": p})
+    findings = _one_engine(findings)
     gen = parse_generated_markers(files, commit=commit, repo=repo)
     if gen:
         findings += gen
