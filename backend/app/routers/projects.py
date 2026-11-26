@@ -2,7 +2,7 @@ import re
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -13,10 +13,11 @@ from app.db import get_db
 from app.errors import Refused, Validation
 from app.models import Membership, Project, User
 from app.schemas import (
-    GitopsPatch, GitopsView, MemberOut, MemoryWriteModeWrite, ProjectCreate, PublishToOrgWrite, ProjectOut, ProjectRetagIn,
+    GitopsPatch, GitopsView, MemberOut, MemoryWriteModeWrite, ProjectArchiveIn, ProjectCreate, PublishToOrgWrite, ProjectOut, ProjectRetagIn,
     ProjectSummaryOut, ProjectUpdate, UserOut,
 )
 from app.security import authz
+from app.security.apikey import is_api_key
 from app.security.deps import get_current_user
 from app.services import code_sync
 from app.services import events as events_svc
@@ -69,17 +70,24 @@ def _resolve_org_id(db: Session, user: User, requested: str | None) -> str | Non
 
 
 @router.get("", response_model=list[ProjectOut])
-def list_projects(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def list_projects(include_archived: bool = False, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """Every project this user can read. An archived one (GRPH-1955) is left out unless
+    `include_archived`; it is still readable by id, and its row carries `archived_at`."""
     readable = set(authz.readable_project_ids(db, user.id))
     rows = db.scalars(select(Project).order_by(Project.name)).all()
-    return [p for p in rows if p.id in readable]
+    return [p for p in rows if p.id in readable
+            and (include_archived or p.archived_at is None)]
 
 
 @router.get("/summaries", response_model=list[ProjectSummaryOut])
-def project_summaries(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def project_summaries(include_archived: bool = False, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
     """The project switcher's rows — counts, branch, presence and last activity for every
-    project this user can read, in one request of fixed cost (GRPH-1131)."""
-    return projects_svc.project_summaries(db, authz.readable_project_ids(db, user.id))
+    project this user can read, in one request of fixed cost (GRPH-1131). Archived projects
+    are left out unless `include_archived` (GRPH-1955)."""
+    return projects_svc.project_summaries(db, authz.readable_project_ids(db, user.id),
+                                          include_archived=include_archived)
 
 
 @router.post("", response_model=ProjectOut, status_code=201)
@@ -218,6 +226,66 @@ def retag(
     events_svc.record_user(db, user, action="retag_project", target_type="project",
                            target_id=project_id, project_id=project_id,
                            meta={"from": was, "to": project.tag})
+    return project
+
+
+def get_person(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> User:
+    """A signed-in person, and an agent key told so by name (GRPH-1955).
+
+    `get_current_user` alone answers an agent key with a 401 "invalid token", which reads as
+    a broken credential rather than a boundary. Archive is a person's act, so a key presented
+    either way is refused with a 403 naming the rule, before any project is looked up."""
+    bearer = authorization.split(" ", 1)[1] if authorization and \
+        authorization.lower().startswith("bearer ") else ""
+    if x_api_key or (bearer and is_api_key(bearer)):
+        raise Refused(403, "archiving or unarchiving a project is a person's act: an agent "
+                      "API key cannot do it", rule_id="project.archive_person_only",
+                      hint="a project owner or admin does it from Settings")
+    return get_current_user(request=request, authorization=authorization, db=db)
+
+
+def _require_archive_admin(db: Session, user: User, project_id: str) -> Project:
+    authz.require_writable(db, user.id, project_id)  # 404 for another tenant's project
+    if authz.project_role(db, user.id, project_id) not in ("owner", "admin"):
+        raise Refused(403, "archiving or unarchiving a project requires its owner or an admin",
+                      rule_id="project.archive_needs_admin")
+    return _load_project(db, project_id)
+
+
+@router.post("/{project_id}/archive", response_model=ProjectOut)
+def archive_project(project_id: str, body: ProjectArchiveIn, db: Session = Depends(get_db),
+                    user: User = Depends(get_person)):
+    """Put a project away (GRPH-1955): out of the default lists, refusing work writes, its
+    custom and adopted rules no longer holding. Reversible; its tag stays its own."""
+    project = _require_archive_admin(db, user, project_id)
+    was = project.archived_at is not None
+    try:
+        project = projects_svc.set_archived(db, project, archived=True, actor_user_id=user.id,
+                                            reason=body.reason)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    if not was:
+        events_svc.record_user(db, user, action="archive_project", target_type="project",
+                               target_id=project_id, project_id=project_id,
+                               meta={"reason": project.archived_reason})
+    return project
+
+
+@router.post("/{project_id}/unarchive", response_model=ProjectOut)
+def unarchive_project(project_id: str, db: Session = Depends(get_db),
+                      user: User = Depends(get_person)):
+    """Bring an archived project back (GRPH-1955). Same gate as archive."""
+    project = _require_archive_admin(db, user, project_id)
+    was = project.archived_at is not None
+    project = projects_svc.set_archived(db, project, archived=False, actor_user_id=user.id)
+    if was:
+        events_svc.record_user(db, user, action="unarchive_project", target_type="project",
+                               target_id=project_id, project_id=project_id, meta={})
     return project
 
 

@@ -600,6 +600,15 @@ class ProjectOut(ORMModel):
     release_ref: str | None = None
     repo_url: str | None = None
     publish_to_org: dict = {"specs": True, "item_digests": True}
+    # GRPH-1955: null is live. Set, the project is archived and refuses work writes.
+    archived_at: datetime | None = None
+    archived_reason: str = ""
+
+
+class ProjectArchiveIn(BaseModel):
+    """Archive a project (GRPH-1955). The reason is required: it is what a later reader of
+    the project picker's archived list has to go on."""
+    reason: str = Field(min_length=1, max_length=500)
 
 
 class ProjectSummaryOut(BaseModel):
@@ -618,6 +627,7 @@ class ProjectSummaryOut(BaseModel):
     live_agents: int
     default_branch: str | None = None
     last_activity_at: datetime | None = None
+    archived_at: datetime | None = None
 
 
 class ProjectCreate(BaseModel):

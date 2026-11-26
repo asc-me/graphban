@@ -548,6 +548,12 @@ export const api = {
   config: () => request<AppConfig>("/config"),
 
   projects: () => request<Project[]>("/projects"),
+  // Archived projects ride along only when asked (GRPH-1955); the default list leaves them out.
+  projectsIncludingArchived: () => request<Project[]>("/projects?include_archived=true"),
+  // A person's act, owner or admin: an agent key is refused with a 403 naming the rule.
+  archiveProject: (id: string, reason: string) =>
+    request<Project>(`/projects/${id}/archive`, { method: "POST", body: JSON.stringify({ reason }) }),
+  unarchiveProject: (id: string) => request<Project>(`/projects/${id}/unarchive`, { method: "POST" }),
   projectSummaries: () => request<ProjectSummary[]>("/projects/summaries"),
   createProject: (body: {
     name: string;

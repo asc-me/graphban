@@ -300,6 +300,13 @@ class Project(Base):
     # gitops column: a linked box can still set it locally, and the gitops contract is
     # untouched. Written only through services/projects.set_release_ref.
     release_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Archived (GRPH-1955): a soft, reversible put-away — set and cleared only by a person
+    # through POST /projects/{id}/archive|unarchive. NULL is live. An archived project keeps
+    # its tag (a retired tag is never reclaimed), items, events and history, readable by id;
+    # it leaves the default project lists and refuses work writes (projects.refuse_if_archived).
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_reason: Mapped[str] = mapped_column(Text, default="", server_default="")
+    archived_by: Mapped[str | None] = mapped_column(String, nullable=True)
     # Hosted SaaS only (AL-74): the owning organization. NULL on self-host, where
     # the org layer is inert. In hosted mode authz additionally requires the caller
     # to belong to this org, so a project never leaks outside its tenant.
