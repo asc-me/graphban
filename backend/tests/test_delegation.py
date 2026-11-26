@@ -196,7 +196,7 @@ def test_delegate_requires_tier_and_lane(client, key):
 def test_delegate_refuses_a_blocked_item_and_names_the_blocker(client, key):
     """5a."""
     item = _item(client, key)
-    _ok(_mcp(client, key, "update_item", {"id": item, "blocker": "waiting on the schema"}))
+    _ok(_mcp(client, key, "update_item", {"id": item, "blocker": "waiting on the schema decision"}))
     me = _agent(client, key, "planner")
     e = _err(_delegate(client, key, item, me))
     assert e["code"] == "conflict" and "waiting on the schema" in e["message"]

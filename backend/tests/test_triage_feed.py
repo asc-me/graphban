@@ -48,7 +48,7 @@ def test_all_kinds_blockers_first_with_counts(client, auth, db):
     b = _item(client, auth, "Edit router too", touchpoints=["app/routers/x.py"])
     blocked = _item(client, auth, "Needs a call")
     client.patch(f"/api/items/{blocked}", headers=auth,
-                 json={"status": "blocked", "blocker": "waiting on legal"})
+                 json={"status": "blocked", "blocker": "waiting on a person in legal"})
     f = _feed(client, auth)
     kinds = [r["kind"] for r in f["rows"]]
     assert kinds[0] == "blocker"
@@ -60,7 +60,7 @@ def test_all_kinds_blockers_first_with_counts(client, auth, db):
         assert c[tab] == sum(r["kind"] in kinds_ for r in f["rows"]) >= 1
     assert c["all"] == len(f["rows"])
     blocker = next(r for r in f["rows"] if r["id"] == blocked)
-    assert blocker["reason"] == "waiting on legal"
+    assert blocker["reason"] == "waiting on a person in legal"
     assert all(r["kind"] == "blocker" for r in f["rows"][:c["blockers"]])
     col = next(r for r in f["rows"] if r["kind"] == "collision"
                and {a, b} <= {m["id"] for m in r["members"]})
