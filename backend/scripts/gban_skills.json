@@ -9,6 +9,7 @@
     "graphban-prove",
     "graphban-red-ci",
     "graphban-review",
+    "graphban-rules-import",
     "graphban-scan",
     "graphban-ship",
     "graphban-unstick",

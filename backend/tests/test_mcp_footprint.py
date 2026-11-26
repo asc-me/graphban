@@ -249,7 +249,10 @@ CEILING = 18360
 # 18307 -> 18329 (GRPH-1955): `list_projects` gains `include_archived` and its rows an
 # `archived` flag, so an agent can see a project was put away rather than vanished. The
 # description was shortened to pay part of it (-6). CEILING 18310 -> 18360. Headroom 31.
-MEASURED_TOKENS = 18329  # P75 S1: +170 for answer_wait (ceiling 17775). GRPH-1650's
+# 18329 -> 18350 (GRPH-1952, P92 D4): `propose_rule` takes `import_run`, so the customer's
+# agent files its prose findings onto the run the CLI opened. Every harness's agent needs it,
+# so it cannot be gated to a fleet key.
+MEASURED_TOKENS = 18350  # P75 S1: +170 for answer_wait (ceiling 17775). GRPH-1650's
 # create_item `agent_id` is fleet-only (_FLEET_ONLY_ARGS), so it costs this manifest nothing.
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming

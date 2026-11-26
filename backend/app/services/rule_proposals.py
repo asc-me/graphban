@@ -152,6 +152,15 @@ def _citations(db: Session, project: Project, raw: object) -> list[dict]:
     return out
 
 
+def verify_citations(db: Session, project_id: str, raw: object) -> list[dict]:
+    """Resolve citations as a proposal would, for a finding that files nothing (an EXTERNAL
+    finding on an import run, GRPH-1952). Refused exactly as an uncited proposal is."""
+    project = db.get(Project, project_id)
+    if project is None:
+        raise NotFound(f"project {project_id!r} not found")
+    return _citations(db, project, raw)
+
+
 # ---- rule lookup -------------------------------------------------------------------------
 
 def _primitive_of(rule_id: str, project_id: str, db: Session) -> str | None:

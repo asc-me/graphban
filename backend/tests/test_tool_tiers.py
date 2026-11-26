@@ -424,7 +424,8 @@ CORE_TOKENS = 9183  # GRPH-1955: +22, list_projects include_archived and an `arc
 # fleet 1877 -> 1881 (GRPH-1857, P98 S4): `bench` suite actions.
 # prd 3863 -> 3864 (GRPH-1895): `decompose_prd` names `split_refused`. The whole bill is
 # this tier; CORE_TOKENS does not move. MEASURED_TOKENS 18305 -> 18307 with it.
-TIER_TOKENS = {"prd": 3864, "codegraph": 1811, "fleet": 1881, "misc": 1585}
+TIER_TOKENS = {"prd": 3864, "codegraph": 1811, "fleet": 1881, "misc": 1606}
+# misc 1585 -> 1606 (GRPH-1952, P92 D4): `propose_rule` takes `import_run`.
 # misc 1577 -> 1586 (GRPH-1780, P91 S8): `propose_rule` names the guidance draft.
 # misc 1463 -> 1577 (GRPH-1775, P91 S3): `propose_rule`. The whole bill is this tier.
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.
