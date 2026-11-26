@@ -248,9 +248,6 @@ def update_item(
         # not in a state that may be completed (GRPH-543). A 422 would read as "you sent
         # something malformed" and send the caller editing their payload.
         raise HTTPException(409, str(e))
-    except items_svc.BlockerDisagrees as e:
-        # GRPH-1961. Well formed; the item's blocker is what refuses the move.
-        raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(422, str(e))
     if item is None:

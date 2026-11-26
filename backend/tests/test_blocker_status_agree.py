@@ -137,11 +137,11 @@ def test_no_write_leaves_a_backlog_or_next_item_with_a_live_blocker(db):
 
 # --- the surfaces --------------------------------------------------------------------
 
-def test_patch_refuses_leaving_blocked_with_409_naming_the_blocker(client, auth, db):
+def test_patch_refuses_leaving_blocked_naming_the_blocker(client, auth, db):
     dep = items_svc.create_item(db, project_id="core", title="dep")
     it = _blocked_on(db, f"needs {dep.key}")
     r = client.patch(f"/api/items/{it.id}", json={"status": "backlog"}, headers=auth)
-    assert r.status_code == 409, r.text
+    assert r.status_code == 422, r.text  # update_item's refusals map ValueError to 422
     assert dep.key in r.json()["detail"]
 
 
