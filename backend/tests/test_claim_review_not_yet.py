@@ -139,3 +139,78 @@ def test_a_note_from_before_the_fix_names_no_head_and_does_not_count(db, client,
         {"kind": "note", "detail": f"NOT YET (GRPH-A{n}): needs a person"} for n in (1, 2, 3)])
     db.commit()
     assert fleet_svc.review_needs_person(_stored(db, item)) is None
+
+
+# GRPH-1959. Two NOT YETs that only waited on CI: a passing suite_green on that head, recorded
+# after them, is their answer. Seen on GRPH-1950, parked for hours after CI went green.
+
+
+def _suite(commit: str, *, passed: bool = True, range_: list[str] | None = None) -> dict:
+    return {"kind": "attestation", "adapter": "github-actions", "commit": commit,
+            "run_ref": "https://github.com/o/r/actions/runs/1",
+            "predicates": [{"name": items_svc.CI_PREDICATE, "passed": passed}],
+            "range": range_ or []}
+
+
+def _attest(db, item, receipt: dict) -> None:
+    row = _stored(db, item)
+    row.evidence = items_svc.append_evidence(row.evidence, [receipt])
+    db.commit()
+
+
+def _park(client, key, proj, db, planner, item) -> str:
+    for n in (1, 2):
+        _not_yet(client, key, item, _reviewer(client, key, proj, db, planner, f"ci-{n}"))
+    r3 = _reviewer(client, key, proj, db, planner, "reviewer-3")
+    assert _rules(db, r3, proj) == [(item, fleet_svc.WITHHELD_NOT_YET)]
+    return r3
+
+
+def test_a_passing_suite_green_on_the_head_after_the_not_yets_releases_it(client, key, proj, db):
+    """Sabotage: drop the `_suite_green_releases` reset in `review_needs_person`. Still parked."""
+    planner, item = _ready(client, key, db)
+    r3 = _park(client, key, proj, db, planner, item)
+    why = fleet_svc.review_needs_person(_stored(db, item))
+    assert f"CI attests a passed {items_svc.CI_PREDICATE} on that head" in why
+
+    _attest(db, item, _suite(HEAD))
+    assert fleet_svc.review_needs_person(_stored(db, item)) is None
+    got = _ok(_mcp(client, key, "claim_review", {"agent_id": r3}))
+    assert got["claimed"] and got["item"]["id"] == item, got
+
+
+def test_a_suite_green_whose_range_includes_the_head_releases_it(client, key, proj, db):
+    """Sabotage as above. The run's own commit is one the ledger knew before the NOT YETs, so
+    only the range naming the head can release it."""
+    planner, item = _ready(client, key, db)
+    old = "c" * 40
+    _attest(db, item, _suite(old, passed=False))
+    _park(client, key, proj, db, planner, item)
+    _attest(db, item, _suite(old, range_=[HEAD, old]))
+    assert fleet_svc.review_needs_person(_stored(db, item)) is None
+
+
+def test_a_suite_green_recorded_before_the_not_yets_does_not_release_it(client, key, proj, db):
+    planner, item = _ready(client, key, db)
+    _attest(db, item, _suite(HEAD))
+    r3 = _park(client, key, proj, db, planner, item)
+    assert fleet_svc.review_needs_person(_stored(db, item)) is not None
+    got = _ok(_mcp(client, key, "claim_review", {"agent_id": r3}))
+    assert not got["claimed"], got
+
+
+def test_a_failing_or_other_head_suite_green_does_not_release_it(client, key, proj, db):
+    """An OLD head the ledger already knew before the NOT YETs. A commit it has never seen is
+    a new revision under GRPH-1830 and releases the row for that reason, not this one."""
+    planner, item = _ready(client, key, db)
+    old = "e" * 40
+    _attest(db, item, _suite(old, passed=False))
+    r3 = _park(client, key, proj, db, planner, item)
+    _attest(db, item, _suite(HEAD, passed=False))
+    _attest(db, item, _suite(old))
+    _attest(db, item, _suite(old, range_=[old]))
+    # A run-start marker is not a verdict either.
+    _attest(db, item, {"kind": "attestation", "adapter": "github-actions", "commit": HEAD,
+                       "predicates": [{"name": items_svc.CI_RUNNING_PREDICATE, "passed": True}]})
+    assert fleet_svc.review_needs_person(_stored(db, item)) is not None
+    assert _rules(db, r3, proj) == [(item, fleet_svc.WITHHELD_NOT_YET)]

@@ -2485,7 +2485,10 @@ def review_needs_person(item: Item) -> str | None:
     - a `blocker` is set. On a review row that is a person-only step; a reviewer cannot clear it.
     - `NOT_YET_LIMIT` distinct reviewers said NOT YET on the current head and the current
       description, and no person wrote a `review requeued` note after them. A new head, an
-      acceptance edit, or that note releases it.
+      acceptance edit, or that note releases it — and so does a passing `suite_green`
+      attestation recorded after them whose commit or range includes the current head
+      (GRPH-1959): a NOT YET that only waited on CI has its answer. A green recorded BEFORE
+      the NOT YETs does not: those reviewers already saw it and still said NOT YET.
     """
     if item.status != "review":
         return None
@@ -2501,6 +2504,9 @@ def review_needs_person(item: Item) -> str | None:
         if detail.lower().startswith(REVIEW_REQUEUED):
             said = {}
             continue
+        if _suite_green_releases(e, head):
+            said = {}
+            continue
         # A note from before GRPH-1830 names no head, so it cannot be matched to this one.
         m = _NOT_YET.match(detail)
         if m and m.group(3) == revision and m.group(4) == acc:
@@ -2512,7 +2518,22 @@ def review_needs_person(item: Item) -> str | None:
     return (f"review_skipped: {len(said)} reviewers ({', '.join(sorted(said))}) said NOT YET "
             f"on head {head[:12]} and its acceptance has not changed "
             f"since: {last[:300]}. Released when the head changes, the description is edited, "
+            f"CI attests a passed {items_svc.CI_PREDICATE} on that head, "
             f"or a person writes a `{REVIEW_REQUEUED}` note")
+
+
+def _suite_green_releases(e: dict, head: str) -> bool:
+    """A passing `suite_green` attestation whose commit or range includes `head` (GRPH-1959).
+
+    Run-start markers are not verdicts (`attestation_receipts` drops them). A failing
+    predicate on the same receipt wins (`_suite_green_flag`). No head is never a match.
+    """
+    if not head or head == "none" or not items_svc.attestation_receipts([e]):
+        return False
+    if _suite_green_flag(e) is not True:
+        return False
+    covered = [str(e.get("commit") or "")] + list(e.get("range") or [])
+    return any(items_svc.same_commit(c, head) for c in covered)
 
 
 #: The `detail` prefix gbfleet writes when a review row's branch is no longer a head on its
