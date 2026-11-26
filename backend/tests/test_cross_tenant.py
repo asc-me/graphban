@@ -148,6 +148,8 @@ PROBE_PARAMS = {
     "/api/agent/code/for": {"ref_id": "x"},
     "/api/agent/code/neighbors": {"path": "a/b.py"},
     "/api/public/duplicates": {"q": "hello"},
+    # A key that names a `{path}` segment fills it; the rest are query params.
+    "/api/projects/{project_id}/rules/import-runs/{run_id}": {"run_id": "1"},
 }
 
 # Deliberately EMPTY, and that is a finding rather than an oversight: every one of the 36
@@ -198,8 +200,12 @@ def test_every_project_scoped_read_blocks_another_org(client, tenants):
         if path in CROSS_TENANT_EXEMPT:
             continue
         query = {"project_id": pb} if "{project_id}" not in path else {}
-        query.update(PROBE_PARAMS.get(path, {}))
         url = path.replace("{project_id}", pb)
+        for k, v in PROBE_PARAMS.get(path, {}).items():
+            if "{" + k + "}" in url:
+                url = url.replace("{" + k + "}", v)
+            else:
+                query[k] = v
         if query:
             url += "?" + "&".join(f"{k}={v}" for k, v in query.items())
 

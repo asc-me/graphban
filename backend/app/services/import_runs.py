@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.errors import AppError, NotFound, Refused, Validation
 from app.models import ImportFinding, ImportRun, Project, RuleProposal, User
 from app.security import authz
-from app.services import rule_pack, rule_proposals
+from app.services import handles, rule_pack, rule_proposals
 
 BUCKETS = ("proposed", "external", "gap")
 
@@ -61,7 +61,7 @@ def create_run(db: Session, user: User, project_id: str, *, commit: object,
     run = ImportRun(project_id=project_id, commit_sha=sha,
                     sources_read=_sources(sources_read, "sources_read"),
                     sources_unread=_sources(sources_unread, "sources_unread"),
-                    created_by=user.handle or user.name)
+                    created_by=handles.project_handle(db, user, project_id) or user.name)
     db.add(run)
     db.flush()
     who = f"import:{run.id}"
