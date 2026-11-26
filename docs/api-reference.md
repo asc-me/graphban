@@ -869,6 +869,19 @@ Pushing and the portable bundle are a JWT on this box.
 | POST | `/api/sync/import` | JWT (write) | Import a bundle. This instance re-embeds on arrival |
 | GET | `/api/documents/{doc_id}/bytes` | JWT (read) | The stored bytes of a document blob by id; 409 `blob_pending` while the backend write is pending, 404 with no row |
 
+**Team-triage people and decisions (GRPH-1722), outbound.** Every sync, before it pulls the
+team-triage decisions, the box sends the console `POST /api/sync/assignable-people` once per named
+project, as `?project=<name>` with the body exactly `{"people": [{id, name}]}`: the users with
+write access to that project (`id` is the user id, `name` the display name). It never sends an
+email, and the console refuses any other field with `422`. A project nobody can be assigned on
+sends `people: []`. The console reads that as a list with nobody on it, which is not the same as
+never sent. The console's `assign` decision then serves `assignee: {id, name}`. The box sets the
+item's assignee to that user's handle on the project, or reports `refused` `not_assignable` and
+leaves the item unchanged. Its `duplicate` decision serves `duplicate_of: {item_id}`. The box
+links the target as a duplicate of that item, or reports `refused` with `not_found` (an item this
+box does not hold) or `wrong_project`. A `404` on the first project means the console does not
+serve the route, and nothing is reported. A failed push never fails the sync.
+
 ## Spec reader (GRPH-1319 / GRPH-P66)
 
 The reader's surface over the preamble, set constraints and design sets, which were MCP-only

@@ -81,6 +81,10 @@ class _Console:
         self.post_override = post
         self.missing = missing
         self.gets, self.posts, self.refused = [], [], []
+        # `params` of every report POST, in order: the report must name its project.
+        self.post_params = []
+        # `POST /api/sync/assignable-people`, by project: the last set accepted.
+        self.people, self.people_refused = {}, []
 
     def install(self, monkeypatch):
         import httpx
@@ -97,8 +101,11 @@ class _Console:
                            "decisions": self.decisions.get(name, [])})
 
     def post(self, url, params=None, json=None, **k):
+        if url.endswith("/api/sync/assignable-people"):
+            return self._people(params, json)
         if self.post_override is not None:
             return self.post_override(url, params=params, json=json, **k)
+        self.post_params.append(dict(params or {}))
         body = json if isinstance(json, dict) else {}
         detail = self._invalid(body)
         if detail:
@@ -107,6 +114,33 @@ class _Console:
         self.posts.append((url, body))
         return _Resp(200, {"record": "triage_decision", "id": body["decision_id"],
                            "status": body["outcome"]})
+
+    def _people(self, params, body):
+        """The console's `validatePeople`: exactly `{people: [{id, name}]}`, anything else 422."""
+        name = (params or {}).get("project")
+        detail = ""
+        if not isinstance(body, dict) or not isinstance(body.get("people"), list):
+            detail = "people must be a list"
+        else:
+            extra = [k for k in body if k != "people"]
+            if extra:
+                detail = f"{extra[0]} is not a people field"
+            for p in body["people"]:
+                if detail:
+                    break
+                if not isinstance(p, dict):
+                    detail = "each person is {id, name}"
+                    break
+                bad = [k for k in p if k not in ("id", "name")]
+                if bad:
+                    detail = f"{bad[0]} is not a person field"
+                elif not all(isinstance(p.get(k), str) and p[k].strip() for k in ("id", "name")):
+                    detail = "each person needs id and name"
+        if detail:
+            self.people_refused.append((name, body, detail))
+            return _Resp(422, {"detail": detail})
+        self.people[name] = list(body["people"])
+        return _Resp(200, {"record": "assignable_people", "count": len(body["people"])})
 
     @staticmethod
     def _invalid(body):
@@ -166,6 +200,8 @@ def test_each_decision_is_reported_by_its_own_post(client, auth, db, monkeypatch
     assert out == {"applied": 1, "refused": 1, "errors": []}
     assert ("https://console.test/api/sync/triage-decisions", name) in console.gets
     assert console.refused == []
+    # Each report names the project it was pulled for, exactly as the GET did.
+    assert console.post_params == [{"project": name}, {"project": name}]
     applied = "https://console.test/api/sync/triage-decisions/applied"
     assert console.posts == [
         (applied, {"decision_id": _did(1), "outcome": "applied", "reason": ""}),
@@ -307,3 +343,151 @@ def test_a_failed_report_is_retried_next_sync_without_reapplying(client, auth, d
     assert len(db.scalars(select(Event).where(Event.action == triage.APPLIED_ACTION)).all()) == 1
     db.expire_all()
     assert db.query(Item).filter(Item.title == "Retry").one().status == "next"
+
+
+# ---- `duplicate` and `assign` (GBC-277 / GRPH-1722) ----
+
+def _dup(id, key, of, note=""):
+    return {**_decision(id, _at(key), "duplicate", note), "duplicate_of": {"item_id": of}}
+
+
+def _assign(id, key, person):
+    return {**_decision(id, _at(key), "assign"), "assignee": person}
+
+
+def _dup_links(db, a):
+    from app.models import Link
+    db.expire_all()
+    return [(l.a, l.b) for l in db.scalars(select(Link).where(
+        Link.a == a, Link.reason == "duplicate_of"))]
+
+
+def test_a_console_duplicate_links_the_item_and_reports_applied(client, auth, db, monkeypatch):
+    dup = _item(client, auth, "Dup copy")
+    orig = _item(client, auth, "Dup original")
+    name = _project_name(db)
+    console = _Console({name: [_dup(_did(20), dup, orig)]}).install(monkeypatch)
+
+    out = triage.pull_decisions(db, cloud_url="https://c", api_key="k")
+    assert out == {"applied": 1, "refused": 0, "errors": []}
+    assert console.refused == []
+    assert console.posts == [("https://c/api/sync/triage-decisions/applied",
+                              {"decision_id": _did(20), "outcome": "applied", "reason": ""})]
+    assert _dup_links(db, dup) == [(dup, orig)]
+
+
+def test_a_console_duplicate_of_an_item_the_box_does_not_hold_is_refused(client, auth, db,
+                                                                        monkeypatch):
+    from app.models import Project
+    dup = _item(client, auth, "Dup orphan")
+    from app.services import items as items_svc
+    db.add(Project(id="elsewhere", name="Elsewhere", tag="ELSE"))
+    db.commit()
+    other_key = items_svc.create_item(db, title="Other project", project_id="elsewhere").key
+    name = _project_name(db)
+    console = _Console({name: [_dup(_did(21), dup, "GRPH-99999"),
+                               _dup(_did(22), dup, other_key)]}).install(monkeypatch)
+
+    out = triage.pull_decisions(db, cloud_url="https://c", api_key="k")
+    assert out["applied"] == 0 and out["refused"] == 2
+    assert console.refused == []
+    assert [b for _, b in console.posts] == [
+        {"decision_id": _did(21), "outcome": "refused", "reason": "not_found"},
+        {"decision_id": _did(22), "outcome": "refused", "reason": "wrong_project"},
+    ]
+    assert _dup_links(db, dup) == []
+
+
+def _writer(db, uid, name, project="core", access="write"):
+    from app.models import Membership, User
+    db.add(User(id=uid, name=name, handle=uid.replace("_", "-"), email=f"{uid}@example.test",
+                password_hash="x"))
+    db.add(Membership(user_id=uid, project_id=project, role="member", access=access))
+    db.commit()
+
+
+def test_a_console_assign_sets_the_assignee_and_reports_applied(client, auth, db, monkeypatch):
+    key = _item(client, auth, "Assign me")
+    _writer(db, "u_ada", "Ada Lovelace")
+    name = _project_name(db)
+    console = _Console({name: [_assign(_did(30), key, {"id": "u_ada", "name": "Ada Lovelace"})]}
+                       ).install(monkeypatch)
+
+    out = triage.pull_decisions(db, cloud_url="https://c", api_key="k")
+    assert out == {"applied": 1, "refused": 0, "errors": []}
+    assert [b for _, b in console.posts] == [
+        {"decision_id": _did(30), "outcome": "applied", "reason": ""}]
+    db.expire_all()
+    assert db.query(Item).filter(Item.title == "Assign me").one().assignee == "u-ada"
+
+
+def test_a_console_assign_to_someone_not_assignable_is_refused_and_unchanged(client, auth, db,
+                                                                           monkeypatch):
+    key = _item(client, auth, "Keep my assignee")
+    db.expire_all()
+    db.query(Item).filter(Item.title == "Keep my assignee").one().assignee = "before"
+    db.commit()
+    _writer(db, "u_reader", "Read Only", access="read")
+    name = _project_name(db)
+    console = _Console({name: [
+        _assign(_did(31), key, {"id": "u_nobody", "name": "Nobody"}),
+        _assign(_did(32), key, {"id": "u_reader", "name": "Read Only"}),
+    ]}).install(monkeypatch)
+
+    out = triage.pull_decisions(db, cloud_url="https://c", api_key="k")
+    assert out["applied"] == 0 and out["refused"] == 2
+    assert console.refused == []
+    assert [b["reason"] for _, b in console.posts] == ["not_assignable", "not_assignable"]
+    db.expire_all()
+    assert db.query(Item).filter(Item.title == "Keep my assignee").one().assignee == "before"
+
+
+# ---- the assignable-people push ----
+
+def test_the_people_fake_refuses_any_field_but_id_and_name(db, monkeypatch):
+    import httpx
+    console = _Console({}).install(monkeypatch)
+    url = "https://c/api/sync/assignable-people"
+    assert httpx.post(url, params={"project": "p"},
+                      json={"people": [{"id": "u", "name": "U", "email": "u@x"}]}
+                      ).status_code == 422
+    assert httpx.post(url, params={"project": "p"},
+                      json={"people": [], "project": "p"}).status_code == 422
+    assert console.people == {} and len(console.people_refused) == 2
+
+
+def test_each_project_pushes_exactly_id_and_name_and_an_empty_one_pushes_none(client, auth, db,
+                                                                           monkeypatch):
+    from app.models import Project
+    _writer(db, "u_grace", "Grace Hopper")
+    _writer(db, "u_viewer", "Just Looking", access="read")
+    db.add(Project(id="empty", name="Nobody Here", tag="NOBO"))
+    db.commit()
+    name = _project_name(db)
+    console = _Console({}).install(monkeypatch)
+
+    out = triage.push_assignable_people(db, cloud_url="https://c", api_key="k")
+    assert out["errors"] == [] and console.people_refused == []
+    assert {"id": "u_grace", "name": "Grace Hopper"} in console.people[name]
+    assert all(set(p) == {"id", "name"} for p in console.people[name])
+    assert "u_viewer" not in {p["id"] for p in console.people[name]}
+    assert console.people["Nobody Here"] == []
+    assert set(out["pushed"]) == set(console.people)
+
+
+def test_a_console_without_the_people_route_is_not_pushed(client, auth, db, monkeypatch):
+    import httpx
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: _Resp(404))
+    assert triage.push_assignable_people(db, cloud_url="https://c", api_key="k") is None
+
+
+def test_the_sync_tail_pushes_people_before_it_pulls_decisions(client, auth, db, monkeypatch):
+    from app.services import code_sync
+    calls = []
+    monkeypatch.setattr(triage, "push_assignable_people",
+                        lambda db, **k: calls.append("people") or {"pushed": [], "errors": []})
+    monkeypatch.setattr(triage, "pull_decisions",
+                        lambda db, **k: calls.append("decisions") or {"applied": 0})
+    out = code_sync._sync_tail(db, "https://c", "k")
+    assert calls == ["people", "decisions"]
+    assert out["assignable_people"] == {"pushed": [], "errors": []}
