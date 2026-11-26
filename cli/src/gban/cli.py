@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from gban import codemap, codemap_service, config, doctor as doctor_mod, machine as machine_mod, playbooks, scan as scan_mod, setup as setup_mod, stackmap, swamp as swamp_mod
+from gban import codemap, codemap_service, config, doctor as doctor_mod, machine as machine_mod, playbooks, rules as rules_mod, scan as scan_mod, setup as setup_mod, stackmap, swamp as swamp_mod
 from gban.client import (EXIT_NO_SESSION, EXIT_NO_SUPERVISOR, EXIT_REFUSED, EXIT_UNREACHABLE,
                        Client, NoSession,
                        Refused, Unreachable, authenticated, login, pair_poll,
@@ -227,6 +227,20 @@ def _parser() -> argparse.ArgumentParser:
                       help="repeatable; the first is the role the agent registers into")
     mint.add_argument("--wave", default="wave-1")
     mint.add_argument("--label", default="")
+
+    rules_cmd = sub.add_parser("rules", help="bring the repo's existing requirements in")
+    rules_do = rules_cmd.add_subparsers(dest="act", required=True)
+    rules_import = rules_do.add_parser(
+        "import", help="open an import run over this repo",
+        description=("--prose opens a run listing the repo's prose sources (CONTRIBUTING.md, "
+                     "ADRs, architecture docs, AGENTS.md, CLAUDE.md, .cursorrules, "
+                     ".github/copilot-instructions.md) as unread, and prints the skill "
+                     "invocation for your own agent. Nothing here reads prose; the run stays "
+                     "unclean until an agent does. Reads the repo only, never writes it."))
+    rules_import.add_argument("--prose", action="store_true",
+                              help="open the run for the graphban-rules-import skill")
+    rules_import.add_argument("--repo", default=None,
+                              help="repository to read (default: the current directory)")
     return parser
 
 
@@ -981,13 +995,34 @@ def cmd_keys(args) -> int:
     return 0
 
 
+def cmd_rules(args) -> int:
+    if not args.prose:
+        print(f"{PROG}: `{PROG} rules import` reads prose only in this build: pass --prose. "
+              "Structured sources are read by the server's parsers.", file=sys.stderr)
+        return EXIT_REFUSED
+    url, project = _server(args), _project(args, "rules import")
+    repo = Path(args.repo) if args.repo else Path.cwd()
+    try:
+        body = rules_mod.run_body(repo)
+    except rules_mod.Unreadable as exc:
+        # Never an empty run: "could not look" must not read as "nothing to read".
+        print(f"{PROG}: {exc}\n     no import run was opened.", file=sys.stderr)
+        return EXIT_REFUSED
+    run = authenticated(url, act="rules import").call(
+        "POST", f"/api/projects/{project}/rules/import-runs", body)
+    _out(dict(run, invocation=rules_mod.invocation(run)), rules_mod.summary(run, PROG),
+         args.as_json)
+    return 0
+
+
 def cmd_update(args) -> int:
     return 0  # the poll itself runs in main(), forced for this verb
 
 
 COMMANDS = {"update": cmd_update, "login": cmd_login, "logout": cmd_logout, "whoami": cmd_whoami,
             "doctor": cmd_doctor, "setup": cmd_setup, "fleet": cmd_fleet, "seats": cmd_seats,
-            "agents": cmd_agents, "keys": cmd_keys, "swamp": cmd_swamp, "stack": cmd_stack, "code": cmd_code, "scan": cmd_scan}
+            "agents": cmd_agents, "keys": cmd_keys, "swamp": cmd_swamp, "stack": cmd_stack, "code": cmd_code, "scan": cmd_scan,
+            "rules": cmd_rules}
 
 
 def _poll(args) -> None:

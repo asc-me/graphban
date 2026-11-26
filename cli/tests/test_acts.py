@@ -163,6 +163,7 @@ INVOCATIONS = {
     "seats revoke-unused": ["seats", "revoke-unused"],
     "agents role": ["agents", "role", "a1", "planner"],
     "keys mint": ["keys", "mint", "--role", "worker"],
+    "rules import": ["rules", "import", "--prose"],
 }
 #: Driven separately: `login` sends a password (its own test), `doctor` and `fleet` are PR 2,
 #: `setup` writes config files and so needs a repository and a target of its own

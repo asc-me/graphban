@@ -1916,3 +1916,6 @@ def test_rules_import_skill_files_only_through_propose_rule():
     assert "`propose_rule`" in body and "never edit rules directly" in body
     assert "Quote the line" in body and "kind: guidance" in body
     assert "stays listed as unread" in body and "no local-model fallback" in body
+    # The call shape the server reads (GRPH-1952): the run, the quote, and the read sources.
+    assert "`import_run: <id>`" in body and "`sources_read: [paths]`" in body
+    assert "`external`" in body and "guarantee nothing" in body
