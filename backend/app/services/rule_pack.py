@@ -51,7 +51,7 @@ from app.version import __version__
 
 #: The primitive API this server provides. Bump the minor for additive changes, the major for
 #: a removed primitive or a new required param; the pinned fixtures then fail the PR (below).
-PRIMITIVE_API = "1.11.0"
+PRIMITIVE_API = "1.12.0"
 
 #: Raw Ed25519 public keys (hex) whose signatures are trusted. The graphban-rules signing job
 #: holds the matching private key; it never enters this repo. An empty tuple would refuse every pack.
@@ -203,6 +203,12 @@ register_primitive(Primitive(
     "memory_write_mode", "enforced",
     Enforcer("graphban_source", "app/services/memory.py"),
     {"mode": Param("str")}, stage="Learn"))
+# GRPH-1954. `enforced`: `items.update_item` refuses `done` without a passing `fleet.sign_off`
+# receipt at the item's head while `review.sign_off_before_done` is on (GRPH-1940). Without it
+# no pack could ship the rule's template, so no person or profile could turn the gate off.
+register_primitive(Primitive(
+    "sign_off_before_done", "enforced",
+    Enforcer("graphban_source", "app/services/items.py"), stage="Review"))
 register_primitive(Primitive(
     "evidence_attached", "checked",
     Enforcer("graphban_source", "app/services/items.py"),

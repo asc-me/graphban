@@ -198,3 +198,90 @@ def test_a_resolution_close_still_closes_with_no_sign_off(db):
                                  reason="filed twice", actor="planner-1")
 
     assert out.status == "done"
+
+
+# ---- through the pack loader (GRPH-1954) ---------------------------------------------------
+
+TEMPLATE = f'''id = "{RULE}"
+stage = "Review"
+title = "Sign-off before done"
+summary = "done needs an independent fleet.sign_off at the item's head."
+primitive = "sign_off_before_done"
+claims = "enforced"
+default = "on"
+'''
+PACK = 'name = "gate"\nversion = "0.0.1"\nprimitive_api = "1.12.0"\nmin_server = "2026.10.1"\n'
+
+
+def _signed_pack():
+    import io
+    import tarfile
+
+    from tests.test_rule_pack import KEY
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for rel, text in sorted({"pack.toml": PACK,
+                                 "templates/sign_off.toml": TEMPLATE}.items()):
+            data = text.encode()
+            ti = tarfile.TarInfo(rel)
+            ti.size = len(data)
+            tf.addfile(ti, io.BytesIO(data))
+    art = buf.getvalue()
+    return art, KEY.sign(art)
+
+
+@pytest.fixture()
+def loaded(monkeypatch):
+    """The rule's template as the pack ships it, loaded and registered by the real loader."""
+    from app.services import rule_pack as P
+    from tests.test_rule_pack import TRUST
+    monkeypatch.setattr(T, "LIBRARY", {})
+    pack = P.load(*_signed_pack(), trusted_keys=TRUST)
+    for tid, t in pack.templates.items():
+        T.register(P._library_rule(tid, t, pack.refused.get(tid, "")))
+    return pack
+
+
+def test_the_template_binds_to_a_published_review_primitive(loaded):
+    from app.services import rule_pack as P
+    assert loaded.refused == {}
+    assert T.LIBRARY[RULE].enforcement == "enforced"
+    published = {p["id"]: p for p in P.contract()["primitives"]}
+    assert published["sign_off_before_done"]["stage"] == "Review"
+    assert published["sign_off_before_done"]["level"] == "enforced"
+    assert P.contract()["api_version"] == "1.12.0"
+
+
+def test_a_loaded_template_switched_off_lets_a_ci_receipt_close_without_sign_off(
+        client, auth, db, loaded):
+    on_item = _attested_in_review(db)
+    key = _planner_key(client, auth, db)
+
+    refused = _rpc(client, key, "update_item", {"id": on_item.id, "status": "done"})["result"]
+    assert refused.get("isError"), refused
+    err = refused["structuredContent"]["error"]
+    assert err["code"] == "conflict" and RULE in err["message"], err
+    assert _status(db, on_item.id) == "review"
+
+    r = client.put(f"/api/rules/toggles/{RULE}", params={"project_id": "core"},
+                   json={"on": False, "reason": "exploratory project"}, headers=auth)
+    assert r.status_code == 200, r.text
+    off_item = _attested_in_review(db)
+
+    out = _rpc(client, key, "update_item", {"id": off_item.id, "status": "done"})["result"]
+    assert not out.get("isError"), out
+    assert _status(db, off_item.id) == "done"
+    assert not items_svc.signed_off_at(items_svc.get_item(db, off_item.id).evidence, HEAD)
+
+
+def test_without_the_primitive_the_template_is_refused_and_the_rule_reads_on(
+        db, monkeypatch):
+    from app.services import rule_pack as P
+    from tests.test_rule_pack import TRUST
+    monkeypatch.delitem(P.PRIMITIVES, "sign_off_before_done")
+    monkeypatch.setattr(T, "LIBRARY", {})
+
+    pack = P.load(*_signed_pack(), trusted_keys=TRUST)
+
+    assert "does not exist" in pack.refused[RULE]
+    assert T.sign_off_before_done(db, "core") is True
