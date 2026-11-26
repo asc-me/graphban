@@ -169,7 +169,8 @@ re-checked. A predicate that did not run is not a pass, and it must be attested 
 
 ## `review.sign_off_before_done` — `done` needs an independent sign-off (GRPH-1940)
 
-Stage Review, enforced in `items.update_item`. On means `update_item` (MCP or REST `PATCH`) to
+Stage Review, enforced in `items.update_item`; primitive `sign_off_before_done` (`enforced`,
+no params, primitive API 1.12.0, GRPH-1954), so a pack template binds to it. On means `update_item` (MCP or REST `PATCH`) to
 `done` is refused `409` / `conflict` unless the item carries a passing `fleet.sign_off` receipt
 at its head — however many done predicates are attested, and whichever key calls. Attested is
 not reviewed: before this rule a planner key with no fleet on it could close an item nobody
@@ -249,7 +250,7 @@ A project can only *change* a rule once the box's pack carries it.
 
 ## Primitive stage and direction (P91 S1)
 
-Every primitive in the contract (`docs/rule-primitive-contract.json`, primitive API 1.11.0)
+Every primitive in the contract (`docs/rule-primitive-contract.json`, primitive API 1.12.0)
 declares a `stage` (one of the seven) and an `on_direction`: whether switching the rule on
 `tighten`s or `loosen`s what agents may do (`generated_files` loosens; the rest tighten). A param
 may declare a `comparator` (`greater_tightens`, `greater_loosens`, `superset_tightens`,
