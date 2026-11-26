@@ -19,6 +19,7 @@ import { useGraphViewport, zoomAbout } from "@/lib/graph/useGraphViewport";
 import { useGitops, useRulePack, useRulePackAvailable, useRulesFlow, useUnmappedRefusals } from "@/lib/queries";
 import { projectPath, settingsPath, tagFromPath } from "@/lib/routes";
 import { ObservingRules } from "./ObservingRules";
+import { ImportReport } from "./ImportReport";
 import { ProposalsStrip } from "./ProposalsStrip";
 import { StageProposals } from "./StageProposals";
 import type { RuleFlowRule, RuleStage, RuleSuggestion, RulesFlow } from "@/lib/types";
@@ -318,6 +319,7 @@ export function RulesView() {
             onSetup={() => { setQuick(null); setWizard(true); }}
           />
         )}
+        <ImportReport />
         <ProposalsStrip stageFilter={proposalStage} onClearFilter={() => setProposalStage(null)} />
         {q.isError && !flow ? (
           <LoadError detail={errorDetail(q.error, "request failed")} onRetry={() => void q.refetch()} />

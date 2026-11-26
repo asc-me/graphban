@@ -4368,6 +4368,42 @@ class RuleGuidance(Base):
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class ImportRun(Base):
+    """One rules import over a project's repo (GRPH-1951 / P92 D3).
+
+    A record: the project, the commit read, the sources read and the sources that could not be
+    read (each with why). Its proposals carry `import:<id>` as proposer.
+    """
+
+    __tablename__ = "import_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    commit_sha: Mapped[str] = mapped_column(String)
+    sources_read: Mapped[list] = mapped_column(JSON, default=list)
+    sources_unread: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ImportFinding(Base):
+    """One finding of an import run, in one bucket: `proposed` (a rule proposal), `external`
+    (enforced outside Graphban) or `gap` (guidance plus a primitive gap)."""
+
+    __tablename__ = "import_findings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("import_runs.id"), index=True)
+    bucket: Mapped[str] = mapped_column(String)
+    stage: Mapped[str] = mapped_column(String)
+    quote: Mapped[str] = mapped_column(Text)
+    source: Mapped[dict] = mapped_column(JSON, default=dict)
+    label: Mapped[str | None] = mapped_column(String, nullable=True)
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proposal_id: Mapped[int | None] = mapped_column(ForeignKey("rule_proposals.id"), nullable=True)
+    guidance_id: Mapped[int | None] = mapped_column(ForeignKey("rule_guidance.id"), nullable=True)
+
+
 class PrimitiveGapCount(Base):
     """How often a requirement of this stage and short label had no primitive (GRPH-1780).
 
