@@ -75,10 +75,11 @@ def _proposal(f: Finding) -> tuple[dict | None, str]:
     """The proposal this finding can file, or `(None, why not)`."""
     cites = [f.citation.as_dict()]
     if f.rule_id:
-        if RP._PRIMITIVE_OF.get(f.rule_id) is None and not _pack_has(f.rule_id):
+        primitive = _library_primitive(f.rule_id)
+        if primitive is None:
             return None, f"{f.rule_id} is not a library rule"
-        return {"kind": "tighten", "rule_id": f.rule_id, "params": dict(f.params),
-                "citations": cites}, ""
+        return {"kind": _tighten_kind(primitive, f.params), "rule_id": f.rule_id,
+                "params": dict(f.params), "citations": cites}, ""
     if f.primitive and f.slug:
         if f.primitive not in rule_pack.PRIMITIVES:
             return None, f"primitive {f.primitive!r} does not exist"
@@ -91,9 +92,27 @@ def _proposal(f: Finding) -> tuple[dict | None, str]:
     return None, "no library rule or evaluated primitive names it"
 
 
-def _pack_has(rule_id: str) -> bool:
+def _library_primitive(rule_id: str) -> str | None:
+    """The primitive a library rule is bound to, as `rule_proposals` resolves it, else None."""
     pack = rule_pack.CURRENT
-    return bool(pack and rule_id in pack.templates)
+    t = pack.templates.get(rule_id) if pack else None
+    if t and t.get("primitive") in rule_pack.PRIMITIVES:
+        return t["primitive"]
+    return RP._PRIMITIVE_OF.get(rule_id)
+
+
+def _tighten_kind(primitive: str, params: dict) -> str:
+    """`tighten` when a changed param has a comparator, else `turn_on`.
+
+    A param with no comparator (`evidence_required`'s `path` and `engine`) has no direction
+    between two values, so `propose` would refuse a `tighten` of it. Turning the rule on with
+    those params is a tighten by the primitive's `on_direction`; when the rule is already on,
+    `propose` refuses it as already on, and a person sets the value.
+    """
+    spec = rule_pack.PRIMITIVES[primitive].params
+    if params and not any(spec.get(n) is not None and spec[n].comparator for n in params):
+        return "turn_on"
+    return "tighten"
 
 
 def classify(f: Finding) -> Placed:

@@ -122,3 +122,60 @@ def test_external_alongside_payload_is_accepted_by_propose(project):
                     rule_id="build.generated_files", params={"paths": ["gen/"]}))
     assert p.bucket == "external" and p.external["source"]["ref"]["path"] == ".gitattributes"
     _file(pid, p.proposal)
+
+
+# ---- build.engine_evidence for db/ on Postgres (bounce on attempt 2) -----------------------
+
+WF = Citation(".github/workflows/ci.yml", "20-31", "deadbeef",
+              "paths: ['db/**'] ... services: postgres")
+
+
+@pytest.fixture()
+def engine_rule(project, monkeypatch):
+    """`build.engine_evidence` as the shipped pack binds it: a template on `evidence_required`."""
+    from app.services import rule_pack as P
+    from app.services import rule_toggles as T
+    from app.services import rules as R
+    rid = "build.engine_evidence"
+    prim = P.PRIMITIVES["evidence_required"]
+    T.register(T.LibraryRule(
+        id=rid, stage="build", title="Engine evidence", summary="s", enforcement=prim.level,
+        enforcer=R.Enforcer("graphban_source", "app/services/items.py"), default_on=False,
+        default_params={"path": "alembic/versions/", "engine": "postgres"}))
+    monkeypatch.setattr(P, "CURRENT", P.Pack(
+        "t", "1.0.0", P.PRIMITIVE_API, "0.0.0",
+        {rid: {"id": rid, "primitive": "evidence_required"}}, {}, {}, []))
+    return project
+
+
+def test_engine_evidence_for_db_on_postgres_is_a_fileable_tighten(engine_rule):
+    """Acceptance: a workflow running Postgres tests on `db/**` files a `build.engine_evidence`
+    tighten for `db/` on Postgres, cited by file, lines and commit, and the pipeline takes it."""
+    pid, seen = engine_rule
+    p = classify(_f(citation=WF, rule_id="build.engine_evidence",
+                    params={"path": "db/", "engine": "postgres"}))
+    # `path`/`engine` carry no comparator, so the tighten is filed as turning the rule on.
+    assert p.bucket == "proposal" and p.proposal["kind"] == "turn_on"
+    cites = _file(pid, p.proposal)
+    assert seen == [(".github/workflows/ci.yml", "deadbeef")]
+    assert cites[0]["ref"] == {"path": ".github/workflows/ci.yml", "commit": "deadbeef",
+                               "lines": "20-31"}
+
+
+def test_engine_evidence_already_on_is_refused_not_misfiled(engine_rule, client):
+    """When the rule is already on, `propose` refuses the change (no direction between two
+    paths); the classifier never dresses it up as a `tighten` the pipeline would compute."""
+    pid, _ = engine_rule
+    from app.services import rule_toggles as T
+    T.LIBRARY["build.engine_evidence"] = T.LIBRARY["build.engine_evidence"].__class__(
+        **{**T.LIBRARY["build.engine_evidence"].__dict__, "default_on": True})
+    p = classify(_f(citation=WF, rule_id="build.engine_evidence",
+                    params={"path": "db/", "engine": "postgres"}))
+    from app.db import SessionLocal
+    db = SessionLocal()
+    try:
+        with pytest.raises(Exception, match="already on"):
+            RP.propose(db, project_id=pid, proposer_kind="import", proposer="rules-import",
+                       **p.proposal)
+    finally:
+        db.close()
