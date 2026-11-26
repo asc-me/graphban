@@ -479,12 +479,95 @@ def test_a_failed_project_push_is_reported_then_cleared(client, monkeypatch, res
 
 
 def test_a_refused_triage_or_spec_report_is_not_a_failing_box(client, monkeypatch):
-    # Those reports store nothing on `sync_project`; only a project push can fail the box.
+    """A full sync tail where the console 422s the triage-decision report and the spec
+    revision report: neither makes the box failing."""
+    from app.services import code_sync, triage
+    from app.services import prds as prd_svc
+
+    db, fake = _gated_setup(monkeypatch, ["box_build"])
+    prd = prd_svc.create_prd(db, title="Mine", project_id="north")
+    cur = prd_svc.body_hash(prd_svc.get_prd(db, prd.id).body)
+    _sync_row(db, "ok")
+    refused: list[str] = []
+
+    class Resp:
+        def __init__(self, status, body=None):
+            self.status_code, self._body = status, body
+
+        def json(self):
+            return self._body
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError("no", request=None, response=None)
+
+    def get(url, params=None, headers=None, timeout=None):
+        if url.endswith("/api/config"):
+            return Resp(200, {"features": ["specs"]})
+        if url.endswith("/api/sync/specs") and params["project"] == "North":
+            return Resp(200, {"revisions": [{"id": 7, "prd_id": prd.id, "base_hash": cur,
+                                             "body_markdown": "# Mine\n\n## Overview\n\nnew\n",
+                                             "author": "Dana"}]})
+        if url.endswith("/api/sync/specs"):
+            return Resp(200, {})
+        if url.endswith(triage.DECISIONS_FEATURE_PATH) and params["project"] == "North":
+            return Resp(200, {"decisions": [{"id": "d1", "author": {"name": "Mo"}}]})
+        if url.endswith(triage.DECISIONS_FEATURE_PATH):
+            return Resp(200, {"decisions": []})
+        return Resp(404)
+
+    def post(url, json=None, headers=None, timeout=None, params=None):
+        if url.endswith("/api/sync/box-push"):
+            return fake(url, json=json, headers=headers, timeout=timeout)
+        if url.endswith("/applied"):
+            refused.append(url)
+            return Resp(422, {"detail": "no"})
+        return Resp(404)
+
+    monkeypatch.setattr(httpx, "get", get)
+    monkeypatch.setattr(httpx, "post", post)
+    monkeypatch.setattr(httpx, "request", lambda *a, **k: Resp(404))
+    monkeypatch.setattr(code_sync, "link_status", lambda _db: {"linked": True})
+    code_sync._sync_tail(db, "https://c", "k")  # receipt names box_build
+    code_sync._sync_tail(db, "https://c", "k")  # gated push after both reports were refused
+    code_sync._sync_tail(db, "https://c", "k")  # and again after the second refusals
+    assert any(u.endswith("/api/sync/specs/applied") for u in refused)
+    assert any(u.endswith(triage.DECISIONS_FEATURE_PATH + "/applied") for u in refused)
+    db.expire_all()
+    assert db.get(SyncProject, "north").last_push_result == "ok"
+    gated = [b for b in fake.bodies if "failing" in b]
+    assert len(gated) == 2 and all(b["failing"] is None for b in gated)  # null, never omitted
+    db.close()
+
+
+@pytest.mark.parametrize("sha,sent", [("0123abcd" * 5, True), ("unknown", False),
+                                      ("abc", False), ("zz" * 10, False)])
+def test_git_sha_rides_only_when_known_and_valid(client, monkeypatch, sha, sent):
+    from app.config import settings
+
+    monkeypatch.setattr(type(settings), "resolved_git_sha", property(lambda self: sha))
     db, fake = _gated_setup(monkeypatch, ["box_build"])
     _go(db)
-    _sync_row(db, "ok")
     _go(db)
-    assert fake.bodies[-1]["failing"] is None
+    build = fake.bodies[-1]["build"]
+    assert build["version"] == __version__
+    assert build.get("git_sha") == (sha if sent else None)
+    assert ("git_sha" in build) is sent
+    db.close()
+
+
+def test_since_is_the_start_of_a_run_that_began_before_the_gate(client, monkeypatch):
+    db, fake = _gated_setup(monkeypatch, ["box_build"])
+    _sync_row(db, "refused", "first")  # 2026-01-01, before box_build is seen
+    _go(db)
+    assert "failing" not in fake.bodies[0]
+    row = db.get(SyncProject, "north")
+    row.last_push_at = datetime(2026, 1, 5, tzinfo=timezone.utc)  # a later failed attempt
+    row.last_push_reason = "again"
+    db.commit()
+    _go(db)
+    failing = fake.bodies[-1]["failing"]
+    assert failing["since"] == "2026-01-01T00:00:00Z" and failing["reason"] == "again"
     db.close()
 
 

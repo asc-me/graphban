@@ -88,7 +88,13 @@ def _iso(dt: datetime) -> str:
 
 def _failing(db: Session) -> dict | None:
     """The contract's `failing`: set while any synced project's latest push was refused or
-    unknown, else None. Triage and spec-revision reports never touch these rows."""
+    unknown, else None. Triage and spec-revision reports never touch these rows.
+
+    `since` is the start of the run. A row's `last_push_at` is overwritten by every attempt,
+    so the start is held in `_failing_since`, refreshed on every box push, gated or not, so a
+    run that began before `box_build` was seen keeps its start. Accepted limit: that start
+    lives in this process. After a restart mid-run, `since` is the earliest failing row's
+    latest attempt, which is later than the true start of the run."""
     global _failing_since
     rows = list(db.scalars(select(SyncProject).where(
         SyncProject.last_push_result.in_(("refused", "unknown")))))
@@ -317,6 +323,8 @@ def push_box_view(db: Session, *, cloud_url: str, api_key: str) -> dict:
     global _refused_key
     if db.scalar(select(func.count(Project.id))) == 0:
         return {"pushed": False, "reason": "no projects"}
+    if not _box_build_seen:
+        _failing(db)  # keep the run's start before the gate opens; nothing is sent
     body = build_box_push(db, with_counts=console_accepts_counts(cloud_url),
                           with_build=_box_build_seen)
     if body is None:
