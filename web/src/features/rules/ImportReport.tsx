@@ -16,7 +16,7 @@ import { useCanWriteRules } from "./LibraryRuleControls";
 
 export const BUCKET_LABEL: Record<ImportFinding["bucket"], string> = {
   proposed: "Proposed rules",
-  external: "Enforced outside Graphban",
+  external: "EXTERNAL — held outside Graphban, not verified",
   gap: "Guidance (no primitive yet)",
 };
 const BUCKETS: ImportFinding["bucket"][] = ["proposed", "external", "gap"];
