@@ -84,7 +84,7 @@ jobs:
 
 
 def test_cross_repo_workflow_paths_are_unread_not_dropped():
-    f, u = S.parse_workflow(REMOTE, ".github/workflows/ci.yml", commit="abc")
+    _, u = S.parse_workflow(REMOTE, ".github/workflows/ci.yml", commit="abc")
     assert [x["path"] for x in u] == [
         ".github/workflows/ci.yml: jobs.shared uses other-org/ci/.github/workflows/test.yml@v2",
         ".github/workflows/ci.yml: jobs.build.steps[1] uses other-org/actions/lint@main"]

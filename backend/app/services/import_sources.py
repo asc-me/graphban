@@ -16,7 +16,8 @@ import httpx
 from app.config import settings
 
 #: Files whose first lines mark them generated (D1: "DO NOT EDIT" headers).
-_GENERATED_HEADER = re.compile(r"do not edit|code generated|@generated|auto-?generated", re.I)
+_GENERATED_HEADER = re.compile(r"do not edit|code generated|@generated|auto-?generated",
+                               re.IGNORECASE)
 LOCKFILES = ("uv.lock", "poetry.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
              "Cargo.lock", "Gemfile.lock", "go.sum", "composer.lock")
 _FORGE_TIMEOUT = 5.0
