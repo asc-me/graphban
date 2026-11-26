@@ -367,9 +367,13 @@ def feed(db: Session, project_id: str) -> dict:
 # own `POST .../applied` carrying ONE `{decision_id, outcome, reason}`.
 
 DECISIONS_FEATURE_PATH = "/api/sync/triage-decisions"
-# The console serves `accept` | `decline` | `defer`. `duplicate_of`, `park` and `assign_team` are
-# the box's own names, kept for GRPH-1722 to map the console's onto — not removed here.
-DECISION_TYPES = ("accept", "decline", "defer", "duplicate_of", "park", "assign_team")
+# The console serves `accept` | `decline` | `defer` | `duplicate` | `assign` (GBC-277).
+# `duplicate_of`, `park` and `assign_team` are the box's own older names, still applied.
+# `duplicate` carries `duplicate_of: {item_id}`; `assign` carries `assignee: {id, name}`, a PERSON
+# from the list `push_assignable_people` sent — not the team tag `assign_team` writes.
+DECISION_TYPES = ("accept", "decline", "defer", "duplicate", "assign",
+                  "duplicate_of", "park", "assign_team")
+PEOPLE_FEATURE_PATH = "/api/sync/assignable-people"
 APPLIED_ACTION = "triage_decision_applied"
 _TIMEOUT = 30.0
 
@@ -472,6 +476,10 @@ def _apply_one(db: Session, target, decision: dict) -> dict:
             else:
                 tags = [t for t in (target.tags or []) if not str(t).startswith("team:")]
                 items_svc.update_item(db, target.id, tags=tags + [f"team:{team}"])
+        elif kind == "duplicate":
+            _apply_console_duplicate(db, target, decision)
+        elif kind == "assign":
+            _apply_assign(db, target, decision)
         else:  # duplicate_of
             _apply_duplicate(db, target, decision)
     except req_svc.ActionRefused as e:
@@ -511,6 +519,107 @@ def _apply_duplicate(db: Session, target, decision: dict) -> None:
         db.add(Link(project_id=target.project_id, a=target.key, b=other.key,
                     type="semantic", reason="duplicate_of"))
         db.commit()
+
+
+def _apply_console_duplicate(db: Session, target, decision: dict) -> None:
+    """The console's `duplicate`: `duplicate_of: {item_id}` names another item THIS box holds in
+    the same project. The target is linked as its duplicate; nothing else about it changes."""
+    from sqlalchemy import select
+    from app.models import Link
+
+    if not isinstance(target, Item):
+        raise DecisionRefused("unsupported_target", "duplicate is an item decision")
+    ref = decision.get("duplicate_of")
+    key = str(ref.get("item_id") or "").strip() if isinstance(ref, dict) else ""
+    if not key:
+        raise DecisionRefused("bad_decision", "duplicate needs duplicate_of: {item_id}")
+    iid = keys.resolve_item(db, key)
+    other = db.get(Item, iid or key)
+    if other is None:
+        raise DecisionRefused("not_found", f"duplicate_of {key!r} is not an item on this box")
+    if other.project_id != target.project_id:
+        raise DecisionRefused("wrong_project", f"duplicate_of {key!r} is in another project")
+    if other.id == target.id:
+        raise DecisionRefused("bad_decision", "an item cannot duplicate itself")
+    exists = db.scalar(select(Link).where(
+        Link.project_id == target.project_id, Link.a == target.key, Link.b == other.key,
+        Link.reason == "duplicate_of"))
+    if exists is None:
+        db.add(Link(project_id=target.project_id, a=target.key, b=other.key,
+                    type="semantic", reason="duplicate_of"))
+        db.commit()
+
+
+def assignable_people(db: Session, project_id: str) -> list:
+    """The people an item on this project can be assigned to: every user who can WRITE it.
+
+    The same rule `authz.can_write` applies to the user, so the list pushed to the console and
+    the check an `assign` decision meets on the way back can never disagree.
+    """
+    from sqlalchemy import select
+    from app.models import Membership, User
+    from app.security import authz
+
+    users = db.scalars(select(User).join(Membership, Membership.user_id == User.id).where(
+        Membership.project_id == project_id, Membership.access == "write"
+    ).order_by(User.name, User.id)).all()
+    return [u for u in users if authz.can_write(db, u.id, project_id)]
+
+
+def _apply_assign(db: Session, target, decision: dict) -> None:
+    """The console's `assign`: `assignee: {id, name}`, the id one this box listed. The item's
+    assignee becomes that person's handle on the project; refused, and the item untouched, when
+    they cannot be assigned here (unknown, or no write access any more)."""
+    from app.models import User
+    from app.security import authz
+    from app.services import handles
+
+    if not isinstance(target, Item):
+        raise DecisionRefused("unsupported_target", "assign is an item decision")
+    who = decision.get("assignee")
+    uid = str(who.get("id") or "").strip() if isinstance(who, dict) else ""
+    if not uid:
+        raise DecisionRefused("bad_decision", "assign needs assignee: {id, name}")
+    user = db.get(User, uid)
+    if user is None or not authz.can_write(db, user.id, target.project_id):
+        raise DecisionRefused("not_assignable",
+                              f"{uid!r} cannot be assigned on this project")
+    items_svc.update_item(db, target.id,
+                          assignee=handles.project_handle(db, user, target.project_id))
+
+
+def push_assignable_people(db: Session, *, cloud_url: str, api_key: str) -> dict | None:
+    """BOX: push each project's assignable people, `{"people": [{id, name}]}` and nothing else.
+
+    The console replaces the whole set per project, and refuses (422) any field but `id` and
+    `name` — so no email ever leaves here. A project nobody can be assigned on pushes
+    `people: []`, which the console reads as "listed, nobody", not "never pushed". None when the
+    console does not serve the route (404 on the first project): nothing is reported.
+    """
+    import httpx
+    from sqlalchemy import select
+    from app.models import Project
+
+    url, headers = cloud_url.rstrip("/") + PEOPLE_FEATURE_PATH, {"X-API-Key": api_key}
+    out: dict = {"pushed": [], "errors": []}
+    served = False
+    for project in list(db.scalars(select(Project).order_by(Project.name, Project.id))):
+        name = (project.name or "").strip()
+        if not name:
+            continue
+        people = [{"id": u.id, "name": u.name or u.id}
+                  for u in assignable_people(db, project.id)]
+        try:
+            resp = httpx.post(url, params={"project": name}, headers=headers,
+                              timeout=_TIMEOUT, json={"people": people})
+            if resp.status_code == 404 and not served:
+                return None
+            resp.raise_for_status()
+            served = True
+            out["pushed"].append(name)
+        except Exception as e:  # noqa: BLE001 — retried on the next sync
+            out["errors"].append({"project": name, "error": f"{type(e).__name__}: {e}"})
+    return out
 
 
 def _route_request(db: Session, target: dict, decision: dict, project_id: str | None) -> Item:
