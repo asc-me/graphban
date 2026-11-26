@@ -354,7 +354,7 @@ def test_a_worker_credential_runs_on_core(client, auth):
 #: fail. This one disagrees the moment core moves, which forces whoever moved it to re-run
 #: the arithmetic — and moving core is the thing worth noticing, since core is what every
 #: key pays.
-CORE_TOKENS = 9161  # GRPH-1799: -17, get_backlog description trimmed to pay for line_id; was 9178. GRPH-1695: +26, distinct_from/found_during on create_item; was 9152. GRPH-1683: +41, fix-filing fields on create_item/update_item; was 9111. GRPH-1652: +20, claim_review `withheld`; was 9091. P75 S1: +answer_wait (+170); was 8921, GRPH-1358: GRPH-1358: +kind on the item writes, -6 net (see test_mcp_footprint)
+CORE_TOKENS = 9183  # GRPH-1955: +22, list_projects include_archived and an `archived` flag; was 9161. GRPH-1799: -17, get_backlog description trimmed to pay for line_id; was 9178. GRPH-1695: +26, distinct_from/found_during on create_item; was 9152. GRPH-1683: +41, fix-filing fields on create_item/update_item; was 9111. GRPH-1652: +20, claim_review `withheld`; was 9091. P75 S1: +answer_wait (+170); was 8921, GRPH-1358: GRPH-1358: +kind on the item writes, -6 net (see test_mcp_footprint)
 # 8920 -> 8927 (GRPH-1271): update_item evidence carries the `test` run fields
 # build.engine_evidence reads, net of shorter update_item descriptions.
 # 8919 -> 8918 (GRPH-893): create_item/update_item `description` carries the ## Acceptance
@@ -424,7 +424,8 @@ CORE_TOKENS = 9161  # GRPH-1799: -17, get_backlog description trimmed to pay for
 # fleet 1877 -> 1881 (GRPH-1857, P98 S4): `bench` suite actions.
 # prd 3863 -> 3864 (GRPH-1895): `decompose_prd` names `split_refused`. The whole bill is
 # this tier; CORE_TOKENS does not move. MEASURED_TOKENS 18305 -> 18307 with it.
-TIER_TOKENS = {"prd": 3864, "codegraph": 1811, "fleet": 1881, "misc": 1585}
+TIER_TOKENS = {"prd": 3864, "codegraph": 1811, "fleet": 1881, "misc": 1606}
+# misc 1585 -> 1606 (GRPH-1952, P92 D4): `propose_rule` takes `import_run`.
 # misc 1577 -> 1586 (GRPH-1780, P91 S8): `propose_rule` names the guidance draft.
 # misc 1463 -> 1577 (GRPH-1775, P91 S3): `propose_rule`. The whole bill is this tier.
 # codegraph 1786 -> 1788 (GRPH-1061): record_scan's category enum gains `tests`.

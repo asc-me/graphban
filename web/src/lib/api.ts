@@ -548,6 +548,12 @@ export const api = {
   config: () => request<AppConfig>("/config"),
 
   projects: () => request<Project[]>("/projects"),
+  // Archived projects ride along only when asked (GRPH-1955); the default list leaves them out.
+  projectsIncludingArchived: () => request<Project[]>("/projects?include_archived=true"),
+  // A person's act, owner or admin: an agent key is refused with a 403 naming the rule.
+  archiveProject: (id: string, reason: string) =>
+    request<Project>(`/projects/${id}/archive`, { method: "POST", body: JSON.stringify({ reason }) }),
+  unarchiveProject: (id: string) => request<Project>(`/projects/${id}/unarchive`, { method: "POST" }),
   projectSummaries: () => request<ProjectSummary[]>("/projects/summaries"),
   createProject: (body: {
     name: string;
@@ -1333,6 +1339,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ proposal_ids: proposalIds, reason }),
     }),
+  /** Import runs and their reports (GRPH-1951). */
+  importRuns: (projectId: string) =>
+    request<import("@/lib/types").ImportRunSummary[]>(`/projects/${encodeURIComponent(projectId)}/rules/import-runs`),
+  importRun: (projectId: string, runId: number) =>
+    request<import("@/lib/types").ImportRunReport>(`/projects/${encodeURIComponent(projectId)}/rules/import-runs/${runId}`),
+  adoptImportRun: (projectId: string, runId: number, findingIds: number[], reason: string) =>
+    request<import("@/lib/types").RuleProposal[]>(
+      `/projects/${encodeURIComponent(projectId)}/rules/import-runs/${runId}/adopt`,
+      { method: "POST", body: JSON.stringify({ finding_ids: findingIds, reason }) },
+    ),
   dismissRuleProposal: (projectId: string, proposalId: number, reason: string) =>
     request<import("@/lib/types").RuleProposal>(
       `/projects/${encodeURIComponent(projectId)}/rules/proposals/${proposalId}/dismiss`,

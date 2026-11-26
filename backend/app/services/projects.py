@@ -469,7 +469,8 @@ def _aware(dt: datetime | None) -> datetime | None:
     return dt
 
 
-def project_summaries(db: Session, readable_ids: list[str]) -> list[dict]:
+def project_summaries(db: Session, readable_ids: list[str],
+                      include_archived: bool = False) -> list[dict]:
     """One switcher row per readable project, from grouped aggregates (GRPH-1131).
 
     The caller passes the authz-resolved readable ids and every query is filtered by them, so
@@ -486,8 +487,10 @@ def project_summaries(db: Session, readable_ids: list[str]) -> list[dict]:
 
     if not readable_ids:
         return []
-    projects = list(db.scalars(
-        select(Project).where(Project.id.in_(readable_ids)).order_by(Project.name)).all())
+    q = select(Project).where(Project.id.in_(readable_ids))
+    if not include_archived:  # GRPH-1955: the switcher leaves archived projects out
+        q = q.where(Project.archived_at.is_(None))
+    projects = list(db.scalars(q.order_by(Project.name)).all())
     if not projects:
         return []
     ids = [p.id for p in projects]
@@ -524,8 +527,76 @@ def project_summaries(db: Session, readable_ids: list[str]) -> list[dict]:
             "live_agents": int(live),
             "default_branch": branches.get(p.id),
             "last_activity_at": max(stamps) if stamps else None,
+            "archived_at": p.archived_at,
         })
     return out
+
+
+# ---- archive (GRPH-1955) ---------------------------------------------------------------------
+# A soft, reversible put-away for a finished walk or test project. Not a delete: a delete would
+# cascade through items, events and attestations, and free the tag, which retag forbids (a
+# retired tag is never reclaimed). An archived project keeps everything readable by id; it
+# leaves the default lists, refuses work writes, and its custom and adopted rules stop holding
+# and recording.
+
+#: The refusal every work write on an archived project raises.
+ARCHIVED_RULE = "project.archived_refuses_writes"
+#: Archive and unarchive are a person's act: an agent key is refused with this, never a 401.
+ARCHIVE_PERSON_ONLY_RULE = "project.archive_person_only"
+#: ... and an owner's or admin's, not any writer's.
+ARCHIVE_NEEDS_ADMIN_RULE = "project.archive_needs_admin"
+ARCHIVE_REASON_MAX = 500
+
+
+def is_archived(db: Session, project_id: str | None) -> bool:
+    if not project_id:
+        return False
+    return db.scalar(select(Project.archived_at).where(Project.id == project_id)) is not None
+
+
+def archived_ids(db: Session) -> set[str]:
+    return set(db.scalars(select(Project.id).where(Project.archived_at.is_not(None))))
+
+
+def refuse_if_archived(db: Session, project_id: str | None, what: str = "this write") -> None:
+    """Refuse a work write — claim, delegate, create or update an item — on an archived project.
+
+    A 409 that names the archived state and the way back, so an agent reads why rather than an
+    empty board. Raised before anything is written."""
+    if not is_archived(db, project_id):
+        return
+    project = db.get(Project, project_id)
+    from app.errors import Refused
+    raise Refused(
+        409,
+        f"project {project.tag} ({project.id}) is archived: {what} is refused. An archived "
+        "project's items, events and history stay readable, and nothing is written to it.",
+        rule_id=ARCHIVED_RULE,
+        hint="a project owner or admin unarchives it in Settings",
+    )
+
+
+def set_archived(db: Session, project: Project, *, archived: bool, actor_user_id: str,
+                 reason: str = "") -> Project:
+    """Archive (with a reason) or unarchive. Idempotent: archiving an archived project keeps
+    its first stamp. The caller checks who may; this records what was decided."""
+    if archived:
+        reason = (reason or "").strip()
+        if not reason:
+            raise ValueError("archiving a project needs a reason")
+        if len(reason) > ARCHIVE_REASON_MAX:
+            raise ValueError(f"the reason is at most {ARCHIVE_REASON_MAX} characters")
+        if project.archived_at is None:
+            project.archived_at = utcnow()
+            project.archived_reason = reason
+            project.archived_by = actor_user_id
+    else:
+        project.archived_at = None
+        project.archived_reason = ""
+        project.archived_by = None
+    db.commit()
+    db.refresh(project)
+    return project
 
 
 # ---- release ref (GRPH-1109 / PRD-P57 S2) ----------------------------------------------------

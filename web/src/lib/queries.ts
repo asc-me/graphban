@@ -936,6 +936,35 @@ export function useAdoptRuleProposals(projectId: string) {
   });
 }
 
+export function useImportRuns(projectId: string) {
+  return useQuery({
+    queryKey: ["import-runs", projectId],
+    queryFn: () => api.importRuns(projectId),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+export function useImportRun(projectId: string, runId: number | null) {
+  return useQuery({
+    queryKey: ["import-runs", projectId, runId],
+    queryFn: () => api.importRun(projectId, runId as number),
+    enabled: !!projectId && runId != null,
+    retry: false,
+  });
+}
+
+export function useAdoptImportRun(projectId: string, runId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { ids: number[]; reason: string }) => api.adoptImportRun(projectId, runId, v.ids, v.reason),
+    onSuccess: () => {
+      invalidateProposals(qc);
+      void qc.invalidateQueries({ queryKey: ["import-runs", projectId] });
+    },
+  });
+}
+
 export function useDismissRuleProposal(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -1292,6 +1321,29 @@ export function useSetPublishToOrg(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: { specs?: boolean; item_digests?: boolean }) => api.setPublishToOrg(projectId, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.projects }),
+  });
+}
+
+/** Every readable project, archived ones included and marked (GRPH-1955). */
+export function useProjectsIncludingArchived() {
+  return useQuery({ queryKey: [...keys.projects, "include-archived"], queryFn: api.projectsIncludingArchived });
+}
+
+export function useArchiveProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, reason }: { id: string; reason: string }) => api.archiveProject(id, reason),
+    // The prefix also covers the switcher's summaries and the include-archived read.
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.projects }),
+  });
+}
+
+export function useUnarchiveProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.unarchiveProject(id),
+    // The prefix also covers the switcher's summaries and the include-archived read.
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.projects }),
   });
 }

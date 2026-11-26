@@ -68,6 +68,9 @@ def exclusive_area_rules(db: Session, project_id: str | None
     `(rule_id, paths)`. An unmeasured rule (its primitive no longer loads) is in neither."""
     active: list[tuple[str, list[str]]] = []
     observing: list[tuple[str, list[str]]] = []
+    from app.services import projects as projects_svc
+    if projects_svc.is_archived(db, project_id):  # GRPH-1955: an archived project's rules hold nothing
+        return active, observing
     for r in rows_for_project(db, project_id):
         if r.primitive != "exclusive_areas" or unmeasured_reason(r):
             continue

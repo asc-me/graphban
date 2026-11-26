@@ -1130,7 +1130,9 @@ def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
     """
     from app.services import fleet as fleet_svc
     from app.services import items as items_svc
+    from app.services import projects as projects_svc
 
+    projects_svc.refuse_if_archived(db, item.project_id, "delegate")  # GRPH-1955
     if lane not in LANES:
         raise DelegationRefused(f"lane must be one of {list(LANES)}", code="validation")
     if tier not in TIERS:

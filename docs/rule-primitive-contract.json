@@ -1,5 +1,5 @@
 {
-  "api_version": "1.11.0",
+  "api_version": "1.12.0",
   "primitives": [
     {
       "id": "done_predicates",
@@ -190,6 +190,13 @@
           "type": "int"
         }
       ],
+      "stage": "Review"
+    },
+    {
+      "id": "sign_off_before_done",
+      "level": "enforced",
+      "on_direction": "tighten",
+      "params": [],
       "stage": "Review"
     },
     {

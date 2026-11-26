@@ -10,7 +10,7 @@ def _draft(**kw):
 
 
 def test_every_primitive_declares_stage_and_direction():
-    assert len(rp.PRIMITIVES) == 16
+    assert len(rp.PRIMITIVES) == 17
     for p in rp.PRIMITIVES.values():
         assert p.stage in rp.STAGES and p.on_direction in rp.DIRECTIONS
 

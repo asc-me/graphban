@@ -300,6 +300,13 @@ class Project(Base):
     # gitops column: a linked box can still set it locally, and the gitops contract is
     # untouched. Written only through services/projects.set_release_ref.
     release_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Archived (GRPH-1955): a soft, reversible put-away — set and cleared only by a person
+    # through POST /projects/{id}/archive|unarchive. NULL is live. An archived project keeps
+    # its tag (a retired tag is never reclaimed), items, events and history, readable by id;
+    # it leaves the default project lists and refuses work writes (projects.refuse_if_archived).
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_reason: Mapped[str] = mapped_column(Text, default="", server_default="")
+    archived_by: Mapped[str | None] = mapped_column(String, nullable=True)
     # Hosted SaaS only (AL-74): the owning organization. NULL on self-host, where
     # the org layer is inert. In hosted mode authz additionally requires the caller
     # to belong to this org, so a project never leaks outside its tenant.
@@ -4366,6 +4373,44 @@ class RuleGuidance(Base):
     decided_by: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ImportRun(Base):
+    """One rules import over a project's repo (GRPH-1951 / P92 D3).
+
+    A record: the project, the commit read, the sources read and the sources that could not be
+    read (each with why). Its proposals carry `import:<id>` as proposer.
+    """
+
+    __tablename__ = "import_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    commit_sha: Mapped[str] = mapped_column(String)
+    sources_read: Mapped[list] = mapped_column(JSON, default=list)
+    sources_unread: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ImportFinding(Base):
+    """One finding of an import run, in one bucket: `proposed` (a rule proposal), `external`
+    (enforced outside Graphban) or `gap` (guidance plus a primitive gap)."""
+
+    __tablename__ = "import_findings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("import_runs.id"), index=True)
+    bucket: Mapped[str] = mapped_column(String)
+    stage: Mapped[str] = mapped_column(String)
+    quote: Mapped[str] = mapped_column(Text)
+    source: Mapped[dict] = mapped_column(JSON, default=dict)
+    label: Mapped[str | None] = mapped_column(String, nullable=True)
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proposal_id: Mapped[int | None] = mapped_column(ForeignKey("rule_proposals.id"), nullable=True)
+    guidance_id: Mapped[int | None] = mapped_column(ForeignKey("rule_guidance.id"), nullable=True)
+    # Why the pipeline refused this finding's proposal or guidance; null when it was filed.
+    refused: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class PrimitiveGapCount(Base):

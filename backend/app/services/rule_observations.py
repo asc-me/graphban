@@ -73,6 +73,9 @@ def record(db: Session, project_id: str | None, rule_id: str, outcome: str, *,
         raise ValueError(f"unknown would-have outcome {outcome!r}")
     if not project_id:
         return None
+    from app.services import projects as projects_svc
+    if projects_svc.is_archived(db, project_id):  # GRPH-1955: an archived project records nothing
+        return None
     detail = detail or {}
     for prior in db.scalars(select(RuleObservation).where(
             RuleObservation.project_id == project_id, RuleObservation.rule_id == rule_id,

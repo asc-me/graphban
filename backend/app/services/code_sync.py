@@ -767,6 +767,18 @@ def _pull_triage_on_sync(db: Session, url: str, key: str) -> dict | None:
     return None if out.get("pulled") is False else out
 
 
+def _push_people_on_sync(db: Session, url: str, key: str) -> dict | None:
+    """Assignable people for the console's `assign` (GRPH-1722). Never fatal to the graph push.
+    None when the console does not serve the route: the sync result is then unchanged."""
+    from app.services import triage
+
+    try:
+        return triage.push_assignable_people(db, cloud_url=url, api_key=key)
+    except Exception as e:  # noqa: BLE001
+        db.rollback()
+        return {"pushed": [], "error": f"{type(e).__name__}: {e}"}
+
+
 def _publish_specs_on_sync(db: Session, url: str, key: str) -> dict | None:
     """Specs (PRDs) publish on the same sync (GRPH-1676). Never fatal to the graph push.
     None when the console does not serve specs: the sync result is then unchanged."""
@@ -806,6 +818,10 @@ def _sync_tail(db: Session, url: str, key: str) -> dict:
     digests = _publish_digests_on_sync(db, url, key)
     if digests is not None:
         out["digests"] = digests
+    # Before the decisions: an `assign` is checked against the list the console last received.
+    people = _push_people_on_sync(db, url, key)
+    if people is not None:
+        out["assignable_people"] = people
     decisions = _pull_triage_on_sync(db, url, key)
     if decisions is not None:
         out["triage_decisions"] = decisions

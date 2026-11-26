@@ -152,6 +152,15 @@ def _citations(db: Session, project: Project, raw: object) -> list[dict]:
     return out
 
 
+def verify_citations(db: Session, project_id: str, raw: object) -> list[dict]:
+    """Resolve citations as a proposal would, for a finding that files nothing (an EXTERNAL
+    finding on an import run, GRPH-1952). Refused exactly as an uncited proposal is."""
+    project = db.get(Project, project_id)
+    if project is None:
+        raise NotFound(f"project {project_id!r} not found")
+    return _citations(db, project, raw)
+
+
 # ---- rule lookup -------------------------------------------------------------------------
 
 def _primitive_of(rule_id: str, project_id: str, db: Session) -> str | None:
@@ -407,7 +416,9 @@ def _stage_adoption(db: Session, user, p: RuleProposal, reason: str, batch: bool
             meta={"proposal_id": p.id, "kind": p.kind, "state": state, "reason": reason,
                   "batch": batch, "history": f"{_history(p)}, adopted by {p.decided_by}",
                   "proposer": p.proposer, "proposer_kind": p.proposer_kind,
-                  "citations": p.citations, "adopted_by": p.decided_by})
+                  "citations": p.citations, "adopted_by": p.decided_by,
+                  **({"import_run": p.proposer.split(":", 1)[1]}
+                     if p.proposer_kind == "import" and ":" in p.proposer else {})})
     return record
 
 
@@ -545,7 +556,11 @@ def decide_guidance(db: Session, user, project_id: str, guidance_id: int, *,
 
 
 def adopted_for_stage(db: Session, project_id: str, stage: str, limit: int) -> list[dict]:
-    """Adopted guidance for one stage, oldest first, as `{label, text}` for a brief."""
+    """Adopted guidance for one stage, oldest first, as `{label, text}` for a brief. None for
+    an archived project (GRPH-1955): its adopted rules no longer hold."""
+    from app.services import projects as projects_svc
+    if projects_svc.is_archived(db, project_id):
+        return []
     rows = db.scalars(select(RuleGuidance).where(
         RuleGuidance.project_id == project_id, RuleGuidance.stage == stage,
         RuleGuidance.status == "adopted").order_by(RuleGuidance.id).limit(limit)).all()

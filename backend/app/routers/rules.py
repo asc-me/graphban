@@ -20,6 +20,7 @@ from app.security import authz
 from app.security.deps import get_current_user, get_user_or_agent_key
 from app.services import code_graph
 from app.services import custom_rules
+from app.services import import_runs
 from app.services import collision
 from app.services import events as events_svc
 from app.services import gitops as gitops_svc
@@ -355,6 +356,57 @@ def adopt_rule_proposals(project_id: str, body: RuleProposalAdopt, db: Session =
     `rules.person_adopts`; a `loosens` proposal is refused in a batch."""
     rows = _adoption(rule_proposals.adopt, db, principal, project_id, body.proposal_ids,
                      body.reason)
+    return [dict(rule_proposals.view(r), decided_by=r.decided_by,
+                 decided_reason=r.decided_reason) for r in rows]
+
+
+class ImportRunWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    commit: str
+    sources_read: list = []
+    sources_unread: list = []
+    findings: list[dict] = []
+
+
+class ImportAdopt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    finding_ids: list[int]
+    reason: str
+
+
+@router.get("/projects/{project_id}/rules/import-runs")
+def list_import_runs(project_id: str, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    authz.require_readable(db, user.id, project_id)
+    return import_runs.list_runs(db, project_id)
+
+
+@router.post("/projects/{project_id}/rules/import-runs", status_code=201)
+def create_import_run(project_id: str, body: ImportRunWrite, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    """Record an import run and file its findings; its proposals carry `import:<id>`."""
+    try:
+        run = import_runs.create_run(db, user, project_id, **body.model_dump())
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except AppError as e:
+        raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
+    return import_runs.report(db, project_id, run.id)
+
+
+@router.get("/projects/{project_id}/rules/import-runs/{run_id}")
+def get_import_run(project_id: str, run_id: int, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    authz.require_readable(db, user.id, project_id)
+    return _adoption(import_runs.report, db, project_id, run_id)
+
+
+@router.post("/projects/{project_id}/rules/import-runs/{run_id}/adopt")
+def adopt_import_run(project_id: str, run_id: int, body: ImportAdopt,
+                     db: Session = Depends(get_db), principal=Depends(get_user_or_agent_key)):
+    """A person adopts the ticked findings as one batch under one reason."""
+    rows = _adoption(import_runs.adopt_batch, db, principal, project_id, run_id,
+                     body.finding_ids, body.reason)
     return [dict(rule_proposals.view(r), decided_by=r.decided_by,
                  decided_reason=r.decided_reason) for r in rows]
 
