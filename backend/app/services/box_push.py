@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from datetime import datetime, timedelta, timezone
 
-from app.models import Agent, Item, Observation, Project, RuleDecisionPull
+from app.models import Agent, Item, Observation, Project, RuleDecisionPull, SyncProject
 from app.services import rule_measure
 from app.services import rule_pack
 from app.services import rule_proposals
@@ -46,10 +46,62 @@ _PROBE_TIMEOUT = 10.0
 _refused_key: str | None = None
 
 
+#: GBC-279: the receipt capability that lets a push carry `build` and `failing`. Until a
+#: receipt has named it (and a legacy sync key's never does) neither field is sent.
+BUILD_CAPABILITY = "box_build"
+_box_build_seen = False
+#: Start of the current run of failed project pushes; None while nothing is failing.
+_failing_since: datetime | None = None
+_SHA = re.compile(r"^[0-9a-fA-F]{7,64}$")
+_STAGE = "project_push"
+_REASON_MAX = 280
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
 def reset_refusal() -> None:
     """Tests start from a box that has not just been refused."""
-    global _refused_key
+    global _refused_key, _box_build_seen, _failing_since
     _refused_key = None
+    _box_build_seen = False
+    _failing_since = None
+
+
+def _build() -> dict:
+    from app.config import settings
+    from app.version import __version__
+
+    out = {"version": __version__}
+    sha = settings.resolved_git_sha
+    if _SHA.match(sha):
+        out["git_sha"] = sha
+    return out
+
+
+def _trim_reason(reason: str | None) -> str:
+    text = _CONTROL.sub(" ", reason or "").strip() or "unknown"
+    return text[:_REASON_MAX]
+
+
+def _iso(dt: datetime) -> str:
+    return _aware(dt).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _failing(db: Session) -> dict | None:
+    """The contract's `failing`: set while any synced project's latest push was refused or
+    unknown, else None. Triage and spec-revision reports never touch these rows."""
+    global _failing_since
+    rows = list(db.scalars(select(SyncProject).where(
+        SyncProject.last_push_result.in_(("refused", "unknown")))))
+    if not rows:
+        _failing_since = None
+        return None
+    rows.sort(key=lambda r: (_aware(r.last_push_at) or datetime.max.replace(tzinfo=timezone.utc),
+                             r.local_project_id))
+    first = _aware(rows[0].last_push_at) or datetime.now(timezone.utc)
+    if _failing_since is None or first < _failing_since:
+        _failing_since = first
+    return {"since": _iso(_failing_since), "stage": _STAGE,
+            "reason": _trim_reason(rows[-1].last_push_reason)}
 
 
 def _state(on: bool, enforcement: str) -> str:
@@ -204,7 +256,7 @@ def _publishing(project: Project) -> dict:
             "item_digests": bool(project.publish_item_digests)}
 
 
-def build_box_push(db: Session, *, with_counts: bool = False) -> dict | None:
+def build_box_push(db: Session, *, with_counts: bool = False, with_build: bool = False) -> dict | None:
     """The console's `box_push` record, or None when this box has no projects.
 
     A project name that is shared by two projects on the box is left out and
@@ -248,7 +300,11 @@ def build_box_push(db: Session, *, with_counts: bool = False) -> dict | None:
         projects.append(entry)
     if not projects:
         return None
-    return {"record": "box_push", "projects": projects}
+    out = {"record": "box_push", "projects": projects}
+    if with_build:
+        out["build"] = _build()
+        out["failing"] = _failing(db)
+    return out
 
 
 def payload_key(body: dict) -> str:
@@ -261,7 +317,8 @@ def push_box_view(db: Session, *, cloud_url: str, api_key: str) -> dict:
     global _refused_key
     if db.scalar(select(func.count(Project.id))) == 0:
         return {"pushed": False, "reason": "no projects"}
-    body = build_box_push(db, with_counts=console_accepts_counts(cloud_url))
+    body = build_box_push(db, with_counts=console_accepts_counts(cloud_url),
+                          with_build=_box_build_seen)
     if body is None:
         return {"pushed": False, "reason": "no projects"}
     key = payload_key(body)
@@ -283,8 +340,20 @@ def push_box_view(db: Session, *, cloud_url: str, api_key: str) -> dict:
         return {"pushed": False, "refused": True, "failures": failures}
     resp.raise_for_status()
     _refused_key = None
+    _read_receipt(resp)
     return {"pushed": True, "projects": [p["project"] for p in body["projects"]],
             "idempotency_key": key}
+
+
+def _read_receipt(resp: object) -> None:
+    """Note whether the receipt's `capabilities` names `box_build`."""
+    global _box_build_seen
+    try:
+        data = resp.json()
+    except Exception:  # noqa: BLE001 — a receipt we cannot read grants nothing
+        return
+    caps = data.get("capabilities") if isinstance(data, dict) else None
+    _box_build_seen = isinstance(caps, (list, tuple)) and BUILD_CAPABILITY in caps
 
 
 def publish_enabled(db: Session, project_id: str, flag: str) -> bool:

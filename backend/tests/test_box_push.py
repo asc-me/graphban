@@ -370,3 +370,130 @@ def test_a_console_config_that_is_not_200_means_the_old_shape(client, monkeypatc
     monkeypatch.setattr(box_push.httpx, "get", lambda *a, **k: NotFound())
     assert box_push.console_accepts_counts("https://c") is False
     db.close()
+
+
+# ---- GBC-279: build version and push failure ------------------------------------------
+
+import re as _re
+from datetime import datetime, timezone
+
+from app.models import SyncProject
+from app.version import __version__
+
+_TOP = {"record", "projects", "build", "failing"}
+_FAILING_KEYS = {"since", "stage", "reason", "attempts"}
+
+
+class _FakeConsole:
+    """The console's box-push contract: 422 on what it refuses, a receipt otherwise."""
+
+    def __init__(self, capabilities):
+        self.capabilities = capabilities
+        self.bodies = []
+
+    def __call__(self, url, json=None, headers=None, timeout=None):
+        self.bodies.append(json)
+        gated = "box_build" in self.capabilities
+        bad = set(json) - _TOP
+        if ("build" in json or "failing" in json) and not gated:
+            bad.add("ungated")
+        if "build" in json and (not isinstance(json["build"], dict)
+                                or set(json["build"]) - {"version", "git_sha"}):
+            bad.add("build")
+        f = json.get("failing")
+        if isinstance(f, dict):
+            if set(f) - _FAILING_KEYS or not _re.match(r"^[a-z][a-z0-9_-]{0,63}$", f["stage"]) \
+                    or len(f["reason"]) > 280:
+                bad.add("failing")
+        status = 422 if bad else 200
+        caps = list(self.capabilities)
+
+        class R:
+            status_code = status
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"detail": "no", "failures": []} if bad else {
+                    "record": "box_push", "capabilities": caps}
+        return R()
+
+
+def _gated_setup(monkeypatch, capabilities):
+    db = _db()
+    _projects(db)
+    _install(monkeypatch)
+    fake = _FakeConsole(capabilities)
+    monkeypatch.setattr(box_push.httpx, "post", fake)
+    return db, fake
+
+
+def _go(db):
+    return box_push.push_box_view(db, cloud_url="https://c", api_key="k")
+
+
+def _sync_row(db, result, reason=None, project="north"):
+    row = db.get(SyncProject, project) or SyncProject(local_project_id=project, cloud_project_id="c")
+    row.last_push_result, row.last_push_reason = result, reason
+    row.last_push_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    db.add(row)
+    db.commit()
+
+
+def test_build_rides_once_the_receipt_names_box_build(client, monkeypatch):
+    db, fake = _gated_setup(monkeypatch, ["box_build"])
+    _go(db)  # first push: capability not yet seen
+    assert "build" not in fake.bodies[0] and "failing" not in fake.bodies[0]
+    assert _go(db)["pushed"] is True
+    body = fake.bodies[1]
+    assert body["build"]["version"] == __version__
+    assert set(body["build"]) <= {"version", "git_sha"}
+    assert body["failing"] is None  # gated, never failed: null, not omitted
+    db.close()
+
+
+def test_a_legacy_key_never_sends_build_or_failing(client, monkeypatch):
+    db, fake = _gated_setup(monkeypatch, [])
+    _go(db)
+    _go(db)
+    assert all(set(b) == {"record", "projects"} for b in fake.bodies)
+    db.close()
+
+
+@pytest.mark.parametrize("result", ["refused", "unknown"])
+def test_a_failed_project_push_is_reported_then_cleared(client, monkeypatch, result):
+    db, fake = _gated_setup(monkeypatch, ["box_build"])
+    _go(db)
+    _sync_row(db, result, "x" * 400)
+    _go(db)
+    failing = fake.bodies[-1]["failing"]
+    assert set(failing) == {"since", "stage", "reason"}
+    assert failing["stage"] == "project_push"
+    assert failing["since"] == "2026-01-01T00:00:00Z"
+    assert failing["reason"] == "x" * 280
+    _sync_row(db, "ok")
+    _go(db)
+    assert fake.bodies[-1]["failing"] is None
+    db.close()
+
+
+def test_a_refused_triage_or_spec_report_is_not_a_failing_box(client, monkeypatch):
+    # Those reports store nothing on `sync_project`; only a project push can fail the box.
+    db, fake = _gated_setup(monkeypatch, ["box_build"])
+    _go(db)
+    _sync_row(db, "ok")
+    _go(db)
+    assert fake.bodies[-1]["failing"] is None
+    db.close()
+
+
+def test_the_fake_enforces_the_contract(client, monkeypatch):
+    db, fake = _gated_setup(monkeypatch, ["box_build"])
+    for extra in ({"build": None}, {"failing": {"since": "s", "stage": "Bad Stage", "reason": "r"}},
+                  {"failing": {"since": "s", "stage": "project_push", "reason": "r",
+                               "last_ok_at": "t"}}):
+        assert fake("u", json={"record": "box_push", "projects": [], **extra}).status_code == 422
+    legacy = _FakeConsole([])
+    assert legacy("u", json={"record": "box_push", "projects": [], "failing": None}).status_code == 422
+    db.close()
