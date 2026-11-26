@@ -3950,7 +3950,9 @@ def _satisfied_blocker_keys(db: Session, item: Item) -> list[str] | None:
     names nothing this rule can see.
     """
     text = (item.blocker or "").strip()
-    if not text or item.status not in ("blocked", "next"):
+    # GRPH-1958. `backlog` too: a planner parks a blocked item there once its
+    # dependencies are linked, and a guard on blocked/next left that blocker forever.
+    if not text or item.status not in ("blocked", "next", "backlog"):
         return None
     if blocker_names_person_or_decision(text) or text.endswith(BLOCKING_FIX_BLOCKER_SUFFIX):
         return None
@@ -3983,7 +3985,7 @@ def clear_satisfied_blocker(db: Session, item: Item, *, commit: bool = True) -> 
     """Clear a blocker whose named dependencies are all done, and say why.
 
     `blocked` returns to `next` (or stays `in_progress` on a live lease). A
-    `next` item keeps its status; dropping the text is what makes it ready.
+    `next` or `backlog` item keeps its status; dropping the text is what makes it ready.
     """
     names = _satisfied_blocker_keys(db, item)
     if not names:
