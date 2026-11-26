@@ -38,6 +38,7 @@ def upgrade() -> None:
         sa.Column("text", sa.Text(), nullable=True),
         sa.Column("proposal_id", sa.Integer(), sa.ForeignKey("rule_proposals.id"), nullable=True),
         sa.Column("guidance_id", sa.Integer(), sa.ForeignKey("rule_guidance.id"), nullable=True),
+        sa.Column("refused", sa.Text(), nullable=True),
     )
     op.create_index("ix_import_findings_run_id", "import_findings", ["run_id"])
 

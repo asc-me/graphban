@@ -21,6 +21,7 @@ const report: ImportRunReport = {
   findings: [
     { id: 10, bucket: "proposed", stage: "Plan", quote: "serialise migrations", source: { path: "CODEOWNERS", url: "https://x/CODEOWNERS" }, label: null, text: null, proposal_id: 7, guidance_id: null,
       proposal: { id: 7, status: "open" } as never },
+    { id: 12, bucket: "proposed", stage: "Plan", quote: "uncited rule", source: { path: "CODEOWNERS" }, label: null, text: null, proposal_id: null, guidance_id: null, refused: "a proposal must cite its source", proposal: null },
     { id: 11, bucket: "external", stage: "Plan", quote: "CI required", source: { path: "CONTRIBUTING.md" }, label: null, text: null, proposal_id: null, guidance_id: null, proposal: null },
   ],
 };
@@ -42,6 +43,8 @@ describe("ImportReport", () => {
     expect(await screen.findByText(/docs\/adr\/1.md — missing permission/)).toBeInTheDocument();
     expect(screen.getByText("Proposed rules")).toBeInTheDocument();
     expect(screen.getByText("Enforced outside Graphban")).toBeInTheDocument();
+    expect(screen.getByText(/refused: a proposal must cite its source/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Adopt finding 12")).not.toBeInTheDocument();
     const adopt = screen.getByRole("button", { name: /adopt/i });
     expect(adopt).toBeDisabled();
     await userEvent.click(screen.getByLabelText("Adopt finding 10"));

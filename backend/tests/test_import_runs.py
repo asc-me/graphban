@@ -31,6 +31,12 @@ def _body():
                           "title": "Areas", "why": "migrations clash",
                           "params": {"paths": ["db/migrations"]},
                           "citations": _cite("CODEOWNERS")}},
+            {"bucket": "proposed", "stage": "Plan", "quote": "vendor is generated",
+             "source": src("CODEOWNERS"),
+             "proposal": {"kind": "new_rule", "slug": "vendor-areas", "primitive": "exclusive_areas",
+                          "title": "Vendor", "why": "vendor clashes",
+                          "params": {"paths": ["vendor"]},
+                          "citations": _cite("CODEOWNERS")}},
             {"bucket": "external", "stage": "Merge", "quote": "branch protection requires CI",
              "source": src("CONTRIBUTING.md"), "text": "enforced by GitHub"},
             {"bucket": "gap", "stage": "Plan", "quote": "keep modules small",
@@ -48,7 +54,10 @@ def test_run_report_and_batch_adopt(client, monkeypatch):
     rep = r.json()
     assert rep["commit"] == "abc123" and rep["sources_unread"][0]["path"] == "docs/adr/1.md"
     assert {f["bucket"] for f in rep["findings"]} == {"proposed", "external", "gap"}
-    prop = next(f for f in rep["findings"] if f["bucket"] == "proposed")
+    props = [f for f in rep["findings"] if f["bucket"] == "proposed"]
+    assert len(props) == 2
+    prop = props[0]
+    assert all(f["proposal"]["proposer"] == f"import:{rep['id']}" for f in props)
     assert prop["proposal"]["proposer"] == f"import:{rep['id']}"
     assert prop["proposal"]["proposer_kind"] == "import"
     assert client.get(f"{base}/{rep['id']}", headers=h).json()["id"] == rep["id"]
@@ -60,18 +69,28 @@ def test_run_report_and_batch_adopt(client, monkeypatch):
                       "reason": "ok"}, headers=h)
     assert bad.status_code == 422
 
-    ok = client.post(f"{base}/{rep['id']}/adopt", json={"finding_ids": [prop["id"]],
-                     "reason": "matches our repo"}, headers=h)
+    # Acceptance: adopting the batch with one reason gives every rule a history entry naming
+    # the run, and all start `observing`.
+    ok = client.post(f"{base}/{rep['id']}/adopt",
+                     json={"finding_ids": [f["id"] for f in props],
+                           "reason": "matches our repo"}, headers=h)
     assert ok.status_code == 200, ok.text
-    assert ok.json()[0]["status"] == "adopted"
+    assert [p["status"] for p in ok.json()] == ["adopted", "adopted"]
+    assert {p["decided_reason"] for p in ok.json()} == {"matches our repo"}
     db = SessionLocal()
     try:
         ev = [e for e in db.query(Event).filter(Event.action == "adopt_rule_proposal")
               if e.project_id == pid]
-        assert ev and ev[0].meta["import_run"] == str(rep["id"])
-        assert ev[0].meta["state"] == "observing"
+        assert len(ev) == 2
+        for e in ev:
+            assert e.meta["import_run"] == str(rep["id"])
+            assert f"proposed by import:{rep['id']}" in e.meta["history"]
+            assert e.meta["state"] == "observing"
+            assert e.meta["batch"] is True
     finally:
         db.close()
+    after = client.get(f"{base}/{rep['id']}", headers=h).json()
+    assert {f["proposal"]["status"] for f in after["findings"] if f["proposal"]} == {"adopted"}
 
 
 def test_run_refuses_unknown_bucket_and_uncited(client, monkeypatch):
@@ -80,6 +99,29 @@ def test_run_refuses_unknown_bucket_and_uncited(client, monkeypatch):
     b = _body()
     b["findings"][0]["bucket"] = "nope"
     assert client.post(base, json=b, headers=h).status_code == 422
+    assert client.get(base, headers=h).json() == []
+    b = _body()
+    b["findings"][0]["source"] = {}
+    assert client.post(base, json=b, headers=h).status_code == 422
+    assert client.get(base, headers=h).json() == []
+
+
+def test_refused_finding_is_kept_on_the_run_and_cannot_be_adopted(client, monkeypatch):
+    """The pipeline refuses an uncited proposal; the run still records it, with the refusal,
+    and the rest of the run's findings are filed."""
+    h, pid = _setup(client, monkeypatch)
+    base = f"/api/projects/{pid}/rules/import-runs"
     b = _body()
     b["findings"][0]["proposal"]["citations"] = []
-    assert client.post(base, json=b, headers=h).status_code == 422
+    r = client.post(base, json=b, headers=h)
+    assert r.status_code == 201, r.text
+    rep = r.json()
+    bad = next(f for f in rep["findings"] if f["quote"] == "migrations are serialised")
+    assert bad["proposal_id"] is None and bad["refused"]
+    good = next(f for f in rep["findings"] if f["quote"] == "vendor is generated")
+    assert good["proposal"]["proposer"] == f"import:{rep['id']}" and good["refused"] is None
+    gap = next(f for f in rep["findings"] if f["bucket"] == "gap")
+    assert gap["guidance_id"] is not None
+    nope = client.post(f"{base}/{rep['id']}/adopt", json={"finding_ids": [bad["id"]],
+                       "reason": "ok"}, headers=h)
+    assert nope.status_code == 422 and "refused" in nope.text

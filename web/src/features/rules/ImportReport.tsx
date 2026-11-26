@@ -86,7 +86,9 @@ function Report({ projectId, runId }: { projectId: string; runId: number }) {
                         ) : (
                           <span className="font-mono">{f.source.path}</span>
                         )}
+                        {f.text && b !== "proposed" && <span className="text-muted-foreground"> — {f.text}</span>}
                         {f.proposal && f.proposal.status !== "open" && <span> · {f.proposal.status}</span>}
+                        {f.refused && <span className="text-destructive"> · refused: {f.refused}</span>}
                       </span>
                     </li>
                   ))}

@@ -4051,6 +4051,8 @@ export interface ImportFinding {
   text: string | null;
   proposal_id: number | null;
   guidance_id: number | null;
+  /** Why the pipeline refused to file this finding; null when it was filed. */
+  refused?: string | null;
   proposal: RuleProposal | null;
 }
 

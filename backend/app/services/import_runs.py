@@ -4,14 +4,16 @@ A run is a record: project, commit, sources read and unread, and each finding wi
 Findings in the `proposed` bucket file a proposal through `rule_proposals.propose` with the run
 as proposer (`import:<id>`), so every pipeline guarantee (cited, direction-checked, never off,
 no invariants) applies unchanged. `gap` findings file guidance; `external` findings are
-recorded only. Adoption goes through `rule_proposals.adopt`, the pipeline's batch adoption.
+recorded only. A finding the pipeline refuses (uncited, loosening an invariant, re-filing a
+dismissed proposal) is kept on the run with the refusal as `refused`, so one bad finding neither
+aborts the import nor leaves a half-written run behind. Adoption goes through `rule_proposals.adopt`, the pipeline's batch adoption.
 """
 from __future__ import annotations
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.errors import NotFound, Validation
+from app.errors import AppError, NotFound, Refused, Validation
 from app.models import ImportFinding, ImportRun, Project, RuleProposal, User
 from app.security import authz
 from app.services import rule_pack, rule_proposals
@@ -67,20 +69,27 @@ def create_run(db: Session, user: User, project_id: str, *, commit: object,
     for f in specs:
         row = ImportFinding(run_id=run.id, bucket=f["bucket"], stage=f["stage"],
                             quote=f["quote"].strip(), source=dict(f["source"]))
-        if f["bucket"] == "proposed":
-            prop = dict(f.get("proposal") or {})
-            p, _ = rule_proposals.propose(db, project_id=project_id, proposer_kind="import",
-                                          proposer=who, **prop)
-            row.proposal_id = p.id
-        elif f["bucket"] == "gap":
-            g = rule_proposals.file_guidance(
-                db, project_id=project_id, proposer_kind="import", proposer=who,
-                stage=f["stage"], label=f.get("label"), text=f.get("text"),
-                citations=f.get("citations"))
-            row.label, row.text, row.guidance_id = g.label, g.text, g.id
-        else:
-            row.label = f.get("label")
-            row.text = f.get("text")
+        try:
+            if f["bucket"] == "proposed":
+                prop = dict(f.get("proposal") or {})
+                p, _ = rule_proposals.propose(db, project_id=project_id, proposer_kind="import",
+                                              proposer=who, **prop)
+                row.proposal_id = p.id
+            elif f["bucket"] == "gap":
+                g = rule_proposals.file_guidance(
+                    db, project_id=project_id, proposer_kind="import", proposer=who,
+                    stage=f["stage"], label=f.get("label"), text=f.get("text"),
+                    citations=f.get("citations"))
+                row.label, row.text, row.guidance_id = g.label, g.text, g.id
+            else:
+                row.label = f.get("label")
+                row.text = f.get("text")
+        except (AppError, Refused, TypeError) as e:
+            db.rollback()
+            detail = e.detail if isinstance(e, Refused) else str(e)
+            row.refused = str(detail)[:500]
+            row.label = f.get("label") if isinstance(f.get("label"), str) else None
+            row.text = f.get("text") if isinstance(f.get("text"), str) else None
         db.add(row)
         db.commit()
     return run
@@ -110,7 +119,7 @@ def report(db: Session, project_id: str, run_id: int) -> dict:
         "findings": [{
             "id": r.id, "bucket": r.bucket, "stage": r.stage, "quote": r.quote,
             "source": r.source, "label": r.label, "text": r.text,
-            "proposal_id": r.proposal_id, "guidance_id": r.guidance_id,
+            "proposal_id": r.proposal_id, "guidance_id": r.guidance_id, "refused": r.refused,
             "proposal": rule_proposals.view(props[r.proposal_id]) if r.proposal_id in props
             else None,
         } for r in rows],
@@ -140,6 +149,8 @@ def adopt_batch(db: Session, actor: object, project_id: str, run_id: int,
         if f is None:
             raise NotFound(f"finding {i} is not part of import run {run.id}")
         if f.proposal_id is None:
-            raise Validation(f"finding {i} is a `{f.bucket}` finding with no proposal to adopt")
+            why = f" (refused: {f.refused})" if f.refused else ""
+            raise Validation(f"finding {i} is a `{f.bucket}` finding with no proposal to adopt"
+                             + why)
         pids.append(f.proposal_id)
     return rule_proposals.adopt(db, actor, project_id, pids, reason)

@@ -4402,6 +4402,8 @@ class ImportFinding(Base):
     text: Mapped[str | None] = mapped_column(Text, nullable=True)
     proposal_id: Mapped[int | None] = mapped_column(ForeignKey("rule_proposals.id"), nullable=True)
     guidance_id: Mapped[int | None] = mapped_column(ForeignKey("rule_guidance.id"), nullable=True)
+    # Why the pipeline refused this finding's proposal or guidance; null when it was filed.
+    refused: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class PrimitiveGapCount(Base):
