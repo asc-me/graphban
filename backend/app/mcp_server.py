@@ -72,6 +72,7 @@ from app.services import delegation as delegation_svc
 from app.services import entitlements as entitlements_svc
 from app.services import bench as bench_svc
 from app.services import rule_proposals as rule_proposals_svc
+from app.services import import_runs as import_runs_svc
 from app.services import rule_toggles as rule_toggles_svc
 from app.services import headroom as headroom_svc
 from app.services import quotas
@@ -651,7 +652,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "propose_rule",
         "description": (
-            "Cited rule suggestion; agents tighten only. guidance: draft{stage,label,text}"
+            "Cited rule suggestion; agents tighten only. guidance: draft{stage,label,text}. "
+            "import_run: onto that run, +quote, sources_read"
         ),
         "inputSchema": {
             "type": "object",
@@ -659,6 +661,7 @@ TOOLS: list[dict[str, Any]] = [
                 "kind": {"type": "string"},
                 "draft": {"type": "object"},
                 "citations": {"type": "array"},
+                "import_run": {"type": "integer"},
             },
         },
     },
@@ -3677,6 +3680,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         # P91 D2: any agent on the project may SUGGEST; nothing here adopts (rules.person_adopts).
         draft = args.get("draft") or {}  # {slug, primitive, title, why, params} or {rule_id, params}
         who = fleet_svc.caller_identity(args.get("agent_id"), key)
+        if args.get("import_run") is not None:
+            # P92 D4 (GRPH-1952): the skill's findings land on the run the CLI opened, still
+            # filed as this agent, so every agent refusal applies unchanged.
+            return import_runs_svc.attach(
+                db, pid, args["import_run"], proposer=who, kind=args.get("kind"),
+                draft=draft, citations=args.get("citations"), quote=args.get("quote"),
+                sources_read=args.get("sources_read"))
         if args.get("kind") == rule_proposals_svc.GUIDANCE_KIND:
             # P91 D8: advisory text, cited; a person adopts it (rules.person_adopts).
             g = rule_proposals_svc.file_guidance(
