@@ -33,11 +33,18 @@ def test_codeowners_area_gap_and_outside_repo():
 def test_workflow_proposes_turn_on_never_a_path_glob_and_bad_yaml_unread():
     f, u = S.parse_workflow(WF, ".github/workflows/ci.yml", commit="abc")
     props = [x["proposal"] for x in f if x["bucket"] == "proposed"]
+    # One trigger directory (`backend/**`) is carried as the substring the gate matches.
     assert props == [{"kind": "turn_on", "rule_id": "build.engine_evidence",
-                      "params": {"engine": "postgres"}, "why": props[0]["why"],
+                      "params": {"engine": "postgres", "path": "backend/"},
+                      "why": props[0]["why"],
                       "citations": S._cite(".github/workflows/ci.yml", "abc")}]
-    gap = next(x for x in f if x["bucket"] == "gap")
-    assert "backend/**" in gap["text"] and u == []
+    assert not [x for x in f if x["bucket"] == "gap"] and u == []
+    # Trigger paths naming more than one directory, or no directory, stay a gap.
+    for paths in ('["backend/**", "db/**"]', '["**/*.sql"]'):
+        f, _ = S.parse_workflow(WF.replace('["backend/**"]', paths), "w.yml", commit="abc")
+        props = [x["proposal"] for x in f if x["bucket"] == "proposed"]
+        assert props[0]["params"] == {"engine": "postgres"}
+        assert any(x["bucket"] == "gap" and x["label"] == "engine evidence paths" for x in f)
     f, u = S.parse_workflow("a: [", ".github/workflows/x.yml", commit="abc")
     assert f == [] and u and u[0]["path"] == ".github/workflows/x.yml"
 
@@ -53,7 +60,8 @@ def test_one_engine_proposal_across_jobs_and_files():
     out = S.read_sources({".github/workflows/a.yml": two, ".github/workflows/b.yml": WF},
                          commit="abc")
     props = [x for x in out["findings"] if x["bucket"] == "proposed"]
-    assert len(props) == 1 and props[0]["proposal"]["params"] == {"engine": "postgres"}
+    assert len(props) == 1 and props[0]["proposal"]["params"] == {"engine": "postgres",
+                                                                  "path": "backend/"}
     assert any(x.get("label") == "engine evidence engine" and "mysql" in x["text"]
                for x in out["findings"])
 
@@ -65,6 +73,13 @@ def test_already_on_engine_rule_is_no_difference():
     out = S.read_sources({".github/workflows/ci.yml": WF}, commit="abc",
                          current={"build.engine_evidence": {"engine": "mysql", "_on": True}})
     assert any(x.get("label") == "engine evidence engine" for x in out["findings"])
+    # On with the same engine for another path: a gap naming both, never a changed path.
+    out = S.read_sources({".github/workflows/ci.yml": WF}, commit="abc",
+                         current={"build.engine_evidence": {"engine": "postgres", "_on": True,
+                                                            "path": "alembic/versions/"}})
+    gap = [x for x in out["findings"] if x.get("label") == "engine evidence paths"]
+    assert not [x for x in out["findings"] if x["bucket"] == "proposed"]
+    assert gap and "alembic/versions/" in gap[0]["text"] and "backend/" in gap[0]["text"]
 
 
 REMOTE = """
@@ -163,6 +178,6 @@ def test_parsed_findings_file_through_the_pipeline(client, monkeypatch):
     # The workflow's turn_on and the CODEOWNERS custom rule FILE; neither is refused.
     eng = by_rule["build.engine_evidence"]
     assert not eng["refused"] and eng["proposal"]["direction"] == "tighten"
-    assert eng["proposal"]["params"]["path"] == "alembic/versions/"
+    assert eng["proposal"]["params"]["path"] == "backend/"
     area = by_rule["custom.codeowners-a"]
     assert not area["refused"] and area["proposal"]["params"] == {"paths": ["db/migrations"]}

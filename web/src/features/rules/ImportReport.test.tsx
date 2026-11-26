@@ -42,7 +42,7 @@ describe("ImportReport", () => {
     );
     expect(await screen.findByText(/docs\/adr\/1.md — missing permission/)).toBeInTheDocument();
     expect(screen.getByText("Proposed rules")).toBeInTheDocument();
-    expect(screen.getByText("Enforced outside Graphban")).toBeInTheDocument();
+    expect(screen.getByText("EXTERNAL — held outside Graphban, not verified")).toBeInTheDocument();
     expect(screen.getByText(/refused: a proposal must cite its source/)).toBeInTheDocument();
     expect(screen.queryByLabelText("Adopt finding 12")).not.toBeInTheDocument();
     const adopt = screen.getByRole("button", { name: /adopt/i });
