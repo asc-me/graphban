@@ -4842,7 +4842,8 @@ def _definition_of_mention(token: str, mentioners: list[str],
     return best, sorted(votes[best])[0]
 
 
-def _resolve_named_things(nodes, text: str, edges=None) -> list[tuple[int, str, str, bool]]:
+def _resolve_named_things(nodes, text: str, edges=None,
+                          creates: dict[str, str] | None = None) -> list[tuple[int, str, str, bool]]:
     """`(order, path, evidence, create)` for the names in `text` the graph can place.
 
     A backticked name resolves to a symbol node of that name, then to a file whose name or
@@ -4851,6 +4852,9 @@ def _resolve_named_things(nodes, text: str, edges=None) -> list[tuple[int, str, 
     rule id is not where the work goes (GRPH-1937). A command or a surface the graph holds
     no module for becomes a create beside its closest existing siblings: the section says
     the work exists, and the graph says where its kind lives.
+
+    `creates`, when given, is filled with `{path: "program sub"}` for each command create,
+    so the caller can say which command a created path is for (GRPH-1957).
     """
     symbols: dict[str, list[str]] = {}
     stems: dict[str, list[str]] = {}
@@ -4908,7 +4912,10 @@ def _resolve_named_things(nodes, text: str, edges=None) -> list[tuple[int, str, 
                             "defines", False))
                 continue
             directory = dirs[0]
-            out.append((4, f"{directory}/{sub}{_sibling_extension(nodes, directory)}",
+            created = f"{directory}/{sub}{_sibling_extension(nodes, directory)}"
+            if creates is not None:
+                creates.setdefault(created, f"{program} {sub}")
+            out.append((4, created,
                         f"create: the section names the command `{token}`; `{directory}` "
                         "holds its closest existing siblings", True))
         else:
@@ -4961,7 +4968,8 @@ def _home_dir(nodes, names: tuple[str, ...], anchor: str = "") -> str:
     return min(dirs, key=lambda d: (-shared(d), order[d]))
 
 
-def _record_homes(nodes, text: str) -> list[tuple[str, str, bool]]:
+def _record_homes(nodes, text: str,
+                  creates: dict[str, str] | None = None) -> list[tuple[str, str, bool]]:
     """`(path, evidence, create)` for the backend a record the section defines needs (GRPH-1937).
 
     P92's D3 opens "**An import run is a record:** project, commit, sources read and
@@ -5001,6 +5009,10 @@ def _record_homes(nodes, text: str) -> list[tuple[str, str, bool]]:
     else:
         out.insert(0, (service, f"create: {why}; its service is a new module beside "
                                 f"`{services}`'s others", True))
+    if creates is not None:
+        for path, _evidence, create in out:
+            if create:
+                creates.setdefault(path, phrase)
     return out
 
 
@@ -5034,10 +5046,16 @@ def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[
     nodes = list(code_graph.list_nodes(db, prd.project_id))
     found: dict[str, dict] = {}
 
+    creates: dict[str, str] = {}
+
     def add(path: str, evidence: str, create: bool = False) -> None:
         if not path or path in found or _is_read_only_path(raw, path):
             return
         found[path] = {"path": path, "evidence": evidence, "create": create}
+        if create and creates.get(path):
+            # What the path is created FOR, so a section that invokes it can be ordered
+            # after this one (GRPH-1957).
+            found[path]["creates"] = creates[path]
 
     named: dict[str, str] = {}
     for n in nodes:
@@ -5057,9 +5075,9 @@ def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[
         edges = code_graph.list_edges(db, prd.project_id)
     except Exception:  # noqa: BLE001 - edges only sharpen a mention; without them it places nothing
         edges = []
-    for _order, path, evidence, create in _resolve_named_things(nodes, raw, edges):
+    for _order, path, evidence, create in _resolve_named_things(nodes, raw, edges, creates):
         add(path, evidence, create)
-    for path, evidence, create in _record_homes(nodes, raw):
+    for path, evidence, create in _record_homes(nodes, raw, creates):
         add(path, evidence, create)
     try:
         hits = code_graph.search_code(db, raw[:2000], prd.project_id, top_k=_TP_MAX)
@@ -5441,8 +5459,17 @@ def _heading_matcher(title: str) -> re.Pattern[str] | None:
     return re.compile(rf"(?<![A-Za-z0-9]){inner}(?![A-Za-z0-9])", re.IGNORECASE)
 
 
+#: Subjects that say nothing about what is built: "These are product code" defines nothing.
+_PRONOUNS = frozenset({"it", "this", "that", "these", "those", "they", "ours", "all",
+                       "everything", "both", "each", "code"})
+
+
 def _defined_names(body: str) -> list[tuple[str, str]]:
-    """`(name, kind)` records and routes `body` defines.
+    """`(name, kind)` records, routes and components `body` defines.
+
+    "Parsers are product code" defines the component `Parsers`: the section builds them,
+    and a section that says "a parser reading forge configuration" runs on them
+    (GRPH-1957).
 
     "An import run is a record" defines the record `import run`. A backticked HTTP
     method and path defines a route. A command in backticks is neither: two sections
@@ -5457,7 +5484,9 @@ def _defined_names(body: str) -> list[tuple[str, str]]:
     """
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for match in re.finditer(r"\bis a record\b", body or "", re.IGNORECASE):
+    for match in re.finditer(r"\bis a record\b|\b(?:is|are) product code\b", body or "",
+                             re.IGNORECASE):
+        kind = "component" if "product code" in match.group(0).lower() else "record"
         before = (body or "")[:match.start()]
         chunk = re.split(r"[\n.;:]|\*\*", before)[-1]
         chunk = chunk.strip()
@@ -5472,10 +5501,15 @@ def _defined_names(body: str) -> list[tuple[str, str]]:
         key = name.lower()
         if len(key) < 3 or key in seen:
             continue
-        if len(name.split()) < 2 and not quoted:
+        # "Parsers are product code" names a thing the section builds as plainly as a
+        # backtick would, so one word is enough there (GRPH-1957); "Ours is a record"
+        # is ordinary prose, so a record still needs two words or backticks.
+        if len(name.split()) < 2 and not quoted and kind == "record":
+            continue
+        if kind == "component" and key in _PRONOUNS:
             continue
         seen.add(key)
-        out.append((name, "record"))
+        out.append((name, kind))
     for match in _ROUTE_DEF.finditer(body or ""):
         name = re.sub(r"\s+", " ", match.group(1).strip())
         key = name.lower()
@@ -5487,8 +5521,15 @@ def _defined_names(body: str) -> list[tuple[str, str]]:
 
 
 def _name_pattern(name: str) -> re.Pattern[str]:
+    """`name` as prose writes it, singular or plural on its last word ("parser", "parsers")."""
     parts = [p for p in name.split() if p]
-    inner = _HEADING_JOIN.join(re.escape(p) for p in parts)
+    if parts:
+        last = parts[-1]
+        stem = last[:-1] if last.lower().endswith("s") and not last.lower().endswith("ss") \
+            and len(last) > 3 else last
+        parts[-1] = f"{re.escape(stem)}(?:e?s)?"
+    inner = _HEADING_JOIN.join(p if i == len(parts) - 1 else re.escape(p)
+                               for i, p in enumerate(parts))
     return re.compile(rf"(?<![A-Za-z0-9]){inner}(?![A-Za-z0-9])", re.IGNORECASE)
 
 
@@ -5505,7 +5546,7 @@ def _reference(text: str, target: str, matcher, defined) -> tuple[str, str] | No
     for name, kind, pattern in defined:
         found = pattern.search(text)
         if found:
-            noun = "a record" if kind == "record" else "a route"
+            noun = {"record": "a record", "route": "a route"}.get(kind, "product code")
             return f'body uses "{name}", which "{target}" defines as {noun}', found.group(0)
     return None
 
@@ -5562,6 +5603,75 @@ def propose_section_links(
                 continue
             edges.append({**edge, "inferred": True})
     return edges, skipped
+
+
+def propose_creation_links(
+    order: list[str], evidence: dict[str, list[dict]], texts: dict[str, str],
+    existing: list[dict],
+) -> list[dict]:
+    """Edges to the section that CREATES a command or record another section runs (GRPH-1957).
+
+    `evidence` is each proposed section's touchpoint evidence; an entry with `create: true`
+    and `creates` says the section makes that path for a command (`gban rules`) or a record
+    (`import run`). `texts` is each section's body plus its acceptance clauses: P92's D2
+    names `gban rules import` only in the clause it is accepted on, and its builder could
+    not run that clause without the command.
+
+    One path has one creator. When two sections would each create it, the one whose heading
+    names what is created owns it, else the earliest in the document; the other's entry is
+    rewritten to `create: false` with `created_by`, and that section depends on the owner.
+    `evidence` is changed in place, so the reply never offers two creators of one file.
+
+    A section whose text invokes what an owner creates depends on the owner. A command both
+    sections only mention is still no edge (GRPH-1895): the edge needs a section whose
+    touchpoints create the command. Pairs already in `existing` are not repeated.
+    """
+    rank = {s: i for i, s in enumerate(order)}
+    creators: dict[str, list[tuple[str, dict]]] = {}
+    for section in sorted(evidence, key=lambda s: rank.get(s, len(rank))):
+        for entry in evidence[section]:
+            if entry.get("create") and entry.get("creates"):
+                creators.setdefault(entry["path"], []).append((section, entry))
+
+    seen = {(e["section"], e["depends_on"]) for e in existing}
+    edges: list[dict] = []
+
+    def link(dep: str, target: str, why: str, matched: str) -> None:
+        if dep == target or (dep, target) in seen:
+            return
+        seen.add((dep, target))
+        edges.append({"section": dep, "depends_on": target, "why": why, "matched": matched,
+                      "inferred": True})
+
+    owned: list[tuple[str, str, str]] = []
+    for path, rows in creators.items():
+        name = rows[0][1]["creates"]
+        pattern = _name_pattern(name)
+        named = [row for row in rows if pattern.search(row[0])]
+        owner, _entry = (named or rows)[0]
+        owned.append((path, name, owner))
+        for section, entry in rows:
+            if section == owner:
+                continue
+            entry["create"] = False
+            entry["created_by"] = owner
+            entry.pop("creates", None)
+            said = re.sub(r"^create:\s*", "", entry["evidence"])
+            entry["evidence"] = (f'{said}; "{owner}" creates it, so this section depends on '
+                                 "that one rather than creating it too")
+            link(section, owner,
+                 f'would also create `{path}` for `{name}`; "{owner}" owns that create',
+                 path)
+    for path, name, owner in owned:
+        pattern = _name_pattern(name)
+        for dep in order:
+            if dep == owner or dep not in evidence:
+                continue
+            found = pattern.search(texts.get(dep, ""))
+            if found:
+                link(dep, owner,
+                     f'invokes `{name}`, which "{owner}" creates (`{path}`)', found.group(0))
+    return edges
 
 
 def _find_cycle(edges: list[dict]) -> list[str] | None:
@@ -5798,8 +5908,9 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
     Each proposal carries ``depends_on``: the other sections this one builds on, each with
     the text that said so (GRPH-1690). Direction is this section DEPENDS ON the named one.
     A heading name, or a record or route the other section defines, is a dependency. A
-    slice label or a command is not (GRPH-1895). ``create=True`` writes those as dependency
-    links. ``drop_links`` / ``add_links`` are the caller's corrections, per section, as
+    slice label or a command is not (GRPH-1895), unless another section's touchpoints
+    create that command — then the section invoking it depends on the creator (GRPH-1957).
+    ``create=True`` writes those as dependency links. ``drop_links`` / ``add_links`` are the caller's corrections, per section, as
     ``[{"section", "depends_on"}]``. A cycle is reported and cut rather than created.
 
     A section whose acceptance clauses, touchpoint areas, or body length exceed the
@@ -5842,7 +5953,6 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
     no_touchpoints: list[str] = []
     ui_items: list[dict] = []
     ui_skipped: list[dict] = []
-    overrides = touchpoints or {}
     # Sections that can carry an edge: the ones becoming items, plus every other
     # implementable section one of them might name. Document order is the order a cycle
     # is cut in. The acceptance list is never an item, so there is nothing to link.
@@ -5853,6 +5963,19 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
         and _section_key(p["section"]) not in _ACCEPTANCE_SECTION_KEYS
     ]
     edges, links_skipped = propose_section_links(universe, bodies, proposed)
+    # Touchpoints first, so an edge can follow what a section CREATES (GRPH-1957). A
+    # section the caller typed paths for is not read as a creator: its list says nothing
+    # about what it makes.
+    overrides = touchpoints or {}
+    section_evidence: dict[str, list[dict]] = {
+        s: propose_touchpoints(db, prd, s, bodies.get(s, "").strip()) for s in wanted}
+    creation_texts = {
+        s: "\n".join([bodies.get(s, ""), *combined.get(s, [])]) for s in wanted}
+    edges = [*edges, *propose_creation_links(
+        universe,
+        {s: ev for s, ev in section_evidence.items()
+         if not [t for t in (overrides.get(s) or []) if isinstance(t, str) and t.strip()]},
+        creation_texts, edges)]
     # Overrides land before the cycle cut, so a link a caller adds cannot sneak a cycle
     # past the check.
     edges, ignored = apply_link_overrides(edges, drop_links, add_links, universe, proposed)
@@ -5891,7 +6014,9 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             if design is not None:
                 design_text = design_svc.design_block(design)
         described = _compose_task(prd, body, clauses, context, gate_text, design_text)
-        tp_evidence = propose_touchpoints(db, prd, p["section"], body)
+        tp_evidence = section_evidence.get(p["section"])
+        if tp_evidence is None:
+            tp_evidence = propose_touchpoints(db, prd, p["section"], body)
         given = [t for t in (overrides.get(p["section"]) or []) if isinstance(t, str) and t.strip()]
         tps = given or [e["path"] for e in tp_evidence]
         if given:
