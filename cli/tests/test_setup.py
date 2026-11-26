@@ -1908,3 +1908,11 @@ def test_a_configured_key_without_planner_is_replaced_not_stored(tmp_path, wired
     assert len(server.minted) == 1
     stored = config.stored_supervisor_key("core")
     assert stored and stored != "gb_sk_workeronly"
+
+
+def test_rules_import_skill_files_only_through_propose_rule():
+    """GRPH-1952 / P92 D4: the skill names its sources, quotes, guidance and the one filing tool."""
+    body = " ".join(setup_mod.skill_source("graphban-rules-import").read_text(encoding="utf-8").split())
+    assert "`propose_rule`" in body and "never edit rules directly" in body
+    assert "Quote the line" in body and "kind: guidance" in body
+    assert "stays listed as unread" in body and "no local-model fallback" in body
