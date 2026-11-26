@@ -149,13 +149,28 @@ def _one_engine(findings: list[dict]) -> list[dict]:
     return out
 
 
+def engine_path(patterns: list[str]) -> str | None:
+    """The one directory every trigger pattern names, as the substring `build.engine_evidence`
+    matches a touchpoint against: `db/**` -> `db/`. None when the patterns name more than one
+    place, or a place that is not a directory prefix (`**/*.sql`), so a person sets it."""
+    out: set[str] = set()
+    for pat in patterns:
+        lit = re.split(r"[*?\[]", pat, maxsplit=1)[0].lstrip("/")
+        rest = pat.lstrip("/")[len(lit):]
+        if not lit.endswith("/") or rest not in ("", "**", "**/*", "*"):
+            return None
+        out.add(lit)
+    return out.pop() if len(out) == 1 else None
+
+
 def parse_workflow(text: str, path: str, *, commit: str, repo: str | None = None
                    ) -> tuple[list[dict], list[dict]]:
     """A job that runs the tests against a database service is evidence the tests run on that
     engine: one `turn_on` of `build.engine_evidence` with that engine. The rule's `path` and
     `engine` declare no comparator, so a parser never proposes a CHANGED `path` (it would be
-    `not_proposable`, and the gate matches it as a substring of a touchpoint, so a glob would
-    match nothing); the paths the workflow triggers on are reported as guidance instead.
+    `not_proposable`). Turning the rule on may set it: when the trigger paths name one directory
+    (`db/**`), the `turn_on` carries the substring the gate matches a touchpoint against
+    (`db/`), never a glob. Trigger paths that name more than that are reported as guidance.
     A reusable workflow or action that lives in another repo is listed unread, never dropped."""
     try:
         import yaml
@@ -198,14 +213,17 @@ def parse_workflow(text: str, path: str, *, commit: str, repo: str | None = None
                     for k, v in services.items() if isinstance(v, dict)):
                 seen[engine] = name
     findings = []
+    prefix = engine_path(trig_paths)
     for engine, name in seen.items():
+        params = {"engine": engine} | ({"path": prefix} if prefix else {})
+        why = f"CI job `{name}` already runs the tests on {engine}" + (
+            f" for {', '.join(trig_paths)}" if prefix else "")
         findings.append(_finding(
-            "proposed", "Build", f"job `{name}` runs tests against {engine}", path, repo,
-            commit, proposal={"kind": "turn_on", "rule_id": ENGINE_RULE,
-                              "params": {"engine": engine},
-                              "why": f"CI job `{name}` already runs the tests on {engine}",
-                              "citations": _cite(path, commit)}))
-        if trig_paths:
+            "proposed", "Build", f"job `{name}` runs tests against {engine}"
+            + (f" for {', '.join(trig_paths)}" if prefix else ""), path, repo,
+            commit, proposal={"kind": "turn_on", "rule_id": ENGINE_RULE, "params": params,
+                              "why": why, "citations": _cite(path, commit)}))
+        if trig_paths and not prefix:
             findings.append(_finding(
                 "gap", "Build", f"job `{name}` runs on {engine} for " + ", ".join(trig_paths),
                 path, repo, commit, label="engine evidence paths",
@@ -350,8 +368,15 @@ def _engine_against_current(f: dict, cur: dict) -> dict | None:
     if not cur.get("_on"):
         return f
     want, have = f["proposal"]["params"].get("engine"), cur.get("engine") or "postgres"
+    want_path, have_path = f["proposal"]["params"].get("path"), cur.get("path")
     if want == have:
-        return None
+        if not want_path or not have_path or want_path == have_path:
+            return None
+        return {k: v for k, v in f.items() if k != "proposal"} | {
+            "bucket": "gap", "label": "engine evidence paths",
+            "text": f"CI runs the {want} tests for {want_path}; `{ENGINE_RULE}` is on for "
+                    f"{have_path}. The path has no comparator, so a person changes it.",
+            "citations": f["proposal"]["citations"]}
     return {k: v for k, v in f.items() if k != "proposal"} | {
         "bucket": "gap", "label": "engine evidence engine",
         "text": f"CI runs the tests on {want}; `{ENGINE_RULE}` is on with engine {have}. "

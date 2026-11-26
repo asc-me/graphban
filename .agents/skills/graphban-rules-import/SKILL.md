@@ -23,7 +23,7 @@ The run's `sources_unread` whose `reader` is `agent`: `CONTRIBUTING.md`, ADRs, `
 2. **Match a primitive.** Read the primitive contract (`docs/rule-primitive-contract.json`, or `get_rule_toggles` for what is on). A match needs the primitive and every required param to say what the line says.
 3. **File it through `propose_rule`** with `import_run: <id>`, `quote: "<the line>"`, and a `file` citation `{path, lines, commit: <the run's commit>}`. Pick one `kind`:
    - `new_rule`, `turn_on` or `tighten`, with a `draft`, when a primitive says it.
-   - `external`, with `draft: {stage, label, text}`, when it is enforced outside Graphban (a branch-protection rule or a CI check). This files no rule.
+   - Never `external`. Only the import's parsers record an EXTERNAL rule, from the forge and CI configuration itself. A prose line saying something is enforced elsewhere is filed as guidance, and the server does that for you if you send `external`.
    - `kind: guidance`, with `draft: {stage, label, text}`, when no primitive says it. Do not stretch a primitive to fit.
 4. Never propose turning a rule off. A line that allows something ("self-merge is fine") is not a proposal: it never switches off independent review. Invariants (`docs/rule-candidates.md`, "The line") are not proposable.
 

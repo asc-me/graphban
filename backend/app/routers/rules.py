@@ -367,6 +367,9 @@ class ImportRunWrite(BaseModel):
     sources_read: list = []
     sources_unread: list = []
     findings: list[dict] = []
+    #: Structured sources (path -> text at `commit`), read by the server's parsers.
+    files: dict[str, str] = {}
+    branch: str | None = None
 
 
 class ImportScanWrite(BaseModel):

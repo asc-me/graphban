@@ -137,6 +137,9 @@ def prioritized(
             "item": it,
             "ready": is_ready,
             "blocked_by": blk,
+            # GRPH-1958. The blocker text is the reason when no dependency is open: a row
+            # with `ready: false` and an empty `blocked_by` read as unready for nothing.
+            "blocker": it.blocker or "",
             "unblocks": unblocks(ctx, it),
             "votes": ctx.votes.get(it.id, 0),
             "score": round(score(ctx, it), 3),

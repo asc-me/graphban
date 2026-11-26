@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.errors import AppError, NotFound, Refused, Validation
 from app.models import ImportFinding, ImportRun, Project, RuleProposal, User
 from app.security import authz
-from app.services import handles, rule_pack, rule_proposals
+from app.services import handles, import_sources, rule_pack, rule_proposals
 
 BUCKETS = ("proposed", "external", "gap")
 #: A rescan's drift notice (GRPH-1953 / P92 D5): `source gone` or `source moved`. Written by the
@@ -33,6 +33,8 @@ PROSE_FILES = ("CONTRIBUTING.md", "AGENTS.md", "CLAUDE.md", ".cursorrules",
                ".github/copilot-instructions.md")
 PROSE_PREFIXES = ("docs/adr/", "doc/adr/", "adr/", "docs/architecture")
 AGENT_READER = "agent"
+PROSE_NOT_EXTERNAL = ("(Filed as guidance: a prose source cannot record an EXTERNAL rule; "
+                      "the import's parsers read branch protection and CI themselves.)")
 AWAITING_AGENT = ("prose: no agent attached to this run has read it "
                   "(run the graphban-rules-import skill)")
 
@@ -65,19 +67,52 @@ def _sources(raw: object, what: str) -> list[dict]:
     return out
 
 
+def _parse(db: Session, project: Project, sha: str, files: object, branch: object) -> dict:
+    """Run the D1 parsers over the repo's structured files, as the CLI sent them at `sha`.
+
+    Branch protection is read from the forge here, with the server's token; a project with no
+    GitHub repo, or a token that cannot read it, lists it unread, never as unprotected."""
+    if not isinstance(files, dict) or not all(isinstance(k, str) and k and isinstance(v, str)
+                                              for k, v in files.items()):
+        raise Validation("`files` maps each repo path to its text")
+    br = _str(branch, "branch") if branch is not None else "main"
+    m = rule_proposals._REPO.match(project.repo_url or "")
+    slug = m.group(1) if m else None
+    protection, unread = None, None
+    if slug:
+        protection, unread = import_sources.fetch_branch_protection(slug, br)
+    else:
+        unread = import_sources.unread(f"branch protection: {br}",
+                                       "the project has no GitHub repo_url set")
+    return import_sources.read_sources(
+        files, commit=sha, repo=slug, branch=br, protection=protection,
+        protection_unread=unread, current=import_sources.current_params(db, project.id))
+
+
 def create_run(db: Session, user: User, project_id: str, *, commit: object,
                sources_read: object = None, sources_unread: object = None,
-               findings: object = None, notices: list[dict] | None = None) -> ImportRun:
+               findings: object = None, files: object = None,
+               branch: object = None, notices: list[dict] | None = None) -> ImportRun:
     """Record a run and file every finding. Each finding is validated before the run is
-    written; a proposal a finding files is committed by `propose`. `notices` are a rescan's
-    drift notices (`import_rescan`), recorded on the run and never acted on."""
+    written; a proposal a finding files is committed by `propose`.
+
+    `files` (path -> text at `commit`) are the repo's structured sources: the server's parsers
+    read them (`import_sources.read_sources`) and their findings join the run's. `notices` are a
+    rescan's drift notices (`import_rescan`), recorded on the run and never acted on."""
     authz.require_writable(db, user.id, project_id)
-    if db.get(Project, project_id) is None:
+    project = db.get(Project, project_id)
+    if project is None:
         raise NotFound(f"project {project_id!r} not found")
     sha = _str(commit, "commit")
-    specs = findings if isinstance(findings, list) else []
     if findings is not None and not isinstance(findings, list):
         raise Validation("`findings` must be a list")
+    specs = list(findings) if isinstance(findings, list) else []
+    parsed_read: list[dict] = []
+    parsed_unread: list[dict] = []
+    if files:
+        parsed = _parse(db, project, sha, files, branch)
+        specs += parsed["findings"]
+        parsed_read, parsed_unread = parsed["sources_read"], parsed["sources_unread"]
     for f in specs:
         if not isinstance(f, dict) or f.get("bucket") not in BUCKETS:
             raise Validation(f"each finding needs a `bucket` of {BUCKETS}")
@@ -86,9 +121,9 @@ def create_run(db: Session, user: User, project_id: str, *, commit: object,
         _str(f.get("quote"), "quote")
         if not isinstance(f.get("source"), dict) or not f["source"].get("path"):
             raise Validation("each finding needs a `source` with a `path`")
-    read = _sources(sources_read, "sources_read")
+    read = _sources(sources_read, "sources_read") + parsed_read
     unread = [_awaiting(s) if is_prose(s["path"]) else s
-              for s in _sources(sources_unread, "sources_unread")]
+              for s in _sources(sources_unread, "sources_unread") + parsed_unread]
     # Only an agent attached to the run marks prose read (`attach`); a run opened by a person
     # or the CLI lists every prose source as unread, so its report never reads as clean.
     unread += [_awaiting({k: v for k, v in s.items() if k != "reason"})
@@ -266,21 +301,20 @@ def attach(db: Session, project_id: str, run_id: object, *, proposer: str, kind:
                 "sources_unread": out["sources_unread"], "clean": out["clean"]}
     q = _str(quote, "quote")
     stage = draft.get("stage")
+    if kind == "external":
+        # P92 D2: only a parser reading forge or CI configuration records an EXTERNAL rule. A
+        # prose line saying something is enforced elsewhere is not that configuration, so it
+        # is guidance, and the report says why; it is never drawn as enforced.
+        kind = rule_proposals.GUIDANCE_KIND
+        text = draft.get("text") if isinstance(draft.get("text"), str) else ""
+        draft = {**draft, "text": (text + " " if text else "") + PROSE_NOT_EXTERNAL}
     row = ImportFinding(run_id=run.id, quote=q, source={}, stage="",
-                        bucket="external" if kind == "external" else (
-                            "gap" if kind == rule_proposals.GUIDANCE_KIND else "proposed"))
+                        bucket="gap" if kind == rule_proposals.GUIDANCE_KIND else "proposed")
     filed: dict = {}
     err: Exception | None = None
     try:
         row.source = _file_source(run, citations)
-        if kind == "external":
-            # Enforced outside Graphban: recorded on the run, nothing filed. Still cited, and
-            # the citation is verified like any other.
-            rule_proposals.verify_citations(db, project_id, citations)
-            if stage not in rule_pack.STAGES:
-                raise Validation(f"`draft.stage` must be one of {rule_pack.STAGES}")
-            row.stage, row.label, row.text = stage, draft.get("label"), draft.get("text")
-        elif kind == rule_proposals.GUIDANCE_KIND:
+        if kind == rule_proposals.GUIDANCE_KIND:
             g = rule_proposals.file_guidance(
                 db, project_id=project_id, proposer_kind="agent", proposer=proposer,
                 stage=stage, label=draft.get("label"), text=draft.get("text"),
