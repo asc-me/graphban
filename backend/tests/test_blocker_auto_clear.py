@@ -49,11 +49,22 @@ def _backlog_waiting_on(db, *deps):
     waiting = items_svc.create_item(db, project_id="core", title="waits", status="blocked")
     names = " and ".join(d.key for d in deps)
     items_svc.update_item(db, waiting.id, blocker=f"needs {names} (parsers, command)")
-    # The planner's move: dependencies linked, item parked in backlog.
-    items_svc.update_item(db, waiting.id, status="backlog")
+    # The planner's move: dependencies linked, item parked in backlog. Refused since
+    # GRPH-1961, so the row is written the way rows from before it were left.
+    waiting.status = "backlog"
+    db.commit()
     db.refresh(waiting)
     assert waiting.status == "backlog" and waiting.blocker
     return waiting
+
+
+def _legacy_backlog(db, blocker):
+    """A backlog row with a blocker, as rows from before GRPH-1961 were left."""
+    prose = items_svc.create_item(db, project_id="core", title="prose", status="backlog")
+    prose.blocker = blocker
+    db.commit()
+    db.refresh(prose)
+    return prose
 
 
 def _cleared(waiting, *deps):
@@ -98,8 +109,7 @@ def test_the_backlog_row_names_the_blocker_that_keeps_it_unready(db):
     dep = items_svc.create_item(db, project_id="core", title="dep")
     waiting = _backlog_waiting_on(db, dep)
     attest.complete(db, dep.id)  # dependency done; blocker clears
-    prose = items_svc.create_item(db, project_id="core", title="prose", status="backlog")
-    items_svc.update_item(db, prose.id, blocker="Needs the import command")
+    prose = _legacy_backlog(db, "Needs the import command")
 
     rows = {r["item"].id: r for r in prio_svc.prioritized(db, "core")}
     assert rows[waiting.id]["ready"] is True and rows[waiting.id]["blocker"] == ""
@@ -110,8 +120,7 @@ def test_the_backlog_row_names_the_blocker_that_keeps_it_unready(db):
 
 def test_a_blocker_naming_no_item_key_stays_and_get_backlog_says_so(client, auth, db):
     other = items_svc.create_item(db, project_id="core", title="unrelated")
-    prose = items_svc.create_item(db, project_id="core", title="prose", status="backlog")
-    items_svc.update_item(db, prose.id, blocker="Needs the import command")
+    prose = _legacy_backlog(db, "Needs the import command")
     attest.complete(db, other.id)
     db.refresh(prose)
     assert prose.blocker == "Needs the import command"

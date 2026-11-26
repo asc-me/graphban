@@ -5248,6 +5248,12 @@ async def mcp_endpoint(
             return _fail("conflict", str(e),
                                "move it to `review` and let an adapter attest it — a worker "
                                "via sign_off with a commit, or CI holding a `gate`-scoped key")
+        except items_svc.BlockerDisagrees as e:
+            # GRPH-1961. A ValueError, caught before the generic mapping: the call is well
+            # formed and the item's blocker is what refuses it.
+            return _fail("conflict", str(e),
+                               "send blocker=\"\" in the same call to clear it, or leave "
+                               "the item blocked until what the blocker names is done")
         except items_svc.EvidenceRequired as e:
             return _refused(errors.Refused(
                 409, str(e), rule_id=items_svc.ENGINE_EVIDENCE_RULE,
