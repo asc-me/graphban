@@ -1713,3 +1713,95 @@ def test_record_homes_need_a_record_and_a_services_directory():
     assert prd_svc._record_homes(nodes, "A bench run reads its records.") == []
     assert prd_svc._record_homes([_ns("web/src/services/a.ts")],
                                  "An import run is a record.") == []
+
+
+# ── GRPH-1957: a clause that runs a command another section creates got no dependency ──
+#
+# decompose on P92 v1.1 linked only D1->D3 and D4->D3. D2's acceptance runs
+# `gban rules import` and D5 rescans with it; both need the command and D1's parsers, and
+# both builders blocked themselves in their first run. D4 and D5 were also both offered
+# as the creator of `cli/src/gban/rules.py`.
+
+_COMMAND_FILE = "cli/src/gban/rules.py"
+
+
+def _deps(proposal):
+    return {d["section"]: d for d in proposal["depends_on"]}
+
+
+def test_p92_a_clause_running_a_created_command_depends_on_its_creator(client, auth, monkeypatch):
+    """D2 and D5 depend on D1 (the parsers) and on the one section that creates the command."""
+    _prd, dry = _p92_split_dry(client, auth, monkeypatch)
+    by = {p["section"]: p for p in dry["proposals"]}
+
+    creators = [s for s, p in by.items()
+                if any(e["path"] == _COMMAND_FILE and e["create"] for e in p["touchpoint_evidence"])]
+    assert creators == [_D4], creators
+
+    d2 = _deps(by[_D2])
+    # D2 names `gban rules import` only in the clause it is accepted on, not in its body.
+    assert "gban rules import" not in prd_svc.section_bodies(_P92_BODY)[_D2]
+    assert _D4 in d2, by[_D2]["depends_on"]
+    assert "`gban rules`" in d2[_D4]["why"] and _COMMAND_FILE in d2[_D4]["why"]
+    assert _D1 in d2 and "product code" in d2[_D1]["why"], by[_D2]["depends_on"]
+
+    d5 = _deps(by[_D5])
+    assert _D4 in d5 and _D1 in d5, by[_D5]["depends_on"]
+    # D5 no longer offers itself as a second creator of the command's module: it keeps the
+    # path (it edits the command) and says who creates it.
+    d5_entry = {e["path"]: e for e in by[_D5]["touchpoint_evidence"]}[_COMMAND_FILE]
+    assert d5_entry["create"] is False and d5_entry["created_by"] == _D4
+    assert not d5_entry["evidence"].startswith("create:")
+    assert _COMMAND_FILE in by[_D5]["touchpoints"]
+
+    # The record edges GRPH-1895 placed still stand, and nothing points backwards.
+    assert _D3 in _deps(by[_D1]) and _D3 in _deps(by[_D4])
+    assert not _deps(by[_D1]).keys() & {_D2, _D4, _D5}
+    assert dry["link_cycles"] == []
+
+
+def test_p92_creation_links_are_written_at_create(client, auth, monkeypatch):
+    """The new edges are filed as dependency links, not only shown in the dry run."""
+    from tests.prd_approve import approve_id
+
+    prd, _dry = _p92_split_dry(client, auth, monkeypatch)
+    approve_id(prd["id"])
+    r = client.post(f"/api/prds/{prd['id']}/decompose?create=true", headers=auth)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    created = {(e["section"], e["depends_on"]) for e in out["links"]}
+    assert (_D2, _D4) in created and (_D5, _D4) in created, out["links"]
+    assert (_D2, _D1) in created and (_D5, _D1) in created, out["links"]
+
+
+def _create(path, name, evidence="create: x"):
+    return {"path": path, "evidence": evidence, "create": True, "creates": name}
+
+
+def test_two_creators_of_one_path_name_one_owner():
+    """The earliest section owns a shared create; the other depends on it."""
+    order = ["A. Import", "B. Rescan"]
+    ev = {"A. Import": [_create("cli/x/rules.py", "gban rules")],
+          "B. Rescan": [_create("cli/x/rules.py", "gban rules")]}
+    edges = prd_svc.propose_creation_links(order, ev, {s: "" for s in order}, [])
+    assert [(e["section"], e["depends_on"]) for e in edges] == [("B. Rescan", "A. Import")]
+    assert ev["A. Import"][0]["create"] is True
+    assert ev["B. Rescan"][0]["create"] is False
+    assert ev["B. Rescan"][0]["created_by"] == "A. Import"
+
+
+def test_the_section_whose_heading_names_the_artifact_owns_it():
+    """A later section headed by the command owns it over an earlier one that only uses it."""
+    order = ["D4. The skill", "D6. The gban rules command"]
+    ev = {s: [_create("cli/x/rules.py", "gban rules")] for s in order}
+    texts = {"D4. The skill": "Run `gban rules import --prose`.", order[1]: ""}
+    edges = prd_svc.propose_creation_links(order, ev, texts, [])
+    assert [(e["section"], e["depends_on"]) for e in edges] == [("D4. The skill", order[1])]
+    assert ev[order[1]][0]["create"] is True and ev["D4. The skill"][0]["create"] is False
+
+
+def test_a_mentioned_command_nobody_creates_links_nobody():
+    """GRPH-1895 still holds: two sections mentioning a command is not an edge by itself."""
+    order = ["A", "B"]
+    texts = {"A": "Run `gban rules import`.", "B": "Then `gban rules import` again."}
+    assert prd_svc.propose_creation_links(order, {"A": [], "B": []}, texts, []) == []
