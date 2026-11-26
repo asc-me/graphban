@@ -98,11 +98,13 @@ def test_agent_finding_lands_on_the_run_and_its_batch(client, env):
     assert not ext.get("isError"), ext
     rep = client.get(f"{env['base']}/{env['run']['id']}", headers=env["h"]).json()
     by = {f["bucket"]: f for f in rep["findings"]}
-    assert set(by) == {"proposed", "gap", "external"}
+    # P92 D2: prose never records an EXTERNAL rule; the agent's `external` is guidance.
+    assert set(by) == {"proposed", "gap"}
+    assert [f["bucket"] for f in rep["findings"] if f["quote"] == "CI must be green"] == ["gap"]
     assert by["proposed"]["source"] == {"path": "CONTRIBUTING.md", "lines": "12", "commit": SHA}
     assert by["proposed"]["quote"] == "migrations are serialised"
     assert by["proposed"]["stage"] == "Plan" and by["proposed"]["proposal_id"] == out["id"]
-    assert by["gap"]["guidance_id"] and by["external"]["proposal_id"] is None
+    assert by["gap"]["guidance_id"]
     ok = client.post(f"{env['base']}/{env['run']['id']}/adopt", headers=env["h"],
                      json={"finding_ids": [by["proposed"]["id"]], "reason": "ours"})
     assert ok.status_code == 200, ok.text

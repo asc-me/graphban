@@ -232,7 +232,11 @@ def _parser() -> argparse.ArgumentParser:
     rules_do = rules_cmd.add_subparsers(dest="act", required=True)
     rules_import = rules_do.add_parser(
         "import", help="open an import run over this repo",
-        description=("--prose opens a run listing the repo's prose sources (CONTRIBUTING.md, "
+        description=("Without --prose, sends the repo's structured sources at HEAD "
+                     "(CODEOWNERS, .github/workflows, .gitattributes, generated markers) to the "
+                     "server's parsers, which file proposals, EXTERNAL rules and gaps in one "
+                     "run, and lists prose unread for your agent. "
+                     "--prose opens a run listing the repo's prose sources (CONTRIBUTING.md, "
                      "ADRs, architecture docs, AGENTS.md, CLAUDE.md, .cursorrules, "
                      ".github/copilot-instructions.md) as unread, and prints the skill "
                      "invocation for your own agent. Nothing here reads prose; the run stays "
@@ -996,22 +1000,19 @@ def cmd_keys(args) -> int:
 
 
 def cmd_rules(args) -> int:
-    if not args.prose:
-        print(f"{PROG}: `{PROG} rules import` reads prose only in this build: pass --prose. "
-              "Structured sources are read by the server's parsers.", file=sys.stderr)
-        return EXIT_REFUSED
     url, project = _server(args), _project(args, "rules import")
     repo = Path(args.repo) if args.repo else Path.cwd()
     try:
-        body = rules_mod.run_body(repo)
+        body = rules_mod.run_body(repo) if args.prose else rules_mod.import_body(repo)
     except rules_mod.Unreadable as exc:
         # Never an empty run: "could not look" must not read as "nothing to read".
         print(f"{PROG}: {exc}\n     no import run was opened.", file=sys.stderr)
         return EXIT_REFUSED
     run = authenticated(url, act="rules import").call(
         "POST", f"/api/projects/{project}/rules/import-runs", body)
-    _out(dict(run, invocation=rules_mod.invocation(run)), rules_mod.summary(run, PROG),
-         args.as_json)
+    human = (rules_mod.summary(run, PROG) if args.prose
+             else rules_mod.import_summary(run, PROG))
+    _out(dict(run, invocation=rules_mod.invocation(run)), human, args.as_json)
     return 0
 
 
