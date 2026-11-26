@@ -23,6 +23,7 @@ const report: ImportRunReport = {
       proposal: { id: 7, status: "open" } as never },
     { id: 12, bucket: "proposed", stage: "Plan", quote: "uncited rule", source: { path: "CODEOWNERS" }, label: null, text: null, proposal_id: null, guidance_id: null, refused: "a proposal must cite its source", proposal: null },
     { id: 11, bucket: "external", stage: "Plan", quote: "CI required", source: { path: "CONTRIBUTING.md" }, label: null, text: null, proposal_id: null, guidance_id: null, proposal: null },
+    { id: 13, bucket: "notice", stage: "Build", quote: "build.engine_evidence: no finding at c3 still supports it", source: { path: ".github/workflows/ci.yml" }, label: "source gone", text: "The rule is unchanged: only a person loosens or removes a rule.", proposal_id: null, guidance_id: null, proposal: null },
   ],
 };
 
@@ -45,6 +46,11 @@ describe("ImportReport", () => {
     expect(screen.getByText("Enforced outside Graphban")).toBeInTheDocument();
     expect(screen.getByText(/refused: a proposal must cite its source/)).toBeInTheDocument();
     expect(screen.queryByLabelText("Adopt finding 12")).not.toBeInTheDocument();
+    // A rescan's drift notice is shown and cannot be ticked: nothing is filed from it.
+    expect(screen.getByText("Drift (shown, never acted on)")).toBeInTheDocument();
+    expect(screen.getByText("source gone:")).toBeInTheDocument();
+    expect(screen.getByText(/only a person loosens or removes a rule/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Adopt finding 13")).not.toBeInTheDocument();
     const adopt = screen.getByRole("button", { name: /adopt/i });
     expect(adopt).toBeDisabled();
     await userEvent.click(screen.getByLabelText("Adopt finding 10"));

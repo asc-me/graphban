@@ -22,6 +22,14 @@ LOCKFILES = ("uv.lock", "poetry.lock", "package-lock.json", "pnpm-lock.yaml", "y
              "Cargo.lock", "Gemfile.lock", "go.sum", "composer.lock")
 _FORGE_TIMEOUT = 5.0
 ENGINE_RULE = "build.engine_evidence"
+DONE_RULE = "merge.done_predicates"
+_GITHUB_REPO = re.compile(r"^(?:https?://)?(?:www\.)?github\.com/([\w.-]+/[\w.-]+?)(?:\.git)?/?$")
+
+
+def repo_of(repo_url: str | None) -> str | None:
+    """`owner/name` of a GitHub repo url (`github.com/o/r`, with or without scheme), else None."""
+    m = _GITHUB_REPO.match((repo_url or "").strip())
+    return m.group(1) if m else None
 
 
 def unread(path: str, reason: str) -> dict:
