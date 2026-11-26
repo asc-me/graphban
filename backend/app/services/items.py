@@ -3414,11 +3414,15 @@ def claimable(item: Item, *, lease_seconds: int = DEFAULT_LEASE_SECONDS, now=Non
 def _ready_candidates(db: Session, project_id: str | None, lease_seconds: int) -> list[Item]:
     from app.services import prioritization as prio
 
+    from app.services import projects as projects_svc
+
     ctx = prio.context(db, project_id)
     cutoff = utcnow() - timedelta(seconds=lease_seconds)
+    # GRPH-1955: an unscoped sweep never offers an archived project's items.
+    archived = projects_svc.archived_ids(db) if project_id is None else set()
     out = []
     for it in ctx.items:
-        if not _is_claimable(it, cutoff):
+        if it.project_id in archived or not _is_claimable(it, cutoff):
             continue
         # An unfinished dependency is not claimable on any status this sweep offers,
         # including a stale in_progress reclaim (GRPH-1530). A status write back to
@@ -4053,6 +4057,10 @@ def claim_next(
     # Caller-supplied rather than remembered server-side: a decline is a fact about this
     # agent's turn, not about the item, and storing it would mean deciding when it expires.
     declined = {s for s in (skip or [])}
+    # GRPH-1955. An archived project takes no claims. Refused, not filtered to None, for the
+    # reason GRPH-988 gives below: "nothing was ready" would be the reassuring wrong answer.
+    from app.services import projects as projects_svc
+    projects_svc.refuse_if_archived(db, project_id, "claim_next")
     # GRPH-988. Refused BEFORE any candidate is considered, and refused rather than filtered
     # to an empty result. The scope and `reach=deploy` checks below SKIP a candidate because
     # the caller asked for "whatever is next" and the next one may be fine; here no candidate
@@ -4246,6 +4254,9 @@ def claim_item(db: Session, item_id: str, agent_id: str, lease_seconds: int = DE
     """
     cutoff = utcnow() - timedelta(seconds=lease_seconds)
     it = db.get(Item, keys.resolve_item(db, item_id) or item_id)
+    if it is not None:  # GRPH-1955: every claim path inherits this, like the scope gate
+        from app.services import projects as projects_svc
+        projects_svc.refuse_if_archived(db, it.project_id, f"claiming {it.key}")
     if it is None or not _is_claimable(it, cutoff) or pinned_elsewhere(it, agent_id):
         return None
     # GRPH-1530. The cluster pool keeps a stale in_progress row even when a dependency

@@ -547,7 +547,11 @@ def decide_guidance(db: Session, user, project_id: str, guidance_id: int, *,
 
 
 def adopted_for_stage(db: Session, project_id: str, stage: str, limit: int) -> list[dict]:
-    """Adopted guidance for one stage, oldest first, as `{label, text}` for a brief."""
+    """Adopted guidance for one stage, oldest first, as `{label, text}` for a brief. None for
+    an archived project (GRPH-1955): its adopted rules no longer hold."""
+    from app.services import projects as projects_svc
+    if projects_svc.is_archived(db, project_id):
+        return []
     rows = db.scalars(select(RuleGuidance).where(
         RuleGuidance.project_id == project_id, RuleGuidance.stage == stage,
         RuleGuidance.status == "adopted").order_by(RuleGuidance.id).limit(limit)).all()

@@ -5770,6 +5770,10 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     the bound-seat invariant. The server refuses rather than asking the model to behave.
     """
     from app.services import collision as collision_svc
+    from app.services import projects as projects_svc
+
+    # GRPH-1955: an archived project takes no claims, refused before any seat check.
+    projects_svc.refuse_if_archived(db, project_id, "claim_cluster")
 
     # GRPH-988: a review-only seat may not take build work, and a cluster IS build work. Each
     # member would raise from `claim_item`; answered once, here, with the sentence instead —

@@ -252,6 +252,28 @@ change is an activity event, `publish_to_org`, naming who changed which flag. Tu
 removes what was published; turning it back on republishes on the next sync. To opt out after
 upgrading, untick it here.
 
+### Archive
+
+Put a finished walk or test project away (GRPH-1955). Archiving is soft and reversible — not
+a delete, which would cascade through items, events and attestations and free the project's
+tag (a retired tag is never reclaimed).
+
+- Type a **reason** and press **Archive**. The reason is required and shown next to the
+  project in the archived list.
+- An archived project leaves the project picker, `GET /api/projects` and MCP `list_projects`
+  (an `include_archived` read still shows it, marked archived). Its tag, items, events and
+  history stay readable by id or URL.
+- Nothing can be claimed, delegated, created or updated in it: `claim_next`, `claim_cluster`,
+  `delegate`, `create_item` and `update_item` are refused with `project.archived_refuses_writes`.
+  Its custom and adopted rules stop holding and recording.
+- **Archived projects** lists every archived project you can read, with an **Unarchive**
+  button each.
+
+Only a project **owner or admin** can archive or unarchive, as a signed-in person
+(`POST /api/projects/{id}/archive` with `{"reason": "..."}`, `POST /api/projects/{id}/unarchive`).
+An agent API key gets 403 `project.archive_person_only`; any other member gets 403
+`project.archive_needs_admin`.
+
 ## Members tab
 
 Lists the project's members with their **role** (owner/admin/member) and **access**

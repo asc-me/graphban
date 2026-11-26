@@ -17,6 +17,7 @@ import { ApiKeysPanel } from "@/features/settings/ApiKeysPanel";
 import { CloudOrgLinkPanel } from "@/features/settings/CloudOrgLinkPanel";
 import { SyncLinkPanel } from "@/features/settings/SyncLinkPanel";
 import { PublishToOrgPanel } from "@/features/settings/PublishToOrgPanel";
+import { ProjectArchivePanel } from "@/features/settings/ProjectArchivePanel";
 import { CloudTag } from "@/components/shell/CloudTag";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { prefersReducedMotion } from "@/features/onboarding/WizardGraphic";
@@ -751,6 +752,7 @@ function ProjectPanel() {
       <RetagRow />
       <div className="mb-3"><CloudTag projectId={active.id} /></div>
       <PublishToOrgPanel />
+      <ProjectArchivePanel />
       <div className="mb-4"><Label>Description</Label><Textarea rows={2} value={form.description ?? ""} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} /></div>
       {theme && (
         <div className="mb-4">

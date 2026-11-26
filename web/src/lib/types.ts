@@ -94,6 +94,9 @@ export interface Project {
   repo_url?: string | null;
   /** What a linked box publishes to the org for this project (GRPH-1674); both default on. */
   publish_to_org?: { specs: boolean; item_digests: boolean };
+  /** Set when the project is archived (GRPH-1955): out of the default lists, refusing work writes. Null is live. */
+  archived_at?: string | null;
+  archived_reason?: string;
   // Memory auto-triage toggles (AL-227).
   memory_auto_reject: boolean;
   memory_write_mode: string;
@@ -130,6 +133,8 @@ export interface ProjectSummary {
   default_branch: string | null;
   /** Null when nothing has ever happened, not an epoch. */
   last_activity_at: string | null;
+  /** Only present on an `include_archived` read; null is live (GRPH-1955). */
+  archived_at?: string | null;
 }
 
 // ── Deploy config + Organizations (hosted-only, AL-74b) ────────────────────
