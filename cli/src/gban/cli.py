@@ -235,7 +235,11 @@ def _parser() -> argparse.ArgumentParser:
         description=("Without --prose, sends the repo's structured sources at HEAD "
                      "(CODEOWNERS, .github/workflows, .gitattributes, generated markers) to the "
                      "server's parsers, which file proposals, EXTERNAL rules and gaps in one "
-                     "run, and lists prose unread for your agent. "
+                     "run, and lists prose unread for your agent. On a project with adopted "
+                     "rules only differences are filed; a source that is gone or moved is a "
+                     "notice, never acted on. Exits non-zero when a structured source went "
+                     "unread. --ci-template prints the GitHub Actions workflow that runs this "
+                     "on the default branch. "
                      "--prose opens a run listing the repo's prose sources (CONTRIBUTING.md, "
                      "ADRs, architecture docs, AGENTS.md, CLAUDE.md, .cursorrules, "
                      ".github/copilot-instructions.md) as unread, and prints the skill "
@@ -243,6 +247,10 @@ def _parser() -> argparse.ArgumentParser:
                      "unclean until an agent does. Reads the repo only, never writes it."))
     rules_import.add_argument("--prose", action="store_true",
                               help="open the run for the graphban-rules-import skill")
+    rules_import.add_argument("--ci-template", action="store_true",
+                              help="print the GitHub Actions rescan workflow and exit")
+    rules_import.add_argument("--branch", default=None,
+                              help="the default branch (default: origin's HEAD, else main)")
     rules_import.add_argument("--repo", default=None,
                               help="repository to read (default: the current directory)")
     return parser
@@ -1000,20 +1008,31 @@ def cmd_keys(args) -> int:
 
 
 def cmd_rules(args) -> int:
-    url, project = _server(args), _project(args, "rules import")
     repo = Path(args.repo) if args.repo else Path.cwd()
+    if args.ci_template:
+        print(rules_mod.ci_template(args.branch or rules_mod.default_branch(repo)), end="")
+        return 0
+    url, project = _server(args), _project(args, "rules import")
     try:
         body = rules_mod.run_body(repo) if args.prose else rules_mod.import_body(repo)
     except rules_mod.Unreadable as exc:
         # Never an empty run: "could not look" must not read as "nothing to read".
         print(f"{PROG}: {exc}\n     no import run was opened.", file=sys.stderr)
         return EXIT_REFUSED
+    if args.prose:
+        run = authenticated(url, act="rules import").call(
+            "POST", f"/api/projects/{project}/rules/import-runs", body)
+        _out(dict(run, invocation=rules_mod.invocation(run)), rules_mod.summary(run, PROG),
+             args.as_json)
+        return 0
+    if args.branch:
+        body["branch"] = args.branch
+    # The structured read and its rescan (GRPH-1953): the server compares with what is adopted.
     run = authenticated(url, act="rules import").call(
-        "POST", f"/api/projects/{project}/rules/import-runs", body)
-    human = (rules_mod.summary(run, PROG) if args.prose
-             else rules_mod.import_summary(run, PROG))
-    _out(dict(run, invocation=rules_mod.invocation(run)), human, args.as_json)
-    return 0
+        "POST", f"/api/projects/{project}/rules/import-runs/scan", body)
+    _out(dict(run, invocation=rules_mod.invocation(run)), rules_mod.import_summary(run, PROG),
+         args.as_json)
+    return EXIT_REFUSED if rules_mod.failed(run) else 0
 
 
 def cmd_update(args) -> int:

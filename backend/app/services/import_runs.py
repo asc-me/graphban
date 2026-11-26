@@ -19,6 +19,10 @@ from app.security import authz
 from app.services import handles, import_sources, rule_pack, rule_proposals
 
 BUCKETS = ("proposed", "external", "gap")
+#: A rescan's drift notice (GRPH-1953 / P92 D5): `source gone` or `source moved`. Written by the
+#: server's rescan only, never taken from a caller's findings; shown, never filed or adopted.
+NOTICE = "notice"
+_ORDER = (*BUCKETS, NOTICE)
 
 # ---- prose sources (GRPH-1952 / P92 D4) ------------------------------------------------------
 # Prose is read by the customer's own agent through the `graphban-rules-import` skill, never by
@@ -88,13 +92,13 @@ def _parse(db: Session, project: Project, sha: str, files: object, branch: objec
 def create_run(db: Session, user: User, project_id: str, *, commit: object,
                sources_read: object = None, sources_unread: object = None,
                findings: object = None, files: object = None,
-               branch: object = None) -> ImportRun:
+               branch: object = None, notices: list[dict] | None = None) -> ImportRun:
     """Record a run and file every finding. Each finding is validated before the run is
     written; a proposal a finding files is committed by `propose`.
 
     `files` (path -> text at `commit`) are the repo's structured sources: the server's parsers
-    read them (`import_sources.read_sources`) and their findings join the run's, so
-    `gban rules import` files the parsed proposals, EXTERNAL rules and gaps in one run."""
+    read them (`import_sources.read_sources`) and their findings join the run's. `notices` are a
+    rescan's drift notices (`import_rescan`), recorded on the run and never acted on."""
     authz.require_writable(db, user.id, project_id)
     project = db.get(Project, project_id)
     if project is None:
@@ -158,6 +162,11 @@ def create_run(db: Session, user: User, project_id: str, *, commit: object,
             row.text = f.get("text") if isinstance(f.get("text"), str) else None
         db.add(row)
         db.commit()
+    for n in notices or []:
+        db.add(ImportFinding(run_id=run.id, bucket=NOTICE, stage=n["stage"],
+                             quote=n["quote"], source=dict(n["source"]), label=n["label"],
+                             text=n["text"]))
+    db.commit()
     return run
 
 
@@ -174,7 +183,8 @@ def report(db: Session, project_id: str, run_id: int) -> dict:
     rows = list(db.scalars(select(ImportFinding).where(ImportFinding.run_id == run.id)
                            .order_by(ImportFinding.id)))
     stages = {s: i for i, s in enumerate(rule_pack.STAGES)}
-    rows.sort(key=lambda r: (stages.get(r.stage, 99), BUCKETS.index(r.bucket), r.id))
+    rows.sort(key=lambda r: (stages.get(r.stage, 99),
+                             _ORDER.index(r.bucket) if r.bucket in _ORDER else 99, r.id))
     props = {p.id: p for p in db.scalars(select(RuleProposal).where(
         RuleProposal.id.in_([r.proposal_id for r in rows if r.proposal_id])))} if rows else {}
     return {

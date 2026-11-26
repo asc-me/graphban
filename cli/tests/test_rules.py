@@ -122,7 +122,7 @@ def test_structured_import_posts_one_run_and_prints_three_buckets(tmp_path, home
     monkeypatch.setattr(cli_mod, "authenticated", lambda url, act="": rec)
     assert main(["rules", "import", "--repo", str(repo)]) == 0
     (method, path, body), = rec.calls
-    assert (method, path) == ("POST", "/api/projects/core/rules/import-runs")
+    assert (method, path) == ("POST", "/api/projects/core/rules/import-runs/scan")
     assert "CODEOWNERS" in body["files"]
     out = capsys.readouterr().out
     assert "proposed" in out and "EXTERNAL" in out and "guidance + gap" in out
@@ -138,3 +138,64 @@ def test_structured_import_of_an_unreadable_repo_opens_nothing(tmp_path, home, m
     monkeypatch.setattr(cli_mod, "authenticated", lambda url, act="": rec)
     assert main(["rules", "import", "--repo", str(plain)]) == EXIT_REFUSED and rec.calls == []
     assert "no import run was opened" in capsys.readouterr().err
+
+
+# ---- the rescan and its drift (GRPH-1953 / P92 D5) ----------------------------------------
+
+class ScanRec(Rec):
+    def __init__(self, clean=True):
+        super().__init__()
+        self.clean = clean
+
+    def call(self, method, path, body=None):
+        self.calls.append((method, path, body))
+        return {"id": 9, "commit": body["commit"], "clean": self.clean,
+                "sources_unread": [{"path": "CONTRIBUTING.md", "reader": "agent"}] + (
+                    [] if self.clean else [{"path": "branch protection: main",
+                                            "reason": "token lacks admin:read"}]),
+                "findings": [{"bucket": "notice", "label": "source gone",
+                              "text": "build.engine_evidence was adopted from ci.yml",
+                              "source": {"path": ".github/workflows/ci.yml"}}]}
+
+
+def test_a_rescan_prints_its_drift_notices_and_adopts_nothing(tmp_path, home, monkeypatch, capsys):
+    repo = _repo(tmp_path / "r", STRUCTURED)
+    rec = ScanRec()
+    monkeypatch.setattr(cli_mod, "authenticated", lambda url, act="": rec)
+    assert main(["rules", "import", "--repo", str(repo)]) == 0
+    (method, path, body), = rec.calls
+    assert (method, path) == ("POST", "/api/projects/core/rules/import-runs/scan")
+    assert "CODEOWNERS" in body["files"]
+    out = capsys.readouterr().out
+    assert "notice" in out and "source gone" in out and "nothing is adopted here" in out
+
+
+def test_an_unread_source_fails_the_step(tmp_path, home, monkeypatch, capsys):
+    """CI reports an unread source as a failed step, never as a pass."""
+    repo = _repo(tmp_path / "r", STRUCTURED)
+    rec = ScanRec(clean=False)
+    monkeypatch.setattr(cli_mod, "authenticated", lambda url, act="": rec)
+    assert main(["rules", "import", "--repo", str(repo), "--branch", "trunk"]) == EXIT_REFUSED
+    assert rec.calls[0][2]["branch"] == "trunk"
+    out = capsys.readouterr().out
+    assert "unread  branch protection: main" in out and "NOT CLEAN" in out
+
+
+def test_ci_template_prints_the_workflow_and_calls_nothing(tmp_path, home, monkeypatch, capsys):
+    rec = ScanRec()
+    monkeypatch.setattr(cli_mod, "authenticated", lambda url, act="": rec)
+    assert main(["rules", "import", "--ci-template", "--branch", "trunk"]) == 0
+    assert rec.calls == []
+    out = capsys.readouterr().out
+    assert "  push:\n    branches: [trunk]\n    paths:\n" in out
+    for p in (".github/workflows/**", "**/CODEOWNERS", "**/.gitattributes"):
+        assert f'      - "{p}"' in out
+    assert "gban rules import --branch trunk" in out
+    assert "permissions:\n  contents: read\n" in out
+    # It files; it never adopts, and its step is not made to pass on an unread source.
+    body = out.split("jobs:", 1)[1]
+    assert "adopt" not in body and "|| true" not in out and "continue-on-error" not in out
+
+
+def test_ci_template_pins_the_cli_version():
+    assert 'pipx install "graphban-cli==9.9.9"' in rules.ci_template("main", "9.9.9")
