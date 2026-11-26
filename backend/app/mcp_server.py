@@ -144,9 +144,10 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "list_projects",
         "description": (
-            "`accent` is the one solid colour. `accent2` (null means solid) and `pattern` fill the tile."
+            "`accent`: solid colour. `accent2` (null: solid), `pattern`: tile fill. "
+            "include_archived adds archived ones."
         ),
-        "inputSchema": {"type": "object", "properties": {}},
+        "inputSchema": {"type": "object", "properties": {"include_archived": {"type": "boolean"}}},
     },
     {
         "name": "create_project",
@@ -1746,7 +1747,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
             "type": "object",
             "properties": {"id": _STR, "name": _STR, "tag": _STR, "accent": _STR,
                            "accent2": _NULLABLE_STR, "pattern": _STR,
-                           "description": _STR},
+                           "description": _STR, "archived": {"type": "boolean"}},
         }}},
     },
     "setup_project": {
@@ -3277,9 +3278,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         return {"results": [
             {"id": p.id, "name": p.name, "tag": p.tag, "accent": p.accent,
              "accent2": p.accent2, "pattern": p.pattern,
-             "description": p.description}
+             "description": p.description, "archived": p.archived_at is not None}
             for p in db.scalars(select(Project).order_by(Project.name)).all()
-            if p.id in readable
+            if p.id in readable and (args.get("include_archived") or p.archived_at is None)
         ]}
     if name == "create_item":
         cached = _idempotent_get(db, args, "create_item", Item)
@@ -3293,6 +3294,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         is_wait = bool(args.get("question")) or any(
             str(t).strip().lower() == "wait:decision" for t in (args.get("tags") or []))
         caller = _agent_for_call(db, key, args, session_id) if is_wait else None
+        projects_svc.refuse_if_archived(db, pid, "create_item")  # GRPH-1955
         held: list = []
         if args.get("kind") == "fix" or any(
                 str(t).strip().lower() == "bug" for t in (args.get("tags") or [])):
@@ -3341,7 +3343,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             out["touchpoint_warnings"] = tw
         return out
     if name == "update_item":
-        _scoped_item(db, args["id"], allowed)
+        projects_svc.refuse_if_archived(  # GRPH-1955
+            db, _scoped_item(db, args["id"], allowed).project_id, "update_item")
         if args.get("resolution") is not None:
             return _resolve_item_call(db, args, key, allowed, defer)
         if "reach" in args:

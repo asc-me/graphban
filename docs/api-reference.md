@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 405 of the 405. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 407 of the 407. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -83,7 +83,7 @@ Five public surfaces are mounted on the org host: `/{path_id}/feedback`,
 | --- | --- | --- | --- |
 | GET | `/api/projects` | JWT | List projects (each carries its `tag`) |
 | POST | `/api/projects` | JWT | Create a project. `tag` is optional — derived from `name` when omitted, refused with 422 when taken or malformed |
-| GET | `/api/projects/summaries` | JWT | Project switcher rows for every project the caller can read: `item_count`, `agent_count` (roster, dismissed excluded), `live_agents` (heartbeat inside the presence TTL, not quarantined), `default_branch` (gitops `base_branch`; `null` is unset, never `main`) and `last_activity_at` (latest item change or audit event; `null` when there is none). Fixed statement count, whatever the item count |
+| GET | `/api/projects/summaries` | JWT | Project switcher rows for every project the caller can read: `item_count`, `agent_count` (roster, dismissed excluded), `live_agents` (heartbeat inside the presence TTL, not quarantined), `default_branch` (gitops `base_branch`; `null` is unset, never `main`) and `last_activity_at` (latest item change or audit event; `null` when there is none). Fixed statement count, whatever the item count. Archived projects are left out unless `?include_archived=true`, and each row carries `archived_at` (GRPH-1955) |
 | GET | `/api/projects/tag-suggestion` | JWT | A free tag derived from a project name (`?name=`). Prefills the creation form |
 | GET | `/api/projects/tag-check` | JWT | `{tag, available, reason}` for live form feedback (`?tag=`) |
 | GET | `/api/projects/{id}/counts` | JWT | The badge numbers the shell renders, a few integers instead of the four full lists |
@@ -94,6 +94,8 @@ Five public surfaces are mounted on the org host: `/{path_id}/feedback`,
 | PATCH | `/api/projects/{id}` | JWT | Update project config. **Not** the tag — changing that has to record tag history |
 | PUT | `/api/projects/{id}/memory-write-mode` | JWT (write, person only) | The Rules page's change of `memory.write_mode` (`review`\|`auto`\|`trusted`). `{mode, reason}`; an empty reason is 422, an agent key is refused (`rules.person_adopts`). Recorded in the rule history as a `set_rule_toggle` event with old and new values (GRPH-1497). A `memory_write_mode` change through the PATCH above is recorded the same way, its `memory_write_mode_reason` optional |
 | PUT | `/api/projects/{id}/publish-to-org` | JWT (owner or admin) | What a linked box publishes to the org for this project: `{specs?, item_digests?}` (bool, either or both; both default on). Any other member is 403. Each change is a `publish_to_org` activity event naming who changed which flag. An unlinked box publishes nothing whatever these say (GRPH-1674) |
+| POST | `/api/projects/{id}/archive` | JWT (owner or admin, person only) | Archive the project: `{reason}` (1–500 chars; empty is 422). It leaves `GET /api/projects`, the summaries and MCP `list_projects` unless `include_archived`; its tag, items, events and history stay readable by id. Claim, delegate, create and update on its items are 409 `project.archived_refuses_writes`, and its custom and adopted rules stop holding and recording. An agent key is 403 `project.archive_person_only`; another member is 403 `project.archive_needs_admin`. Idempotent; audited as `archive_project` (GRPH-1955) |
+| POST | `/api/projects/{id}/unarchive` | JWT (owner or admin, person only) | Bring an archived project back; same gates as archive. Audited as `unarchive_project` (GRPH-1955) |
 | GET | `/api/projects/{id}/members` | JWT | List members (role/access) |
 | GET | `/api/projects/{id}/triage` | JWT | Unified triage inbox: untriaged requests (bug/feature/enhancement, with likely duplicate and suggested PRD), blocked items (decision question/options or `waiting_on`) and unanswered collision clusters (`id` keyed by member set, `risk` serialize\|blocked). Blockers sort first; `counts` per tab (all/bugs/requests/blockers/collisions). Snoozed and decided rows are absent. A failing source is named in `failed_sources` while the others still return |
 | GET | `/api/projects/{id}/gitops` | JWT | Live delivery contract (fetches the org when this box is linked). Unset is unmeasured, not `main` |

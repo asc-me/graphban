@@ -259,3 +259,17 @@ def test_custom_rule_remove_is_in_the_sweep(client, tenants):
     r = client.post(f"/api/projects/{tenants['p_b']}/rules/custom/custom.probe/remove",
                     json={"reason": "probe"}, headers=tenants["alex"])
     assert _blocked(r.status_code), r.text
+
+
+@pytest.mark.parametrize("route", ["archive", "unarchive"])
+def test_project_archive_routes_are_in_the_sweep(client, tenants, route):
+    """GRPH-1955: archive and unarchive are project writes; the sweep enumerates both, and a
+    stranger naming another org's project is blocked even with a leaked write seat on it."""
+    found = _project_scoped_writes(client)
+    name = f"POST /api/projects/{{project_id}}/{route}"
+    assert name in found, sorted(k for k in found if "archive" in k)
+    r = client.post(f"/api/projects/{tenants['p_b']}/{route}", json={"reason": "probe"},
+                    headers=tenants["alex"])
+    assert _blocked(r.status_code), r.text
+    r = client.get(f"/api/projects?include_archived=true", headers=tenants["dana"]).json()
+    assert next(p for p in r if p["id"] == tenants["p_b"])["archived_at"] is None

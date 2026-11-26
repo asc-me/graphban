@@ -135,6 +135,18 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
          "Turning a project's publish-to-org switches (specs, item digests) off or on is done by "
          "its owner or an admin, not by any member.",
          "enforced", _src("app/routers/projects.py", "set_publish_to_org"), "code"),
+    Rule("project.archive_person_only", "build", "Archiving a project is a person's act",
+         "Archiving or unarchiving a project is done by a signed-in person; an agent API key is "
+         "refused with a 403 that names this rule.",
+         "enforced", _src("app/routers/projects.py", "get_person"), "code"),
+    Rule("project.archive_needs_admin", "build", "Archiving a project needs a project admin",
+         "Archiving or unarchiving a project is done by its owner or an admin, not by any member.",
+         "enforced", _src("app/routers/projects.py", "_require_archive_admin"), "code"),
+    Rule("project.archived_refuses_writes", "build", "An archived project refuses work writes",
+         "Claiming, delegating, creating or updating an item in an archived project is refused, "
+         "and its custom and adopted rules stop holding and recording. Its history stays "
+         "readable.",
+         "enforced", _src("app/services/projects.py", "refuse_if_archived"), "code"),
     Rule("setup.posture_needs_instance_admin", "build", "The instance posture needs an instance admin",
          "Whether this box's secrets and signup are safe to expose is read only by its operator "
          "(hosted) or an owner of one of its projects (self-host); anyone else learns nothing.",

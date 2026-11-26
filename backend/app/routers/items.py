@@ -16,6 +16,7 @@ from app.security import authz
 from app.security.deps import get_current_user
 from app.services import collision as collision_svc
 from app.services import items as items_svc
+from app.services import projects as projects_svc
 from app.services import handles
 from app.services import touchpoint_check
 from app.services import waits as waits_svc
@@ -62,6 +63,7 @@ def create_item(
     writable = authz.writable_project_ids(db, user.id)
     pid = body.project_id or (writable[0] if writable else None)
     authz.require_writable(db, user.id, pid)
+    projects_svc.refuse_if_archived(db, pid, "creating an item")  # GRPH-1955
     reporter = {"name": user.name, "handle": handles.project_handle(db, user, pid), "avatar": user.avatar}
     try:
         created = items_svc.create_item(
@@ -216,6 +218,7 @@ def update_item(
     if existing is None:
         raise HTTPException(404, "item not found")
     authz.require_writable(db, user.id, existing.project_id, "item")
+    projects_svc.refuse_if_archived(db, existing.project_id, "updating an item")  # GRPH-1955
     changes = body.model_dump(exclude_unset=True)
     # GRPH-832: `reach` is set HERE and never by `update_item`, because `update_item` is the
     # verb every agent holds and this route is the one a bearer JWT reaches. Popped before the

@@ -1296,6 +1296,29 @@ export function useSetPublishToOrg(projectId: string) {
   });
 }
 
+/** Every readable project, archived ones included and marked (GRPH-1955). */
+export function useProjectsIncludingArchived() {
+  return useQuery({ queryKey: [...keys.projects, "include-archived"], queryFn: api.projectsIncludingArchived });
+}
+
+export function useArchiveProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, reason }: { id: string; reason: string }) => api.archiveProject(id, reason),
+    // The prefix also covers the switcher's summaries and the include-archived read.
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.projects }),
+  });
+}
+
+export function useUnarchiveProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.unarchiveProject(id),
+    // The prefix also covers the switcher's summaries and the include-archived read.
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.projects }),
+  });
+}
+
 export function useMembers(projectId: string) {
   return useQuery({ queryKey: ["members", projectId], queryFn: () => api.members(projectId), enabled: !!projectId });
 }
