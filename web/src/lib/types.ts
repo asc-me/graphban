@@ -4040,6 +4040,35 @@ export interface RuleProposal {
   decided_reason?: string | null;
 }
 
+/** One finding of a rules import run (GRPH-1951 / P92 D3). */
+export interface ImportFinding {
+  id: number;
+  bucket: "proposed" | "external" | "gap";
+  stage: string;
+  quote: string;
+  source: { path: string; url?: string };
+  label: string | null;
+  text: string | null;
+  proposal_id: number | null;
+  guidance_id: number | null;
+  /** Why the pipeline refused to file this finding; null when it was filed. */
+  refused?: string | null;
+  proposal: RuleProposal | null;
+}
+
+export interface ImportRunReport {
+  id: number;
+  project_id: string;
+  commit: string;
+  created_by: string;
+  created_at: string | null;
+  sources_unread: { path: string; reason?: string }[];
+  sources_read: { path: string }[];
+  findings: ImportFinding[];
+}
+
+export interface ImportRunSummary { id: number; commit: string; created_by: string; created_at: string | null; unread: number }
+
 /** Who decided a proposal, when and why, read from its audit event (GRPH-1807). */
 export interface ProposalDecision {
   by: string;

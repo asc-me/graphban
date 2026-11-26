@@ -936,6 +936,35 @@ export function useAdoptRuleProposals(projectId: string) {
   });
 }
 
+export function useImportRuns(projectId: string) {
+  return useQuery({
+    queryKey: ["import-runs", projectId],
+    queryFn: () => api.importRuns(projectId),
+    enabled: !!projectId,
+    retry: false,
+  });
+}
+
+export function useImportRun(projectId: string, runId: number | null) {
+  return useQuery({
+    queryKey: ["import-runs", projectId, runId],
+    queryFn: () => api.importRun(projectId, runId as number),
+    enabled: !!projectId && runId != null,
+    retry: false,
+  });
+}
+
+export function useAdoptImportRun(projectId: string, runId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { ids: number[]; reason: string }) => api.adoptImportRun(projectId, runId, v.ids, v.reason),
+    onSuccess: () => {
+      invalidateProposals(qc);
+      void qc.invalidateQueries({ queryKey: ["import-runs", projectId] });
+    },
+  });
+}
+
 export function useDismissRuleProposal(projectId: string) {
   const qc = useQueryClient();
   return useMutation({

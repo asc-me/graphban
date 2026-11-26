@@ -1333,6 +1333,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ proposal_ids: proposalIds, reason }),
     }),
+  /** Import runs and their reports (GRPH-1951). */
+  importRuns: (projectId: string) =>
+    request<import("@/lib/types").ImportRunSummary[]>(`/projects/${encodeURIComponent(projectId)}/rules/import-runs`),
+  importRun: (projectId: string, runId: number) =>
+    request<import("@/lib/types").ImportRunReport>(`/projects/${encodeURIComponent(projectId)}/rules/import-runs/${runId}`),
+  adoptImportRun: (projectId: string, runId: number, findingIds: number[], reason: string) =>
+    request<import("@/lib/types").RuleProposal[]>(
+      `/projects/${encodeURIComponent(projectId)}/rules/import-runs/${runId}/adopt`,
+      { method: "POST", body: JSON.stringify({ finding_ids: findingIds, reason }) },
+    ),
   dismissRuleProposal: (projectId: string, proposalId: number, reason: string) =>
     request<import("@/lib/types").RuleProposal>(
       `/projects/${encodeURIComponent(projectId)}/rules/proposals/${proposalId}/dismiss`,

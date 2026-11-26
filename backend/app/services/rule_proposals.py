@@ -407,7 +407,9 @@ def _stage_adoption(db: Session, user, p: RuleProposal, reason: str, batch: bool
             meta={"proposal_id": p.id, "kind": p.kind, "state": state, "reason": reason,
                   "batch": batch, "history": f"{_history(p)}, adopted by {p.decided_by}",
                   "proposer": p.proposer, "proposer_kind": p.proposer_kind,
-                  "citations": p.citations, "adopted_by": p.decided_by})
+                  "citations": p.citations, "adopted_by": p.decided_by,
+                  **({"import_run": p.proposer.split(":", 1)[1]}
+                     if p.proposer_kind == "import" and ":" in p.proposer else {})})
     return record
 
 

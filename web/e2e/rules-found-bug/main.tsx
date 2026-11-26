@@ -59,6 +59,8 @@ function answer(path: string): unknown {
   if (path === "/api/events") return { results: [], total: 0 };
   if (path === "/api/rules/refusals/unmapped") return { groups: [] };
   if (path === "/api/rules/recommended") return { suggestions: [], sources: [] };
+  // GRPH-1951: the Rules page reads the newest import run; this harness has none.
+  if (path.endsWith("/rules/import-runs")) return [];
   if (path.startsWith("/api/projects")) return [PROJECT];
   return null;
 }
