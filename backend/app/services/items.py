@@ -3332,6 +3332,9 @@ def render_ref(db: Session, stored_id: str, readable: list[str] | None = None) -
         row = db.get(keys.MODELS[kind], stored_id)
         if row is not None:
             if readable is not None and row.project_id not in readable:
+                from app.services import links as links_svc
+                if kind == "item" and links_svc.prd_link_visible(db, row, readable):
+                    return row.key  # GRPH-1993: an accepted PRD link grants id/title/status
                 return HIDDEN_REF
             return row.key
     return stored_id
@@ -3340,6 +3343,21 @@ def render_ref(db: Session, stored_id: str, readable: list[str] | None = None) -
 # Shard statuses an item read and a brief leave out: memory a person or migration took out of
 # retrieval (GRPH-1234).
 HIDDEN_SHARD_STATUSES = ("retired", "rejected")
+
+
+def _far_meta(db: Session, link, self_id: str, readable: list[str] | None) -> dict:
+    """Title, status and project of a far endpoint that an accepted PRD link made visible
+    (GRPH-1993). Metadata only — nothing from the body, evidence or comments."""
+    if readable is None:
+        return {}
+    far = db.get(Item, link.b if link.a == self_id else link.a)
+    if far is None or far.project_id in readable:
+        return {}
+    from app.services import links as links_svc
+    if not links_svc.prd_link_visible(db, far, readable):
+        return {}
+    return {"far": {"id": far.key, "title": far.title, "status": far.status,
+                    "project": far.project_id}}
 
 
 def get_item_details(db: Session, item_id: str, readable: list[str] | None = None) -> dict | None:
@@ -3382,7 +3400,8 @@ def get_item_details(db: Session, item_id: str, readable: list[str] | None = Non
         # A far endpoint the viewer cannot read stays in the list as `HIDDEN_REF` (GRPH-1063).
         "links": [{"type": link.type, "a": render_ref(db, link.a, readable),
                    "b": render_ref(db, link.b, readable),
-                   "reason": link.reason or ""} for link in links],
+                   "reason": link.reason or "",
+                   **_far_meta(db, link, item.id, readable)} for link in links],
         "linked_shards": [{"id": sh.id, "text": sh.text, "source": sh.source} for sh in shards],
         "linked_requests": [{"id": r.key, "title": r.title, "type": r.type} for r in reqs],
     })
