@@ -1,8 +1,9 @@
 """Delivery of PRD-link requests and thread messages on the agent's normal loop (GRPH-P104 S3).
 
 Delivered to the PRD, not to a session: a pending request or a new message is pending for a PRD
-until someone working it has read it; a PRD is not told about its own side's posts. "Working it" is an agent that holds an item on the PRD (or
-has one in review). Delivery rides the `directive` channel (`fleet.collect_directive`) and
+until someone working it has read it; a PRD is not told about its own side's posts. "Working
+it" is `worked_prd_ids`: an agent holding or reviewing an item on the PRD, or one on a key whose
+person owns the open PRD. Delivery rides the `directive` channel (`fleet.collect_directive`) and
 advances the PRD's cursor, so the PRD's other agents are not told twice. Nothing is deleted, and
 when nobody works a PRD its pending rows stay until someone does.
 """
@@ -44,12 +45,22 @@ def pending_for_prd(db: Session, prd_id: str) -> list[dict]:
 
 
 def worked_prd_ids(db: Session, agent_id: str) -> list[str]:
-    """PRDs the agent holds (or reviews) an item on."""
-    rows = db.scalars(select(Item.prd_id).where(
+    """PRDs the agent works (PRD S3: "its owner, or any agent that holds or claims an item on
+    it"): those it holds or reviews an item on, and — in its own project — the open PRDs whose
+    owner is the person behind its credential."""
+    from app.models import Agent, ApiKey, Prd
+
+    held = set(db.scalars(select(Item.prd_id).where(
         Item.prd_id.is_not(None),
         or_(Item.claimed_by == agent_id, Item.review_claimed_by == agent_id),
-        Item.status.in_(("in_progress", "review"))).distinct()).all()
-    return list(rows)
+        Item.status.in_(("in_progress", "review"))).distinct()).all())
+    agent = db.get(Agent, agent_id)
+    key = db.get(ApiKey, agent.api_key_id) if agent is not None and agent.api_key_id else None
+    if key is not None and key.user_id:
+        held |= {p.id for p in db.scalars(select(Prd).where(
+            Prd.project_id == agent.project_id, Prd.created_by == key.user_id)).all()
+            if not p.close_record}
+    return sorted(held)
 
 
 def link_directive(db: Session, agent_id: str) -> dict | None:
@@ -75,4 +86,5 @@ def link_directive(db: Session, agent_id: str) -> dict | None:
         return None
     db.commit()
     return {"type": "prd_link_pending", "items": entries,
-            "next": "read the thread (the linked PRD's agents wrote this) and reply or act on it"}
+            "next": "read it with list_threads(link=...) and answer with post_comment; "
+                    "decide_prd_link on a request, file_suggested_item on a suggested_item"}

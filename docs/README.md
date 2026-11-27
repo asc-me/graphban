@@ -49,7 +49,7 @@ One guide per area of the left nav that the guides above do not already cover.
 
 | Doc | What it covers |
 | --- | --- |
-| [MCP tools](mcp.md) | The 82 MCP tools, JSON-RPC endpoint, API-key auth, error taxonomy, call metering |
+| [MCP tools](mcp.md) | The 87 MCP tools, JSON-RPC endpoint, API-key auth, error taxonomy, call metering |
 | [Grok Build](grok-build.md) | Connect Grok Build (xAI's coding CLI) to Graphban's MCP + prime it on the loop |
 | [Fleet on another machine](fleet-remote.md) | Standing a drain up on a Linux box — the vendor logins that cannot be scripted, `gbfleet service`, linger |
 | [Vendor adapters](fleet-adapters.md) | The fleet vendor-adapter support matrix |
