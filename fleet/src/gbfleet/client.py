@@ -33,6 +33,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import quote
 
 import httpx
 
@@ -852,6 +853,9 @@ SESSION_REFRESH_PATH = "/api/auth/refresh"
 #: Mints a key. Called once per `drain create`.
 SESSION_API_KEYS_PATH = "/api/api-keys"
 SESSION_PATHS: frozenset[str] = frozenset({SESSION_REFRESH_PATH, SESSION_API_KEYS_PATH})
+#: The one READ the session makes: a PRD's coverage (status and `shaped`), which
+#: `drain create` checks before it mints (GRPH-1975). A GET, so it cannot write.
+SESSION_COVERAGE_PATH = "/api/prds/{prd}/coverage"
 
 GBAN_HOME_ENV = "GRAPHBAN_HOME"
 #: The tiers `gban setup` mints with. The server adds `fleet` to a PRD-limited key anyway.
@@ -921,6 +925,25 @@ class LedgerSession:
         if project:
             body["project_id"] = project
         return self._post(SESSION_API_KEYS_PATH, body)
+
+    def prd_coverage(self, prd: str) -> dict:
+        """The PRD's `prd_coverage` reply: `status`, `shaped` and the rest. Writes nothing."""
+        path = SESSION_COVERAGE_PATH.format(prd=quote(prd, safe=""))
+        try:
+            with httpx.Client(timeout=self.timeout, transport=self.transport) as http:
+                response = http.get(self.base_url + path,
+                                    headers={"Authorization": f"Bearer {self.token}"})
+        except httpx.HTTPError as exc:
+            raise ServerUnreachable(f"could not reach {self.base_url}: {exc}") from exc
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {"detail": response.text[:400]}
+        if response.status_code >= 400:
+            detail = payload.get("detail") if isinstance(payload, dict) else payload
+            raise ToolFailed(path, code=str(response.status_code),
+                             message=str(detail or f"HTTP {response.status_code}"))
+        return payload if isinstance(payload, dict) else {}
 
     def _post(self, path: str, body: dict, *, auth: bool = True) -> dict:
         if path not in SESSION_PATHS:

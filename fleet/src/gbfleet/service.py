@@ -667,7 +667,7 @@ def make_plan(
     # everyone who opens the file, including the person debugging why the wrong repository
     # is being drained.
     root = root.resolve()
-    until_args = _replace_value(until_args, "--repo", str(root))
+    until_args = install_args(until_args)
     binary = binary or _this_gbfleet()
     try:
         common = repo_root(root)
@@ -731,6 +731,19 @@ def _this_gbfleet() -> str:
             "look up on a PATH it does not have — install it with "
             "`uv tool install graphban-fleet` and try again")
     return str(Path(found).resolve())
+
+
+def install_args(until_args: list[str]) -> list[str]:
+    """The `until` argv a unit carries for `until_args`, worked out without the disk.
+
+    `make_plan` installs exactly this, so `drain create` can compare it with its dry run
+    before anything is cloned (GRPH-1975). `--repo` is resolved the way `make_plan`
+    resolves it; `Path.resolve` does not need the directory to exist yet.
+    """
+    repo = _value_of(until_args, "--repo")
+    if repo is None:
+        return list(until_args)
+    return _replace_value(until_args, "--repo", str(Path(repo).resolve()))
 
 
 def _replace_value(args: list[str], flag: str, value: str) -> list[str]:
