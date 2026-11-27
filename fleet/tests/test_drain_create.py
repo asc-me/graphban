@@ -118,11 +118,23 @@ class FakeSupervisor:
         self.exit[unit_name] = done.returncode
 
 
+#: What the fake ledger's `prd_coverage` answers by default: an approved, shaped PRD with tasks.
+GOOD_COVERAGE = {"prd_id": PRD, "status": "approved", "shaped": True, "total_items": 4}
+
+
 class FakeLedger:
     def __init__(self, key: str) -> None:
         self.key = key
         self.opened: list[str] = []
         self.minted: list[tuple[str, str, str]] = []
+        self.coverage: dict = dict(GOOD_COVERAGE)
+        self.read: list[str] = []
+        #: When set, `mint_prd_key` raises it — a failure after the clone step.
+        self.mint_error: Exception | None = None
+
+    def prd_coverage(self, prd: str) -> dict:
+        self.read.append(prd)
+        return dict(self.coverage)
 
     def open(self, server: str) -> "FakeLedger":
         self.opened.append(server)
@@ -130,6 +142,8 @@ class FakeLedger:
 
     def mint_prd_key(self, prd: str, label: str, *, project: str = "") -> dict:
         self.minted.append((prd, label, project))
+        if self.mint_error is not None:
+            raise self.mint_error
         return {"id": "key_fake01", "plaintext": self.key, "project_id": "proj"}
 
 
@@ -278,7 +292,8 @@ def test_dry_run_writes_no_env_file_mints_no_key_and_installs_nothing(world, cap
     assert "would mint a key limited to GRPH-P96" in out
     assert not service.env_path_for(NAME).exists()
     assert not service.unit_path_for(NAME, world["kind"]).exists()
-    assert world["ledger"].opened == [] and world["ledger"].minted == []
+    # GRPH-1984: the dry run reads the PRD through the session, and mints nothing.
+    assert world["ledger"].read == [PRD] and world["ledger"].minted == []
     assert world["fake"].calls == []
     assert not _clone(world).exists()
 
@@ -382,6 +397,92 @@ def test_an_existing_drain_name_is_never_overwritten(world, capsys):
     assert world["ledger"].opened == []
 
 
+# ---- GRPH-1984: the dry run refuses what the real run refuses -----------------------------
+
+@posix_only
+@pytest.mark.parametrize("coverage,reason", [
+    ({"status": "draft"}, "GRPH-P96 is draft, not approved"),
+    ({"status": "review"}, "GRPH-P96 is review, not approved"),
+    ({"shaped": False}, "GRPH-P96 is not shaped"),
+    ({"total_items": 0}, "GRPH-P96 has no tasks"),
+])
+def test_dry_run_refuses_an_unready_prd_exactly_as_the_real_run_does(
+        world, capsys, coverage, reason):
+    world["ledger"].coverage.update(coverage)
+    dry_code, dry_out, dry_err = _create(capsys, "--like", LIKE, "--dry-run")
+    code, out, err = _create(capsys, "--like", LIKE)
+    assert dry_code == code == drain.EXIT_REFUSED
+    assert reason in dry_err
+    assert dry_err == err, "the dry run must give the real run's reason, word for word"
+    assert dry_out == out == ""
+    assert world["ledger"].minted == []
+    assert world["fake"].calls == []
+    assert not _clone(world).exists()
+    assert not service.env_path_for(NAME).exists()
+    assert not service.unit_path_for(NAME, world["kind"]).exists()
+
+
+# ---- GRPH-1984: a failed create removes the clone it made ---------------------------------
+
+def _fail_install(monkeypatch) -> None:
+    def refuse(plan, key):
+        raise service.Refused("install refused for the test")
+    monkeypatch.setattr(service, "install", refuse)
+
+
+@posix_only
+@pytest.mark.parametrize("failure", ["mint", "install"])
+def test_a_create_that_fails_after_cloning_removes_its_clone_and_a_rerun_succeeds(
+        world, capsys, monkeypatch, failure):
+    clone = _clone(world)
+    real_install = service.install
+    if failure == "mint":
+        world["ledger"].mint_error = client_mod.ToolFailed(
+            "/api/api-keys", code="500", message="boom")
+    else:
+        _fail_install(monkeypatch)
+    code, _out, err = _create(capsys, "--like", LIKE)
+    assert code == drain.EXIT_REFUSED
+    assert not clone.exists(), "the checkout this run cloned must be removed"
+    assert f"removed {clone}" in err
+    assert not service.env_path_for(NAME).exists()
+
+    world["ledger"].mint_error = None
+    monkeypatch.setattr(service, "install", real_install)
+    code, _out, err = _create(capsys, "--like", LIKE)
+    assert code == 0, err
+    assert (clone / ".git" / drain.MARKER).read_text(encoding="utf-8") == f"{NAME}\n"
+    assert service.unit_path_for(NAME, world["kind"]).is_file()
+
+
+@posix_only
+def test_a_failed_create_never_removes_a_directory_that_was_already_there(
+        world, capsys, monkeypatch):
+    mine = world["tmp"] / "mine"
+    subprocess.run(["git", "clone", "-q", str(world["origin"]), str(mine)], check=True)
+    _fail_install(monkeypatch)
+    code, _out, err = _create(capsys, "--like", LIKE, "--repo", str(mine))
+    assert code == drain.EXIT_REFUSED
+    assert (mine / "README.md").is_file()
+    assert "removed" not in err
+
+
+@posix_only
+def test_a_failed_create_keeps_a_clone_that_does_not_carry_this_drains_marker(
+        world, capsys, monkeypatch):
+    """The marker is the proof of ownership: without it (or naming another drain) it stays."""
+    clone = _clone(world)
+
+    def other_marker(checkout, name):
+        (checkout / ".git" / drain.MARKER).write_text("someone-else\n", encoding="utf-8")
+    monkeypatch.setattr(drain, "_write_marker", other_marker)
+    _fail_install(monkeypatch)
+    code, _out, err = _create(capsys, "--like", LIKE)
+    assert code == drain.EXIT_REFUSED
+    assert clone.is_dir()
+    assert f"kept {clone}" in err and "removed" not in err
+
+
 # ---- unit rendering through the host() seam (clause 6) ------------------------------------
 
 @posix_only
@@ -432,6 +533,29 @@ def test_the_session_mints_a_prd_limited_key_on_its_two_paths_only(tmp_path, mon
     assert client_mod.SESSION_PATHS == {"/api/auth/refresh", "/api/api-keys"}
     with pytest.raises(client_mod.NotPermitted):
         session._post("/api/items", {})
+
+
+def test_the_session_reads_prd_coverage_by_get_and_nothing_else(tmp_path, monkeypatch):
+    monkeypatch.setenv("GRAPHBAN_HOME", str(tmp_path))
+    (tmp_path / "session.json").write_text('{"refresh_token": "rt_fake"}', encoding="utf-8")
+    seen: list[tuple[str, str, str]] = []
+
+    def server(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path, request.headers.get("authorization", "")))
+        if request.url.path == "/api/auth/refresh":
+            return httpx.Response(200, json={"access_token": "at_fake"})
+        return httpx.Response(200, json=GOOD_COVERAGE)
+
+    session = client_mod.LedgerSession.open("http://ledger.invalid/",
+                                            transport=httpx.MockTransport(server))
+    assert session.prd_coverage(PRD)["status"] == "approved"
+    assert seen[1] == ("GET", f"/api/prds/{PRD}/coverage", "Bearer at_fake")
+    for path in ("/api/items", "/api/prds/X", "/api/prds/X/coverage/more", "/api/prds//coverage"):
+        with pytest.raises(client_mod.NotPermitted):
+            session._get(path)
+    with pytest.raises(client_mod.NotPermitted):
+        session.prd_coverage("../items")
+    assert len(seen) == 2
 
 
 def test_no_session_file_refuses_before_any_network(tmp_path, monkeypatch):

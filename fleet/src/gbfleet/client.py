@@ -852,6 +852,10 @@ SESSION_REFRESH_PATH = "/api/auth/refresh"
 #: Mints a key. Called once per `drain create`.
 SESSION_API_KEYS_PATH = "/api/api-keys"
 SESSION_PATHS: frozenset[str] = frozenset({SESSION_REFRESH_PATH, SESSION_API_KEYS_PATH})
+#: The one READ the session makes (GRPH-1984): a PRD's coverage, which carries its `status`
+#: and `shaped`, so `drain create` and its dry run refuse an unapproved or unshaped PRD the
+#: same way. GET only, and only this shape — `_get` refuses every other path.
+SESSION_PRD_COVERAGE_PATH = "/api/prds/{prd}/coverage"
 
 GBAN_HOME_ENV = "GRAPHBAN_HOME"
 #: The tiers `gban setup` mints with. The server adds `fleet` to a PRD-limited key anyway.
@@ -922,6 +926,25 @@ class LedgerSession:
             body["project_id"] = project
         return self._post(SESSION_API_KEYS_PATH, body)
 
+    def prd_coverage(self, prd: str) -> dict:
+        """The PRD's coverage as the person reads it: `status`, `shaped`, `total_items`."""
+        if not prd or "/" in prd or "?" in prd or "#" in prd:
+            raise NotPermitted(f"not a PRD id: {prd!r}")
+        return self._get(SESSION_PRD_COVERAGE_PATH.format(prd=prd))
+
+    def _get(self, path: str) -> dict:
+        head, _, tail = SESSION_PRD_COVERAGE_PATH.partition("{prd}")
+        middle = path[len(head):len(path) - len(tail)] if path.endswith(tail) else ""
+        if not path.startswith(head) or not middle or "/" in middle:
+            raise NotPermitted(f"the gban session may not GET {path!r}")
+        try:
+            with httpx.Client(timeout=self.timeout, transport=self.transport) as http:
+                response = http.get(self.base_url + path,
+                                    headers={"Authorization": f"Bearer {self.token}"})
+        except httpx.HTTPError as exc:
+            raise ServerUnreachable(f"could not reach {self.base_url}: {exc}") from exc
+        return self._payload(path, response)
+
     def _post(self, path: str, body: dict, *, auth: bool = True) -> dict:
         if path not in SESSION_PATHS:
             raise NotPermitted(f"the gban session may not POST {path!r}")
@@ -931,6 +954,10 @@ class LedgerSession:
                 response = http.post(self.base_url + path, json=body, headers=headers)
         except httpx.HTTPError as exc:
             raise ServerUnreachable(f"could not reach {self.base_url}: {exc}") from exc
+        return self._payload(path, response)
+
+    @staticmethod
+    def _payload(path: str, response: httpx.Response) -> dict:
         try:
             payload = response.json()
         except ValueError:
