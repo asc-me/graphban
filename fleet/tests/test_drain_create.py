@@ -453,7 +453,8 @@ def test_write_env_replaces_atomically_and_leaves_the_old_key_on_failure(tmp_pat
                         err_path=tmp_path / "e", binary="/bin/true", until_args=[],
                         repo=tmp_path, common_dir=tmp_path, path_env="")
     service.write_env(plan, "gb_test_old_value")
-    assert stat.S_IMODE(plan.env_path.stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(plan.env_path.stat().st_mode) == 0o600
 
     def fail(src, dst):
         raise OSError("disk full")
