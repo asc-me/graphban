@@ -2464,6 +2464,8 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         if effort_update < 0:
             raise ValueError(f"negative effort: {effort_update}")
     prev_status = item.status
+    # GRPH-1961. Before anything is written: a refusal here leaves the row as it was.
+    fields, cleared_blocker = reconcile_blocker_status(db, item, fields)
     if fields.get("status") == "blocked" and prev_status != "blocked":
         # PRD-35 D9: a linked delegation's attempt ended here.
         from app.services import delegation as delegation_svc
@@ -2686,6 +2688,11 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
                 "severity"):
         if key in fields and fields[key] is not None:
             setattr(item, key, fields[key])
+    if cleared_blocker:
+        item.evidence = append_evidence(item.evidence, [{
+            "kind": "note",
+            "detail": f"blocker cleared on leaving blocked: {cleared_blocker}",
+        }])
     if "blocker" in fields:
         # GRPH-1867. Links derived from the old text go when the new text no longer names them.
         drop_stale_blocker_dependencies(db, item)
@@ -4052,6 +4059,104 @@ def clear_satisfied_blocker(db: Session, item: Item, *, commit: bool = True) -> 
         db.commit()
         db.refresh(item)
     return True
+
+
+#: Statuses a blocker may not sit on without `blocked` (GRPH-1961).
+UNBLOCKED_OPEN_STATUSES = ("backlog", "next")
+
+
+class BlockerDisagrees(ValueError):
+    """Status and blocker would disagree after this write (GRPH-1961)."""
+
+
+def blocker_open_waits(db: Session, item: Item, text: str) -> list[str]:
+    """What `text`, written as this item's blocker, still waits on.
+
+    A typed wait tag, a named item that is not `done`, and a `blocker`-reason
+    dependency link to an open item each count. Empty means nothing open is named.
+    """
+    waits: list[str] = []
+    from app.services.waits import wait_tags_on
+    waits.extend(f"typed wait {t}" for t in wait_tags_on(item))
+    seen: set[str] = set()
+    for token in keys_named_in((text or "").strip()):
+        stored = keys.resolve_item(db, token)
+        other = db.get(Item, stored) if stored else None
+        if other is None or other.id == item.id or other.id in seen:
+            continue
+        seen.add(other.id)
+        if other.status != "done":
+            waits.append(other.key)
+    link_ids = db.scalars(select(Link.b).where(
+        Link.type == "dependency", Link.a == item.id,
+        Link.reason == BLOCKER_DEP_REASON)).all()
+    for dep_id in dict.fromkeys(link_ids):
+        if dep_id in seen:
+            continue
+        dep = db.get(Item, dep_id)
+        if dep is not None and dep.status != "done":
+            seen.add(dep.id)
+            waits.append(dep.key)
+    return waits
+
+
+def _blocker_text_satisfied(db: Session, item: Item, text: str) -> bool:
+    """True when `text` names items and every one is `done`: GRPH-1530 clears it."""
+    text = (text or "").strip()
+    if (not text or blocker_names_person_or_decision(text)
+            or text.endswith(BLOCKING_FIX_BLOCKER_SUFFIX)):
+        return False
+    from app.services.waits import wait_tags_on
+    if wait_tags_on(item):
+        return False
+    tokens = keys_named_in(text)
+    if not tokens:
+        return False
+    for token in tokens:
+        stored = keys.resolve_item(db, token)
+        other = db.get(Item, stored) if stored else None
+        if other is None or other.status != "done":
+            return False
+    return True
+
+
+def reconcile_blocker_status(db: Session, item: Item, fields: dict) -> tuple[dict, str]:
+    """Keep `status` and `blocker` in agreement on this write (GRPH-1961).
+
+    Returns the fields to write and the blocker text this call clears, if any.
+    Raises `BlockerDisagrees` before anything is written.
+
+    1. Leaving `blocked` for `backlog`/`next` with the blocker untouched: refused,
+       naming the blocker, while it waits on an open item or a typed wait.
+       Otherwise the blocker clears in the same call and the caller writes a note.
+    2. A non-empty blocker on a `backlog`/`next` item: the item becomes `blocked`.
+       Refused when the same call asks for `backlog`/`next` explicitly. A blocker
+       naming only done items is left to GRPH-1530, which clears it after commit.
+    """
+    asked_status = fields.get("status")
+    new_status = asked_status if asked_status is not None else item.status
+    blocker_given = fields.get("blocker") is not None
+    current = (item.blocker or "").strip()
+    if (item.status == "blocked" and new_status in UNBLOCKED_OPEN_STATUSES
+            and not blocker_given and current):
+        open_waits = blocker_open_waits(db, item, current)
+        if open_waits:
+            raise BlockerDisagrees(
+                f"{item.key} cannot move from blocked to {new_status}: its blocker "
+                f"{current!r} still waits on {', '.join(open_waits)}. Clear the "
+                "blocker in the same call (blocker=\"\") or leave it blocked")
+        return {**fields, "blocker": ""}, current
+    incoming = (fields.get("blocker") or "").strip() if blocker_given else ""
+    if incoming and new_status in UNBLOCKED_OPEN_STATUSES:
+        if _blocker_text_satisfied(db, item, incoming):
+            return fields, ""
+        if asked_status is not None:
+            raise BlockerDisagrees(
+                f"{item.key} cannot be {asked_status} with blocker {incoming!r}: a "
+                "blocker on a backlog or next item is a blocked item. Send "
+                "status=blocked, or no blocker")
+        return {**fields, "status": "blocked"}, ""
+    return fields, ""
 
 
 def release_when_named_blockers_done(db: Session, finished: Item) -> list[str]:

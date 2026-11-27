@@ -224,7 +224,7 @@ def test_an_item_in_progress_is_not_pulled_back_to_review(client, key, auth, pro
     assert _green_notes(got) == []
 
 
-def test_a_blocker_keeps_a_ci_red_row_next(client, key, auth, proj):
+def test_a_blocker_keeps_a_ci_red_row_out_of_review(client, key, auth, proj):
     worker = _agent(client, key, "w")
     reviewer = _agent(client, key, "rev")
     item = _to_review(client, key, worker, "held by a person")
@@ -234,7 +234,8 @@ def test_a_blocker_keeps_a_ci_red_row_next(client, key, auth, proj):
 
     got = _post(client, _gate(client, auth, proj), item)
 
-    assert got["status"] == "next"
+    # GRPH-1961: a blocker on a `next` row makes it `blocked`; green does not return it.
+    assert got["status"] == "blocked"
     assert got["bounce_reason"].startswith(CI_RED_BOUNCE_PREFIX)
     assert _green_notes(got) == []
 

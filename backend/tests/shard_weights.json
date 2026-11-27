@@ -38,6 +38,7 @@
 "tests/test_bench_repo_suite.py": 1.77,
 "tests/test_blocker_auto_clear.py": 1.2,
 "tests/test_blocker_must_name.py": 1.1,
+"tests/test_blocker_status_agree.py": 1.2,
 "tests/test_blocking_fix_unblocks.py": 0.5,
 "tests/test_blocking_fixes.py": 3.0,
 "tests/test_bootstrap.py": 1.7,
