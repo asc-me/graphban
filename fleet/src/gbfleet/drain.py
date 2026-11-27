@@ -30,6 +30,9 @@ person's own `gban setup` key) has its key left alive, and both commands list th
 live keys by id and label and send them to Settings to revoke the right one. That case exits
 `EXIT_MANUAL_REVOKE` (3) and prints `manual_revoke_needed: <ids, comma-separated>`; every
 other success exits 0.
+A rekey whose restart and reload both fail exits 1 with no `manual_revoke_needed:` line
+(GRPH-1983): the running service still uses the old key, so the env file is put back on it
+and the unused new key is revoked (or named by id when that revoke fails).
 
 **Preflight refuses with a named reason, before anything is cut, minted or written**
 (GRPH-1975). `draft` refuses an unsupported platform, a service or env file that already
@@ -1430,8 +1433,17 @@ def _env_plan(name: str, kind: str, env: Path) -> service.Plan:
                         common_dir=env.parent, path_env="")
 
 
+class RestartFailed(RuntimeError):
+    """Neither the restart nor the reload took: the service did not re-read its env file."""
+
+
 def restart(name: str, kind: str) -> str:
-    """Restart the installed service so it reads the env file again. Loads it if it is not."""
+    """Restart the installed service so it reads the env file again. Loads it if it is not.
+
+    Raises `RestartFailed` when the restart and the reload both answer non-zero (GRPH-1983):
+    whatever is running then still runs on the key it started with, so the caller must not
+    treat the new key as adopted.
+    """
     unit = service.unit_path_for(name, kind)
     if kind == "launchd":
         domain = service._launchd_gui_domain()
@@ -1439,11 +1451,24 @@ def restart(name: str, kind: str) -> str:
             raise Refused("launchd domain needs a numeric uid; os.getuid is absent")
         code, said = service._run(["launchctl", "kickstart", "-k",
                                    f"{domain}/{service.label_for(name)}"])
+        if code == 0:
+            return said
+        # The not-loaded case: bootstrap the plist already on disk, retried once for
+        # launchd's asynchronous gap (as `service._load_existing` does), codes checked.
+        load_code, load_said = service._run(["launchctl", "bootstrap", domain, str(unit)])
+        if load_code != 0:
+            load_code, load_said = service._run(["launchctl", "bootstrap", domain, str(unit)])
     else:
         code, said = service._run(["systemctl", "--user", "restart", service.unit_name(name)])
-    if code != 0:
-        return service._load_existing(name, kind, unit)
-    return said
+        if code == 0:
+            return said
+        service._run(["systemctl", "--user", "daemon-reload"])
+        load_code, load_said = service._run(["systemctl", "--user", "enable", "--now",
+                                             service.unit_name(name)])
+    if load_code != 0:
+        raise RestartFailed(f"restart failed ({said or f'exit {code}'}) and the reload failed "
+                            f"({load_said or f'exit {load_code}'})")
+    return load_said
 
 
 def first_call_seen(ledger: object, key_id: str, *, window: float | None = None,
@@ -1467,6 +1492,47 @@ def first_call_seen(ledger: object, key_id: str, *, window: float | None = None,
             return False
         time.sleep(poll)
         waited += poll
+
+
+def _unwind_failed_restart(ledger: object, name: str, kind: str, env: Path, old: str,
+                           new_id: str, prior_record: str, why: str, out: TextIO,
+                           err: TextIO) -> int:
+    """The service never restarted, so it still runs on the old key (GRPH-1983).
+
+    The old key is NOT offered for revoking (no `manual_revoke_needed:` line): revoking it
+    would stop the drain. The env file and the `.key-id` record go back to the old key, so a
+    later start does not pick up a key that is about to be revoked, and the unused new key is
+    revoked; when either step fails, the new key is named by id so it is not left alive
+    silently. Exits 1.
+    """
+    print(f"gbfleet drain rekey: could not restart {name}: {why}. The old key is still in "
+          "use by the running service and the new key was not adopted. See `gbfleet service "
+          f"status --name {name}`", file=err)
+    try:
+        service.write_env(_env_plan(name, kind, env), old)
+    except OSError as exc:
+        print(f"gbfleet drain rekey: could not put the old key back in {env}: {exc}. It holds "
+              f"new key {new_id}, unused, left alive so the next start works", file=err)
+        print(f"new key: unused, left ALIVE in {env} ({new_id})", file=out)
+        return 1
+    if prior_record:
+        _record_key_id(name, prior_record)
+    else:
+        try:
+            key_id_path(name).unlink()
+        except OSError:
+            pass
+    print(f"key: {env} holds the old key again", file=out)
+    try:
+        ledger.revoke_key(new_id)  # type: ignore[attr-defined]
+    except (client_mod.ServerUnreachable, client_mod.ToolFailed) as exc:
+        print(f"gbfleet drain rekey: unused new key {new_id} was NOT revoked and is still "
+              f"ALIVE: {exc}. Revoke it in Settings", file=err)
+        print(f"new key: unused, left ALIVE ({new_id})", file=out)
+        return 1
+    print(f"new key: unused, revoked ({new_id})", file=out)
+    print("old key: still in use by the running service, NOT revoked", file=out)
+    return 1
 
 
 def rekey(name: str, *, out: TextIO | None = None, err: TextIO | None = None) -> int:
@@ -1517,14 +1583,16 @@ def rekey(name: str, *, out: TextIO | None = None, err: TextIO | None = None) ->
         print("gbfleet drain rekey: the server returned no usable new key. Nothing was "
               "changed", file=err)
         return EXIT_REFUSED
+    prior_record = _recorded_key_id(name)
     try:
         warnings = service.write_env(_env_plan(name, kind, env), new)
     except OSError as exc:
+        old = ""
         print(f"gbfleet drain rekey: could not write {env}: {exc}. It still holds the old "
               f"key; key {new_id} was minted and not stored, revoke it in Settings", file=err)
         return EXIT_REFUSED
     finally:
-        new = old = ""
+        new = ""
     _record_key_id(name, new_id)
     print(f"key: minted ({new_id}, labelled {label}), written to {env}", file=out)
     for warning in warnings:
@@ -1533,8 +1601,16 @@ def rekey(name: str, *, out: TextIO | None = None, err: TextIO | None = None) ->
     try:
         restart(name, kind)
     except Refused as exc:
+        old = ""
         print(f"gbfleet drain rekey: {exc}. The old key is left alive", file=err)
         return 1
+    except RestartFailed as exc:
+        try:
+            return _unwind_failed_restart(ledger, name, kind, env, old, new_id, prior_record,
+                                          str(exc), out, err)
+        finally:
+            old = ""
+    old = ""
     if not first_call_seen(ledger, new_id):
         print(f"gbfleet drain rekey: the restarted service has made no call with key {new_id} "
               "yet, so the old key is left alive. See `gbfleet service status --name "

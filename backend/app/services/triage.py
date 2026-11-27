@@ -729,6 +729,26 @@ def _route_request(db: Session, target: dict, decision: dict, project_id: str | 
         raise DecisionRefused("refused", str(e))
 
 
+def _check_move(decision: dict, kind: str) -> None:
+    """A move arrives at the TARGET box as a routed accept carrying
+    `move: {from: {box_label, item_id}}` (GBC-291). The `from` names an item on the SOURCE box,
+    so a move is only ever applied as a new item from a request-kind target: an item-kind target
+    on a move would resolve its key locally and write to an unrelated item that happens to share
+    it. Refused `bad_decision` before anything is read or created, as is a malformed `move`."""
+    if decision.get("move") is None:
+        return
+    move = decision["move"]
+    src = move.get("from") if isinstance(move, dict) else None
+    if not isinstance(src, dict) or not all(
+            isinstance(src.get(f), str) and src[f].strip() for f in ("box_label", "item_id")):
+        raise DecisionRefused("bad_decision", "move needs from: {box_label, item_id}")
+    if kind != "request":
+        raise DecisionRefused(
+            "bad_decision",
+            f"a move from {src['box_label']}:{src['item_id']} is applied only to a routed "
+            f"request, never to a local item by key")
+
+
 def apply_decision(db: Session, decision: dict, project_id: str | None = None) -> dict:
     """Apply one console decision. Returns the report row: `{id, result, reason?}`.
 
@@ -756,6 +776,7 @@ def apply_decision(db: Session, decision: dict, project_id: str | None = None) -
     if not kind:
         return {"id": did, "result": "refused", "reason": "bad_decision"}
     try:
+        _check_move(decision, kind)
         if kind == "request":
             target = _route_request(db, payload, decision, project_id)
             out = {"decision": str(decision.get("decision"))}

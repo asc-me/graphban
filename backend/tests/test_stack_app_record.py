@@ -488,9 +488,9 @@ def test_alembic_stays_single_head_with_0140_in_the_chain():
     # on 0146 (GRPH-1137, decision waits) on 0145 (GRPH-1134, item done_at)
     # on 0144 (GRPH-1133, per-user UI preferences) on 0143
     # (GRPH-1127, scan finding grain); linear through 0140.
-    assert script.get_heads() == ["0237"]
-    assert script.get_revision("0237").down_revision == "0236"  # GRPH-1992, link delivery
-    assert script.get_revision("0236").down_revision == "0235"  # GRPH-1989, PRD links
+    assert script.get_heads() == ["0238"]
+    assert script.get_revision("0238").down_revision == "0237"  # GRPH-1992, link delivery
+    assert script.get_revision("0237").down_revision == "0236"  # GRPH-1990, PRD link suggestions
     assert script.get_revision("0235").down_revision == "0234"  # GRPH-1978, console choice
     assert script.get_revision("0234").down_revision == "0233"  # GRPH-1973, key PRD limit
     assert script.get_revision("0233").down_revision == "0232"  # GRPH-1961, blocker status
