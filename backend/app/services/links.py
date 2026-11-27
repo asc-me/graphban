@@ -74,6 +74,11 @@ def link_endpoints(
     found = [db.get(Item, keys.resolve_item(db, ref) or ref) for ref in pair]
     for ref, item in zip(pair, found):
         if item is None or item.project_id not in readable:
+            # GRPH-1993: an accepted PRD link makes the far PRD's items linkable by metadata.
+            if (item is not None and ref == b and found[0] is not None
+                    and found[0].project_id in readable
+                    and prd_link_grants(db, found[0], item)):
+                continue
             raise _refused(a, b, ref)
     ia, ib = found
     if _org_of(db, ia.project_id) != _org_of(db, ib.project_id):
@@ -84,6 +89,29 @@ def link_endpoints(
             hint="link from an item you can write, or use a key with write access to it",
         )
     return ia, ib
+
+
+def prd_link_grants(db: Session, near: Item, far: Item) -> bool:
+    """True when `near` and `far` sit on the two PRDs of one ACCEPTED PRD link (GRPH-P104 S4).
+    The grant is metadata-only: it never widens read access to bodies, evidence or comments."""
+    if not near.prd_id or not far.prd_id or near.prd_id == far.prd_id:
+        return False
+    link = _pair_link(db, near.prd_id, far.prd_id)
+    return link is not None and link.status == "accepted"
+
+
+def prd_link_visible(db: Session, far: Item, readable: list[str]) -> bool:
+    """True when `far` (outside `readable`) is on a PRD joined by an accepted PRD link to a PRD
+    in a project the viewer reads — its id, title and status may then be shown."""
+    if not far.prd_id:
+        return False
+    for link in db.scalars(select(PrdLink).where(
+            PrdLink.status == "accepted",
+            or_(PrdLink.prd_a_id == far.prd_id, PrdLink.prd_b_id == far.prd_id))):
+        other = link.project_b_id if link.prd_a_id == far.prd_id else link.project_a_id
+        if other in readable:
+            return True
+    return False
 
 
 def _org_of(db: Session, project_id: str) -> str | None:
