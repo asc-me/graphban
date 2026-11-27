@@ -140,3 +140,52 @@ def test_grill_apply_folds_conversation_into_prd_body(db):
     r = at.dispatch(ctx, ToolCall(id="c1", name="grill_apply", input={}))
     assert not r.is_error and "rewrote" in r.content
     assert "offline mode" in prd_svc.get_prd(db, prd.id).body
+
+
+# ---- GRPH-2005: leftover clauses must not read as "already fully tracked" ----
+
+_LEFTOVER_PRD = (
+    "# Sync Spec\n\n## API sync endpoint\n"
+    "The server exposes a sync endpoint that ingests external events.\n\n"
+    "## Acceptance\n- The sync endpoint ingests an event\n- The moon is cheese\n")
+
+
+def test_decompose_rerun_with_an_unassigned_clause_is_not_fully_tracked(db):
+    from app.services import prds as prd_svc
+
+    from tests.prd_approve import approve
+    prd = prd_svc.create_prd(db, title="Sync Spec", body=_LEFTOVER_PRD)
+    approve(db, prd)
+    first = at.dispatch(_ctx(db, "prd", prd.id), ToolCall(id="c1", name="decompose_prd", input={}))
+    assert not first.is_error and "created" in first.content
+    assert "The moon is cheese" in first.content  # named even when something was filed
+    again = at.dispatch(_ctx(db, "prd", prd.id), ToolCall(id="c2", name="decompose_prd", input={}))
+    assert not again.is_error
+    assert "fully tracked" not in again.content.replace("NOT fully tracked", "")
+    assert "NOT fully tracked" in again.content
+    assert "The moon is cheese" in again.content
+
+
+def test_decompose_with_an_unfiled_section_clause_is_not_fully_tracked(db, monkeypatch):
+    from app.services import prds as prd_svc
+
+    prd = prd_svc.create_prd(db, title="Framing", body="# Framing\n\n## S1. Thing\nA thing.\n")
+    monkeypatch.setattr(prd_svc, "decompose", lambda *a, **k: {
+        "created": [], "unassigned_clauses": [], "unfiled_pieces": [],
+        "unfiled_section_clauses": [{"clause": "**S6:** the note is readable",
+                                     "sections": ["S6. Framing notes"]}]})
+    r = at.dispatch(_ctx(db, "prd", prd.id), ToolCall(id="c1", name="decompose_prd", input={}))
+    assert not r.is_error
+    assert "NOT fully tracked" in r.content
+    assert "**S6:** the note is readable" in r.content and "S6. Framing notes" in r.content
+
+
+def test_decompose_with_nothing_left_over_keeps_its_reply(db, monkeypatch):
+    from app.services import prds as prd_svc
+
+    prd = prd_svc.create_prd(db, title="Done", body="# Done\n\n## S1. Thing\nA thing.\n")
+    monkeypatch.setattr(prd_svc, "decompose", lambda *a, **k: {
+        "created": [], "unassigned_clauses": [], "unfiled_section_clauses": [],
+        "unfiled_pieces": None})
+    r = at.dispatch(_ctx(db, "prd", prd.id), ToolCall(id="c1", name="decompose_prd", input={}))
+    assert r.content == f"{prd.id}: no uncovered sections to decompose (already fully tracked)"
