@@ -94,3 +94,58 @@ def test_stale_status_moved_is_item_moved(client, auth, db, monkeypatch):
     d["status"] = "done"
     _, console = _pull(db, monkeypatch, [d])
     assert console.posts[0][1]["reason"] == "item_moved"
+
+
+# GRPH-2002: a move-marked decision never applies to a local item by key.
+MOVE = {"from": {"box_label": "b", "item_id": "GRPH-5"}}
+
+
+def test_move_on_an_item_target_is_refused_and_the_local_item_is_untouched(
+        client, auth, db, monkeypatch):
+    key = _item(client, auth, "Local namesake")
+    db.expire_all()
+    before = db.query(Item).filter(Item.title == "Local namesake").one()
+    seen = (before.status, before.assignee)
+    events = db.query(Event).filter(Event.target_id.in_([key, before.id])).count()
+    d = _decision(_did(20), {"kind": "item", "source": "b", "item_id": key}, "accept")
+    d["move"] = {"from": {"box_label": "b", "item_id": key}}
+    out, console = _pull(db, monkeypatch, [d])
+    assert out["refused"] == 1
+    assert console.posts[0][1]["reason"] == "bad_decision"
+    db.expire_all()
+    after = db.query(Item).filter(Item.title == "Local namesake").one()
+    assert (after.status, after.assignee) == seen
+    assert db.query(Event).filter(Event.target_id.in_([key, before.id])).count() == events
+
+
+def test_request_kind_move_still_creates_and_reports_the_item(client, auth, db, monkeypatch):
+    _writer(db, "u_ada", "Ada")
+    d = _routed(21, {"id": "u_ada"})
+    d["move"] = MOVE
+    out, console = _pull(db, monkeypatch, [d])
+    assert out["applied"] == 1
+    db.expire_all()
+    made = db.query(Item).filter(Item.title == "Routed 21").one()
+    assert console.posts[0][1]["created_item_id"] == made.key and made.assignee == "u-ada"
+
+
+def test_request_kind_move_with_unassignable_assignee_creates_nothing(
+        client, auth, db, monkeypatch):
+    d = _routed(22, {"id": "u_nobody"})
+    d["move"] = MOVE
+    _, console = _pull(db, monkeypatch, [d])
+    assert console.posts[0][1]["reason"] == "not_assignable"
+    db.expire_all()
+    assert db.query(Item).filter(Item.title == "Routed 22").count() == 0
+
+
+@pytest.mark.parametrize("move", ["GRPH-5", ["b"], {}, {"from": "b"},
+                                  {"from": {"box_label": "b"}},
+                                  {"from": {"box_label": "b", "item_id": ""}}])
+def test_malformed_move_is_bad_decision_and_creates_nothing(client, auth, db, monkeypatch, move):
+    d = _routed(23)
+    d["move"] = move
+    _, console = _pull(db, monkeypatch, [d])
+    assert console.posts[0][1]["reason"] == "bad_decision"
+    db.expire_all()
+    assert db.query(Item).filter(Item.title == "Routed 23").count() == 0
