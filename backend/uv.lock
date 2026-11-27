@@ -770,7 +770,7 @@ wheels = [
 
 [[package]]
 name = "graphban-api"
-version = "2026.11.73"
+version = "2026.11.74"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
