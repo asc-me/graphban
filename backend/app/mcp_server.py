@@ -2972,6 +2972,17 @@ def _unregistered_planner_call(tool: str, project_id: str) -> errors.Validation:
              "delegation is planner work, so register as a planner on the work's project")
 
 
+def _authorize_proxied(db: Session, name: str, args: dict[str, Any], key: ApiKey,
+                       session_id: str | None, scope_out: dict) -> None:
+    """Refuse, before forwarding, a call the caller's key may not make (GRPH-1981).
+
+    The local prelude of `_call_tool` (check_only), then the limits a forwarded call can
+    only fail closed on, because the sync key upstream carries none of them.
+    """
+    _call_tool(db, name, args, key, session_id, scope_out=scope_out, check_only=True)
+    mcp_proxy.require_forwardable(db, key, TOOL_ALIASES.get(name, name), args)
+
+
 # Retired tool names, kept dispatchable forever. NOT in TOOLS — an alias must not appear
 # in tools/list or inflate the counts asserted by tests/test_api.py and test_phase4.py.
 # Agents cache tool names in memory and in committed configs, so a name that ever worked
@@ -2981,7 +2992,15 @@ TOOL_ALIASES = {"report_agentledger_issue": "report_graphban_issue"}
 
 def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                session_id: str | None = None, defer=None,
-               scope_out: dict | None = None) -> Any:
+               scope_out: dict | None = None, check_only: bool = False) -> Any:
+    """Authorize and dispatch one tool call.
+
+    `check_only` runs the caller's key limits — scopes, the PRD bound, the `gate` scope,
+    project scope and the role gate — and returns None before quotas or dispatch. The hybrid
+    proxy calls it so a call is refused locally before it is forwarded under the sync key
+    (GRPH-1981); one prelude for both paths, so the two cannot disagree about what a key
+    may do.
+    """
     name = TOOL_ALIASES.get(name, name)
     # Authority: a key's declared scopes ∩ its owner's memberships bound every call
     # (a key never out-ranks the user who minted it). `project_id` args can select
@@ -3172,6 +3191,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             f"{'write-access ' if writes else ''}project memberships; "
             "ask a project owner to grant access"
         )
+    if check_only:
+        return None
 
     # Rate/quota gates (hosted only; attributed to the org owning the target project;
     # calls with no project in scope are exempt). Burst cap first — it's the cheap
@@ -5215,6 +5236,10 @@ async def mcp_endpoint(
             # applies its own authz + metering + audit, so we return its result verbatim and
             # skip the local metering/audit below.
             if mcp_proxy.should_proxy(name):
+                # The caller's OWN key limits first (GRPH-1981). The cloud sees only the sync
+                # key, which carries none of them, so a call refused here must never leave.
+                await run_in_threadpool(_authorize_proxied, db, name, args, key,
+                                        _session_id, scope)
                 cloud = await run_in_threadpool(mcp_proxy.forward, name, args)
                 if "result" in cloud:
                     out = cloud["result"]
