@@ -21,6 +21,15 @@ def _visible_link(db: Session, caller: Caller, link_id: str) -> PrdLink:
     return link
 
 
+def sender_side(link: PrdLink, caller: Caller) -> str:
+    """The project a caller posts from: the side it can write, else the side it can read."""
+    for pool in (caller.writable, caller.readable):
+        for pid in (link.project_a_id, link.project_b_id):
+            if pid in pool:
+                return pid
+    return link.project_a_id
+
+
 def read_only_reason(db: Session, link: PrdLink) -> str | None:
     if link.status != "accepted":
         return f"the link is {link.status}"
@@ -49,10 +58,12 @@ def post(db: Session, caller: Caller, link_id: str, *, kind: str, body: str,
     reason = read_only_reason(db, link)
     if reason:
         raise ValueError(f"this thread is read-only: {reason}")
+    side = sender_side(link, caller)
     body, ids, parent = messages_svc.validate(
-        db, link, kind=kind, body=body, cites=cites, reply_to=reply_to)
+        db, link, kind=kind, body=body, cites=cites, reply_to=reply_to,
+        sender_prd_id=link.prd_a_id if side == link.project_a_id else link.prd_b_id)
     msg = PrdLinkMessage(
-        link_id=link.id, kind=kind, body=body, cites=ids,
+        link_id=link.id, project_id=side, kind=kind, body=body, cites=ids,
         reply_to_id=parent.id if parent else None,
         author_kind="agent" if caller.is_agent else "person",
         author_label=caller.label, author_owner=caller.owner)

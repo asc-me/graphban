@@ -171,7 +171,8 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
          "enforced", _src("app/services/links.py", "Refused"), "code"),
     Rule("prd_links.person_decides", "plan", "A person decides a PRD link by default",
          "Accepting or declining an incoming PRD link is a person's act unless the organization "
-         "lets a receiving agent; unlinking is always a person's (needs_person).",
+         "lets a receiving agent; unlinking is always a person's (needs_person). The first decision wins; a later one is "
+         "refused already_decided.",
          "enforced", _src("app/services/links.py", "_needs_person"), "code", scope="org"),
     Rule("reach.deploy_not_delegable", "plan", "Deploy-reach work is not delegated",
          "An item declared reach=deploy acts on a running system and is never delegated.",
