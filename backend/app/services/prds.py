@@ -5911,9 +5911,9 @@ def propose_section_links(
     drain the dependent. D4 filing into the import run D3 defines makes D4 the dependent.
 
     Mentioning a slice label or a command is not an edge. An edge whose far end is not
-    being created is returned in `skipped` with a reason rather than dropped: a proposal
-    that silently omits a reference it saw is the same quiet absence the rest of this
-    module reports.
+    being created, because that section already has tracked work, is still an edge and
+    carries ``existing: True``: create links it to the item covering the section
+    (GRPH-1995). `skipped` is kept for the signature and is empty.
     """
     # First section in document order owns a name. A later section that also says
     # "is a record" is not a second definition; it consumes the first if it names it,
@@ -5944,13 +5944,14 @@ def propose_section_links(
                 continue
             seen.add((dep, target))
             why, matched = hit
-            edge = {"section": dep, "depends_on": target, "why": why, "matched": matched}
+            edge = {"section": dep, "depends_on": target, "why": why, "matched": matched,
+                    "inferred": True}
+            # A target with tracked work already is still an edge (GRPH-1995): create writes
+            # it onto the item covering that section. A rerun after a create that filed S1
+            # and was cut off used to drop every "depends on S1" link here.
             if target not in proposed:
-                skipped.append({**edge, "reason": (
-                    f'"{target}" already has tracked work, so this decompose creates no item '
-                    "to link to; add the dependency on that item by hand")})
-                continue
-            edges.append({**edge, "inferred": True})
+                edge["existing"] = True
+            edges.append(edge)
     return edges, skipped
 
 
@@ -6190,11 +6191,15 @@ def apply_link_overrides(
             ignore(entry, "names a section this PRD does not have")
         elif dep == tgt or any(e["section"] == dep and e["depends_on"] == tgt for e in kept):
             ignore(entry, "already proposed")
-        elif dep not in proposed or tgt not in proposed:
-            ignore(entry, "both ends must be sections this decompose creates items for")
+        elif dep not in proposed:
+            ignore(entry, "the dependent must be a section this decompose creates an item for")
         else:
-            kept.append({"section": dep, "depends_on": tgt, "inferred": False, "matched": "",
-                         "why": str(entry.get("why") or "").strip() or "added by the caller"})
+            edge = {"section": dep, "depends_on": tgt, "inferred": False, "matched": "",
+                    "why": str(entry.get("why") or "").strip() or "added by the caller"}
+            # A target already covered by tracked work links to that work (GRPH-1995).
+            if tgt not in proposed:
+                edge["existing"] = True
+            kept.append(edge)
     return kept, ignored
 
 
@@ -6293,6 +6298,27 @@ def _ui_description(prd: Prd, body: str, design: dict, context: str) -> str:
     )
 
 
+def _covering_items(db: Session, prd: Prd, cov: dict,
+                    sections: set[str]) -> dict[str, list[tuple[str, str]]]:
+    """`{section: [(item id, key)]}` — the tracked work coverage counts on each of `sections`.
+
+    The same set as coverage's ``item_ids`` (blocking fixes excluded), minus the UI item
+    decompose hangs off a behaviour section: a dependency on the section is on its
+    behaviour, and the UI item itself depends on that.
+    """
+    if not sections:
+        return {}
+    keys = {k for s in cov["sections"] if s["section"] in sections for k in s["item_ids"]}
+    out: dict[str, list[tuple[str, str]]] = {}
+    rows = db.scalars(select(Item).where(Item.prd_id == prd.id,
+                                         Item.prd_section.in_(sorted(sections))))
+    for it in sorted(rows, key=lambda r: r.number or 0):
+        if it.key not in keys or it.title == f"Implement: {it.prd_section} UI":
+            continue
+        out.setdefault(it.prd_section, []).append((it.id, it.key))
+    return out
+
+
 def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool = False,
               touchpoints: dict[str, list[str]] | None = None,
               splits: dict[str, list[str]] | None = None,
@@ -6384,10 +6410,18 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
     edges, ignored = apply_link_overrides(edges, drop_links, add_links, universe, proposed)
     edges, link_cycles = break_link_cycles(edges, universe)
     links_skipped = [*links_skipped, *ignored]
+    # GRPH-1995. The items already covering each section an edge points at but this call
+    # does not file. A rerun after a cut-off create resolves its links through these, by
+    # `prd_section`, so every link the preview showed is written whichever call filed the
+    # target. The UI item hung off a behaviour section is not what a sibling builds on.
+    covering = _covering_items(
+        db, prd, cov, {e["depends_on"] for e in edges if e.get("existing")})
     depends_by_section: dict[str, list[dict]] = {}
     for edge in edges:
-        depends_by_section.setdefault(edge["section"], []).append(
-            {"section": edge["depends_on"], "why": edge["why"], "matched": edge["matched"]})
+        entry = {"section": edge["depends_on"], "why": edge["why"], "matched": edge["matched"]}
+        if edge.get("existing"):
+            entry["items"] = [key for _iid, key in covering.get(edge["depends_on"], [])]
+        depends_by_section.setdefault(edge["section"], []).append(entry)
     for p in cov["sections"]:
         if not include_prose and not p["implementable"]:
             continue
@@ -6806,11 +6840,13 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             created.append(item.id)
             filed[pr["section"]] = [(item.id, item.key)]
             behaviour_ids[pr["section"]] = [item.id]
-        # Written after every item exists: a dependency points at an item this same call
-        # created. `a` is the dependent. A split's pieces each carry the section's edges.
+        # Written after every item exists. `a` is the dependent. A split's pieces each carry
+        # the section's edges. The target is the item this call filed for the section, or
+        # — when an earlier call (or a person) already covered it — the item covering it
+        # (GRPH-1995), so a rerun after a cut-off create writes every link exactly once.
         for edge in edges:
             srcs = filed.get(edge["section"]) or []
-            dsts = filed.get(edge["depends_on"]) or []
+            dsts = filed.get(edge["depends_on"]) or covering.get(edge["depends_on"]) or []
             if not srcs or not dsts:
                 links_skipped.append({
                     "section": edge["section"], "depends_on": edge["depends_on"],
