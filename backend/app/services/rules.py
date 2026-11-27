@@ -161,6 +161,18 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
          "link_items, heartbeat) only that PRD's items and never moves an item to another "
          "PRD, and it may not act as an agent registered on another key.",
          "enforced", _src("app/security/authz.py", "require_prd_key_caller"), "code"),
+    Rule("prd_links.one_org", "plan", "A PRD link joins two PRDs of one organization",
+         "A link request to a PRD in another organization, one the caller cannot read, or one "
+         "that does not exist gets one indistinguishable refusal (GRPH-P104 S1).",
+         "enforced", _src("app/services/links.py", "_refuse_prd"), "code", scope="org"),
+    Rule("prd_links.write_access", "plan", "A PRD link is requested and decided with write access",
+         "A link is requested from a PRD the caller can write, decided by someone who can write "
+         "the receiving project, and unlinked by someone who can write either side.",
+         "enforced", _src("app/services/links.py", "Refused"), "code"),
+    Rule("prd_links.person_decides", "plan", "A person decides a PRD link by default",
+         "Accepting or declining an incoming PRD link is a person's act unless the organization "
+         "lets a receiving agent; unlinking is always a person's (needs_person).",
+         "enforced", _src("app/services/links.py", "_needs_person"), "code", scope="org"),
     Rule("reach.deploy_not_delegable", "plan", "Deploy-reach work is not delegated",
          "An item declared reach=deploy acts on a running system and is never delegated.",
          "enforced", _src("app/services/delegation.py", "Refused"), "code"),
