@@ -976,10 +976,6 @@ class LedgerSession:
                 response = http.post(self.base_url + path, json=body, headers=headers)
         except httpx.HTTPError as exc:
             raise ServerUnreachable(f"could not reach {self.base_url}: {exc}") from exc
-        return self._payload(path, response)
-
-    @staticmethod
-    def _payload(path: str, response: httpx.Response) -> dict:
         try:
             payload = response.json()
         except ValueError:
