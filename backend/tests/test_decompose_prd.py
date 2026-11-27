@@ -1805,3 +1805,369 @@ def test_a_mentioned_command_nobody_creates_links_nobody():
     order = ["A", "B"]
     texts = {"A": "Run `gban rules import`.", "B": "Then `gban rules import` again."}
     assert prd_svc.propose_creation_links(order, {"A": [], "B": []}, texts, []) == []
+
+
+# ── GRPH-1980: decompose on P104 proposed keyword touchpoints and a backwards edge ─────────
+#
+# `decompose_prd(GRPH-P104, create=false)` at 2026.11.75 could not be filed: S1 and S2 got
+# files only a test mentioning `question` or `note` led to, S3 got the fleet client for
+# `directive`, S1 was ordered after S3, S4 had no touchpoints although it names
+# `links.link_endpoints` and `HIDDEN_REF`, S5's view was not read as UI, and a clause that
+# covers three sections landed on one. The fixture is P104's S1 to S5 text; the acceptance
+# list is P104's, with the v1.0 cross-org and sabotage clauses that named several sections.
+# S3 carries one sentence the current body lacks, "A message is a durable record.": it is
+# what made S3 the creator of `services/messages.py` on the box, which this fixture needs.
+
+_P104_PROBLEM = """\
+## Problem
+
+<!-- framing -->
+
+What exists:
+- **Cross-project links within one org** (GRPH-1063, `services/links.link_endpoints`).
+- **A far endpoint the viewer can't read** renders as `items.HIDDEN_REF` ("(an item in a \
+project you cannot see)", via `items.render_ref`). It is kept rather than dropped, so a \
+hidden blocker still blocks.
+- **Typed waits** (`wait:decision`, `services/waits.py`). The answer reaches those agents \
+as a `directive` on their normal loop (`waits.answer_directive`).
+"""
+
+_P104_S1 = """\
+The anchor is a **PRD link**: two PRDs in different projects of one org, joined by request \
+and accept. Its thread is shared by the pair.
+
+- **Request.** A person, or a planner agent, with write access to PRD A's project requests \
+a link from A to PRD B in another project of the same org, with a one-line reason. The \
+request is pending on B's side until it is decided.
+- **Accept or decline.** Who may accept on B's side is one org-wide setting (owner, \
+2026-11-27). By default it is a person with write access to B's project, and the org can \
+allow a receiving agent. A decline carries a reason. A request to a PRD in another org, or \
+to one the caller can't name, gets the one indistinguishable refusal.
+- **One link per pair, one thread per link.** A PRD may link to several PRDs, and each link \
+has its own thread. Re-requesting an existing or pending pair returns that link instead of \
+a second one.
+- **Unlink.** A person with write access on either side can unlink. The thread becomes \
+read-only and is kept.
+- **Messages.** Each message has a kind, a body, an author (an agent label plus its owner, \
+or a person), and a time. It never carries an email or seat id. It may cite items of \
+either PRD by id.
+- **Kinds** (owner, 2026-11-27):
+  - `note`: FYI.
+  - `question`: expects an answer. An answer is a reply to that message.
+  - `correction`: "your claim X is wrong; here is the evidence".
+  - `suggested_item`: see S2.
+- **Who reads the thread.** Agents and people with read access to either PRD's project \
+read and post on the thread. Each side sees the other PRD's id, title and status. The \
+other PRD's body is visible only to someone who can already read it.
+"""
+
+_P104_S2 = """\
+The one proposal is a `suggested_item` comment. It carries `{kind, title, description, \
+touchpoints, tags, status}` for the other side's PRD. This replaces ticket drafts in /tmp \
+files.
+
+- **The receiving side files it with its own key.** The new item is created in the \
+receiving project, on the receiving PRD (`prd_id` set to it). The sender never gets write \
+access to the receiving project.
+- **A person by default** (owner, 2026-11-27). Filing a `suggested_item` needs a person \
+with write access on the receiving side. One org-wide setting can let a receiving agent \
+file it.
+- **The filer may add one dependency link** between the new item and an item on the \
+sender's PRD, in either direction. That is allowed under the link's visibility (S4).
+- **The outcome posts back to the thread.** It is `filed` with the new item's id, \
+`declined`, or `conflict`, with a stable machine-readable reason code plus a message.
+  - Codes include `needs_person`, `not_allowed`, `prd_closed`, `unlinked`, and the \
+receiving tool's own refusal code.
+  - A validation failure carries the refusal `create_item` would have returned (for \
+example, the missing field), so the sender can correct it.
+- **No automatic retry.** A corrected suggestion is a new comment, and the declined one \
+stays on the thread with its reason.
+- **No other proposal actions** (owner, 2026-11-27). `answer` is a reply to a `question`. \
+A `link` is made by the filer when it files a `suggested_item`, or by either side's own \
+`link_items` under S4.
+"""
+
+_P104_S3 = """\
+There's no new client feature.
+- **Durable, stored until read.** Requests and messages are durable records. A message is \
+a durable record. They are never dropped because nobody is working the receiving PRD when \
+they arrive.
+- **Delivered to the PRD, not to a session.** A pending link request, or a new message on \
+a pair thread, is pending for each side's PRD until someone working that PRD has read it.
+  - "Working that PRD" means its owner, or any agent that holds or claims an item on it.
+  - It shows in `get_context`, and as a `directive` on `heartbeat` and `claim_*` results \
+for those agents. That is the same channel `waits.answer_directive` already uses ("a \
+response carrying a `directive` field must be acted on").
+- **When nobody is working the PRD,** it stays pending there and in the S5 oversight view, \
+and the S5 age alert raises it.
+- **New MCP tools:** `request_prd_link`, `decide_prd_link`, `post_comment`, \
+`list_threads`, and `file_suggested_item` (file or decline).
+"""
+
+_P104_S4 = """\
+- **An accepted PRD link is the visibility grant** (owner, 2026-11-27). Each side sees the \
+other PRD's title and status, and that PRD's items: id, title, status and project tag. \
+Nothing outside the two PRDs becomes visible.
+- **Metadata only.** Item bodies, evidence, acceptance and comments are never exposed by \
+the link. Reading them still needs ordinary read access.
+- **Linking under a PRD link.** A dependency link may join an item on one linked PRD with \
+an item on the other when the caller can write the dependent item. Today \
+`links.link_endpoints` requires read on both. Any other cross-project pair keeps today's \
+rule, including the one indistinguishable refusal.
+- **Rendering.** Both sides render the far item with its real id, title and status \
+instead of `HIDDEN_REF`.
+- **Unlinking.** It hides them again: existing dependency links stay, still block, and \
+render as `HIDDEN_REF`.
+- **Readiness.** When the far item is done, the dependent becomes ready, as for an \
+in-project dependency.
+- **On a linked box,** the rule is applied where `link_items` already goes: the cloud, \
+inside the org.
+"""
+
+_P104_S5 = """\
+- **The oversight view.** An org-level view lists every pending link request and every \
+open pair thread: the two PRDs, their projects, the latest kind, age, and the outcome of \
+each `suggested_item`.
+- **People can act on any of it.** A person can accept or decline a link request, answer \
+a `question`, and file or decline a `suggested_item`.
+- **Audit.** Every request, decision, message and filing is in the audit log (`events`).
+- **Stale alert.** A pending link request, an unanswered `question`, or an undecided \
+`suggested_item` past an age the org sets is flagged in the view. It is also raised \
+through the box's existing alert path (`alerts_svc`).
+  - Recipients come from the P75 rule, `question_recipients`, for the receiving PRD: its \
+owner if they can read its project, otherwise that project's owners with read access.
+- **Retention.** Links and threads are kept, and nothing is deleted.
+"""
+
+_P104_ACCEPTANCE = """\
+- **S1:** an agent on PRD A-P1 in project A requests a link to PRD B-P2 in project B. \
+Under the default setting, a B agent's accept is refused `needs_person`, and a person in B \
+accepts. Exactly one thread exists for the pair, and a second request returns that same link.
+- **S1, S2:** cross-org posting is refused: a request or a post to a PRD in another org \
+gets the same refusal as one to a missing PRD.
+- **S2:** a declined `suggested_item` posts its reason code and creates nothing.
+- **S3:** a new message on the pair thread shows up as a `directive` on the next \
+`heartbeat` from an agent holding an item on B-P2.
+- **S4:** a B-P2 item depending on an A-P1 item renders the A item's real id, title and \
+status on both sides. After unlink, it renders as `HIDDEN_REF` and still blocks.
+- **S5:** an undecided `suggested_item` past the org's age raises an alert to B-P2's owner.
+- **Sabotage (S1, S2, S4):**
+  - Let an agent accept a link under the default setting, and a test fails.
+  - File a `suggested_item` with the sender's key, and a test fails.
+  - Render a far dependency as `HIDDEN_REF` while the link is accepted, and a test fails.
+"""
+
+_P104_S1_T = "S1. Threads anchored to an item or PRD"
+_P104_S2_T = "S2. Proposals the other side decides"
+_P104_S3_T = "S3. Delivery on the agent's normal loop"
+_P104_S4_T = "S4. Cross-project dependencies"
+_P104_S5_T = "S5. Human oversight"
+
+_P104_BODY = "\n".join([
+    "# Cross-project threads", "", _P104_PROBLEM,
+    f"## {_P104_S1_T}", "", _P104_S1, f"## {_P104_S2_T}", "", _P104_S2,
+    f"## {_P104_S3_T}", "", _P104_S3, f"## {_P104_S4_T}", "", _P104_S4,
+    f"## {_P104_S5_T}", "", _P104_S5, "## Acceptance", "", _P104_ACCEPTANCE,
+])
+
+
+def _n(path, summary="", kind="file", name=""):
+    return {"path": path, "kind": kind, "name": name, "summary": summary}
+
+
+#: The files the P104 dry run proposed or should have, with entries shaped like the live
+#: graph's: one line of summary, file nodes, a test reaching its module by `tested_by`.
+_P104_GRAPH = [
+    _n("backend/app/services/project_sync_client.py", "Sends box records to the console."),
+    _n("backend/tests/test_project_sync_client.py",
+       "A proposal and a note reach the console once."),
+    _n("backend/app/services/question_recipients.py", "Who a decision wait goes to (P75)."),
+    _n("backend/tests/test_question_recipients.py", "A question reaches the PRD owner."),
+    _n("backend/app/services/agent_chat.py", "The in-app assistant's turns."),
+    _n("backend/tests/test_agent_chat.py", "The assistant gives an answer with a source."),
+    _n("backend/app/services/link_device.py", "Pairing a device to an account."),
+    _n("backend/tests/test_link_device.py", "A declined link leaves no device paired."),
+    _n("backend/app/services/rules_org.py", "Org-level rules."),
+    _n("backend/tests/test_rules_org.py", "A conflict between org and project rules."),
+    _n("fleet/src/gbagent/heartbeat.py", "The agent's heartbeat loop."),
+    _n("fleet/src/gbfleet/heartbeat.py", "The supervisor's heartbeat thread."),
+    _n("fleet/tests/test_heartbeat.py", "The heartbeat acts on a directive."),
+    _n("fleet/src/gbfleet/matrix.py", "The capability matrix."),
+    _n("fleet/tests/test_matrix.py", "A directive does not change the matrix."),
+    _n("backend/app/services/links.py", "Typed item links, cross-project within an org."),
+    _n("backend/app/services/items.py", "Items: create, update, claim."),
+    _n("backend/app/routers/items.py", "Item routes."),
+    _n("backend/app/mcp_server.py", "The MCP tool surface."),
+    _n("backend/app/services/fleet.py", "Fleet agents, roles and directives."),
+    _n("backend/app/services/waits.py", "Typed waits."),
+    _n("fleet/src/gbfleet/waits.py", "The supervisor's view of waits."),
+    _n("backend/app/services/alerts.py", "In-app alerts."),
+    _n("backend/app/models/__init__.py", "ORM models."),
+    _n("backend/alembic/versions/0001_init.py", "Initial schema."),
+    _n("backend/app/routers/prds.py", "PRD routes."),
+    _n("web/src/features/rules/RulesPage.tsx", "The Rules page."),
+    _n("web/src/features/tracker/Tracker.tsx", "The tracker board."),
+    _n("web/src/features/tracker/Card.tsx", "A tracker card."),
+]
+
+_P104_EDGES = [
+    {"src": m, "dst": t, "type": "tested_by"} for m, t in (
+        ("backend/app/services/project_sync_client.py", "backend/tests/test_project_sync_client.py"),
+        ("backend/app/services/question_recipients.py", "backend/tests/test_question_recipients.py"),
+        ("backend/app/services/agent_chat.py", "backend/tests/test_agent_chat.py"),
+        ("backend/app/services/link_device.py", "backend/tests/test_link_device.py"),
+        ("backend/app/services/rules_org.py", "backend/tests/test_rules_org.py"),
+        ("fleet/src/gbfleet/matrix.py", "fleet/tests/test_matrix.py"),
+    )
+] + [
+    {"src": "fleet/tests/test_heartbeat.py", "dst": "fleet/src/gbagent/heartbeat.py",
+     "type": "imports"},
+    {"src": "backend/app/mcp_server.py", "dst": "backend/app/services/links.py",
+     "type": "imports"},
+    {"src": "backend/app/services/links.py", "dst": "backend/app/services/items.py",
+     "type": "imports"},
+]
+
+
+def _p104_dry(client, auth, monkeypatch):
+    _quiet_semantic(monkeypatch)
+    prd = client.post("/api/prds", json={"title": "P104", "body": _P104_BODY},
+                      headers=auth).json()
+    _describe(_project_of(prd["id"]), _P104_GRAPH, _P104_EDGES)
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    return prd, dry
+
+
+_COMMON_WORDS = ("question", "note", "answer", "declined", "conflict", "directive",
+                 "proposal")
+
+
+def test_p104_proposes_no_file_only_a_common_word_led_to(client, auth, monkeypatch):
+    """No touchpoint's only evidence is a common word matched through a test or consumer."""
+    _prd, dry = _p104_dry(client, auth, monkeypatch)
+    by = {p["section"]: p for p in dry["proposals"]}
+    assert set(by) == {_P104_S1_T, _P104_S2_T, _P104_S3_T, _P104_S4_T, _P104_S5_T}
+    for section, proposal in by.items():
+        for e in proposal["touchpoint_evidence"]:
+            for word in _COMMON_WORDS:
+                assert not (f"names `{word}`;" in e["evidence"]
+                            and "code graph's entry" in e["evidence"]), (section, e)
+        paths = _all_paths(proposal)
+        for wrong in ("backend/app/services/project_sync_client.py",
+                      "backend/app/services/agent_chat.py",
+                      "backend/app/services/link_device.py",
+                      "backend/app/services/rules_org.py",
+                      "fleet/src/gbagent/heartbeat.py", "fleet/src/gbfleet/heartbeat.py",
+                      "fleet/src/gbfleet/matrix.py"):
+            assert wrong not in paths, (section, wrong)
+    # S1 says `question` only as a message kind; S5 names `question_recipients` itself.
+    assert "backend/app/services/question_recipients.py" not in _all_paths(by[_P104_S1_T])
+    assert "backend/app/services/question_recipients.py" in _all_paths(by[_P104_S5_T])
+
+
+def test_p104_s1_is_not_ordered_after_s3(client, auth, monkeypatch):
+    """S1 defines the message ("**Messages.**"); S3 delivers it, so S3 depends on S1."""
+    _prd, dry = _p104_dry(client, auth, monkeypatch)
+    by = {p["section"]: p for p in dry["proposals"]}
+    assert _P104_S3_T not in _deps(by[_P104_S1_T]), by[_P104_S1_T]["depends_on"]
+    assert _P104_S1_T in _deps(by[_P104_S3_T]), by[_P104_S3_T]["depends_on"]
+    s1 = {e["path"]: e for e in by[_P104_S1_T]["touchpoint_evidence"]}
+    assert s1["backend/app/services/messages.py"]["create"] is True
+    s3 = {e["path"]: e for e in by[_P104_S3_T]["touchpoint_evidence"]}
+    assert s3["backend/app/services/messages.py"]["create"] is False
+    assert s3["backend/app/services/messages.py"]["created_by"] == _P104_S1_T
+    assert dry["link_cycles"] == []
+
+
+def test_p104_s4_names_resolve_to_their_modules(client, auth, monkeypatch):
+    """`links.link_endpoints` is links.py; `HIDDEN_REF`, which the PRD writes as
+    `items.HIDDEN_REF`, is the services items.py and not the shorter router."""
+    _prd, dry = _p104_dry(client, auth, monkeypatch)
+    by = {p["section"]: p for p in dry["proposals"]}
+    s4 = by[_P104_S4_T]
+    assert "backend/app/services/links.py" in s4["touchpoints"], s4["touchpoint_evidence"]
+    assert "backend/app/services/items.py" in s4["touchpoints"], s4["touchpoint_evidence"]
+    assert "backend/app/routers/items.py" not in s4["touchpoints"]
+    assert _P104_S4_T not in dry["no_touchpoints"]
+
+
+def test_p104_s5_view_is_ui(client, auth, monkeypatch):
+    """"An org-level view lists …" is UI work: S5 carries a web/ touchpoint."""
+    _prd, dry = _p104_dry(client, auth, monkeypatch)
+    by = {p["section"]: p for p in dry["proposals"]}
+    s5 = by[_P104_S5_T]
+    in_ui = any(u["section"] == _P104_S5_T for u in dry["ui_items"])
+    web = [t for t in s5["touchpoints"] if t.startswith("web/")]
+    assert in_ui or web, s5["touchpoint_evidence"]
+    assert web == ["web/src/features/"]
+    # S3 mentions "the S5 oversight view" without describing it, and gets no web/ path.
+    assert not [t for t in by[_P104_S3_T]["touchpoints"] if t.startswith("web/")]
+
+
+def test_p104_a_clause_naming_several_sections_lands_on_each(client, auth, monkeypatch):
+    _prd, dry = _p104_dry(client, auth, monkeypatch)
+    by = {p["section"]: p for p in dry["proposals"]}
+
+    def has(section, prefix):
+        return any(c.startswith(prefix) for c in by[section]["acceptance"])
+
+    for section in (_P104_S1_T, _P104_S2_T, _P104_S4_T):
+        assert has(section, "**Sabotage (S1, S2, S4):**"), (section, by[section]["acceptance"])
+    for section in (_P104_S3_T, _P104_S5_T):
+        assert not has(section, "**Sabotage"), section
+    for section in (_P104_S1_T, _P104_S2_T):
+        assert has(section, "**S1, S2:**"), section
+    assert not has(_P104_S4_T, "**S1, S2:**")
+    # A clause led by one label is unchanged: it still goes where the text puts it.
+    assert has(_P104_S3_T, "**S3:**")
+
+
+def test_lead_sections_read_only_the_lead():
+    titles = [_P104_S1_T, _P104_S2_T, _P104_S4_T]
+    assert prd_svc._lead_sections("**Sabotage (S1, S2, S4):** x", "", titles) == titles
+    assert prd_svc._lead_sections("S1, S2: x", "", titles) == titles[:2]
+    assert prd_svc._lead_sections("A thing, as S1 and S2 say.", "", titles) == []
+    assert prd_svc._lead_sections("x", "S2 and S4", titles) == [_P104_S2_T, _P104_S4_T]
+    assert prd_svc.clause_sections("**Sabotage (S1, S9):** x", "", titles) != titles
+
+
+def test_a_module_symbol_resolves_to_the_services_module():
+    nodes = [_ns(n["path"], n["kind"], n["name"], n["summary"]) for n in _P104_GRAPH]
+    out = prd_svc._resolve_named_things(nodes, "Today `links.link_endpoints` reads both.")
+    assert [(p, c) for _o, p, _e, c in out] == [("backend/app/services/links.py", False)]
+    out = prd_svc._resolve_named_things(nodes, "Render `items.render_ref`.")
+    assert [p for _o, p, _e, _c in out] == ["backend/app/services/items.py"]
+    out = prd_svc._resolve_named_things(nodes, "Render `HIDDEN_REF`.",
+                                        qualifiers={"hidden_ref": "items"})
+    assert [p for _o, p, _e, _c in out] == ["backend/app/services/items.py"]
+    assert prd_svc._resolve_named_things(nodes, "Render `HIDDEN_REF`.") == []
+    # One file of the stem outside services is still the module.
+    out = prd_svc._resolve_named_things(nodes, "Add to `mcp_server.TOOLS`.")
+    assert [p for _o, p, _e, _c in out] == ["backend/app/mcp_server.py"]
+    assert prd_svc.module_qualifiers(
+        "`services/links.link_endpoints` and `items.HIDDEN_REF`") == {
+        "link_endpoints": "links", "hidden_ref": "items"}
+
+
+def test_a_plain_word_places_no_file_through_a_test_that_uses_it():
+    nodes = [_ns(n["path"], n["kind"], n["name"], n["summary"]) for n in _P104_GRAPH]
+    edges = [_es(e["src"], e["dst"], e["type"]) for e in _P104_EDGES]
+    for word in ("question", "note", "directive", "answer", "conflict"):
+        assert prd_svc._resolve_named_things(nodes, f"A `{word}`.", edges) == [], word
+    # Two same-named files in different trees: the bare word does not say which.
+    assert prd_svc._resolve_named_things(nodes, "On `heartbeat`.", edges) == []
+    # A single file of that name is still that file.
+    out = prd_svc._resolve_named_things(nodes, "Change `alerts`.", edges)
+    assert [p for _o, p, _e, _c in out] == ["backend/app/services/alerts.py"]
+
+
+def test_the_defining_section_owns_a_create_another_section_found():
+    order = ["S1. Threads", "S3. Delivery"]
+    ev = {order[0]: [], order[1]: [_create("backend/app/services/messages.py", "message")]}
+    texts = {order[0]: "- **Messages.** Each message has a kind.",
+             order[1]: "A message is a durable record."}
+    edges = prd_svc.propose_creation_links(order, ev, texts, [])
+    assert [(e["section"], e["depends_on"]) for e in edges] == [(order[1], order[0])]
+    assert [e["path"] for e in ev[order[0]]] == ["backend/app/services/messages.py"]
+    assert ev[order[0]][0]["create"] is True
+    assert ev[order[1]][0]["created_by"] == order[0]
