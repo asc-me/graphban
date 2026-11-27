@@ -1,10 +1,12 @@
 """GRPH-P104 S1: PRD links request/accept, one thread per pair, metadata-only reads."""
 import pytest
+from sqlalchemy import select
 
-from app.models import Item, Membership, Organization, Project
+from app.models import Item, Link, Membership, Organization, PrdLinkMessage, Project
 from app.errors import NotFound, Refused
 from app.services import links as L
 from app.services import prds as prds_svc
+from app.services import suggestions as S
 from app.services import threads as T
 from app.services.links import Caller
 
@@ -147,9 +149,6 @@ def test_declined_link_does_not_reveal_far_side(world):
 
 # ---- S2: suggested items ----------------------------------------------------------------
 
-from app.models import PrdLinkMessage  # noqa: E402
-from app.services import suggestions as S  # noqa: E402
-
 
 def _linked(world):
     db, a, b, x = world
@@ -168,12 +167,12 @@ def test_person_in_b_files_item_on_b_prd_and_outcome_posts_back(world):
     assert m["kind"] == "suggested_item" and m["outcome"] is None
     out = S.file_suggestion(db, _b(), link.id, m["id"])
     assert out["decided"] and out["outcome"]["outcome"] == "filed"
-    item = db.scalar(__import__("sqlalchemy").select(Item).where(Item.title == "Console contract"))
+    item = db.scalar(select(Item).where(Item.title == "Console contract"))
     assert item.project_id == "pb" and item.prd_id == b.id
     assert out["outcome"]["item"] == item.id
-    from app.models import Link
-    dep = db.scalar(__import__("sqlalchemy").select(Link).where(Link.a == "it1", Link.b == item.id))
-    assert dep is not None and dep.type == "dependency"
+    dep = db.scalar(select(Link).where(Link.a == "it1", Link.b == item.id))
+    # The edge is stored with its source (it1, on A's side), as link_items stores one.
+    assert dep is not None and dep.type == "dependency" and dep.project_id == "pa"
     thread = T.read_thread(db, _a(), link.id)["messages"]
     assert thread[-1]["reply_to"] == m["id"] and thread[-1]["body"].startswith("filed: filed")
 

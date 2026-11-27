@@ -120,10 +120,15 @@ def file_suggestion(db: Session, caller: Caller, link_id: str, message_id: int) 
                       "link": link.id}, **kwargs)
         if data.get("link"):
             other, direction = data["link"]["item"], data["link"]["direction"]
-            if db.get(Item, other) is None:
+            far = db.get(Item, other)
+            if far is None:
                 raise ValueError(f"the linked item {other!r} no longer exists")
-            a, b = (item.id, other) if direction == "depends_on" else (other, item.id)
-            db.add(Link(project_id=project, a=a, b=b, type="dependency", confidence=1.0,
+            # Stored in the SOURCE's project, as link_items stores a cross-project edge
+            # (GRPH-1063): it belongs to the item it constrains. The accepted PRD link is what
+            # lets the filer write it on the sender's side (S4).
+            a, b, home = ((item.id, other, project) if direction == "depends_on"
+                          else (other, item.id, far.project_id))
+            db.add(Link(project_id=home, a=a, b=b, type="dependency", confidence=1.0,
                         reason=f"suggested on PRD link {link.id}"))
         db.flush()
         item_id, key = item.id, item.key
