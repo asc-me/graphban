@@ -867,9 +867,11 @@ export interface Item {
 }
 
 export interface ItemResolution {
-  kind: "duplicate" | "superseded";
-  /** The item (or, for superseded, the PRD) that carries the work instead. */
+  kind: "duplicate" | "superseded" | "moved";
+  /** The item (or, for superseded, the PRD) that carries the work instead. Empty for `moved`. */
   of: string;
+  /** For `moved` (GRPH-1979): the box the item went to, and its id there. */
+  to?: { box_label: string; item_id: string } | null;
   reason: string;
   by: string;
   at: string;

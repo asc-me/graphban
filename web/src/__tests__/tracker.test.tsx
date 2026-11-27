@@ -308,6 +308,42 @@ describe("a bounced item", () => {
   });
 });
 
+describe("a resolved item in the drawer (GRPH-1999)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    Element.prototype.scrollTo = Element.prototype.scrollTo ?? (() => {});
+  });
+
+  const open = async (resolution: ItemDetail["resolution"]) => {
+    served = [{ ...items[0], id: "AL-05", title: "Resolved thing", resolution } as ItemDetail];
+    renderTracker();
+    await userEvent.click(await screen.findByText("Resolved thing"));
+    return screen.findByTestId("item-resolution");
+  };
+  afterEach(() => {
+    served = items;
+  });
+
+  it("names the box and remote id of a moved item, then the reason", async () => {
+    const panel = await open({
+      kind: "moved", of: "", to: { box_label: "laptop", item_id: "BOX-42" },
+      reason: "belongs to the laptop box", by: "alex", at: "",
+    });
+    expect(panel.textContent).toMatch(/^Moved to laptop as BOX-42 · belongs to the laptop box/);
+    expect(panel.textContent).not.toMatch(/Superseded by/);
+  });
+
+  it("keeps the duplicate label", async () => {
+    const dup = await open({ kind: "duplicate", of: "AL-02", reason: "", by: "alex", at: "" });
+    expect(dup.textContent).toMatch(/^Duplicate of AL-02/);
+  });
+
+  it("keeps the superseded label", async () => {
+    const sup = await open({ kind: "superseded", of: "PRD-9", reason: "rewritten", by: "alex", at: "" });
+    expect(sup.textContent).toMatch(/^Superseded by PRD-9 · rewritten/);
+  });
+});
+
 describe("editing from the open drawer (GRPH-1228)", () => {
   // The detail query (an ItemDetail object) lives under the `items` prefix, next to the
   // lists. The optimistic updaters used to .map every entry under it, so with the drawer
