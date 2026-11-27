@@ -1,0 +1,13 @@
+name: test
+on:
+  pull_request:
+    paths: ["db/**"]
+jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+    steps:
+      - uses: actions/checkout@v4
+      - run: pytest db/
