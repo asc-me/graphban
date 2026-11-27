@@ -77,6 +77,30 @@ receipts it looked for. When the Merger hits a conflict and the server refuses t
 that way, it blocks the item with the conflict and stops watching it. It does not log the
 same failure on every cycle.
 
+### A `--prd` drain that exits `stuck`
+
+With `--prd`, `until` exits `idle` only when every build item of that PRD is done or
+deliberately parked. Parked means closed by an owner, or blocked on a typed wait on a person
+(`wait:decision`, `wait:secret`, `wait:access`, `wait:deploy`). `wait:merge` is not a person
+wait. Any other unfinished item turns `idle` or `idle-with-waits` into `reason: "stuck"`,
+exit 1 (GRPH-1962). The summary carries a `stuck` list of `{item, reason}`, read from the
+server rows:
+
+- `held on dependency: <id> (<status>)`: a dependency link whose target is not done.
+- `not ready: <status>: <blocker text>`: the row's free-text blocker, shortened to 200
+  characters. This is the stale note that kept GRPH-P92 exiting `idle` for hours.
+- `not ready: <status>: missing acceptance, touchpoints`: the row has no `## Acceptance`
+  heading in its description, or it has an empty touchpoints list.
+- `held elsewhere: <status>, held by <agent>`: claimed, or under review, by an agent outside
+  this drain.
+- `ready, not claimed this cycle`, or `not ready: status <status>` when nothing else applies.
+
+A `stuck` exit posts a `stalled` drain notice listing these items. The server only records a
+notice that differs from the last one, so the same stuck set notifies once rather than on
+every cycle. `gbfleet service status` prints `<name>: stuck: <item> <reason>; ...` and never
+reads it as `idle between runs`. If the PRD listing cannot be read, the exit keeps its
+original reason.
+
 ### Reading the last drain notice
 
 A `--prd` drain run as a service remembers the last notice `until` sent (one per change
