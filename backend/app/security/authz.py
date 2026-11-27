@@ -279,6 +279,22 @@ PRD_KEY_ITEM_WRITES: dict[str, tuple[str, ...]] = {
     "release_item": ("id",),
     "heartbeat": ("id",),
     "link_items": ("a", "b"),
+    # GRPH-1985: the writes that still reached outside the PRD around the GRPH-1973 bound.
+    "unlink_items": ("a", "b"),
+    "link_code": ("ref_id",),
+    "unlink_code": ("ref_id",),
+    "delegate": ("id",),
+    "mint_enrolment": ("item",),
+    "create_item": ("blocks", "found_during"),
+}
+# Writes that NAME a PRD — an item's home, a seat's claim scope — and the arg naming it. An
+# item created with no `prd_id`, or a seat minted with no `scope`, is not bound to the key's
+# PRD, so leaving the arg out is outside it too (GRPH-1985).
+PRD_KEY_PRD_ARGS: dict[str, str] = {
+    "update_item": "prd_id",
+    "create_item": "prd_id",
+    "delegate": "scope",
+    "mint_enrolment": "scope",
 }
 
 
@@ -304,11 +320,29 @@ def require_prd_key_item_write(db: Session, key: ApiKey, tool: str, args: dict) 
                 403, f"api key {key.name!r} is limited to PRD {key.prd_id}; item {ref!r} is "
                 f"outside it, so {tool} is refused", rule_id=PRD_KEY_RULE,
                 hint="this key writes only its own PRD's items")
-    if tool == "update_item" and "prd_id" in args:
-        asked = args.get("prd_id")
-        resolved = (keys_svc.resolve_prd(db, asked) or asked) if isinstance(asked, str) else asked
-        if resolved != key.prd_id:
-            raise Refused(
-                403, f"api key {key.name!r} is limited to PRD {key.prd_id} and cannot move an "
-                f"item to PRD {asked!r}", rule_id=PRD_KEY_RULE,
-                hint="this key cannot re-home items; ask the PRD's owner")
+    if tool not in PRD_KEY_PRD_ARGS:
+        return
+    arg = PRD_KEY_PRD_ARGS[tool]
+    asked = args.get(arg)
+    if not asked:
+        # update_item: naming no PRD at all leaves the item where it is; naming an empty one
+        # moves it out. Everywhere else an empty scope is outside the PRD, except a delegate
+        # that opens no seat (the item, already checked above, is then the whole bound).
+        if tool == "update_item" and arg not in args:
+            return
+        if tool == "delegate" and (not args.get("seat") or args.get("withdraw")):
+            return
+    resolved = (keys_svc.resolve_prd(db, asked) or asked) if isinstance(asked, str) else asked
+    if resolved != key.prd_id:
+        if tool == "update_item":
+            what = f"move an item to PRD {asked!r}"
+        elif tool == "create_item":
+            what = (f"create an item in PRD {asked!r}" if asked
+                    else "create an item outside any PRD")
+        else:
+            what = (f"{tool} with scope {asked!r}" if asked
+                    else f"{tool} a seat without scope={key.prd_id}")
+        raise Refused(
+            403, f"api key {key.name!r} is limited to PRD {key.prd_id} and cannot {what}",
+            rule_id=PRD_KEY_RULE,
+            hint="this key writes only its own PRD; pass its PRD or ask the PRD's owner")
