@@ -613,7 +613,7 @@ def test_an_unrecorded_key_left_alive_exits_3_with_a_manual_revoke_line(world, c
     _install(world, "legacy", setup, marker="legacy", record_id=False)
 
     code, out, err = _cli(capsys, verb, "legacy")
-    assert code == 3 == drain.EXIT_MANUAL_REVOKE, (out, err)
+    assert code == 4 == drain.EXIT_MANUAL_REVOKE != drain.EXIT_NO_SESSION, (out, err)
     lines = [line for line in out.splitlines() if line.startswith("manual_revoke_needed:")]
     assert lines == [f"manual_revoke_needed: {setup_id},{other_id}"], out
     assert "Settings" in out, "the line comes alongside the guidance, not instead of it"

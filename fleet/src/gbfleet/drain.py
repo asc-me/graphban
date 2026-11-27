@@ -76,9 +76,9 @@ APPROVED = "approved"
 EXIT_REFUSED = 2
 EXIT_NO_SESSION = 3
 #: `remove` / `rekey` did their work but left an old key alive that only the person can name.
-#: The same number as EXIT_NO_SESSION (the item's spec); a script tells them apart by the
-#: `manual_revoke_needed:` line, which only this exit prints.
-EXIT_MANUAL_REVOKE = 3
+#: Its own number, distinct from EXIT_NO_SESSION, so a script can tell "nothing changed, log in"
+#: from "done, but revoke a key by hand" by the exit code alone.
+EXIT_MANUAL_REVOKE = 4
 #: The machine-readable line printed with EXIT_MANUAL_REVOKE: candidate key ids, comma-separated.
 MANUAL_REVOKE_LINE = "manual_revoke_needed:"
 
