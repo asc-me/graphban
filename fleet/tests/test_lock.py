@@ -514,6 +514,12 @@ def test_an_idle_live_holder_is_stopped_and_the_lock_is_taken(
 
     Sabotage: make `_try_reclaim_idle` return `(False, "")`; this raises
     `RepoLocked` and the assertion on `takeover` fails.
+
+    Flaked on Windows once (GRPH-2000): the lock was asked for exactly once,
+    right after the holder's pid left the process list, and Windows drops a
+    dead process's byte-range lock during teardown, which can come later.
+    `hold` now polls for the lock itself; the test below pins that ordering
+    on every platform.
     """
     proc = _spawn_holder(git_repo, state)
     try:
@@ -528,6 +534,54 @@ def test_an_idle_live_holder_is_stopped_and_the_lock_is_taken(
             assert str(proc._reported_pid) in taken.takeover.describe()  # type: ignore[attr-defined]
         proc.wait(timeout=5)
         assert proc.returncode is not None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_an_idle_takeover_waits_for_the_lock_to_come_free_after_the_pid_goes(
+    git_repo: Path, state: Path, monkeypatch
+):
+    """The Windows ordering, reproduced everywhere (GRPH-2000).
+
+    The holder is stopped and its pid is gone, but the lock is still held for a
+    few more polls: Windows releases a dead process's byte-range lock during
+    teardown, which can trail `taskkill` and `tasklist`. `hold` has to keep
+    asking for the lock until its deadline, not ask once and refuse.
+
+    Sabotage: set `RECLAIM_WAIT_SECONDS` to 0, so the lock is asked for once;
+    this raises `RepoLocked`.
+    """
+    import gbfleet.lock as lock_mod
+
+    real_lock = lock_mod.lock_exclusive
+    real_end = lock_mod.end_pid
+    stopped = {"at": None, "refused": 0}
+
+    def end_pid(pid: int) -> None:
+        real_end(pid)
+        stopped["at"] = time.monotonic()
+
+    def lagging_lock(fd: int) -> None:
+        # Until 0.3 s after the stop, answer as the kernel still holding the
+        # dead process's lock would.
+        if stopped["at"] is not None and time.monotonic() - stopped["at"] < 0.3:
+            stopped["refused"] += 1
+            raise lock_mod.AlreadyLocked(13, "lock held by another process")
+        real_lock(fd)
+
+    monkeypatch.setattr(lock_mod, "end_pid", end_pid)
+    monkeypatch.setattr(lock_mod, "lock_exclusive", lagging_lock)
+    proc = _spawn_holder(git_repo, state)
+    try:
+        _age_lock(lock_path(repo_root(git_repo), state))
+        with hold(git_repo, state, idle_after=60) as taken:
+            assert taken.takeover is not None
+            assert taken.takeover.because == "idle"
+            assert taken.takeover.holder.pid == proc._reported_pid  # type: ignore[attr-defined]
+        assert stopped["refused"] > 0, "the lag never happened; this test proved nothing"
+        proc.wait(timeout=5)
     finally:
         if proc.poll() is None:
             proc.kill()
