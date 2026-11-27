@@ -755,7 +755,9 @@ def checkout_verdict(repo: Path, name: str) -> str:
     has no linked worktree, no uncommitted change, no untracked file (whatever
     `status.showUntrackedFiles` says), no ignored file outside `DISPOSABLE_DIRS` /
     `DISPOSABLE_SUFFIXES`, no stash, no tag on an unpushed commit, and no commit on any ref
-    that no remote-tracking ref reaches. Anything unreadable is a keep, never a delete.
+    that no remote-tracking ref reaches whose tip the server still lists (`git ls-remote`, read
+    only; a server that cannot be asked is a keep). Anything unreadable is a keep, never a
+    delete.
 
     Also kept, without trying to prove them clean: a path or marker reached through a symlink,
     a git dir outside the checkout, any submodule, a tracked file hidden by
@@ -842,9 +844,17 @@ def checkout_verdict(repo: Path, name: str) -> str:
     proving, inside, why = _proving_refs(repo)
     if why:
         return why
-    not_on = ["--not", *proving]
+    # And only a tip the server lists now: a ref left behind by a branch deleted on the server
+    # (never pruned) proves nothing (GRPH-1987).
+    live, stale, why = _listed_now(repo, proving)
+    if why:
+        return why
+    not_on = ["--not", *live]
     unproven = (f"; remote(s) {_named(inside)} point inside this checkout or cannot be "
                 "resolved, so their refs prove nothing") if inside else ""
+    if stale:
+        unproven += (f"; remote-tracking ref(s) {_named(stale)} name branch(es) the server no "
+                     "longer lists, so they prove nothing")
     code, tags = _git(repo, "for-each-ref", "--format=%(refname:short)", "refs/tags")
     if code != 0:
         return f"cannot list its tags: {tags}"
@@ -961,13 +971,15 @@ def _refspec_matches(pattern: str, ref: str) -> bool:
     return len(ref) >= len(head) + len(tail) and ref.startswith(head) and ref.endswith(tail)
 
 
-def _proving_refs(repo: Path) -> tuple[list[str], list[str], str]:
-    """(remote-tracking refs that prove a push, remotes that prove nothing, error).
+def _proving_refs(repo: Path) -> tuple[dict[str, tuple[str, list[str]]], list[str], str]:
+    """({remote-tracking ref: (its tip, the remotes that write it)} that may prove a push,
+    remotes that prove nothing, error).
 
-    A ref under refs/remotes/ proves a push only when a remote whose every URL (fetch and push,
-    after insteadOf) points outside this checkout writes it, and no remote that points inside
-    it (`.`, a relative path, a file:// URL under .git/) can also write it. A ref no configured
-    remote writes proves nothing either."""
+    A ref under refs/remotes/ may prove a push only when a remote whose every URL (fetch and
+    push, after insteadOf) points outside this checkout writes it, and no remote that points
+    inside it (`.`, a relative path, a file:// URL under .git/) can also write it. A ref no
+    configured remote writes proves nothing either. Whether the server still holds its tip is
+    `_listed_now`'s question, not this one's."""
     code, names = _git(repo, "remote")
     if code != 0:
         return [], [], f"cannot list its remotes: {names}"
@@ -996,13 +1008,86 @@ def _proving_refs(repo: Path) -> tuple[list[str], list[str], str]:
             trusted.append(remote)
         else:
             untrusted.append(remote)
-    code, refs = _git(repo, "for-each-ref", "--format=%(refname)", "refs/remotes")
+    code, refs = _git(repo, "for-each-ref", "--format=%(objectname) %(refname)", "refs/remotes")
     if code != 0:
-        return [], untrusted, f"cannot list its remote-tracking refs: {refs}"
-    proving = [ref for ref in refs.splitlines()
-               if any(_refspec_matches(p, ref) for r in trusted for p in patterns[r])
-               and not any(_refspec_matches(p, ref) for r in untrusted for p in patterns[r])]
+        return {}, untrusted, f"cannot list its remote-tracking refs: {refs}"
+    proving: dict[str, tuple[str, list[str]]] = {}
+    for line in refs.splitlines():
+        sha, _, ref = line.partition(" ")
+        writers = [r for r in trusted if any(_refspec_matches(p, ref) for p in patterns[r])]
+        if writers and sha and not any(_refspec_matches(p, ref) for r in untrusted
+                                       for p in patterns[r]):
+            proving[ref] = (sha, writers)
     return proving, untrusted, ""
+
+
+#: Seconds one `git ls-remote` may take before its server counts as unreachable.
+LS_REMOTE_TIMEOUT = 30.0
+_USERINFO = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/\s@]*@")
+
+
+def _scrub(text: str) -> str:
+    """git's first error line, with any `user:secret@` taken out of a URL in it."""
+    first = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    return _USERINFO.sub(r"\1", first)[:200]
+
+
+def _ls_remote(repo: Path, remote: str) -> tuple[set[str] | None, str]:
+    """(every object id `remote` lists now, "") or (None, why it could not be asked).
+
+    Reads only: no fetch, no prune, no ref written. Never prompts: GIT_TERMINAL_PROMPT=0, no
+    stdin and no controlling terminal (its own session), so a remote that wants credentials
+    fails instead of hanging, and LS_REMOTE_TIMEOUT kills the whole group if it still does."""
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never",
+           "SSH_ASKPASS_REQUIRE": "never"}
+    posix = os.name != "nt"
+    try:
+        proc = subprocess.Popen(["git", "ls-remote", "--", remote], cwd=repo, env=env,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, start_new_session=posix)
+    except OSError as exc:
+        return None, f"git ls-remote could not start: {exc.strerror or exc}"
+    try:
+        listed, failed = proc.communicate(timeout=LS_REMOTE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        try:
+            if posix:
+                os.killpg(proc.pid, 9)
+            else:
+                proc.kill()
+        except OSError:
+            pass
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.SubprocessError:
+            pass
+        return None, f"git ls-remote gave no answer within {LS_REMOTE_TIMEOUT:g}s"
+    if proc.returncode != 0:
+        return None, f"git ls-remote failed: {_scrub(failed) or f'exit {proc.returncode}'}"
+    return {line.split("\t", 1)[0] for line in listed.splitlines() if "\t" in line}, ""
+
+
+def _listed_now(repo: Path, proving: dict[str, tuple[str, list[str]]]
+                ) -> tuple[list[str], list[str], str]:
+    """(tips that prove a push, stale refs, error). A local remote-tracking ref proves its
+    tip only when a remote that writes it lists that object id NOW (`git ls-remote`): a
+    branch deleted on the server leaves a ref nobody pruned, and that ref proves nothing.
+    Any remote that cannot be asked is an error: the checkout is kept."""
+    asked: dict[str, set[str]] = {}
+    for remote in dict.fromkeys(r for _sha, writers in proving.values() for r in writers):
+        listed, why = _ls_remote(repo, remote)
+        if listed is None:
+            return [], [], (f"the server for remote {remote} could not be reached to confirm "
+                            f"what it holds now ({why})")
+        asked[remote] = listed
+    live: list[str] = []
+    stale: list[str] = []
+    for ref, (sha, writers) in proving.items():
+        if any(sha in asked[r] for r in writers):
+            live.append(sha)
+        else:
+            stale.append(ref[len("refs/remotes/"):] if ref.startswith("refs/remotes/") else ref)
+    return list(dict.fromkeys(live)), stale, ""
 
 
 def _through_symlink(path: Path) -> bool:
