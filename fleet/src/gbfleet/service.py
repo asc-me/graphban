@@ -976,7 +976,23 @@ def write_env(plan: Plan, api_key: str) -> list[str]:
     """The credential file. Returns warnings, never raises on a permission it could not set."""
     plan.env_path.parent.mkdir(parents=True, exist_ok=True)
     restrict_to_owner(plan.env_path.parent)
-    plan.env_path.write_text(f"{API_KEY_ENV}={api_key}\n", encoding="utf-8")
+    # Atomic (GRPH-1974): a temp file in the same directory, created owner-only, then renamed
+    # over the target. A reader — the unit starting, or a second `drain create` — sees the old
+    # file or the new one, never a half-written key, and the key is never on disk under a
+    # wider mode for the moment between a write and a chmod.
+    tmp = plan.env_path.with_name(f".{plan.env_path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(f"{API_KEY_ENV}={api_key}\n")
+        restrict_to_owner(tmp)
+        os.replace(tmp, plan.env_path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
     restrict_to_owner(plan.env_path)
     # Asked for, then CHECKED. The platform where the request quietly does nothing is exactly
     # the platform where nobody was looking (GRPH-584), and this file holds a live key.

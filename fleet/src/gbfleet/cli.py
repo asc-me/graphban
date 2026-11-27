@@ -20,6 +20,7 @@ from . import adopt as adopt_mod
 from .adapters import ADAPTERS, AdapterError, Tuning, checked_tuning, resolve
 from .client import ALLOWED_TOOLS, Graphban, NotPermitted, ObservationRefused, ServerUnreachable, ToolFailed
 from . import doctor
+from . import drain as drain_mod
 from . import service as service_mod
 from . import surface as surface_mod
 from . import teardown as teardown_mod
@@ -332,6 +333,50 @@ def build_parser() -> argparse.ArgumentParser:
     svc_remove = svc_do.add_parser("uninstall",
                                    help="stop it and remove the unit AND its key file")
     svc_remove.add_argument("--name", default=service_mod.DEFAULT_NAME)
+
+    drn = sub.add_parser(
+        "drain",
+        help="create a drain for one PRD: its own checkout, its own key, its own service",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "`create` clones a checkout for the PRD, mints a key limited to that PRD with your "
+            "`gban` session, writes it to an owner-only file, and installs `gbfleet until` as a "
+            "service (launchd / systemd --user). The key is named only by its id. Run with "
+            "--dry-run first: it prints the same plan and the same `until` arguments, and "
+            "writes, mints and installs nothing."),
+        epilog=(
+            "Example:\n"
+            "  gbfleet drain create --prd GRPH-P96 --like drain --dry-run\n"
+            "  gbfleet drain create --prd GRPH-P96 --like drain\n"),
+    )
+    drn_do = drn.add_subparsers(dest="act", metavar="ACT")
+    drn_create = drn_do.add_parser(
+        "create", help="checkout, minted PRD key, service — or, with --dry-run, the plan only")
+    drn_create.add_argument("--prd", required=True, help="the PRD this drain works")
+    drn_create.add_argument(
+        "--like", default="", metavar="NAME",
+        help="copy the `until` flags of this installed drain, read from its unit file. "
+             "Explicit flags override them")
+    drn_create.add_argument(
+        "--repo", default="",
+        help="an existing clean checkout of the same remote. Default: a new clone at "
+             "<this checkout>-<prd lowercased>, marked as the drain's")
+    drn_create.add_argument("--name", default="",
+                            help="service name (default: the PRD id, lowercased)")
+    drn_create.add_argument("--server", default="",
+                            help="Graphban base URL (default: --like's, then `gban login`'s)")
+    drn_create.add_argument("--project", default="", help="`until --project`")
+    drn_create.add_argument("--adapter", default="", help="`until --adapter`")
+    drn_create.add_argument("--tier", action="append", default=[], metavar="NAME=ADAPTER[:MODEL]",
+                            help="`until --tier`; repeatable, replaces every copied --tier")
+    drn_create.add_argument("--max-workers", type=int, default=None)
+    drn_create.add_argument("--allow", action="append", default=[], metavar="NAME",
+                            help="`until --allow`; repeatable, replaces every copied --allow")
+    drn_create.add_argument("--merge", action="store_true", default=False, help=_MERGE_HELP)
+    drn_create.add_argument("--every", type=int, default=service_mod.RESTART_SEC,
+                            metavar="SECONDS", help="service restart interval")
+    drn_create.add_argument("--dry-run", action="store_true",
+                            help="print the plan; write no env file, mint no key, install nothing")
 
     until = sub.add_parser(
         "until",
@@ -1384,6 +1429,20 @@ def _service(args) -> int:
     return 1
 
 
+def _drain(args) -> int:
+    """`gbfleet drain …`. Only `create` so far (GRPH-1974)."""
+    if getattr(args, "act", None) != "create":
+        print("gbfleet drain: no action given. Try `gbfleet drain create --help`.",
+              file=sys.stderr)
+        return 2
+    opts = drain_mod.Options(
+        prd=args.prd, like=args.like, repo=args.repo, name=args.name, server=args.server,
+        project=args.project, adapter=args.adapter, tier=list(args.tier),
+        max_workers=args.max_workers, allow=list(args.allow), merge=args.merge,
+        every=args.every, dry_run=args.dry_run)
+    return drain_mod.create(opts, show_status=_service_status)
+
+
 def _reload_named_service(args) -> int:
     """`install --name X` with no `until` arguments: load the unit already on disk.
 
@@ -2106,6 +2165,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "service":
         return _service(args)
+
+    if args.command == "drain":
+        return _drain(args)
 
     if args.command == "until":
         return _until(args)
