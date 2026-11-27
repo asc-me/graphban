@@ -17,6 +17,16 @@ contains the value.
 **No session, nothing written.** The session is checked before the checkout is cut, so a
 person without `gban login` gets the instruction and an unchanged disk.
 
+**Remove and rekey (GRPH-1976).** `remove` uninstalls the service, revokes its key, deletes
+the env file, and deletes the checkout only when its marker names this drain and it holds no
+uncommitted change and no unpushed commit; any other checkout is kept and named. `rekey`
+mints a new PRD-limited key, swaps the env file atomically, restarts the service, and revokes
+the old key only after the server has seen the new key used (`last_used`), and only when no
+other installed drain's env file holds the same old key. Neither prints a key value. The
+server keeps only a hash, so the key's id is recorded beside the env file (`<name>.key-id`,
+not a secret); a drain without that record is matched by its prefix, and only a single live
+match is ever revoked.
+
 **Preflight refuses with a named reason, before anything is cut, minted or written**
 (GRPH-1975). `draft` refuses an unsupported platform, a service or env file that already
 exists, a plan for another PRD, an empty captured PATH, an adapter that PATH does not
@@ -26,11 +36,13 @@ is not approved or not shaped. Only after all of that does it clone, mint and in
 """
 from __future__ import annotations
 
+import hmac
 import os
 import shutil
 import socket
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, TextIO
@@ -509,6 +521,7 @@ def create(opts: Options, *, out: TextIO | None = None, err: TextIO | None = Non
     finally:
         key = ""
     print(f"key: minted ({key_id}), written to {plan.env_path}", file=out)
+    _record_key_id(d.name, str(minted.get("id") or ""))
     for warning in done.warnings:
         print(f"WARNING {warning}", file=err)
     state = done.state or service.status(d.name, kind=d.kind)
@@ -516,4 +529,357 @@ def create(opts: Options, *, out: TextIO | None = None, err: TextIO | None = Non
         show_status(state)
     else:
         print(state.line(), file=out)
+    return 0
+
+
+# ---- remove and rekey (GRPH-1976) ----------------------------------------------------------
+
+#: How long `rekey` waits for the restarted service's first call with the new key before it
+#: leaves the old key alive and says so. `until` calls the server as it starts, so a minute is
+#: a service that did not come up, not a slow one.
+FIRST_CALL_WINDOW = 120.0
+FIRST_CALL_POLL = 3.0
+
+
+def key_id_path(name: str) -> Path:
+    """The id of the key in `<name>.env`. Not a secret: an id revokes nothing by itself."""
+    return service.CONFIG_DIR / f"{name}.key-id"
+
+
+def _record_key_id(name: str, key_id: str) -> None:
+    if not key_id:
+        return
+    path = key_id_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{key_id}\n", encoding="utf-8")
+
+
+def _recorded_key_id(name: str) -> str:
+    try:
+        return key_id_path(name).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _read_key(env_path: Path) -> str:
+    """The key in an env file, or "". Held in memory only; never printed or logged."""
+    try:
+        text = env_path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        if line.startswith(f"{service.API_KEY_ENV}="):
+            return line.split("=", 1)[1].strip()
+    return ""
+
+
+def _same_key(a: str, b: str) -> bool:
+    """Constant-time equality, so neither value is compared in a way that prints or leaks."""
+    return bool(a) and bool(b) and hmac.compare_digest(a.encode(), b.encode())
+
+
+def sharers(name: str, key: str, kind: str) -> list[str]:
+    """The other installed drains whose env file holds this same key (a copied shared key)."""
+    return [other for other in service.installed_names(kind)
+            if other != name and _same_key(_read_key(service.env_path_for(other)), key)]
+
+
+def resolve_key_id(ledger: object, name: str, key: str) -> tuple[str, str]:
+    """(id, "") for the key in `name`'s env file, or ("", why) when it cannot be named.
+
+    The recorded id first, checked against the listing's prefix. A drain `create` did not
+    make has no record, so its key is matched by prefix, and only a single live match counts:
+    revoking a guess could kill somebody else's credential.
+    """
+    try:
+        rows = ledger.list_keys()  # type: ignore[attr-defined]
+    except (client_mod.ServerUnreachable, client_mod.ToolFailed) as exc:
+        return "", f"cannot list your keys: {exc}"
+    recorded = _recorded_key_id(name)
+    if recorded:
+        row = next((r for r in rows if str(r.get("id")) == recorded), None)
+        if row is None:
+            return "", f"the recorded key {recorded} is not one of your keys"
+        prefix = str(row.get("prefix") or "")
+        if prefix and not key.startswith(prefix):
+            return "", f"the recorded key {recorded} is not the key in {name}'s env file"
+        return recorded, ""
+    matches = [r for r in rows if not r.get("revoked") and r.get("prefix")
+               and key.startswith(str(r["prefix"]))]
+    if len(matches) == 1:
+        return str(matches[0].get("id") or ""), ""
+    if not matches:
+        return "", "none of your live keys matches it (it may be another person's key)"
+    return "", (f"{len(matches)} of your live keys share its prefix "
+                f"({', '.join(str(r.get('id')) for r in matches)}), so which one is unknown")
+
+
+def checkout_verdict(repo: Path, name: str) -> str:
+    """"" when `repo` may be deleted: it is the top of a checkout, its marker names `name`, and
+    it (and every linked worktree) has no uncommitted change, no stash and no unpushed commit.
+    Otherwise why it is kept. Anything unreadable is a keep, never a delete."""
+    if _toplevel(repo) != repo.resolve():
+        return "it is not the top of a git checkout"
+    code, git_dir = _git(repo, "rev-parse", "--absolute-git-dir")
+    if code != 0:
+        return f"cannot find its git dir: {git_dir}"
+    marker = Path(git_dir) / MARKER
+    try:
+        owner = marker.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return f"it has no .git/{MARKER} marker, so drain create did not make it"
+    except OSError as exc:
+        return f"cannot read its .git/{MARKER} marker: {exc}"
+    if owner != name:
+        return f"its .git/{MARKER} marker names drain {owner!r}, not {name!r}"
+    code, listed = _git(repo, "worktree", "list", "--porcelain")
+    if code != 0:
+        return f"cannot list its worktrees: {listed}"
+    trees = [Path(line[len("worktree "):]) for line in listed.splitlines()
+             if line.startswith("worktree ")] or [repo]
+    for tree in trees:
+        if not tree.exists():
+            continue
+        code, dirty = _git(tree, "status", "--porcelain")
+        if code != 0:
+            return f"cannot read the status of {tree}: {dirty}"
+        if dirty:
+            return f"{tree} has uncommitted changes"
+    code, stashed = _git(repo, "stash", "list")
+    if code != 0:
+        return f"cannot read its stash: {stashed}"
+    if stashed:
+        return "it has stashed changes"
+    code, ahead = _git(repo, "rev-list", "HEAD", "--branches", "--not", "--remotes")
+    if code != 0:
+        return f"cannot tell whether it has unpushed commits: {ahead}"
+    if ahead:
+        return f"it has {len(ahead.splitlines())} unpushed commit(s)"
+    return ""
+
+
+def _open(server: str, verb: str, err: TextIO) -> tuple[object | None, int]:
+    try:
+        return open_ledger(server), 0
+    except client_mod.NoSession as exc:
+        print(f"gbfleet drain {verb}: {exc}. Run `gban --server {server} login`, then run "
+              "this again. Nothing was changed.", file=err)
+        return None, EXIT_NO_SESSION
+    except (client_mod.ServerUnreachable, client_mod.ToolFailed) as exc:
+        print(f"gbfleet drain {verb}: cannot open the gban session: {exc}. Nothing was "
+              "changed.", file=err)
+        return None, EXIT_REFUSED
+
+
+def remove(name: str, *, out: TextIO | None = None, err: TextIO | None = None) -> int:
+    """Uninstall, revoke, delete the env file, and delete the checkout only if it is safe."""
+    out = out or sys.stdout
+    err = err or sys.stderr
+    try:
+        kind = _supported_kind()
+    except Refused as exc:
+        print(f"gbfleet drain remove: {exc}", file=err)
+        return EXIT_REFUSED
+    unit = service.unit_path_for(name, kind)
+    env = service.env_path_for(name)
+    if not unit.exists() and not env.exists():
+        print(f"gbfleet drain remove: no drain named {name!r} is installed here ({kind})",
+              file=err)
+        return EXIT_REFUSED
+    # Read before uninstall: it deletes the unit and the env file this reads from.
+    args = service.until_args_of(name, kind) or []
+    repo = service.value_of(args, "--repo")
+    server = service.value_of(args, "--server") or client_mod.gban_url()
+    key = _read_key(env)
+    others = sharers(name, key, kind) if key else []
+    ledger, key_id, why = None, "", ""
+    if key and not others:
+        ledger, code = _open(server, "remove", err)
+        if ledger is None:
+            return code
+        key_id, why = resolve_key_id(ledger, name, key)
+    key = ""
+
+    failed = False
+    try:
+        removed = service.uninstall(name, kind=kind)
+    except service.Refused as exc:
+        print(f"gbfleet drain remove: {exc}", file=err)
+        return EXIT_REFUSED
+    print(f"service: uninstalled {name} ({kind})", file=out)
+    for path in removed:
+        print(f"  deleted {path}", file=out)
+    if others:
+        print(f"key: NOT revoked: the env file of {', '.join(others)} holds the same key, and "
+              "revoking it would stop them. Rekey them, then revoke it", file=out)
+    elif ledger is not None:
+        if key_id:
+            try:
+                ledger.revoke_key(key_id)  # type: ignore[attr-defined]
+                print(f"key: revoked ({key_id})", file=out)
+            except (client_mod.ServerUnreachable, client_mod.ToolFailed) as exc:
+                failed = True
+                print(f"gbfleet drain remove: key {key_id} was NOT revoked: {exc}. Revoke it "
+                      "in Settings", file=err)
+        else:
+            failed = True
+            print(f"gbfleet drain remove: the key was NOT revoked: {why}. Revoke it in "
+                  "Settings", file=err)
+    else:
+        print(f"key: {env} held no {service.API_KEY_ENV}, so there was none to revoke",
+              file=out)
+    try:
+        key_id_path(name).unlink()
+    except OSError:
+        pass
+
+    if not repo:
+        print("checkout: none named in the unit; nothing to delete", file=out)
+    elif not Path(repo).exists():
+        print(f"checkout: {repo} is already gone", file=out)
+    else:
+        path = Path(repo)
+        verdict = checkout_verdict(path, name)
+        if verdict:
+            print(f"checkout: kept {path}: {verdict}", file=out)
+        else:
+            shutil.rmtree(path)
+            print(f"checkout: deleted {path}", file=out)
+    return 1 if failed else 0
+
+
+def _env_plan(name: str, kind: str, env: Path) -> service.Plan:
+    """A plan that carries only the env path, for `service.write_env`'s atomic swap."""
+    return service.Plan(name=name, kind=kind, label=service.label_for(name),
+                        unit_path=service.unit_path_for(name, kind), env_path=env,
+                        log_path=env, err_path=env, binary="", until_args=[], repo=env.parent,
+                        common_dir=env.parent, path_env="")
+
+
+def restart(name: str, kind: str) -> str:
+    """Restart the installed service so it reads the env file again. Loads it if it is not."""
+    unit = service.unit_path_for(name, kind)
+    if kind == "launchd":
+        domain = service._launchd_gui_domain()
+        if domain is None:
+            raise Refused("launchd domain needs a numeric uid; os.getuid is absent")
+        code, said = service._run(["launchctl", "kickstart", "-k",
+                                   f"{domain}/{service.label_for(name)}"])
+    else:
+        code, said = service._run(["systemctl", "--user", "restart", service.unit_name(name)])
+    if code != 0:
+        return service._load_existing(name, kind, unit)
+    return said
+
+
+def first_call_seen(ledger: object, key_id: str, *, window: float | None = None,
+                    poll: float | None = None) -> bool:
+    """True once the server reports `last_used` on the new key: an authenticated call made it.
+
+    Nobody else holds the new key, so the first use is the restarted service's.
+    """
+    window = FIRST_CALL_WINDOW if window is None else window
+    poll = FIRST_CALL_POLL if poll is None else poll
+    waited = 0.0
+    while True:
+        try:
+            rows = ledger.list_keys()  # type: ignore[attr-defined]
+        except (client_mod.ServerUnreachable, client_mod.ToolFailed):
+            rows = []
+        row = next((r for r in rows if str(r.get("id")) == key_id), None)
+        if row is not None and row.get("last_used"):
+            return True
+        if waited >= window:
+            return False
+        time.sleep(poll)
+        waited += poll
+
+
+def rekey(name: str, *, out: TextIO | None = None, err: TextIO | None = None) -> int:
+    """A new PRD-limited key for one drain; the old one revoked once the new one is in use."""
+    out = out or sys.stdout
+    err = err or sys.stderr
+    try:
+        kind = _supported_kind()
+    except Refused as exc:
+        print(f"gbfleet drain rekey: {exc}", file=err)
+        return EXIT_REFUSED
+    unit = service.unit_path_for(name, kind)
+    env = service.env_path_for(name)
+    args = service.until_args_of(name, kind)
+    if not unit.exists() or args is None:
+        print(f"gbfleet drain rekey: no drain named {name!r} is installed here ({kind})",
+              file=err)
+        return EXIT_REFUSED
+    prd = service.value_of(args, "--prd") or ""
+    if not prd:
+        print(f"gbfleet drain rekey: {name}'s unit runs no --prd, and a PRD-limited key needs "
+              "one. Nothing was changed", file=err)
+        return EXIT_REFUSED
+    old = _read_key(env)
+    if not old:
+        print(f"gbfleet drain rekey: {env} holds no {service.API_KEY_ENV}. Nothing was "
+              "changed", file=err)
+        return EXIT_REFUSED
+    server = service.value_of(args, "--server") or client_mod.gban_url()
+    project = service.value_of(args, "--project") or ""
+    others = sharers(name, old, kind)
+    ledger, code = _open(server, "rekey", err)
+    if ledger is None:
+        return code
+    # Named before the new key's id overwrites the record.
+    old_id, why = ("", "") if others else resolve_key_id(ledger, name, old)
+
+    label = f"{name}@{socket.gethostname()}"
+    try:
+        minted = ledger.mint_prd_key(prd, label, project=project)  # type: ignore[attr-defined]
+    except (client_mod.ServerUnreachable, client_mod.ToolFailed) as exc:
+        print(f"gbfleet drain rekey: the server did not mint a key: {exc}. Nothing was "
+              "changed", file=err)
+        return EXIT_REFUSED
+    new = str(minted.get("plaintext") or "")
+    new_id = str(minted.get("id") or "")
+    if not new or not new_id or _same_key(new, old):
+        print("gbfleet drain rekey: the server returned no usable new key. Nothing was "
+              "changed", file=err)
+        return EXIT_REFUSED
+    try:
+        warnings = service.write_env(_env_plan(name, kind, env), new)
+    except OSError as exc:
+        print(f"gbfleet drain rekey: could not write {env}: {exc}. It still holds the old "
+              f"key; key {new_id} was minted and not stored, revoke it in Settings", file=err)
+        return EXIT_REFUSED
+    finally:
+        new = old = ""
+    _record_key_id(name, new_id)
+    print(f"key: minted ({new_id}, labelled {label}), written to {env}", file=out)
+    for warning in warnings:
+        print(f"WARNING {warning}", file=err)
+
+    try:
+        restart(name, kind)
+    except Refused as exc:
+        print(f"gbfleet drain rekey: {exc}. The old key is left alive", file=err)
+        return 1
+    if not first_call_seen(ledger, new_id):
+        print(f"gbfleet drain rekey: the restarted service has made no call with key {new_id} "
+              "yet, so the old key is left alive. See `gbfleet service status --name "
+              f"{name}`, then revoke the old key in Settings", file=err)
+        return 1
+    print(f"service: restarted; its first call with key {new_id} was seen", file=out)
+    if others:
+        print(f"old key: NOT revoked: the env file of {', '.join(others)} holds it too, and "
+              "revoking it would stop them. Rekey them; the last rekey revokes it", file=out)
+        return 0
+    if not old_id:
+        print(f"gbfleet drain rekey: the old key was NOT revoked: {why}. Revoke it in "
+              "Settings", file=err)
+        return 1
+    try:
+        ledger.revoke_key(old_id)  # type: ignore[attr-defined]
+    except (client_mod.ServerUnreachable, client_mod.ToolFailed) as exc:
+        print(f"gbfleet drain rekey: old key {old_id} was NOT revoked: {exc}. Revoke it in "
+              "Settings", file=err)
+        return 1
+    print(f"old key: revoked ({old_id})", file=out)
     return 0
