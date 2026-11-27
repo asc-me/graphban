@@ -16,9 +16,18 @@ contains the value.
 
 **No session, nothing written.** The session is checked before the checkout is cut, so a
 person without `gban login` gets the instruction and an unchanged disk.
+
+**Preflight refuses with a named reason, before anything is cut, minted or written**
+(GRPH-1975). `draft` refuses an unsupported platform, a service or env file that already
+exists, a plan for another PRD, an empty captured PATH, an adapter that PATH does not
+resolve, install flags that differ from the dry run's, and an `until` already holding the
+checkout. `create` then reads the PRD's coverage through the session and refuses a PRD that
+is not approved or not shaped. Only after all of that does it clone, mint and install.
 """
 from __future__ import annotations
 
+import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -27,7 +36,9 @@ from pathlib import Path
 from typing import Callable, TextIO
 
 from . import client as client_mod
+from . import lock as lock_mod
 from . import service
+from .adapters import ADAPTERS
 
 #: Written into a checkout `create` cloned, naming the drain that owns it (grill decision 4).
 #: `drain remove` reads it before deleting a directory; a checkout without it is the
@@ -36,6 +47,14 @@ MARKER = "gbfleet-drain"
 
 #: Flags that belong to the drain being created, never copied from `--like`.
 _OWN_FLAGS = {"--repo": True, "--prd": True, "--dry-run": False, "--line": True}
+
+#: The supervisors `drain create` installs into. Task Scheduler has `service install`, but not
+#: this command: P96 scopes `create` to launchd and systemd --user.
+SUPPORTED_KINDS = {"launchd": "macOS (launchd)", "systemd": "Linux (systemd --user)"}
+
+#: The PRD status `create` will mint a key for. A draft or in-review PRD has no settled
+#: sections for a drain to work, and a closed one has nothing left.
+APPROVED = "approved"
 
 #: Exit codes. 3 matches `gban`'s EXIT_NO_SESSION.
 EXIT_REFUSED = 2
@@ -82,6 +101,8 @@ class Draft:
     project: str
     unit_path: Path
     env_path: Path
+    #: The PATH the unit will capture. Checked here, and handed to `make_plan` unchanged.
+    path_env: str = ""
 
     @property
     def runs(self) -> str:
@@ -202,16 +223,26 @@ def draft(opts: Options, *, cwd: Path | None = None) -> Draft:
     prd = opts.prd.strip()
     if not prd:
         raise Refused("--prd is required")
-    found = service.host()
-    if not found.kind:
-        raise Refused(found.why)
-    kind = found.kind
+    kind = _supported_kind()
+    # First, before any `git` runs: with no PATH those fail too, and the refusal would
+    # name a missing checkout instead of the PATH.
+    path_env = os.environ.get("PATH", "")
+    if not path_env.strip():
+        raise Refused(
+            "the PATH this service would capture is empty, so it could run no adapter (and "
+            "no git) at all. Run create from a shell whose PATH finds the adapter")
     name = opts.name or prd.lower()
-    for existing in (service.unit_path_for(name, kind), service.env_path_for(name)):
-        if existing.exists():
-            raise Refused(
-                f"a drain named {name!r} already exists ({existing}). Pick another --name, or "
-                "remove that drain first; create never overwrites one")
+    unit = service.unit_path_for(name, kind)
+    if unit.exists():
+        raise Refused(
+            f"a service named {name!r} is already installed ({unit}). See "
+            f"`gbfleet service status --name {name}`; pick another --name, or remove that "
+            "drain first. create never overwrites one")
+    env = service.env_path_for(name)
+    if env.exists():
+        raise Refused(
+            f"{env} already exists, so a drain named {name!r} already has a key file. Pick "
+            "another --name, or remove that drain first; create never overwrites a key")
 
     copied: list[str] = []
     like_repo = ""
@@ -258,14 +289,128 @@ def draft(opts: Options, *, cwd: Path | None = None) -> Draft:
         clone_from = remote
 
     until_args = until_args_for(opts, copied, repo)
-    if service.value_of(until_args, "--adapter") is None:
+    adapter = service.value_of(until_args, "--adapter")
+    if adapter is None:
         raise Refused("no adapter: pass --adapter, or --like a drain that has one")
+    planned = _prds_in(until_args)
+    if planned != [prd]:
+        raise Refused(
+            f"the plan is for {', '.join(planned) or 'no PRD'}, not the requested {prd}; "
+            "not installing a drain for a PRD nobody asked for")
+    _check_adapter_on(adapter, path_env)
+    drift = flag_drift(until_args, service.install_args(until_args))
+    if drift:
+        raise Refused(f"the install flags differ from the dry run's at {drift}; not installing")
+    if not clone_from:
+        _check_no_until(repo)
     return Draft(
         name=name, prd=prd, kind=kind, repo=repo, clone_from=clone_from, supplied=supplied,
         until_args=until_args, binary=service._this_gbfleet(),
         label=f"{name}@{socket.gethostname()}", every=opts.every,
         project=service.value_of(until_args, "--project") or "",
-        unit_path=service.unit_path_for(name, kind), env_path=service.env_path_for(name))
+        unit_path=unit, env_path=env, path_env=path_env)
+
+
+# ---- preflight (GRPH-1975) -----------------------------------------------------------------
+
+def _supported_kind() -> str:
+    found = service.host()
+    if found.kind in SUPPORTED_KINDS:
+        return found.kind
+    this = f"this host has {found.kind}" if found.kind else f"this host has neither: {found.why}"
+    raise Refused(
+        f"drain create installs into {' or '.join(SUPPORTED_KINDS.values())}; {this}. "
+        "Nothing was written")
+
+
+def _prds_in(args: list[str]) -> list[str]:
+    """Every `--prd` value among `until`'s own flags (the `-- command` tail is the child's)."""
+    flags, _tail = _split_remainder(args)
+    out: list[str] = []
+    for i, arg in enumerate(flags):
+        if arg == "--prd":
+            out.append(flags[i + 1] if i + 1 < len(flags) else "")
+        elif arg.startswith("--prd="):
+            out.append(arg.split("=", 1)[1])
+    return out
+
+
+def _check_adapter_on(adapter: str, path_env: str) -> None:
+    """The adapter's binary must resolve on the PATH the unit will capture, not on ours."""
+    known = ADAPTERS.get(adapter)
+    if known is None:
+        raise Refused(f"--adapter {adapter!r} is not one of {', '.join(sorted(ADAPTERS))}")
+    if shutil.which(known.binary, path=path_env) is None:
+        raise Refused(
+            f"adapter {adapter!r} needs {known.binary!r}, which does not resolve on the PATH "
+            f"this service would capture ({path_env}). Install it, or run create from a shell "
+            "whose PATH finds it")
+
+
+def _pairs(args: list[str]) -> list[tuple[str, str]]:
+    """(flag, value) in order; a bare flag has value "", a `-- tail` is one entry."""
+    flags, tail = _split_remainder(args)
+    out: list[tuple[str, str]] = []
+    i = 0
+    while i < len(flags):
+        arg = flags[i]
+        if arg.startswith("--") and "=" in arg:
+            flag, _, value = arg.partition("=")
+            out.append((flag, value))
+        elif i + 1 < len(flags) and not flags[i + 1].startswith("--"):
+            out.append((arg, flags[i + 1]))
+            i += 1
+        else:
+            out.append((arg, ""))
+        i += 1
+    if tail:
+        out.append(("--", " ".join(tail[1:])))
+    return out
+
+
+def flag_drift(dry: list[str], install: list[str]) -> str:
+    """"" when byte-identical; else the first differing flag, with both values."""
+    if dry == install:
+        return ""
+    a, b = _pairs(dry), _pairs(install)
+    for i in range(max(len(a), len(b))):
+        left = a[i] if i < len(a) else None
+        right = b[i] if i < len(b) else None
+        if left != right:
+            flag = (left or right)[0]  # type: ignore[index]
+            return (f"{flag} (dry run: {left[1] if left else 'absent'!r}, "
+                    f"install: {right[1] if right else 'absent'!r})")
+    # Same pairs, different bytes: `--x=1` against `--x 1`. Still not identical.
+    return f"the argv spelling ({dry} vs {install})"
+
+
+def _check_no_until(repo: Path) -> None:
+    """Refuse a checkout another supervisor holds. Asks the lock `until` takes; never takes it."""
+    try:
+        lock_mod.probe(repo)
+    except lock_mod.RepoLocked as exc:
+        raise Refused(f"another `until` (or `mcp`) is running against {repo}: {exc}") from None
+    except OSError as exc:
+        # Could not ask is not "free": a drain installed beside a live one double-spawns.
+        raise Refused(f"cannot tell whether a supervisor holds {repo}: {exc}") from None
+
+
+def check_prd(ledger: object, prd: str) -> None:
+    """The PRD must be approved and shaped. Read through the session; an unreadable reply
+    is a refusal, never a pass."""
+    try:
+        cov = ledger.prd_coverage(prd)  # type: ignore[attr-defined]
+    except (client_mod.ServerUnreachable, client_mod.ToolFailed) as exc:
+        raise Refused(f"cannot read {prd}'s coverage to check it is approved: {exc}") from None
+    status = str(cov.get("status") or "")
+    if status != APPROVED:
+        raise Refused(
+            f"{prd} is {status or 'of unknown status'}, not {APPROVED}. Approve it first; "
+            "a drain works an approved PRD's items")
+    if cov.get("shaped") is not True:
+        raise Refused(
+            f"prd_coverage reports {prd} shaped: {cov.get('shaped')!r}, so it has no sections "
+            "for items to sit under. Give it `##` sections and decompose it first")
 
 
 def print_plan(d: Draft, out: TextIO, *, dry_run: bool) -> None:
@@ -313,6 +458,11 @@ def create(opts: Options, *, out: TextIO | None = None, err: TextIO | None = Non
     except (client_mod.ServerUnreachable, client_mod.ToolFailed) as exc:
         print(f"gbfleet drain create: cannot open the gban session: {exc}", file=err)
         return EXIT_REFUSED
+    try:
+        check_prd(ledger, d.prd)
+    except Refused as exc:
+        print(f"gbfleet drain create: {exc}. Nothing was written.", file=err)
+        return EXIT_REFUSED
 
     if d.clone_from:
         d.repo.parent.mkdir(parents=True, exist_ok=True)
@@ -324,15 +474,18 @@ def create(opts: Options, *, out: TextIO | None = None, err: TextIO | None = Non
 
     try:
         plan = service.make_plan(d.until_args, name=d.name, kind=d.kind, binary=d.binary,
-                                 every=d.every)
+                                 path_env=d.path_env, every=d.every)
     except service.Refused as exc:
         print(f"gbfleet drain create: {exc}", file=err)
         return EXIT_REFUSED
     # The dry run is a promise about what runs. A difference here is a bug in this module,
     # and installing anyway would break the promise quietly.
-    if plan.until_args != d.until_args:
-        print("gbfleet drain create: the service would run different arguments than the "
-              f"plan ({plan.until_args} vs {d.until_args}); not installing", file=err)
+    # Preflight compared `install_args` already; this is the same promise, kept on the plan
+    # that is actually installed.
+    drift = flag_drift(d.until_args, plan.until_args)
+    if drift:
+        print(f"gbfleet drain create: the install flags differ from the dry run's at {drift}; "
+              "not installing", file=err)
         return EXIT_REFUSED
 
     try:
