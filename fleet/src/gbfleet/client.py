@@ -491,6 +491,16 @@ class Graphban:
     def propose_allocation(self, **arguments: Any) -> dict:
         return self.call("propose_allocation", **arguments)
 
+    # GRPH-1977, the scripting surface. Two reads the CLI wraps, held by the CLI's own
+    # `SCRIPTING_READS` set and not by `ALLOWED_TOOLS`.
+    def prd_coverage(self, prd_id: str) -> dict:
+        return self.call("prd_coverage", prd_id=prd_id)
+
+    def decompose_preview(self, prd_id: str) -> dict:
+        # `create` is spelled here and nowhere a caller can reach: there is no parameter
+        # for it, so no scripting form of `decompose` files anything.
+        return self.call("decompose_prd", prd_id=prd_id, create=False)
+
 
 def _keepalive_options() -> list[tuple[int, int, int]]:
     """SO_KEEPALIVE plus a short idle/interval/count where the platform names them."""
