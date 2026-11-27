@@ -1,6 +1,6 @@
 # API reference
 
-**This names every path the app serves** — 411 of the 411. The OpenAPI schema at **`/docs`**
+**This names every path the app serves** — 418 of the 418. The OpenAPI schema at **`/docs`**
 is the schema (bodies and status codes). This page is where a route's *authority* is
 explained, which a schema has no field for: why `code/health` accepts an agent key and
 `fleet/presence` does not, why a share token is the only accepted credential in hosted mode.
@@ -112,6 +112,13 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | GET | `/api/orgs/{id}/entitlements` | JWT (org member) | Capacity-routing registry (PRD-62 S2): each entitlement with `headroom` (S3: derived `state`, verbatim `vendor_text`, `in_flight`, `spend` with `unreported` a count) and `declared_by`, the runners that declared it at `register_agent` — self-declared, not verified, and `declaration` says so. 402 / `quota_exceeded` off `team`/`enterprise` |
 | POST | `/api/orgs/{id}/entitlements` | JWT (org admin) | Register one: `vendor`, `kind` (`subscription`/`api_key`/`cloud`/`local`), `owner_user_id` (required for a subscription), `runner`, `plan_label`, `reset_cadence`, `token_budget`, and `secret_ref` for `api_key`/`cloud` only — the NAME of the secret on the runner, never the key. Unknown fields are refused, never dropped; a secret on a subscription is refused here and by a CHECK constraint. 402 off `team`/`enterprise` |
 | PATCH | `/api/orgs/{id}/entitlements/{entitlement_id}` | JWT (org admin) | Patch one; omitted fields unchanged, `null` clears. The result is re-validated, so a kind change cannot leave a subscription holding a `secret_ref` |
+| GET | `/api/orgs/{org_id}/link-oversight` | JWT (org member) | Human oversight of PRD links (GRPH-P104 S5). Runs the stale sweep first, then lists every pending link request and open pair thread in the org: both PRDs (metadata only), their projects, `latest_kind`, `age_seconds`, each `suggested_item`'s outcome, unanswered questions, a `stale` flag and `can_decide`. An org owner or admin sees every link in the org; a member sees links touching a project they read. `stale_after_hours` is the org's setting |
+| PUT | `/api/orgs/{org_id}/link-oversight/stale-age` | JWT (org owner/admin) | Set `{hours}` (at least 1, default 72): how long a pending request, unanswered question or undecided suggestion may sit before it is flagged and a `link_stale` alert is raised to the receiving PRD's owner (P75 rule), else the org's owners |
+| POST | `/api/prd-links/{link_id}/accept` | JWT (write on the receiving project) | A person accepts a pending link request. Audited as `prd_link_accept` |
+| POST | `/api/prd-links/{link_id}/decline` | JWT (write on the receiving project) | Decline with `{reason}`. Audited as `prd_link_decline` |
+| POST | `/api/prd-links/{link_id}/messages/{message_id}/answer` | JWT (write on one side) | Answer a `question` with `{body}`: a reply on the thread. 422 when the thread is read-only |
+| POST | `/api/prd-links/{link_id}/messages/{message_id}/file` | JWT (write on the receiving project) | File a `suggested_item` as an item in the receiving project, with the person's own access. Audited as `prd_link_suggestion_filed` |
+| POST | `/api/prd-links/{link_id}/messages/{message_id}/decline` | JWT (write on the receiving project) | Decline a `suggested_item` with `{reason}`. Audited as `prd_link_suggestion_declined` |
 | GET | `/api/sync/gitops` | MCP (sync key) | Cloud receiver. `resolve_local` of `targets[0]` — never outbound, never a query-string project |
 
 ## Cloud link and the Organization window (GRPH-1223)

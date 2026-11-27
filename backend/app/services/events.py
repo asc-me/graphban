@@ -92,6 +92,23 @@ def record_user(db: Session, user: User, *, action: str, target_type: str = "",
     )
 
 
+PRD_LINK_ACTIONS = ("prd_link_request", "prd_link_accept", "prd_link_decline", "prd_link_unlink",
+                    "prd_link_message", "prd_link_suggestion_filed", "prd_link_suggestion_declined",
+                    "prd_link_suggestion_withdrawn", "prd_link_stale_alert")
+
+
+def record_prd_link(db: Session, caller, *, action: str, link, meta: dict | None = None) -> None:
+    """Audit one PRD-link act (GRPH-P104 S5): a request, decision, message or filing. `caller`
+    is a `links.Caller`; the row names the link and carries both PRDs' ids, never a body."""
+    system = caller is None
+    record(
+        db, actor_type="system" if system else ("apikey" if caller.is_agent else "user"),
+        actor_label="" if system else caller.who, surface="rest", action=action,
+        target_type="prd_link", target_id=link.id, project_id=link.project_b_id,
+        meta={"prd_a": link.prd_a_id, "prd_b": link.prd_b_id, "project_a": link.project_a_id,
+              "project_b": link.project_b_id, **(meta or {})})
+
+
 def record_refusal(db: Session, *, rule_id: str | None, surface: str, where: str,
                    status: int, detail: str, actor: tuple[str, str, str] = ("system", "", ""),
                    target_type: str = "", target_id: str = "",

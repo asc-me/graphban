@@ -2218,6 +2218,11 @@ def close_prd(
     from app.services import design_sets as design_svc
 
     design_svc.freeze_for_prd(db, prd.id)
+    from app.services import oversight as oversight_svc
+
+    # GRPH-P104 S5: a closed PRD makes its link threads read-only; undecided suggestions on
+    # them are withdrawn with `prd_closed` now. Items already filed are untouched.
+    oversight_svc.on_prd_closed(db, prd.id)
     db.refresh(prd)
     events_svc.record(
         db, actor_type="agent" if closed_by.startswith("agent:") else "user",

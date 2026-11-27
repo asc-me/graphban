@@ -36,6 +36,7 @@ from app.routers import (
     live,
     memory,
     orgs,
+    oversight,
     platform,
     prds,
     projects,
@@ -361,6 +362,17 @@ def _question_sweep_pass() -> None:
     db = SessionLocal()
     try:
         waits_svc.sweep_questions(db)
+    finally:
+        db.close()
+    # GRPH-P104 S5: the PRD-link stale alert rides the same leader-only timer, in its own
+    # session; its failure is logged and never stops the question sweep.
+    from app.services import oversight as oversight_svc
+
+    db = SessionLocal()
+    try:
+        oversight_svc.sweep(db)
+    except Exception:  # noqa: BLE001
+        logger.warning("prd link stale sweep failed", exc_info=True)
     finally:
         db.close()
 
@@ -779,6 +791,7 @@ app.include_router(mcp_router, prefix=API)
 # org surface. Gating per-request (vs. a build-time `if`) keeps the flag authoritative
 # at runtime and lets the test suite exercise the surface under a monkeypatched flag.
 app.include_router(orgs.router, prefix=API)
+app.include_router(oversight.router, prefix=API)
 app.include_router(tracker_links.router, prefix=API)
 # Operator plane (AL-91): hosted + platform-admin gated at the router level; every
 # route 404s for tenants, so the surface is invisible outside the operator allowlist.

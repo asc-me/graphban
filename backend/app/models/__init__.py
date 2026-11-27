@@ -386,6 +386,11 @@ class Organization(Base):
     prd_link_accept_agents: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false(), nullable=False
     )
+    # GRPH-P104 S5: hours a pending link request, an unanswered question or an undecided
+    # suggested_item may sit before the oversight view flags it and the alert path raises it.
+    prd_link_stale_hours: Mapped[int] = mapped_column(
+        Integer, default=72, server_default="72", nullable=False
+    )
 
 
 class SlugRedirect(Base):
