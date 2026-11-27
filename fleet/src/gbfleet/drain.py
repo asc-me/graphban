@@ -755,9 +755,9 @@ def checkout_verdict(repo: Path, name: str) -> str:
     has no linked worktree, no uncommitted change, no untracked file (whatever
     `status.showUntrackedFiles` says), no ignored file outside `DISPOSABLE_DIRS` /
     `DISPOSABLE_SUFFIXES`, no stash, no tag on an unpushed commit, and no commit on any ref
-    that no remote-tracking ref reaches whose tip the server still lists (`git ls-remote`, read
-    only; a server that cannot be asked is a keep). Anything unreadable is a keep, never a
-    delete.
+    that no tip the server lists now reaches (`git ls-remote`; a branch the server moved is
+    proved by its new tip, fetched as objects only; a server or tip that cannot be read is a
+    keep). Anything unreadable is a keep, never a delete.
 
     Also kept, without trying to prove them clean: a path or marker reached through a symlink,
     a git dir outside the checkout, any submodule, a tracked file hidden by
@@ -1023,6 +1023,8 @@ def _proving_refs(repo: Path) -> tuple[dict[str, tuple[str, list[str]]], list[st
 
 #: Seconds one `git ls-remote` may take before its server counts as unreachable.
 LS_REMOTE_TIMEOUT = 30.0
+#: Seconds one object fetch of a moved server tip may take before the tip counts as unread.
+FETCH_TIP_TIMEOUT = 60.0
 _USERINFO = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/\s@]*@")
 
 
@@ -1032,23 +1034,23 @@ def _scrub(text: str) -> str:
     return _USERINFO.sub(r"\1", first)[:200]
 
 
-def _ls_remote(repo: Path, remote: str) -> tuple[set[str] | None, str]:
-    """(every object id `remote` lists now, "") or (None, why it could not be asked).
-
-    Reads only: no fetch, no prune, no ref written. Never prompts: GIT_TERMINAL_PROMPT=0, no
-    stdin and no controlling terminal (its own session), so a remote that wants credentials
-    fails instead of hanging, and LS_REMOTE_TIMEOUT kills the whole group if it still does."""
+def _ask_server(repo: Path, verb: str, args: list[str], timeout: float
+                ) -> tuple[str | None, str]:
+    """(stdout, "") or (None, why). Runs `git <args>` against a server and never prompts:
+    GIT_TERMINAL_PROMPT=0, no stdin and no controlling terminal (its own session), so a remote
+    that wants credentials fails instead of hanging, and `timeout` kills the WHOLE process
+    group (git and its ssh / credential helpers) if it still does."""
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never",
            "SSH_ASKPASS_REQUIRE": "never"}
     posix = os.name != "nt"
     try:
-        proc = subprocess.Popen(["git", "ls-remote", "--", remote], cwd=repo, env=env,
+        proc = subprocess.Popen(["git", *args], cwd=repo, env=env,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, start_new_session=posix)
     except OSError as exc:
-        return None, f"git ls-remote could not start: {exc.strerror or exc}"
+        return None, f"{verb} could not start: {exc.strerror or exc}"
     try:
-        listed, failed = proc.communicate(timeout=LS_REMOTE_TIMEOUT)
+        listed, failed = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         try:
             if posix:
@@ -1061,19 +1063,82 @@ def _ls_remote(repo: Path, remote: str) -> tuple[set[str] | None, str]:
             proc.communicate(timeout=5)
         except subprocess.SubprocessError:
             pass
-        return None, f"git ls-remote gave no answer within {LS_REMOTE_TIMEOUT:g}s"
+        return None, f"{verb} gave no answer within {timeout:g}s"
     if proc.returncode != 0:
-        return None, f"git ls-remote failed: {_scrub(failed) or f'exit {proc.returncode}'}"
-    return {line.split("\t", 1)[0] for line in listed.splitlines() if "\t" in line}, ""
+        return None, f"{verb} failed: {_scrub(failed) or f'exit {proc.returncode}'}"
+    return listed, ""
+
+
+def _ls_remote(repo: Path, remote: str) -> tuple[dict[str, str] | None, str]:
+    """({ref name: object id} `remote` lists now, "") or (None, why it could not be asked).
+    Reads only: no fetch, no prune, no ref written."""
+    listed, why = _ask_server(repo, "git ls-remote", ["ls-remote", "--", remote],
+                               LS_REMOTE_TIMEOUT)
+    if listed is None:
+        return None, why
+    refs: dict[str, str] = {}
+    for line in listed.splitlines():
+        sha, tab, name = line.partition("\t")
+        if tab:
+            refs[name] = sha
+    return refs, ""
+
+
+def _fetch_tip(repo: Path, remote: str, sha: str) -> str:
+    """"" once `sha` (a tip `remote` lists now) is an object here, else why it could not be
+    read. Writes OBJECTS only: an object id is no refspec destination, so no ref, no reflog,
+    no FETCH_HEAD (--no-write-fetch-head), no prune, no tag, no submodule, no auto gc or
+    maintenance (which could pack refs), no commit-graph."""
+    _out, why = _ask_server(repo, "git fetch", [
+        "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "fetch.writeCommitGraph=false",
+        "-c", "fetch.prune=false", "-c", "fetch.pruneTags=false",
+        "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--no-prune",
+        "--no-recurse-submodules", "--no-auto-gc", "--no-write-commit-graph", "--", remote, sha],
+        FETCH_TIP_TIMEOUT)
+    return why
+
+
+def _has_commit(repo: Path, sha: str) -> bool:
+    return _git(repo, "cat-file", "-e", f"{sha}^{{commit}}")[0] == 0
+
+
+def _server_name(repo: Path, remote: str, ref: str) -> str | None:
+    """The server ref `remote`'s fetch refspecs map onto local `ref`, if any (the reverse of a
+    refspec; the conventional refs/heads/* -> refs/remotes/<remote>/* when none matches).
+    refs/remotes/<remote>/HEAD is the server's HEAD, which ls-remote lists as `HEAD`."""
+    if ref == f"refs/remotes/{remote}/HEAD":
+        return "HEAD"
+    code, specs = _git(repo, "config", "--get-all", f"remote.{remote}.fetch")
+    pairs = [s.lstrip("+").split(":", 1) for s in specs.splitlines() if ":" in s] \
+        if code == 0 else []
+    pairs.append(["refs/heads/*", f"refs/remotes/{remote}/*"])
+    for src, dst in pairs:
+        if not dst.startswith("refs/"):
+            dst = f"refs/remotes/{dst}"
+        if "*" not in dst:
+            if ref == dst and "*" not in src:
+                return src
+            continue
+        if "*" not in src or not _refspec_matches(dst, ref):
+            continue
+        head, tail = dst.split("*", 1)
+        middle = ref[len(head):len(ref) - len(tail)]
+        return src.replace("*", middle, 1)
+    return None
 
 
 def _listed_now(repo: Path, proving: dict[str, tuple[str, list[str]]]
                 ) -> tuple[list[str], list[str], str]:
     """(tips that prove a push, stale refs, error). A local remote-tracking ref proves its
-    tip only when a remote that writes it lists that object id NOW (`git ls-remote`): a
-    branch deleted on the server leaves a ref nobody pruned, and that ref proves nothing.
-    Any remote that cannot be asked is an error: the checkout is kept."""
-    asked: dict[str, set[str]] = {}
+    tip only by what a remote that writes it lists NOW (`git ls-remote`): a branch deleted on
+    the server leaves a ref nobody pruned, and that ref proves nothing (GRPH-1987).
+
+    When the server lists the ref's branch at a different tip (someone pushed since, or
+    force-pushed), that tip is the proof instead: fetched as an object if it is not here
+    (GRPH-2001), so a commit is pushed exactly when that tip contains it. Any remote that
+    cannot be asked, and any moved tip that cannot be read, is an error: the checkout is
+    kept."""
+    asked: dict[str, dict[str, str]] = {}
     for remote in dict.fromkeys(r for _sha, writers in proving.values() for r in writers):
         listed, why = _ls_remote(repo, remote)
         if listed is None:
@@ -1083,10 +1148,27 @@ def _listed_now(repo: Path, proving: dict[str, tuple[str, list[str]]]
     live: list[str] = []
     stale: list[str] = []
     for ref, (sha, writers) in proving.items():
-        if any(sha in asked[r] for r in writers):
+        if any(sha in asked[r].values() for r in writers):
             live.append(sha)
-        else:
+            continue
+        moved: list[tuple[str, str, str]] = []
+        for remote in writers:
+            name = _server_name(repo, remote, ref)
+            tip = asked[remote].get(name) if name else None
+            if tip:
+                moved.append((remote, name, tip))
+        if not moved:
             stale.append(ref[len("refs/remotes/"):] if ref.startswith("refs/remotes/") else ref)
+            continue
+        for remote, name, tip in moved:
+            why = "" if _has_commit(repo, tip) else _fetch_tip(repo, remote, tip)
+            if not why and not _has_commit(repo, tip):
+                why = f"{tip} is not a commit"
+            if why:
+                return [], [], (f"the server for remote {remote} could not be reached to "
+                                f"confirm what it holds now (server tip could not be read: "
+                                f"{name} at {tip[:12]}: {why})")
+            live.append(tip)
     return list(dict.fromkeys(live)), stale, ""
 
 
