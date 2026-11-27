@@ -2330,6 +2330,11 @@ class ApiKey(Base):
     # config file could silently narrow a posture the human picked in the UI, costing that
     # agent `done` and `sign_off` with nothing to indicate the choice had been overridden.
     posture: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: The one PRD this key may claim work in (GRPH-1973, P96 "Key"). NULL is unlimited —
+    #: every key minted before this column. Set, it bounds every agent registered on the key
+    #: the way `Enrolment.prd_id` bounds a seat, and the key is pinned to the PRD's project.
+    #: A frozen id, not a ForeignKey, for the reason `Enrolment.prd_id` gives.
+    prd_id: Mapped[str | None] = mapped_column(String, nullable=True)
     last_used: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Where the deployment using this credential says it can be reached (PRD-21 D6).
     #

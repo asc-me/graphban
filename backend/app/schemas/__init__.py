@@ -1132,6 +1132,9 @@ class ApiKeyCreate(BaseModel):
     tool_tiers: list[str] = []
     # Which surface is minting (GRPH-1310). Optional; NULL = unknown.
     origin: Literal["web", "gban_setup", "gban_swamp_setup", "fleet", "quickstart"] | None = None
+    # Limit the key to one PRD (GRPH-1973): its id or key, in the caller's project. The key
+    # is pinned to that PRD's project and may claim only that PRD's items. None = unlimited.
+    prd_id: str | None = None
 
     @field_validator("tool_tiers")
     @classmethod
@@ -1179,6 +1182,8 @@ class ApiKeyOut(ORMModel):
     # End wave sweeping one of them is invisible until it happens.
     fleet_wave: str | None = None
     origin: str | None = None
+    # The PRD this key is limited to (GRPH-1973). Null = unlimited.
+    prd_id: str | None = None
 
 
 class ApiKeyRotate(BaseModel):
