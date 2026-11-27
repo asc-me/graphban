@@ -2407,3 +2407,122 @@ def test_mcp_home_needs_the_phrase_and_prefers_the_server():
     out = prd_svc._mcp_home(nodes, "**New MCP tools:** `post_comment`.")
     assert [p for p, _e, _c in out] == ["backend/app/mcp_server.py"]
     assert prd_svc._mcp_home(nodes, "Reached over the MCP server.") == []
+
+
+# ---- GRPH-1995: a create cut off after S1 is completed exactly by a rerun -------------
+# P104 timed out at the MCP client with S1 filed. The rerun filed S2..S5 and wrote only
+# the one link between two of its own items: every "depends on S1" link was dropped,
+# because S1's item came from the earlier call.
+
+_P104_SHAPE = """\
+# Messages
+
+## Message store
+A message is a durable record kept in the message store.
+
+## Sending
+Sending writes into the message store.
+
+## Inbox
+The inbox reads from the message store.
+
+## Read receipts
+Read receipts mark what the inbox showed, using the message store.
+
+## Retention
+Retention prunes the message store after Sending has written.
+
+## Acceptance criteria
+### Message store
+- a message is stored
+### Sending
+- a message is sent
+### Inbox
+- the inbox lists messages
+### Read receipts
+- a receipt is recorded
+### Retention
+- old messages are pruned
+"""
+
+
+def test_a_rerun_after_a_cut_off_create_writes_every_previewed_link(
+        client, auth, monkeypatch):
+    import pytest
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models import Item, Link
+    from app.services import items as items_svc
+    from tests.prd_approve import approve_id
+
+    prd = client.post("/api/prds", json={"title": "P104 shape", "body": _P104_SHAPE},
+                      headers=auth).json()
+    approve_id(prd["id"])
+    db = SessionLocal()
+    preview = prd_svc.decompose(db, prd_svc.get_prd(db, prd["id"]))
+    wanted = {(p["section"], d["section"]) for p in preview["proposals"]
+              for d in p["depends_on"]}
+    s1 = "Message store"
+    # The shape is only a test of this if S1 is a target and some link is not on S1.
+    assert {dep for _sec, dep in wanted} >= {s1}
+    assert any(dep != s1 for _sec, dep in wanted)
+
+    real = items_svc.create_item
+    calls = {"n": 0}
+
+    def cut_off(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise TimeoutError("The operation timed out")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(items_svc, "create_item", cut_off)
+    with pytest.raises(TimeoutError):
+        prd_svc.decompose(db, prd_svc.get_prd(db, prd["id"]), create=True)
+    monkeypatch.setattr(items_svc, "create_item", real)
+    first = list(db.scalars(select(Item).where(Item.prd_id == prd["id"])))
+    assert [it.prd_section for it in first] == [s1]
+
+    rerun = prd_svc.decompose(db, prd_svc.get_prd(db, prd["id"]), create=True)
+    assert rerun["links_skipped"] == []
+    # The rerun's preview names the item covering S1, so the caller can see what it links.
+    for p in rerun["proposals"]:
+        for d in p["depends_on"]:
+            if d["section"] == s1:
+                assert d["items"] == [first[0].key]
+
+    items = list(db.scalars(select(Item).where(Item.prd_id == prd["id"])))
+    section_of = {it.id: it.prd_section for it in items}
+    assert sorted(section_of.values()) == sorted(
+        [s1, *(p["section"] for p in rerun["proposals"])])
+    rows = list(db.scalars(select(Link).where(
+        Link.type == "dependency", Link.a.in_(section_of), Link.b.in_(section_of))))
+    stored = {(section_of[r.a], section_of[r.b]) for r in rows}
+    assert stored == wanted
+    assert len(rows) == len(wanted)  # once each
+    # The reply names every link it made, the ones onto the earlier call's item included.
+    assert {(row["section"], row["depends_on"]) for row in rerun["links"]} == wanted
+    db.close()
+
+
+def test_a_caller_may_add_a_link_onto_a_section_already_covered(client, auth):
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models import Link
+    from tests.prd_approve import approve_id
+
+    body = ("# Pair\n\n## Ingest\nread the feed\n\n## Export\nwrite rows out\n\n"
+            "## Acceptance criteria\n### Ingest\n- feed is read\n### Export\n- rows written\n")
+    prd = client.post("/api/prds", json={"title": "Pair", "body": body}, headers=auth).json()
+    done = client.post("/api/items", json={"title": "ingest, built", "prd_id": prd["id"],
+                                           "prd_section": "Ingest"}, headers=auth).json()
+    approve_id(prd["id"])
+    db = SessionLocal()
+    out = prd_svc.decompose(db, prd_svc.get_prd(db, prd["id"]), create=True,
+                            add_links=[{"section": "Export", "depends_on": "Ingest"}])
+    rows = list(db.scalars(select(Link).where(Link.type == "dependency",
+                                              Link.a.in_(out["created"]))))
+    assert [(r.a, r.b) for r in rows] == [(out["created"][0], done["id"])]
+    db.close()

@@ -731,19 +731,30 @@ def test_decompose_reports_a_cycle_instead_of_creating_it(client, auth):
     assert len(made["link_cycles"]) == 1
 
 
-def test_decompose_names_a_reference_it_cannot_link(client, auth):
-    """A reference to a section that already has work is reported, not silently dropped."""
+def test_decompose_links_a_reference_to_a_section_already_covered(client, auth):
+    """A reference to a section that already has work links to that work (GRPH-1995).
+
+    It used to be skipped with "add the dependency by hand", which is how a rerun after a
+    cut-off create lost every link onto what the first call filed.
+    """
+    from tests.prd_approve import approve_id
+
     body = ("# Part\n\n## Ingest\nread the feed\n\n## Export\nwrite out what Ingest produced\n\n"
             "## Acceptance criteria\n### Ingest\n- feed is read\n### Export\n- rows written\n")
     prd = client.post("/api/prds", json={"title": "Part", "body": body}, headers=auth).json()
-    client.post("/api/items", json={"title": "ingest, already built", "prd_id": prd["id"],
-                                    "prd_section": "Ingest"}, headers=auth)
+    built = client.post("/api/items", json={"title": "ingest, already built", "prd_id": prd["id"],
+                                            "prd_section": "Ingest"}, headers=auth).json()
     dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
     assert [p["section"] for p in dry["proposals"]] == ["Export"]
-    assert dry["proposals"][0]["depends_on"] == []
-    assert [(s["section"], s["depends_on"]) for s in dry["links_skipped"]] == [
-        ("Export", "Ingest")]
-    assert "already has tracked work" in dry["links_skipped"][0]["reason"]
+    assert [(d["section"], d["items"]) for d in dry["proposals"][0]["depends_on"]] == [
+        ("Ingest", [built["key"] if "key" in built else built["id"]])]
+    assert dry["links_skipped"] == []
+
+    approve_id(prd["id"])
+    made = client.post(f"/api/prds/{prd['id']}/decompose?create=true", headers=auth).json()
+    db = SessionLocal()
+    assert _dep_links(db, made["created"]) == [(made["created"][0], built["id"])]
+    db.close()
 
 
 def test_mcp_caller_can_drop_and_add_links_per_section(client, auth):
