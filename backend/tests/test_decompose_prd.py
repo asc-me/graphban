@@ -2099,7 +2099,8 @@ def test_p104_s5_view_is_ui(client, auth, monkeypatch):
     in_ui = any(u["section"] == _P104_S5_T for u in dry["ui_items"])
     web = [t for t in s5["touchpoints"] if t.startswith("web/")]
     assert in_ui or web, s5["touchpoint_evidence"]
-    assert web == ["web/src/features/"]
+    # GRPH-1988: the view's own file, not the bare screens directory.
+    assert web == ["web/src/features/oversight/OversightView.tsx"]
     # S3 mentions "the S5 oversight view" without describing it, and gets no web/ path.
     assert not [t for t in by[_P104_S3_T]["touchpoints"] if t.startswith("web/")]
 
@@ -2171,3 +2172,238 @@ def test_the_defining_section_owns_a_create_another_section_found():
     assert [e["path"] for e in ev[order[0]]] == ["backend/app/services/messages.py"]
     assert ev[order[0]][0]["create"] is True
     assert ev[order[1]][0]["created_by"] == order[0]
+
+
+# ── GRPH-1988: decompose on rebaselined P104 (v1.1) ────────────────────────────────────────
+#
+# At 2026.11.76, after GRPH-1980, the rebaselined P104 still could not be filed. S1, which
+# introduces the link, the thread and its messages, got no touchpoints, because it never
+# says "is a record" — S5 says it for S1's things ("Links, threads, messages and
+# suggestions are new records in the box's own ledger (new tables)"). With nothing created
+# by S1, no section depended on it. S3's new MCP tools never placed `mcp_server.py`. S2's
+# split pieces carried no acceptance, and S5's view got the bare `web/src/features/`.
+# The fixture is v1.1's S1 to S5 text verbatim; the graph is GRPH-1980's.
+
+_P104R_PROBLEM = _P104_PROBLEM + """\
+- **No message, comment or inbox tool on the MCP server.** None of the 82 tools in \
+`mcp_server.TOOLS` sends, lists or answers a message.
+"""
+
+_P104R_S2 = """\
+The one proposal is a `suggested_item` comment. It carries `{kind, title, description, \
+touchpoints, tags, status}` for the other side's PRD. This replaces ticket drafts in /tmp \
+files.
+
+- **The receiving side files it with its own key.** The new item is created in the \
+receiving project, on the receiving PRD (`prd_id` set to it). The sender never gets write \
+access to the receiving project.
+- **A person by default** (owner, 2026-11-27). Filing a `suggested_item` needs a person \
+with write access on the receiving side. One org-wide setting can let a receiving agent \
+file it.
+- **The filer may add one dependency link** between the new item and an item on the \
+sender's PRD, in either direction. That is allowed under the link's visibility (S4).
+- **The outcome posts back to the thread.** It is `filed` with the new item's id, \
+`declined`, or `conflict`, with a stable machine-readable reason code plus a message.
+  - Codes include `needs_person`, `not_allowed`, `prd_closed`, `unlinked`, \
+`already_decided`, and the receiving tool's own refusal code.
+  - A validation failure carries the full refusal `create_item` would have returned (its \
+code and its message naming the field), never a generic "invalid", so the sender's agent \
+can correct it without a person.
+- **First decision wins** (owner, 2026-11-27). Deciding a `suggested_item`, or a link \
+request (S1), is atomic. Any later or concurrent call gets `already_decided` with the \
+stored outcome and changes nothing.
+- **No automatic retry.** A corrected suggestion is a new comment, and the declined one \
+stays on the thread with its reason.
+- **Who can read a suggestion.** Its content, including `description`, is a message on the \
+pair thread. So it is readable by exactly the people and agents who can read the thread \
+(S1), and there is no redaction step. A sender who can't share something with the other \
+project leaves it out.
+- **No other proposal actions** (owner, 2026-11-27). `answer` is a reply to a `question`. \
+A `link` is made by the filer when it files a `suggested_item`, or by either side's own \
+`link_items` under S4.
+"""
+
+_P104R_S3 = """\
+There's no new client feature.
+- **Durable, stored until read.** Requests and messages are durable records. They are \
+never dropped because nobody is working the receiving PRD when they arrive.
+- **Delivered to the PRD, not to a session.** A pending link request, or a new message on \
+a pair thread, is pending for each side's PRD until someone working that PRD has read it.
+  - "Working that PRD" means its owner, or any agent that holds or claims an item on it.
+  - It shows in `get_context`, and as a `directive` on `heartbeat` and `claim_*` results \
+for those agents. That is the same channel `waits.answer_directive` already uses ("a \
+response carrying a `directive` field must be acted on").
+- **When nobody is working the PRD,** it stays pending there and in the S5 oversight view, \
+and the S5 age alert raises it.
+- **New MCP tools:** `request_prd_link`, `decide_prd_link`, `post_comment`, \
+`list_threads`, and `file_suggested_item` (file or decline).
+"""
+
+_P104R_S4 = """\
+- **An accepted PRD link is the visibility grant** (owner, 2026-11-27). It replaces the \
+v1.0 per-project-pair grant. Each side sees the other PRD's title and status, and that \
+PRD's items: id, title, status and project tag. Nothing outside the two PRDs becomes visible.
+- **Metadata only.** Item bodies, evidence, acceptance and comments are never exposed by \
+the link. Reading them still needs ordinary read access. A link is not cross-project read \
+access.
+- **Linking under a PRD link.** A dependency link may join an item on one linked PRD with \
+an item on the other when the caller can write the dependent item. Today \
+`links.link_endpoints` requires read on both. Any other cross-project pair keeps today's \
+rule, including the one indistinguishable refusal.
+- **Rendering.** Both sides render the far item with its real id, title and status \
+instead of `HIDDEN_REF`.
+- **Unlinking.** It hides them again: existing dependency links stay, still block, and \
+render as `HIDDEN_REF`.
+- **Readiness.** When the far item is done, the dependent becomes ready, as for an \
+in-project dependency.
+- **On a linked box,** the rule is applied where `link_items` already goes: the cloud, \
+inside the org.
+"""
+
+_P104R_S5 = """\
+- **The oversight view.** An org-level view lists every pending link request and every \
+open pair thread: the two PRDs, their projects, the latest kind, age, and the outcome of \
+each `suggested_item`. Links, threads, messages and suggestions are new records in the \
+box's own ledger (new tables), and are in this PRD's scope, not the deferred console half.
+- **People can act on any of it.** A person can accept or decline a link request, answer \
+a `question`, and file or decline a `suggested_item`.
+- **Audit.** Every request, decision, message and filing is in the audit log (`events`).
+- **Stale alert.** A pending link request, an unanswered `question`, or an undecided \
+`suggested_item` past an age the org sets is flagged in the view. It is also raised \
+through the box's existing alert path (`alerts_svc`).
+  - Recipients come from the P75 rule, `question_recipients`, for the receiving PRD: its \
+owner if they can read its project, otherwise that project's owners with read access.
+  - When that finds nobody, the alert goes to the org's owners.
+  - There is no email. The alert clears when the thing is decided.
+- **Retention.** Links and threads are kept, and nothing is deleted.
+  - When either PRD closes, or the pair is unlinked, the thread becomes read-only. Any \
+undecided `suggested_item` is withdrawn, with outcome `declined` and code `prd_closed` or \
+`unlinked`.
+  - Items already filed stay where they are, and are neither removed nor invalidated.
+- **Scope.** Links join PRDs inside one Graphban instance and one org. Cross-instance \
+belongs to the later console PRD.
+"""
+
+_P104R_ACCEPTANCE = """\
+- **S1:** an agent on PRD A-P1 in project A requests a link to PRD B-P2 in project B. \
+Under the default setting, a B agent's accept is refused `needs_person`, and a person in B \
+accepts. Exactly one thread exists for the pair, and a second request returns that same \
+link. A request to a PRD in another org gets the same refusal as one to a missing PRD.
+- **S1:** an agent with a B-only key reads and posts on the pair thread, sees A-P1's id, \
+title and status, and can't read A-P1's body.
+- **S2:** a `suggested_item` from A, filed by a person in B, creates the item in B on B-P2 \
+with B's key, and posts `filed` with the new id back to the thread. A's key still can't \
+write B.
+- **S2:** a declined `suggested_item` posts its reason code and creates nothing.
+- **S3:** a new message on the pair thread shows up as a `directive` on the next \
+`heartbeat` from an agent holding an item on B-P2.
+- **S4:** a B-P2 item depending on an A-P1 item renders the A item's real id, title and \
+status on both sides, and becomes ready when that item is done. After unlink, it renders \
+as `HIDDEN_REF` and still blocks.
+- **S5:** an undecided `suggested_item` past the org's age raises an alert to B-P2's \
+owner, or to the org's owners when no owner can be found. Closing A-P1 withdraws it with \
+`prd_closed`.
+- **Sabotage:**
+  - File a `suggested_item` with the sender's key, and a test fails.
+  - Show a linked PRD's item body to a reader without read access, and a test fails.
+  - Render a far dependency as `HIDDEN_REF` while the link is accepted, and a test fails.
+  - Let an agent accept a link under the default setting, and a test fails.
+"""
+
+_P104R_BODY = "\n".join([
+    "# Cross-project threads", "", _P104R_PROBLEM,
+    f"## {_P104_S1_T}", "", _P104_S1, f"## {_P104_S2_T}", "", _P104R_S2,
+    f"## {_P104_S3_T}", "", _P104R_S3, f"## {_P104_S4_T}", "", _P104R_S4,
+    f"## {_P104_S5_T}", "", _P104R_S5, "## Acceptance", "", _P104R_ACCEPTANCE,
+])
+
+
+def _p104r_dry(client, auth, monkeypatch):
+    _quiet_semantic(monkeypatch)
+    prd = client.post("/api/prds", json={"title": "P104 v1.1", "body": _P104R_BODY},
+                      headers=auth).json()
+    _describe(_project_of(prd["id"]), _P104_GRAPH, _P104_EDGES)
+    dry = client.post(f"/api/prds/{prd['id']}/decompose", headers=auth).json()
+    return prd, dry
+
+
+def test_p104r_s1_creates_the_records_a_sibling_section_lists(client, auth, monkeypatch):
+    """S5 lists links, threads, messages and suggestions as new records; S1 introduces the
+    first three, so S1 gets their service, model and migration homes."""
+    _prd, dry = _p104r_dry(client, auth, monkeypatch)
+    by = {p["section"]: p for p in dry["proposals"]}
+    assert _P104_S1_T not in dry["no_touchpoints"]
+    s1 = {e["path"]: e for e in by[_P104_S1_T]["touchpoint_evidence"]}
+    for path in ("backend/app/services/threads.py", "backend/app/services/messages.py",
+                 "backend/app/models/", "backend/alembic/versions/"):
+        assert s1.get(path, {}).get("create") is True, (path, s1)
+    # The suggestion is S2's: S1 only points at it ("see S2").
+    assert "backend/app/services/suggestions.py" not in s1
+    s2 = {e["path"]: e for e in by[_P104_S2_T]["touchpoint_evidence"]}
+    assert s2["backend/app/services/suggestions.py"]["create"] is True
+    # S5, which only views the records, creates none of them.
+    assert not [e for e in by[_P104_S5_T]["touchpoint_evidence"]
+                if e["path"].startswith("backend/") and e.get("create")]
+
+
+def test_p104r_every_later_section_depends_on_s1(client, auth, monkeypatch):
+    _prd, dry = _p104r_dry(client, auth, monkeypatch)
+    by = {p["section"]: p for p in dry["proposals"]}
+    for section in (_P104_S2_T, _P104_S3_T, _P104_S4_T, _P104_S5_T):
+        assert _P104_S1_T in _deps(by[section]), (section, by[section]["depends_on"])
+    assert not _deps(by[_P104_S1_T]), by[_P104_S1_T]["depends_on"]
+    assert dry["link_cycles"] == []
+
+
+def test_p104r_new_mcp_tools_place_the_mcp_server(client, auth, monkeypatch):
+    _prd, dry = _p104r_dry(client, auth, monkeypatch)
+    by = {p["section"]: p for p in dry["proposals"]}
+    assert "backend/app/mcp_server.py" in by[_P104_S3_T]["touchpoints"], \
+        by[_P104_S3_T]["touchpoint_evidence"]
+    for section in (_P104_S1_T, _P104_S2_T, _P104_S4_T, _P104_S5_T):
+        assert "backend/app/mcp_server.py" not in by[section]["touchpoints"], section
+
+
+def test_p104r_s5_view_is_a_specific_web_file(client, auth, monkeypatch):
+    _prd, dry = _p104r_dry(client, auth, monkeypatch)
+    by = {p["section"]: p for p in dry["proposals"]}
+    s5 = by[_P104_S5_T]
+    in_ui = any(u["section"] == _P104_S5_T for u in dry["ui_items"])
+    web = [t for t in s5["touchpoints"] if t.startswith("web/")]
+    assert in_ui or (web and all(not t.endswith("/") for t in web)), s5["touchpoint_evidence"]
+    assert web == ["web/src/features/oversight/OversightView.tsx"]
+
+
+def test_p104r_no_split_piece_is_offered_without_acceptance(client, auth, monkeypatch):
+    _prd, dry = _p104r_dry(client, auth, monkeypatch)
+    pieces = [(p["section"], s) for p in dry["proposals"] for s in p["sub_items"]]
+    assert pieces, "S2 is oversized and should offer a split"
+    for section, sub in pieces:
+        assert sub["acceptance"], (section, sub["heading"])
+        assert sub["clauses"] or sub["acceptance"]
+    s2 = next(p for p in dry["proposals"] if p["section"] == _P104_S2_T)
+    offered = [c for s in s2["sub_items"] for c in s["acceptance"]]
+    # Every one of the parent's clauses is on a piece.
+    assert set(s2["acceptance"]) <= set(offered), (s2["acceptance"], offered)
+
+
+def test_new_record_owners_reads_a_list_and_gives_each_to_its_introducer():
+    body = ("## A. Threads\n\n- **Messages.** Each message has a kind. A thread holds them.\n"
+            "\n## B. Proposals\n\nA suggestion on a thread.\n"
+            "\n## C. Oversight\n\nThreads, messages and suggestions are new records "
+            "(new tables). These are new records too.\n")
+    owners = prd_svc.new_record_owners(body)
+    assert [n for n, _s in owners["A. Threads"]] == ["thread", "message"]
+    assert [n for n, _s in owners["B. Proposals"]] == ["suggestion"]
+    assert "C. Oversight" not in owners
+    assert prd_svc.new_record_owners("## A. X\n\nAn item is a record.\n") == {}
+
+
+def test_mcp_home_needs_the_phrase_and_prefers_the_server():
+    nodes = [_ns(n["path"], n["kind"], n["name"], n["summary"]) for n in _P104_GRAPH] + [
+        _ns("fleet/src/gbfleet/mcp.py", "file", "", "The fleet's MCP client."),
+        _ns("backend/alembic/versions/0003_roadmap_mcp.py", "file", "", "MCP tables."),
+    ]
+    out = prd_svc._mcp_home(nodes, "**New MCP tools:** `post_comment`.")
+    assert [p for p, _e, _c in out] == ["backend/app/mcp_server.py"]
+    assert prd_svc._mcp_home(nodes, "Reached over the MCP server.") == []

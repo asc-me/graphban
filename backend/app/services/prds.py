@@ -5150,7 +5150,8 @@ def _view_homes(nodes, text: str) -> list[tuple[str, str, bool]]:
     view's own qualifier (`org` for "org-level") is that view's home; otherwise the view is
     a create under the screens' directory.
     """
-    match = _VIEW_PHRASE.search(_FENCED_BLOCK.sub(" ", text or ""))
+    clean = _FENCED_BLOCK.sub(" ", text or "")
+    match = _VIEW_PHRASE.search(clean)
     if not match:
         return []
     counts: dict[str, int] = {}
@@ -5171,7 +5172,184 @@ def _view_homes(nodes, text: str) -> list[tuple[str, str, bool]]:
     for word in re.split(r"[^a-z0-9]+", match.group(1).lower()):
         if word and f"{home}/{word}" in known:
             return [(f"{home}/{word}/", f"{why}; `{home}/{word}` is that view's feature", False)]
-    return [(f"{home}/", f"create: {why}; the web screens live in `{home}/`", True)]
+    # GRPH-1988. The bare screens directory names no work: it reserves every screen, and
+    # a UI piece filed on it collides with all of them. The view gets a file of its own,
+    # named by the bold label it sits under ("**The oversight view.**"), else by the
+    # qualifier the sentence gives it ("org-level").
+    words = _view_name_words(clean, match)
+    if not words:
+        return [(f"{home}/", f"create: {why}; the web screens live in `{home}/`", True)]
+    feature = "-".join(words)
+    component = "".join(w.capitalize() for w in words) + "View"
+    path = f"{home}/{feature}/{component}{_web_extension(nodes, home)}"
+    return [(path, f"create: {why}; a new screen under `{home}/`, which holds the web "
+                   "screens", True)]
+
+
+#: "**The oversight view.**": the bold label a view's sentence sits under names the view.
+_VIEW_LABEL = re.compile(
+    r"\*\*(?:the\s+|an?\s+)?((?:[a-z][\w-]*\s+){0,2}?)(?:view|page|screen|dashboard|panel)"
+    r"\.?\s*\*\*", re.IGNORECASE)
+_VIEW_NAME_STOP = frozenset({"new", "one", "single", "main", "this", "that", "its", "level"})
+
+
+def _view_name_words(text: str, match: re.Match) -> list[str]:
+    """Words naming the view `match` found: its bold label's, else the sentence's qualifier."""
+    line_start = text.rfind("\n", 0, match.start()) + 1
+    line_end = text.find("\n", match.end())
+    line = text[line_start:line_end if line_end >= 0 else len(text)]
+    label = _VIEW_LABEL.search(line)
+    for source in ((label.group(1) if label else ""), match.group(1)):
+        words = [w for w in re.split(r"[^a-z0-9]+", source.lower())
+                 if w and w not in _VIEW_NAME_STOP]
+        if words:
+            return words
+    return []
+
+
+def _web_extension(nodes, home: str) -> str:
+    """The extension most files under `home` use, `.tsx` when none says."""
+    counts: dict[str, int] = {}
+    for n in nodes:
+        path = _node_file(n)
+        if not path.startswith(f"{home}/"):
+            continue
+        base = path.rsplit("/", 1)[-1]
+        if "." in base and not _TESTISH_PATH.search(path):
+            ext = base[base.index("."):]
+            counts[ext] = counts.get(ext, 0) + 1
+    if not counts:
+        return ".tsx"
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+
+
+#: "Links, threads, messages and suggestions are new records in the box's own ledger (new
+#: tables)": one section listing records other sections introduce (GRPH-1988).
+_NEW_RECORDS_PHRASE = re.compile(
+    r"(?<![\w-])((?:[a-z][\w-]*\s*,\s*)*(?:[a-z][\w-]*\s*,?\s+and\s+)?[a-z][\w-]*)\s+"
+    r"(?:are|is)\s+(?:all\s+|each\s+)?(?:an?\s+)?new\s+(?:records?|tables?)\b",
+    re.IGNORECASE,
+)
+
+
+def _record_word(word: str) -> str:
+    """A listed record made singular: `entries` → `entry`, `messages` → `message`."""
+    low = word.lower()
+    if low.endswith("ies") and len(low) > 4:
+        return low[:-3] + "y"
+    return _name_word(low)
+
+
+def new_record_owners(body: str) -> dict[str, list[tuple[str, str]]]:
+    """`{section: [(record, sentence)]}` for records a PRD lists as new, by introducing section.
+
+    P104's S5 says "Links, threads, messages and suggestions are new records in the box's
+    own ledger (new tables)". The section that has to build them is not S5, which only
+    views them; it is the first implementable section whose text uses the record's name
+    (S1 for link, thread and message, S2 for suggestion). Without this S1 got no
+    touchpoints at all, and nothing could be ordered after it (GRPH-1988).
+    """
+    sections = [(t, b) for t, b in section_bodies(body or "").items()
+                if is_implementable_section(t, b)
+                and _section_key(t) not in _ACCEPTANCE_SECTION_KEYS]
+    records: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for _title, text in sections:
+        clean = _FENCED_BLOCK.sub(" ", text)
+        for match in _NEW_RECORDS_PHRASE.finditer(clean):
+            sentence = " ".join(match.group(0).split())
+            for word in re.split(r"\s*,\s*|\s+and\s+", match.group(1).strip()):
+                words = word.split()
+                if len(words) != 1:
+                    continue
+                name = _record_word(words[0])
+                if len(name) < 3 or name in _PRONOUNS or name in seen:
+                    continue
+                seen.add(name)
+                records.append((name, sentence))
+    out: dict[str, list[tuple[str, str]]] = {}
+    for name, sentence in records:
+        pattern = _name_pattern(name)
+        owner = next((t for t, text in sections if pattern.search(text)), None)
+        if owner is not None:
+            out.setdefault(owner, []).append((name, sentence))
+    return out
+
+
+def _listed_record_homes(nodes, records: list[tuple[str, str]]) -> list[dict]:
+    """Touchpoint entries for the new records a section introduces (`new_record_owners`).
+
+    Each record gets its service module, a create unless the graph already holds one by
+    that name; the model and migration directories nearest the services follow once.
+    Every service entry carries `records`, so a section using the name is ordered after
+    this one (`propose_creation_links`).
+    """
+    services = _home_dir(nodes, ("services",))
+    if not services or not records:
+        return []
+    known = {_node_file(n) for n in nodes}
+    ext = _sibling_extension(nodes, services) or ".py"
+    out: list[dict] = []
+    for name, sentence in records:
+        path = f"{services}/{name}s{ext}"
+        why = f"the PRD says {sentence!r}, and this section introduces the {name}"
+        if path in known:
+            out.append({"path": path, "evidence": f"{why}; this file is its service",
+                        "create": False, "records": [name]})
+        else:
+            out.append({"path": path, "evidence": (f"create: {why}; its service is a new "
+                                                   f"module beside `{services}`'s others"),
+                        "create": True, "records": [name]})
+    listed = [name for name, _s in records]
+    names = (f"the {listed[0]} as a new record" if len(listed) == 1
+             else f"{', '.join(listed[:-1])} and {listed[-1]} as new records")
+    for dirnames, what in ((("models",), "their models"),
+                           (("versions", "migrations"), "their migrations"),
+                           (("routers", "routes"), "their routes")):
+        directory = _home_dir(nodes, dirnames, services)
+        if what == "their migrations" and directory.rsplit("/", 1)[-1] == "versions" \
+                and "alembic" not in directory:
+            directory = ""
+        if directory:
+            out.append({"path": f"{directory}/", "create": True,
+                        "evidence": (f"create: the PRD lists {names}; "
+                                     f"{what} go in `{directory}/`")})
+    return out
+
+
+#: "New MCP tools: `request_prd_link`, …": the section adds to the MCP tool surface.
+_MCP_TOOLS_PHRASE = re.compile(
+    r"\b(?:new|adds?|added|adding)\s+(?:an?\s+)?MCP\s+tools?\b", re.IGNORECASE)
+
+
+def _mcp_home(nodes, text: str) -> list[tuple[str, str, bool]]:
+    """`(path, evidence, create)` for the file holding the MCP tools a section adds (GRPH-1988).
+
+    P104's S3 lists five new MCP tools by name. None exists yet, so no name resolves, and
+    the file every one of them is registered in was never proposed. The graph's MCP server
+    module is that file: a source file named for MCP, preferring `server` in its name, then
+    a summary that says it holds tools, then the shortest path.
+    """
+    match = _MCP_TOOLS_PHRASE.search(_FENCED_BLOCK.sub(" ", text or ""))
+    if not match:
+        return []
+    candidates: list[tuple[tuple, str]] = []
+    for n in nodes:
+        path = _node_file(n)
+        base = path.rsplit("/", 1)[-1].lower()
+        if ("mcp" not in base or "." not in base or _is_web_touchpoint(path)
+                or _TESTISH_PATH.search(path) or _MIGRATION_PATH.search(path)
+                or not base.endswith((".py", ".ts", ".go", ".rs", ".js"))):
+            continue
+        summary = (getattr(n, "summary", "") or "").lower()
+        rank = ("server" not in _node_stem(path).lower(), "tool" not in summary,
+                len(path), path)
+        candidates.append((rank, path))
+    if not candidates:
+        return []
+    path = min(candidates)[1]
+    return [(path, f"the section adds MCP tools ({match.group(0).strip()!r}); this file "
+                   "registers them", False)]
 
 
 def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[dict]:
@@ -5243,6 +5421,13 @@ def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[
         add(path, evidence, create)
     for path, evidence, create in _view_homes(nodes, raw):
         add(path, evidence, create)
+    for path, evidence, create in _mcp_home(nodes, raw):
+        add(path, evidence, create)
+    owned_records = new_record_owners(getattr(prd, "body", "") or "").get(section, [])
+    for entry in _listed_record_homes(nodes, owned_records):
+        add(entry["path"], entry["evidence"], entry["create"])
+        if entry.get("records") and entry["path"] in found:
+            found[entry["path"]].setdefault("records", []).extend(entry["records"])
     try:
         hits = code_graph.search_code(db, raw[:2000], prd.project_id, top_k=_TP_MAX)
     except Exception:  # noqa: BLE001 - semantic search is best effort; lexical hits still stand
@@ -5874,6 +6059,21 @@ def propose_creation_links(
             if found:
                 link(dep, owner,
                      f'invokes `{name}`, which "{owner}" creates (`{path}`)', found.group(0))
+    # GRPH-1988. A record the PRD lists as new ("Links, threads, messages and suggestions
+    # are new records") is introduced by one section (`new_record_owners`); every other
+    # section whose text uses it builds on that one.
+    for owner in sorted(evidence, key=lambda s: rank.get(s, len(rank))):
+        for entry in evidence[owner]:
+            for name in entry.get("records") or []:
+                pattern = _name_pattern(name)
+                for dep in order:
+                    if dep == owner or dep not in evidence:
+                        continue
+                    found = pattern.search(texts.get(dep, ""))
+                    if found:
+                        link(dep, owner,
+                             f'uses the {name}, a new record "{owner}" introduces '
+                             f'(`{entry["path"]}`)', found.group(0))
     return edges
 
 
@@ -6350,6 +6550,9 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                     "heading": heading,
                     "title": f"Implement: {p['section']} — {heading}",
                     "clauses": sub_clauses,
+                    # What the piece is accepted on, under the name the section's own
+                    # proposal uses: its clauses and any it lists inline (GRPH-1988).
+                    "acceptance": list(d["acceptance"]),
                     "touchpoints": sub_tps,
                     "touchpoints_inherited": d["inherited"],
                     "description": _compose_task(
@@ -6385,6 +6588,7 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                     "heading": _REMAINDER_HEADING,
                     "title": rem["title"],
                     "clauses": list(unplaced),
+                    "acceptance": list(unplaced),
                     "touchpoints": rem["touchpoints"],
                     "touchpoints_inherited": not remainder_pieces,
                     "description": rem["description"],
@@ -6396,6 +6600,17 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                     "_gbody": "",
                     "_own_clauses": list(unplaced),
                 })
+        # GRPH-1988. A piece offered with nothing to be accepted on is a child sign-off
+        # refuses. Should one ever come out of the split above, the section is offered
+        # whole instead, and `split_refused` says which piece had none.
+        bare = [s["heading"] for s in sub_items if not s.get("acceptance")]
+        if bare:
+            no_partition = (
+                f"{size['oversized_reason']}; piece {bare[0]!r} would carry no acceptance "
+                "clause, so the section is offered whole")
+            sub_items, claimed_by_pieces, remainder_pieces = [], [], []
+            unplaced = folded = None
+            split_framing = preamble
         # Null when the section was not split: every given path is on the section's own
         # item then, and an empty list would read as "distributed, nothing left over".
         unassigned_tps: list[str] | None = None
