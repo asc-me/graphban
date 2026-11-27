@@ -82,6 +82,32 @@ def test_already_on_engine_rule_is_no_difference():
     assert gap and "alembic/versions/" in gap[0]["text"] and "backend/" in gap[0]["text"]
 
 
+def test_current_params_ignores_platform_default(client, monkeypatch):
+    from app.db import SessionLocal
+    from app.services import rule_pack as R
+    from app.services import rule_toggles as T
+    monkeypatch.setattr(T, "LIBRARY", {})
+    T.register(T.LibraryRule(
+        id="build.engine_evidence", stage="build", title="Engine evidence", summary="s",
+        enforcement="enforced", enforcer=R.Enforcer("graphban_source", "app/services/items.py"),
+        default_on=False, default_params={"path": "alembic/versions/", "engine": "postgres"}))
+    T.register(T.LibraryRule(
+        id="build.generated_files", stage="build", title="Generated files", summary="s",
+        enforcement="checked", enforcer=R.Enforcer("supervisor", "gbfleet until"),
+        default_on=True, default_params={"paths": ["old/**"]}))
+    r = client.post("/api/auth/login", json={"email": "alex@ascme-labs.com", "password": "graphban"})
+    h = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    pid = client.post("/api/projects", json={"name": "Fresh"}, headers=h).json()["id"]
+    with SessionLocal() as db:
+        cur = S.current_params(db, pid)
+        assert T.resolve(db, S.ENGINE_RULE, pid)["params"]["source"] == "platform default"
+    assert cur.get("build.generated_files") == {}
+    assert "path" not in cur[S.ENGINE_RULE]
+    out = S.read_sources({".github/workflows/ci.yml": WF}, commit="abc", current=cur)
+    assert [x for x in out["findings"] if x["bucket"] == "proposed"
+            and x["proposal"]["rule_id"] == S.ENGINE_RULE]
+
+
 REMOTE = """
 on: [pull_request]
 jobs:
