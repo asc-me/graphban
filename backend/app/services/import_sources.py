@@ -355,7 +355,9 @@ def current_params(db, project_id: str) -> dict[str, dict]:
     for rid in (*LIST_RULES, ENGINE_RULE):
         if rid in T.LIBRARY:
             st = T.resolve(db, rid, project_id)
-            out[rid] = dict(st["params"]["value"] or {})
+            # GRPH-1971: a default naming this repo's own paths is not the project's value.
+            own = not T.repo_path_default(rid, st)
+            out[rid] = dict(st["params"]["value"] or {}) if own else {}
             if rid == ENGINE_RULE:
                 out[rid]["_on"] = bool(st["on"]["value"])
     return out
@@ -365,7 +367,7 @@ def _engine_against_current(f: dict, cur: dict) -> dict | None:
     """A `turn_on` of a rule that is already on is no difference: dropped when the engine
     matches, a gap naming both engines when it does not (the param has no comparator, so only
     a person changes it)."""
-    if not cur.get("_on"):
+    if not cur.get("_on") or (not cur.get("path") and not cur.get("engine")):
         return f
     want, have = f["proposal"]["params"].get("engine"), cur.get("engine") or "postgres"
     want_path, have_path = f["proposal"]["params"].get("path"), cur.get("path")

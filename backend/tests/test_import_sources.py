@@ -82,6 +82,79 @@ def test_already_on_engine_rule_is_no_difference():
     assert gap and "alembic/versions/" in gap[0]["text"] and "backend/" in gap[0]["text"]
 
 
+FRESH_WF = """
+on:
+  pull_request:
+    paths: ["db/**"]
+jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres: {image: "postgres:16"}
+    steps:
+      - run: pytest db/
+"""
+
+
+def test_fresh_project_proposes_against_no_platform_default(client, monkeypatch):
+    """GRPH-1971. Clause 1: a project that has not set `build.engine_evidence` gets a filed
+    proposal for `db/` on postgres, not a gap against the platform default's
+    `alembic/versions/`. Clause 2: `.gitattributes` `gen/**` files a `build.generated_files`
+    proposal carrying `gen/**` and nothing of the default list. Clause 3 (a project-set path
+    still gaps) is `test_already_on_engine_rule_is_no_difference` and the tail of this test."""
+    from app.db import SessionLocal
+    from app.services import rule_pack as R
+    from app.services import rule_proposals as RP
+    from app.services import rule_toggles as T
+    monkeypatch.setattr(T, "LIBRARY", {})
+    T.register(T.LibraryRule(
+        id="build.engine_evidence", stage="build", title="Engine evidence", summary="s",
+        enforcement="enforced", enforcer=R.Enforcer("graphban_source", "app/services/items.py"),
+        default_on=True, default_params={"path": "alembic/versions/", "engine": "postgres"}))
+    monkeypatch.setattr(RP, "_PRIMITIVE_OF",
+                        {**RP._PRIMITIVE_OF, "build.engine_evidence": "evidence_required"})
+    T.register(T.LibraryRule(
+        id="build.generated_files", stage="build", title="Generated files", summary="s",
+        enforcement="checked", enforcer=R.Enforcer("supervisor", "gbfleet until"),
+        default_on=True, default_params={"paths": ["old/**"]}))
+    monkeypatch.setattr(RP, "FILE_READER", lambda repo, path, commit: True)
+    r = client.post("/api/auth/login", json={"email": "alex@ascme-labs.com", "password": "graphban"})
+    h = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    pid = client.post("/api/projects", json={"name": "Fresh"}, headers=h).json()["id"]
+    with SessionLocal() as db:
+        assert T.resolve(db, S.ENGINE_RULE, pid)["params"]["source"] == "platform default"
+        cur = S.current_params(db, pid)
+    assert cur["build.generated_files"] == {} and "path" not in cur[S.ENGINE_RULE]
+    body = S.read_sources({".github/workflows/ci.yml": FRESH_WF,
+                           ".gitattributes": "gen/** linguist-generated=true\n"},
+                          commit="abc123", current=cur)
+    assert not [f for f in body["findings"] if f["bucket"] == "gap"]
+    props = {f["proposal"]["rule_id"]: f["proposal"] for f in body["findings"]
+             if f["bucket"] == "proposed"}
+    assert props[S.ENGINE_RULE]["params"] == {"engine": "postgres", "path": "db/"}
+    assert props["build.generated_files"]["params"] == {"paths": ["gen/**"]}
+    body.pop("clean")
+    rep = client.post(f"/api/projects/{pid}/rules/import-runs", json=body, headers=h)
+    assert rep.status_code == 201, rep.text
+    filed = {f["proposal"]["rule_id"]: f for f in rep.json()["findings"] if f.get("proposal")}
+    eng, gen = filed[S.ENGINE_RULE], filed["build.generated_files"]
+    assert not eng["refused"] and eng["proposal"]["params"] == {"engine": "postgres",
+                                                                 "path": "db/"}
+    assert eng["proposal"]["direction"] == "tighten" and not eng["proposal"]["loosens"]
+    assert not gen["refused"] and gen["proposal"]["params"] == {"paths": ["gen/**"]}
+    assert gen["proposal"]["loosens"] is True  # adopted alone, by a person
+    # Clause 3: once the project sets its own path, the same CI is a gap, never a new path.
+    with SessionLocal() as db:
+        from app.models import User
+        T.set_project_toggle(db, pid, S.ENGINE_RULE,
+                             {"params": {"path": "alembic/versions/", "engine": "postgres"}},
+                             actor=db.query(User).first(), reason="this project's own path")
+        cur = S.current_params(db, pid)
+    out = S.read_sources({".github/workflows/ci.yml": FRESH_WF}, commit="abc123", current=cur)
+    assert not [f for f in out["findings"] if f["bucket"] == "proposed"]
+    assert [f for f in out["findings"] if f.get("label") == "engine evidence paths"]
+
+
 REMOTE = """
 on: [pull_request]
 jobs:
