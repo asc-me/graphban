@@ -28,7 +28,14 @@ def session(client):
 def _parked(client, auth, title, blocker):
     made = client.post("/api/items", json={"title": title, "project_id": "core"},
                        headers=auth).json()
-    client.patch(f"/api/items/{made['id']}", json={"blocker": blocker}, headers=auth)
+    # Written through the service, as parking does: free text is refused at update_item's
+    # boundary (GRPH-1960), and this file is about what search finds, not what may be written.
+    from app.db import SessionLocal
+    s = SessionLocal()
+    try:
+        items_svc.update_item(s, made["id"], blocker=blocker)
+    finally:
+        s.close()
     return made["id"]
 
 

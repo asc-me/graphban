@@ -169,6 +169,8 @@ class Report:
     unready: list[dict] | None = None
     detail: str = ""
     wave: Wave | None = None
+    #: GRPH-1962. `[{item, reason}]` on a `stuck` exit; None on every other.
+    stuck: list[dict] | None = None
 
     def as_json(self) -> dict:
         payload = {
@@ -195,6 +197,8 @@ class Report:
             # GRPH-1697. A `--line` run only: `[{id, missing}]`; empty means it looked and
             # found none. Absent on a `--prd` run, which has no such notion.
             **({"unready": list(self.unready)} if self.unready is not None else {}),
+            # GRPH-1962. Only on a `stuck` exit: each unfinished PRD item and why.
+            **({"stuck": list(self.stuck)} if self.stuck is not None else {}),
             # GRPH-834. Always present, including when nothing was measured: an absent key
             # reads as "this build has no spend reporting", and a zeroed block with
             # `reported: 0` reads as "nobody told us", which is the true statement.
@@ -1925,17 +1929,59 @@ def _prd_open_items(planner: Graphban, prd: str, holds: list[dict] | None = None
                 if holds is not None:
                     holds.append({"item": item_id, "waiting_on": ", ".join(
                         f"{w['id']} ({w['status']})" for w in waiting)})
+        holder = str(row.get("claimed_by") or row.get("review_claimed_by") or "")
         items.append(outcome_mod.OpenItem(
             id=item_id, status=status,
             walk=bool(tags & {"walk", "planner-only"}),
             ready=ready,
-            live=bool(row.get("claimed_by") or row.get("review_claimed_by")),
-            blocker=str(row.get("blocker") or "")))
+            live=bool(holder),
+            blocker=str(row.get("blocker") or ""),
+            parked=bool(tags & PERSON_WAIT_TAGS),
+            missing=_missing_for_build(row) if status != "done" else (),
+            held_by=holder))
     return items
 
 
+#: Typed waits on a person (GRPH-1962). An item carrying one is deliberately parked, so
+#: it does not keep a `--prd` drain from exiting `idle`. `wait:merge` waits on a merge,
+#: not a person, and is not here.
+PERSON_WAIT_TAGS = frozenset(
+    f"wait:{kind}" for kind in wait_mod.WAIT_KINDS if kind != "merge")
+
+
+def _missing_for_build(row: dict) -> tuple[str, ...]:
+    """What the server row says a build lacks. A field the row does not carry is not
+    missing: absence is unreported, not empty."""
+    missing: list[str] = []
+    if "description" in row and "## Acceptance" not in str(row.get("description") or ""):
+        missing.append("acceptance")
+    if "touchpoints" in row and not row.get("touchpoints"):
+        missing.append("touchpoints")
+    return tuple(missing)
+
+
+def _prd_stuck(planner: Graphban, prd: str, wave: Wave, waits: list[str],
+               ) -> tuple[dict[str, str], list, list[dict]] | None:
+    """`(unfinished, items, holds)` for `prd`, or None when the PRD could not be read.
+
+    `unfinished` maps each build item that is neither done nor parked to why it is not
+    moving (GRPH-1962). None is not empty: the exit keeps the reason it had.
+    """
+    holds: list[dict] = []
+    try:
+        items = _prd_open_items(planner, prd, holds)
+    except (NotPermitted, ToolFailed, ServerUnreachable):
+        return None
+    stuck = outcome_mod.unfinished(
+        items, dependency_holds=holds,
+        review_waits=list(wave.review_waits) + list(waits),
+        delegate_refused=list(wave.delegate_refused))
+    return stuck, items, holds
+
+
 def notify_outcome(planner: Graphban, wave: Wave, reason: str, prd: str, *,
-                   on_notice: Callable[[dict], None] | None = None) -> dict | None:
+                   on_notice: Callable[[dict], None] | None = None,
+                   read: tuple[list, list[dict]] | None = None) -> dict | None:
     """Post this cycle's drain outcome (GRPH-1912). Returns the notice when one was written.
 
     Stateless: the server holds the last notice and answers `changed: false` for a post
@@ -1945,9 +1991,14 @@ def notify_outcome(planner: Graphban, wave: Wave, reason: str, prd: str, *,
     state. `on_notice` runs only when the server says the notice changed something.
     """
     try:
-        holds: list[dict] = []
+        if read is not None:
+            # `_finish` already read the PRD this exit (GRPH-1962): one read, one answer.
+            items, holds = read
+        else:
+            holds = []
+            items = _prd_open_items(planner, prd, holds)
         found = outcome_mod.classify(
-            reason, _prd_open_items(planner, prd, holds), spawned=len(wave.spawned),
+            reason, items, spawned=len(wave.spawned),
             dependency_holds=holds,
             review_waits=list(wave.review_waits), delegate_refused=list(wave.delegate_refused))
         open_items = [{"item": i, "reason": why} for i, why in sorted(found.reasons.items())]
@@ -1995,6 +2046,20 @@ def _finish(
     if reason in ("idle", "idle-with-waits") and wave.delegate_refused:
         reason = "stalled"
         exit_code = 1
+    # GRPH-1962. With `--prd`, `idle` means every build item is done or parked on a
+    # person. Two backlog items with stale blocker text exited `idle` every cycle for
+    # hours; that exit is `stuck`, and it names each item and why.
+    stuck: list[dict] | None = None
+    read = None
+    if prd and not line and reason in ("idle", "idle-with-waits"):
+        got = _prd_stuck(planner, prd, wave, list(waits))
+        if got is not None:
+            unfinished, items, holds = got
+            read = (items, holds)
+            if unfinished:
+                reason = outcome_mod.STUCK
+                exit_code = 1
+                stuck = [{"item": i, "reason": why} for i, why in sorted(unfinished.items())]
     wave.reason = reason
     if review is None:
         try:
@@ -2004,7 +2069,7 @@ def _finish(
         except (NotPermitted, ToolFailed, ServerUnreachable):
             review = []
     if prd and not line:
-        notify_outcome(planner, wave, reason, prd, on_notice=on_notice)
+        notify_outcome(planner, wave, reason, prd, on_notice=on_notice, read=read)
     return Report(
         ok=exit_code == 0,
         reason=reason,
@@ -2015,6 +2080,7 @@ def _finish(
         review=review,
         review_outside_prd=list(outside or []),
         unready=_unready(planner, line) if line is not None else None,
+        stuck=stuck,
         wave=wave,
     )
 

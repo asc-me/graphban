@@ -249,6 +249,11 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
          "A member may leave an organization, but its only owner is refused until somebody "
          "else is made an owner.",
          "enforced", _src("app/services/orgs.py", "leave_org"), "code", scope="org"),
+    Rule("build.blocker_names_what_it_waits_on", "build", "A blocker names what it waits on",
+         "A blocker written through update_item names an item key, a person or a decision, a "
+         "typed wait or a blocking-fix filing; a note naming none of these is refused, so no "
+         "blocker can gate a drain after what it waited on has landed.",
+         "enforced", _src("app/services/items.py", "refuse_unnamed_blocker"), "code"),
     Rule("agents.operating_loop", "build", "Operating loop",
          "Agents follow the operating loop and invariants in AGENTS.md.",
          "advisory", Enforcer("doc", "AGENTS.md"), "repo_file", channel="doc"),

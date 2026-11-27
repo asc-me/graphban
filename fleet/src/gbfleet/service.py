@@ -110,7 +110,7 @@ REASON_NO_OPEN = "no-open-items"
 #: (GRPH-1645). ``merge-pending`` is an exit 0 while a signed-off pull request is
 #: still open (GRPH-1818).
 _NOT_BETWEEN_RUNS = (
-    "", "unready", "stalled", "merge-pending", REASON_PRD_CLOSED, REASON_NO_OPEN,
+    "", "unready", "stalled", "stuck", "merge-pending", REASON_PRD_CLOSED, REASON_NO_OPEN,
 )
 
 #: Detail from `_running_launchd` / `_running_systemd` when the unit file is on disk
@@ -258,7 +258,12 @@ def _reason_in(lines: list[str]) -> tuple[str, int, str] | None:
             continue
         if isinstance(doc, dict) and isinstance(doc.get("reason"), str) and doc["reason"]:
             un = doc.get("unready")
-            stall = _stall_phrase(doc.get("refused")) if doc["reason"] == "stalled" else ""
+            stall = ""
+            if doc["reason"] == "stalled":
+                stall = _stall_phrase(doc.get("refused"))
+            elif doc["reason"] == "stuck":
+                # GRPH-1962: the unfinished PRD items and why, the same clause shape.
+                stall = _stall_phrase(doc.get("stuck"))
             return doc["reason"], len(un) if isinstance(un, list) else 0, stall
     return None
 
@@ -1331,7 +1336,8 @@ class Status:
     run_reason: str | None = None
     unready: int = 0
     #: `GBC-125 bound_seat_refused (reach)` when `run_reason` is `stalled` (GRPH-1643).
-    #: Empty when the log named the stall without a `refused` row.
+    #: Empty when the log named the stall without a `refused` row. On `stuck` (GRPH-1962)
+    #: it names each unfinished item and its reason, from the summary's `stuck` list.
     stall: str = ""
     #: The process is alive and the loop has logged `loop_silent` (GRPH-1786). A pid is
     #: not a working drain: launchd kept the 2026-11-20 process as running for 50 minutes
@@ -1405,6 +1411,11 @@ class Status:
         if self.run_reason == "stalled":
             phrase = self.stall or "a ready item stayed refused"
             return f"{self.name}: stalled: {phrase} ({where}, {self.unit_path})"
+        if self.run_reason == "stuck":
+            # GRPH-1962. Not idle: the PRD still has build items that are not done
+            # and not parked on a person.
+            phrase = self.stall or "the PRD has unfinished items"
+            return f"{self.name}: stuck: {phrase} ({where}, {self.unit_path})"
         if self.run_reason == REASON_PRD_CLOSED:
             return (f"{self.name}: PRD closed; not restarting "
                     f"({where}, {self.unit_path})")

@@ -1749,6 +1749,19 @@ def blocker_item_keys(text: str) -> list[str]:
     return found
 
 
+#: Prefix of the blocker `_block` and `_leave_done` write when a done item's merge did not
+#: land (GRPH-1965). The server refuses a blocker that names nothing it waits on
+#: (GRPH-1960, `build.blocker_names_what_it_waits_on`); the merge reason alone names no item,
+#: person or hold. Nothing lifts this block on its own, so it names the person it waits on.
+MERGE_BLOCKER_PREFIX = "needs a person: merge did not land"
+
+
+def merge_blocker(reason: str) -> str:
+    """The blocker text for a done item whose merge did not land (GRPH-1965)."""
+    reason = (reason or "").strip()
+    return f"{MERGE_BLOCKER_PREFIX} — {reason}" if reason else MERGE_BLOCKER_PREFIX
+
+
 #: Same sentence `deps.HOLD_MARK` writes. Not imported: this module must not take
 #: a dependency on `deps` (the hold writer imports the supervisor). A dependency
 #: hold names the finished-but-unmerged item, so clearing it and the next cycle
@@ -4338,8 +4351,8 @@ class Merger:
     def _block(self, wave: Wave, item_id: str, reason: str, refused: Exception) -> None:
         """Block a `done` item the server will not bounce (GRPH-1929). Reported once."""
         try:
-            self.client.call("update_item", id=item_id, status="blocked", blocker=reason,
-                             evidence=[{
+            self.client.call("update_item", id=item_id, status="blocked",
+                             blocker=merge_blocker(reason), evidence=[{
                                  "kind": "note",
                                  "detail": f"gbfleet: blocked, merge did not land — {reason}",
                              }])
@@ -4414,8 +4427,8 @@ class Merger:
             self.client.call("bounce", id=item_id, reason=reason, agent_id=self.agent_id)
         except (NotPermitted, ToolFailed, ServerUnreachable):
             try:
-                self.client.call("update_item", id=item_id, status="blocked", blocker=reason,
-                                 evidence=[{
+                self.client.call("update_item", id=item_id, status="blocked",
+                                 blocker=merge_blocker(reason), evidence=[{
                                      "kind": "note",
                                      "detail": f"gbfleet: blocked, merge did not land — {reason}",
                                  }])
