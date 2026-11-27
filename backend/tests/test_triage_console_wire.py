@@ -85,6 +85,7 @@ class _Console:
         self.post_params = []
         # `POST /api/sync/assignable-people`, by project: the last set accepted.
         self.people, self.people_refused = {}, []
+        self.routed = set()
 
     def install(self, monkeypatch):
         import httpx
@@ -97,8 +98,13 @@ class _Console:
         self.gets.append((url, name))
         if name in self.missing:
             return _Resp(404)
-        return _Resp(200, {"record": "triage_decisions", "project_id": name,
-                           "decisions": self.decisions.get(name, [])})
+        rows = self.decisions.get(name, [])
+        # A routed request accept is the one a box creates an item for: its applied report
+        # must carry `created_item_id` (graphban-control #339), or the console 422s it.
+        self.routed.update(d["id"] for d in rows
+                           if isinstance(d.get("target"), dict)
+                           and d["target"].get("kind") == "request")
+        return _Resp(200, {"record": "triage_decisions", "project_id": name, "decisions": rows})
 
     def post(self, url, params=None, json=None, **k):
         if url.endswith("/api/sync/assignable-people"):
@@ -142,8 +148,7 @@ class _Console:
         self.people[name] = list(body["people"])
         return _Resp(200, {"record": "assignable_people", "count": len(body["people"])})
 
-    @staticmethod
-    def _invalid(body):
+    def _invalid(self, body):
         did = body.get("decision_id")
         if not isinstance(did, str) or not _UUID_RE.match(did):
             return "decision_id is required"
@@ -152,6 +157,10 @@ class _Console:
         reason = body.get("reason")
         if body["outcome"] == "refused" and not (isinstance(reason, str) and reason.strip()):
             return "a refusal needs a reason"
+        if (did in self.routed and body["outcome"] == "applied"
+                and not (isinstance(body.get("created_item_id"), str)
+                         and body["created_item_id"].strip())):
+            return "created_item_id is required on a routed accept"
         return ""
 
 
@@ -261,7 +270,8 @@ def test_an_accepted_console_request_lands_as_a_new_item(client, auth, db, monke
     assert made.description == "Every month, by hand."
     assert made.project_id == "core" and made.status == "next"
     assert console.posts == [("https://c/api/sync/triage-decisions/applied",
-                              {"decision_id": _did(7), "outcome": "applied", "reason": ""})]
+                              {"decision_id": _did(7), "outcome": "applied", "reason": "",
+                               "created_item_id": made.key})]
 
 
 def test_a_routed_request_is_not_created_twice_when_the_report_failed(client, auth, db,
