@@ -36,7 +36,17 @@ other success exits 0.
 exists, a plan for another PRD, an empty captured PATH, an adapter that PATH does not
 resolve, install flags that differ from the dry run's, and an `until` already holding the
 checkout. `create` then reads the PRD's coverage through the session and refuses a PRD that
-is not approved or not shaped. Only after all of that does it clone, mint and install.
+is not approved, not shaped, or has no tasks. Only after all of that does it clone, mint and install.
+
+**The dry run is the real run's refusals (GRPH-1984).** Both open the session and refuse a PRD
+that is not approved, not shaped, or has no tasks, with the same sentence and exit code — a
+dry run that passes a create the real run would refuse promises something false. The dry run
+still mints nothing and writes nothing.
+
+**A failed create leaves no clone (GRPH-1984).** When anything after the clone fails, the
+checkout this run cut is removed — only that one, only while it still carries this drain's
+marker, and never once a unit naming it is on disk — and the removal is reported. So the
+re-run starts from the same disk the first run did.
 """
 from __future__ import annotations
 
@@ -230,6 +240,17 @@ def _usable_checkout(path: Path, remote: str) -> str:
     if out:
         return f"{path} has uncommitted changes; a drain must start from a clean checkout"
     return ""
+
+
+def _marked_by(checkout: Path) -> str:
+    """The drain named in `checkout`'s marker, or "" when it carries none."""
+    code, git_dir = _git(checkout, "rev-parse", "--absolute-git-dir")
+    if code != 0:
+        return ""
+    try:
+        return (Path(git_dir) / MARKER).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 
 def _write_marker(checkout: Path, name: str) -> None:
@@ -434,6 +455,9 @@ def check_prd(ledger: object, prd: str) -> None:
         raise Refused(
             f"prd_coverage reports {prd} shaped: {cov.get('shaped')!r}, so it has no sections "
             "for items to sit under. Give it `##` sections and decompose it first")
+    if not int(cov.get("total_items") or 0):
+        raise Refused(f"{prd} has no tasks. Decompose it (decompose_prd) before starting a "
+                      "drain")
 
 
 def print_plan(d: Draft, out: TextIO, *, dry_run: bool) -> None:
@@ -467,10 +491,6 @@ def create(opts: Options, *, out: TextIO | None = None, err: TextIO | None = Non
         print(f"gbfleet drain create: {exc}", file=err)
         return EXIT_REFUSED
 
-    if opts.dry_run:
-        print_plan(d, out, dry_run=True)
-        return 0
-
     server = service.value_of(d.until_args, "--server") or ""
     try:
         ledger = open_ledger(server)
@@ -487,14 +507,56 @@ def create(opts: Options, *, out: TextIO | None = None, err: TextIO | None = Non
         print(f"gbfleet drain create: {exc}. Nothing was written.", file=err)
         return EXIT_REFUSED
 
-    if d.clone_from:
-        d.repo.parent.mkdir(parents=True, exist_ok=True)
-        code, said = _git(d.repo.parent, "clone", "-q", d.clone_from, str(d.repo))
-        if code != 0:
-            print(f"gbfleet drain create: clone failed: {said}", file=err)
-            return EXIT_REFUSED
-        _write_marker(d.repo, d.name)
+    if opts.dry_run:
+        print_plan(d, out, dry_run=True)
+        return 0
 
+    cloned = False
+    installed = False
+    try:
+        if d.clone_from:
+            d.repo.parent.mkdir(parents=True, exist_ok=True)
+            code, said = _git(d.repo.parent, "clone", "-q", d.clone_from, str(d.repo))
+            if code != 0:
+                print(f"gbfleet drain create: clone failed: {said}", file=err)
+                return EXIT_REFUSED
+            cloned = True
+            try:
+                _write_marker(d.repo, d.name)
+            except (Refused, OSError) as exc:
+                print(f"gbfleet drain create: {exc}", file=err)
+                return EXIT_REFUSED
+        code = _install(d, ledger, out=out, err=err, show_status=show_status)
+        installed = code == 0
+        return code
+    finally:
+        if cloned and not installed:
+            _remove_clone(d, err)
+
+
+def _remove_clone(d: Draft, err: TextIO) -> None:
+    """Remove the checkout this run cloned, after a failure. Never one it did not make."""
+    if d.supplied or not d.clone_from:
+        return
+    if d.unit_path.exists():
+        print(f"gbfleet drain create: kept {d.repo}: {d.unit_path} names it", file=err)
+        return
+    owner = _marked_by(d.repo)
+    if owner != d.name:
+        print(f"gbfleet drain create: kept {d.repo}: it does not carry this drain's "
+              f"{MARKER} marker", file=err)
+        return
+    shutil.rmtree(d.repo, ignore_errors=True)
+    if d.repo.exists():
+        print(f"gbfleet drain create: could not remove the checkout it cloned, {d.repo}; "
+              "remove it before running this again", file=err)
+    else:
+        print(f"gbfleet drain create: removed {d.repo}, the checkout this run cloned",
+              file=err)
+
+
+def _install(d: Draft, ledger: object, *, out: TextIO, err: TextIO,
+             show_status: Callable[[object], None] | None) -> int:
     try:
         plan = service.make_plan(d.until_args, name=d.name, kind=d.kind, binary=d.binary,
                                  path_env=d.path_env, every=d.every)
@@ -693,7 +755,9 @@ def checkout_verdict(repo: Path, name: str) -> str:
     has no linked worktree, no uncommitted change, no untracked file (whatever
     `status.showUntrackedFiles` says), no ignored file outside `DISPOSABLE_DIRS` /
     `DISPOSABLE_SUFFIXES`, no stash, no tag on an unpushed commit, and no commit on any ref
-    that no remote-tracking ref reaches. Anything unreadable is a keep, never a delete.
+    that no remote-tracking ref reaches whose tip the server still lists (`git ls-remote`, read
+    only; a server that cannot be asked is a keep). Anything unreadable is a keep, never a
+    delete.
 
     Also kept, without trying to prove them clean: a path or marker reached through a symlink,
     a git dir outside the checkout, any submodule, a tracked file hidden by
@@ -780,9 +844,17 @@ def checkout_verdict(repo: Path, name: str) -> str:
     proving, inside, why = _proving_refs(repo)
     if why:
         return why
-    not_on = ["--not", *proving]
+    # And only a tip the server lists now: a ref left behind by a branch deleted on the server
+    # (never pruned) proves nothing (GRPH-1987).
+    live, stale, why = _listed_now(repo, proving)
+    if why:
+        return why
+    not_on = ["--not", *live]
     unproven = (f"; remote(s) {_named(inside)} point inside this checkout or cannot be "
                 "resolved, so their refs prove nothing") if inside else ""
+    if stale:
+        unproven += (f"; remote-tracking ref(s) {_named(stale)} name branch(es) the server no "
+                     "longer lists, so they prove nothing")
     code, tags = _git(repo, "for-each-ref", "--format=%(refname:short)", "refs/tags")
     if code != 0:
         return f"cannot list its tags: {tags}"
@@ -899,13 +971,15 @@ def _refspec_matches(pattern: str, ref: str) -> bool:
     return len(ref) >= len(head) + len(tail) and ref.startswith(head) and ref.endswith(tail)
 
 
-def _proving_refs(repo: Path) -> tuple[list[str], list[str], str]:
-    """(remote-tracking refs that prove a push, remotes that prove nothing, error).
+def _proving_refs(repo: Path) -> tuple[dict[str, tuple[str, list[str]]], list[str], str]:
+    """({remote-tracking ref: (its tip, the remotes that write it)} that may prove a push,
+    remotes that prove nothing, error).
 
-    A ref under refs/remotes/ proves a push only when a remote whose every URL (fetch and push,
-    after insteadOf) points outside this checkout writes it, and no remote that points inside
-    it (`.`, a relative path, a file:// URL under .git/) can also write it. A ref no configured
-    remote writes proves nothing either."""
+    A ref under refs/remotes/ may prove a push only when a remote whose every URL (fetch and
+    push, after insteadOf) points outside this checkout writes it, and no remote that points
+    inside it (`.`, a relative path, a file:// URL under .git/) can also write it. A ref no
+    configured remote writes proves nothing either. Whether the server still holds its tip is
+    `_listed_now`'s question, not this one's."""
     code, names = _git(repo, "remote")
     if code != 0:
         return [], [], f"cannot list its remotes: {names}"
@@ -934,13 +1008,86 @@ def _proving_refs(repo: Path) -> tuple[list[str], list[str], str]:
             trusted.append(remote)
         else:
             untrusted.append(remote)
-    code, refs = _git(repo, "for-each-ref", "--format=%(refname)", "refs/remotes")
+    code, refs = _git(repo, "for-each-ref", "--format=%(objectname) %(refname)", "refs/remotes")
     if code != 0:
-        return [], untrusted, f"cannot list its remote-tracking refs: {refs}"
-    proving = [ref for ref in refs.splitlines()
-               if any(_refspec_matches(p, ref) for r in trusted for p in patterns[r])
-               and not any(_refspec_matches(p, ref) for r in untrusted for p in patterns[r])]
+        return {}, untrusted, f"cannot list its remote-tracking refs: {refs}"
+    proving: dict[str, tuple[str, list[str]]] = {}
+    for line in refs.splitlines():
+        sha, _, ref = line.partition(" ")
+        writers = [r for r in trusted if any(_refspec_matches(p, ref) for p in patterns[r])]
+        if writers and sha and not any(_refspec_matches(p, ref) for r in untrusted
+                                       for p in patterns[r]):
+            proving[ref] = (sha, writers)
     return proving, untrusted, ""
+
+
+#: Seconds one `git ls-remote` may take before its server counts as unreachable.
+LS_REMOTE_TIMEOUT = 30.0
+_USERINFO = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/\s@]*@")
+
+
+def _scrub(text: str) -> str:
+    """git's first error line, with any `user:secret@` taken out of a URL in it."""
+    first = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    return _USERINFO.sub(r"\1", first)[:200]
+
+
+def _ls_remote(repo: Path, remote: str) -> tuple[set[str] | None, str]:
+    """(every object id `remote` lists now, "") or (None, why it could not be asked).
+
+    Reads only: no fetch, no prune, no ref written. Never prompts: GIT_TERMINAL_PROMPT=0, no
+    stdin and no controlling terminal (its own session), so a remote that wants credentials
+    fails instead of hanging, and LS_REMOTE_TIMEOUT kills the whole group if it still does."""
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never",
+           "SSH_ASKPASS_REQUIRE": "never"}
+    posix = os.name != "nt"
+    try:
+        proc = subprocess.Popen(["git", "ls-remote", "--", remote], cwd=repo, env=env,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, start_new_session=posix)
+    except OSError as exc:
+        return None, f"git ls-remote could not start: {exc.strerror or exc}"
+    try:
+        listed, failed = proc.communicate(timeout=LS_REMOTE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        try:
+            if posix:
+                os.killpg(proc.pid, 9)
+            else:
+                proc.kill()
+        except OSError:
+            pass
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.SubprocessError:
+            pass
+        return None, f"git ls-remote gave no answer within {LS_REMOTE_TIMEOUT:g}s"
+    if proc.returncode != 0:
+        return None, f"git ls-remote failed: {_scrub(failed) or f'exit {proc.returncode}'}"
+    return {line.split("\t", 1)[0] for line in listed.splitlines() if "\t" in line}, ""
+
+
+def _listed_now(repo: Path, proving: dict[str, tuple[str, list[str]]]
+                ) -> tuple[list[str], list[str], str]:
+    """(tips that prove a push, stale refs, error). A local remote-tracking ref proves its
+    tip only when a remote that writes it lists that object id NOW (`git ls-remote`): a
+    branch deleted on the server leaves a ref nobody pruned, and that ref proves nothing.
+    Any remote that cannot be asked is an error: the checkout is kept."""
+    asked: dict[str, set[str]] = {}
+    for remote in dict.fromkeys(r for _sha, writers in proving.values() for r in writers):
+        listed, why = _ls_remote(repo, remote)
+        if listed is None:
+            return [], [], (f"the server for remote {remote} could not be reached to confirm "
+                            f"what it holds now ({why})")
+        asked[remote] = listed
+    live: list[str] = []
+    stale: list[str] = []
+    for ref, (sha, writers) in proving.items():
+        if any(sha in asked[r] for r in writers):
+            live.append(sha)
+        else:
+            stale.append(ref[len("refs/remotes/"):] if ref.startswith("refs/remotes/") else ref)
+    return list(dict.fromkeys(live)), stale, ""
 
 
 def _through_symlink(path: Path) -> bool:
