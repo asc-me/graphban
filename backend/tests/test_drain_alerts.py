@@ -3,7 +3,8 @@
 Sabotage: drop the `row.title == title and row.body == body` early `continue` in
 `alerts.post_drain_notice` and the identical-post test fails (a second push). Drop the
 `DRAIN_PUSH_GAP` test and a reason change pushes again. Drop the `prd.project_id not in
-writable` check in the route and the stranger test fails.
+writable` check in the route and the stranger test fails. Drop the `clear_settled_stall` call
+in `items.update_item` and the stall-clears tests fail (GRPH-1972).
 """
 from __future__ import annotations
 
@@ -174,3 +175,60 @@ def test_reply_says_whether_the_notice_changed_anything(client, key, prd, db, pu
                _post(client, key, prd, "working").json()["changed"],
                _post(client, key, prd, "working").json()["changed"]]
     assert changed == [True, False, True, True, False]
+
+
+def _item(client, auth, proj, prd, title, **extra):
+    r = client.post("/api/items", headers=auth,
+                    json={"title": title, "project_id": proj, "prd_id": prd.id,
+                          "status": "next", **extra})
+    assert r.status_code in (200, 201), r.text
+    return r.json()["id"]
+
+
+def _close(client, auth, item_id):
+    """`done` the way a person reaches it: the owner closes the hand-merged item."""
+    r = client.post(f"/api/items/{item_id}/owner-close", headers=auth,
+                    json={"commit": "a" * 40, "pr_url": "https://github.com/o/r/pull/1"})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "done"
+
+
+def _listed_kinds(client, auth):
+    return [a["kind"] for a in client.get("/api/me/alerts", headers=auth).json()["alerts"]]
+
+
+def test_a_stall_clears_when_its_last_open_item_is_done(client, auth, key, proj, prd, db,
+                                                        pushes):
+    """GRPH-1972: the drain stopped, a person closed the item it named; nobody else will."""
+    one = _item(client, auth, proj, prd, "Blocked on a person")
+    _post(client, key, prd, "stalled", [(one, "blocked on a person")])
+    assert _listed_kinds(client, auth) == ["drain_stalled"]
+    _close(client, auth, one)
+    assert _rows(db, prd) == []
+    [row] = _rows(db, prd, live=False)
+    assert row.kind == "drain_stalled" and row.cleared_at is not None  # cleared, not drained
+    assert "drain_stalled" not in _listed_kinds(client, auth)
+
+
+def test_a_stall_clears_when_its_last_open_item_moves_off_the_prd(client, auth, key, proj,
+                                                                  prd, db, pushes):
+    one = _item(client, auth, proj, prd, "Moved away")
+    _post(client, key, prd, "stalled", [(one, "hold")])
+    other = prds_svc.create_prd(db, title="Elsewhere", project_id=proj)
+    r = client.patch(f"/api/items/{one}", json={"prd_id": other.id}, headers=auth)
+    assert r.status_code == 200, r.text
+    assert _rows(db, prd) == []
+
+
+def test_a_stall_stays_while_another_open_build_item_remains(client, auth, key, proj, prd,
+                                                             db, pushes):
+    one = _item(client, auth, proj, prd, "First")
+    two = _item(client, auth, proj, prd, "Second")
+    _item(client, auth, proj, prd, "A walk", tags=["walk"])  # never a build item
+    _post(client, key, prd, "stalled", [(one, "hold"), (two, "hold")])
+    _close(client, auth, one)
+    [row] = _rows(db, prd)
+    assert row.kind == "drain_stalled"
+    assert _listed_kinds(client, auth) == ["drain_stalled"]
+    _close(client, auth, two)
+    assert _rows(db, prd) == []  # only the walk is left open: not build work

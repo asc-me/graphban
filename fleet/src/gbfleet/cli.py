@@ -18,7 +18,8 @@ from pathlib import Path
 from . import __version__
 from . import adopt as adopt_mod
 from .adapters import ADAPTERS, AdapterError, Tuning, checked_tuning, resolve
-from .client import ALLOWED_TOOLS, Graphban, NotPermitted, ObservationRefused, ServerUnreachable, ToolFailed
+from .client import (ALLOWED_TOOLS, Graphban, NotPermitted, ObservationRefused, ProtocolError,
+                     ServerUnreachable, ToolFailed)
 from . import doctor
 from . import drain as drain_mod
 from . import service as service_mod
@@ -85,6 +86,10 @@ SPAWN_READS: frozenset[str] = ALLOWED_TOOLS | frozenset(
 #: asked for the merge by name and the receipt is the half that makes the merge visible to
 #: the ledger. The server still bounds what that call may write by role.
 MERGE_TOOLS: frozenset[str] = frozenset({"get_item_details", "related_work", "update_item"})
+#: The scripting surface (GRPH-1977): `prd-coverage`, `fleet-status` and `decompose --preview`.
+#: `decompose_prd` is held only so the preview can read; `Graphban.decompose_preview` always
+#: sends `create=False`. No grill answer, `sign_off` or approval is reachable from here.
+SCRIPTING_READS: frozenset[str] = frozenset({"prd_coverage", "fleet_status", "decompose_prd"})
 #: `bench run` reads a reviewer's verdict off its scratch item and does nothing else there.
 BENCH_VERDICT_READS: frozenset[str] = frozenset({"get_item_details"})
 
@@ -663,6 +668,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     harn_grid.add_argument("--server", required=True, help="Graphban base URL")
     harn_grid.add_argument("--project", required=True, help="project id")
+
+    for name, text in (
+        ("prd-coverage", "print a PRD's spec-to-task coverage (prd_coverage)"),
+        ("fleet-status", "print who is working this project (fleet_status)"),
+        ("decompose", "preview a PRD's decomposition; --preview is required, nothing is filed"),
+    ):
+        sp = sub.add_parser(name, help=text, description=text)
+        if name != "fleet-status":
+            sp.add_argument("prd_id", help="the PRD id, e.g. GRPH-P96")
+        if name == "decompose":
+            sp.add_argument("--preview", action="store_true",
+                            help="required: show what decomposition would file, file nothing")
+        sp.add_argument("--json", action="store_true", help="print the tool's result as JSON")
+        sp.add_argument("--server", required=True, help="Graphban base URL")
+        sp.add_argument("--project", required=True, help="project id")
 
     sub.add_parser(
         "gc",
@@ -2122,6 +2142,63 @@ def _harness(args: argparse.Namespace) -> int:
     return 0
 
 
+def _summary(value, indent: int = 0) -> list[str]:
+    pad = "  " * indent
+    if isinstance(value, dict):
+        lines: list[str] = []
+        for k, v in value.items():
+            if isinstance(v, (dict, list)) and v:
+                lines.append(f"{pad}{k}:")
+                lines.extend(_summary(v, indent + 1))
+            else:
+                lines.append(f"{pad}{k}: {json.dumps(v) if isinstance(v, (dict, list)) else v}")
+        return lines
+    if isinstance(value, list):
+        lines = []
+        for v in value:
+            if isinstance(v, (dict, list)):
+                lines.append(f"{pad}-")
+                lines.extend(_summary(v, indent + 1))
+            else:
+                lines.append(f"{pad}- {v}")
+        return lines
+    return [f"{pad}{value}"]
+
+
+def _scripting(args: argparse.Namespace) -> int:
+    name = args.command
+    if name == "decompose" and not args.preview:
+        print("gbfleet decompose: refused. Scripting only previews: pass --preview. Nothing was "
+              "filed, and no form of this command files.", file=sys.stderr)
+        return 2
+    api_key = os.environ.get(API_KEY_ENV)
+    if not api_key:
+        print(f"gbfleet {name}: set ${API_KEY_ENV} to an agent key", file=sys.stderr)
+        return 2
+    client = Graphban(args.server, api_key, allowed=SCRIPTING_READS, project_id=args.project)
+    try:
+        if name == "prd-coverage":
+            result = client.prd_coverage(args.prd_id)
+        elif name == "fleet-status":
+            result = client.fleet_status()
+        else:
+            result = client.decompose_preview(args.prd_id)
+    except ToolFailed as exc:
+        # `ToolFailed`'s text is `tool: code: message (hint)`; a script greps it.
+        print(f"gbfleet {name}: failed: {exc}", file=sys.stderr)
+        return 1
+    except (NotPermitted, ServerUnreachable, ProtocolError) as exc:
+        print(f"gbfleet {name}: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        client.close()
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print("\n".join(_summary(result)))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -2174,6 +2251,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "harness":
         return _harness(args)
+
+    if args.command in ("prd-coverage", "fleet-status", "decompose"):
+        return _scripting(args)
 
     if args.command == "teardown":
         return _teardown(args)

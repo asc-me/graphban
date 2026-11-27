@@ -4480,23 +4480,74 @@ def _clause_section(clause: str, group: str, titles: list[str],
     return _body_cover(clause, titles, bodies) or hit
 
 
+#: A clause's lead: "**Sabotage (S1, S2, S4):**" or "**S1, S2:**" before the clause text.
+_CLAUSE_LEAD = re.compile(r"^\s*\*\*([^*\n]+?)\*\*|^\s*([^:\n]{1,60}):")
+_LABEL_TOKEN = re.compile(r"(?<![A-Za-z0-9])((?:AC|PRD)-\d{1,3}|[DEGS]-?\d{1,2})(?![A-Za-z0-9])",
+                          re.IGNORECASE)
+
+
+def _label_key(label: str) -> str:
+    return label.replace("-", "").upper()
+
+
+def _lead_sections(clause: str, group: str, titles: list[str]) -> list[str]:
+    """The sections a clause's lead or sub-heading names by slice label, in title order.
+
+    P104 v1.0 had a sabotage clause that covers S1, S2 and S4 and a cross-org clause that
+    covers S1 and S2; each landed on one section (GRPH-1980). The lead is the clause's
+    opening bold label (or text before its first colon), plus its group: a label named in
+    passing further into the clause says nothing about where the clause belongs.
+    """
+    labelled: dict[str, str] = {}
+    for title in titles:
+        found = _SLICE_PREFIX.match(title or "")
+        token = _LABEL_TOKEN.match(found.group(0).strip()) if found else None
+        if token:
+            labelled.setdefault(_label_key(token.group(1)), title)
+    if not labelled:
+        return []
+    lead = _CLAUSE_LEAD.match(clause or "")
+    texts = [group or ""]
+    if lead:
+        texts.append(next(g for g in lead.groups() if g))
+    out: list[str] = []
+    for text in texts:
+        for token in _LABEL_TOKEN.findall(text):
+            title = labelled.get(_label_key(token))
+            if title and title not in out:
+                out.append(title)
+    return sorted(out, key=titles.index)
+
+
+def clause_sections(clause: str, group: str, titles: list[str],
+                    bodies: dict[str, str] | None = None) -> list[str]:
+    """Every section a clause belongs to: all the ones its lead names when it names two or
+    more, else the one `_clause_section` finds, else none."""
+    named = _lead_sections(clause, group, titles)
+    if len(named) >= 2:
+        return named
+    target = _clause_section(clause, group, titles, bodies)
+    return [target] if target is not None else []
+
+
 def assign_acceptance(body: str, titles: list[str],
                       bodies: dict[str, str] | None = None,
                       ) -> tuple[dict[str, list[str]], list[str]]:
     """Per-section acceptance clauses, and the clauses that map to no section.
 
     `bodies` is `section_bodies(body)` when the caller already has it, so a decompose
-    parses the PRD once.
+    parses the PRD once. A clause whose lead names several sections lands on each of them
+    (`clause_sections`, GRPH-1980), never silently on one.
     """
     if bodies is None:
         bodies = section_bodies(body)
     by_section: dict[str, list[str]] = {}
     unassigned: list[str] = []
     for clause, group in acceptance_clauses(body):
-        target = _clause_section(clause, group, titles, bodies)
-        if target is None:
+        targets = clause_sections(clause, group, titles, bodies)
+        if not targets:
             unassigned.append(clause)
-        else:
+        for target in targets:
             by_section.setdefault(target, []).append(clause)
     return by_section, unassigned
 
@@ -4842,8 +4893,46 @@ def _definition_of_mention(token: str, mentioners: list[str],
     return best, sorted(votes[best])[0]
 
 
+#: A backticked token that is one plain lowercase word: `question`, `note`, `directive`.
+_PLAIN_WORD = re.compile(r"[a-z]+")
+#: `links.link_endpoints`, `items.HIDDEN_REF`: a module and a name in it. A leading path
+#: (`services/links.link_endpoints`) is the same module.
+_MODULE_SYMBOL = re.compile(r"^(?:[\w-]+/)*([A-Za-z_]\w*)\.([A-Za-z_]\w*)$")
+
+
+def module_qualifiers(text: str) -> dict[str, str]:
+    """`{name: module}` for each `module.name` the text backticks, when only one module has it.
+
+    P104's Problem section writes `items.HIDDEN_REF` and `items.render_ref`; its S4 then says
+    `HIDDEN_REF` alone. The PRD has already said which module that is (GRPH-1980).
+    """
+    seen: dict[str, set[str]] = {}
+    for span in _BACKTICK_SPAN.finditer(_FENCED_BLOCK.sub(" ", text or "")):
+        match = _MODULE_SYMBOL.match(span.group(1).strip())
+        if match:
+            seen.setdefault(match.group(2).lower(), set()).add(match.group(1).lower())
+    return {name: next(iter(mods)) for name, mods in seen.items() if len(mods) == 1}
+
+
+def _module_file(stems: dict[str, list[str]], module: str) -> str:
+    """The file a `module.name` reference means: `<services>/<module>.py` first (GRPH-1980).
+
+    `items` is both `backend/app/routers/items.py` and `backend/app/services/items.py`, and
+    the shorter path is the router. A name in a module is a service's name unless the graph
+    holds only one file of that stem, which is then the module whatever its directory.
+    """
+    hits = sorted({p for p in stems.get(module.lower(), []) if not _definition_rank(p)
+                   and _node_stem(p).lower() == module.lower()})
+    services = [p for p in hits if _dir_of(p).rsplit("/", 1)[-1] == "services"]
+    if services:
+        return min(services, key=lambda p: (len(p), p))
+    return hits[0] if len(hits) == 1 else ""
+
+
 def _resolve_named_things(nodes, text: str, edges=None,
-                          creates: dict[str, str] | None = None) -> list[tuple[int, str, str, bool]]:
+                          creates: dict[str, str] | None = None,
+                          qualifiers: dict[str, str] | None = None,
+                          ) -> list[tuple[int, str, str, bool]]:
     """`(order, path, evidence, create)` for the names in `text` the graph can place.
 
     A backticked name resolves to a symbol node of that name, then to a file whose name or
@@ -4855,6 +4944,14 @@ def _resolve_named_things(nodes, text: str, edges=None,
 
     `creates`, when given, is filled with `{path: "program sub"}` for each command create,
     so the caller can say which command a created path is for (GRPH-1957).
+
+    GRPH-1980, from P104. A `module.name` resolves to that module's file, preferring the
+    services directory (`links.link_endpoints` → `backend/app/services/links.py`), and a
+    bare name the PRD qualifies elsewhere (`qualifiers`, from `module_qualifiers`) resolves
+    the same way. A plain lowercase word (`question`, `note`, `directive`) is English
+    before it is a name: it places only a symbol or a single file of that name, never a
+    file reached through a test or consumer that happens to use the word, and never one
+    of two same-named files in different trees (`heartbeat`).
     """
     symbols: dict[str, list[str]] = {}
     stems: dict[str, list[str]] = {}
@@ -4879,10 +4976,25 @@ def _resolve_named_things(nodes, text: str, edges=None,
     for token, kind in _named_things(text):
         if kind == "name":
             low = token.lower()
+            plain = _PLAIN_WORD.fullmatch(token) is not None
             tier, hits = 0, symbols.get(low, [])
             if not hits:
                 tier, hits = 1, sorted(set(stems.get(low, [])))
+                if plain and len({_dir_of(p) for p in hits if not _definition_rank(p)}) > 1:
+                    hits = []
             if not hits:
+                dotted = _MODULE_SYMBOL.match(token)
+                module = dotted.group(1) if dotted else (qualifiers or {}).get(low, "")
+                path = _module_file(stems, module) if module else ""
+                if path:
+                    said = (f"`{token}`" if dotted
+                            else f"`{token}`, which the PRD writes as `{module}.{token}`")
+                    out.append((1, path, f"the section names {said}, a name in this module",
+                                False))
+                    continue
+            if not hits:
+                if plain:
+                    continue
                 mentioners = sorted({p for p, entry in described if _whole_token(entry, low)})
                 if depends is None:
                     depends = _dependency_map(edges)
@@ -5016,6 +5128,52 @@ def _record_homes(nodes, text: str,
     return out
 
 
+#: "An org-level view lists every pending link request": a section describing a screen by
+#: what it shows. Lowercase, so `_SURFACE_NAME` ("the Rules page") never saw it (GRPH-1980).
+_VIEW_PHRASE = re.compile(
+    r"\b(?:an?|the|one)\s+((?:[a-z][\w-]*\s+){0,2}?)(view|page|screen|dashboard|panel)\s+"
+    r"(?:that\s+)?(?:lists|shows|displays)\b",
+    re.IGNORECASE,
+)
+#: Directory names a web tree keeps its screens under.
+_UI_HOMES = ("features", "pages", "views", "screens")
+
+
+def _view_homes(nodes, text: str) -> list[tuple[str, str, bool]]:
+    """`(path, evidence, create)` for the UI a section that describes a view needs (GRPH-1980).
+
+    P104's S5 opens "An org-level view lists every pending link request and every open
+    pair thread" and got no `web/` touchpoint and no UI item: the view has no capitalized
+    name for `_SURFACE_NAME` to read. A view the section says shows something is UI work,
+    and the graph says where screens live — the web directory that holds the most of them
+    under `features/` (or `pages/`, `views/`, `screens/`). A feature directory named by the
+    view's own qualifier (`org` for "org-level") is that view's home; otherwise the view is
+    a create under the screens' directory.
+    """
+    match = _VIEW_PHRASE.search(_FENCED_BLOCK.sub(" ", text or ""))
+    if not match:
+        return []
+    counts: dict[str, int] = {}
+    for n in nodes:
+        path = _node_file(n)
+        if not _is_web_touchpoint(path):
+            continue
+        parts = path.split("/")[:-1]
+        for i, part in enumerate(parts):
+            if part.lower() in _UI_HOMES:
+                home = "/".join(parts[:i + 1])
+                counts[home] = counts.get(home, 0) + 1
+    if not counts:
+        return []
+    home = min(counts, key=lambda d: (-counts[d], d))
+    why = f"the section describes a view ({match.group(0).strip()!r})"
+    known = {_dir_of(_node_file(n)) for n in nodes}
+    for word in re.split(r"[^a-z0-9]+", match.group(1).lower()):
+        if word and f"{home}/{word}" in known:
+            return [(f"{home}/{word}/", f"{why}; `{home}/{word}` is that view's feature", False)]
+    return [(f"{home}/", f"create: {why}; the web screens live in `{home}/`", True)]
+
+
 def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[dict]:
     """Code-graph paths a section likely changes, each with the evidence that matched.
 
@@ -5031,7 +5189,9 @@ def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[
     (GRPH-1930). A name only a graph entry mentions resolves through what that entry's
     file depends on, never to the mentioning test or consumer, and a section that says a
     thing "is a record" gets creates for the record's service, model, migration and route
-    (GRPH-1937).
+    (GRPH-1937). A `module.name` places its module, a bare name the PRD qualifies
+    elsewhere places the same module, a plain English word never places a file through a
+    test that uses it, and a section describing a view gets its web home (GRPH-1980).
 
     What the section named is collected before search runs and keeps its order, so
     `_TP_MAX` truncation cuts search hits first and the named files last.
@@ -5075,9 +5235,13 @@ def propose_touchpoints(db: Session, prd: Prd, section: str, body: str) -> list[
         edges = code_graph.list_edges(db, prd.project_id)
     except Exception:  # noqa: BLE001 - edges only sharpen a mention; without them it places nothing
         edges = []
-    for _order, path, evidence, create in _resolve_named_things(nodes, raw, edges, creates):
+    qualifiers = module_qualifiers(getattr(prd, "body", "") or "")
+    for _order, path, evidence, create in _resolve_named_things(nodes, raw, edges, creates,
+                                                                qualifiers):
         add(path, evidence, create)
     for path, evidence, create in _record_homes(nodes, raw, creates):
+        add(path, evidence, create)
+    for path, evidence, create in _view_homes(nodes, raw):
         add(path, evidence, create)
     try:
         hits = code_graph.search_code(db, raw[:2000], prd.project_id, top_k=_TP_MAX)
@@ -5226,7 +5390,7 @@ def claim_subheading_clauses(
     section_level, _unassigned = assign_acceptance(body, titles, section_texts)
     assigned: set[int] = set()
     for i, (clause, group) in enumerate(indexed):
-        if _clause_section(clause, group, titles, section_texts) is not None:
+        if clause_sections(clause, group, titles, section_texts):
             assigned.add(i)
     per_heading: dict[tuple[str, str], list[str]] = {}
     groups_of = {title: section_groups(section_texts.get(title, "")) for title in titles}
@@ -5605,6 +5769,26 @@ def propose_section_links(
     return edges, skipped
 
 
+#: A list item or line that opens with a bold label: "- **Messages.** Each message has…".
+_BOLD_LABEL = re.compile(r"^\s*(?:[-*+]\s+)?\*\*([^*\n]+?)\*\*", re.MULTILINE)
+
+
+def _defining_section(order: list[str], texts: dict[str, str], pattern: re.Pattern[str],
+                      candidates) -> str | None:
+    """The first section in `candidates` whose own bold label is the created thing's name.
+
+    "**Messages.** Each message has a kind, a body, an author…" is where P104 specifies the
+    message; S3 only delivers it (GRPH-1980).
+    """
+    for section in order:
+        if section not in candidates:
+            continue
+        for label in _BOLD_LABEL.findall(texts.get(section, "")):
+            if pattern.fullmatch(label.strip().rstrip(".:").strip()):
+                return section
+    return None
+
+
 def propose_creation_links(
     order: list[str], evidence: dict[str, list[dict]], texts: dict[str, str],
     existing: list[dict],
@@ -5625,6 +5809,13 @@ def propose_creation_links(
     A section whose text invokes what an owner creates depends on the owner. A command both
     sections only mention is still no edge (GRPH-1895): the edge needs a section whose
     touchpoints create the command. Pairs already in `existing` are not repeated.
+
+    No heading naming it, the section that DEFINES the thing under its own bold label owns
+    the create, though its own touchpoints never proposed the path (GRPH-1980). P104's S3
+    said "a message is a durable record" and so was the only creator of
+    `services/messages.py`; S1, whose "**Messages.**" item specifies the message, was then
+    ordered after S3 for "invoking" it. The definer gets the create, and the section that
+    found the path depends on it.
     """
     rank = {s: i for i, s in enumerate(order)}
     creators: dict[str, list[tuple[str, dict]]] = {}
@@ -5648,6 +5839,18 @@ def propose_creation_links(
         name = rows[0][1]["creates"]
         pattern = _name_pattern(name)
         named = [row for row in rows if pattern.search(row[0])]
+        if not named:
+            definer = _defining_section(order, texts, pattern, evidence)
+            if definer is not None:
+                row = next((r for r in rows if r[0] == definer), None)
+                if row is None:
+                    entry = {"path": path, "create": True, "creates": name,
+                             "evidence": (f'create: the section defines `{name}` under its own '
+                                          f'label; "{rows[0][0]}" found `{path}` for it')}
+                    evidence[definer].append(entry)
+                    row = (definer, entry)
+                    rows.insert(0, row)
+                named = [row]
         owner, _entry = (named or rows)[0]
         owned.append((path, name, owner))
         for section, entry in rows:
