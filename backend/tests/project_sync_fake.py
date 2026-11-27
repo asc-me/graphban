@@ -70,6 +70,16 @@ class _Replica:
     owner_label: str
     entities: dict = field(default_factory=dict)
     revision: int = 1
+    #: GBC-P23. Non-home deployments that can reach this project: token -> True.
+    members: dict = field(default_factory=dict)
+    #: The console's ``sync`` choice per deployment token (``full``/``summaries``/None).
+    choice: dict = field(default_factory=dict)
+    #: Tokens whose ``GET /api/sync/projects`` entry leaves ``home`` out (an older console).
+    home_omitted: set = field(default_factory=set)
+    #: The effective level each deployment last reported. Absent is "never reported".
+    effective: dict = field(default_factory=dict)
+    #: A non-home deployment's own ``item`` rows: token -> {(type, id): entity}.
+    box_entities: dict = field(default_factory=dict)
 
 
 class FakeConsole:
@@ -89,6 +99,19 @@ class FakeConsole:
         self._raise: BaseException | None = None
         self._status: int | None = None
         self._retry_after: int | None = None
+        #: GBC-P23. What the box-push receipt lists in ``capabilities``.
+        self.receipt_capabilities: list[str] = []
+        #: What ``GET /api/config`` advertises.
+        self.features: dict = {"item_digests": True}
+        #: Every ``POST /api/sync/project-sync`` the console stored: (token, project, level).
+        self.effective_reports: list[tuple[str, str, str]] = []
+        #: Every 403/422 answered, as (path, status, detail, field).
+        self.refusals: list[tuple[str, int, str, str | None]] = []
+        #: Accepted bodies: digests by (token, project name), people by (token, project name).
+        self.digests: dict = {}
+        self.people: dict = {}
+        #: Every body the console accepted (digest rows and entities), for leak checks.
+        self.accepted_bodies: list = []
 
     def add_deployment(self, token: str, *, engineer: str, label: str,
                        revoked: bool = False) -> None:
@@ -138,6 +161,55 @@ class FakeConsole:
         self._proposals[proposal["id"]] = proposal
         return self._public(proposal)
 
+    # ---- GBC-P23 setup (not wire calls) -------------------------------------------------
+
+    def set_choice(self, cloud_project_id: str, token: str, sync: str | None, *,
+                   omit_home: bool = False) -> None:
+        """The console's ``sync`` choice for this deployment on this project."""
+        replica = self._require_replica(cloud_project_id)
+        replica.choice[token] = sync
+        if omit_home:
+            replica.home_omitted.add(token)
+        else:
+            replica.home_omitted.discard(token)
+
+    def share(self, cloud_project_id: str, token: str, *, sync: str | None = None) -> None:
+        """``token`` can reach the project without being its home (a team member's box)."""
+        replica = self._require_replica(cloud_project_id)
+        replica.members[token] = True
+        replica.choice[token] = sync
+
+    def box_entities(self, cloud_project_id: str, token: str) -> list[dict]:
+        replica = self._require_replica(cloud_project_id)
+        return list(replica.box_entities.get(token, {}).values())
+
+    def install(self, monkeypatch) -> "FakeConsole":
+        """Route the box's module-level ``httpx`` calls (digests, people, box push, the
+        projects read) and every ``httpx.Client`` through this console."""
+        real_client = httpx.Client
+        transport = self.transport()
+
+        def _client(*args, **kwargs):
+            if kwargs.get("transport") is None:
+                kwargs["transport"] = transport
+            return real_client(*args, **kwargs)
+
+        def _call(method):
+            def call(url, **kwargs):
+                kwargs.pop("timeout", None)
+                with real_client(transport=transport) as c:
+                    return c.request(method, url, **kwargs)
+            return call
+
+        def _request(method, url, **kwargs):
+            return _call(method)(url, **kwargs)
+
+        monkeypatch.setattr(httpx, "Client", _client)
+        monkeypatch.setattr(httpx, "get", _call("GET"))
+        monkeypatch.setattr(httpx, "post", _call("POST"))
+        monkeypatch.setattr(httpx, "request", _request)
+        return self
+
     def entities(self, cloud_project_id: str) -> list[dict]:
         replica = self._require_replica(cloud_project_id)
         return list(replica.entities.values())
@@ -180,17 +252,32 @@ class FakeConsole:
         if self._retry_after is not None:
             seconds, self._retry_after = self._retry_after, None
             return self._respond(429, headers={"Retry-After": str(seconds)})
+        path = request.url.path
+        if path == "/api/config" and request.method == "GET":
+            return self._respond(200, json={"features": dict(self.features)})
         token, missing = self._token(request)
         if missing is not None:
             return missing
+        # The legacy-key routes the box posts without X-Sync-Contract.
+        if path == "/api/sync/item-digests" and request.method == "POST":
+            return self._digests(request, token)
+        if path == "/api/sync/item-digests" and request.method == "DELETE":
+            return self._respond(200, json={"deleted": True})
+        if path == "/api/sync/assignable-people" and request.method == "POST":
+            return self._people_call(request, token)
+        if path == "/api/sync/box-push" and request.method == "POST":
+            return self._respond(200, json={"capabilities": list(self.receipt_capabilities)})
+        if path == "/api/sync/projects" and request.method == "GET":
+            return self._projects(token)
         refused = self._contract_header(request)
         if refused is not None:
             return refused
-        path = request.url.path
         if path == "/api/sync/contract" and request.method == "GET":
             return self._respond(200, json={"version": CONTRACT})
         if path == "/api/sync/projects" and request.method == "POST":
             return self._register(request, token)
+        if path == "/api/sync/project-sync" and request.method == "POST":
+            return self._project_sync(request, token)
         if path == "/api/sync/project-entities" and request.method == "POST":
             return self._push(request, token)
         if path == "/api/sync/project-entities" and request.method == "DELETE":
@@ -275,12 +362,33 @@ class FakeConsole:
         if str(body.get("contract")) != CONTRACT:
             return self._problem(422, "contract", field="contract")
         project = request.headers.get("x-cloud-project", "")
-        replica = self._home(project, token)
+        replica = self._visible(project, token)
         if isinstance(replica, httpx.Response):
             return replica
         entities = body.get("entities")
         if not isinstance(entities, list):
             return self._problem(422, "invalid", field="entities")
+        is_home = replica.home_token == token
+        full = replica.effective.get(token) == "full"
+        if not is_home:
+            # GBC-P23 per-box items: a non-home box owns only `item` records.
+            for entity in entities:
+                if isinstance(entity, dict) and entity.get("type") in ("prd", "comment", "wait"):
+                    return self._problem(403, "not_home")
+            if not full:
+                return self._problem(
+                    422, "a non-home item push needs effective_sync full", field="entities")
+        # Holders: exact keys, and only while the stored level for this box is `full`.
+        # Checked over the whole request first: a refused request stores nothing.
+        for entity in entities:
+            if isinstance(entity, dict) and entity.get("type") == "item" and isinstance(
+                    entity.get("body"), dict):
+                problem = self._holder_problem(entity["body"], full)
+                if problem is not None:
+                    return problem
+        # Subclasses override `_one_entity(replica, entity)`, so the per-box target rides
+        # on the instance for the length of this request.
+        self._target = replica.entities if is_home else replica.box_entities.setdefault(token, {})
         stored, refused = [], []
         for entity in entities:
             row, reason = self._one_entity(replica, entity)
@@ -291,6 +399,8 @@ class FakeConsole:
         return self._respond(200, json={"stored": stored, "refused": refused})
 
     def _one_entity(self, replica: _Replica, entity: object) -> tuple[dict, str | None]:
+        target = getattr(self, "_target", None)
+        target = replica.entities if target is None else target
         if not isinstance(entity, dict):
             return {"type": "", "id": "", "version": 0}, "invalid"
         identity = {
@@ -316,16 +426,21 @@ class FakeConsole:
         # equal version is acknowledged and changes nothing (GBC-P19): the
         # response still says stored, and the replica keeps the body it has.
         key = (identity["type"], identity["id"])
-        current = replica.entities.get(key)
+        current = target.get(key)
         if current is None or identity["version"] > current.get("version", -1):
-            replica.entities[key] = dict(entity)
+            target[key] = dict(entity)
+            self.accepted_bodies.append(dict(entity))
         return identity, None
 
     def _purge(self, request: httpx.Request, token: str) -> httpx.Response:
         project = request.url.params.get("project", "")
-        replica = self._home(project, token)
+        replica = self._visible(project, token)
         if isinstance(replica, httpx.Response):
             return replica
+        if replica.home_token != token:
+            # GBC-P23: DELETE removes only the caller's own rows.
+            own = replica.box_entities.pop(token, {})
+            return self._respond(200, json={"deleted": len(own)})
         deleted = len(replica.entities)
         replica.entities.clear()
         self._close_open(replica, reason="project unsynced")
@@ -396,6 +511,127 @@ class FakeConsole:
                     replica.revision += 1
         return self._respond(200, json={})
 
+    # ---- GBC-P23 routes ------------------------------------------------------------------
+
+    def _projects(self, token: str) -> httpx.Response:
+        rows = []
+        for replica in self._by_id.values():
+            is_home = replica.home_token == token
+            if not is_home and token not in replica.members:
+                continue
+            row = {"id": replica.cloud_project_id, "tag": replica.tag, "name": replica.name,
+                   "sync": replica.choice.get(token)}
+            if token not in replica.home_omitted:
+                row["home"] = is_home
+            rows.append(row)
+        return self._respond(200, json={"projects": rows})
+
+    def _project_sync(self, request: httpx.Request, token: str) -> httpx.Response:
+        project = request.headers.get("x-cloud-project", "")
+        replica = self._visible(project, token)
+        if isinstance(replica, httpx.Response):
+            return replica
+        try:
+            body = json.loads(request.content or b"{}")
+        except ValueError:
+            return self._problem(422, "invalid", field="body")
+        level = body.get("effective_sync") if isinstance(body, dict) else None
+        if level not in ("full", "summaries"):
+            return self._problem(422, "effective_sync must be full or summaries",
+                                 field="effective_sync")
+        replica.effective[token] = level
+        self.effective_reports.append((token, project, level))
+        return self._respond(200, json={"project_id": project, "effective_sync": level})
+
+    def _by_name(self, name: str, token: str) -> _Replica | None:
+        for replica in self._by_id.values():
+            if replica.name == name and (replica.home_token == token or token in replica.members):
+                return replica
+        return None
+
+    def _digests(self, request: httpx.Request, token: str) -> httpx.Response:
+        try:
+            body = json.loads(request.content or b"{}")
+        except ValueError:
+            return self._problem(422, "invalid", field="body")
+        if not isinstance(body, dict) or not isinstance(body.get("items"), list):
+            return self._problem(422, "invalid", field="items")
+        name = str(body.get("project") or "")
+        replica = self._by_name(name, token)
+        full = replica is not None and replica.effective.get(token) == "full"
+        for row in body["items"]:
+            if not isinstance(row, dict):
+                return self._problem(422, "invalid", field="items")
+            problem = self._holder_problem(row, full)
+            if problem is not None:
+                return problem
+        self.digests[(token, name)] = list(body["items"])
+        self.accepted_bodies.extend(body["items"])
+        return self._respond(200, json={"record": "item_digests", "count": len(body["items"])})
+
+    def _people_call(self, request: httpx.Request, token: str) -> httpx.Response:
+        name = request.url.params.get("project", "")
+        try:
+            body = json.loads(request.content or b"{}")
+        except ValueError:
+            return self._problem(422, "invalid", field="body")
+        if not isinstance(body, dict) or set(body) != {"people"} or not isinstance(
+                body.get("people"), list):
+            return self._problem(422, "people must be a list", field="people")
+        allowed = {"id", "name"}
+        if "assignable_self" in self.receipt_capabilities:
+            allowed = {"id", "name", "self"}
+        marked = 0
+        for person in body["people"]:
+            if not isinstance(person, dict):
+                return self._problem(422, "each person is {id, name}", field="people")
+            bad = [k for k in person if k not in allowed]
+            if bad:
+                return self._problem(422, f"{bad[0]} is not a person field", field=bad[0])
+            if not all(isinstance(person.get(k), str) and person[k].strip()
+                       for k in ("id", "name")):
+                return self._problem(422, "each person needs id and name", field="people")
+            if "self" in person:
+                if person["self"] is not True:
+                    return self._problem(422, "self must be true", field="self")
+                marked += 1
+        if marked > 1:
+            return self._problem(422, "at most one person is self", field="self")
+        self.people[(token, name)] = list(body["people"])
+        return self._respond(200, json={"record": "assignable_people",
+                                        "count": len(body["people"])})
+
+    def _holder_problem(self, row: dict, full: bool) -> httpx.Response | None:
+        """#339 "Holders on the wire": exact keys, and only under a stored ``full``."""
+        present = [k for k in ("assignee", "held_by") if k in row]
+        if not present:
+            return None
+        if not full:
+            return self._problem(422, "holder fields need effective_sync full",
+                                 field=present[0])
+        assignee = row.get("assignee")
+        if "assignee" in row and assignee is not None:
+            if not isinstance(assignee, dict) or set(assignee) != {"id", "name"}:
+                return self._problem(422, "assignee is {id, name}", field="assignee")
+        held = row.get("held_by")
+        if "held_by" in row and held is not None:
+            if not isinstance(held, dict) or not {"kind", "label"} <= set(held) or (
+                    set(held) - {"kind", "label", "owner", "agent_kind"}):
+                return self._problem(422, "held_by is {kind, label, owner?, agent_kind?}",
+                                     field="held_by")
+            if held["kind"] not in ("agent", "person"):
+                return self._problem(422, "held_by.kind is agent or person", field="held_by")
+            owner = held.get("owner")
+            if owner is not None and (not isinstance(owner, dict) or set(owner) != {"id", "name"}):
+                return self._problem(422, "held_by.owner is {id, name}", field="held_by")
+        return None
+
+    def _visible(self, project: str, token: str) -> _Replica | httpx.Response:
+        replica = self._by_id.get(project)
+        if replica is None or (replica.home_token != token and token not in replica.members):
+            return self._problem(403, "not_home")
+        return replica
+
     def _home(self, project: str, token: str) -> _Replica | httpx.Response:
         replica = self._by_id.get(project)
         if replica is None or replica.home_token != token:
@@ -431,4 +667,7 @@ class FakeConsole:
         return httpx.Response(status, json=json, headers=headers)
 
     def _problem(self, status: int, detail: str, **extra: str) -> httpx.Response:
+        if status in (403, 422):
+            path = self.requests[-1]["path"] if self.requests else ""
+            self.refusals.append((path, status, detail, extra.get("field")))
         return self._respond(status, json={"detail": detail, **extra})

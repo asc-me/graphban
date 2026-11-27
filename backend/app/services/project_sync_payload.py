@@ -40,6 +40,14 @@ ITEM_KEYS = (
 PRD_KEYS = (
     "body", "sections", "grill_state", "baseline_hash", "version", "coverage",
 )
+#: GBC-P23 holder fields (GRPH-1978). Not in ``ITEM_KEYS``: they go out only while the
+#: project's effective level is ``full`` and the console has stored it (``holders_on``), and
+#: only when there is a holder to name. ``assignee`` is ``{id, name}`` from the assignable
+#: people list; ``held_by`` is ``{kind, label, owner?, agent_kind?}``. Never an email, an
+#: agent or seat id, a claim token or an enrolment code.
+HOLDER_KEYS = ("assignee", "held_by")
+HELD_BY_KEYS = ("kind", "label", "owner", "agent_kind")
+
 # Comments have no answer and waits do. Both types carry the same four keys
 # so a new column on either model is still an edit to this tuple.
 NOTE_KEYS = ("text", "answer", "timestamps", "actor")
@@ -204,7 +212,88 @@ def _item_body(db: Session, item: Item) -> dict:
         "line_id": rendered.get("line_id"),
         "status_history": _status_history(db, item),
     }
-    return allow(source, "item")
+    body = allow(source, "item")
+    if holders_allowed(db, item.project_id):
+        body.update(holders(db, item))
+    return body
+
+
+def holders_allowed(db: Session, project_id: str | None) -> bool:
+    """Does this project's effective level, as the console stored it, let holders out?"""
+    from app.models import SyncProject
+    from app.services import project_sync_lifecycle
+
+    if not project_id:
+        return False
+    return project_sync_lifecycle.holders_on(db.get(SyncProject, project_id))
+
+
+def _person(db: Session, user: User, project_id: str | None) -> dict:
+    """``{id, name}`` exactly as ``push_assignable_people`` names the person. A name that is
+    itself an address is not a name: the project handle (or the id) stands in."""
+    from app.services import handles
+
+    name = (user.name or "").strip()
+    if not name or _looks_email(name):
+        name = (handles.project_handle(db, user, project_id) or "").strip() or user.id
+    return {"id": user.id, "name": name}
+
+
+def _assignable_by_handle(db: Session, project_id: str) -> dict[str, User]:
+    from app.services import handles, triage
+
+    out: dict[str, User] = {}
+    for user in triage.assignable_people(db, project_id):
+        # The project handle is what `_apply_assign` writes; the account handle is what a
+        # project with no org falls back to, and `project_handle` already returns it then.
+        for handle in {handles.project_handle(db, user, project_id), user.id}:
+            if handle:
+                out.setdefault(handle, user)
+    return out
+
+
+def holders(db: Session, item: Item) -> dict:
+    """``assignee`` and ``held_by`` for one item, each only when there is one to name.
+
+    ``assignee`` is a person this project lists as assignable; an assignee that is an agent,
+    or a handle nobody here holds, is not sent (its id would be an agent or seat id).
+    ``held_by`` is the lease: an agent is named by its label, with ``owner`` (its key's user)
+    and ``agent_kind`` (its declared vendor). The agent id itself never leaves.
+    """
+    from app.models import Agent, ApiKey
+
+    people = _assignable_by_handle(db, item.project_id)
+    out: dict = {}
+    assignee = people.get((item.assignee or "").strip())
+    if assignee is not None:
+        out["assignee"] = _person(db, assignee, item.project_id)
+    holder = (item.claimed_by or "").strip()
+    if not holder:
+        return out
+    agent = db.get(Agent, holder)
+    if agent is not None:
+        label = (agent.label or "").strip()
+        if not label or _looks_email(label) or holder in label:
+            label = "agent"
+        held: dict = {"kind": "agent", "label": label}
+        key = db.get(ApiKey, agent.api_key_id) if agent.api_key_id else None
+        owner = db.get(User, key.user_id) if key is not None and key.user_id else None
+        if owner is not None:
+            held["owner"] = _person(db, owner, item.project_id)
+        vendor = (agent.capabilities or {}).get("vendor") if isinstance(
+            agent.capabilities, dict) else None
+        if isinstance(vendor, str) and vendor.strip():
+            held["agent_kind"] = vendor.strip()
+        out["held_by"] = held
+        return out
+    person = people.get(holder)
+    if person is not None:
+        out["held_by"] = {"kind": "person", "label": _person(db, person, item.project_id)["name"]}
+    else:
+        # A lease under a name this box cannot place (a key name, a removed agent). The
+        # string itself may be a seat or key id, so only the fact of the hold goes out.
+        out["held_by"] = {"kind": "agent", "label": "agent"}
+    return out
 
 
 def _prd_body(db: Session, prd: Prd) -> dict:

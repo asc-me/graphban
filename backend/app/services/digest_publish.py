@@ -79,8 +79,10 @@ def _cutoff() -> datetime:
     return datetime.now(timezone.utc) - DONE_WINDOW
 
 
-def _item_rows(db: Session, project_id: str, cutoff: datetime) -> list[dict]:
+def _item_rows(db: Session, project_id: str, cutoff: datetime,
+               with_holders: bool = False) -> list[dict]:
     from app.services import clustering
+    from app.services import project_sync_payload
 
     pool = clustering.load_pool(db, project_id)
     rows = []
@@ -107,6 +109,9 @@ def _item_rows(db: Session, project_id: str, cutoff: datetime) -> list[dict]:
         }
         if item.status == "done":
             row["done_at"] = _iso(_aware(item.done_at))
+        if with_holders:
+            # GBC-P23: `assignee` / `held_by`, only under a stored effective `full`.
+            row.update(project_sync_payload.holders(db, item))
         rows.append(row)
     return rows
 
@@ -170,8 +175,55 @@ def _request_rows(db: Session, project_id: str, cutoff: datetime) -> list[dict]:
 
 
 def build_digest(db: Session, project_id: str) -> list[dict]:
+    """The digest rows. Items carry holders only while the project's effective level is
+    `full` AND the console has stored it (GRPH-1978); otherwise exactly as before."""
+    from app.services import project_sync_payload
+
     cutoff = _cutoff()
-    return _item_rows(db, project_id, cutoff) + _request_rows(db, project_id, cutoff)
+    with_holders = project_sync_payload.holders_allowed(db, project_id)
+    return (_item_rows(db, project_id, cutoff, with_holders)
+            + _request_rows(db, project_id, cutoff))
+
+
+#: A 422 naming one of these is the console's stored level refusing holder fields.
+_HOLDER_FIELDS = ("assignee", "held_by")
+
+
+def _refusal(resp) -> tuple[str, str | None]:
+    try:
+        data = resp.json()
+    except Exception:  # noqa: BLE001 — an unreadable refusal is still a refusal
+        data = None
+    if not isinstance(data, dict):
+        return f"http_{resp.status_code}", None
+    reason = data.get("detail") or data.get("reason") or f"http_{resp.status_code}"
+    field = data.get("field") if isinstance(data.get("field"), str) else None
+    return str(reason), field
+
+
+def _post_digest(db: Session, base: str, headers: dict, project: Project, name: str):
+    """One digest POST. A holder 422 is recorded, the console's choice is re-read and
+    re-reported, and the digest is rebuilt and sent once more under the level now held."""
+    from app.models import SyncProject
+    from app.services import project_sync_lifecycle as lifecycle
+
+    mapping = db.get(SyncProject, project.id)
+    if mapping is not None:
+        lifecycle.report(db, mapping)
+    resp = None
+    for attempt in (1, 2):
+        body = {"record": "item_digests", "project": name,
+                "items": build_digest(db, project.id)}
+        resp = httpx.post(base, json=body, headers=headers, timeout=_TIMEOUT)
+        if resp.status_code not in (403, 422):
+            return resp
+        reason, field = _refusal(resp)
+        lifecycle.record_refusal(db, db.get(SyncProject, project.id),
+                                 f"item-digests {resp.status_code}", reason=reason, field=field)
+        if attempt == 2 or resp.status_code != 422 or field not in _HOLDER_FIELDS:
+            return resp
+        lifecycle.refresh(db)
+    return resp
 
 
 def publish_digests(db: Session, *, cloud_url: str, api_key: str) -> dict | None:
@@ -194,9 +246,7 @@ def publish_digests(db: Session, *, cloud_url: str, api_key: str) -> dict | None
             continue
         try:
             if box_push.publish_enabled(db, project.id, "item_digests"):
-                body = {"record": "item_digests", "project": name,
-                        "items": build_digest(db, project.id)}
-                resp = httpx.post(base, json=body, headers=headers, timeout=_TIMEOUT)
+                resp = _post_digest(db, base, headers, project, name)
                 if resp.status_code == 404:
                     raise NotServed()
                 resp.raise_for_status()

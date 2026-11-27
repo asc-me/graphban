@@ -600,26 +600,71 @@ def push_assignable_people(db: Session, *, cloud_url: str, api_key: str) -> dict
     from sqlalchemy import select
     from app.models import Project
 
+    from app.services import box_push
+
     url, headers = cloud_url.rstrip("/") + PEOPLE_FEATURE_PATH, {"X-API-Key": api_key}
     out: dict = {"pushed": [], "errors": []}
+    # GBC-P23: `self` only once a box-push receipt has listed `assignable_self`.
+    mark_self = box_push.assignable_self_seen()
+    own_email = _linked_email(db) if mark_self else ""
     served = False
     for project in list(db.scalars(select(Project).order_by(Project.name, Project.id))):
         name = (project.name or "").strip()
         if not name:
             continue
-        people = [{"id": u.id, "name": u.name or u.id}
-                  for u in assignable_people(db, project.id)]
+        users = assignable_people(db, project.id)
+        people = [{"id": u.id, "name": u.name or u.id} for u in users]
+        if mark_self:
+            _mark_self(people, users, own_email)
         try:
             resp = httpx.post(url, params={"project": name}, headers=headers,
                               timeout=_TIMEOUT, json={"people": people})
             if resp.status_code == 404 and not served:
                 return None
+            if resp.status_code in (403, 422):
+                _record_people_refusal(db, project.id, resp)
             resp.raise_for_status()
             served = True
             out["pushed"].append(name)
         except Exception as e:  # noqa: BLE001 — retried on the next sync
             out["errors"].append({"project": name, "error": f"{type(e).__name__}: {e}"})
     return out
+
+
+def _linked_email(db: Session) -> str:
+    """The linked engineer's address (`SyncLink.linked_email`), lowercased; "" when none."""
+    from app.models import SyncLink
+
+    link = db.get(SyncLink, "instance")
+    return ((link.linked_email if link is not None else "") or "").strip().lower()
+
+
+def _mark_self(people: list[dict], users: list, own_email: str) -> None:
+    """`self: true` on the one person whose email is the linked engineer's, else on none.
+
+    The email decides on the box and never goes out: the entry stays `{id, name, self}`.
+    """
+    if not own_email:
+        return
+    for entry, user in zip(people, users):
+        if (user.email or "").strip().lower() == own_email:
+            entry["self"] = True
+            return
+
+
+def _record_people_refusal(db: Session, project_id: str, resp) -> None:
+    from app.models import SyncProject
+    from app.services import project_sync_lifecycle as lifecycle
+
+    try:
+        data = resp.json()
+    except Exception:  # noqa: BLE001
+        data = None
+    data = data if isinstance(data, dict) else {}
+    lifecycle.record_refusal(
+        db, db.get(SyncProject, project_id), f"assignable-people {resp.status_code}",
+        reason=str(data.get("detail") or f"http_{resp.status_code}"),
+        field=data.get("field") if isinstance(data.get("field"), str) else None)
 
 
 def _route_request(db: Session, target: dict, decision: dict, project_id: str | None) -> Item:

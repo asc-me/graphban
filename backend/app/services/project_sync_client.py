@@ -163,6 +163,33 @@ def push_entities(db: Session, *, cloud_project_id: str, entities: list[Entity],
     return SyncResult(status="ok", stored=stored, refused=refused)
 
 
+#: GBC-P23: the levels the console stores per box. ``full`` lets holder fields and a
+#: non-home box's ``item`` records through; ``summaries`` refuses both.
+EFFECTIVE_SYNC_LEVELS = ("full", "summaries")
+
+
+def report_effective_sync(db: Session, *, cloud_project_id: str, effective_sync: str,
+                          transport: httpx.BaseTransport | None = None) -> SyncResult:
+    """``POST /api/sync/project-sync`` ``{effective_sync}`` with ``X-Cloud-Project``.
+
+    The console answers ``200 {project_id, effective_sync}`` and stores the level for this
+    box. Any other value is a 422 naming ``effective_sync``, so the box refuses to send one.
+    """
+    if effective_sync not in EFFECTIVE_SYNC_LEVELS:
+        raise ValueError(f"effective_sync must be one of {', '.join(EFFECTIVE_SYNC_LEVELS)}")
+    result, resp = _call(db, "POST", "/api/sync/project-sync",
+                         json_body={"effective_sync": effective_sync},
+                         extra_headers={"X-Cloud-Project": cloud_project_id},
+                         transport=transport)
+    if result is not None:
+        return result
+    data = _object(resp)
+    answered = data.get("effective_sync") if isinstance(data, dict) else None
+    if answered not in EFFECTIVE_SYNC_LEVELS:
+        return SyncResult(status="unknown", reason="the console answered without effective_sync")
+    return SyncResult(status="ok", version=answered)
+
+
 def purge_entities(db: Session, *, project: str,
                    transport: httpx.BaseTransport | None = None) -> SyncResult:
     """``DELETE /api/sync/project-entities?project=`` → ``{deleted}``.
