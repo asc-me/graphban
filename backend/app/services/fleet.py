@@ -1655,6 +1655,14 @@ OPEN_TOOLS: dict[str, str] = {
         # GRPH-1279: the design-set read.
         "get_design_set",
     )},
+    # GRPH-P104 S3: the PRD-link verbs. Every role is told of a link request or a thread
+    # message on a PRD it works, so every role must be able to answer; authority is in the
+    # service — writing the side's project, and a person for accept/decline/unlink/file by
+    # default.
+    **{name: "bounded in-service by the link's sides and the org's person-decides setting, "
+             "not by role" for name in (
+        "request_prd_link", "decide_prd_link", "post_comment", "list_threads",
+        "file_suggested_item")},
     "setup_project": "a read despite the name — returns a checklist, changes nothing",
     "collision_clusters": "the divvy a planner allocates FROM; seeing the partition is not "
                           "taking from it, and a worker that could not see it would have to "

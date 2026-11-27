@@ -24,7 +24,7 @@ from app.services import tool_tiers
 #
 # Raising CEILING is a decision, not a fix. The history below is a series of raises that the
 # docstring itself argues should have been trims.
-CEILING = 18360
+CEILING = 19020
 # 13592 -> 13595 (GRPH-146). `get_code_map` gained `limit`/`offset` so a bounded read is
 # possible at all, and that two-property addition did NOT fit: it cost ~73 tokens against 8 of
 # headroom. It was paid for inside the manifest rather than by raising the ceiling — four
@@ -252,7 +252,14 @@ CEILING = 18360
 # 18329 -> 18350 (GRPH-1952, P92 D4): `propose_rule` takes `import_run`, so the customer's
 # agent files its prose findings onto the run the CLI opened. Every harness's agent needs it,
 # so it cannot be gated to a fleet key.
-MEASURED_TOKENS = 18350  # P75 S1: +170 for answer_wait (ceiling 17775). GRPH-1650's
+# 18350 -> 19007, and CEILING 18360 -> 19020 with it (GRPH-1996, P104 S3): five PRD-link tools
+# (`request_prd_link`, `decide_prd_link`, `post_comment`, `list_threads`, `file_suggested_item`),
+# +657, every one in core and open to every role. Not gated, and that is the decision: a link
+# request or thread message is DELIVERED as a directive on heartbeat to whoever works the PRD,
+# whatever its role, and a directive the agent has no verb to answer is the person-relay the
+# PRD exists to remove. A tier would not have helped this number (CEILING measures every tier).
+# Already at the bone: one-line descriptions, three to six properties, a two-field outputSchema.
+MEASURED_TOKENS = 19007  # P75 S1: +170 for answer_wait (ceiling 17775). GRPH-1650's
 # create_item `agent_id` is fleet-only (_FLEET_ONLY_ARGS), so it costs this manifest nothing.
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming

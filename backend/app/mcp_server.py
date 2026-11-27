@@ -52,6 +52,7 @@ from app.services import design_sets as design_sets_svc
 from app.services import documents as documents_svc
 from app.services import handles
 from app.services import scans as scans_svc
+from app.services import threads as threads_svc
 from app.services import touchpoint_check
 from app.services import events as events_svc
 from app.services import fleet as fleet_svc
@@ -1012,6 +1013,48 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["wait"],
         },
     },
+    # GRPH-P104 S3: PRD links and their one thread per pair, on the agent's normal loop.
+    {
+        "name": "request_prd_link",
+        "description": "Ask to link your PRD `prd` to `other_prd` in another project of your org. One per pair.",
+        "inputSchema": {"type": "object", "properties": {
+            "prd": {"type": "string"}, "other_prd": {"type": "string"}, "reason": {"type": "string"},
+        }, "required": ["prd", "other_prd", "reason"]},
+    },
+    {
+        "name": "decide_prd_link",
+        "description": "Receiving side: accept, decline (reason) or unlink. Default: a person decides.",
+        "inputSchema": {"type": "object", "properties": {
+            "link": {"type": "string"},
+            "decision": {"type": "string", "enum": ["accept", "decline", "unlink"]},
+            "reason": {"type": "string"},
+        }, "required": ["link", "decision"]},
+    },
+    {
+        "name": "post_comment",
+        "description": "Post on a linked pair's thread. `suggested_item` carries `item` {title, ...}.",
+        "inputSchema": {"type": "object", "properties": {
+            "link": {"type": "string"},
+            "kind": {"type": "string", "enum": ["note", "question", "correction", "suggested_item"]},
+            "body": {"type": "string"}, "cites": {"type": "array", "items": {"type": "string"}},
+            "reply_to": {"type": "integer"}, "item": {"type": "object"},
+        }, "required": ["link", "kind"]},
+    },
+    {
+        "name": "list_threads",
+        "description": "PRD links you can see (or one PRD's). With `link`: its thread after `after`.",
+        "inputSchema": {"type": "object", "properties": {
+            "prd": {"type": "string"}, "link": {"type": "string"}, "after": {"type": "integer"},
+        }},
+    },
+    {
+        "name": "file_suggested_item",
+        "description": "File a suggested_item `message` as your item, or decline it with a reason.",
+        "inputSchema": {"type": "object", "properties": {
+            "link": {"type": "string"}, "message": {"type": "integer"},
+            "decision": {"type": "string", "enum": ["file", "decline"]}, "reason": {"type": "string"},
+        }, "required": ["link", "message", "decision"]},
+    },
     {
         "name": "describe_code",
         "description": (
@@ -1678,6 +1721,8 @@ _READ_ONLY = {
     # mattered: scope gating ships a read-only key exactly this set, so a read-only
     # credential could not call the tool that exists to let an agent read a PRD.
     "get_prd",
+    # GRPH-P104 S3: a linked pair's threads; posting is `post_comment`.
+    "list_threads",
 }
 
 _PAGE_META = {  # shared output shape for paged reads (#9)
@@ -1988,6 +2033,11 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     "heartbeat": _ITEM_SCHEMA,
     "release_item": _ITEM_SCHEMA,
     "answer_wait": {"type": "object", "properties": {"wait": {"type": "string"}}},
+    "request_prd_link": {"type": "object", "properties": {"id": _STR, "status": _STR}},
+    "decide_prd_link": {"type": "object", "properties": {"id": _STR, "status": _STR}},
+    "post_comment": {"type": "object", "properties": {"id": {"type": "integer"}, "kind": _STR}},
+    "list_threads": {"type": "object", "properties": {"links": {"type": "array"}}},
+    "file_suggested_item": {"type": "object", "properties": {"decided": {"type": "boolean"}}},
     "related_work": {"type": "object", "properties": {"results": {"type": "array"}}},
     "next_cluster": {
         "type": "object",
@@ -2600,7 +2650,7 @@ _FILTER_READS = frozenset({
     "unscoped_fixes", "get_rule_toggles", "list_entitlements", "propose_allocation",
     "collision_clusters",
     "fleet_status", "get_code_map", "graph_query", "search_code", "scan_status",
-    "scans_due", "prd_acceptance", "learning_loop", "search_docs",
+    "scans_due", "prd_acceptance", "learning_loop", "search_docs", "list_threads",
 })
 
 
@@ -2728,6 +2778,72 @@ def _readable_prd(db, prd_id: str, readable):
     if prd.project_id not in readable:
         raise authz.Forbidden(f"prd {prd_id!r} is outside this key's project scope")
     return prd
+
+
+_PRD_LINK_TOOLS = frozenset({"request_prd_link", "decide_prd_link", "post_comment",
+                             "list_threads", "file_suggested_item"})
+
+
+def _link_caller(db, key: ApiKey, args: dict, session_id, readable) -> "links_svc.Caller":
+    """The `Caller` the PRD-link services take (GRPH-P104). An MCP call is always an agent's:
+    a bare credential is a relay, never the person, so a person-only act stays `needs_person`.
+    Signed with the agent's label (else the key's name) and the key's person's name — never
+    an email or a seat id."""
+    agent_id = _agent_for_call(db, key, args, session_id)
+    agent = db.get(Agent, agent_id) if agent_id else None
+    user = db.get(User, key.user_id) if key.user_id else None
+    writable = authz.key_writable_ids(db, key) if "write" in (key.scopes or []) else []
+    return links_svc.Caller(readable=list(readable), writable=list(writable), is_agent=True,
+                            label=(agent.label if agent and agent.label else "") or key.name or "",
+                            owner=user.name if user else "")
+
+
+def _prd_link_tool(db, tool: str, args: dict, key: ApiKey, session_id, readable) -> dict:
+    from app.services import suggestions as suggestions_svc
+
+    caller = _link_caller(db, key, args, session_id, readable)
+    try:
+        if tool == "request_prd_link":
+            link = links_svc.request_prd_link(db, caller, args["prd"], args["other_prd"],
+                                              reason=args.get("reason", ""))
+            return links_svc.render_prd_link(db, caller, link)
+        if tool == "decide_prd_link":
+            decision = args["decision"]
+            if decision == "accept":
+                link = links_svc.accept_prd_link(db, caller, args["link"])
+            elif decision == "decline":
+                link = links_svc.decline_prd_link(db, caller, args["link"],
+                                                  reason=args.get("reason", ""))
+            elif decision == "unlink":
+                link = links_svc.unlink_prd_link(db, caller, args["link"])
+            else:
+                raise ValueError("decision is accept, decline or unlink")
+            return links_svc.render_prd_link(db, caller, link)
+        if tool == "post_comment":
+            if args["kind"] == "suggested_item":
+                if not isinstance(args.get("item"), dict):
+                    raise ValueError("a suggested_item carries `item` {title, ...}")
+                return suggestions_svc.suggest(db, caller, args["link"], args["item"],
+                                               reply_to=args.get("reply_to"))
+            return threads_svc.post(db, caller, args["link"], kind=args["kind"],
+                                    body=args.get("body", ""), cites=args.get("cites"),
+                                    reply_to=args.get("reply_to"))
+        if tool == "list_threads":
+            if args.get("link"):
+                return threads_svc.read_thread(db, caller, args["link"],
+                                               after=int(args.get("after") or 0))
+            return {"links": [links_svc.render_prd_link(db, caller, link)
+                              for link in links_svc.list_prd_links(db, caller, args.get("prd"))]}
+        # file_suggested_item
+        if args["decision"] == "file":
+            return suggestions_svc.file_suggestion(db, caller, args["link"], int(args["message"]))
+        if args["decision"] == "decline":
+            return suggestions_svc.decline_suggestion(db, caller, args["link"],
+                                                      int(args["message"]),
+                                                      reason=args.get("reason", ""))
+        raise ValueError("decision is file or decline")
+    except ValueError as e:
+        raise errors.Validation(str(e)) from e
 
 
 def _key_user_id(db, key: ApiKey) -> str | None:
@@ -4287,6 +4403,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             message, hint = items_svc.release_refusal(db, args["id"])
             raise errors.Conflict(message, hint=hint)
         return _item_dict(item)
+    if name in _PRD_LINK_TOOLS:
+        return _prd_link_tool(db, name, args, key, session_id, readable)
     if name == "answer_wait":
         _scoped_item(db, args["wait"], allowed)
         agent = fleet_svc.caller_identity(args.get("agent_id"), key)

@@ -133,7 +133,7 @@ _FILTERS = {
     "unscoped_fixes", "get_rule_toggles", "list_entitlements", "propose_allocation",
     "collision_clusters",
     "fleet_status", "get_code_map", "graph_query", "search_code", "scan_status",
-    "scans_due", "prd_acceptance", "learning_loop", "search_docs",
+    "scans_due", "prd_acceptance", "learning_loop", "search_docs", "list_threads",
 }
 # One subject, named by a required id. A dropped extra cannot widen a page.
 _IDENTITY = {
@@ -154,6 +154,7 @@ _WRITES = {
     "report_utilization", "request_rebaseline", "resolve_finding", "retire_wave",
     "review_recommendation", "set_entitlement", "sign_off", "submit_verdict",
     "unlink_code", "unlink_items", "update_item", "update_prd",
+    "request_prd_link", "decide_prd_link", "post_comment", "file_suggested_item",
 }
 
 

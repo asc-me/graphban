@@ -159,6 +159,11 @@ CORE_TOOLS: dict[str, str] = {
 
     "answer_wait": "the answer loop: an agent that can ask a person but not answer a peer's "
                    "question strands the wait. Same class as release_item",
+    **{name: "the PRD-link loop (GRPH-P104 S3): a link request or thread message arrives as a "
+                "directive on heartbeat, and an agent shipped the directive but not the verbs "
+                "to answer it is the person-relay this exists to remove"
+       for name in ("request_prd_link", "decide_prd_link", "post_comment", "list_threads",
+                    "file_suggested_item")},
 
     # ---- review: a plain credential is how a human reviews -----------------------------------
     "claim_review": "review is not fleet administration. Tiering these would mean a reviewer "
