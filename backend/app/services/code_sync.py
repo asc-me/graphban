@@ -449,10 +449,16 @@ def console_projects(db: Session) -> dict:
         return {"status": "refused", "reason": e.reason}
     except ConsoleUnknown as e:
         return {"status": "unknown", "reason": e.reason}
+    listed = [r for r in rows if isinstance(r, dict) and r.get("id")]
     projects = [{"id": str(r["id"]), "tag": str(r.get("tag") or ""),
-                 "name": str(r.get("name") or r["id"])}
-                for r in rows if isinstance(r, dict) and r.get("id")]
+                 "name": str(r.get("name") or r["id"])} for r in listed]
     _refresh_tags(db, {p["id"]: p["tag"] for p in projects if p["tag"]})
+    # GBC-P23 (GRPH-1978): each entry's `sync` and `home` are stored on the mapping. A
+    # missing `home` stays unknown, never false: such a box pushes as it always has.
+    from app.services import project_sync_lifecycle
+    project_sync_lifecycle.note_console_choice(
+        db, [{"id": str(r["id"]), **{k: r[k] for k in ("sync", "home") if k in r}}
+             for r in listed])
     return {"status": "ok", "projects": projects}
 
 
@@ -492,6 +498,8 @@ def set_project_map(db: Session, mappings: list[tuple[str, str]],
         if row.cloud_project_id != cloud:
             row.cloud_project_id = cloud
             row.cloud_project_tag = ""
+            # The console's choice and the stored level were the old project's.
+            row.console_sync = row.console_home = row.reported_sync = None
             row.last_push_at = row.last_push_result = row.last_push_reason = None
         if cloud in tags:
             row.cloud_project_tag = tags[cloud]
@@ -803,6 +811,25 @@ def _pull_specs_on_sync(db: Session, url: str, key: str) -> dict | None:
         return {"remote": [], "applied": [], "conflicts": [], "error": f"{type(e).__name__}: {e}"}
 
 
+def _sync_choice_on_sync(db: Session) -> dict | None:
+    """GBC-P23: read each project's console `sync`/`home`, then report the effective level
+    wherever it moved (GRPH-1978). Before the digests and the people push, so a holder field
+    rides only a level the console has stored. Never fatal; None on a box with no deployment
+    credential, where there is no console choice to read."""
+    from app.services import project_sync_lifecycle
+
+    try:
+        read = console_projects(db)
+        if read.get("status") != "ok":
+            return {"read": read.get("status"), "reason": read.get("reason")}
+        return {"read": "ok", "reported": project_sync_lifecycle.report_all(db)}
+    except NotLinked:
+        return None
+    except Exception as e:  # noqa: BLE001 — the graph push already landed; never undo it
+        db.rollback()
+        return {"read": "error", "error": f"{type(e).__name__}: {e}"}
+
+
 def _sync_tail(db: Session, url: str, key: str) -> dict:
     """Rule decisions, the org-view push, specs, then the digests. All run after any graph batches."""
     out = {
@@ -815,6 +842,9 @@ def _sync_tail(db: Session, url: str, key: str) -> dict:
     pulled = _pull_specs_on_sync(db, url, key)
     if pulled is not None:
         out["specs_pull"] = pulled
+    choice = _sync_choice_on_sync(db)
+    if choice is not None:
+        out["project_sync"] = choice
     digests = _publish_digests_on_sync(db, url, key)
     if digests is not None:
         out["digests"] = digests

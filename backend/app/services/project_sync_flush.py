@@ -27,6 +27,7 @@ from app.models import SyncManifest, SyncOutbox, SyncProject
 from app.services.project_sync_client import CONTRACT, DEFAULT_MAX_DELAY, get_contract, push_entities
 from app.services.project_sync_outbox import SYNC_LEVEL_SYNC, due, version_in_range
 from app.services.project_sync_payload import entity as payload_entity
+from app.services import project_sync_lifecycle as lifecycle
 
 logger = logging.getLogger("graphban.project_sync_flush")
 
@@ -326,6 +327,26 @@ def _note_attempts(rows: list[tuple]) -> None:
         row.attempts = (row.attempts or 0) + 1
 
 
+#: A 422 naming one of these is the console's stored level refusing holders or a non-home
+#: item (GBC-P23). It is not the entity's fault, so the rows are not parked for it.
+_LEVEL_FIELDS = ("assignee", "held_by", "entities")
+
+
+def _rebuild(db: Session, fitted: list[tuple], mapping: SyncProject | None) -> list[tuple]:
+    """``fitted`` again, each body rebuilt under the level the console now holds. A
+    non-home box that fell to ``summaries`` sends none of them."""
+    if mapping is None or (lifecycle.non_home(mapping) and not lifecycle.holders_on(mapping)):
+        return []
+    out = []
+    for row, seen, _old in fitted:
+        if lifecycle.non_home(mapping) and row.entity_type != "item":
+            continue
+        record = payload_entity(db, row.entity_type, row.entity_id)
+        if record is not None:
+            out.append((row, seen, record))
+    return out
+
+
 def flush_once(db: Session, *, now: datetime, transport=None, state: FlushState | None = None,
                rng=None) -> int:
     """Send what is due at ``now``. Returns how many batches were accepted.
@@ -373,6 +394,22 @@ def flush_once(db: Session, *, now: datetime, transport=None, state: FlushState 
         mapping = db.get(SyncProject, project_id)
         if mapping is None or mapping.sync_level != SYNC_LEVEL_SYNC or not mapping.cloud_project_id:
             continue
+        # GBC-P23: the console stores this box's effective level before any body that
+        # carries holders, or any non-home item, is sent. Posts only when it moved.
+        lifecycle.report(db, mapping, transport=transport, now=now)
+        mapping = db.get(SyncProject, project_id)
+        if mapping is None:
+            continue
+        if lifecycle.non_home(mapping):
+            if not lifecycle.holders_on(mapping):
+                # Non-home at `summaries`: this box pushes no entities at all.
+                continue
+            # Non-home at `full`: only this box's own `item` records. `prd`, `comment` and
+            # `wait` are the home box's and the console answers them `403 not_home`.
+            for row in group:
+                if row.entity_type != "item":
+                    _delete_if_unchanged(db, row, row.version)
+            group = [row for row in group if row.entity_type == "item"]
         ready: list[tuple] = []
         for row in group:
             seen = row.version
@@ -399,6 +436,7 @@ def flush_once(db: Session, *, now: datetime, transport=None, state: FlushState 
                 _mark(mapping, result="refused", reason="too_large", now=now)
                 continue
             ready.append((row, seen, record))
+        retried = False
         while ready:
             fitted = _afford(ready, state, now)
             if not fitted:
@@ -424,6 +462,18 @@ def flush_once(db: Session, *, now: datetime, transport=None, state: FlushState 
                 _mark(mapping, result="refused", reason="contract", now=now)
                 db.commit()
                 return sent
+            if (result.status == "refused" and result.field in _LEVEL_FIELDS
+                    and not retried):
+                # The console's stored level is not `full` after all. Record it, re-read the
+                # choice, re-report, and send these rows once more under the level now held.
+                retried = True
+                lifecycle.record_refusal(db, mapping, "project-entities", reason=result.reason,
+                                         field=result.field, now=now)
+                lifecycle.refresh(db, transport=transport, now=now)
+                mapping = db.get(SyncProject, project_id)
+                rebuilt = _rebuild(db, fitted, mapping)
+                ready = rebuilt + ready[len(fitted):]
+                continue
             if result.status != "ok":
                 _park([row for row, _, _ in fitted], reason=result.reason or "refused", contract=None,
                       now=now)

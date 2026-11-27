@@ -2545,6 +2545,16 @@ class SyncProject(Base):
     last_push_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_push_result: Mapped[str | None] = mapped_column(String, nullable=True)
     last_push_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: The console's choice for this project (GRPH-1978, GBC-P23): ``full``, ``summaries``,
+    #: or null — not read yet, or the console sent null. Both null and ``summaries`` count as
+    #: ``summaries``. The console narrows the box's ``sync_level``; it never widens it.
+    console_sync: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: Is this box the project's home on the console? Null is "the console did not say",
+    #: which pushes as before; only an explicit false stops ``prd``/``comment``/``wait``.
+    console_home: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    #: The ``effective_sync`` the console last answered 200 to, for this mapping. Null until
+    #: the first report. Holders go out only while this is ``full``.
+    reported_sync: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=True)
 

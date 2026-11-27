@@ -104,6 +104,12 @@ def project_view(db: Session, project_id: str) -> dict:
         "held_by": _held(project_id, queue["queued"], queue["reasons"]),
         "last_push_at": when,
         "last_push_result": _push_result(mapping),
+        # GRPH-1978: the console's choice, the box's own level and what goes out. The console
+        # narrows the box's level; `effective_sync` is the one reported and obeyed.
+        "console_sync": mapping.console_sync if mapping is not None else None,
+        "console_home": mapping.console_home if mapping is not None else None,
+        "effective_sync": lifecycle.effective_sync(mapping) if mapping is not None else None,
+        "reported_sync": mapping.reported_sync if mapping is not None else None,
     }
 
 
@@ -164,6 +170,8 @@ def _point(db: Session, project_id: str, cloud_project_id: str, tag: str) -> Non
     row.cloud_project_id = cloud_project_id
     row.cloud_project_tag = tag
     row.last_push_at = row.last_push_result = row.last_push_reason = None
+    # The console's choice and the level it stored belong to the old cloud project.
+    row.console_sync = row.console_home = row.reported_sync = None
     db.commit()
 
 

@@ -50,6 +50,10 @@ _refused_key: str | None = None
 #: receipt has named it (and a legacy sync key's never does) neither field is sent.
 BUILD_CAPABILITY = "box_build"
 _box_build_seen = False
+#: GBC-P23 (GRPH-1978): the receipt capability that lets the assignable-people push mark the
+#: linked engineer's own entry `self: true`. Same seen-capabilities state as `box_build`.
+SELF_CAPABILITY = "assignable_self"
+_assignable_self_seen = False
 #: Start of the current run of failed project pushes; None while nothing is failing.
 _failing_since: datetime | None = None
 _SHA = re.compile(r"^[0-9a-fA-F]{7,64}$")
@@ -60,9 +64,10 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 def reset_refusal() -> None:
     """Tests start from a box that has not just been refused."""
-    global _refused_key, _box_build_seen, _failing_since
+    global _refused_key, _box_build_seen, _assignable_self_seen, _failing_since
     _refused_key = None
     _box_build_seen = False
+    _assignable_self_seen = False
     _failing_since = None
 
 
@@ -354,14 +359,21 @@ def push_box_view(db: Session, *, cloud_url: str, api_key: str) -> dict:
 
 
 def _read_receipt(resp: object) -> None:
-    """Note whether the receipt's `capabilities` names `box_build`."""
-    global _box_build_seen
+    """Note whether the receipt's `capabilities` names `box_build` and `assignable_self`."""
+    global _box_build_seen, _assignable_self_seen
     try:
         data = resp.json()
     except Exception:  # noqa: BLE001 — a receipt we cannot read grants nothing
         return
     caps = data.get("capabilities") if isinstance(data, dict) else None
-    _box_build_seen = isinstance(caps, (list, tuple)) and BUILD_CAPABILITY in caps
+    listed = isinstance(caps, (list, tuple))
+    _box_build_seen = listed and BUILD_CAPABILITY in caps
+    _assignable_self_seen = listed and SELF_CAPABILITY in caps
+
+
+def assignable_self_seen() -> bool:
+    """Has the latest box-push receipt listed `assignable_self`? Until it has, no `self`."""
+    return _assignable_self_seen
 
 
 def publish_enabled(db: Session, project_id: str, flag: str) -> bool:

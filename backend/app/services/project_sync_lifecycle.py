@@ -257,3 +257,159 @@ def retry_pending_purges(db: Session, *, transport=None) -> list[dict]:
             continue
         out.append(_finish_purge(db, row, requested, transport=transport))
     return out
+
+
+# ---- the console's choice and the effective level (GRPH-1978, GBC-P23) ---------------------
+
+#: What the box reports on ``POST /api/sync/project-sync``. Only ``full`` lets holders out.
+EFFECTIVE_FULL = "full"
+EFFECTIVE_SUMMARIES = "summaries"
+
+
+def effective_sync(mapping: SyncProject | None) -> str:
+    """``full`` only when the console chose ``full`` AND the box admin chose ``sync``.
+
+    The console narrows, never widens (owner, 2026-11-27): console ``full`` on a box at
+    ``digests`` is ``summaries``. A null console choice is ``summaries``.
+    """
+    if mapping is None:
+        return EFFECTIVE_SUMMARIES
+    if mapping.console_sync == EFFECTIVE_FULL and mapping.sync_level == outbox.SYNC_LEVEL_SYNC:
+        return EFFECTIVE_FULL
+    return EFFECTIVE_SUMMARIES
+
+
+def holders_on(mapping: SyncProject | None) -> bool:
+    """May this project's pushes carry ``assignee`` / ``held_by``?
+
+    Both the effective level and the level the console last stored must be ``full``. The
+    second half is what makes "report before the first holder push" structural: a holder
+    field cannot go out ahead of the 200 that stored ``full``.
+    """
+    return (mapping is not None and effective_sync(mapping) == EFFECTIVE_FULL
+            and mapping.reported_sync == EFFECTIVE_FULL)
+
+
+def non_home(mapping: SyncProject | None) -> bool:
+    """The console said explicitly that this box is not the project's home.
+
+    A missing ``home`` is null and is NOT this: such a box pushes as before and the
+    console's ``403 not_home`` still decides.
+    """
+    return mapping is not None and mapping.console_home is False
+
+
+def note_console_choice(db: Session, rows: list[dict]) -> None:
+    """Store each mapped project's ``sync`` and ``home`` from ``GET /api/sync/projects``.
+
+    ``rows`` are the console's entries, keyed by ``id`` (the cloud project id). A mapping the
+    console did not list keeps what it had: absence from one read is not a change of choice.
+    A ``sync`` key that is null or anything but ``full`` is stored as ``summaries`` — what it
+    counts as. An entry with no ``sync`` key at all is a console that predates the choice:
+    stored null, and nothing is reported for it. A ``home`` that is not a bool is null
+    (unknown), never false.
+    """
+    by_cloud = {str(r.get("id")): r for r in rows if isinstance(r, dict) and r.get("id")}
+    changed = False
+    for mapping in db.scalars(select(SyncProject)).all():
+        row = by_cloud.get(mapping.cloud_project_id or "")
+        if row is None:
+            continue
+        if "sync" in row:
+            sync = EFFECTIVE_FULL if row["sync"] == EFFECTIVE_FULL else EFFECTIVE_SUMMARIES
+        else:
+            sync = None
+        home = row.get("home")
+        home = home if isinstance(home, bool) else None
+        if mapping.console_sync != sync or mapping.console_home is not home:
+            mapping.console_sync = sync
+            mapping.console_home = home
+            changed = True
+    if changed:
+        db.commit()
+
+
+def record_refusal(db: Session, mapping: SyncProject | None, what: str, *,
+                   reason: str | None, field: str | None = None,
+                   now: datetime | None = None) -> None:
+    """A 403 or 422 on a GBC-P23 push, written where link status reads it.
+
+    ``last_push_result`` / ``last_push_reason`` are what ``GET /api/sync/status`` shows per
+    mapping. Swallowing the refusal would leave the panel saying ``ok`` while nothing landed.
+    """
+    if mapping is None:
+        return
+    detail = reason or "refused"
+    if field:
+        detail = f"{detail} ({field})"
+    mapping.last_push_at = _now(now)
+    mapping.last_push_result = "refused"
+    mapping.last_push_reason = f"{what}: {detail}"
+    db.commit()
+
+
+def report(db: Session, mapping: SyncProject, *, transport=None,
+           now: datetime | None = None, force: bool = False) -> str | None:
+    """Report this mapping's effective level when it differs from what the console stored.
+
+    Returns the level the console now holds for this box (``reported_sync``), or None when
+    nothing has been stored yet. A refusal is recorded on link status; no answer leaves
+    ``reported_sync`` as it was, so holders stay off until a 200 says ``full``. When the
+    stored level moves on a synced project, its entities are requeued: their bodies gain or
+    lose the holder fields.
+    """
+    if not mapping.cloud_project_id:
+        return mapping.reported_sync
+    if mapping.console_sync is None and mapping.reported_sync is None:
+        # The console has not stated a choice (not read yet, or it predates GBC-P23).
+        # There is nothing to answer, and an older console does not serve the route.
+        return None
+    wanted = effective_sync(mapping)
+    if mapping.reported_sync == wanted and not force:
+        return wanted
+    project_id = mapping.local_project_id
+    result = client.report_effective_sync(
+        db, cloud_project_id=mapping.cloud_project_id, effective_sync=wanted,
+        transport=transport)
+    mapping = db.get(SyncProject, project_id)
+    if mapping is None:
+        return None
+    if result.status == "refused":
+        record_refusal(db, mapping, "project-sync", reason=result.reason, field=result.field,
+                       now=now)
+        return mapping.reported_sync
+    if result.status != "ok":
+        return mapping.reported_sync
+    moved = mapping.reported_sync != result.version
+    mapping.reported_sync = result.version
+    if moved and mapping.sync_level == outbox.SYNC_LEVEL_SYNC:
+        _resume(db, project_id, _now(now))
+    db.commit()
+    return mapping.reported_sync
+
+
+def report_all(db: Session, *, transport=None, now: datetime | None = None,
+               force: bool = False) -> dict[str, str | None]:
+    """``report`` for every mapping with a cloud project. Keyed by local project id."""
+    rows = list(db.scalars(select(SyncProject).order_by(SyncProject.local_project_id)).all())
+    return {row.local_project_id: report(db, row, transport=transport, now=now, force=force)
+            for row in rows if row.cloud_project_id}
+
+
+def refresh(db: Session, *, transport=None, now: datetime | None = None) -> dict | None:
+    """Re-read the console's choice and re-report every mapping. The holder-422 path.
+
+    Returns ``report_all``'s answer, or None when the projects read got no ``ok``: the
+    stored choice then stands, and so does the level the console last stored.
+    """
+    from app.services import code_sync
+
+    try:
+        read = code_sync.console_projects(db)
+    except code_sync.NotLinked:
+        return None
+    if read.get("status") != "ok":
+        return None
+    # Forced: the 422 is the console saying its stored level is not the one this box
+    # believes it reported, so "already reported" is exactly the fact in doubt.
+    return report_all(db, transport=transport, now=now, force=True)
