@@ -1,7 +1,7 @@
 """Delivery of PRD-link requests and thread messages on the agent's normal loop (GRPH-P104 S3).
 
 Delivered to the PRD, not to a session: a pending request or a new message is pending for a PRD
-until someone working it has read it. "Working it" is an agent that holds an item on the PRD (or
+until someone working it has read it; a PRD is not told about its own side's posts. "Working it" is an agent that holds an item on the PRD (or
 has one in review). Delivery rides the `directive` channel (`fleet.collect_directive`) and
 advances the PRD's cursor, so the PRD's other agents are not told twice. Nothing is deleted, and
 when nobody works a PRD its pending rows stay until someone does.
@@ -32,8 +32,11 @@ def pending_for_prd(db: Session, prd_id: str) -> list[dict]:
         if link.status != "accepted":
             continue
         cursor = read.last_message_id if read else 0
+        # Delivered to the OTHER side only: a PRD is never told about what its own side posted.
+        own_project = link.project_a_id if link.prd_a_id == prd_id else link.project_b_id
         for m in db.scalars(select(PrdLinkMessage).where(
-                PrdLinkMessage.link_id == link.id, PrdLinkMessage.id > cursor
+                PrdLinkMessage.link_id == link.id, PrdLinkMessage.id > cursor,
+                PrdLinkMessage.project_id != own_project,
         ).order_by(PrdLinkMessage.id)):
             out.append({"type": "prd_link_message", "link": link.id, "message": m.id,
                         "kind": m.kind, "body": m.body, "author": m.author_label})
