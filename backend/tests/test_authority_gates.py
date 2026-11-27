@@ -146,6 +146,12 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         # P75 S1. QUALITY: records an answer on a decision wait. Refused for the filing agent,
         # and an agent answer must cite a source that resolves.
         "answer_wait",
+        # GRPH-P104 S3. QUALITY: a link request, a thread post and a read. The authority acts
+        # behind them — accepting, declining or unlinking a link, filing a suggested item — are
+        # `needs_person` for any agent unless the org's one setting lets agents decide, and an
+        # agent never writes a project its key cannot.
+        "request_prd_link", "decide_prd_link", "post_comment", "list_threads",
+        "file_suggested_item",
         # E7. An AUTHORITY gate, and bounded twice: planner-only, so the role holding it
         # cannot build and has nothing to launder; and clamped by the minting credential's
         # own ceiling, so it reshuffles authority rather than manufacturing it.

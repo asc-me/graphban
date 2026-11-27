@@ -75,13 +75,14 @@ def post(db: Session, caller: Caller, link_id: str, *, kind: str, body: str,
 
 
 def _side_of(link: PrdLink, caller: Caller) -> str:
-    a, b = link.project_a_id in caller.readable, link.project_b_id in caller.readable
-    return "a" if a and not b else "b" if b and not a else ""
+    """The side a message is posted from — the same one `sender_side` picks, so a caller that
+    reads both projects is still on exactly one side and is never told about its own message."""
+    return "a" if sender_side(link, caller) == link.project_a_id else "b"
 
 
 # ---- Delivery (GRPH-P104 S3) --------------------------------------------------------------
 # Requests and messages are durable and pending for a PRD until someone working it has been
-# told. "Working" a PRD = holding an item on it; get_context and the oversight view read the
+# told. "Working" a PRD = `prds_worked_by`; get_context and the oversight view read the
 # same pending list through `pending_for_prds`.
 
 def pending_for_prds(db: Session, prd_ids: list[str]) -> list[dict]:
@@ -110,15 +111,28 @@ def pending_for_prds(db: Session, prd_ids: list[str]) -> list[dict]:
     return out
 
 
-def link_directive(db: Session, agent_id: str) -> dict | None:
-    """The pending link request or thread messages on PRDs this agent holds an item on, marked
-    delivered for those PRDs. None when nothing waits."""
-    from app.models import Item
+def prds_worked_by(db: Session, agent_id: str) -> list[str]:
+    """The PRDs an agent works (PRD S3): those it holds an item on — as builder, or holding its
+    review — and, in its own project, the open PRDs its credential's person owns."""
+    from app.models import Agent, ApiKey, Item
 
-    prd_ids = sorted({p for p in db.scalars(select(Item.prd_id).where(
-        Item.claimed_by == agent_id, Item.status.in_(("in_progress", "review")),
-        Item.prd_id.is_not(None))).all() if p})
-    pending = pending_for_prds(db, prd_ids)
+    held = set(db.scalars(select(Item.prd_id).where(
+        Item.prd_id.is_not(None),
+        or_((Item.claimed_by == agent_id) & Item.status.in_(("in_progress", "review")),
+            (Item.review_claimed_by == agent_id) & (Item.status == "review")))).all())
+    agent = db.get(Agent, agent_id)
+    key = db.get(ApiKey, agent.api_key_id) if agent is not None and agent.api_key_id else None
+    if key is not None and key.user_id:
+        held |= {p.id for p in db.scalars(select(Prd).where(
+            Prd.project_id == agent.project_id, Prd.created_by == key.user_id)).all()
+            if not p.close_record}
+    return sorted(p for p in held if p)
+
+
+def link_directive(db: Session, agent_id: str) -> dict | None:
+    """The pending link request or thread messages on PRDs this agent works, marked delivered
+    for those PRDs. None when nothing waits."""
+    pending = pending_for_prds(db, prds_worked_by(db, agent_id))
     if not pending:
         return None
     for p in pending:
@@ -131,4 +145,5 @@ def link_directive(db: Session, agent_id: str) -> dict | None:
             link.seen_b_message_id = max(link.seen_b_message_id, p["latest_id"])
     db.commit()
     return {"type": "prd_link_pending", "pending": pending,
-            "next": "read the pair thread and answer, or accept or decline the request"}
+            "next": "list_threads(link=...) and post_comment to answer; decide_prd_link on a "
+                    "request; file_suggested_item on a suggested_item"}
