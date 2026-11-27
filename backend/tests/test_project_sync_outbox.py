@@ -63,7 +63,8 @@ def test_alembic_head_is_the_proposal_migration():
     cfg.set_main_option("script_location", str(backend / "alembic"))
     cfg.set_main_option("path_separator", "os")
     script = ScriptDirectory.from_config(cfg)
-    assert script.get_heads() == ["0233"]
+    assert script.get_heads() == ["0234"]
+    assert script.get_revision("0234").down_revision == "0233"  # GRPH-1973, key PRD limit
     assert script.get_revision("0233").down_revision == "0232"  # GRPH-1961, blocker status
     assert script.get_revision("0232").down_revision == "0231"  # GRPH-1955, project archive
     assert script.get_revision("0231").down_revision == "0230"  # GRPH-1951, import runs

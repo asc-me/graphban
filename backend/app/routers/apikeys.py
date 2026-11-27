@@ -5,12 +5,13 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.errors import Refused
 from app.mcp_server import manifest_tool_count
-from app.models import ApiKey, Project, User
+from app.models import ApiKey, Prd, Project, User
 from app.schemas import ApiKeyCreate, ApiKeyCreated, ApiKeyOut, ApiKeyRotate
 from app.security import authz
 from app.security.apikey import generate_api_key
 from app.security.deps import get_current_user
 from app.services import events as events_svc
+from app.services import keys as keys_svc
 
 router = APIRouter(prefix="/api-keys", tags=["api-keys"])
 
@@ -31,6 +32,23 @@ def list_keys(db: Session = Depends(get_db), user: User = Depends(get_current_us
 
 @router.post("", response_model=ApiKeyCreated, status_code=201)
 def create_key(body: ApiKeyCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    prd = None
+    if body.prd_id is not None:
+        # A key limited to one PRD (GRPH-1973): one per drain, so a leaked one cannot claim
+        # other work. 404 for a PRD the caller cannot see, the same existence-hiding answer
+        # `require_writable` gives, and every refusal here comes before anything is minted.
+        stored = keys_svc.resolve_prd(db, body.prd_id)
+        prd = db.get(Prd, stored) if stored else None
+        if prd is None or not authz.can_read(db, user.id, prd.project_id):
+            raise HTTPException(404, f"prd not found: {body.prd_id!r}")
+        if body.project_id is not None and body.project_id != prd.project_id:
+            raise HTTPException(
+                422, f"prd {body.prd_id!r} is not in project {body.project_id!r}")
+        # Claiming is a write, so the minter must be able to write the PRD's project; the key
+        # never out-ranks them (design philosophy §2).
+        authz.require_writable(db, user.id, prd.project_id)
+        # Pinned to the PRD's project, so no `project_id` argument can take it elsewhere.
+        body.project_id = prd.project_id
     if body.project_id is not None:
         if db.get(Project, body.project_id) is None:
             raise HTTPException(422, f"unknown project: {body.project_id!r}")
@@ -53,14 +71,20 @@ def create_key(body: ApiKeyCreate, db: Session = Depends(get_db), user: User = D
         # Ingest / attestation writes; require_readable above is not enough. Without this
         # a key minted on a read-only project mints fine and then 403s at use time.
         authz.require_writable(db, user.id, body.project_id)
+    # A PRD-limited key is a drain's key, so it carries the fleet tools.
+    tiers = (list(dict.fromkeys([*body.tool_tiers, "fleet"])) if prd is not None
+             else body.tool_tiers)
     row, plaintext = generate_api_key(
         db, user.id, body.name, body.scopes, body.project_id, body.expires_in_days,
-        tool_tiers=body.tool_tiers, origin=body.origin,
+        tool_tiers=tiers, origin=body.origin, commit=False,
     )
+    row.prd_id = prd.id if prd is not None else None
+    db.commit()
+    db.refresh(row)
     events_svc.record_user(db, user, action="create_api_key", target_type="api_key",
                            target_id=row.id, project_id=row.project_id,
                            meta={"name": row.name, "scopes": row.scopes,
-                                 "tool_tiers": row.tool_tiers})
+                                 "tool_tiers": row.tool_tiers, "prd_id": row.prd_id})
     out = ApiKeyCreated.model_validate({**_out(row).model_dump(), "plaintext": plaintext})
     return out
 
@@ -129,6 +153,7 @@ def rotate_key(key_id: str, body: ApiKeyRotate, db: Session = Depends(get_db),
             db, user.id, old.name, list(old.scopes or []), old.project_id, body.expires_in_days,
             tool_tiers=list(old.tool_tiers) if old.tool_tiers else None, origin=old.origin,
             roles=list(old.roles or []), posture=old.posture, commit=False)
+        row.prd_id = old.prd_id  # GRPH-1973: a replacement keeps the old key's PRD bound
         old.revoked = True
         db.commit()
     except Exception:

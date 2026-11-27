@@ -155,6 +155,10 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
          "Rotate refuses a revoked key, a link key (relink instead), a fleet-wave key (End wave) "
          "and a key a gban command minted and stored (rerun that command).",
          "enforced", _src("app/routers/apikeys.py", "rotate_key"), "code"),
+    Rule("keys.prd_limited", "build", "A key limited to one PRD claims only that PRD's work",
+         "A key minted with prd_id is pinned to the PRD's project, its agents claim and review "
+         "only that PRD's items, and it may not act as an agent registered on another key.",
+         "enforced", _src("app/security/authz.py", "require_prd_key_caller"), "code"),
     Rule("reach.deploy_not_delegable", "plan", "Deploy-reach work is not delegated",
          "An item declared reach=deploy acts on a running system and is never delegated.",
          "enforced", _src("app/services/delegation.py", "Refused"), "code"),

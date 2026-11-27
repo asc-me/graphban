@@ -24,7 +24,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import ApiKey, Membership, OrgMembership, Project
+from app.errors import Refused
+from app.models import Agent, ApiKey, Membership, OrgMembership, Project
 
 
 class Forbidden(Exception):
@@ -218,3 +219,48 @@ def require_project_owner(db: Session, user_id: str, project_id: str | None,
     require_writable(db, user_id, project_id, what)
     if project_role(db, user_id, project_id) != "owner":
         raise HTTPException(403, "requires the project owner")
+
+
+# ---- A key limited to one PRD (GRPH-1973, P96 "Key") ------------------------------------
+# A drain's key may claim only its PRD's work, so a leaked one cannot claim other work. The
+# bound is the one a scoped seat already carries (`items.seat_scope`), read through the KEY
+# the claiming agent registered on, so it holds for a key with no seat at all.
+
+PRD_KEY_RULE = "keys.prd_limited"
+# The self-claim tools. Each resolves the claimer from a self-declared `agent_id`, so a
+# PRD-limited key must name one of its own agents there — never none, never another key's.
+PRD_KEY_CLAIM_TOOLS = frozenset({"claim_next", "claim_cluster", "next_cluster", "claim_review"})
+
+
+def agent_key_prd(db: Session, agent_id: str | None) -> str:
+    """The PRD the key this agent registered on is limited to, or "" for an unlimited key."""
+    if not agent_id:
+        return ""
+    agent = db.get(Agent, agent_id)
+    if agent is None or not agent.api_key_id:
+        return ""
+    key = db.get(ApiKey, agent.api_key_id)
+    return (key.prd_id or "") if key is not None else ""
+
+
+def require_prd_key_caller(db: Session, key: ApiKey, tool: str, agent_id) -> None:
+    """Refuse a PRD-limited key acting as an agent that is not its own.
+
+    Without this the bound is a promise: `caller_identity` takes `agent_id` as given, so the
+    key could name an agent registered on its owner's unlimited key, or name none and claim
+    as the bare credential, which no agent's key limits.
+    """
+    if not key.prd_id:
+        return
+    if isinstance(agent_id, str) and agent_id:
+        agent = db.get(Agent, agent_id)
+        if agent is None or agent.api_key_id != key.id:
+            raise Refused(
+                403, f"api key {key.name!r} is limited to PRD {key.prd_id} and agent "
+                f"{agent_id!r} was not registered on it", rule_id=PRD_KEY_RULE,
+                hint="register_agent with this key and pass the agent_id it returns")
+    elif tool in PRD_KEY_CLAIM_TOOLS:
+        raise Refused(
+            403, f"api key {key.name!r} is limited to PRD {key.prd_id}; {tool} needs the "
+            "agent_id this key registered", rule_id=PRD_KEY_RULE,
+            hint="register_agent with this key and pass the agent_id it returns")

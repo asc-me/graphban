@@ -3559,9 +3559,16 @@ def seat_scope(db: Session, agent_id: str | None) -> str:
     Unscoped is the honest default and stays the default: a fleet key with no enrolment, a
     human's credential, and every seat minted before this column existed all read "". An
     unscoped seat behaves exactly as it did.
+
+    A key limited to one PRD (GRPH-1973) bounds the same way, and wins over the seat: the key
+    is the ceiling, so a seat on it cannot widen what the key may claim.
     """
     if not agent_id:
         return ""
+    from app.security import authz
+
+    if key_prd := authz.agent_key_prd(db, agent_id):
+        return key_prd
     agent = db.get(Agent, agent_id)
     if agent is None or not agent.enrolment_id:
         return ""
@@ -3575,8 +3582,16 @@ def seat_scope(db: Session, agent_id: str | None) -> str:
 
 
 def seat_line(db: Session, agent_id: str | None) -> str:
-    """The maintenance line this agent's seat is scoped to, or "" (GRPH-1685)."""
+    """The maintenance line this agent's seat is scoped to, or "" (GRPH-1685).
+
+    "" under a PRD-limited key (GRPH-1973): `seat_scope` answers the key's PRD there, and a
+    line here would hand `claim_cluster` the line pool instead.
+    """
     if not agent_id:
+        return ""
+    from app.security import authz
+
+    if authz.agent_key_prd(db, agent_id):
         return ""
     agent = db.get(Agent, agent_id)
     if agent is None or not agent.enrolment_id:
