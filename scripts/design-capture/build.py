@@ -130,12 +130,11 @@ P("pages/build-code-graph", "Build", "Code graph",
 P("pages/build-links", "Build", "Links",
   "Typed relationships between items and requests — dependency / code / semantic / tag edges; click a node or edge to inspect.",
   [V(POP, SH("links")), V(EMP, HO("h-links"))])
-P("pages/build-fleet-v2", "Build", "Fleet.v2",
-  "What can run and how you allocate it (GRPH-866): harness catalog (harness · model · tier · status · cost) and allocation by share of recent spawns. Roster and waves stay on Fleet.v1.",
-  [V(POP, SH("fleet-v2")), V("Hosted", HO("h-fleet-v2")), V(LOAD, EX("fleet-v2--loading")), V(ERR, EX("fleet-v2--error"))])
-P("pages/build-fleet-wave", "Build", "Fleet.v1",
-  "Who is working here right now: Connections (roster, API keys that reach this project, legacy wave key), Wave, Work (items waiting for review).",
-  [V("Connections — self-host", SH("fleet-v1")), V("Wave tab", XX("fleet-v1-wave")), V("Work tab", XX("fleet-v1-work")), V("Hosted", HO("h-fleet-v1"))])
+P("pages/build-fleet", "Build", "Fleet",
+  "One page, two tabs in <code>?tab=</code> (GRPH-1152 merged Fleet.v1 and Fleet.v2; both old routes redirect here). Fleet management: who is working here now — roster, the API keys that reach this project, the wave. Harness config: what can run and how you allocate it — harness catalog (harness · model · tier · status · cost) and allocation by share of recent spawns.",
+  [V("Fleet management — Connections, self-host", SH("fleet-manage")), V("Fleet management — Wave", XX("fleet-wave")),
+   V("Fleet management — Work", XX("fleet-work")), V("Harness config — self-host", SH("fleet-harness")),
+   V("Hosted", HO("h-fleet")), V(LOAD, EX("fleet--loading")), V(ERR, EX("fleet--error"))])
 P("pages/build-outposts", "Build", "Outposts",
   "Machines that have registered a gbagent/gbfleet agent on this project, and the harness they declared.",
   [V("Self-host — no host registered", SH("outposts")), V("Hosted", HO("h-outposts"))])

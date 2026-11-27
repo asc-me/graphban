@@ -37,7 +37,8 @@ This is not scripted: DesignSync is only reachable from a Claude session.
 1. Run `/design-login` yourself.
 2. Ask Claude to push `$DC_WORK/bundle` to graphban-local (`499ef95b-3483-4575-aa1c-fb88f2a7b543`).
    It runs `list_files`, then `finalize_plan` (`localDir` = the bundle), then `write_files` with `localPath`.
-3. `pages/build-harnesses-proposed` is a proposal, not a capture. Never overwrite it.
+3. Every card in the project is a capture. When a route is merged or retired, delete its old card in the same push
+   (as `pages/build-fleet-v2` and `pages/build-fleet-wave` were for `pages/build-fleet`), or it stays as a stale reference.
 
 ## Where the variants come from
 
