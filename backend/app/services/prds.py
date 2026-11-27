@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+import itertools
 import json
 import logging
 import re
@@ -4227,7 +4228,7 @@ def acceptance_clauses(body: str) -> list[tuple[str, str]]:
         def flush() -> None:
             nonlocal lines
             if lines is not None:
-                out.append(("\n".join(lines), opened))
+                out.extend((clause, opened) for clause in _split_bare_lead(lines))
             lines = None
 
         for line in text.splitlines():
@@ -4258,6 +4259,37 @@ def acceptance_clauses(body: str) -> list[tuple[str, str]]:
                 lines.append(f"  {stripped}")
         flush()
     return out
+
+
+def _split_bare_lead(lines: list[str]) -> list[str]:
+    """One clause, or one per child when the parent is nothing but a lead.
+
+    P104 v1.1's `- **Sabotage:**` holds four sabotage clauses for three sections and says
+    nothing of its own. Read as one clause, the whole group went to whichever section the
+    four children's words together resembled most, so S2's item carried S1's and S4's
+    sabotages and no reviewer could sign it off (GRPH-2003). A parent with text of its own
+    is a requirement whose children are part of it (P92's "`gban rules import` files:",
+    GRPH-1905) and stays whole. Each child keeps the lead, so a labelled lead
+    ("**Sabotage (S1, S4):**") still names its sections, and a child that says nothing
+    more than its lead is still a clause the reader can see.
+    """
+    lead = _CLAUSE_LEAD.match(lines[0])
+    if lead is None or lines[0][lead.end():].strip() or len(lines) < 2:
+        return ["\n".join(lines)]
+    children: list[list[str]] = []
+    base: int | None = None
+    for line in lines[1:]:
+        item = _AC_ITEM.match(line)
+        depth = len(item.group("indent").expandtabs(4)) if item else -1
+        if item and (base is None or depth <= base):
+            base = depth
+            children.append([item.group("text")])
+        elif children:
+            children[-1].append(line[base:] if base and line[:base].isspace() else line)
+        else:
+            return ["\n".join(lines)]
+    head = lines[0].strip()
+    return [f"{head} " + "\n".join(child) for child in children]
 
 
 def _clause_title_pattern(title: str) -> re.Pattern[str] | None:
@@ -4395,15 +4427,33 @@ def _content_words(text: str, prose_only: bool = False) -> set[str]:
     states. Dropping it is what separates D2 — which defines the three buckets in prose —
     from D1 for the layering clause (GRPH-1905: 0.64 against 0.36).
     """
+    return set(_content_tokens(text, prose_only))
+
+
+#: Grammar, not subject, in a clause matched against section prose. Kept out of
+#: `_SUBJECT_STOP`, which also cleans headings and was measured on P92 (GRPH-1895). On
+#: P104 v1.1 "Let an agent accept a link under the default setting" went to S2 for its
+#: "let" and "under" over S1, which says every content word of it (GRPH-2003).
+_COVER_STOP = frozenset({"let", "under", "without"})
+
+
+def _content_tokens(text: str, prose_only: bool = False) -> list[str]:
+    """`_content_words` in text order, repeats kept, so adjacent pairs can be read off."""
     if prose_only:
         text = "\n".join(line for line in (text or "").splitlines()
                          if not _AC_TABLE_ROW.match(line))
-    out: set[str] = set()
+    out: list[str] = []
     for raw in re.split(r"[^A-Za-z0-9]+", text or ""):
         low = raw.lower()
-        if low and low not in _SUBJECT_STOP:
-            out.add(_stem(low))
+        # One character is never a subject: the "s" of every possessive was a hit for
+        # every section with an apostrophe in it.
+        if len(low) > 1 and low not in _SUBJECT_STOP and low not in _COVER_STOP:
+            out.append(_stem(low))
     return out
+
+
+def _pairs(tokens: list[str]) -> set[tuple[str, str]]:
+    return set(itertools.pairwise(tokens))
 
 
 #: How much of a clause a section's own prose has to restate before the clause moves to it
@@ -4425,22 +4475,30 @@ def _body_cover(clause: str, titles: list[str], bodies: dict[str, str]) -> str |
     `no_acceptance` (GRPH-1905). The section's prose is the stronger evidence: it is where
     the behaviour the clause asserts is specified.
 
-    A tie returns None. Two sections covering the clause equally means the text does not
-    decide, and picking one would decide it by section name.
+    A tie goes to the one section that also restates the clause's adjacent word pairs;
+    still tied returns None. Two sections covering the clause equally means the text does
+    not decide, and picking one would decide it by section name.
     """
     want = _content_words(clause)
     if not want:
         return None
-    scored = sorted(
-        ((len(want & _content_words(f"{t}\n{bodies.get(t, '')}", prose_only=True)) / len(want), t)
-         for t in titles),
-        reverse=True,
-    )
+    texts = {t: _content_tokens(f"{t}\n{bodies.get(t, '')}", prose_only=True) for t in titles}
+    scored = sorted(((len(want & set(texts[t])) / len(want), t) for t in titles), reverse=True)
     best = scored[0]
-    runner_up = scored[1][0] if len(scored) > 1 else 0.0
-    if best[0] < _BODY_COVER_FLOOR or best[0] <= runner_up:
+    if best[0] < _BODY_COVER_FLOOR:
         return None
-    return best[1]
+    tied = [t for ratio, t in scored if ratio == best[0]]
+    if len(tied) == 1:
+        return best[1]
+    # Equal word cover: the section that restates the clause's phrases, not only its words,
+    # says it. P104's "Show a linked PRD's item body to a reader without read access"
+    # covers S1, S2 and S4 equally word by word; only S4 says "linked PRD", "item bodies"
+    # and "read access" (GRPH-2003). Still tied is still undecided.
+    pairs = _pairs(_content_tokens(clause))
+    ranked = sorted(((len(pairs & _pairs(texts[t])), t) for t in tied), reverse=True)
+    if ranked[0][0] == 0 or ranked[0][0] == ranked[1][0]:
+        return None
+    return ranked[0][1]
 
 
 def _clause_section(clause: str, group: str, titles: list[str],
@@ -4490,14 +4548,27 @@ def _label_key(label: str) -> str:
     return label.replace("-", "").upper()
 
 
-def _lead_sections(clause: str, group: str, titles: list[str]) -> list[str]:
+def _lead_sections(clause: str, group: str, titles: list[str],
+                   universe: list[str] | None = None) -> list[str]:
     """The sections a clause's lead or sub-heading names by slice label, in title order.
 
     P104 v1.0 had a sabotage clause that covers S1, S2 and S4 and a cross-org clause that
     covers S1 and S2; each landed on one section (GRPH-1980). The lead is the clause's
     opening bold label (or text before its first colon), plus its group: a label named in
     passing further into the clause says nothing about where the clause belongs.
+
+    `universe` is every section of the PRD, `titles` the ones this call may assign to.
+    Labels resolve against the universe and the answer is cut to `titles`, so a clause
+    led by a section that is not on offer — already covered, on a rerun — names that
+    section and no other. Resolved against `titles` alone, "**S1:**" read as no lead
+    once S1 was filed, and the clause fell to S2 through S2's prose (GRPH-2003).
     """
+    named = _lead_named(clause, group, universe or titles)
+    return [t for t in named if t in titles]
+
+
+def _lead_named(clause: str, group: str, titles: list[str]) -> list[str]:
+    """`_lead_sections` before it is cut to the sections on offer."""
     labelled: dict[str, str] = {}
     for title in titles:
         found = _SLICE_PREFIX.match(title or "")
@@ -4520,18 +4591,46 @@ def _lead_sections(clause: str, group: str, titles: list[str]) -> list[str]:
 
 
 def clause_sections(clause: str, group: str, titles: list[str],
-                    bodies: dict[str, str] | None = None) -> list[str]:
-    """Every section a clause belongs to: all the ones its lead names when it names two or
-    more, else the one `_clause_section` finds, else none."""
-    named = _lead_sections(clause, group, titles)
-    if len(named) >= 2:
+                    bodies: dict[str, str] | None = None,
+                    universe: list[str] | None = None) -> list[str]:
+    """Every section a clause belongs to: all the ones its lead names, else the one
+    `_clause_section` finds, else none — cut to `titles`, the sections on offer.
+
+    A lead that names one section is as final as one that names two (GRPH-2003): a
+    `**S1:**` clause is S1's however much of S2's prose it echoes. `universe` is every
+    section a clause could belong to, `titles` included; a clause whose owner is outside
+    `titles` (filed by an earlier call) goes nowhere rather than to the next-best section.
+    On P104's rerun, S1 was filed, and S1's clauses and sabotage all fell to S2."""
+    return [t for t in _clause_owners(clause, group, titles, bodies, universe) if t in titles]
+
+
+def _clause_owners(clause: str, group: str, titles: list[str],
+                   bodies: dict[str, str] | None, universe: list[str] | None) -> list[str]:
+    pool = list(universe) if universe else list(titles)
+    pool += [t for t in titles if t not in pool]
+    # A label resolves against every section of the PRD: "S1" names S1 even when S1 is
+    # framing to this call.
+    named = _lead_named(clause, group, list(bodies) if bodies else pool)
+    if named:
         return named
-    target = _clause_section(clause, group, titles, bodies)
+    target = _clause_section(clause, group, pool, bodies)
     return [target] if target is not None else []
+
+
+def lead_owned_elsewhere(clause: str, group: str, titles: list[str],
+                         bodies: dict[str, str] | None,
+                         universe: list[str] | None = None) -> bool:
+    """Whether the clause belongs only to sections that are not on offer.
+
+    Such a clause is another call's — its section was filed earlier — so it is neither
+    copied elsewhere nor reported as mapping to no section."""
+    owners = _clause_owners(clause, group, titles, bodies, universe)
+    return bool(owners) and not any(t in titles for t in owners)
 
 
 def assign_acceptance(body: str, titles: list[str],
                       bodies: dict[str, str] | None = None,
+                      universe: list[str] | None = None,
                       ) -> tuple[dict[str, list[str]], list[str]]:
     """Per-section acceptance clauses, and the clauses that map to no section.
 
@@ -4544,8 +4643,8 @@ def assign_acceptance(body: str, titles: list[str],
     by_section: dict[str, list[str]] = {}
     unassigned: list[str] = []
     for clause, group in acceptance_clauses(body):
-        targets = clause_sections(clause, group, titles, bodies)
-        if not targets:
+        targets = clause_sections(clause, group, titles, bodies, universe)
+        if not targets and not lead_owned_elsewhere(clause, group, titles, bodies, universe):
             unassigned.append(clause)
         for target in targets:
             by_section.setdefault(target, []).append(clause)
@@ -5561,6 +5660,7 @@ def measure_size(body: str, clauses: list[str], touchpoints: list[str]) -> dict:
 
 def claim_subheading_clauses(
     body: str, titles: list[str], section_texts: dict[str, str],
+    universe: list[str] | None = None,
 ) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[tuple[str, str], list[str]], list[str]]:
     """Section clauses, the ##-level ones, clauses per (section, piece), and the rest.
 
@@ -5572,10 +5672,10 @@ def claim_subheading_clauses(
     place each on the piece that exercises it (`place_level_clauses`).
     """
     indexed = list(acceptance_clauses(body))
-    section_level, _unassigned = assign_acceptance(body, titles, section_texts)
+    section_level, _unassigned = assign_acceptance(body, titles, section_texts, universe)
     assigned: set[int] = set()
     for i, (clause, group) in enumerate(indexed):
-        if clause_sections(clause, group, titles, section_texts):
+        if clause_sections(clause, group, titles, section_texts, universe):
             assigned.add(i)
     per_heading: dict[tuple[str, str], list[str]] = {}
     groups_of = {title: section_groups(section_texts.get(title, "")) for title in titles}
@@ -5595,7 +5695,8 @@ def claim_subheading_clauses(
             combined.setdefault(title, []).append(clause)
             assigned.add(i)
             break
-    unassigned = [clause for i, (clause, _group) in enumerate(indexed) if i not in assigned]
+    unassigned = [clause for i, (clause, group) in enumerate(indexed) if i not in assigned
+                  and not lead_owned_elsewhere(clause, group, titles, section_texts, universe)]
     return combined, section_level, per_heading, unassigned
 
 
@@ -6376,8 +6477,15 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
         if (include_prose or p["implementable"]) and not p["item_count"]
         and _section_key(p["section"]) not in _ACCEPTANCE_SECTION_KEYS
     ]
+    # Every section a clause could belong to, covered or not: a clause of a section filed
+    # earlier is that section's, and is not handed to the next-best one (GRPH-2003).
+    owners = [
+        p["section"] for p in cov["sections"]
+        if (include_prose or p["implementable"])
+        and _section_key(p["section"]) not in _ACCEPTANCE_SECTION_KEYS
+    ]
     combined, section_level, per_heading, unassigned = claim_subheading_clauses(
-        prd.body or "", wanted, bodies)
+        prd.body or "", wanted, bodies, owners)
     no_acceptance: list[str] = []
     no_touchpoints: list[str] = []
     ui_items: list[dict] = []
