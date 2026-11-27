@@ -4872,3 +4872,13 @@ class PrdLinkMessage(Base):
     # An answer is a reply to the question it answers.
     reply_to_id: Mapped[int | None] = mapped_column(ForeignKey("prd_link_messages.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # GRPH-P104 S2: the project the author posted from (the sending side of a suggestion), and
+    # the one decision a `suggested_item` gets. `outcome` is "" until decided, then filed |
+    # declined | conflict, never changed again (first decision wins).
+    project_id: Mapped[str] = mapped_column(String, default="", server_default="")
+    outcome: Mapped[str] = mapped_column(String, default="", server_default="")
+    outcome_code: Mapped[str] = mapped_column(String, default="", server_default="")
+    outcome_message: Mapped[str] = mapped_column(Text, default="", server_default="")
+    outcome_item_id: Mapped[str] = mapped_column(String, default="", server_default="")
+    decided_by: Mapped[str] = mapped_column(String, default="", server_default="")
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

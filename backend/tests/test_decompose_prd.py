@@ -2526,3 +2526,107 @@ def test_a_caller_may_add_a_link_onto_a_section_already_covered(client, auth):
                                               Link.a.in_(out["created"]))))
     assert [(r.a, r.b) for r in rows] == [(out["created"][0], done["id"])]
     db.close()
+
+
+# ---- GRPH-2003: S2 got S1's clauses and every sabotage clause --------------------------
+# P104 v1.1's acceptance is a flat list led `**S1:**` to `**S5:**`, plus a bare
+# `**Sabotage:**` bullet whose four children belong to S2 (sender's key), S4 (item body,
+# HIDDEN_REF) and S1 (agent accepts under the default). The create that filed S2 ran after
+# S1 had been filed: S2's item got both S1 clauses and all four sabotages, and two
+# reviewers could not sign off a sound build.
+
+_P104R_TITLES = [_P104_S1_T, _P104_S2_T, _P104_S3_T, _P104_S4_T, _P104_S5_T]
+_SAB_SENDER = "**Sabotage:** File a `suggested_item` with the sender's key"
+_SAB_BODY = "**Sabotage:** Show a linked PRD's item body"
+_SAB_HIDDEN = "**Sabotage:** Render a far dependency as `HIDDEN_REF`"
+_SAB_ACCEPT = "**Sabotage:** Let an agent accept a link under the default"
+
+
+def _owner_of(by_section, prefix):
+    return [s for s, clauses in by_section.items() if any(c.startswith(prefix) for c in clauses)]
+
+
+def test_p104r_each_clause_lands_on_its_own_section_only():
+    bodies = prd_svc.section_bodies(_P104R_BODY)
+    by, unassigned = prd_svc.assign_acceptance(_P104R_BODY, _P104R_TITLES, bodies)
+    assert unassigned == []
+    for title in _P104R_TITLES:
+        label = title.split(".")[0]
+        assert _owner_of(by, f"**{label}:**") == [title], (label, by)
+    assert _owner_of(by, _SAB_SENDER) == [_P104_S2_T]
+    assert _owner_of(by, _SAB_BODY) == [_P104_S4_T]
+    assert _owner_of(by, _SAB_HIDDEN) == [_P104_S4_T]
+    assert _owner_of(by, _SAB_ACCEPT) == [_P104_S1_T]
+    # No clause is the group: each sabotage is one clause of its own.
+    assert not [c for cs in by.values() for c in cs if c.count("a test fails") > 1]
+
+
+def test_p104r_a_rerun_after_s1_keeps_s1s_clauses_off_s2():
+    """S1 filed earlier: its clauses are its own, not S2's, and not unassigned either."""
+    bodies = prd_svc.section_bodies(_P104R_BODY)
+    later = _P104R_TITLES[1:]
+    by, unassigned = prd_svc.assign_acceptance(_P104R_BODY, later, bodies, _P104R_TITLES)
+    assert unassigned == []
+    assert _owner_of(by, "**S1:**") == []
+    assert _owner_of(by, _SAB_ACCEPT) == []
+    s2 = by[_P104_S2_T]
+    assert len(s2) == 3, s2
+    assert [c for c in s2 if c.startswith("**S2:**")] == s2[:2]
+    assert s2[2].startswith(_SAB_SENDER)
+
+
+def test_a_bare_lead_child_that_names_no_section_is_unassigned():
+    body = _P104R_BODY.replace(
+        "  - Let an agent accept a link",
+        "  - Paint the bikeshed mauve, and a test fails.\n  - Let an agent accept a link")
+    bodies = prd_svc.section_bodies(body)
+    by, unassigned = prd_svc.assign_acceptance(body, _P104R_TITLES, bodies)
+    assert unassigned == ["**Sabotage:** Paint the bikeshed mauve, and a test fails."]
+    assert _owner_of(by, "**Sabotage:** Paint") == []
+
+
+def test_a_parent_with_text_of_its_own_keeps_its_children():
+    body = ("## A. Import\n\nThe import run files proposals.\n\n## Acceptance\n\n"
+            "- **A:** `gban rules import` files:\n  - one proposal\n  - two proposals\n"
+            "- **Sabotage:**\n  - Drop the import, and a test fails.\n")
+    clauses = [c for c, _g in prd_svc.acceptance_clauses(body)]
+    assert clauses == ["**A:** `gban rules import` files:\n  - one proposal\n  - two proposals",
+                       "**Sabotage:** Drop the import, and a test fails."]
+
+
+def test_p104r_rerun_files_s2_with_only_its_own_clauses(client, auth, monkeypatch):
+    from app.db import SessionLocal
+    from app.services import items as items_svc
+    from tests.prd_approve import approve_id
+
+    _quiet_semantic(monkeypatch)
+    prd = client.post("/api/prds", json={"title": "P104 v1.1", "body": _P104R_BODY},
+                      headers=auth).json()
+    _describe(_project_of(prd["id"]), _P104_GRAPH, _P104_EDGES)
+    client.post("/api/items", json={"title": "S1, filed earlier", "prd_id": prd["id"],
+                                    "prd_section": _P104_S1_T}, headers=auth)
+    approve_id(prd["id"])
+    db = SessionLocal()
+    out = prd_svc.decompose(db, prd_svc.get_prd(db, prd["id"]), create=True)
+    assert out["unassigned_clauses"] == []
+    s2 = next(it for it in (items_svc.get_item(db, i) for i in out["created"])
+              if it.prd_section == _P104_S2_T)
+    acceptance = s2.description.split("## Acceptance", 1)[1].split("\n\n", 1)[0]
+    lines = [ln for ln in acceptance.splitlines() if ln.startswith("- ")]
+    assert len(lines) == 3, lines
+    assert lines[0].startswith("- **S2:**") and lines[1].startswith("- **S2:**")
+    assert lines[2].startswith(f"- {_SAB_SENDER}")
+    db.close()
+
+
+def test_an_s1_lead_is_s1s_even_when_s2s_prose_names_it():
+    """S2 says "Deciding a `suggested_item`, or a link request (S1), is atomic": by its
+    words alone this clause is S2's. Its lead says S1, and the lead decides."""
+    clause = ("**S1:** deciding a link request twice is atomic: the later call gets "
+              "`already_decided` with the stored outcome.")
+    bodies = prd_svc.section_bodies(_P104R_BODY)
+    assert prd_svc._clause_section(clause, "", _P104R_TITLES, bodies) == _P104_S2_T
+    assert prd_svc.clause_sections(clause, "", _P104R_TITLES, bodies) == [_P104_S1_T]
+    body = _P104R_BODY.replace("- **S2:** a declined", f"- {clause}\n- **S2:** a declined")
+    by, _un = prd_svc.assign_acceptance(body, _P104R_TITLES, bodies)
+    assert _owner_of(by, "**S1:** deciding") == [_P104_S1_T]

@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.errors import NotFound, Refused
@@ -129,6 +129,12 @@ PRD_LINK_PERSON_RULE = "prd_links.person_decides"
 NEEDS_PERSON = "needs_person"
 
 
+def already_decided(detail: str) -> Refused:
+    """The first decision wins; a later or concurrent one changes nothing."""
+    return Refused(409, f"already_decided: {detail}", rule_id=PRD_LINK_PERSON_RULE,
+                   hint="already_decided")
+
+
 def _needs_person(message: str) -> None:
     """An agent tried an act the org reserves for a person. The hint is `needs_person`."""
     raise Refused(403, f"needs_person: {message}", rule_id=PRD_LINK_PERSON_RULE, hint=NEEDS_PERSON)
@@ -216,11 +222,24 @@ def _pending_for_decision(db: Session, caller: Caller, link_id: str) -> PrdLink:
     if link is None or link.project_b_id not in caller.readable:
         raise _no_link(link_id)
     if link.status != "pending":
-        raise ValueError(f"link {link_id} is {link.status}, not pending")
+        raise already_decided(f"link {link_id} is {link.status}, not pending")
     if link.project_b_id not in caller.writable:
         raise Refused(403, "deciding a link needs write access to the receiving project",
                       rule_id=PRD_LINK_WRITE_RULE)
     return link
+
+
+def _decide_once(db: Session, link: PrdLink, **values) -> None:
+    """First decision wins (GRPH-P104 S2): the write is conditional on the link still being
+    pending, so a concurrent second decision changes nothing and gets `already_decided`."""
+    won = db.execute(update(PrdLink).where(PrdLink.id == link.id, PrdLink.status == "pending")
+                     .values(decided_at=utcnow(), **values)).rowcount
+    if not won:
+        db.rollback()
+        db.refresh(link)
+        raise already_decided(f"link {link.id} is {link.status}, not pending")
+    db.commit()
+    db.refresh(link)
 
 
 def accept_prd_link(db: Session, caller: Caller, link_id: str) -> PrdLink:
@@ -234,9 +253,7 @@ def accept_prd_link(db: Session, caller: Caller, link_id: str) -> PrdLink:
         if not allowed:
             _needs_person(f"link {link_id} is waiting for a person with write access to the "
                           "receiving project; this organization does not let an agent accept")
-    link.status, link.decided_by, link.decided_at = "accepted", caller.who, utcnow()
-    db.commit()
-    db.refresh(link)
+    _decide_once(db, link, status="accepted", decided_by=caller.who)
     return link
 
 
@@ -249,10 +266,7 @@ def decline_prd_link(db: Session, caller: Caller, link_id: str, *, reason: str) 
     if caller.is_agent and not db.scalar(select(Organization.prd_link_accept_agents).where(
             Organization.id == _org_of(db, link.project_b_id))):
         _needs_person(f"link {link_id} is decided by a person in this organization")
-    link.status, link.decision_reason = "declined", reason
-    link.decided_by, link.decided_at = caller.who, utcnow()
-    db.commit()
-    db.refresh(link)
+    _decide_once(db, link, status="declined", decided_by=caller.who, decision_reason=reason)
     return link
 
 

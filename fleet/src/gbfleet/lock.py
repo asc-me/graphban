@@ -77,6 +77,15 @@ _FILE_MODE = 0o600
 #: or a tool is called, so a supervisor that is actually working never reaches this.
 IDLE_TAKEOVER_AFTER = 4 * 60 * 60
 
+#: How long an idle takeover waits, after stopping the holder, for its pid to go
+#: and then for the lock to come free (GRPH-2000). Both are polled, and the
+#: deadline is only how long to keep asking. Windows needs the room: each
+#: `tasklist` poll is a process launch on a loaded runner, and the kernel drops
+#: a dead process's byte-range lock after the process ends, not when
+#: `taskkill` returns. Microsoft documents that release as dependent on
+#: "available system resources", so one immediate retry lost the race there.
+RECLAIM_WAIT_SECONDS = 10.0
+
 
 @dataclass(frozen=True)
 class Holder:
@@ -346,7 +355,7 @@ def _try_reclaim_idle(holder: Holder, path: Path, *, idle_after: float) -> tuple
     # matched. Stopping there is the only reclaim that platform can do; the
     # sentence in `end_pid` is why it is still only that one pid.
     end_pid(holder.pid)
-    deadline = time.monotonic() + 2.0
+    deadline = time.monotonic() + RECLAIM_WAIT_SECONDS
     while time.monotonic() < deadline:
         # A zombie still answers `kill(pid, 0)`. It has already dropped the
         # flock; its parent is the only one who can make the pid disappear.
@@ -359,6 +368,25 @@ def _try_reclaim_idle(holder: Holder, path: Path, *, idle_after: float) -> tuple
             f"{holder.pid} did not release the lock, so it was left as it was."
         )
     return True, ""
+
+
+def _take_after_reclaim(fd: int) -> bool:
+    """Take the lock a stopped holder is releasing. Polls until `RECLAIM_WAIT_SECONDS`.
+
+    The holder's pid being gone is not the lock being free on Windows: the
+    byte-range lock is dropped during process teardown, which can trail the pid
+    leaving the process list (GRPH-2000). Asking once, immediately, raced that.
+    Always asks at least once, so a zero deadline still means "try now".
+    """
+    deadline = time.monotonic() + RECLAIM_WAIT_SECONDS
+    while True:
+        try:
+            lock_exclusive(fd)
+            return True
+        except AlreadyLocked:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
 
 
 @contextmanager
@@ -401,9 +429,7 @@ def hold(repo: Path | str, state: Path | str | None = None, *,
                 reclaimed_idle, note = _try_reclaim_idle(parsed, path, idle_after=limit)
             if not reclaimed_idle:
                 raise RepoLocked(path, parsed, idle_after=limit, note=note) from None
-            try:
-                lock_exclusive(fd)
-            except AlreadyLocked:
+            if not _take_after_reclaim(fd):
                 _raw, parsed = _read_holder(fd)
                 raise RepoLocked(path, parsed, idle_after=limit) from None
 

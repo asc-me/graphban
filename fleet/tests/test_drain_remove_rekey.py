@@ -354,6 +354,86 @@ def test_rekey_leaves_the_old_key_alive_when_the_new_one_is_never_used(world, ca
     assert not any(e[0] == "revoke" for e in ledger.events)
 
 
+# ---- GRPH-1983: a failed restart never advises revoking the key the old service runs on ----
+
+_RESTARTS = (["launchctl", "kickstart"], ["systemctl", "--user", "restart"])
+_RELOADS = (["launchctl", "bootstrap"], ["systemctl", "--user", "enable", "--now"])
+
+
+def _failing(world, monkeypatch, *, reload_ok: bool = False):
+    """The supervisor refuses the restart, and the reload too unless `reload_ok`."""
+    fake = world["fake"]
+
+    def run(cmd: list[str], timeout: float = 20.0) -> tuple[int, str]:
+        if any(cmd[:len(p)] == p for p in _RESTARTS):
+            fake.calls.append(list(cmd))
+            return 1, "restart refused"
+        if not reload_ok and any(cmd[:len(p)] == p for p in _RELOADS):
+            fake.calls.append(list(cmd))
+            return 5, "load refused"
+        return fake(cmd, timeout)
+
+    monkeypatch.setattr(service, "_run", run)
+
+
+def test_a_failed_restart_and_reload_exits_1_and_keeps_the_old_key_in_use(
+        world, capsys, monkeypatch):
+    ledger = world["ledger"]
+    old = _key(world)
+    _install(world, "d9", old, marker="d9")
+    old_id = ledger.id_of(old)
+    _failing(world, monkeypatch)
+
+    code, out, err = _cli(capsys, "rekey", "d9")
+    assert code == 1, (out, err)
+    assert drain.MANUAL_REVOKE_LINE not in out + err
+    assert "old key is still in use by the running service" in err
+    assert "new key was not adopted" in err
+    # The env file and the record are back on the old key, which is alive.
+    assert drain._same_key(drain._read_key(service.env_path_for("d9")), old)
+    assert drain.key_id_path("d9").read_text(encoding="utf-8").strip() == old_id
+    assert ledger.call(old) == old_id
+    # The minted key was never used and is revoked, by id.
+    (new_id,) = [k for k in ledger.keys if k != old_id]
+    assert ("revoke", new_id) in ledger.events
+    assert ("revoke", old_id) not in ledger.events
+    assert f"new key: unused, revoked ({new_id})" in out
+
+
+def test_a_failed_restart_names_the_unused_new_key_when_its_revoke_fails(
+        world, capsys, monkeypatch):
+    ledger = world["ledger"]
+    old = _key(world)
+    _install(world, "d10", old, marker="d10")
+    old_id = ledger.id_of(old)
+    _failing(world, monkeypatch)
+    monkeypatch.setattr(drain, "open_ledger", lambda server: _ServerError(ledger))
+
+    code, out, err = _cli(capsys, "rekey", "d10")
+    assert code == 1, (out, err)
+    assert drain.MANUAL_REVOKE_LINE not in out + err
+    (new_id,) = [k for k in ledger.keys if k != old_id]
+    assert f"new key: unused, left ALIVE ({new_id})" in out
+    assert not ledger.keys[old_id]["revoked"]
+
+
+def test_a_failed_restart_that_the_reload_recovers_keeps_the_existing_paths(
+        world, capsys, monkeypatch):
+    """The reload took, so the service read the new env file: the normal verdicts apply."""
+    ledger = world["ledger"]
+    old = _key(world)
+    _install(world, "d11", old, marker="d11")
+    old_id = ledger.id_of(old)
+    _failing(world, monkeypatch, reload_ok=True)
+    world["fake"].calls_home = False
+
+    code, out, err = _cli(capsys, "rekey", "d11")
+    # Up on the new key's env file but no call seen yet: the existing exit-4 path.
+    assert code == drain.EXIT_MANUAL_REVOKE, (out, err)
+    assert f"{drain.MANUAL_REVOKE_LINE} {old_id}" in out
+    assert not any(e[0] == "revoke" for e in ledger.events)
+
+
 class _ServerError:
     """A revoke the server answers with an error; every other call goes to the fake ledger."""
 
