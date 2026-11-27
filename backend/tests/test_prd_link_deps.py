@@ -74,3 +74,53 @@ def test_link_needs_write_on_the_dependent(world):
     far, near, _ = _setup(db, a, b)
     with pytest.raises(Forbidden):
         L.link_endpoints(db, near.id, far.id, readable=["pb"], writable=[])
+
+
+def test_both_sides_render_the_far_item_through_the_full_read(world):
+    """S4 acceptance: the B item's dependency on the A item reads with the real id, title and
+    status from BOTH sides — the dependent's read and the far item's own read."""
+    db, a, b, x = world
+    far, near, _ = _setup(db, a, b)
+    ia, ib = L.link_endpoints(db, near.id, far.id, readable=["pb"], writable=["pb"])
+    L.create_link(db, a=ia.id, b=ib.id, project_id=ia.project_id)
+    # A's side: the far item's own read lists the incoming edge with B's real metadata.
+    out = items_svc.get_item_details(db, far.id, ["pa"])
+    edge = out["links"][0]
+    assert edge["a"] == near.key and edge["b"] == far.key
+    assert edge["far"] == {"id": near.key, "title": "B near", "status": "next", "project": "pb"}
+    # B's side: metadata only — no body leaks through the edge.
+    out = items_svc.get_item_details(db, near.id, ["pb"])
+    assert out["links"][0]["far"]["id"] == far.key
+    assert "SECRET" not in repr(out["links"])
+
+
+def test_either_side_may_hold_the_dependent(world):
+    """The grant is symmetric: an A item may depend on a B item under the same link."""
+    db, a, b, x = world
+    far, near, _ = _setup(db, a, b)
+    ia, ib = L.link_endpoints(db, far.id, near.id, readable=["pa"], writable=["pa"])
+    assert (ia.id, ib.id) == (far.id, near.id)
+
+
+def test_items_off_the_linked_prds_stay_hidden_and_unlinkable(world):
+    """Nothing outside the two PRDs becomes visible: an item in the same far project but on no
+    PRD (or another PRD) keeps HIDDEN_REF and the indistinguishable refusal."""
+    db, a, b, x = world
+    far, near, _ = _setup(db, a, b)
+    stray = Item(id="stray1", project_id="pa", number=2, title="A stray", status="next")
+    db.add(stray)
+    db.commit()
+    with pytest.raises(Forbidden, match="cannot link") as hidden:
+        L.link_endpoints(db, near.id, stray.id, readable=["pb"], writable=["pb"])
+    with pytest.raises(Forbidden, match="cannot link") as missing:
+        L.link_endpoints(db, near.id, "nope-404", readable=["pb"], writable=["pb"])
+    # One refusal, whatever the reason: only the echoed id differs.
+    assert (str(hidden.value).replace(stray.id, "?")
+            == str(missing.value).replace("nope-404", "?"))
+    assert items_svc.render_ref(db, stray.id, ["pb"]) == items_svc.HIDDEN_REF
+    # A cross-org far item stays refused even when its project id is somehow known.
+    xi = Item(id="xi1", project_id="px", number=1, title="X", prd_id=x.id, status="next")
+    db.add(xi)
+    db.commit()
+    with pytest.raises(Forbidden, match="cannot link"):
+        L.link_endpoints(db, near.id, xi.id, readable=["pb"], writable=["pb"])
