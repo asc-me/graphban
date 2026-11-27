@@ -143,3 +143,26 @@ def test_declined_link_does_not_reveal_far_side(world):
     L.decline_prd_link(db, _b(), link.id, reason="no")
     out = T.read_thread(db, _a(), link.id)["link"]
     assert out["to"] == {"id": b.key} and "B two" not in repr(out)
+
+
+def test_link_traffic_is_a_directive_to_agents_working_the_prd(world):
+    from app.models import Agent
+    from app.services import fleet as fleet_svc
+
+    db, a, b, x = world
+    it = Item(id="itb", project_id="pb", number=1, title="t", status="in_progress", claimed_by="ag-b",
+              prd_id=b.id)
+    db.add(it)
+    db.add(Agent(id="ag-b", project_id="pb", number=1))
+    db.commit()
+    link = L.request_prd_link(db, _a(), a.id, b.id, reason="need it")
+    d = fleet_svc.collect_directive(db, "ag-b")
+    assert d["type"] == "prd_link_pending" and d["items"][0]["type"] == "prd_link_request"
+    assert fleet_svc.collect_directive(db, "ag-b") is None  # read; not told twice
+    L.accept_prd_link(db, _b(), link.id)
+    T.post(db, _a(), link.id, kind="note", body="hello B")
+    d = fleet_svc.collect_directive(db, "ag-b")
+    assert d["items"][0]["body"] == "hello B"
+    # Nobody working A's PRD: the message stays pending there.
+    from app.services import link_delivery
+    assert any(e["type"] == "prd_link_message" for e in link_delivery.pending_for_prd(db, a.id))

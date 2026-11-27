@@ -4847,6 +4847,22 @@ class PrdLink(Base):
     __table_args__ = (UniqueConstraint("prd_a_id", "prd_b_id", name="uq_prd_link_pair"),)
 
 
+class PrdLinkRead(Base):
+    """What a PRD has read on one link (GRPH-P104 S3). Delivery is to the PRD, not a session:
+    the first agent working the PRD to be handed a request or message advances the PRD's cursor,
+    so the rest of that PRD's agents are not told twice. Nothing is deleted from the thread."""
+
+    __tablename__ = "prd_link_reads"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    link_id: Mapped[str] = mapped_column(ForeignKey("prd_links.id"), index=True)
+    prd_id: Mapped[str] = mapped_column(String)
+    last_message_id: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    request_read: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+
+    __table_args__ = (UniqueConstraint("link_id", "prd_id", name="uq_prd_link_read"),)
+
+
 class PrdLinkMessage(Base):
     """One message on a PRD link's thread (GRPH-P104 S1). Append-only; carries an author LABEL
     and OWNER name, never an email or a seat id."""
