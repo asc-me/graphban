@@ -191,10 +191,21 @@ export function ItemDetailPanel({
               data-testid="item-resolution"
               className="rounded-[10px] border border-line-2 bg-surface-2 px-3 py-2.5 text-body text-fg-2"
             >
-              <span className="font-mono text-[10px] uppercase tracking-wide">
-                {item.resolution.kind === "duplicate" ? "Duplicate of " : "Superseded by "}
-              </span>
-              <span className="font-mono">{item.resolution.of}</span>
+              {item.resolution.kind === "moved" ? (
+                <>
+                  <span className="font-mono text-[10px] uppercase tracking-wide">Moved to </span>
+                  <span className="font-mono">{item.resolution.to?.box_label}</span>
+                  {" as "}
+                  <span className="font-mono">{item.resolution.to?.item_id}</span>
+                </>
+              ) : (
+                <>
+                  <span className="font-mono text-[10px] uppercase tracking-wide">
+                    {item.resolution.kind === "duplicate" ? "Duplicate of " : "Superseded by "}
+                  </span>
+                  <span className="font-mono">{item.resolution.of}</span>
+                </>
+              )}
               {item.resolution.reason ? ` · ${item.resolution.reason}` : ""}
               <span className="block text-small text-muted">
                 Closed by {item.resolution.by}. Nothing was delivered here.
