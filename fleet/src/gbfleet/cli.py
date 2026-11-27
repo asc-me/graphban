@@ -341,7 +341,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     drn = sub.add_parser(
         "drain",
-        help="create a drain for one PRD: its own checkout, its own key, its own service",
+        help="create, remove or rekey a drain for one PRD: its own checkout, key and service",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
             "`create` clones a checkout for the PRD, mints a key limited to that PRD with your "
@@ -382,6 +382,16 @@ def build_parser() -> argparse.ArgumentParser:
                             metavar="SECONDS", help="service restart interval")
     drn_create.add_argument("--dry-run", action="store_true",
                             help="print the plan; write no env file, mint no key, install nothing")
+    drn_remove = drn_do.add_parser(
+        "remove", help="uninstall the service, revoke its key (only by its recorded id), delete "
+                       "its env file, and delete its checkout only when that is the drain's own "
+                       "and holds nothing but caches")
+    drn_remove.add_argument("name", help="the drain's service name")
+    drn_rekey = drn_do.add_parser(
+        "rekey", help="mint a new PRD-limited key, swap it in, restart, then revoke the old one "
+                      "by its recorded id once the new one is in use (unless another drain "
+                      "shares it)")
+    drn_rekey.add_argument("name", help="the drain's service name")
 
     until = sub.add_parser(
         "until",
@@ -1450,8 +1460,13 @@ def _service(args) -> int:
 
 
 def _drain(args) -> int:
-    """`gbfleet drain …`. Only `create` so far (GRPH-1974)."""
-    if getattr(args, "act", None) != "create":
+    """`gbfleet drain create|remove|rekey` (GRPH-1974, GRPH-1976)."""
+    act = getattr(args, "act", None)
+    if act == "remove":
+        return drain_mod.remove(args.name)
+    if act == "rekey":
+        return drain_mod.rekey(args.name)
+    if act != "create":
         print("gbfleet drain: no action given. Try `gbfleet drain create --help`.",
               file=sys.stderr)
         return 2

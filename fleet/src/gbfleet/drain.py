@@ -17,6 +17,20 @@ contains the value.
 **No session, nothing written.** The session is checked before the checkout is cut, so a
 person without `gban login` gets the instruction and an unchanged disk.
 
+**Remove and rekey (GRPH-1976).** `remove` uninstalls the service, revokes its key, deletes
+the env file, and deletes the checkout only when its marker names this drain and it holds
+nothing that is not provably disposable (`checkout_verdict`); any other checkout is kept and
+named with the reason. `rekey` mints a new PRD-limited key, swaps the env file atomically,
+restarts the service, and revokes the old key only after the server has seen the new key used
+(`last_used`), and only when no other installed drain's env file holds the same old key.
+Neither prints a key value. The server keeps only a hash, so the key's id is recorded beside
+the env file (`<name>.key-id`, not a secret). **A key is revoked only by that recorded id,
+never by a guess**: a drain without the record (one `create` did not make, often holding the
+person's own `gban setup` key) has its key left alive, and both commands list the person's
+live keys by id and label and send them to Settings to revoke the right one. That case exits
+`EXIT_MANUAL_REVOKE` (3) and prints `manual_revoke_needed: <ids, comma-separated>`; every
+other success exits 0.
+
 **Preflight refuses with a named reason, before anything is cut, minted or written**
 (GRPH-1975). `draft` refuses an unsupported platform, a service or env file that already
 exists, a plan for another PRD, an empty captured PATH, an adapter that PATH does not
@@ -26,11 +40,14 @@ is not approved or not shaped. Only after all of that does it clone, mint and in
 """
 from __future__ import annotations
 
+import hmac
 import os
+import re
 import shutil
 import socket
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, TextIO
@@ -59,6 +76,12 @@ APPROVED = "approved"
 #: Exit codes. 3 matches `gban`'s EXIT_NO_SESSION.
 EXIT_REFUSED = 2
 EXIT_NO_SESSION = 3
+#: `remove` / `rekey` did their work but left an old key alive that only the person can name.
+#: Its own number, distinct from EXIT_NO_SESSION, so a script can tell "nothing changed, log in"
+#: from "done, but revoke a key by hand" by the exit code alone.
+EXIT_MANUAL_REVOKE = 4
+#: The machine-readable line printed with EXIT_MANUAL_REVOKE: candidate key ids, comma-separated.
+MANUAL_REVOKE_LINE = "manual_revoke_needed:"
 
 
 class Refused(RuntimeError):
@@ -509,6 +532,7 @@ def create(opts: Options, *, out: TextIO | None = None, err: TextIO | None = Non
     finally:
         key = ""
     print(f"key: minted ({key_id}), written to {plan.env_path}", file=out)
+    _record_key_id(d.name, str(minted.get("id") or ""))
     for warning in done.warnings:
         print(f"WARNING {warning}", file=err)
     state = done.state or service.status(d.name, kind=d.kind)
@@ -516,4 +540,679 @@ def create(opts: Options, *, out: TextIO | None = None, err: TextIO | None = Non
         show_status(state)
     else:
         print(state.line(), file=out)
+    return 0
+
+
+# ---- remove and rekey (GRPH-1976) ----------------------------------------------------------
+
+#: How long `rekey` waits for the restarted service's first call with the new key before it
+#: leaves the old key alive and says so. `until` calls the server as it starts, so a minute is
+#: a service that did not come up, not a slow one.
+FIRST_CALL_WINDOW = 120.0
+FIRST_CALL_POLL = 3.0
+
+
+def key_id_path(name: str) -> Path:
+    """The id of the key in `<name>.env`. Not a secret: an id revokes nothing by itself."""
+    return service.CONFIG_DIR / f"{name}.key-id"
+
+
+def _record_key_id(name: str, key_id: str) -> None:
+    if not key_id:
+        return
+    path = key_id_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{key_id}\n", encoding="utf-8")
+
+
+def _recorded_key_id(name: str) -> str:
+    try:
+        return key_id_path(name).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _read_key(env_path: Path) -> str:
+    """The key in an env file, or "". Held in memory only; never printed or logged."""
+    try:
+        text = env_path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        if line.startswith(f"{service.API_KEY_ENV}="):
+            return line.split("=", 1)[1].strip()
+    return ""
+
+
+def _same_key(a: str, b: str) -> bool:
+    """Constant-time equality, so neither value is compared in a way that prints or leaks."""
+    return bool(a) and bool(b) and hmac.compare_digest(a.encode(), b.encode())
+
+
+def sharers(name: str, key: str, kind: str) -> list[str]:
+    """The other installed drains whose env file holds this same key (a copied shared key)."""
+    return [other for other in service.installed_names(kind)
+            if other != name and _same_key(_read_key(service.env_path_for(other)), key)]
+
+
+@dataclass
+class KeyLookup:
+    """What `resolve_key_id` found. `key_id` is set only from a recorded id; never a guess."""
+    key_id: str = ""
+    why: str = ""
+    #: The person's live keys as (id, label), for the revoke-it-yourself guidance. Ids and
+    #: labels only: the listing's prefix is never carried, let alone a value.
+    candidates: list[tuple[str, str]] = field(default_factory=list)
+
+
+def resolve_key_id(ledger: object, name: str, key: str, kind: str = "") -> KeyLookup:
+    """The id of the key in `name`'s env file, from `<name>.key-id` only.
+
+    No automatic revocation without a recorded id (the owner's decision after the GRPH-1976
+    bounce): a drain `create` did not make often holds the person's own `gban setup` key, and
+    a prefix match can name an unrelated live key. Without a record nothing is matched;
+    the caller leaves the key alive and prints `candidates` for the person to choose from.
+
+    A recorded id is also refused when another drain's `.key-id` names the same id, or when
+    the key it names (by its display prefix) could be the key another installed drain's env
+    file holds: revoking it might stop that drain.
+    """
+    try:
+        rows = ledger.list_keys()  # type: ignore[attr-defined]
+    except (client_mod.ServerUnreachable, client_mod.ToolFailed) as exc:
+        return KeyLookup(why=f"cannot list your keys: {exc}")
+    # A key another drain's record names is that drain's; it is never offered for revoking.
+    records = {p.stem: _recorded_key_id(p.stem) for p in service.CONFIG_DIR.glob("*.key-id")
+               if p.stem != name}
+    owned = set(records.values()) - {""}
+    live = [(str(r.get("id") or ""), str(r.get("name") or ""))
+            for r in rows if not r.get("revoked") and r.get("id")
+            and str(r.get("id")) not in owned]
+    recorded = _recorded_key_id(name)
+    if not recorded:
+        return KeyLookup(why=f"no {key_id_path(name).name} records which key it is",
+                         candidates=live)
+    if recorded in owned:
+        holders = sorted(other for other, kid in records.items() if kid == recorded)
+        return KeyLookup(why=f"the recorded key {recorded} is also recorded for drain(s) "
+                             f"{', '.join(holders)}", candidates=live)
+    row = next((r for r in rows if str(r.get("id")) == recorded), None)
+    if row is None:
+        return KeyLookup(why=f"the recorded key {recorded} is not one of your keys",
+                         candidates=live)
+    prefix = str(row.get("prefix") or "")
+    if prefix and not key.startswith(prefix):
+        return KeyLookup(why=f"the recorded key {recorded} is not the key in {name}'s env file",
+                         candidates=live)
+    # The listing shows only a prefix, so a key another drain's env file holds that shares it
+    # might be the one this id names. Never revoke on that doubt.
+    alike = [other for other in service.installed_names(kind) if other != name
+             and prefix and _read_key(service.env_path_for(other)).startswith(prefix)]
+    if alike:
+        return KeyLookup(why=f"the recorded key {recorded} may be the key drain(s) "
+                             f"{', '.join(alike)} hold (same display prefix)",
+                         candidates=live)
+    return KeyLookup(key_id=recorded)
+
+
+def print_left_alive(lookup: KeyLookup, out: TextIO) -> None:
+    """The old key stays alive: say so, list the candidates by id and label, point at Settings."""
+    print(f"old key: left ALIVE, not revoked: {lookup.why}. gbfleet never revokes a key it "
+          "cannot name from its own record.", file=out)
+    if lookup.candidates:
+        print("  your live keys (id, label):", file=out)
+        for key_id, label in lookup.candidates:
+            print(f"    {key_id}  {label or '(no label)'}", file=out)
+    print("  Revoke the one this drain used in Settings > API keys, if no one else uses it "
+          "(it may be your `gban setup` key).", file=out)
+    print(f"{MANUAL_REVOKE_LINE} {','.join(key_id for key_id, _ in lookup.candidates)}",
+          file=out)
+
+
+#: The only ignored paths `remove` treats as disposable: regenerable caches and environments.
+#: A directory here matches at any depth; any other ignored file keeps the checkout.
+DISPOSABLE_DIRS = frozenset({".venv", "node_modules", "__pycache__", ".pytest_cache",
+                             ".mypy_cache", ".ruff_cache"})
+DISPOSABLE_SUFFIXES = (".pyc",)
+
+
+def _disposable(path: str) -> bool:
+    parts = path.rstrip("/").split("/")
+    return any(p in DISPOSABLE_DIRS for p in parts[:-1]) or parts[-1] in DISPOSABLE_DIRS \
+        or parts[-1].endswith(DISPOSABLE_SUFFIXES)
+
+
+def _named(paths: list[str], limit: int = 5) -> str:
+    shown = ", ".join(paths[:limit])
+    return shown + (f" and {len(paths) - limit} more" if len(paths) > limit else "")
+
+
+def checkout_verdict(repo: Path, name: str) -> str:
+    """"" when `repo` may be deleted, else why it is kept. Deleted only when it holds nothing
+    that is not provably disposable: it is the top of a checkout, its marker names `name`, it
+    has no linked worktree, no uncommitted change, no untracked file (whatever
+    `status.showUntrackedFiles` says), no ignored file outside `DISPOSABLE_DIRS` /
+    `DISPOSABLE_SUFFIXES`, no stash, no tag on an unpushed commit, and no commit on any ref
+    that no remote-tracking ref reaches. Anything unreadable is a keep, never a delete.
+
+    Also kept, without trying to prove them clean: a path or marker reached through a symlink,
+    a git dir outside the checkout, any submodule, a tracked file hidden by
+    `--assume-unchanged` / `--skip-worktree`, and a commit only a reflog reaches."""
+    if _through_symlink(repo):
+        return f"its path resolves through a symlink (to {os.path.realpath(repo)})"
+    if _toplevel(repo) != repo.resolve():
+        return "it is not the top of a git checkout"
+    code, git_dir = _git(repo, "rev-parse", "--absolute-git-dir")
+    if code != 0:
+        return f"cannot find its git dir: {git_dir}"
+    if Path(os.path.realpath(git_dir)) != repo.resolve() / ".git" or _through_symlink(
+            repo / ".git"):
+        return f"its git dir {git_dir} is not a plain .git directory inside it"
+    marker = Path(git_dir) / MARKER
+    if _through_symlink(marker):
+        return f"its .git/{MARKER} marker is a symlink (to {os.path.realpath(marker)})"
+    try:
+        owner = marker.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return f"it has no .git/{MARKER} marker, so drain create did not make it"
+    except OSError as exc:
+        return f"cannot read its .git/{MARKER} marker: {exc}"
+    if owner != name:
+        return f"its .git/{MARKER} marker names drain {owner!r}, not {name!r}"
+    # Any linked worktree, live or not: deleting the main checkout destroys the .git it runs on.
+    code, listed = _git(repo, "worktree", "list", "--porcelain")
+    if code != 0:
+        return f"cannot list its worktrees: {listed}"
+    trees = [line[len("worktree "):] for line in listed.splitlines()
+             if line.startswith("worktree ")]
+    linked = [t for t in trees if Path(t).resolve() != repo.resolve()]
+    if linked:
+        return f"it has linked worktree(s): {_named(linked)}"
+    # A submodule keeps its commits in .git/modules/<sub>, which the superproject's checks
+    # cannot see. Not proved clean: any sign of one keeps the checkout.
+    subs = _submodules(repo, Path(git_dir))
+    if subs:
+        return f"it has submodule(s): {_named(subs)}"
+    # An edit `git status` is told not to see is still an edit.
+    code, tagged = _git(repo, "ls-files", "-v", "-z")
+    if code != 0:
+        return f"cannot list its tracked files: {tagged}"
+    hidden = [e[2:] for e in tagged.split("\0")
+              if len(e) > 2 and (e[0].islower() or e[0] == "S")]
+    if hidden:
+        return ("it has tracked file(s) marked --assume-unchanged or --skip-worktree, so "
+                f"their edits are hidden: {_named(hidden)}")
+    # Explicit, so the repo's status.showUntrackedFiles cannot hide an untracked file.
+    code, dirty = _git(repo, "status", "--porcelain", "--untracked-files=all")
+    if code != 0:
+        return f"cannot read its status: {dirty}"
+    if dirty:
+        lines = dirty.splitlines()
+        untracked = [line[3:] for line in lines if line.startswith("?? ")]
+        if len(untracked) < len(lines):
+            return "it has uncommitted changes"
+        return f"it has untracked file(s): {_named(untracked)}"
+    code, ignored = _git(repo, "ls-files", "-z", "--others", "--ignored", "--exclude-standard")
+    if code != 0:
+        return f"cannot list its ignored files: {ignored}"
+    kept = [p for p in ignored.split("\0") if p and not _disposable(p)]
+    if kept:
+        return f"it has ignored file(s) that are not caches: {_named(kept)}"
+    # A nested repo inside a cache dir is someone's work, not a cache: rmtree would take its
+    # commits. Any `.git` (file or directory) under the disposable set keeps the checkout.
+    nested = _nested_repos(repo, [p for p in ignored.split("\0") if p])
+    if nested:
+        return f"it has nested git repo(s) inside ignored caches: {_named(nested)}"
+    # LFS objects are not proved pushed (a `push --no-verify` skips them): any keeps it.
+    lfs = Path(git_dir) / "lfs" / "objects"
+    held = _any_file(lfs)
+    if held is None:
+        return f"cannot read {lfs}"
+    if held:
+        return f"its .git/lfs/objects holds Git LFS object(s), e.g. {held}"
+    code, stashed = _git(repo, "stash", "list")
+    if code != 0:
+        return f"cannot read its stash: {stashed}"
+    if stashed:
+        return "it has stashed changes"
+    # Only refs from a remote outside this checkout prove a push: one that resolves inside it
+    # (`git remote add self .`, a file:// remote under .git/) goes when the checkout does.
+    proving, inside, why = _proving_refs(repo)
+    if why:
+        return why
+    not_on = ["--not", *proving]
+    unproven = (f"; remote(s) {_named(inside)} point inside this checkout or cannot be "
+                "resolved, so their refs prove nothing") if inside else ""
+    code, tags = _git(repo, "for-each-ref", "--format=%(refname:short)", "refs/tags")
+    if code != 0:
+        return f"cannot list its tags: {tags}"
+    for tag in tags.splitlines():
+        code, ahead = _git(repo, "rev-list", f"refs/tags/{tag}", *not_on)
+        if code != 0:
+            return f"cannot tell whether tag {tag} is pushed: {ahead}"
+        if ahead:
+            return f"its tag {tag} points at a commit that is on no remote{unproven}"
+    # Every ref and every HEAD, not just branches: a commit only a note, a detached HEAD or an
+    # odd ref reaches is still work.
+    code, ahead = _git(repo, "rev-list", "--all", *not_on)
+    if code != 0:
+        return f"cannot tell whether it has unpushed commits: {ahead}"
+    if ahead:
+        return f"it has {len(ahead.splitlines())} unpushed commit(s){unproven}"
+    # A commit only a reflog reaches (a `reset --hard` away from a branch) is still work.
+    code, ahead = _git(repo, "rev-list", "--reflog", "--all", *not_on)
+    if code != 0:
+        return f"cannot read its reflogs: {ahead}"
+    if ahead:
+        return (f"it has {len(ahead.splitlines())} commit(s) only a reflog reaches, on no "
+                f"remote{unproven}")
+    return ""
+
+
+def _nested_repos(repo: Path, ignored: list[str]) -> list[str]:
+    """Every `.git` (file or directory) under the disposable directories the ignored list
+    names, and every entry git itself lists as a nested repo (a trailing `/`). Walks without
+    following symlinks, as rmtree deletes. An unreadable directory counts as a nested repo."""
+    found = [p.rstrip("/") for p in ignored if p.endswith("/")]
+    roots: set[str] = set()
+    for p in ignored:
+        parts = p.rstrip("/").split("/")
+        for i, part in enumerate(parts):
+            if part in DISPOSABLE_DIRS:
+                roots.add("/".join(parts[:i + 1]))
+                break
+    for root in sorted(roots):
+        if _through_symlink(repo / root):
+            continue  # rmtree unlinks a symlink; it never deletes what it points at
+        def unreadable(exc: OSError, root: str = root) -> None:
+            found.append(f"{root} (unreadable: {exc.strerror})")
+        for here, dirs, files in os.walk(repo / root, onerror=unreadable):
+            if ".git" in dirs or ".git" in files:
+                found.append(Path(here).relative_to(repo).as_posix())
+            dirs[:] = [d for d in dirs if d != ".git"]
+    return list(dict.fromkeys(found))
+
+
+def _any_file(top: Path) -> str | None:
+    """The first file under `top` (relative), "" when there is none or `top` is absent, None
+    when it cannot be read."""
+    if not top.exists() and not top.is_symlink():
+        return ""
+    broken: list[OSError] = []
+    for here, _dirs, files in os.walk(top, onerror=broken.append):
+        if files:
+            return (Path(here) / files[0]).relative_to(top).as_posix()
+    return None if broken else ""
+
+
+def _local_url_path(url: str, repo: Path) -> Path | None:
+    """The filesystem path a remote URL names, or None when it is not a local one (https,
+    ssh, `host:path`). A relative path (and `.`) resolves against the checkout, as git does."""
+    url = url.strip()
+    if url.startswith("file://"):
+        # file://[host]/path, percent-decoded. Parsed here: drain.py is not a network door.
+        rest = url[len("file://"):]
+        slash = rest.find("/")
+        path = _percent_decode(rest[slash:] if slash >= 0 else "/")
+        if os.name == "nt" and len(path) > 2 and path[0] == "/" and path[2] == ":":
+            path = path[1:]
+        return Path(path)
+    if "://" in url:
+        return None
+    colon, slash = url.find(":"), url.find("/")
+    drive = os.name == "nt" and colon == 1 and url[0].isalpha()
+    if colon > 0 and (slash == -1 or colon < slash) and not drive:
+        return None  # scp-like [user@]host:path
+    path = Path(os.path.expanduser(url))
+    return path if path.is_absolute() else repo / path
+
+
+def _percent_decode(text: str) -> str:
+    raw = re.sub(rb"%([0-9A-Fa-f]{2})", lambda m: bytes([int(m.group(1), 16)]),
+                 text.encode("utf-8", "surrogateescape"))
+    return raw.decode("utf-8", "surrogateescape")
+
+
+def _inside(path: Path, root: Path) -> bool:
+    """True when `path` is `root` or under it, by real path and by inode (case-folding file
+    systems, symlinks). Unresolvable counts as inside: when in doubt, it proves nothing."""
+    try:
+        real = Path(os.path.realpath(path))
+        top = Path(os.path.realpath(root))
+    except OSError:
+        return True
+    for candidate in (real, *real.parents):
+        if candidate == top:
+            return True
+        try:
+            if candidate.exists() and os.path.samefile(candidate, top):
+                return True
+        except OSError:
+            return True
+    return False
+
+
+def _refspec_matches(pattern: str, ref: str) -> bool:
+    if "*" not in pattern:
+        return ref == pattern
+    head, tail = pattern.split("*", 1)
+    return len(ref) >= len(head) + len(tail) and ref.startswith(head) and ref.endswith(tail)
+
+
+def _proving_refs(repo: Path) -> tuple[list[str], list[str], str]:
+    """(remote-tracking refs that prove a push, remotes that prove nothing, error).
+
+    A ref under refs/remotes/ proves a push only when a remote whose every URL (fetch and push,
+    after insteadOf) points outside this checkout writes it, and no remote that points inside
+    it (`.`, a relative path, a file:// URL under .git/) can also write it. A ref no configured
+    remote writes proves nothing either."""
+    code, names = _git(repo, "remote")
+    if code != 0:
+        return [], [], f"cannot list its remotes: {names}"
+    trusted: list[str] = []
+    untrusted: list[str] = []
+    patterns: dict[str, list[str]] = {}
+    for remote in names.splitlines():
+        urls: list[str] = []
+        ok = True
+        for push in (False, True):
+            code, got = _git(repo, "remote", "get-url", "--all", *(["--push"] if push else []),
+                             remote)
+            if code != 0:
+                ok = False
+                break
+            urls += got.splitlines()
+        code, specs = _git(repo, "config", "--get-all", f"remote.{remote}.fetch")
+        dsts = [s.lstrip("+").split(":", 1)[1] for s in specs.splitlines() if ":" in s] \
+            if code == 0 else []
+        patterns[remote] = [d if d.startswith("refs/") else f"refs/remotes/{d}" for d in dsts]
+        # The conventional namespace too: for an untrusted remote it widens what is excluded,
+        # and a trusted remote's own namespace is excluded anyway where an untrusted one maps.
+        patterns[remote].append(f"refs/remotes/{remote}/*")
+        local = [p for p in (_local_url_path(u, repo) for u in urls) if p is not None]
+        if ok and urls and not any(_inside(p, repo) for p in local):
+            trusted.append(remote)
+        else:
+            untrusted.append(remote)
+    code, refs = _git(repo, "for-each-ref", "--format=%(refname)", "refs/remotes")
+    if code != 0:
+        return [], untrusted, f"cannot list its remote-tracking refs: {refs}"
+    proving = [ref for ref in refs.splitlines()
+               if any(_refspec_matches(p, ref) for r in trusted for p in patterns[r])
+               and not any(_refspec_matches(p, ref) for r in untrusted for p in patterns[r])]
+    return proving, untrusted, ""
+
+
+def _through_symlink(path: Path) -> bool:
+    """True when `path`, or any directory above it, is a symlink. Never follows it to act."""
+    return os.path.realpath(path) != os.path.abspath(path)
+
+
+def _submodules(repo: Path, git_dir: Path) -> list[str]:
+    """Every sign of a submodule: `.gitmodules`, anything under `.git/modules/`, a gitlink in
+    the index. Names them when it can; an unreadable sign still counts."""
+    found: list[str] = []
+    gitmodules = repo / ".gitmodules"
+    if gitmodules.exists() or gitmodules.is_symlink():
+        code, paths = _git(repo, "config", "-f", ".gitmodules", "--get-regexp",
+                           r"^submodule\..*\.path$")
+        named = [line.split(" ", 1)[1] for line in paths.splitlines() if " " in line] \
+            if code == 0 else []
+        found += named or [".gitmodules"]
+    modules = git_dir / "modules"
+    try:
+        found += [f".git/modules/{p.name}" for p in sorted(modules.iterdir())]
+    except FileNotFoundError:
+        pass
+    except OSError:
+        found.append(".git/modules")
+    code, staged = _git(repo, "ls-files", "-s")
+    if code != 0:
+        found.append("(cannot read its index)")
+    else:
+        found += [line.split("\t", 1)[1] for line in staged.splitlines()
+                  if line.startswith("160000 ") and "\t" in line]
+    return list(dict.fromkeys(found))
+
+
+def _open(server: str, verb: str, err: TextIO) -> tuple[object | None, int]:
+    try:
+        return open_ledger(server), 0
+    except client_mod.NoSession as exc:
+        print(f"gbfleet drain {verb}: {exc}. Run `gban --server {server} login`, then run "
+              "this again. Nothing was changed.", file=err)
+        return None, EXIT_NO_SESSION
+    except (client_mod.ServerUnreachable, client_mod.ToolFailed) as exc:
+        print(f"gbfleet drain {verb}: cannot open the gban session: {exc}. Nothing was "
+              "changed.", file=err)
+        return None, EXIT_REFUSED
+
+
+def remove(name: str, *, out: TextIO | None = None, err: TextIO | None = None) -> int:
+    """Uninstall, revoke, delete the env file, and delete the checkout only if it is safe."""
+    out = out or sys.stdout
+    err = err or sys.stderr
+    try:
+        kind = _supported_kind()
+    except Refused as exc:
+        print(f"gbfleet drain remove: {exc}", file=err)
+        return EXIT_REFUSED
+    unit = service.unit_path_for(name, kind)
+    env = service.env_path_for(name)
+    if not unit.exists() and not env.exists():
+        print(f"gbfleet drain remove: no drain named {name!r} is installed here ({kind})",
+              file=err)
+        return EXIT_REFUSED
+    # Read before uninstall: it deletes the unit and the env file this reads from.
+    args = service.until_args_of(name, kind) or []
+    repo = service.value_of(args, "--repo")
+    server = service.value_of(args, "--server") or client_mod.gban_url()
+    key = _read_key(env)
+    others = sharers(name, key, kind) if key else []
+    ledger, lookup = None, KeyLookup()
+    if key and not others:
+        ledger, code = _open(server, "remove", err)
+        if ledger is None:
+            return code
+        lookup = resolve_key_id(ledger, name, key, kind)
+    key = ""
+
+    failed = manual = False
+    try:
+        removed = service.uninstall(name, kind=kind)
+    except service.Refused as exc:
+        print(f"gbfleet drain remove: {exc}", file=err)
+        return EXIT_REFUSED
+    print(f"service: uninstalled {name} ({kind})", file=out)
+    for path in removed:
+        print(f"  deleted {path}", file=out)
+    if others:
+        print(f"key: NOT revoked: the env file of {', '.join(others)} holds the same key, and "
+              "revoking it would stop them. Rekey them, then revoke it", file=out)
+    elif ledger is not None:
+        if lookup.key_id:
+            try:
+                ledger.revoke_key(lookup.key_id)  # type: ignore[attr-defined]
+                print(f"key: revoked ({lookup.key_id})", file=out)
+            except (client_mod.ServerUnreachable, client_mod.ToolFailed) as exc:
+                failed = True
+                print(f"gbfleet drain remove: key {lookup.key_id} was NOT revoked and is "
+                      f"still ALIVE: {exc}. Revoke it in Settings", file=err)
+        else:
+            print_left_alive(lookup, out)
+            manual = True
+    else:
+        print(f"key: {env} held no {service.API_KEY_ENV}, so there was none to revoke",
+              file=out)
+    try:
+        key_id_path(name).unlink()
+    except OSError:
+        pass
+
+    if not repo:
+        print("checkout: none named in the unit; nothing to delete", file=out)
+    elif not Path(repo).exists():
+        print(f"checkout: {repo} is already gone", file=out)
+    else:
+        path = Path(repo)
+        verdict = checkout_verdict(path, name)
+        if verdict:
+            print(f"checkout: kept {path}: {verdict}", file=out)
+        else:
+            try:
+                shutil.rmtree(path)
+            except OSError as exc:
+                print(f"checkout: kept what is left of {path}: deleting it failed: {exc}",
+                      file=out)
+            else:
+                print(f"checkout: deleted {path}", file=out)
+    if failed:
+        return 1
+    return EXIT_MANUAL_REVOKE if manual else 0
+
+
+def _env_plan(name: str, kind: str, env: Path) -> service.Plan:
+    """A plan that carries only the env path, for `service.write_env`'s atomic swap."""
+    return service.Plan(name=name, kind=kind, label=service.label_for(name),
+                        unit_path=service.unit_path_for(name, kind), env_path=env,
+                        log_path=env, err_path=env, binary="", until_args=[], repo=env.parent,
+                        common_dir=env.parent, path_env="")
+
+
+def restart(name: str, kind: str) -> str:
+    """Restart the installed service so it reads the env file again. Loads it if it is not."""
+    unit = service.unit_path_for(name, kind)
+    if kind == "launchd":
+        domain = service._launchd_gui_domain()
+        if domain is None:
+            raise Refused("launchd domain needs a numeric uid; os.getuid is absent")
+        code, said = service._run(["launchctl", "kickstart", "-k",
+                                   f"{domain}/{service.label_for(name)}"])
+    else:
+        code, said = service._run(["systemctl", "--user", "restart", service.unit_name(name)])
+    if code != 0:
+        return service._load_existing(name, kind, unit)
+    return said
+
+
+def first_call_seen(ledger: object, key_id: str, *, window: float | None = None,
+                    poll: float | None = None) -> bool:
+    """True once the server reports `last_used` on the new key: an authenticated call made it.
+
+    Nobody else holds the new key, so the first use is the restarted service's.
+    """
+    window = FIRST_CALL_WINDOW if window is None else window
+    poll = FIRST_CALL_POLL if poll is None else poll
+    waited = 0.0
+    while True:
+        try:
+            rows = ledger.list_keys()  # type: ignore[attr-defined]
+        except (client_mod.ServerUnreachable, client_mod.ToolFailed):
+            rows = []
+        row = next((r for r in rows if str(r.get("id")) == key_id), None)
+        if row is not None and row.get("last_used"):
+            return True
+        if waited >= window:
+            return False
+        time.sleep(poll)
+        waited += poll
+
+
+def rekey(name: str, *, out: TextIO | None = None, err: TextIO | None = None) -> int:
+    """A new PRD-limited key for one drain; the old one revoked once the new one is in use."""
+    out = out or sys.stdout
+    err = err or sys.stderr
+    try:
+        kind = _supported_kind()
+    except Refused as exc:
+        print(f"gbfleet drain rekey: {exc}", file=err)
+        return EXIT_REFUSED
+    unit = service.unit_path_for(name, kind)
+    env = service.env_path_for(name)
+    args = service.until_args_of(name, kind)
+    if not unit.exists() or args is None:
+        print(f"gbfleet drain rekey: no drain named {name!r} is installed here ({kind})",
+              file=err)
+        return EXIT_REFUSED
+    prd = service.value_of(args, "--prd") or ""
+    if not prd:
+        print(f"gbfleet drain rekey: {name}'s unit runs no --prd, and a PRD-limited key needs "
+              "one. Nothing was changed", file=err)
+        return EXIT_REFUSED
+    old = _read_key(env)
+    if not old:
+        print(f"gbfleet drain rekey: {env} holds no {service.API_KEY_ENV}. Nothing was "
+              "changed", file=err)
+        return EXIT_REFUSED
+    server = service.value_of(args, "--server") or client_mod.gban_url()
+    project = service.value_of(args, "--project") or ""
+    others = sharers(name, old, kind)
+    ledger, code = _open(server, "rekey", err)
+    if ledger is None:
+        return code
+    # Named before the new key's id overwrites the record.
+    lookup = KeyLookup() if others else resolve_key_id(ledger, name, old, kind)
+
+    label = f"{name}@{socket.gethostname()}"
+    try:
+        minted = ledger.mint_prd_key(prd, label, project=project)  # type: ignore[attr-defined]
+    except (client_mod.ServerUnreachable, client_mod.ToolFailed) as exc:
+        print(f"gbfleet drain rekey: the server did not mint a key: {exc}. Nothing was "
+              "changed", file=err)
+        return EXIT_REFUSED
+    new = str(minted.get("plaintext") or "")
+    new_id = str(minted.get("id") or "")
+    if not new or not new_id or _same_key(new, old):
+        print("gbfleet drain rekey: the server returned no usable new key. Nothing was "
+              "changed", file=err)
+        return EXIT_REFUSED
+    try:
+        warnings = service.write_env(_env_plan(name, kind, env), new)
+    except OSError as exc:
+        print(f"gbfleet drain rekey: could not write {env}: {exc}. It still holds the old "
+              f"key; key {new_id} was minted and not stored, revoke it in Settings", file=err)
+        return EXIT_REFUSED
+    finally:
+        new = old = ""
+    _record_key_id(name, new_id)
+    print(f"key: minted ({new_id}, labelled {label}), written to {env}", file=out)
+    for warning in warnings:
+        print(f"WARNING {warning}", file=err)
+
+    try:
+        restart(name, kind)
+    except Refused as exc:
+        print(f"gbfleet drain rekey: {exc}. The old key is left alive", file=err)
+        return 1
+    if not first_call_seen(ledger, new_id):
+        print(f"gbfleet drain rekey: the restarted service has made no call with key {new_id} "
+              "yet, so the old key is left alive. See `gbfleet service status --name "
+              f"{name}`, then revoke the old key in Settings", file=err)
+        if others:
+            # Alive on purpose: other drains run on it. Nothing for the person to revoke.
+            print(f"old key: NOT revoked: the env file of {', '.join(others)} holds it too",
+                  file=out)
+            return 1
+        if lookup.key_id:
+            print(f"old key: left ALIVE, not revoked ({lookup.key_id})", file=out)
+            print(f"{MANUAL_REVOKE_LINE} {lookup.key_id}", file=out)
+        else:
+            print_left_alive(lookup, out)
+        return EXIT_MANUAL_REVOKE
+    print(f"service: restarted; its first call with key {new_id} was seen", file=out)
+    if others:
+        print(f"old key: NOT revoked: the env file of {', '.join(others)} holds it too, and "
+              "revoking it would stop them. Rekey them, then revoke it in Settings", file=out)
+        return 0
+    if not lookup.key_id:
+        print_left_alive(lookup, out)
+        return EXIT_MANUAL_REVOKE
+    old_id = lookup.key_id
+    try:
+        ledger.revoke_key(old_id)  # type: ignore[attr-defined]
+    except (client_mod.ServerUnreachable, client_mod.ToolFailed) as exc:
+        print(f"gbfleet drain rekey: old key {old_id} was NOT revoked and is still ALIVE: "
+              f"{exc}. Revoke it in Settings", file=err)
+        return 1
+    print(f"old key: revoked ({old_id})", file=out)
     return 0

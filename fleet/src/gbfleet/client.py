@@ -856,6 +856,10 @@ SESSION_PATHS: frozenset[str] = frozenset({SESSION_REFRESH_PATH, SESSION_API_KEY
 #: The one READ the session makes: a PRD's coverage (status and `shaped`), which
 #: `drain create` checks before it mints (GRPH-1975). A GET, so it cannot write.
 SESSION_COVERAGE_PATH = "/api/prds/{prd}/coverage"
+#: `drain remove` / `drain rekey` (GRPH-1976): the key list (ids, prefixes, `last_used`, the
+#: first-call signal) is a GET on `SESSION_API_KEYS_PATH`; a revoke is a DELETE on one key.
+#: No other DELETE is possible through the session.
+SESSION_REVOKE_PATH = "/api/api-keys/{id}"
 
 GBAN_HOME_ENV = "GRAPHBAN_HOME"
 #: The tiers `gban setup` mints with. The server adds `fleet` to a PRD-limited key anyway.
@@ -928,22 +932,40 @@ class LedgerSession:
 
     def prd_coverage(self, prd: str) -> dict:
         """The PRD's `prd_coverage` reply: `status`, `shaped` and the rest. Writes nothing."""
-        path = SESSION_COVERAGE_PATH.format(prd=quote(prd, safe=""))
+        payload = self._request("GET", SESSION_COVERAGE_PATH.format(prd=quote(prd, safe="")))
+        return payload if isinstance(payload, dict) else {}
+
+    def list_keys(self) -> list[dict]:
+        """The person's keys as the registry shows them: id, prefix, `last_used`, `revoked`.
+        Never a plaintext — the server stores only a hash."""
+        payload = self._request("GET", SESSION_API_KEYS_PATH)
+        return [row for row in payload if isinstance(row, dict)] \
+            if isinstance(payload, list) else []
+
+    def revoke_key(self, key_id: str) -> None:
+        """`DELETE /api/api-keys/{id}`: soft and idempotent on the server (GRPH-788)."""
+        self._request("DELETE", SESSION_REVOKE_PATH.format(id=quote(key_id, safe="")))
+
+    def _request(self, method: str, path: str) -> Any:
+        """A GET or a DELETE with the access token. The JSON reply, or None for an empty one."""
         try:
             with httpx.Client(timeout=self.timeout, transport=self.transport) as http:
-                response = http.get(self.base_url + path,
-                                    headers={"Authorization": f"Bearer {self.token}"})
+                response = http.request(method, self.base_url + path,
+                                        headers={"Authorization": f"Bearer {self.token}"})
         except httpx.HTTPError as exc:
             raise ServerUnreachable(f"could not reach {self.base_url}: {exc}") from exc
-        try:
-            payload = response.json()
-        except ValueError:
-            payload = {"detail": response.text[:400]}
+        if not response.content:
+            payload: Any = None
+        else:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {"detail": response.text[:400]}
         if response.status_code >= 400:
             detail = payload.get("detail") if isinstance(payload, dict) else payload
             raise ToolFailed(path, code=str(response.status_code),
                              message=str(detail or f"HTTP {response.status_code}"))
-        return payload if isinstance(payload, dict) else {}
+        return payload
 
     def _post(self, path: str, body: dict, *, auth: bool = True) -> dict:
         if path not in SESSION_PATHS:
