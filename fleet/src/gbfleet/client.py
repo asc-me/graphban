@@ -27,9 +27,11 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Iterator
 
 import httpx
@@ -831,3 +833,112 @@ def _json_reply(response: httpx.Response) -> dict | None:
         return None
     return payload if isinstance(payload, dict) else None
 
+
+
+# ---- the person's `gban` session (GRPH-1974) ---------------------------------------------------
+#
+# `gbfleet drain create` mints a drain's key AS THE PERSON, the way `gban setup` does, because a
+# PRD-limited key (GRPH-1973) is minted by a human with write on the PRD's project. The
+# supervisor's own credential (`Graphban` above) is an agent key and must not be able to mint
+# one, so this is a second, separate holder with two fixed paths of its own and nothing else.
+#
+# `gban` is a separate distribution (cli/) and fleet cannot import it (PRD-22 D-e), so the two
+# facts it keeps are read here directly: `$GRAPHBAN_HOME/session.json` (`refresh_token`) and
+# `gban.json` (`url`). Read, never written — `gban login` owns both files.
+
+#: Exchanges the stored refresh token for an access token. The presented token stays valid
+#: (the server keys on `token_version`), so nothing is written back.
+SESSION_REFRESH_PATH = "/api/auth/refresh"
+#: Mints a key. Called once per `drain create`.
+SESSION_API_KEYS_PATH = "/api/api-keys"
+SESSION_PATHS: frozenset[str] = frozenset({SESSION_REFRESH_PATH, SESSION_API_KEYS_PATH})
+
+GBAN_HOME_ENV = "GRAPHBAN_HOME"
+#: The tiers `gban setup` mints with. The server adds `fleet` to a PRD-limited key anyway.
+DRAIN_KEY_TIERS = ["fleet", "prd"]
+
+
+class NoSession(RuntimeError):
+    """No stored `gban` session, or one the server will not renew. Nothing was minted."""
+
+
+def gban_home() -> Path:
+    return Path(os.environ.get(GBAN_HOME_ENV) or (Path.home() / ".graphban"))
+
+
+def _gban_file(name: str) -> dict:
+    try:
+        loaded = json.loads((gban_home() / name).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def gban_url() -> str:
+    """The server `gban login` recorded, or "". A default, never an override of `--server`."""
+    return str(_gban_file("gban.json").get("url") or "").strip()
+
+
+@dataclass
+class LedgerSession:
+    """The person's session on one server: an access token held in memory, nothing on disk."""
+
+    base_url: str
+    #: Empty until `open` has exchanged the refresh token. `default_factory`, not a literal:
+    #: bandit reads `token=""` as a hard-coded password (B105/B106).
+    token: str = field(default_factory=str, repr=False)
+    transport: httpx.BaseTransport | None = None
+    timeout: float = 30.0
+
+    @classmethod
+    def open(cls, base_url: str, *,
+             transport: httpx.BaseTransport | None = None) -> "LedgerSession":
+        """One refresh exchange. Raises `NoSession` before any network when nothing is stored."""
+        stored = str(_gban_file("session.json").get("refresh_token") or "")
+        if not stored:
+            raise NoSession("no stored gban session")
+        session = cls(base_url=base_url.rstrip("/"), transport=transport)
+        try:
+            pair = session._post(SESSION_REFRESH_PATH, {"refresh_token": stored}, auth=False)
+        except ToolFailed as exc:
+            if exc.code in ("401", "403"):
+                raise NoSession(f"the server would not renew the gban session ({exc})") \
+                    from exc
+            raise
+        token = str(pair.get("access_token") or "")
+        if not token:
+            raise NoSession("the server returned no access token")
+        session.token = token
+        return session
+
+    def mint_prd_key(self, prd: str, label: str, *, project: str = "") -> dict:
+        """A key limited to `prd` (GRPH-1973). Returns the server's reply, `plaintext` included.
+
+        The caller must write `plaintext` to an owner-only file and print only `id`.
+        """
+        body: dict[str, Any] = {"name": label, "prd_id": prd, "expires_in_days": None,
+                                "tool_tiers": list(DRAIN_KEY_TIERS), "origin": "fleet"}
+        if project:
+            body["project_id"] = project
+        return self._post(SESSION_API_KEYS_PATH, body)
+
+    def _post(self, path: str, body: dict, *, auth: bool = True) -> dict:
+        if path not in SESSION_PATHS:
+            raise NotPermitted(f"the gban session may not POST {path!r}")
+        headers = {"Authorization": f"Bearer {self.token}"} if auth else {}
+        try:
+            with httpx.Client(timeout=self.timeout, transport=self.transport) as http:
+                response = http.post(self.base_url + path, json=body, headers=headers)
+        except httpx.HTTPError as exc:
+            raise ServerUnreachable(f"could not reach {self.base_url}: {exc}") from exc
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {"detail": response.text[:400]}
+        if response.status_code >= 400:
+            detail = payload.get("detail") if isinstance(payload, dict) else payload
+            if isinstance(detail, dict):
+                detail = detail.get("message") or json.dumps(detail)
+            raise ToolFailed(path, code=str(response.status_code),
+                             message=str(detail or f"HTTP {response.status_code}"))
+        return payload if isinstance(payload, dict) else {}
