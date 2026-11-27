@@ -249,10 +249,7 @@ def _org_hours(db: Session, org_id: str) -> int:
 
 def set_stale_hours(db: Session, user: User, org_id: str, hours: int) -> int:
     """The org sets the age past which an undecided thing is stale. Owners and admins only."""
-    role = authz.require_org_member(db, user.id, org_id)
-    if role not in ("owner", "admin"):
-        from fastapi import HTTPException
-        raise HTTPException(403, "only an owner or admin sets the stale age")
+    authz.require_org_admin(db, user.id, org_id)
     if hours < 1:
         raise ValueError("the stale age is at least one hour")
     db.get(Organization, org_id).prd_link_stale_hours = hours
