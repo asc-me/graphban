@@ -1,10 +1,12 @@
 """GRPH-P104 S1: PRD links request/accept, one thread per pair, metadata-only reads."""
 import pytest
+from sqlalchemy import select
 
-from app.models import Item, Membership, Organization, Project
+from app.models import Item, Link, Membership, Organization, PrdLinkMessage, Project
 from app.errors import NotFound, Refused
 from app.services import links as L
 from app.services import prds as prds_svc
+from app.services import suggestions as S
 from app.services import threads as T
 from app.services.links import Caller
 
@@ -143,3 +145,87 @@ def test_declined_link_does_not_reveal_far_side(world):
     L.decline_prd_link(db, _b(), link.id, reason="no")
     out = T.read_thread(db, _a(), link.id)["link"]
     assert out["to"] == {"id": b.key} and "B two" not in repr(out)
+
+
+# ---- S2: suggested items ----------------------------------------------------------------
+
+
+def _linked(world):
+    db, a, b, x = world
+    link = L.request_prd_link(db, _a(), a.id, b.id, reason="r")
+    L.accept_prd_link(db, _b(), link.id)
+    return db, a, b, link
+
+
+def test_person_in_b_files_item_on_b_prd_and_outcome_posts_back(world):
+    db, a, b, link = _linked(world)
+    src = Item(id="it1", project_id="pa", number=1, title="t", prd_id=a.id, status="next")
+    db.add(src)
+    db.commit()
+    m = S.suggest(db, _a(), link.id, {"title": "Console contract", "description": "d",
+                                      "tags": ["x"], "link": {"item": "it1", "direction": "blocks"}})
+    assert m["kind"] == "suggested_item" and m["outcome"] is None
+    out = S.file_suggestion(db, _b(), link.id, m["id"])
+    assert out["decided"] and out["outcome"]["outcome"] == "filed"
+    item = db.scalar(select(Item).where(Item.title == "Console contract"))
+    assert item.project_id == "pb" and item.prd_id == b.id
+    assert out["outcome"]["item"] == item.id
+    dep = db.scalar(select(Link).where(Link.a == "it1", Link.b == item.id))
+    # The edge is stored with its source (it1, on A's side), as link_items stores one.
+    assert dep is not None and dep.type == "dependency" and dep.project_id == "pa"
+    thread = T.read_thread(db, _a(), link.id)["messages"]
+    assert thread[-1]["reply_to"] == m["id"] and thread[-1]["body"].startswith("filed: filed")
+
+
+def test_sender_key_cannot_file_and_agent_needs_person(world):
+    db, a, b, link = _linked(world)
+    m = S.suggest(db, _a(), link.id, {"title": "T"})
+    with pytest.raises(Refused, match="not_allowed"):
+        S.file_suggestion(db, _a(), link.id, m["id"])
+    with _needs_person():
+        S.file_suggestion(db, _b(agent=True), link.id, m["id"])
+    assert db.get(PrdLinkMessage, m["id"]).outcome == ""
+    db.get(Organization, "o1").prd_link_accept_agents = True
+    db.commit()
+    assert S.file_suggestion(db, _b(agent=True), link.id, m["id"])["outcome"]["outcome"] == "filed"
+
+
+def test_decline_creates_nothing_and_first_decision_wins(world):
+    db, a, b, link = _linked(world)
+    m = S.suggest(db, _a(), link.id, {"title": "Nope"})
+    with pytest.raises(ValueError):
+        S.decline_suggestion(db, _b(), link.id, m["id"], reason=" ")
+    out = S.decline_suggestion(db, _b(), link.id, m["id"], reason="out of scope")
+    assert out["outcome"]["outcome"] == "declined" and out["outcome"]["code"] == "declined"
+    again = S.file_suggestion(db, _b(), link.id, m["id"])
+    assert again["code"] == "already_decided" and again["outcome"]["outcome"] == "declined"
+    assert db.query(Item).filter(Item.title == "Nope").count() == 0
+
+
+def test_validation_failure_carries_create_item_refusal(world):
+    db, a, b, link = _linked(world)
+    m = S.suggest(db, _a(), link.id, {"title": "Bad", "status": "bogus"})
+    out = S.file_suggestion(db, _b(), link.id, m["id"])
+    assert out["outcome"]["outcome"] == "conflict"
+    assert out["outcome"]["code"] == "validation" and "invalid status" in out["outcome"]["message"]
+    assert db.query(Item).filter(Item.title == "Bad").count() == 0
+
+
+def test_unlinked_and_second_link_decision(world):
+    db, a, b, link = _linked(world)
+    m = S.suggest(db, _a(), link.id, {"title": "Late"})
+    L.unlink_prd_link(db, Caller(readable=["pa"], writable=["pa"], label="Ann"), link.id)
+    out = S.file_suggestion(db, _b(), link.id, m["id"])
+    assert out["outcome"]["code"] == "unlinked" and db.query(Item).filter(Item.title == "Late").count() == 0
+    with pytest.raises(Exception, match="already_decided"):
+        L.accept_prd_link(db, _b(), link.id)
+
+
+def test_suggestion_shape_and_link_scope(world):
+    db, a, b, link = _linked(world)
+    with pytest.raises(ValueError):
+        S.suggest(db, _a(), link.id, {"description": "no title"})
+    db.add(Item(id="bx", project_id="pb", number=1, title="b item", prd_id=b.id, status="next"))
+    db.commit()
+    with pytest.raises(ValueError, match="your own PRD"):
+        S.suggest(db, _a(), link.id, {"title": "T", "link": {"item": "bx", "direction": "blocks"}})
