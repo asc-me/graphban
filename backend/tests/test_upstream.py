@@ -25,6 +25,23 @@ class _FakeResp:
         return self._data
 
 
+SELF_HOSTED = "https://intake.example.test/api/public/requests"
+
+
+@pytest.fixture(autouse=True)
+def _configured(monkeypatch):
+    """The default URL is the hosted intake, which refuses a tokenless report up front
+    (GRPH-1982). Tests that exercise the send path get a token; the ones about sending
+    WITHOUT one point at a self-hosted intake, which accepts that."""
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "tok_default")
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token_required", None)
+
+
+def _self_hosted_no_token(monkeypatch):
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_url", SELF_HOSTED)
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "")
+
+
 def _fake_post(url, json=None, timeout=None):
     _fake_post.last = {"url": url, "json": json}
     return _FakeResp({"request": {"id": "R-42", "title": (json or {}).get("title")}, "duplicates": []})
@@ -80,6 +97,7 @@ def test_upstream_disabled_when_url_blank(client, auth, monkeypatch):
     assert client.get("/api/reports/upstream", headers=auth).json()["enabled"] is False
     r = client.post("/api/reports/upstream", json={"title": "x"}, headers=auth)
     assert r.status_code == 400  # not configured
+    assert "upstream_feedback_unconfigured" in r.json()["detail"]
 
 
 def test_mcp_report_agentledger_issue(client, auth, monkeypatch):
@@ -130,7 +148,7 @@ def test_no_token_key_is_sent_when_unset(client, auth, monkeypatch):
     """A self-hosted receiver takes the raw project id. Sending an empty token would make
     a blank string look like a credential that was tried and rejected."""
     monkeypatch.setattr(up_svc.httpx, "post", _fake_post)
-    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "")
+    _self_hosted_no_token(monkeypatch)
 
     client.post("/api/reports/upstream", json={"title": "x"}, headers=auth)
     assert "token" not in _fake_post.last["json"]
@@ -172,7 +190,7 @@ def test_a_404_without_a_token_names_the_unset_token(client, auth, monkeypatch):
     """THE bug this guards. One 404 used to name BOTH causes, so an operator with no
     token still read 'public sharing' and went looking at the wrong knob."""
     monkeypatch.setattr(up_svc.httpx, "post", _Status(404))
-    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "")
+    _self_hosted_no_token(monkeypatch)
 
     detail = client.post("/api/reports/upstream", json={"title": "x"}, headers=auth).json()["detail"]
     assert "UPSTREAM_FEEDBACK_TOKEN unset on this server" in detail
@@ -223,7 +241,7 @@ def test_the_mcp_tool_says_retrying_will_not_help(client, auth, monkeypatch):
     """An agent branches on the hint. "Retry later" against a config error is an infinite
     loop that never fixes itself. Token-unset is the SuperArc field case (GRPH-927)."""
     monkeypatch.setattr(up_svc.httpx, "post", _Status(404))
-    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "")
+    _self_hosted_no_token(monkeypatch)
     key = client.post("/api/api-keys", json={"name": "reporter"}, headers=auth).json()["plaintext"]
 
     err = _mcp_report_error(client, key)
@@ -251,3 +269,99 @@ def test_the_mcp_tool_names_both_possibilities_when_the_token_is_set(
     assert "super-arc" not in err["message"]
     assert "UPSTREAM_FEEDBACK_TOKEN unset" not in err["message"]
     assert "will not help" in err.get("hint", "")
+
+
+# ---- a hosted intake with no token is refused up front (GRPH-1982) ----------------------
+def _explode(url, json=None, timeout=None):
+    raise AssertionError("a report the intake cannot accept must not be sent")
+
+
+def test_the_mcp_tool_refuses_unsent_with_a_named_reason_when_the_token_is_unset(
+        client, auth, monkeypatch):
+    """THE CALL this guards: the planner's report_graphban_issue that was lost. The default
+    intake is hosted, so with no token the report is refused before any POST, under a code
+    the agent branches on, and the message says it was not sent."""
+    monkeypatch.setattr(up_svc.httpx, "post", _explode)
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "")
+    key = client.post("/api/api-keys", json={"name": "reporter"}, headers=auth).json()["plaintext"]
+
+    err = _mcp_report_error(client, key)
+
+    assert err["code"] == "upstream_feedback_unconfigured"
+    assert "was not sent" in err["message"]
+    assert "UPSTREAM_FEEDBACK_TOKEN" in err["message"]
+    assert "will not help" in err.get("hint", "")
+
+
+def test_the_rest_route_refuses_unsent_when_the_token_is_unset(client, auth, monkeypatch):
+    monkeypatch.setattr(up_svc.httpx, "post", _explode)
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "")
+
+    cfg = client.get("/api/reports/upstream", headers=auth).json()
+    assert cfg["enabled"] is False and "UPSTREAM_FEEDBACK_TOKEN" in cfg["reason"]
+    r = client.post("/api/reports/upstream", json={"title": "x"}, headers=auth)
+    assert r.status_code == 400
+    assert "upstream_feedback_unconfigured" in r.json()["detail"]
+
+
+def test_token_required_can_be_declared_for_another_hosted_host(monkeypatch):
+    """A hosted intake on a host we do not know is declared, not guessed."""
+    _self_hosted_no_token(monkeypatch)
+    assert up_svc.unconfigured_reason() is None
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token_required", True)
+    assert "UPSTREAM_FEEDBACK_TOKEN" in up_svc.unconfigured_reason()
+    # ...and the inference can be overridden the other way for the default host.
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_url",
+                        "https://feedback.asc-me.dev/api/public/requests")
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token_required", False)
+    assert up_svc.unconfigured_reason() is None
+
+
+def test_health_names_the_missing_token_without_calling_the_tool(client, monkeypatch):
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "")
+    got = client.get("/health").json()["upstream_feedback"]
+    assert got["configured"] is False
+    assert "UPSTREAM_FEEDBACK_TOKEN" in got["missing"]
+
+
+def test_health_is_clean_and_never_prints_the_token_when_set(client, monkeypatch):
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "tok_secret_value_9")
+    r = client.get("/health")
+    assert r.json()["upstream_feedback"] == {"configured": True, "missing": None}
+    assert "tok_secret_value_9" not in r.text
+
+
+def test_the_refusal_never_carries_a_token_value(monkeypatch):
+    """The refusal names the setting. It is only raised with the token unset, but a
+    declared-required self-hosted host must not leak anything else either."""
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "")
+    with pytest.raises(up_svc.UpstreamUnconfigured) as e:
+        up_svc.submit_upstream(type_="bug", title="x")
+    assert "tok_" not in str(e.value)
+
+
+def test_startup_logs_the_missing_token(monkeypatch, caplog):
+    """The gap is visible at boot, not only on the first lost report. The lifespan calls
+    this; a blank URL (deliberate opt-out) stays quiet."""
+    import logging
+
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "")
+    with caplog.at_level(logging.WARNING, logger="graphban.upstream"):
+        assert up_svc.warn_if_unconfigured()
+    assert any("UPSTREAM_FEEDBACK_TOKEN" in r.getMessage() for r in caplog.records)
+
+    caplog.clear()
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_url", "")
+    assert up_svc.warn_if_unconfigured() is None
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_url", SELF_HOSTED)
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "tok_secret_value_9")
+    assert up_svc.warn_if_unconfigured() is None
+    assert not any("tok_secret_value_9" in r.getMessage() for r in caplog.records)
+
+
+def test_the_lifespan_runs_the_startup_check():
+    import inspect
+
+    from app import main
+
+    assert "warn_if_unconfigured()" in inspect.getsource(main.lifespan)
