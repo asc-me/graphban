@@ -18,14 +18,16 @@ contains the value.
 person without `gban login` gets the instruction and an unchanged disk.
 
 **Remove and rekey (GRPH-1976).** `remove` uninstalls the service, revokes its key, deletes
-the env file, and deletes the checkout only when its marker names this drain and it holds no
-uncommitted change and no unpushed commit; any other checkout is kept and named. `rekey`
-mints a new PRD-limited key, swaps the env file atomically, restarts the service, and revokes
-the old key only after the server has seen the new key used (`last_used`), and only when no
-other installed drain's env file holds the same old key. Neither prints a key value. The
-server keeps only a hash, so the key's id is recorded beside the env file (`<name>.key-id`,
-not a secret); a drain without that record is matched by its prefix, and only a single live
-match is ever revoked.
+the env file, and deletes the checkout only when its marker names this drain and it holds
+nothing that is not provably disposable (`checkout_verdict`); any other checkout is kept and
+named with the reason. `rekey` mints a new PRD-limited key, swaps the env file atomically,
+restarts the service, and revokes the old key only after the server has seen the new key used
+(`last_used`), and only when no other installed drain's env file holds the same old key.
+Neither prints a key value. The server keeps only a hash, so the key's id is recorded beside
+the env file (`<name>.key-id`, not a secret). **A key is revoked only by that recorded id,
+never by a guess**: a drain without the record (one `create` did not make, often holding the
+person's own `gban setup` key) has its key left alive, and both commands list the person's
+live keys by id and label and send them to Settings to revoke the right one.
 
 **Preflight refuses with a named reason, before anything is cut, minted or written**
 (GRPH-1975). `draft` refuses an unsupported platform, a service or env file that already
@@ -584,40 +586,86 @@ def sharers(name: str, key: str, kind: str) -> list[str]:
             if other != name and _same_key(_read_key(service.env_path_for(other)), key)]
 
 
-def resolve_key_id(ledger: object, name: str, key: str) -> tuple[str, str]:
-    """(id, "") for the key in `name`'s env file, or ("", why) when it cannot be named.
+@dataclass
+class KeyLookup:
+    """What `resolve_key_id` found. `key_id` is set only from a recorded id; never a guess."""
+    key_id: str = ""
+    why: str = ""
+    #: The person's live keys as (id, label), for the revoke-it-yourself guidance. Ids and
+    #: labels only: the listing's prefix is never carried, let alone a value.
+    candidates: list[tuple[str, str]] = field(default_factory=list)
 
-    The recorded id first, checked against the listing's prefix. A drain `create` did not
-    make has no record, so its key is matched by prefix, and only a single live match counts:
-    revoking a guess could kill somebody else's credential.
+
+def resolve_key_id(ledger: object, name: str, key: str) -> KeyLookup:
+    """The id of the key in `name`'s env file, from `<name>.key-id` only.
+
+    No automatic revocation without a recorded id (the owner's decision after the GRPH-1976
+    bounce): a drain `create` did not make often holds the person's own `gban setup` key, and
+    a prefix match can name an unrelated live key. Without a record nothing is matched;
+    the caller leaves the key alive and prints `candidates` for the person to choose from.
     """
     try:
         rows = ledger.list_keys()  # type: ignore[attr-defined]
     except (client_mod.ServerUnreachable, client_mod.ToolFailed) as exc:
-        return "", f"cannot list your keys: {exc}"
+        return KeyLookup(why=f"cannot list your keys: {exc}")
+    # A key another drain's record names is that drain's; it is never offered for revoking.
+    owned = {_recorded_key_id(p.stem) for p in service.CONFIG_DIR.glob("*.key-id")
+             if p.stem != name} - {""}
+    live = [(str(r.get("id") or ""), str(r.get("name") or ""))
+            for r in rows if not r.get("revoked") and r.get("id")
+            and str(r.get("id")) not in owned]
     recorded = _recorded_key_id(name)
-    if recorded:
-        row = next((r for r in rows if str(r.get("id")) == recorded), None)
-        if row is None:
-            return "", f"the recorded key {recorded} is not one of your keys"
-        prefix = str(row.get("prefix") or "")
-        if prefix and not key.startswith(prefix):
-            return "", f"the recorded key {recorded} is not the key in {name}'s env file"
-        return recorded, ""
-    matches = [r for r in rows if not r.get("revoked") and r.get("prefix")
-               and key.startswith(str(r["prefix"]))]
-    if len(matches) == 1:
-        return str(matches[0].get("id") or ""), ""
-    if not matches:
-        return "", "none of your live keys matches it (it may be another person's key)"
-    return "", (f"{len(matches)} of your live keys share its prefix "
-                f"({', '.join(str(r.get('id')) for r in matches)}), so which one is unknown")
+    if not recorded:
+        return KeyLookup(why=f"no {key_id_path(name).name} records which key it is",
+                         candidates=live)
+    row = next((r for r in rows if str(r.get("id")) == recorded), None)
+    if row is None:
+        return KeyLookup(why=f"the recorded key {recorded} is not one of your keys",
+                         candidates=live)
+    prefix = str(row.get("prefix") or "")
+    if prefix and not key.startswith(prefix):
+        return KeyLookup(why=f"the recorded key {recorded} is not the key in {name}'s env file",
+                         candidates=live)
+    return KeyLookup(key_id=recorded)
+
+
+def print_left_alive(lookup: KeyLookup, out: TextIO) -> None:
+    """The old key stays alive: say so, list the candidates by id and label, point at Settings."""
+    print(f"old key: left ALIVE, not revoked: {lookup.why}. gbfleet never revokes a key it "
+          "cannot name from its own record.", file=out)
+    if lookup.candidates:
+        print("  your live keys (id, label):", file=out)
+        for key_id, label in lookup.candidates:
+            print(f"    {key_id}  {label or '(no label)'}", file=out)
+    print("  Revoke the one this drain used in Settings > API keys, if no one else uses it "
+          "(it may be your `gban setup` key).", file=out)
+
+
+#: The only ignored paths `remove` treats as disposable: regenerable caches and environments.
+#: A directory here matches at any depth; any other ignored file keeps the checkout.
+DISPOSABLE_DIRS = frozenset({".venv", "node_modules", "__pycache__", ".pytest_cache",
+                             ".mypy_cache", ".ruff_cache"})
+DISPOSABLE_SUFFIXES = (".pyc",)
+
+
+def _disposable(path: str) -> bool:
+    parts = path.rstrip("/").split("/")
+    return any(p in DISPOSABLE_DIRS for p in parts[:-1]) or parts[-1] in DISPOSABLE_DIRS \
+        or parts[-1].endswith(DISPOSABLE_SUFFIXES)
+
+
+def _named(paths: list[str], limit: int = 5) -> str:
+    shown = ", ".join(paths[:limit])
+    return shown + (f" and {len(paths) - limit} more" if len(paths) > limit else "")
 
 
 def checkout_verdict(repo: Path, name: str) -> str:
-    """"" when `repo` may be deleted: it is the top of a checkout, its marker names `name`, and
-    it (and every linked worktree) has no uncommitted change, no stash and no unpushed commit.
-    Otherwise why it is kept. Anything unreadable is a keep, never a delete."""
+    """"" when `repo` may be deleted, else why it is kept. Deleted only when it holds nothing
+    that is not provably disposable: it is the top of a checkout, its marker names `name`, it
+    has no linked worktree, no uncommitted change, no untracked file (whatever
+    `status.showUntrackedFiles` says), no ignored file outside `DISPOSABLE_DIRS` /
+    `DISPOSABLE_SUFFIXES`, no stash, no tag on an unpushed commit, and no commit on any ref
+    that no remote-tracking ref reaches. Anything unreadable is a keep, never a delete."""
     if _toplevel(repo) != repo.resolve():
         return "it is not the top of a git checkout"
     code, git_dir = _git(repo, "rev-parse", "--absolute-git-dir")
@@ -632,25 +680,48 @@ def checkout_verdict(repo: Path, name: str) -> str:
         return f"cannot read its .git/{MARKER} marker: {exc}"
     if owner != name:
         return f"its .git/{MARKER} marker names drain {owner!r}, not {name!r}"
+    # Any linked worktree, live or not: deleting the main checkout destroys the .git it runs on.
     code, listed = _git(repo, "worktree", "list", "--porcelain")
     if code != 0:
         return f"cannot list its worktrees: {listed}"
-    trees = [Path(line[len("worktree "):]) for line in listed.splitlines()
-             if line.startswith("worktree ")] or [repo]
-    for tree in trees:
-        if not tree.exists():
-            continue
-        code, dirty = _git(tree, "status", "--porcelain")
-        if code != 0:
-            return f"cannot read the status of {tree}: {dirty}"
-        if dirty:
-            return f"{tree} has uncommitted changes"
+    trees = [line[len("worktree "):] for line in listed.splitlines()
+             if line.startswith("worktree ")]
+    linked = [t for t in trees if Path(t).resolve() != repo.resolve()]
+    if linked:
+        return f"it has linked worktree(s): {_named(linked)}"
+    # Explicit, so the repo's status.showUntrackedFiles cannot hide an untracked file.
+    code, dirty = _git(repo, "status", "--porcelain", "--untracked-files=all")
+    if code != 0:
+        return f"cannot read its status: {dirty}"
+    if dirty:
+        lines = dirty.splitlines()
+        untracked = [line[3:] for line in lines if line.startswith("?? ")]
+        if len(untracked) < len(lines):
+            return "it has uncommitted changes"
+        return f"it has untracked file(s): {_named(untracked)}"
+    code, ignored = _git(repo, "ls-files", "-z", "--others", "--ignored", "--exclude-standard")
+    if code != 0:
+        return f"cannot list its ignored files: {ignored}"
+    kept = [p for p in ignored.split("\0") if p and not _disposable(p)]
+    if kept:
+        return f"it has ignored file(s) that are not caches: {_named(kept)}"
     code, stashed = _git(repo, "stash", "list")
     if code != 0:
         return f"cannot read its stash: {stashed}"
     if stashed:
         return "it has stashed changes"
-    code, ahead = _git(repo, "rev-list", "HEAD", "--branches", "--not", "--remotes")
+    code, tags = _git(repo, "for-each-ref", "--format=%(refname:short)", "refs/tags")
+    if code != 0:
+        return f"cannot list its tags: {tags}"
+    for tag in tags.splitlines():
+        code, ahead = _git(repo, "rev-list", f"refs/tags/{tag}", "--not", "--remotes")
+        if code != 0:
+            return f"cannot tell whether tag {tag} is pushed: {ahead}"
+        if ahead:
+            return f"its tag {tag} points at a commit that is on no remote"
+    # Every ref and every HEAD, not just branches: a commit only a note, a detached HEAD or an
+    # odd ref reaches is still work.
+    code, ahead = _git(repo, "rev-list", "--all", "--not", "--remotes")
     if code != 0:
         return f"cannot tell whether it has unpushed commits: {ahead}"
     if ahead:
@@ -692,12 +763,12 @@ def remove(name: str, *, out: TextIO | None = None, err: TextIO | None = None) -
     server = service.value_of(args, "--server") or client_mod.gban_url()
     key = _read_key(env)
     others = sharers(name, key, kind) if key else []
-    ledger, key_id, why = None, "", ""
+    ledger, lookup = None, KeyLookup()
     if key and not others:
         ledger, code = _open(server, "remove", err)
         if ledger is None:
             return code
-        key_id, why = resolve_key_id(ledger, name, key)
+        lookup = resolve_key_id(ledger, name, key)
     key = ""
 
     failed = False
@@ -713,18 +784,16 @@ def remove(name: str, *, out: TextIO | None = None, err: TextIO | None = None) -
         print(f"key: NOT revoked: the env file of {', '.join(others)} holds the same key, and "
               "revoking it would stop them. Rekey them, then revoke it", file=out)
     elif ledger is not None:
-        if key_id:
+        if lookup.key_id:
             try:
-                ledger.revoke_key(key_id)  # type: ignore[attr-defined]
-                print(f"key: revoked ({key_id})", file=out)
+                ledger.revoke_key(lookup.key_id)  # type: ignore[attr-defined]
+                print(f"key: revoked ({lookup.key_id})", file=out)
             except (client_mod.ServerUnreachable, client_mod.ToolFailed) as exc:
                 failed = True
-                print(f"gbfleet drain remove: key {key_id} was NOT revoked: {exc}. Revoke it "
-                      "in Settings", file=err)
+                print(f"gbfleet drain remove: key {lookup.key_id} was NOT revoked: {exc}. "
+                      "Revoke it in Settings", file=err)
         else:
-            failed = True
-            print(f"gbfleet drain remove: the key was NOT revoked: {why}. Revoke it in "
-                  "Settings", file=err)
+            print_left_alive(lookup, out)
     else:
         print(f"key: {env} held no {service.API_KEY_ENV}, so there was none to revoke",
               file=out)
@@ -828,7 +897,7 @@ def rekey(name: str, *, out: TextIO | None = None, err: TextIO | None = None) ->
     if ledger is None:
         return code
     # Named before the new key's id overwrites the record.
-    old_id, why = ("", "") if others else resolve_key_id(ledger, name, old)
+    lookup = KeyLookup() if others else resolve_key_id(ledger, name, old)
 
     label = f"{name}@{socket.gethostname()}"
     try:
@@ -869,12 +938,12 @@ def rekey(name: str, *, out: TextIO | None = None, err: TextIO | None = None) ->
     print(f"service: restarted; its first call with key {new_id} was seen", file=out)
     if others:
         print(f"old key: NOT revoked: the env file of {', '.join(others)} holds it too, and "
-              "revoking it would stop them. Rekey them; the last rekey revokes it", file=out)
+              "revoking it would stop them. Rekey them, then revoke it in Settings", file=out)
         return 0
-    if not old_id:
-        print(f"gbfleet drain rekey: the old key was NOT revoked: {why}. Revoke it in "
-              "Settings", file=err)
-        return 1
+    if not lookup.key_id:
+        print_left_alive(lookup, out)
+        return 0
+    old_id = lookup.key_id
     try:
         ledger.revoke_key(old_id)  # type: ignore[attr-defined]
     except (client_mod.ServerUnreachable, client_mod.ToolFailed) as exc:

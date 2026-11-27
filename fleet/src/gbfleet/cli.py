@@ -378,12 +378,14 @@ def build_parser() -> argparse.ArgumentParser:
     drn_create.add_argument("--dry-run", action="store_true",
                             help="print the plan; write no env file, mint no key, install nothing")
     drn_remove = drn_do.add_parser(
-        "remove", help="uninstall the service, revoke its key, delete its env file, and delete "
-                       "its checkout only when that is the drain's own and holds no unpushed work")
+        "remove", help="uninstall the service, revoke its key (only by its recorded id), delete "
+                       "its env file, and delete its checkout only when that is the drain's own "
+                       "and holds nothing but caches")
     drn_remove.add_argument("name", help="the drain's service name")
     drn_rekey = drn_do.add_parser(
         "rekey", help="mint a new PRD-limited key, swap it in, restart, then revoke the old one "
-                      "once the new one is in use (unless another drain shares it)")
+                      "by its recorded id once the new one is in use (unless another drain "
+                      "shares it)")
     drn_rekey.add_argument("name", help="the drain's service name")
 
     until = sub.add_parser(

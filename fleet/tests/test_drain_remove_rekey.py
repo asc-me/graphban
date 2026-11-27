@@ -370,15 +370,15 @@ def test_rekey_of_a_shared_key_drain_leaves_the_others_running_and_names_them(wo
     assert mine != shared
     assert ledger.keys[ledger.id_of(mine)]["name"] == f"a@{socket.gethostname()}"
 
-    # b next: c still shares it. Then c: nobody does, so the shared key is revoked — found by
-    # its prefix, since no create ever recorded its id.
+    # b next: c still shares it. Then c: nobody does, but no create ever recorded the shared
+    # key's id, so it is left alive and the person is sent to Settings with the candidates.
     assert _cli(capsys, "rekey", "b")[0] == 0
     assert ledger.call(shared)
     code, out, err = _cli(capsys, "rekey", "c")
     assert code == 0, err
-    with pytest.raises(KeyRefused):
-        ledger.call(shared)
-    assert f"old key: revoked ({ledger.id_of(shared)})" in out
+    assert ledger.call(shared)
+    assert not any(e[0] == "revoke" for e in ledger.events)
+    _assert_left_alive_guidance(out, ledger, shared)
 
 
 def _same_file_key(name: str, key: str) -> bool:
@@ -391,9 +391,189 @@ def test_an_unrecorded_key_whose_prefix_is_ambiguous_is_never_revoked(world, cap
     twin = old[:PREFIX_LEN] + secrets.token_hex(14)
     ledger.add(twin)
     _install(world, "d7", old, marker="d7", record_id=False)
-    code, _out, err = _cli(capsys, "rekey", "d7")
-    assert code == 1 and "share its prefix" in err
+    code, out, err = _cli(capsys, "rekey", "d7")
+    assert code == 0, err
     assert ledger.call(old) and ledger.call(twin)
+    assert not any(e[0] == "revoke" for e in ledger.events)
+    _assert_left_alive_guidance(out, ledger, old)
+
+
+# ---- never revoke a guessed key (GRPH-1976 bounce, probes P3 / P3b / P3c) ------------------
+
+def _assert_left_alive_guidance(out: str, ledger: FakeLedger, *alive: str) -> None:
+    """The old key is said to be left alive, every live key is named by id and label (and by
+    nothing else: not its prefix, not its value), and the person is sent to Settings. A key a
+    drain's record names (another drain's, or the one `rekey` just minted) is never offered
+    as a candidate: revoking it would stop that drain."""
+    assert "old key: left ALIVE, not revoked" in out
+    assert "Settings" in out
+    minted = {p.read_text(encoding="utf-8").strip() for p in service.CONFIG_DIR.glob("*.key-id")}
+    for row in ledger.keys.values():
+        line = f"    {row['id']}  {row['name']}"
+        if row["id"] in minted:
+            assert line not in out, "the drain's new key was offered for revocation"
+        elif not row["revoked"]:
+            assert line in out
+        assert row["prefix"] not in out
+        assert row["plaintext"] not in out
+    for key in alive:
+        assert ledger.call(key)
+
+
+@pytest.mark.parametrize("verb", ["remove", "rekey"])
+def test_a_legacy_drain_holding_the_gban_setup_key_never_revokes_it(world, capsys, verb):
+    """P3 / P3c: an old drain installed from $GBFLEET_API_KEY holds the person's own `gban
+    setup` key. No other drain holds it, so sharers() is empty — and it is still never
+    revoked, because nothing recorded which key it is."""
+    ledger = world["ledger"]
+    setup = "gb_test_" + secrets.token_hex(16)
+    setup_id = ledger.add(setup, "gban setup")
+    repo = _install(world, "old", setup, marker="old", record_id=False)
+
+    code, out, err = _cli(capsys, verb, "old")
+    assert code == 0, err
+    assert not any(e[0] == "revoke" for e in ledger.events)
+    assert not ledger.keys[setup_id]["revoked"]
+    _assert_left_alive_guidance(out, ledger, setup)
+    if verb == "remove":
+        assert not service.unit_path_for("old", world["kind"]).exists()
+        assert not service.env_path_for("old").exists()
+        assert not repo.exists(), "the clean checkout it owns still goes"
+    else:
+        new = drain._read_key(service.env_path_for("old"))
+        assert new and new != setup and ledger.call(new)
+        assert world["fake"].restarted == ["old"]
+        assert ("call", ledger.id_of(new)) in ledger.events
+
+
+@pytest.mark.parametrize("verb", ["remove", "rekey"])
+def test_an_unrelated_live_key_sharing_the_prefix_is_never_revoked(world, capsys, verb):
+    """P3b: the env key is not one of the person's live keys (revoked already, or not theirs),
+    and an unrelated live key — box sync — shares its display prefix. Box sync stays alive."""
+    ledger = world["ledger"]
+    stranger = "gb_test_" + secrets.token_hex(16)  # never added: not in the person's list
+    box = stranger[:PREFIX_LEN] + secrets.token_hex(14)
+    box_id = ledger.add(box, "box sync")
+    _install(world, "stray", stranger, marker="stray", record_id=False)
+
+    code, out, err = _cli(capsys, verb, "stray")
+    assert code == 0, err
+    assert not ledger.keys[box_id]["revoked"]
+    assert not any(e[0] == "revoke" for e in ledger.events)
+    _assert_left_alive_guidance(out, ledger, box)
+
+
+def test_a_recorded_id_is_still_revoked_without_guidance(world, capsys):
+    """The record is the one path to a revoke, and it still works (control for the above)."""
+    ledger = world["ledger"]
+    key = _key(world)
+    _install(world, "rec", key, marker="rec")
+    code, out, err = _cli(capsys, "remove", "rec")
+    assert code == 0, err
+    assert f"key: revoked ({ledger.id_of(key)})" in out
+    assert "left ALIVE" not in out
+
+
+# ---- keep any checkout holding work (GRPH-1976 bounce, probes P1 / P1b / P2 / P2b / P2c) --
+
+def _remove_keeps(world, capsys, name: str, repo: Path, reason: str) -> str:
+    code, out, err = _cli(capsys, "remove", name)
+    assert code == 0, err
+    assert repo.is_dir() and (repo / ".git").exists(), f"{repo} was deleted:\n{out}"
+    assert f"checkout: kept {repo}" in out
+    assert reason in out, out
+    return out
+
+
+def test_remove_keeps_a_checkout_with_a_detached_linked_worktree_holding_a_commit(world, capsys):
+    """P1: the only copy of a commit is a linked worktree's detached HEAD."""
+    key = _key(world)
+    repo = _install(world, "w1", key, marker="w1")
+    tree = world["tmp"] / "w1-linked"
+    _git(repo, "worktree", "add", "-q", "--detach", str(tree))
+    (tree / "only-here.txt").write_text("work\n", encoding="utf-8")
+    _git(tree, "add", "only-here.txt")
+    _git(tree, "commit", "-qm", "unbranched")
+    sha = _git(tree, "rev-parse", "HEAD")
+    _remove_keeps(world, capsys, "w1", repo, f"linked worktree(s): {tree.resolve()}")
+    assert _git(repo, "cat-file", "-t", sha) == "commit"
+
+
+def test_remove_keeps_a_checkout_with_a_clean_linked_worktree(world, capsys):
+    """P1b: a clean linked worktree on a pushed commit still runs on this .git."""
+    key = _key(world)
+    repo = _install(world, "w2", key, marker="w2")
+    tree = world["tmp"] / "w2-linked"
+    _git(repo, "worktree", "add", "-q", "-b", "side", str(tree), "origin/main")
+    _remove_keeps(world, capsys, "w2", repo, "linked worktree(s)")
+    assert (tree / "README.md").exists()
+
+
+def test_remove_keeps_untracked_work_that_show_untracked_files_no_hides(world, capsys):
+    """P2: status.showUntrackedFiles=no must not hide an untracked file."""
+    key = _key(world)
+    repo = _install(world, "u1", key, marker="u1")
+    _git(repo, "config", "status.showUntrackedFiles", "no")
+    (repo / "notes").mkdir()
+    (repo / "notes" / "draft.md").write_text("mine\n", encoding="utf-8")
+    assert _git(repo, "status", "--porcelain") == "", "the setting hides it, as in the probe"
+    _remove_keeps(world, capsys, "u1", repo, "untracked file(s): notes/draft.md")
+
+
+def test_remove_keeps_and_names_ignored_files_that_are_not_caches(world, capsys):
+    """P2b: an ignored scratch dir (.git/info/exclude) is work; it is named. A cache beside it
+    is not named."""
+    key = _key(world)
+    repo = _install(world, "i1", key, marker="i1")
+    (repo / ".git" / "info").mkdir(exist_ok=True)
+    (repo / ".git" / "info" / "exclude").write_text("scratch/\n.venv/\n", encoding="utf-8")
+    (repo / "scratch").mkdir()
+    (repo / "scratch" / "plan.txt").write_text("mine\n", encoding="utf-8")
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    (repo / ".venv" / "bin" / "python").write_text("", encoding="utf-8")
+    out = _remove_keeps(world, capsys, "i1", repo,
+                        "ignored file(s) that are not caches: scratch/plan.txt")
+    assert ".venv" not in out
+
+
+def test_remove_keeps_a_commit_only_an_unpushed_tag_reaches(world, capsys):
+    """P2c: the commit is on no branch and no remote; only a tag holds it."""
+    key = _key(world)
+    repo = _install(world, "t1", key, marker="t1")
+    _git(repo, "checkout", "-q", "--detach")
+    _unpushed(repo)
+    _git(repo, "tag", "v-mine")
+    _git(repo, "checkout", "-q", "main")
+    _remove_keeps(world, capsys, "t1", repo,
+                  "its tag v-mine points at a commit that is on no remote")
+
+
+def test_remove_keeps_a_commit_only_a_non_branch_ref_reaches(world, capsys):
+    """A commit only `git notes` reaches: no branch, no tag, no HEAD. `--all` sees it."""
+    key = _key(world)
+    repo = _install(world, "n1", key, marker="n1")
+    _git(repo, "notes", "add", "-m", "why this was done")
+    _remove_keeps(world, capsys, "n1", repo, "unpushed commit(s)")
+
+
+def test_remove_deletes_a_clean_pushed_checkout_carrying_only_caches(world, capsys):
+    """Control: fully pushed, nothing untracked, and the only ignored files are the fixed
+    regenerable set (.venv/, node_modules/, __pycache__/, the tool caches, *.pyc)."""
+    key = _key(world)
+    repo = _install(world, "c1", key, marker="c1")
+    (repo / ".git" / "info").mkdir(exist_ok=True)
+    (repo / ".git" / "info" / "exclude").write_text(
+        ".venv/\nnode_modules/\n__pycache__/\n.pytest_cache/\n.mypy_cache/\n.ruff_cache/\n"
+        "*.pyc\n", encoding="utf-8")
+    for rel in (".venv/lib/site.py", "node_modules/x/index.js", "pkg/__pycache__/m.cpython.pyc",
+                ".pytest_cache/v/x", ".mypy_cache/x.json", ".ruff_cache/x", "stray.pyc"):
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("cache\n", encoding="utf-8")
+    code, out, err = _cli(capsys, "remove", "c1")
+    assert code == 0, err
+    assert not repo.exists(), out
+    assert f"checkout: deleted {repo}" in out
 
 
 # ---- clause 5: no key value on stdout or stderr --------------------------------------------
