@@ -7063,7 +7063,13 @@ def collect_directive(db: Session, agent_id: str | None) -> dict | None:
         # role change, which is the more urgent fact.
         from app.services import waits as waits_svc
 
-        return waits_svc.answer_directive(db, agent_id)
+        answered = waits_svc.answer_directive(db, agent_id)
+        if answered is not None:
+            return answered
+        # A PRD link request or thread message waiting on a PRD this agent works (GRPH-P104 S3).
+        from app.services import threads as threads_svc
+
+        return threads_svc.link_directive(db, agent_id)
     agent.role_acked_at = datetime.now(timezone.utc)
     db.commit()
     return directive

@@ -52,6 +52,7 @@ from app.services import design_sets as design_sets_svc
 from app.services import documents as documents_svc
 from app.services import handles
 from app.services import scans as scans_svc
+from app.services import threads as threads_svc
 from app.services import touchpoint_check
 from app.services import events as events_svc
 from app.services import fleet as fleet_svc
@@ -3253,6 +3254,11 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             "gitops": gitops.for_agent(view),
             # GRPH-1681. Null = the line has not been created, NOT "no bugs".
             "maintenance_line": lines_svc.context_field(db, pid),
+            # GRPH-P104 S3. Link requests and thread messages still pending on this project's
+            # PRDs; empty when nothing waits. Read-only: a directive is what marks delivery.
+            "pending_prd_links": threads_svc.pending_for_prds(
+                db, list(db.scalars(select(Prd.id).where(Prd.project_id == pid)).all()))
+            if pid else [],
         }
     if name == "create_project":
         # An AUTHORITY gate, narrowly opened (PRD-14 D4). Both refusals below are the
