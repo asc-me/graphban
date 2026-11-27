@@ -364,6 +364,17 @@ def _question_sweep_pass() -> None:
         waits_svc.sweep_questions(db)
     finally:
         db.close()
+    # GRPH-P104 S5: the PRD-link stale alert rides the same leader-only timer, in its own
+    # session; its failure is logged and never stops the question sweep.
+    from app.services import oversight as oversight_svc
+
+    db = SessionLocal()
+    try:
+        oversight_svc.sweep(db)
+    except Exception:  # noqa: BLE001
+        logger.warning("prd link stale sweep failed", exc_info=True)
+    finally:
+        db.close()
 
 
 async def _question_sweep_loop() -> None:

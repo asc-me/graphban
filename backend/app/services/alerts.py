@@ -9,11 +9,11 @@ import uuid
 from datetime import timedelta
 from types import SimpleNamespace
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app import tagging
-from app.models import Alert, Item, Link, Prd, Project, utcnow
+from app.models import Alert, Item, Link, OrgMembership, Prd, Project, utcnow
 from app.security.authz import readable_project_ids
 
 KIND = "response_needed"
@@ -254,8 +254,15 @@ def list_for_user(db: Session, user_id: str) -> dict:
     # D6: access is checked at read time, so an alert for a project the user lost is hidden.
     # Checked ONCE for the list, in the query, never again per alert (GRPH-1535, GRPH-1897).
     readable = readable_project_ids(db, user_id)
-    rows = db.scalars(select(Alert).where(Alert.user_id == user_id, Alert.cleared_at.is_(None),
-                                          Alert.project_id.in_(readable))
+    # GRPH-P104 S5: a PRD-link stale alert falls back to the org's owners when nobody on the
+    # receiving project can be found, so an org owner sees it for any project of their org.
+    owned_org_projects = select(Project.id).where(Project.org_id.in_(
+        select(OrgMembership.org_id).where(OrgMembership.user_id == user_id,
+                                           OrgMembership.role == "owner")))
+    rows = db.scalars(select(Alert).where(
+        Alert.user_id == user_id, Alert.cleared_at.is_(None),
+        or_(Alert.project_id.in_(readable),
+            and_(Alert.kind == "link_stale", Alert.project_id.in_(owned_org_projects))))
                       .order_by(Alert.created_at.desc(), Alert.id.desc())).all()
     lookup = _Lookup(db, rows)
     return {"unread": sum(r.read_at is None for r in rows),

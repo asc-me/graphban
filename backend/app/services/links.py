@@ -322,6 +322,7 @@ def unlink_prd_link(db: Session, caller: Caller, link_id: str) -> PrdLink:
         events_svc.record_prd_link(db, caller, action="prd_link_unlink", link=link)
         from app.services import oversight
         oversight.withdraw_undecided(db, link)
+        oversight._clear_for_links(db, [link.id])
     return link
 
 

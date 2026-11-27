@@ -11,16 +11,14 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Alert, Organization, Prd, PrdLink, PrdLinkMessage, Project, User, utcnow
 from app.security import authz
-from app.services import alerts as alerts_svc
 from app.services import events as events_svc
-from app.services import messages as messages_svc
 from app.services import threads as threads_svc
 from app.services.links import Caller
 from app.services.question_recipients import link_recipients
@@ -83,6 +81,31 @@ def withdraw_undecided(db: Session, link: PrdLink) -> int:
             events_svc.record_prd_link(db, None, action="prd_link_suggestion_withdrawn", link=link,
                                        meta={"message": mid, "outcome": "declined", "code": code})
     return len(done)
+
+
+def on_prd_closed(db: Session, prd_id: str) -> int:
+    """`close_prd` calls this: every accepted link on the PRD becomes read-only now, so its
+    undecided suggestions are withdrawn with `prd_closed` at once rather than at the next
+    sweep, and the stale alerts on those links clear."""
+    links = db.scalars(select(PrdLink).where(
+        PrdLink.status == "accepted", or_(PrdLink.prd_a_id == prd_id, PrdLink.prd_b_id == prd_id)
+    )).all()
+    n = sum(withdraw_undecided(db, link) for link in links)
+    _clear_for_links(db, [link.id for link in links])
+    return n
+
+
+def _clear_for_links(db: Session, link_ids: list[str]) -> int:
+    """Clear every live stale alert on these links: the thing it named was decided or withdrawn."""
+    if not link_ids:
+        return 0
+    ids = set(link_ids)
+    now, n = utcnow(), 0
+    for row in db.scalars(select(Alert).where(Alert.kind == KIND, Alert.cleared_at.is_(None))):
+        if (row.item_id or "").split(":")[0] in ids:
+            row.cleared_at, n = now, n + 1
+    db.commit()
+    return n
 
 
 # ---- what is waiting on a person ---------------------------------------------------------------
@@ -163,11 +186,19 @@ def overview(db: Session, user: User, org_id: str) -> dict:
     """Every pending request and open pair thread in the org that the user can see, with age,
     latest kind, each suggestion's outcome and a stale flag. Sweeps first, so what it shows and
     what it alerted agree."""
-    authz.require_org_member(db, user.id, org_id)
+    role = authz.require_org_member(db, user.id, org_id)
     sweep(db, org_id)
     from app.services import links as links_svc
     caller = caller_for(db, user)
     org_projects = set(db.scalars(select(Project.id).where(Project.org_id == org_id)))
+    if authz.org_admin_rank(role):
+        # An org owner or admin oversees EVERY link in the org, including ones between projects
+        # they hold no seat on: they are the stale alert's last recipient, so a view that hid the
+        # thing they were alerted about would leave them nothing to act on. Seeing is widened;
+        # deciding still goes through `caller_for`, so it needs ordinary write access.
+        caller = Caller(readable=sorted(org_projects | set(caller.readable)),
+                        writable=caller.writable, is_agent=False, label=caller.label,
+                        owner=caller.owner)
     now = utcnow()
     rows = []
     for link in links_svc.list_prd_links(db, caller):
