@@ -288,6 +288,12 @@ class Settings(BaseSettings):
     # the upstream instance (project settings -> public sharing). Secret: set via
     # UPSTREAM_FEEDBACK_TOKEN in the environment, never committed here.
     upstream_feedback_token: str = ""
+    # Whether the upstream refuses a report with no token (GRPH-1982). None = infer: the
+    # default hosted intake (feedback.asc-me.dev) runs in hosted mode and always needs one,
+    # so a report sent there without it is lost to a 404. Any other URL is assumed
+    # self-hosted (raw project_id accepted). Set UPSTREAM_FEEDBACK_TOKEN_REQUIRED=true/false
+    # when repointing at a hosted intake on another host, or to override the inference.
+    upstream_feedback_token_required: bool | None = None
 
     # Local↔cloud hybrid (AL-137/139): where a LINKED local instance pushes its code graph,
     # and the org-minted 'sync'-scoped key it authenticates with. Blank = not linked — a pure

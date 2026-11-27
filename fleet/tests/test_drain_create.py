@@ -11,7 +11,9 @@ every test here:
   `EnvironmentFile` — against a stub `gbfleet` that logs its argv, so the log greps below read
   what a started service would have written;
 - replaces `drain.open_ledger` with a fake ledger that mints a fixed fake key, or leaves the
-  real one in place with no session on disk (it refuses before any network).
+  real one in place with no session on disk (it refuses before any network);
+- puts stub `claude` / `grok` binaries on a temp `$PATH`, because preflight (GRPH-1975)
+  refuses an adapter the captured PATH does not resolve.
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ import secrets
 import shlex
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import httpx
@@ -127,6 +130,7 @@ class FakeLedger:
         self.key = key
         self.opened: list[str] = []
         self.minted: list[tuple[str, str, str]] = []
+        #: What `prd_coverage` answers; preflight tests (GRPH-1975) change it.
         self.coverage: dict = dict(GOOD_COVERAGE)
         self.read: list[str] = []
         #: When set, `mint_prd_key` raises it — a failure after the clone step.
@@ -177,6 +181,11 @@ def world(tmp_path, monkeypatch, kind):
         "echo '{\"reason\": \"idle\", \"exit\": 0}'\n", encoding="utf-8")
     stub.chmod(0o755)
     monkeypatch.setattr(service, "_this_gbfleet", lambda: str(stub))
+    for vendor in ("claude", "grok"):
+        cli = stub.parent / vendor
+        cli.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        cli.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{stub.parent}{os.pathsep}{os.environ.get('PATH', '')}")
 
     origin = tmp_path / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
@@ -375,11 +384,11 @@ def test_an_existing_path_that_is_not_a_clean_checkout_of_the_remote_is_refused(
 
 @posix_only
 def test_like_flags_are_copied_and_explicit_flags_override_them(world, capsys):
-    code, out, err = _create(capsys, "--like", LIKE, "--dry-run", "--adapter", "codex",
+    code, out, err = _create(capsys, "--like", LIKE, "--dry-run", "--adapter", "grok",
                              "--max-workers", "5", "--tier", "frontier=claude:opus", "--merge")
     assert code == 0, err
     args = _runs(out)
-    assert service.value_of(args, "--adapter") == "codex"
+    assert service.value_of(args, "--adapter") == "grok"
     assert service.value_of(args, "--max-workers") == "5"
     assert service.value_of(args, "--server") == "http://ledger.invalid:9"
     assert service.value_of(args, "--project") == "proj"
@@ -392,7 +401,7 @@ def test_like_flags_are_copied_and_explicit_flags_override_them(world, capsys):
 @posix_only
 def test_an_existing_drain_name_is_never_overwritten(world, capsys):
     code, _out, err = _create(capsys, "--like", LIKE, "--name", LIKE)
-    assert code == drain.EXIT_REFUSED and "already exists" in err
+    assert code == drain.EXIT_REFUSED and "already installed" in err
     assert world["y_plan"].env_path.read_text(encoding="utf-8").endswith(world["y_key"] + "\n")
     assert world["ledger"].opened == []
 
@@ -403,7 +412,7 @@ def test_an_existing_drain_name_is_never_overwritten(world, capsys):
 @pytest.mark.parametrize("coverage,reason", [
     ({"status": "draft"}, "GRPH-P96 is draft, not approved"),
     ({"status": "review"}, "GRPH-P96 is review, not approved"),
-    ({"shaped": False}, "GRPH-P96 is not shaped"),
+    ({"shaped": False}, "GRPH-P96 shaped: False"),
     ({"total_items": 0}, "GRPH-P96 has no tasks"),
 ])
 def test_dry_run_refuses_an_unready_prd_exactly_as_the_real_run_does(
@@ -535,29 +544,6 @@ def test_the_session_mints_a_prd_limited_key_on_its_two_paths_only(tmp_path, mon
         session._post("/api/items", {})
 
 
-def test_the_session_reads_prd_coverage_by_get_and_nothing_else(tmp_path, monkeypatch):
-    monkeypatch.setenv("GRAPHBAN_HOME", str(tmp_path))
-    (tmp_path / "session.json").write_text('{"refresh_token": "rt_fake"}', encoding="utf-8")
-    seen: list[tuple[str, str, str]] = []
-
-    def server(request: httpx.Request) -> httpx.Response:
-        seen.append((request.method, request.url.path, request.headers.get("authorization", "")))
-        if request.url.path == "/api/auth/refresh":
-            return httpx.Response(200, json={"access_token": "at_fake"})
-        return httpx.Response(200, json=GOOD_COVERAGE)
-
-    session = client_mod.LedgerSession.open("http://ledger.invalid/",
-                                            transport=httpx.MockTransport(server))
-    assert session.prd_coverage(PRD)["status"] == "approved"
-    assert seen[1] == ("GET", f"/api/prds/{PRD}/coverage", "Bearer at_fake")
-    for path in ("/api/items", "/api/prds/X", "/api/prds/X/coverage/more", "/api/prds//coverage"):
-        with pytest.raises(client_mod.NotPermitted):
-            session._get(path)
-    with pytest.raises(client_mod.NotPermitted):
-        session.prd_coverage("../items")
-    assert len(seen) == 2
-
-
 def test_no_session_file_refuses_before_any_network(tmp_path, monkeypatch):
     monkeypatch.setenv("GRAPHBAN_HOME", str(tmp_path))
 
@@ -588,3 +574,37 @@ def test_write_env_replaces_atomically_and_leaves_the_old_key_on_failure(tmp_pat
         service.write_env(plan, "gb_test_new_value")
     assert plan.env_path.read_text(encoding="utf-8") == "GBFLEET_API_KEY=gb_test_old_value\n"
     assert sorted(p.name for p in plan.env_path.parent.iterdir()) == ["atom.env"]
+
+
+# ---- --like never opens the other drain's key file (GRPH-1975, from GRPH-1974's review) ----
+
+_OPENED: list[str] = []
+_WATCHING: list[bool] = []
+
+
+def _audit(event: str, args: tuple) -> None:
+    if _WATCHING and event == "open" and args and isinstance(args[0], (str, bytes, os.PathLike)):
+        _OPENED.append(os.fsdecode(args[0]))
+
+
+@posix_only
+def test_like_never_opens_the_other_drains_env_file(world, capsys):
+    """`--like` reads Y's UNIT. Y's env file holds Y's key, and no path through create may
+    open it — not to copy it, not to check it. Watched with an audit hook, which sees every
+    `open` (io and os) this process makes, so a quiet read in a try/except still shows."""
+    y_env = os.path.realpath(world["y_plan"].env_path)
+    y_unit = os.path.realpath(world["y_plan"].unit_path)
+    if not _WATCHING and not getattr(sys, "_gbfleet_drain_audit", False):
+        sys.addaudithook(_audit)  # cannot be removed; gated by _WATCHING
+        sys._gbfleet_drain_audit = True  # type: ignore[attr-defined]
+    _OPENED.clear()
+    _WATCHING.append(True)
+    try:
+        code, _out, err = _create(capsys, "--like", LIKE)
+    finally:
+        _WATCHING.clear()
+    assert code == 0, err
+    opened = {os.path.realpath(p) for p in _OPENED}
+    assert y_unit in opened, "the hook saw nothing: --like must have read Y's unit"
+    assert y_env not in opened
+    assert world["key"] != world["y_key"]

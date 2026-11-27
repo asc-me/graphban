@@ -17,7 +17,8 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 def upstream_config(_: User = Depends(get_current_user)):
     """Whether upstream reporting is on and where reports go — the UI uses this to show/hide
     the action and to tell the user (transparently) where their report is sent."""
-    return {"enabled": up_svc.report_enabled(), "target": up_svc.target_host()}
+    return {"enabled": up_svc.report_enabled(), "target": up_svc.target_host(),
+            "reason": up_svc.unconfigured_reason()}
 
 
 @router.post("/upstream")

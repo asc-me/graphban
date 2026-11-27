@@ -69,6 +69,9 @@ async def lifespan(app: FastAPI):
 
     configure_logging()  # structured logs + request-id stamping (AL-56)
     check_security()  # refuse/warn on a weak JWT secret before serving (AL-44)
+    from app.services import upstream as _upstream
+
+    _upstream.warn_if_unconfigured()  # name a missing UPSTREAM_FEEDBACK_TOKEN (GRPH-1982)
 
     from app import leader
 
@@ -813,6 +816,7 @@ def public_config():
 
 from app.services import agent_calls as agent_calls_svc  # noqa: E402 — PRD-34 D18
 from app.services import ci_pull as ci_pull_svc  # noqa: E402 — GRPH-1822
+from app.services import upstream as upstream_svc  # noqa: E402 — GRPH-1982
 
 
 @app.get("/health")
@@ -855,6 +859,13 @@ def health():
         # Read from `ci_pull_notes`, not this process: the loop runs on the leader
         # and this request may be a different worker.
         "ci_pull": {"last_error": ci_pull_svc.last_error()},
+        # Upstream issue reporting (GRPH-1982). `missing` names the setting a report
+        # needs and lacks — never its value — so the gap shows here instead of as a lost
+        # report_graphban_issue call. null = reports can be sent.
+        "upstream_feedback": {
+            "configured": upstream_svc.report_enabled(),
+            "missing": upstream_svc.unconfigured_reason(),
+        },
     }
 
 

@@ -33,6 +33,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import quote
 
 import httpx
 
@@ -852,10 +853,13 @@ SESSION_REFRESH_PATH = "/api/auth/refresh"
 #: Mints a key. Called once per `drain create`.
 SESSION_API_KEYS_PATH = "/api/api-keys"
 SESSION_PATHS: frozenset[str] = frozenset({SESSION_REFRESH_PATH, SESSION_API_KEYS_PATH})
-#: The one READ the session makes (GRPH-1984): a PRD's coverage, which carries its `status`
-#: and `shaped`, so `drain create` and its dry run refuse an unapproved or unshaped PRD the
-#: same way. GET only, and only this shape — `_get` refuses every other path.
-SESSION_PRD_COVERAGE_PATH = "/api/prds/{prd}/coverage"
+#: The one READ the session makes: a PRD's coverage (status and `shaped`), which
+#: `drain create` checks before it mints (GRPH-1975). A GET, so it cannot write.
+SESSION_COVERAGE_PATH = "/api/prds/{prd}/coverage"
+#: `drain remove` / `drain rekey` (GRPH-1976): the key list (ids, prefixes, `last_used`, the
+#: first-call signal) is a GET on `SESSION_API_KEYS_PATH`; a revoke is a DELETE on one key.
+#: No other DELETE is possible through the session.
+SESSION_REVOKE_PATH = "/api/api-keys/{id}"
 
 GBAN_HOME_ENV = "GRAPHBAN_HOME"
 #: The tiers `gban setup` mints with. The server adds `fleet` to a PRD-limited key anyway.
@@ -927,23 +931,41 @@ class LedgerSession:
         return self._post(SESSION_API_KEYS_PATH, body)
 
     def prd_coverage(self, prd: str) -> dict:
-        """The PRD's coverage as the person reads it: `status`, `shaped`, `total_items`."""
-        if not prd or "/" in prd or "?" in prd or "#" in prd:
-            raise NotPermitted(f"not a PRD id: {prd!r}")
-        return self._get(SESSION_PRD_COVERAGE_PATH.format(prd=prd))
+        """The PRD's `prd_coverage` reply: `status`, `shaped` and the rest. Writes nothing."""
+        payload = self._request("GET", SESSION_COVERAGE_PATH.format(prd=quote(prd, safe="")))
+        return payload if isinstance(payload, dict) else {}
 
-    def _get(self, path: str) -> dict:
-        head, _, tail = SESSION_PRD_COVERAGE_PATH.partition("{prd}")
-        middle = path[len(head):len(path) - len(tail)] if path.endswith(tail) else ""
-        if not path.startswith(head) or not middle or "/" in middle:
-            raise NotPermitted(f"the gban session may not GET {path!r}")
+    def list_keys(self) -> list[dict]:
+        """The person's keys as the registry shows them: id, prefix, `last_used`, `revoked`.
+        Never a plaintext — the server stores only a hash."""
+        payload = self._request("GET", SESSION_API_KEYS_PATH)
+        return [row for row in payload if isinstance(row, dict)] \
+            if isinstance(payload, list) else []
+
+    def revoke_key(self, key_id: str) -> None:
+        """`DELETE /api/api-keys/{id}`: soft and idempotent on the server (GRPH-788)."""
+        self._request("DELETE", SESSION_REVOKE_PATH.format(id=quote(key_id, safe="")))
+
+    def _request(self, method: str, path: str) -> Any:
+        """A GET or a DELETE with the access token. The JSON reply, or None for an empty one."""
         try:
             with httpx.Client(timeout=self.timeout, transport=self.transport) as http:
-                response = http.get(self.base_url + path,
-                                    headers={"Authorization": f"Bearer {self.token}"})
+                response = http.request(method, self.base_url + path,
+                                        headers={"Authorization": f"Bearer {self.token}"})
         except httpx.HTTPError as exc:
             raise ServerUnreachable(f"could not reach {self.base_url}: {exc}") from exc
-        return self._payload(path, response)
+        if not response.content:
+            payload: Any = None
+        else:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {"detail": response.text[:400]}
+        if response.status_code >= 400:
+            detail = payload.get("detail") if isinstance(payload, dict) else payload
+            raise ToolFailed(path, code=str(response.status_code),
+                             message=str(detail or f"HTTP {response.status_code}"))
+        return payload
 
     def _post(self, path: str, body: dict, *, auth: bool = True) -> dict:
         if path not in SESSION_PATHS:

@@ -85,7 +85,8 @@ in-app alert works whether or not push does.
 | `SYNC_CLOUD_URL`, `SYNC_API_KEY` | *(empty)* | Local → console code-graph push. Point the URL at the Graphban console. Until `cloud.graphban.dev` is that console, use `https://graphban-console-console-production-ascme-labs.unkey.app` |
 | `UPSTREAM_FEEDBACK_URL` | `https://feedback.asc-me.dev/api/public/requests` | Where `report_graphban_issue` sends |
 | `UPSTREAM_FEEDBACK_PROJECT` | `agentledger` | |
-| `UPSTREAM_FEEDBACK_TOKEN` | *(empty)* | |
+| `UPSTREAM_FEEDBACK_TOKEN` | *(empty)* | Share token of the receiving project. Required by a hosted intake (the default URL): unset, reports are refused as `upstream_feedback_unconfigured` and `/health` names it under `upstream_feedback.missing` |
+| `UPSTREAM_FEEDBACK_TOKEN_REQUIRED` | *(inferred)* | `true`/`false` overrides whether the intake needs a token; unset, only the default hosted host does |
 
 ## Linear integration (PRD-P10)
 
