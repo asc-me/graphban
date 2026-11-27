@@ -2464,6 +2464,7 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         if effort_update < 0:
             raise ValueError(f"negative effort: {effort_update}")
     prev_status = item.status
+    prev_prd_id = item.prd_id
     # GRPH-1961. Before anything is written: a refusal here leaves the row as it was.
     fields, cleared_blocker = reconcile_blocker_status(db, item, fields)
     if fields.get("status") == "blocked" and prev_status != "blocked":
@@ -2841,6 +2842,13 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
     # covering only the subset of work that happens to use the claim path.
     if item.status == "in_progress" and prev_status != "in_progress":
         stamp_baseline_at_start(db, item)
+
+    if prev_prd_id and ((item.status == "done" and prev_status != "done")
+                        or item.prd_id != prev_prd_id):
+        # GRPH-1972. The item left its PRD's open build set: a stall nobody is left to
+        # post about clears once that PRD has no open build item.
+        from app.services.alerts import clear_settled_stall
+        clear_settled_stall(db, prev_prd_id)
 
     if item.status == "done" and prev_status != "done":
         from app.services.waits import (

@@ -119,6 +119,36 @@ def post_drain_notice(db: Session, project_id: str, prd: Prd, outcome: str,
     return {"alerts": ids, "push": push, "changed": changed}
 
 
+#: Tags that make an item never a build item — fleet's `drain_outcome._build_open` rule.
+NOT_BUILD_TAGS = frozenset({"walk", "planner-only"})
+
+
+def clear_settled_stall(db: Session, prd_id: str | None) -> int:
+    """Clear a PRD's live `drain_stalled` alert once it has no open build item (GRPH-1972).
+
+    A stall a person resolves after its drain has stopped has nobody left to post `working`
+    or `drained`, so the server clears it when the last open build item leaves the PRD. Not
+    turned into `drained`: that stays the drain's notice to send. While another open build
+    item remains the alert is left alone, so the drain's next notice keeps owning it.
+    Commits when it clears anything. Returns the number of alerts cleared.
+    """
+    if not prd_id:
+        return 0
+    live = list(db.scalars(select(Alert).where(
+        Alert.prd_id == prd_id, Alert.kind == DRAIN_KINDS["stalled"],
+        Alert.cleared_at.is_(None))))
+    if not live:
+        return 0
+    for item in db.scalars(select(Item).where(Item.prd_id == prd_id, Item.status != "done")):
+        if not (set(item.tags or ()) & NOT_BUILD_TAGS):
+            return 0  # still open build work: the drain's next notice owns the alert
+    now = utcnow()
+    for row in live:
+        row.cleared_at = now
+    db.commit()
+    return len(live)
+
+
 def _askers(db: Session, wait_ids: list[str]) -> dict[str, Item]:
     """The asker of each wait: the first item it depends on that still exists.
 
