@@ -74,12 +74,23 @@ def project(client, monkeypatch):
         id=T.GENERATED_FILES_RULE, stage="build", title="Generated files", summary="",
         enforcement="checked",
         enforcer=R.Enforcer("graphban_source", "fleet/src/gbfleet/supervisor.py"),
-        # The repo's own markers name a subset of the default, so the change is a tighten.
-        default_on=True, default_params={"paths": ["gen/", "AGENTS.md"]}))
+        default_on=True, default_params={"paths": [".agents/skills/"]}))
+    # The project's own list (a platform default naming this repo's paths is not compared
+    # against, GRPH-1971); the repo's markers name a subset of it, so the change is a tighten.
+    _set_own(pid, T.GENERATED_FILES_RULE, {"paths": ["gen/", "AGENTS.md"]})
     seen = []
     monkeypatch.setattr(RP, "FILE_READER",
                         lambda repo, path, commit: seen.append((path, commit)) or True)
     return pid, seen
+
+
+def _set_own(pid, rule_id, params):
+    from app.db import SessionLocal
+    from app.models import User
+    from app.services import rule_toggles as T
+    with SessionLocal() as db:
+        T.set_project_toggle(db, pid, rule_id, {"params": params},
+                             actor=db.query(User).first(), reason="this project's own value")
 
 
 def _file(pid, payload):
@@ -163,12 +174,14 @@ def test_engine_evidence_for_db_on_postgres_is_a_fileable_tighten(engine_rule):
 
 
 def test_engine_evidence_already_on_is_refused_not_misfiled(engine_rule, client):
-    """When the rule is already on, `propose` refuses the change (no direction between two
-    paths); the classifier never dresses it up as a `tighten` the pipeline would compute."""
+    """When the rule is already on with the project's own path, `propose` refuses the change
+    (no direction between two paths); the classifier never dresses it up as a `tighten` the
+    pipeline would compute. (On with only the platform default, it files: GRPH-1971.)"""
     pid, _ = engine_rule
     from app.services import rule_toggles as T
     T.LIBRARY["build.engine_evidence"] = T.LIBRARY["build.engine_evidence"].__class__(
         **{**T.LIBRARY["build.engine_evidence"].__dict__, "default_on": True})
+    _set_own(pid, "build.engine_evidence", {"path": "alembic/versions/", "engine": "postgres"})
     p = classify(_f(citation=WF, rule_id="build.engine_evidence",
                     params={"path": "db/", "engine": "postgres"}))
     from app.db import SessionLocal
@@ -327,11 +340,12 @@ def test_import_files_the_structured_acceptance(imported):
     assert _cites_file_lines_commit(area, commit)
 
     gen = _proposal(run, "build.generated_files")
-    # The adopted list plus the repo's markers. `generated_files` is `superset_loosens` (an
-    # exempt path is checked less), so the pipeline flags this `tighten` as loosening and it
-    # is adopted alone with its own reason (D1), never silently in the batch.
+    # The repo's markers alone: the platform default (`uv.lock` here) names Graphban's own
+    # paths, so it is neither merged in nor compared against (GRPH-1971). `generated_files`
+    # turns on as a loosening (an exempt path is checked less), so it is flagged and adopted
+    # alone with its own reason (D1), never silently in the batch.
     assert gen["proposal"]["kind"] == "tighten"
-    assert gen["proposal"]["params"]["paths"] == ["uv.lock", "gen/**"]
+    assert gen["proposal"]["params"]["paths"] == ["gen/**"]
     assert gen["proposal"]["loosens"] is True
     assert _cites_file_lines_commit(gen, commit)
 

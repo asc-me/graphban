@@ -117,6 +117,20 @@ GENERATED_FILES_DEFAULT: list[str] = [
     ".cursor/agents/", ".cursor/plugins/graphban/", ".cursor/rules/graphban.mdc",
     "AGENTS.md", "backend/tests/shard_weights.json",
 ]
+#: GRPH-1971: library rules whose platform-default params are this repository's own paths
+#: (`alembic/versions/`, `.agents/skills/`, ...). On another project such a default is not the
+#: project's value, so a rules import compares against nothing (`repo_path_default`).
+ENGINE_EVIDENCE_RULE = "build.engine_evidence"
+REPO_PATH_DEFAULT_RULES = frozenset({GENERATED_FILES_RULE, ENGINE_EVIDENCE_RULE})
+
+
+def repo_path_default(rule_id: str, state: dict) -> bool:
+    """True when `state` (a `resolve` result) carries the platform default of a rule whose
+    default names this repository's own paths, so the project has no value of its own."""
+    return (rule_id in REPO_PATH_DEFAULT_RULES
+            and state["params"].get("source") == "platform default")
+
+
 #: GRPH-1496: the globs the delegation brief reads for its lane and task class. Level
 #: `checked`: the brief states what matched and nothing is refused. Defaults are Graphban's
 #: own layout, which is what `delegation.PATH_CLASSES_DEFAULT` has always meant.

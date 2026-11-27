@@ -349,8 +349,12 @@ Notices are shown in the run's report on the Rules page and never acted on: no r
 nothing is filed. Loosening or removing a rule stays a person's act. A source the run could not
 read is not called gone, and it makes the run unclean, so the command exits non-zero.
 
-A rule value the project has not set itself (the platform default, which names this repo's own
-paths) is not compared against: a fresh project gets the proposal, not a gap.
+`build.engine_evidence` and `build.generated_files` ship platform defaults that name
+Graphban's own paths (`alembic/versions/`, `.agents/skills/`, ...). On a project that has not set
+either itself, an import neither compares against nor merges with that default: it files the
+project's first value, measured as turning the rule on with the source's params (a tighten for
+engine evidence, a flagged loosening for generated files). A project that set its own engine path
+still gets the gap: only a person changes it.
 
 To rescan from CI when a cited source changes on the default branch, print the GitHub Actions
 workflow with `gban rules import --ci-template` (it is versioned with the CLI that printed it).

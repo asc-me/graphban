@@ -238,7 +238,14 @@ def propose(db: Session, *, project_id: str, proposer_kind: str, proposer: str, 
             raise NotFound(f"{rule_id!r} is not a library or custom rule of this project")
         cur = T.resolve(db, rule_id, project_id)
         cur_params = copy.deepcopy(cur["params"]["value"] or {})
-        if kind == "turn_on":
+        # GRPH-1971: an import run reading a project that never set a rule whose platform
+        # default is this repo's own paths proposes the project's first value: measured as
+        # off -> on with those params, never against (or merged with) the default.
+        if (proposer_kind == "import" and kind in ("turn_on", "tighten") and params
+                and T.repo_path_default(rule_id, cur)):
+            new_params = params
+            direction = rule_pack.direction(primitive, None, new_params)
+        elif kind == "turn_on":
             if cur["on"]["value"]:
                 _refuse(f"{rule_id!r} is already on")
             new_params = {**cur_params, **params}
