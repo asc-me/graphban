@@ -9,7 +9,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Prd, PrdLink, PrdLinkMessage
-from app.security.authz import Forbidden
 from app.services import links as links_svc
 from app.services import messages as messages_svc
 from app.services.links import Caller
@@ -18,8 +17,7 @@ from app.services.links import Caller
 def _visible_link(db: Session, caller: Caller, link_id: str) -> PrdLink:
     link = db.get(PrdLink, link_id)
     if link is None or not ({link.project_a_id, link.project_b_id} & set(caller.readable)):
-        raise Forbidden(f"no PRD link {link_id!r} that you can see",
-                        hint="list the links on your PRD to find its id")
+        raise links_svc._no_link(link_id)
     return link
 
 

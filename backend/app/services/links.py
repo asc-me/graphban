@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
+from app.errors import NotFound, Refused
 from app.models import Item, Link, Organization, Prd, PrdLink, Project, utcnow
 from app.security.authz import Forbidden
 from app.services import keys
@@ -121,20 +122,33 @@ class Caller:
         return f"{self.label} ({self.owner})" if self.is_agent and self.owner else (self.label or self.owner)
 
 
-class NeedsPerson(Forbidden):
-    """An agent tried an act the org reserves for a person (`needs_person`)."""
-    code = "needs_person"
+#: Rules a PRD-link refusal names (services/rules.py registers each).
+PRD_LINK_ORG_RULE = "prd_links.one_org"
+PRD_LINK_WRITE_RULE = "prd_links.write_access"
+PRD_LINK_PERSON_RULE = "prd_links.person_decides"
+NEEDS_PERSON = "needs_person"
 
 
-def _prd_refused(a: str, b: str) -> Forbidden:
+def _needs_person(message: str) -> None:
+    """An agent tried an act the org reserves for a person. The hint is `needs_person`."""
+    raise Refused(403, f"needs_person: {message}", rule_id=PRD_LINK_PERSON_RULE, hint=NEEDS_PERSON)
+
+
+def _refuse_prd(a: str, b: str) -> None:
     # One message for a PRD in another org, one the caller cannot read, and one that does not
     # exist — anything else tells a caller which ids are real in a tenant they are not in.
-    return Forbidden(
+    raise Refused(
+        403,
         f"cannot link {a!r} and {b!r}: a PRD link joins two PRDs inside one organization, and "
         "one of them is not that — it does not exist, you cannot read it, or it is in another "
         "organization (cross-org links are always refused)",
-        hint="use a PRD id from another project of this organization",
-    )
+        rule_id=PRD_LINK_ORG_RULE, hint="use a PRD id from another project of this organization")
+
+
+def _no_link(link_id: str) -> NotFound:
+    # A link the caller cannot see answers exactly as a missing one.
+    return NotFound(f"no PRD link {link_id!r} that you can see",
+                    hint="list the links on your PRD to find its id")
 
 
 def _get_prd(db: Session, ref: str) -> Prd | None:
@@ -163,16 +177,17 @@ def request_prd_link(db: Session, caller: Caller, a: str, b: str, *, reason: str
         raise ValueError("a link request needs a one-line reason")
     pa, pb = _get_prd(db, a), _get_prd(db, b)
     if pa is None or pb is None or pa.project_id not in caller.readable:
-        raise _prd_refused(a, b)
+        _refuse_prd(a, b)
     if _org_of(db, pa.project_id) != _org_of(db, pb.project_id):
-        raise _prd_refused(a, b)
+        _refuse_prd(a, b)
     # `b` is named by id, not read: the link shows its id/title/status to the pair only, and
     # the project must exist inside this org — which the org check above already settled.
     if pa.project_id == pb.project_id:
         raise ValueError("a PRD link joins PRDs in different projects")
     if pa.project_id not in caller.writable:
-        raise Forbidden(
-            f"PRD {a!r} is outside this key's write scope; a link is requested from a PRD you can write",
+        raise Refused(
+            403, f"PRD {a!r} is outside this key's write scope; a link is requested from a PRD "
+            "you can write", rule_id=PRD_LINK_WRITE_RULE,
             hint="request the link from a PRD in a project you can write")
     existing = _pair_link(db, pa.id, pb.id)
     if existing is not None and existing.status in ("pending", "accepted"):
@@ -199,12 +214,12 @@ def _pending_for_decision(db: Session, caller: Caller, link_id: str) -> PrdLink:
     link = db.get(PrdLink, link_id)
     # B's side only: anyone else (including A's side) gets the same answer as a missing link.
     if link is None or link.project_b_id not in caller.readable:
-        raise Forbidden(f"no PRD link {link_id!r} is waiting on you",
-                        hint="list the links on your PRD to find the pending request")
+        raise _no_link(link_id)
     if link.status != "pending":
         raise ValueError(f"link {link_id} is {link.status}, not pending")
     if link.project_b_id not in caller.writable:
-        raise Forbidden("deciding a link needs write access to the receiving project")
+        raise Refused(403, "deciding a link needs write access to the receiving project",
+                      rule_id=PRD_LINK_WRITE_RULE)
     return link
 
 
@@ -217,10 +232,8 @@ def accept_prd_link(db: Session, caller: Caller, link_id: str) -> PrdLink:
         allowed = db.scalar(select(Organization.prd_link_accept_agents).where(
             Organization.id == _org_of(db, link.project_b_id)))
         if not allowed:
-            raise NeedsPerson(
-                f"needs_person: link {link_id} is waiting for a person with write access to "
-                "the receiving project; this organization does not let an agent accept",
-                hint="needs_person")
+            _needs_person(f"link {link_id} is waiting for a person with write access to the "
+                          "receiving project; this organization does not let an agent accept")
     link.status, link.decided_by, link.decided_at = "accepted", caller.who, utcnow()
     db.commit()
     db.refresh(link)
@@ -235,9 +248,7 @@ def decline_prd_link(db: Session, caller: Caller, link_id: str, *, reason: str) 
     link = _pending_for_decision(db, caller, link_id)
     if caller.is_agent and not db.scalar(select(Organization.prd_link_accept_agents).where(
             Organization.id == _org_of(db, link.project_b_id))):
-        raise NeedsPerson(
-            f"needs_person: link {link_id} is decided by a person in this organization",
-            hint="needs_person")
+        _needs_person(f"link {link_id} is decided by a person in this organization")
     link.status, link.decision_reason = "declined", reason
     link.decided_by, link.decided_at = caller.who, utcnow()
     db.commit()
@@ -250,11 +261,12 @@ def unlink_prd_link(db: Session, caller: Caller, link_id: str) -> PrdLink:
     kept. Idempotent on an already-unlinked link."""
     link = db.get(PrdLink, link_id)
     if link is None or not ({link.project_a_id, link.project_b_id} & set(caller.readable)):
-        raise Forbidden(f"no PRD link {link_id!r} that you can see")
+        raise _no_link(link_id)
     if caller.is_agent:
-        raise NeedsPerson("needs_person: unlinking is a person's act", hint="needs_person")
+        _needs_person("unlinking is a person's act")
     if not ({link.project_a_id, link.project_b_id} & set(caller.writable)):
-        raise Forbidden("unlinking needs write access to either side's project")
+        raise Refused(403, "unlinking needs write access to either side's project",
+                      rule_id=PRD_LINK_WRITE_RULE)
     if link.status != "unlinked":
         link.status, link.decided_by, link.decided_at = "unlinked", caller.who, utcnow()
         db.commit()

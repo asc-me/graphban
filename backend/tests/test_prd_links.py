@@ -2,7 +2,7 @@
 import pytest
 
 from app.models import Item, Membership, Organization, Project
-from app.security.authz import Forbidden
+from app.errors import NotFound, Refused
 from app.services import links as L
 from app.services import prds as prds_svc
 from app.services import threads as T
@@ -29,6 +29,10 @@ def world(client):
         db.close()
 
 
+def _needs_person():
+    return pytest.raises(Refused, match="needs_person")
+
+
 def _a(**kw):
     return Caller(readable=["pa"], writable=["pa"], is_agent=True, label="agent-a", owner="Ann", **kw)
 
@@ -44,7 +48,7 @@ def test_request_accept_one_thread(world):
     # Re-request, from either side, returns the same link.
     assert L.request_prd_link(db, _a(), a.id, b.id, reason="again").id == link.id
     # Default setting: an agent's accept needs a person; the link stays pending.
-    with pytest.raises(L.NeedsPerson):
+    with _needs_person():
         L.accept_prd_link(db, _b(agent=True), link.id)
     db.refresh(link)
     assert link.status == "pending"
@@ -62,11 +66,13 @@ def test_org_setting_lets_agent_accept(world):
 
 def test_cross_org_and_missing_get_the_same_refusal(world):
     db, a, b, x = world
-    with pytest.raises(Forbidden) as e1:
+    with pytest.raises(Refused) as e1:
         L.request_prd_link(db, _a(), a.id, x.id, reason="r")
-    with pytest.raises(Forbidden) as e2:
+    with pytest.raises(Refused) as e2:
         L.request_prd_link(db, _a(), a.id, "nope", reason="r")
-    assert str(e1.value).replace(repr(x.id), "?") == str(e2.value).replace("'nope'", "?")
+    assert e1.value.status_code == e2.value.status_code == 403
+    assert e1.value.rule_id == e2.value.rule_id == L.PRD_LINK_ORG_RULE
+    assert e1.value.detail.replace(repr(x.id), "?") == e2.value.detail.replace("'nope'", "?")
 
 
 def test_b_only_key_reads_and_posts_without_a_body(world):
@@ -92,7 +98,7 @@ def test_unlink_makes_thread_read_only_and_keeps_it(world):
     link = L.request_prd_link(db, _a(), a.id, b.id, reason="r")
     L.accept_prd_link(db, _b(), link.id)
     T.post(db, _b(), link.id, kind="note", body="hi")
-    with pytest.raises(L.NeedsPerson):
+    with _needs_person():
         L.unlink_prd_link(db, _a(), link.id)
     L.unlink_prd_link(db, Caller(readable=["pa"], writable=["pa"], label="Ann"), link.id)
     with pytest.raises(ValueError):
@@ -108,5 +114,8 @@ def test_decline_needs_reason_and_outsider_sees_nothing(world):
     with pytest.raises(ValueError):
         L.decline_prd_link(db, _b(), link.id, reason=" ")
     assert L.decline_prd_link(db, _b(), link.id, reason="no").status == "declined"
-    with pytest.raises(Forbidden):
+    with pytest.raises(NotFound) as hidden:
         T.read_thread(db, Caller(readable=["px"], writable=[]), link.id)
+    with pytest.raises(NotFound) as missing:
+        T.read_thread(db, Caller(readable=["px"], writable=[]), "plk_nope")
+    assert str(hidden.value).replace(repr(link.id), "?") == str(missing.value).replace("'plk_nope'", "?")
