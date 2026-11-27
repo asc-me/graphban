@@ -3852,6 +3852,56 @@ def blocker_names_person_or_decision(text: str) -> bool:
     return bool(_PERSON_OR_DECISION.search(text or ""))
 
 
+#: The refusal a blocker naming nothing it waits on raises (GRPH-1960).
+BLOCKER_MUST_NAME_RULE = "build.blocker_names_what_it_waits_on"
+#: A hold gbfleet writes and lifts itself (`[gbfleet dependency hold]`, `[gbfleet external
+#: check hold]`): released by its writer when the merge or the check lands, so not a stale note.
+_GBFLEET_HOLD = re.compile(r"\[gbfleet [a-z ]+ hold\]")
+
+
+def refuse_unnamed_blocker(db: Session, item: Item, blocker: str | None,
+                           tags: list | None = None) -> None:
+    """Refuse a blocker written through `update_item` that names nothing it waits on.
+
+    A blocker decides readiness on its own, so one tied to nothing goes stale: GRPH-1953's
+    "Needs the `gban rules import` command ..." gated a drain for hours after the work
+    merged. Accepted: empty (a clear), at least one existing item key (each becomes a
+    `blocker` dependency link and releases through `release_when_named_blockers_done`), a
+    person or decision named as `blocker_names_person_or_decision` reads it, a typed wait
+    (`wait:*` tag on the item as it will be), a blocking-fix filing, or a gbfleet hold its
+    writer lifts (`_GBFLEET_HOLD`). The item's own key does not count. Raised before
+    anything is written. Internal writers (decompose, parking, blocking-fix filing) call the
+    service directly and are not this boundary.
+    """
+    text = (blocker or "").strip()
+    if not text:
+        return
+    if blocker_names_person_or_decision(text) or text.endswith(BLOCKING_FIX_BLOCKER_SUFFIX):
+        return
+    from app.services.waits import WAIT_TAGS
+    after_tags = tags if tags is not None else (item.tags or [])
+    if any(str(t).lower() in WAIT_TAGS for t in after_tags):
+        return
+    if _GBFLEET_HOLD.search(text):
+        return
+    named = keys_named_in(text)
+    # The item's own key is not something it waits on: `record_blocker_dependencies` skips it.
+    if any(keys.resolve_item(db, token) not in (None, item.id) for token in named):
+        return
+    unknown = f" ({', '.join(named)} resolve to no item)" if named else ""
+    raise Refused(
+        409,
+        f"{item.key}: a blocker must name what it waits on{unknown} — a note naming nothing "
+        "cannot be released when that thing lands, so it gates the drain until somebody "
+        "clears it by hand. Name an item key (e.g. 'needs GRPH-12'; each becomes a "
+        "dependency and the blocker clears when they are all done), name a person or a "
+        "decision, file a typed wait (status=blocked with a wait:* tag), or file a blocking "
+        "fix (create_item kind=fix, blocks=<this item>). Nothing was written.",
+        rule_id=BLOCKER_MUST_NAME_RULE,
+        hint="if the missing work has no item yet, file it, then name its key",
+    )
+
+
 def unfinished_dependency_ids(db: Session, item: Item) -> list[str]:
     """Dependency targets that exist and are not `done`. A missing row does not block."""
     ids = db.scalars(select(Link.b).where(

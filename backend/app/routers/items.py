@@ -235,6 +235,10 @@ def update_item(
             "an owner.close receipt cannot be written via PATCH; "
             "POST /api/items/{id}/owner-close",
         )
+    if changes.get("blocker") is not None:
+        # GRPH-1960. A blocker names what it waits on, or it is refused before any write.
+        items_svc.refuse_unnamed_blocker(db, existing, changes["blocker"],
+                                         tags=changes.get("tags"))
     try:
         if declared_reach is not None:
             items_svc.set_reach(db, existing, declared_reach)

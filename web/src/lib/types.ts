@@ -4048,7 +4048,8 @@ export interface RuleProposal {
 /** One finding of a rules import run (GRPH-1951 / P92 D3). */
 export interface ImportFinding {
   id: number;
-  bucket: "proposed" | "external" | "gap";
+  /** `notice`: a rescan's drift notice (`source gone` / `source moved`, in `label`), never filed. */
+  bucket: "proposed" | "external" | "gap" | "notice";
   stage: string;
   quote: string;
   source: { path: string; url?: string };

@@ -180,7 +180,7 @@ def test_mcp_search_finds_typed_waits_not_free_text(client, auth):
     stuck = _ok(client, key, "create_item",
                 {"title": "please look", "status": "blocked"})
     _ok(client, key, "update_item",
-        {"id": stuck["id"], "blocker": "please look"})
+        {"id": stuck["id"], "blocker": "please look, a person"})
 
     found = _ok(client, key, "search_items",
                 {"status": "blocked", "tags": ["wait:secret"]})

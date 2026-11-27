@@ -21,6 +21,7 @@ from app.security.deps import get_current_user, get_user_or_agent_key
 from app.services import code_graph
 from app.services import custom_rules
 from app.services import import_runs
+from app.services import import_rescan
 from app.services import collision
 from app.services import events as events_svc
 from app.services import gitops as gitops_svc
@@ -371,6 +372,15 @@ class ImportRunWrite(BaseModel):
     branch: str | None = None
 
 
+class ImportScanWrite(BaseModel):
+    """`gban rules import`: the structured sources as the CLI read them at `commit`."""
+    model_config = ConfigDict(extra="forbid")
+    commit: str
+    files: dict[str, str] = Field(default_factory=dict)
+    branch: str | None = None
+    sources_unread: list = []
+
+
 class ImportAdopt(BaseModel):
     model_config = ConfigDict(extra="forbid")
     finding_ids: list[int]
@@ -395,6 +405,21 @@ def create_import_run(project_id: str, body: ImportRunWrite, db: Session = Depen
     except AppError as e:
         raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
     return import_runs.report(db, project_id, run.id)
+
+
+@router.post("/projects/{project_id}/rules/import-runs/scan", status_code=201)
+def scan_import_run(project_id: str, body: ImportScanWrite, db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
+    """Run the structured parsers over the files the CLI read and record one run. On a project
+    with adopted rules it files only differences, plus source-gone / source-moved notices
+    (GRPH-1953 / P92 D5)."""
+    try:
+        run_id = import_rescan.scan(db, user, project_id, **body.model_dump())
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except AppError as e:
+        raise HTTPException(422, str(e) + (f" — {e.hint}" if e.hint else "")) from e
+    return import_runs.report(db, project_id, run_id)
 
 
 @router.get("/projects/{project_id}/rules/import-runs/{run_id}")

@@ -3360,6 +3360,11 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 "reach is not an agent's to set: it says whether this item's work acts on a "
                 "running system, and only a signed-in person can declare or clear it.",
                 hint="a human sets it on the item in the UI")
+        if args.get("blocker") is not None:
+            # GRPH-1960. A blocker names what it waits on, or it is refused before any write.
+            items_svc.refuse_unnamed_blocker(
+                db, _scoped_item(db, args["id"], allowed), args.get("blocker"),
+                tags=args.get("tags"))
         # Captured BEFORE the write, because `union_touchpoints` mutates the stored list and
         # the reply has to say what the caller's list left behind (GRPH-985).
         before_all_tps = list(getattr(_scoped_item(db, args["id"], allowed), "touchpoints", None) or [])

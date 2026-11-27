@@ -230,7 +230,7 @@ def test_a_blocker_keeps_a_ci_red_row_out_of_review(client, key, auth, proj):
     item = _to_review(client, key, worker, "held by a person")
     _bounce(client, key, reviewer, item, _ci_reason())
     _ok(client, key, "update_item",
-        {"id": item, "agent_id": worker, "blocker": "waiting on a product answer"})
+        {"id": item, "agent_id": worker, "blocker": "waiting on a product decision"})
 
     got = _post(client, _gate(client, auth, proj), item)
 

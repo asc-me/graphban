@@ -1,8 +1,12 @@
-"""`gban rules import`: open an import run over the repo (P92 D1-D4).
+"""`gban rules import`: open an import run over the repo (P92 D1-D5).
 
 `gban rules import` ships the repo's structured sources (CODEOWNERS, workflows,
 `.gitattributes`, generated markers) at HEAD to the server, whose tested parsers read them and
 file through the pipeline; no model reads them. Prose is listed unread for the customer's agent.
+On a project that already holds adopted rules the server files only differences and reports
+drift as notices (`source gone`, `source moved`) it never acts on (GRPH-1953 / P92 D5). A source
+the parsers could not read, or a refused finding, exits non-zero, so the CI template
+(`--ci-template`) reports it as a failed step, not a pass. Prose awaiting the agent does not.
 
 `gban rules import --prose`: open an import run for the customer's agent (GRPH-1952 / P92 D4).
 
@@ -141,7 +145,8 @@ def import_body(repo: Path) -> dict:
                                for p in prose_sources(repo, commit)]}
 
 
-BUCKET_WORDS = {"proposed": "proposed", "external": "EXTERNAL", "gap": "guidance + gap"}
+BUCKET_WORDS = {"proposed": "proposed", "external": "EXTERNAL", "gap": "guidance + gap",
+                "notice": "notice"}
 
 
 def import_summary(run: dict, prog: str = "gban") -> str:
@@ -159,11 +164,23 @@ def import_summary(run: dict, prog: str = "gban") -> str:
             what = f.get("label") or (f.get("proposal") or {}).get("rule_id") or ""
             lines.append(f"     {tag:<14}  {f.get('stage')}: {what} — {f.get('quote')}"
                          + (f"  REFUSED: {f['refused']}" if f.get("refused") else ""))
+    lines += [f"     {'notice':<14}  {f.get('label')}: {f.get('text')}"
+              for f in findings if f.get("bucket") == "notice"]
     if any(s.get("reader") == "agent" for s in unread):
         lines += ["     prose is read by your own agent (any harness with the Graphban MCP "
                   "server):", f"       {invocation(run)}"]
-    lines.append("     a person adopts the batch from the run's report on the Rules page.")
+    lines.append("     nothing is adopted here: a person adopts the batch from the run's report "
+                 "on the Rules page; a notice is shown, never acted on.")
+    if failed(run):
+        lines.append("     NOT CLEAN: a source went unread or a finding was refused.")
     return "\n".join(lines)
+
+
+def failed(run: dict) -> bool:
+    """The step fails on a source the parsers could not read or a refused finding. Prose
+    awaiting the customer's agent is listed, not a failure: no parser reads it."""
+    return (any(s.get("reader") != "agent" for s in run.get("sources_unread") or [])
+            or any(f.get("refused") for f in run.get("findings") or []))
 
 
 def invocation(run: dict) -> str:
@@ -182,3 +199,61 @@ def summary(run: dict, prog: str = "gban") -> str:
               ("     it files through `propose_rule` with that run; a person adopts the batch "
                "from the run's report.")]
     return "\n".join(lines)
+
+
+def _cli_version() -> str:
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        return version("graphban-cli")
+    except PackageNotFoundError:
+        return ""
+
+
+#: The paths whose change re-runs the rescan: every source the structured parsers read.
+CI_PATHS = (".github/workflows/**", "**/CODEOWNERS", "**/.gitattributes", *(
+    f"**/{x}" for x in LOCKFILES))
+
+
+def ci_template(branch: str = "main", version: str | None = None) -> str:
+    """The GitHub Actions workflow that runs the rescan when a cited source changes on the
+    default branch. It files proposals and adopts nothing; an unread source fails the step."""
+    v = _cli_version() if version is None else version
+    pin = f"graphban-cli=={v}" if v else "graphban-cli"
+    paths = "\n".join(f'      - "{p}"' for p in CI_PATHS)
+    return f"""# Printed by `gban rules import --ci-template`{f' (graphban-cli {v})' if v else ''}.
+# Re-print it after upgrading gban: it is versioned with the parsers whose findings it files.
+#
+# Runs the rules rescan when a source the import reads changes on `{branch}`. It FILES
+# proposals and drift notices on the project's Rules page and ADOPTS NOTHING: a person adopts
+# from the run's report. A source the run could not read (a token without permission, a path in
+# another repo) makes the run unclean and this step fails; it is never reported as a pass.
+#
+# Set up once: repository variables GRAPHBAN_URL and GRAPHBAN_PROJECT, and a secret
+# GRAPHBAN_SESSION holding the contents of ~/.graphban/session.json from `gban login`.
+name: graphban rules rescan
+on:
+  push:
+    branches: [{branch}]
+    paths:
+{paths}
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  rescan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install gban
+        run: pipx install "{pin}"
+      - name: Rescan the rules sources
+        env:
+          GRAPHBAN_URL: ${{{{ vars.GRAPHBAN_URL }}}}
+          GRAPHBAN_PROJECT: ${{{{ vars.GRAPHBAN_PROJECT }}}}
+          GRAPHBAN_HOME: ${{{{ runner.temp }}}}/graphban
+          GRAPHBAN_SESSION: ${{{{ secrets.GRAPHBAN_SESSION }}}}
+        run: |
+          mkdir -p "$GRAPHBAN_HOME"
+          (umask 077 && printf '%s' "$GRAPHBAN_SESSION" > "$GRAPHBAN_HOME/session.json")
+          gban rules import --branch {branch}
+"""

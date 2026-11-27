@@ -576,6 +576,18 @@ blocked item, and `get_backlog` ranks **ready-first**, then by a composite score
 linked item, effort, and staleness. Each `get_backlog` row carries `ready`, `blocked_by`,
 `unblocks`, `votes`, and `score`, so an agent can plan against the real graph.
 
+**A blocker names what it waits on (GRPH-1960).** `update_item(blocker=...)`, over MCP and
+`PATCH /api/items/{id}`, accepts a blocker that names at least one existing item key (each
+becomes a `dependency` link with reason `blocker`, and the blocker clears when they are all
+done), names a person or a decision, sits on a typed wait (a `wait:*` tag on the item as the
+call leaves it), is a blocking-fix filing, or carries a hold mark gbfleet writes and lifts itself
+(`[gbfleet dependency hold]`, `[gbfleet external check hold]`). The item's own key does not count.
+Anything else — "Needs the import command, which
+is not in this branch" — is refused `conflict` with rule `build.blocker_names_what_it_waits_on`
+and nothing is written: a note tied to nothing cannot be released when its work lands, so it
+would gate a drain until somebody cleared it by hand. If the missing work has no item, file it
+and name its key. An empty blocker always clears.
+
 `b` may live in **another project of the same organization** (GRPH-1063) — the cross-repo case,
 e.g. a control-plane item waiting on a box-side change. It blocks exactly like a local one, in
 `get_backlog`, `claim_next`, `claim_cluster` and `next_cluster`, even when the caller cannot read

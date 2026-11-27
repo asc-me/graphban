@@ -2,6 +2,10 @@
  * The import report (GRPH-1951, P92 D3). Unread sources first, then findings grouped by stage and
  * bucket, each with its quote and source link. A person ticks proposed findings and adopts them as
  * one batch under one reason; nothing is pre-ticked. Members see it read-only.
+ *
+ * A rescan (GRPH-1953, P92 D5) adds drift notices: `source gone` (an adopted rule nothing at the
+ * new commit still supports) and `source moved` (the same rule, cited from another file). They
+ * are shown with no checkbox: nothing files, nothing changes, and only a person loosens a rule.
  */
 import * as React from "react";
 
@@ -18,8 +22,9 @@ export const BUCKET_LABEL: Record<ImportFinding["bucket"], string> = {
   proposed: "Proposed rules",
   external: "EXTERNAL — held outside Graphban, not verified",
   gap: "Guidance (no primitive yet)",
+  notice: "Drift (shown, never acted on)",
 };
-const BUCKETS: ImportFinding["bucket"][] = ["proposed", "external", "gap"];
+const BUCKETS: ImportFinding["bucket"][] = ["proposed", "external", "gap", "notice"];
 
 function Report({ projectId, runId }: { projectId: string; runId: number }) {
   const q = useImportRun(projectId, runId);
@@ -80,6 +85,7 @@ function Report({ projectId, runId }: { projectId: string; runId: number }) {
                         <input type="checkbox" aria-label={`Adopt finding ${f.id}`} checked={ticked.has(f.id)} onChange={() => toggle(f.id)} />
                       )}
                       <span>
+                        {b === "notice" && f.label && <strong className="mr-1">{f.label}:</strong>}
                         <q>{f.quote}</q>{" "}
                         {f.source.url ? (
                           <a className="underline" href={f.source.url} target="_blank" rel="noreferrer">{f.source.path}</a>

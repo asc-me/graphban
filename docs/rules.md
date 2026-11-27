@@ -333,3 +333,22 @@ adopted guidance is **advisory** text, shown in the delegation brief of an item 
 three entries). Each filing increments a primitive-gap count by stage and short label, never the text.
 Gap counts stay on the box; they are in the box push (`counts.primitive_gaps`) only under the existing
 `box_push_counts` opt-in.
+
+## Rescan and drift — `gban rules import` (GRPH-1953, P92 D5)
+
+`gban rules import` reads the structured sources at HEAD (`CODEOWNERS`, `.github/workflows`,
+`.gitattributes`, lockfiles, DO-NOT-EDIT headers) and the server's parsers file what they say.
+On a project that already holds adopted rules it files only differences: a new requirement, or
+a tighter value of one already held. A finding matches a rule on what the rule says (primitive
+and params), not on where it is cited, so:
+
+- the same rule cited from another file is a **source moved** notice;
+- an adopted rule no finding at the new commit supports is a **source gone** notice.
+
+Notices are shown in the run's report on the Rules page and never acted on: no rule changes and
+nothing is filed. Loosening or removing a rule stays a person's act. A source the run could not
+read is not called gone, and it makes the run unclean, so the command exits non-zero.
+
+To rescan from CI when a cited source changes on the default branch, print the GitHub Actions
+workflow with `gban rules import --ci-template` (it is versioned with the CLI that printed it).
+It files proposals and adopts nothing.
