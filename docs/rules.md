@@ -346,9 +346,6 @@ and params), not on where it is cited, so:
 - an adopted rule no finding at the new commit supports is a **source gone** notice.
 
 Notices are shown in the run's report on the Rules page and never acted on: no rule changes and
-A rule value the project has not set itself (the platform default, which names this repo's own
-paths) is not compared against: a fresh project gets the proposal, not a gap.
-
 nothing is filed. Loosening or removing a rule stays a person's act. A source the run could not
 read is not called gone, and it makes the run unclean, so the command exits non-zero.
 
