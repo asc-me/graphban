@@ -2619,6 +2619,74 @@ def test_p104r_rerun_files_s2_with_only_its_own_clauses(client, auth, monkeypatc
     db.close()
 
 
+# ---- GRPH-2004: a clause led by a section no call will file was silently dropped --------
+# GRPH-2003 resolves a lead against every section, so `**S6:**` names S6 even when S6 is
+# framing. With S6 neither on offer nor filed, `lead_owned_elsewhere` read the clause as
+# another call's: it landed on no item and `unassigned_clauses` still read [].
+
+_P104F_T = "S6. Framing notes"
+_P104F_CLAUSE = "**S6:** the framing note is readable by a planner."
+_P104F_BODY = _P104R_BODY.replace(
+    "## Acceptance\n",
+    f"## {_P104F_T}\n\n<!-- framing -->\nWhy threads matter to the people who read them.\n"
+    f"## Acceptance\n\n- {_P104F_CLAUSE}\n", 1)
+
+
+def test_a_clause_led_by_an_unfiled_section_is_its_own_answer():
+    bodies = prd_svc.section_bodies(_P104F_BODY)
+    assert _P104F_T in bodies
+    later = _P104R_TITLES[1:]
+    combined, _level, _per, unassigned, unfiled = prd_svc.claim_subheading_clauses(
+        _P104F_BODY, later, bodies, _P104R_TITLES)
+    assert unfiled == [{"clause": _P104F_CLAUSE, "sections": [_P104F_T]}]
+    assert unassigned == []
+    assert not [c for cs in combined.values() for c in cs if c == _P104F_CLAUSE]
+    # GRPH-2003 unchanged: S1, filed earlier, still owns its clauses quietly.
+    assert not [u for u in unfiled if u["sections"] == [_P104_S1_T]]
+    assert _owner_of(combined, "**S1:**") == []
+
+
+def test_decompose_reports_a_clause_of_a_framing_section(client, auth, monkeypatch):
+    from app.db import SessionLocal
+    from tests.prd_approve import approve_id
+
+    _quiet_semantic(monkeypatch)
+    prd = client.post("/api/prds", json={"title": "P104 v1.1f", "body": _P104F_BODY},
+                      headers=auth).json()
+    _describe(_project_of(prd["id"]), _P104_GRAPH, _P104_EDGES)
+    client.post("/api/items", json={"title": "S1, filed earlier", "prd_id": prd["id"],
+                                    "prd_section": _P104_S1_T}, headers=auth)
+    approve_id(prd["id"])
+    db = SessionLocal()
+    out = prd_svc.decompose(db, prd_svc.get_prd(db, prd["id"]))
+    db.close()
+    assert _P104F_T not in {p["section"] for p in out["proposals"]}
+    assert out["unfiled_section_clauses"] == [{"clause": _P104F_CLAUSE,
+                                               "sections": [_P104F_T]}]
+    assert out["unassigned_clauses"] == []
+    assert not [p for p in out["proposals"]
+                if any(c == _P104F_CLAUSE for c in p.get("acceptance", []) or [])]
+
+
+def test_a_framing_section_that_already_has_items_owns_its_clause_quietly(
+        client, auth, monkeypatch):
+    from app.db import SessionLocal
+    from tests.prd_approve import approve_id
+
+    _quiet_semantic(monkeypatch)
+    prd = client.post("/api/prds", json={"title": "P104 v1.1g", "body": _P104F_BODY},
+                      headers=auth).json()
+    _describe(_project_of(prd["id"]), _P104_GRAPH, _P104_EDGES)
+    client.post("/api/items", json={"title": "framing, filed with prose", "prd_id": prd["id"],
+                                    "prd_section": _P104F_T}, headers=auth)
+    approve_id(prd["id"])
+    db = SessionLocal()
+    out = prd_svc.decompose(db, prd_svc.get_prd(db, prd["id"]))
+    db.close()
+    assert out["unfiled_section_clauses"] == []
+    assert out["unassigned_clauses"] == []
+
+
 def test_an_s1_lead_is_s1s_even_when_s2s_prose_names_it():
     """S2 says "Deciding a `suggested_item`, or a link request (S1), is atomic": by its
     words alone this clause is S2's. Its lead says S1, and the lead decides."""
