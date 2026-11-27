@@ -2165,7 +2165,7 @@ def set_reach(db: Session, item: Item, value: str) -> Item:
 
 
 #: How an item can be closed without delivering anything (GRPH-1671).
-RESOLUTION_KINDS = ("duplicate", "superseded")
+RESOLUTION_KINDS = ("duplicate", "superseded", "moved")
 #: The rule a refused resolution cites (services/rules.py).
 RESOLUTION_RULE = "close.resolution_points_at_the_work"
 
@@ -2182,8 +2182,9 @@ class ResolutionRefused(ValueError):
         self.reason = reason
 
 
-def resolve_item(db: Session, item_id: str, *, kind: str, of: str, reason: str = "",
-                 actor: str, actor_agent: str | None = None, defer=None) -> Item | None:
+def resolve_item(db: Session, item_id: str, *, kind: str, of: str = "", reason: str = "",
+                 actor: str, actor_agent: str | None = None, defer=None,
+                 to: dict | None = None) -> Item | None:
     """Close an item as a duplicate of another, or as superseded, WITHOUT an attestation
     (GRPH-1671).
 
@@ -2200,6 +2201,9 @@ def resolve_item(db: Session, item_id: str, *, kind: str, of: str, reason: str =
       claim: the builder cannot close its own work this way. WHO may call at all (a
       planner, or the project owner) is the boundary's check — services stay
       principal-free, as `owner_close` does.
+
+    - `moved` points at an item on ANOTHER box: `to={box_label, item_id}` is recorded, no local
+      target is needed. It is refused `claimed` while an agent holds the build or review claim.
 
     The item is `done` but never `delivered` (`Item.delivered`): completeness and the close
     report count the item `of` points at, not this one.
@@ -2224,6 +2228,24 @@ def resolve_item(db: Session, item_id: str, *, kind: str, of: str, reason: str =
             f"{'build' if actor_agent == item.claimed_by else 'review'} claim; the agent "
             "working an item cannot close it as a duplicate or superseded. Release it, and "
             "let a planner or the project owner close it")
+    if kind == "moved":
+        if item.claimed_by or item.review_claimed_by:
+            raise ResolutionRefused(
+                "claimed", f"{item.key} is claimed by an agent; it cannot be moved "
+                           "to another box while one holds its build or review claim")
+        box = str((to or {}).get("box_label") or "").strip()
+        remote = str((to or {}).get("item_id") or "").strip()
+        if not box or not remote:
+            raise ResolutionRefused("target_missing", "a move names to: {box_label, item_id}")
+        resolution = {
+            "kind": "moved",
+            "of": "",
+            "to": {"box_label": box, "item_id": remote},
+            "reason": (reason or "").strip() or f"moved to {box} as {remote}",
+            "by": actor,
+            "at": utcnow().isoformat(),
+        }
+        return _close_resolved(db, item, resolution, defer)
     why = (reason or "").strip()
     if kind == "superseded" and not why:
         raise ResolutionRefused(
@@ -2265,6 +2287,10 @@ def resolve_item(db: Session, item_id: str, *, kind: str, of: str, reason: str =
         "by": actor,
         "at": utcnow().isoformat(),
     }
+    return _close_resolved(db, item, resolution, defer)
+
+
+def _close_resolved(db: Session, item: Item, resolution: dict, defer) -> Item | None:
     out = update_item(db, item.id, defer=defer, status="done", resolution=resolution)
     if out is None:
         return None

@@ -371,7 +371,7 @@ DECISIONS_FEATURE_PATH = "/api/sync/triage-decisions"
 # `duplicate_of`, `park` and `assign_team` are the box's own older names, still applied.
 # `duplicate` carries `duplicate_of: {item_id}`; `assign` carries `assignee: {id, name}`, a PERSON
 # from the list `push_assignable_people` sent — not the team tag `assign_team` writes.
-DECISION_TYPES = ("accept", "decline", "defer", "duplicate", "assign",
+DECISION_TYPES = ("accept", "decline", "defer", "duplicate", "assign", "moved",
                   "duplicate_of", "park", "assign_team")
 PEOPLE_FEATURE_PATH = "/api/sync/assignable-people"
 APPLIED_ACTION = "triage_decision_applied"
@@ -392,14 +392,14 @@ def _author_label(decision: dict) -> str:
     return str(a or "console")
 
 
-def _decision_applied_before(db: Session, decision_id: str) -> bool:
+def _applied_event(db: Session, decision_id: str):
     from sqlalchemy import select
     from app.models import Event
 
     for e in db.scalars(select(Event).where(Event.action == APPLIED_ACTION)):
         if (e.meta or {}).get("decision_id") == decision_id:
-            return True
-    return False
+            return e
+    return None
 
 
 def _find_target(db: Session, key: str):
@@ -480,11 +480,18 @@ def _apply_one(db: Session, target, decision: dict) -> dict:
             _apply_console_duplicate(db, target, decision)
         elif kind == "assign":
             _apply_assign(db, target, decision)
+        elif kind == "moved":
+            _apply_moved(db, target, decision)
         else:  # duplicate_of
             _apply_duplicate(db, target, decision)
     except req_svc.ActionRefused as e:
         db.rollback()
         raise DecisionRefused("refused", str(e))
+    except items_svc.ResolutionRefused as e:
+        db.rollback()
+        # `item_moved` is a different code (the status changed); a move's own refusals pass through.
+        code = e.reason if e.reason in ("already_done", "typed_wait", "claimed") else "refused"
+        raise DecisionRefused(code, str(e))
     except ValueError as e:
         db.rollback()
         raise DecisionRefused("refused", str(e))
@@ -566,24 +573,45 @@ def assignable_people(db: Session, project_id: str) -> list:
     return [u for u in users if authz.can_write(db, u.id, project_id)]
 
 
+def _apply_moved(db: Session, target, decision: dict) -> None:
+    """The console's `moved`: `to: {box_label, item_id}`, the target box's `created_item_id`.
+    The item closes as done (never delivered) through the `moved` resolution."""
+    if not isinstance(target, Item):
+        raise DecisionRefused("unsupported_target", "moved is an item decision")
+    to = decision.get("to")
+    if not isinstance(to, dict) or not str(to.get("box_label") or "").strip() \
+            or not str(to.get("item_id") or "").strip():
+        raise DecisionRefused("bad_decision", "moved needs to: {box_label, item_id}")
+    items_svc.resolve_item(db, target.id, kind="moved", to=to, actor=_author_label(decision))
+
+
+def _assignable_user(db: Session, decision: dict, project_id: str, *, need: str):
+    """The person `assignee: {id}` names, when they can be assigned on the project. Shared by
+    `assign` and a routed accept carrying an assignee."""
+    from app.models import User
+    from app.security import authz
+
+    who = decision.get("assignee")
+    uid = str(who.get("id") or "").strip() if isinstance(who, dict) else ""
+    if not uid:
+        raise DecisionRefused("bad_decision", need)
+    user = db.get(User, uid)
+    if user is None or not authz.can_write(db, user.id, project_id):
+        raise DecisionRefused("not_assignable",
+                              f"{uid!r} cannot be assigned on this project")
+    return user
+
+
 def _apply_assign(db: Session, target, decision: dict) -> None:
     """The console's `assign`: `assignee: {id, name}`, the id one this box listed. The item's
     assignee becomes that person's handle on the project; refused, and the item untouched, when
     they cannot be assigned here (unknown, or no write access any more)."""
-    from app.models import User
-    from app.security import authz
     from app.services import handles
 
     if not isinstance(target, Item):
         raise DecisionRefused("unsupported_target", "assign is an item decision")
-    who = decision.get("assignee")
-    uid = str(who.get("id") or "").strip() if isinstance(who, dict) else ""
-    if not uid:
-        raise DecisionRefused("bad_decision", "assign needs assignee: {id, name}")
-    user = db.get(User, uid)
-    if user is None or not authz.can_write(db, user.id, target.project_id):
-        raise DecisionRefused("not_assignable",
-                              f"{uid!r} cannot be assigned on this project")
+    user = _assignable_user(db, decision, target.project_id,
+                            need="assign needs assignee: {id, name}")
     items_svc.update_item(db, target.id,
                           assignee=handles.project_handle(db, user, target.project_id))
 
@@ -682,9 +710,20 @@ def _route_request(db: Session, target: dict, decision: dict, project_id: str | 
     title = str(target.get("title") or "").strip()
     if not title:
         raise DecisionRefused("bad_decision", "a routed request carries no title")
+    user = None
+    if decision.get("assignee") is not None:
+        # Checked BEFORE anything is created: a refusal leaves no item behind.
+        user = _assignable_user(db, decision, project_id,
+                                need="a routed accept's assignee is {id}")
     try:
-        return items_svc.create_item(db, title=title, description=str(target.get("body") or ""),
-                                     project_id=project_id, status="next")
+        item = items_svc.create_item(db, title=title, description=str(target.get("body") or ""),
+                                     project_id=project_id, status="next", commit=False)
+        if user is not None:
+            from app.services import handles
+            item.assignee = handles.project_handle(db, user, project_id)
+        db.commit()
+        db.refresh(item)
+        return item
     except ValueError as e:
         db.rollback()
         raise DecisionRefused("refused", str(e))
@@ -706,8 +745,13 @@ def apply_decision(db: Session, decision: dict, project_id: str | None = None) -
     did = str(decision.get("id") or "")
     if not did:
         return {"id": did, "result": "refused", "reason": "bad_decision"}
-    if _decision_applied_before(db, did):
-        return {"id": did, "result": "applied"}
+    prior = _applied_event(db, did)
+    if prior is not None:
+        res = {"id": did, "result": "applied"}
+        created = (prior.meta or {}).get("created_item_id")
+        if created:
+            res["created_item_id"] = created
+        return res
     kind, payload = _target_of(decision)
     if not kind:
         return {"id": did, "result": "refused", "reason": "bad_decision"}
@@ -728,8 +772,12 @@ def apply_decision(db: Session, decision: dict, project_id: str | None = None) -
         db, actor_type="console", actor_label=_author_label(decision), surface="rest",
         action=APPLIED_ACTION, target_type="request" if isinstance(target, Request) else "item",
         target_id=target.key, project_id=target.project_id,
-        meta={"decision_id": did, "decision": out["decision"], "author": _author_label(decision)})
-    return {"id": did, "result": "applied"}
+        meta={"decision_id": did, "decision": out["decision"], "author": _author_label(decision),
+              **({"created_item_id": target.key} if kind == "request" else {})})
+    res = {"id": did, "result": "applied"}
+    if kind == "request":
+        res["created_item_id"] = target.key
+    return res
 
 
 def pull_decisions(db: Session, *, cloud_url: str, api_key: str) -> dict:
@@ -768,6 +816,8 @@ def pull_decisions(db: Session, *, cloud_url: str, api_key: str) -> dict:
             # 422 `decision_id is required`, so a refusal it never hears about stays pending.
             report = {"decision_id": r["id"], "outcome": outcome,
                       "reason": reason if outcome == "refused" else ""}
+            if outcome == "applied" and r.get("created_item_id"):
+                report["created_item_id"] = r["created_item_id"]
             try:
                 httpx.post(f"{base}/applied", params={"project": name}, headers=headers,
                            timeout=_TIMEOUT, json=report).raise_for_status()
