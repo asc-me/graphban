@@ -792,6 +792,17 @@ def checkout_verdict(repo: Path, name: str) -> str:
     linked = [t for t in trees if Path(t).resolve() != repo.resolve()]
     if linked:
         return f"it has linked worktree(s): {_named(linked)}"
+    # A `git clone --shared` / `--reference` clone borrows objects from this .git through its
+    # objects/info/alternates: deleting the checkout breaks it (GRPH-1986). Only a sibling of
+    # the checkout can be found; remove warns about the rest when it deletes.
+    borrowers, why = _borrowers(repo)
+    if why:
+        return why
+    if borrowers:
+        return ("clone(s) made from it with --shared or --reference borrow its objects "
+                f"(their objects/info/alternates points into it): {_named(borrowers)}; run "
+                "`git repack -a` in each and delete its objects/info/alternates, or re-clone "
+                "it, then remove again")
     # A submodule keeps its commits in .git/modules/<sub>, which the superproject's checks
     # cannot see. Not proved clean: any sign of one keeps the checkout.
     subs = _submodules(repo, Path(git_dir))
@@ -844,6 +855,11 @@ def checkout_verdict(repo: Path, name: str) -> str:
     proving, inside, why = _proving_refs(repo)
     if why:
         return why
+    # A fetch from `.` (or any path inside the checkout) into refs/remotes/ writes a local
+    # commit into a remote's namespace: that ref proves nothing (GRPH-1986).
+    selfed = _fetched_from_inside(repo, list(proving))
+    for ref in selfed:
+        del proving[ref]
     # And only a tip the server lists now: a ref left behind by a branch deleted on the server
     # (never pruned) proves nothing (GRPH-1987).
     live, stale, why = _listed_now(repo, proving)
@@ -852,6 +868,9 @@ def checkout_verdict(repo: Path, name: str) -> str:
     not_on = ["--not", *live]
     unproven = (f"; remote(s) {_named(inside)} point inside this checkout or cannot be "
                 "resolved, so their refs prove nothing") if inside else ""
+    if selfed:
+        unproven += (f"; remote-tracking ref(s) {_named([_short(r) for r in selfed])} were "
+                     "last written by a fetch from inside this checkout, so they prove nothing")
     if stale:
         unproven += (f"; remote-tracking ref(s) {_named(stale)} name branch(es) the server no "
                      "longer lists, so they prove nothing")
@@ -879,6 +898,104 @@ def checkout_verdict(repo: Path, name: str) -> str:
         return (f"it has {len(ahead.splitlines())} commit(s) only a reflog reaches, on no "
                 f"remote{unproven}")
     return ""
+
+
+def _short(ref: str) -> str:
+    return ref[len("refs/remotes/"):] if ref.startswith("refs/remotes/") else ref
+
+
+def _alternates_of(entry: Path) -> list[Path]:
+    """The objects/info/alternates files a checkout or bare repo at `entry` may read: its
+    .git dir, a `gitdir:` file's target (and that target's commondir), or `entry` itself."""
+    dot = entry / ".git"
+    dirs: list[Path] = []
+    if dot.is_dir():
+        dirs.append(dot)
+    elif dot.is_file():
+        try:
+            line = dot.read_text(encoding="utf-8", errors="surrogateescape").strip()
+        except OSError:
+            line = ""
+        if line.startswith("gitdir:"):
+            target = Path(line[len("gitdir:"):].strip())
+            target = target if target.is_absolute() else entry / target
+            dirs.append(target)
+            try:
+                common = (target / "commondir").read_text(encoding="utf-8").strip()
+            except OSError:
+                common = ""
+            if common:
+                dirs.append(Path(common) if Path(common).is_absolute() else target / common)
+    if (entry / "objects").is_dir() and (entry / "HEAD").is_file():
+        dirs.append(entry)
+    return [d / "objects" / "info" / "alternates" for d in dirs]
+
+
+def _borrowers(repo: Path) -> tuple[list[str], str]:
+    """(siblings of `repo` whose objects/info/alternates points inside it, error). A clone made
+    with `--shared` or `--reference` reads its objects from there, so deleting `repo` breaks
+    it. An alternates file that exists but cannot be read counts as a borrower."""
+    parent = repo.resolve().parent
+    try:
+        entries = sorted(parent.iterdir())
+    except OSError as exc:
+        return [], f"cannot list {parent} to look for clones that borrow its objects: {exc}"
+    found: list[str] = []
+    for entry in entries:
+        try:
+            if not entry.is_dir() or os.path.samefile(entry, repo):
+                continue
+        except OSError:
+            continue
+        for alt in _alternates_of(entry):
+            if not alt.exists() and not alt.is_symlink():
+                continue
+            try:
+                lines = alt.read_text(encoding="utf-8", errors="surrogateescape").splitlines()
+            except OSError as exc:
+                found.append(f"{entry} (its {alt.name} is unreadable: {exc.strerror})")
+                break
+            objects = alt.parent.parent
+            hits = []
+            for line in lines:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if len(line) > 1 and line[0] == line[-1] == '"':
+                    line = line[1:-1]
+                path = Path(line)
+                if _inside(path if path.is_absolute() else objects / path, repo):
+                    hits.append(line)
+            if hits:
+                found.append(str(entry))
+                break
+    return found, ""
+
+
+def _fetched_from_inside(repo: Path, refs: list[str]) -> list[str]:
+    """The refs in `refs` whose newest reflog entry is a `git fetch` / `git pull` from `.` or
+    any path inside `repo` (`git fetch . HEAD:refs/remotes/origin/x`): a local commit written
+    into a remote's namespace, which looks pushed and is not. A configured remote's name is
+    not a path here; `_proving_refs` already judges remotes. A ref with no reflog is left to
+    `_listed_now`."""
+    code, names = _git(repo, "remote")
+    remotes = set(names.splitlines()) if code == 0 else set()
+    found: list[str] = []
+    for ref in refs:
+        code, msg = _git(repo, "reflog", "show", "-n1", "--format=%gs", ref, "--")
+        if code != 0 or not msg:
+            continue
+        head, sep, _note = msg.strip().rpartition(": ")
+        words = (head if sep else msg.strip()).split()
+        if not words or words[0] not in ("fetch", "pull"):
+            continue
+        source = next((w for w in words[1:] if not w.startswith("-")), None)
+        if source is None or source in remotes:
+            continue
+        path = _local_url_path(source, repo)
+        if path is not None and _inside(path, repo):
+            found.append(ref)
+    return found
 
 
 def _nested_repos(repo: Path, ignored: list[str]) -> list[str]:
@@ -1295,6 +1412,11 @@ def remove(name: str, *, out: TextIO | None = None, err: TextIO | None = None) -
                       file=out)
             else:
                 print(f"checkout: deleted {path}", file=out)
+                print(f"checkout: warning: a clone made from {path} with `git clone --shared` "
+                      "or `--reference` that remove could not find (it looks only beside the "
+                      "checkout) borrowed objects from it and is now broken: it needs a "
+                      "re-clone (`git repack -a` in it first would have kept it whole)",
+                      file=out)
     if failed:
         return 1
     return EXIT_MANUAL_REVOKE if manual else 0
