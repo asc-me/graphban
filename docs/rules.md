@@ -349,6 +349,9 @@ Notices are shown in the run's report on the Rules page and never acted on: no r
 nothing is filed. Loosening or removing a rule stays a person's act. A source the run could not
 read is not called gone, and it makes the run unclean, so the command exits non-zero.
 
+A rule value the project has not set itself (the platform default, which names this repo's own
+paths) is not compared against: a fresh project gets the proposal, not a gap.
+
 To rescan from CI when a cited source changes on the default branch, print the GitHub Actions
 workflow with `gban rules import --ci-template` (it is versioned with the CLI that printed it).
 It files proposals and adopts nothing.
