@@ -557,16 +557,20 @@ def test_an_idle_takeover_waits_for_the_lock_to_come_free_after_the_pid_goes(
 
     real_lock = lock_mod.lock_exclusive
     real_end = lock_mod.end_pid
-    stopped = {"at": None, "refused": 0}
+    stopped = {"yes": False, "refused": 0}
+    # Refuse a fixed NUMBER of asks after the stop, not a span of time: how
+    # long the pid-gone wait takes depends on the runner, and a time window
+    # can close before `hold` asks at all, so the lag never happens.
+    lag_asks = 3
 
     def end_pid(pid: int) -> None:
         real_end(pid)
-        stopped["at"] = time.monotonic()
+        stopped["yes"] = True
 
     def lagging_lock(fd: int) -> None:
-        # Until 0.3 s after the stop, answer as the kernel still holding the
-        # dead process's lock would.
-        if stopped["at"] is not None and time.monotonic() - stopped["at"] < 0.3:
+        # For the first few asks after the stop, answer as the kernel still
+        # holding the dead process's lock would.
+        if stopped["yes"] and stopped["refused"] < lag_asks:
             stopped["refused"] += 1
             raise lock_mod.AlreadyLocked(13, "lock held by another process")
         real_lock(fd)
@@ -580,7 +584,7 @@ def test_an_idle_takeover_waits_for_the_lock_to_come_free_after_the_pid_goes(
             assert taken.takeover is not None
             assert taken.takeover.because == "idle"
             assert taken.takeover.holder.pid == proc._reported_pid  # type: ignore[attr-defined]
-        assert stopped["refused"] > 0, "the lag never happened; this test proved nothing"
+        assert stopped["refused"] == lag_asks, "the lag never happened; this test proved nothing"
         proc.wait(timeout=5)
     finally:
         if proc.poll() is None:
