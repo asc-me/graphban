@@ -157,7 +157,9 @@ RULES: tuple[Rule, ...] = _GITOPS_RULES + (
          "enforced", _src("app/routers/apikeys.py", "rotate_key"), "code"),
     Rule("keys.prd_limited", "build", "A key limited to one PRD claims only that PRD's work",
          "A key minted with prd_id is pinned to the PRD's project, its agents claim and review "
-         "only that PRD's items, and it may not act as an agent registered on another key.",
+         "only that PRD's items, it writes (update_item, bounce, sign_off, release_item, "
+         "link_items, heartbeat) only that PRD's items and never moves an item to another "
+         "PRD, and it may not act as an agent registered on another key.",
          "enforced", _src("app/security/authz.py", "require_prd_key_caller"), "code"),
     Rule("reach.deploy_not_delegable", "plan", "Deploy-reach work is not delegated",
          "An item declared reach=deploy acts on a running system and is never delegated.",

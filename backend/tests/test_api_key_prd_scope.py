@@ -328,3 +328,171 @@ def test_rotating_a_prd_key_keeps_its_prd(client, auth, drain, mine, db):
     r = client.post(f"/api/api-keys/{drain['id']}/rotate", json={}, headers=auth)
     assert r.status_code == 201, r.text
     assert db.get(ApiKey, r.json()["id"]).prd_id == mine["id"]
+
+
+# ---- clause 1, the write side: no writing or re-homing another PRD's item (bounce) ---------
+# Bounding claims is not enough on its own: `update_item(prd_id=<its own PRD>)` re-homed any
+# item into the key's PRD and `claim_next` then handed it out. Each write tool is refused on an
+# item outside the PRD with the key's named rule, next to a control on an item inside it.
+
+PRD_RULE = "keys.prd_limited"
+
+
+def _refused_by_prd(res, mine) -> dict:
+    err = _err(res)
+    assert err.get("rule_id") == PRD_RULE, err
+    assert mine["id"] in err["message"], err
+    return err
+
+
+def test_a_prd_key_cannot_rehome_another_prds_item_into_its_own(
+        client, auth, drain, mine, theirs, owner_key, db):
+    """The reviewer's two-call route: re-home, then claim_next. It ends with nothing claimed."""
+    outside = _item(client, owner_key, "other PRD's work", ["ops/deploy.sh"], prd_id=theirs["id"])
+    agent = _agent(client, drain["plaintext"], "drain-a")
+
+    for extra in ({}, {"agent_id": agent}):
+        _refused_by_prd(_mcp(client, drain["plaintext"], "update_item",
+                             {"id": outside, "prd_id": mine["id"], **extra}), mine)
+    assert _stored(db, outside).prd_id == theirs["id"]
+    got = _ok(_mcp(client, drain["plaintext"], "claim_next", {"agent_id": agent}))
+    assert got["claimed"] is False, got
+    assert _stored(db, outside).claimed_by is None
+
+    # Nor can it move its own PRD's item out to another PRD.
+    inside = _item(client, owner_key, "the drain's work", ["svc/a.py"], prd_id=mine["id"])
+    _refused_by_prd(_mcp(client, drain["plaintext"], "update_item",
+                         {"id": inside, "prd_id": theirs["id"], "agent_id": agent}), mine)
+    assert _stored(db, inside).prd_id == mine["id"]
+
+    # Control: the owner's unlimited key re-homes it, and the drain then claims it.
+    _ok(_mcp(client, owner_key, "update_item", {"id": outside, "prd_id": mine["id"]}))
+    assert _stored(db, outside).prd_id == mine["id"]
+
+
+def test_a_prd_key_cannot_update_an_item_outside_its_prd(
+        client, auth, drain, mine, theirs, owner_key, db):
+    outside = _item(client, owner_key, "other PRD's work", ["ops/deploy.sh"], prd_id=theirs["id"])
+    inside = _item(client, owner_key, "the drain's work", ["svc/a.py"], prd_id=mine["id"])
+    agent = _agent(client, drain["plaintext"], "drain-a")
+
+    for extra in ({}, {"agent_id": agent}):
+        _refused_by_prd(_mcp(client, drain["plaintext"], "update_item",
+                             {"id": outside, "title": "renamed", "status": "in_progress",
+                              **extra}), mine)
+    row = _stored(db, outside)
+    assert row.title == "other PRD's work" and row.status == "next"
+
+    # Control: its own PRD's item, including naming its own PRD, goes through.
+    _ok(_mcp(client, drain["plaintext"], "update_item",
+             {"id": inside, "title": "renamed", "prd_id": mine["id"], "agent_id": agent}))
+    assert _stored(db, inside).title == "renamed"
+
+
+def test_a_prd_key_cannot_heartbeat_an_item_outside_its_prd(
+        client, auth, drain, mine, theirs, owner_key, db):
+    outside = _item(client, owner_key, "other PRD's work", ["ops/deploy.sh"], prd_id=theirs["id"])
+    holder = _agent(client, owner_key, "laptop session")
+    _ok(_mcp(client, owner_key, "claim_next", {"agent_id": holder}))
+    agent = _agent(client, drain["plaintext"], "drain-a")
+
+    _refused_by_prd(_mcp(client, drain["plaintext"], "heartbeat",
+                         {"agent_id": agent, "id": outside}), mine)
+    assert _stored(db, outside).claimed_by == holder
+
+    # Control: heartbeating its own claimed item, and a bare presence heartbeat, go through.
+    inside = _item(client, owner_key, "the drain's work", ["svc/a.py"], prd_id=mine["id"])
+    assert _ok(_mcp(client, drain["plaintext"], "claim_next", {"agent_id": agent}))["claimed"]
+    _ok(_mcp(client, drain["plaintext"], "heartbeat", {"agent_id": agent, "id": inside}))
+    _ok(_mcp(client, drain["plaintext"], "heartbeat", {"agent_id": agent}))
+
+
+def test_a_prd_key_cannot_release_an_item_outside_its_prd(
+        client, auth, drain, mine, theirs, owner_key, db):
+    outside = _item(client, owner_key, "other PRD's work", ["ops/deploy.sh"], prd_id=theirs["id"])
+    holder = _agent(client, owner_key, "laptop session")
+    _ok(_mcp(client, owner_key, "claim_next", {"agent_id": holder}))
+    agent = _agent(client, drain["plaintext"], "drain-a")
+
+    for extra in ({}, {"agent_id": agent}):
+        _refused_by_prd(_mcp(client, drain["plaintext"], "release_item",
+                             {"id": outside, **extra}), mine)
+    assert _stored(db, outside).claimed_by == holder
+
+    # Control: it releases its own PRD's item that it holds.
+    inside = _item(client, owner_key, "the drain's work", ["svc/a.py"], prd_id=mine["id"])
+    assert _ok(_mcp(client, drain["plaintext"], "claim_next", {"agent_id": agent}))["claimed"]
+    _ok(_mcp(client, drain["plaintext"], "release_item", {"id": inside, "agent_id": agent}))
+    assert _stored(db, inside).claimed_by is None
+
+
+def test_a_prd_key_cannot_link_an_item_outside_its_prd_at_either_end(
+        client, auth, drain, mine, theirs, owner_key, db):
+    outside = _item(client, owner_key, "other PRD's work", ["ops/deploy.sh"], prd_id=theirs["id"])
+    inside = _item(client, owner_key, "the drain's work", ["svc/a.py"], prd_id=mine["id"])
+    other_inside = _item(client, owner_key, "more drain work", ["svc/b.py"], prd_id=mine["id"])
+    agent = _agent(client, drain["plaintext"], "drain-a")
+
+    for a, b in ((inside, outside), (outside, inside)):
+        _refused_by_prd(_mcp(client, drain["plaintext"], "link_items",
+                             {"a": a, "b": b, "type": "dependency", "agent_id": agent}), mine)
+
+    # Control: both ends inside its PRD.
+    got = _ok(_mcp(client, drain["plaintext"], "link_items",
+                   {"a": inside, "b": other_inside, "type": "dependency", "agent_id": agent}))
+    assert got["type"] == "dependency"
+
+
+def test_a_prd_key_cannot_bounce_an_item_outside_its_prd(
+        client, auth, drain, mine, theirs, owner_key, db):
+    builder = _agent(client, owner_key, "builder")
+    outside = _item(client, owner_key, "other PRD's work", ["ops/deploy.sh"], prd_id=theirs["id"])
+    _to_review(db, outside, builder)
+    agent = _agent(client, drain["plaintext"], "drain-a")
+
+    for extra in ({}, {"agent_id": agent}):
+        _refused_by_prd(_mcp(client, drain["plaintext"], "bounce",
+                             {"id": outside, "reason": "planted", **extra}), mine)
+    assert _stored(db, outside).status == "review"
+
+    # Control: it bounces its own PRD's review item that it claimed for review.
+    inside = _item(client, owner_key, "the drain's work", ["svc/a.py"], prd_id=mine["id"])
+    _to_review(db, inside, builder)
+    assert _ok(_mcp(client, drain["plaintext"], "claim_review", {"agent_id": agent}))["claimed"]
+    _ok(_mcp(client, drain["plaintext"], "bounce",
+             {"id": inside, "reason": "missing a test", "agent_id": agent}))
+    assert _stored(db, inside).status != "review"
+
+
+def test_a_prd_key_cannot_sign_off_an_item_outside_its_prd(
+        client, auth, drain, mine, theirs, owner_key, db):
+    builder = _agent(client, owner_key, "builder")
+    outside = _item(client, owner_key, "other PRD's work", ["ops/deploy.sh"], prd_id=theirs["id"])
+    _to_review(db, outside, builder)
+    agent = _agent(client, drain["plaintext"], "drain-a")
+
+    for extra in ({}, {"agent_id": agent}):
+        _refused_by_prd(_mcp(client, drain["plaintext"], "sign_off",
+                             {"id": outside, **extra}), mine)
+    row = _stored(db, outside)
+    assert row.status == "review" and row.reviewed_by is None
+
+    # Control: on its own PRD's review item the PRD bound does not refuse; whatever the
+    # completion gate then says, it is not this rule.
+    inside = _item(client, owner_key, "the drain's work", ["svc/a.py"], prd_id=mine["id"])
+    _to_review(db, inside, builder)
+    assert _ok(_mcp(client, drain["plaintext"], "claim_review", {"agent_id": agent}))["claimed"]
+    res = _mcp(client, drain["plaintext"], "sign_off", {"id": inside, "agent_id": agent})
+    if res.get("isError"):
+        assert res["structuredContent"]["error"].get("rule_id") != PRD_RULE, res
+
+
+def test_an_unlimited_key_still_writes_any_prds_item(client, auth, theirs, mine, owner_key, db):
+    """The bound is the key's, not the tools': an ordinary key is untouched by it."""
+    outside = _item(client, owner_key, "other PRD's work", ["ops/deploy.sh"], prd_id=theirs["id"])
+    inside = _item(client, owner_key, "the drain's work", ["svc/a.py"], prd_id=mine["id"])
+    agent = _agent(client, owner_key, "laptop session")
+    _ok(_mcp(client, owner_key, "update_item", {"id": outside, "title": "renamed"}))
+    _ok(_mcp(client, owner_key, "link_items",
+             {"a": inside, "b": outside, "type": "dependency", "agent_id": agent}))
+    assert _ok(_mcp(client, owner_key, "claim_next", {"agent_id": agent}))["claimed"]

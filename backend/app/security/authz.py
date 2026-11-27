@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.errors import Refused
-from app.models import Agent, ApiKey, Membership, OrgMembership, Project
+from app.models import Agent, ApiKey, Item, Membership, OrgMembership, Project
 
 
 class Forbidden(Exception):
@@ -243,7 +243,8 @@ def agent_key_prd(db: Session, agent_id: str | None) -> str:
     return (key.prd_id or "") if key is not None else ""
 
 
-def require_prd_key_caller(db: Session, key: ApiKey, tool: str, agent_id) -> None:
+def require_prd_key_caller(db: Session, key: ApiKey, tool: str, agent_id,
+                           args: dict | None = None) -> None:
     """Refuse a PRD-limited key acting as an agent that is not its own.
 
     Without this the bound is a promise: `caller_identity` takes `agent_id` as given, so the
@@ -264,3 +265,50 @@ def require_prd_key_caller(db: Session, key: ApiKey, tool: str, agent_id) -> Non
             403, f"api key {key.name!r} is limited to PRD {key.prd_id}; {tool} needs the "
             "agent_id this key registered", rule_id=PRD_KEY_RULE,
             hint="register_agent with this key and pass the agent_id it returns")
+    require_prd_key_item_write(db, key, tool, args or {})
+
+
+# Item-targeting writes and the args naming the item(s) they write. Bounding claims alone is
+# not enough: with any of these a PRD-limited key could act on another PRD's item directly,
+# and `update_item(prd_id=<its own PRD>)` would re-home that item so `claim_next` hands it
+# out (the reviewer's two-call escape on GRPH-1973).
+PRD_KEY_ITEM_WRITES: dict[str, tuple[str, ...]] = {
+    "update_item": ("id",),
+    "bounce": ("id",),
+    "sign_off": ("id",),
+    "release_item": ("id",),
+    "heartbeat": ("id",),
+    "link_items": ("a", "b"),
+}
+
+
+def require_prd_key_item_write(db: Session, key: ApiKey, tool: str, args: dict) -> None:
+    """Refuse a PRD-limited key writing an item outside its PRD, or moving one out of it.
+
+    An unlimited key returns at once. An arg that names no item (a PRD or request end of a
+    link, a heartbeat with no `id`) is not this check's to judge; the tool's own path is.
+    """
+    if not key.prd_id or tool not in PRD_KEY_ITEM_WRITES:
+        return
+    from app.services import keys as keys_svc
+
+    for arg in PRD_KEY_ITEM_WRITES[tool]:
+        ref = args.get(arg)
+        if not isinstance(ref, str) or not ref:
+            continue
+        item = db.get(Item, keys_svc.resolve_item(db, ref) or ref)
+        if item is None:
+            continue
+        if item.prd_id != key.prd_id:
+            raise Refused(
+                403, f"api key {key.name!r} is limited to PRD {key.prd_id}; item {ref!r} is "
+                f"outside it, so {tool} is refused", rule_id=PRD_KEY_RULE,
+                hint="this key writes only its own PRD's items")
+    if tool == "update_item" and "prd_id" in args:
+        asked = args.get("prd_id")
+        resolved = (keys_svc.resolve_prd(db, asked) or asked) if isinstance(asked, str) else asked
+        if resolved != key.prd_id:
+            raise Refused(
+                403, f"api key {key.name!r} is limited to PRD {key.prd_id} and cannot move an "
+                f"item to PRD {asked!r}", rule_id=PRD_KEY_RULE,
+                hint="this key cannot re-home items; ask the PRD's owner")

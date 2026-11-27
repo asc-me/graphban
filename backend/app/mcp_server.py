@@ -2993,8 +2993,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             "mint a key with the 'write' scope or use a read-only tool"
         )
     # A key limited to one PRD acts only as its own agents (GRPH-1973); the PRD bound itself
-    # is read by every claim path through `items.seat_scope`.
-    authz.require_prd_key_caller(db, key, name, args.get("agent_id"))
+    # is read by every claim path through `items.seat_scope`, and it writes only that PRD's
+    # items and never re-homes one (GRPH-1973 bounce).
+    authz.require_prd_key_caller(db, key, name, args.get("agent_id"), args)
     # The `gate` scope (GRPH-541). An `attestation` receipt is the proof the completion gate
     # reads, so writing one is a strictly higher authority than writing an item — an agent
     # that could mint its own attestation could certify its own work, which is the whole
