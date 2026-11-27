@@ -160,6 +160,9 @@ def test_report_graphban_issue_emits_every_key_it_declares(client, auth, monkeyp
         def json(self): return {"request": {"id": "R-7", "title": "x"}, "duplicates": []}
 
     monkeypatch.setattr(up_svc.httpx, "post", lambda *a, **k: _Resp())
+    # The default URL is the hosted intake, which refuses a report with no token before
+    # sending it (GRPH-1982); a token makes this the success path the schema describes.
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "tok_test")
     key = client.post("/api/api-keys", json={"name": "reporter"}, headers=auth).json()
     r = client.post("/api/mcp", headers={"X-API-Key": key["plaintext"]},
                     json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -187,6 +190,9 @@ def test_a_call_through_an_alias_is_recorded_under_the_canonical_name(client, au
         def json(self): return {"request": {"id": "R-9", "title": "x"}, "duplicates": []}
 
     monkeypatch.setattr(up_svc.httpx, "post", lambda *a, **k: _Resp())
+    # The default URL is the hosted intake, which refuses a report with no token before
+    # sending it (GRPH-1982); a token makes this the success path the schema describes.
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "tok_test")
     key = client.post("/api/api-keys", json={"name": "aliased"}, headers=auth).json()
     client.post("/api/mcp", headers={"X-API-Key": key["plaintext"]},
                 json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",

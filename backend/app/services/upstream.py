@@ -8,17 +8,71 @@ telemetry — and is disabled by leaving `upstream_feedback_url` blank.
 """
 from __future__ import annotations
 
+import logging
 from urllib.parse import urlparse
 
 import httpx
 
+from app import errors
 from app.config import settings
 from app.services.requests import REQUEST_TYPES
 from app.version import __version__
 
+logger = logging.getLogger("graphban.upstream")
+
+
+#: The intake `upstream_feedback_url` points at by default. It runs in hosted mode, which
+#: resolves the project from the share token alone, so a report sent there without
+#: UPSTREAM_FEEDBACK_TOKEN 404s and is lost (GRPH-1982).
+HOSTED_INTAKE_HOSTS = frozenset({"feedback.asc-me.dev"})
+
+#: The named reason a report is refused before it is sent. Stable: callers branch on it.
+UNCONFIGURED = "upstream_feedback_unconfigured"
+
+
+class UpstreamUnconfigured(errors.Unavailable, ValueError):
+    """The report was NOT sent: this server lacks what the upstream needs to accept it.
+
+    `Unavailable` so the MCP dispatcher reports it under its own code and an agent knows
+    retrying will not help; `ValueError` so the REST route keeps answering 400 for it.
+    """
+
+    code = UNCONFIGURED
+
+
+def token_required() -> bool:
+    if settings.upstream_feedback_token_required is not None:
+        return settings.upstream_feedback_token_required
+    return target_host() in HOSTED_INTAKE_HOSTS
+
+
+def unconfigured_reason() -> str | None:
+    """Why a report cannot reach upstream from this server, or None when it can.
+
+    Names the missing SETTING, never a value — this is read by `/health`, which is
+    unauthenticated, and by the startup log.
+    """
+    if not settings.upstream_feedback_url:
+        return "UPSTREAM_FEEDBACK_URL is blank (upstream reporting is disabled)"
+    if token_required() and not settings.upstream_feedback_token:
+        return (f"UPSTREAM_FEEDBACK_TOKEN is unset, and the hosted intake at {target_host()} "
+                "accepts no report without it")
+    return None
+
+
+def warn_if_unconfigured() -> str | None:
+    """Startup check: log why reports cannot be sent, so the gap shows at boot and not as
+    the first lost report. A blank URL is a deliberate opt-out and stays quiet. Names the
+    setting only — never a token value."""
+    why = unconfigured_reason()
+    if why and settings.upstream_feedback_url:
+        logger.warning("upstream issue reporting is off: %s", why)
+        return why
+    return None
+
 
 def report_enabled() -> bool:
-    return bool(settings.upstream_feedback_url)
+    return unconfigured_reason() is None
 
 
 def target_host() -> str:
@@ -54,8 +108,15 @@ def submit_upstream(*, type_: str, title: str, detail: str = "", source: str = "
     ({request, duplicates}). Raises ValueError on config/validation problems and lets
     httpx errors propagate for the caller to translate."""
     url = settings.upstream_feedback_url
-    if not url:
-        raise ValueError("upstream feedback is not configured")
+    reason = unconfigured_reason()
+    if reason:
+        # Refuse before the POST: sending it would only collect the intake's 404, and the
+        # caller must learn the report was not sent rather than that it "failed upstream".
+        raise UpstreamUnconfigured(
+            f"{UNCONFIGURED}: the report was not sent — {reason}",
+            hint="configuration, not transient — retrying will not help; the server's "
+                 "operator must set it",
+        )
     title = (title or "").strip()
     if not title:
         raise ValueError("title is required")
