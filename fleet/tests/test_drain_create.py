@@ -32,6 +32,10 @@ from gbfleet import drain
 from gbfleet import service
 from gbfleet.cli import main
 
+#: The fake first run executes a `/bin/sh` stub and the units are launchd / systemd, so the
+#: end-to-end tests are POSIX-only; the session and atomic-write tests run everywhere.
+posix_only = pytest.mark.skipif(os.name == "nt", reason="launchd / systemd units and a /bin/sh stub")
+
 PRD = "GRPH-P96"
 NAME = "grph-p96"
 LIKE = "y"
@@ -218,6 +222,7 @@ def _logs() -> list[Path]:
 
 # ---- acceptance ---------------------------------------------------------------------------
 
+@posix_only
 def test_like_produces_checkout_owner_only_new_key_and_the_dry_runs_arguments(world, capsys):
     """Clause 1. Checkout, a 600 env file with a key that is not Y's, and an installed service
     whose `until` arguments equal the dry run's — read back from the unit on disk."""
@@ -248,6 +253,7 @@ def test_like_produces_checkout_owner_only_new_key_and_the_dry_runs_arguments(wo
     assert f"key: minted (key_fake01), written to {env}" in out
 
 
+@posix_only
 def test_the_key_appears_in_no_output_no_unit_and_no_first_run_log(world, capsys):
     """Clause 2. Grep the fake key everywhere it could leak. The first-run log must show the
     key REACHED the process (sourced from the env file) without carrying its value."""
@@ -264,6 +270,7 @@ def test_the_key_appears_in_no_output_no_unit_and_no_first_run_log(world, capsys
     assert "--prd GRPH-P96" in logs[0]
 
 
+@posix_only
 def test_dry_run_writes_no_env_file_mints_no_key_and_installs_nothing(world, capsys):
     """Clause 3."""
     code, out, err = _create(capsys, "--like", LIKE, "--dry-run")
@@ -276,6 +283,7 @@ def test_dry_run_writes_no_env_file_mints_no_key_and_installs_nothing(world, cap
     assert not _clone(world).exists()
 
 
+@posix_only
 def test_no_gban_session_prints_login_and_writes_nothing(world, capsys, monkeypatch):
     """Clause 4, through the REAL session reader with an empty $GRAPHBAN_HOME."""
     monkeypatch.setattr(drain, "open_ledger", client_mod.LedgerSession.open)
@@ -288,6 +296,7 @@ def test_no_gban_session_prints_login_and_writes_nothing(world, capsys, monkeypa
     assert world["fake"].calls == []
 
 
+@posix_only
 def test_a_session_the_server_will_not_renew_also_writes_nothing(world, capsys, monkeypatch):
     """Clause 4: stored but refused (401) is the same state as none."""
     gb = Path(os.environ["GRAPHBAN_HOME"])
@@ -310,6 +319,7 @@ def test_a_session_the_server_will_not_renew_also_writes_nothing(world, capsys, 
     assert not service.unit_path_for(NAME, world["kind"]).exists()
 
 
+@posix_only
 def test_a_checkout_create_made_carries_the_marker(world, capsys):
     """Clause 5, first half."""
     code, _out, err = _create(capsys, "--like", LIKE)
@@ -318,6 +328,7 @@ def test_a_checkout_create_made_carries_the_marker(world, capsys):
     assert marker.read_text(encoding="utf-8") == f"{NAME}\n"
 
 
+@posix_only
 def test_a_repo_the_person_supplied_gets_no_marker(world, capsys):
     """Clause 5, second half."""
     mine = world["tmp"] / "mine"
@@ -347,6 +358,7 @@ def test_an_existing_path_that_is_not_a_clean_checkout_of_the_remote_is_refused(
     assert not service.env_path_for(NAME).exists()
 
 
+@posix_only
 def test_like_flags_are_copied_and_explicit_flags_override_them(world, capsys):
     code, out, err = _create(capsys, "--like", LIKE, "--dry-run", "--adapter", "codex",
                              "--max-workers", "5", "--tier", "frontier=claude:opus", "--merge")
@@ -362,6 +374,7 @@ def test_like_flags_are_copied_and_explicit_flags_override_them(world, capsys):
     assert "--merge" in args and args.count("--repo") == 1
 
 
+@posix_only
 def test_an_existing_drain_name_is_never_overwritten(world, capsys):
     code, _out, err = _create(capsys, "--like", LIKE, "--name", LIKE)
     assert code == drain.EXIT_REFUSED and "already exists" in err
@@ -371,6 +384,7 @@ def test_an_existing_drain_name_is_never_overwritten(world, capsys):
 
 # ---- unit rendering through the host() seam (clause 6) ------------------------------------
 
+@posix_only
 def test_both_unit_kinds_render_from_the_host_seam_and_keep_the_key_out(world, capsys):
     """launchd → plist that sources the env file; systemd → `EnvironmentFile=`."""
     code, _out, err = _create(capsys, "--like", LIKE)

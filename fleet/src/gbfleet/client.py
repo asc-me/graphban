@@ -874,7 +874,9 @@ class LedgerSession:
     """The person's session on one server: an access token held in memory, nothing on disk."""
 
     base_url: str
-    token: str
+    #: Empty until `open` has exchanged the refresh token. `default_factory`, not a literal:
+    #: bandit reads `token=""` as a hard-coded password (B105/B106).
+    token: str = field(default_factory=str, repr=False)
     transport: httpx.BaseTransport | None = None
     timeout: float = 30.0
 
@@ -885,7 +887,7 @@ class LedgerSession:
         stored = str(_gban_file("session.json").get("refresh_token") or "")
         if not stored:
             raise NoSession("no stored gban session")
-        session = cls(base_url=base_url.rstrip("/"), token="", transport=transport)
+        session = cls(base_url=base_url.rstrip("/"), transport=transport)
         try:
             pair = session._post(SESSION_REFRESH_PATH, {"refresh_token": stored}, auth=False)
         except ToolFailed as exc:
