@@ -2059,6 +2059,33 @@ def clear_refusals(db: Session, agent_id: str | None) -> None:
     db.commit()
 
 
+def _release_to_open(db: Session, item: Item, status: str = "next") -> str:
+    """Move a released item to `status` without leaving a live blocker on it (GRPH-1970).
+
+    The fleet's release paths write `status` directly, so they never reach GRPH-1961's
+    `reconcile_blocker_status`, and an `in_progress` row may carry a blocker. Landing that
+    row on `backlog`/`next` as-is is the state GRPH-1961 exists to prevent: unready, with
+    no `blocked` status to show it. The same rule as leaving `blocked` applies: while the
+    blocker waits on an open item or a typed wait the row goes `blocked` instead; otherwise
+    the blocker clears and its text is kept as a note. Mutates without committing.
+    """
+    current = (item.blocker or "").strip()
+    if not current:
+        item.status = status
+        return status
+    if items_svc.blocker_open_waits(db, item, current):
+        item.status = "blocked"
+        return "blocked"
+    left = item.status
+    item.blocker = ""
+    item.evidence = items_svc.append_evidence(item.evidence, [{
+        "kind": "note",
+        "detail": f"blocker cleared on leaving {left}: {current}",
+    }])
+    item.status = status
+    return status
+
+
 def quarantine(db: Session, agent_id: str) -> dict:
     """Stop an agent that has stopped listening: release its work and take it off the fleet.
 
@@ -2085,7 +2112,7 @@ def quarantine(db: Session, agent_id: str) -> dict:
         it.claimed_at = None
         it.assignee = ""
         if it.status == "in_progress":
-            it.status = "next"
+            _release_to_open(db, it)
         released.append(it.id)
     reservations = db.scalars(
         select(AreaReservation).where(AreaReservation.agent_id == agent.id)).all()
@@ -4098,7 +4125,7 @@ def reopen_on_red(db: Session, item: Item, arrived: list,
               f"{commit[:12]} — failing check: {check}; run: {run}")
     release_reservations(db, item_id=item.id)
     author = item.built_by
-    item.status = "next"
+    _release_to_open(db, item)
     item.claimed_by = None
     item.claimed_at = None
     item.assignee = ""
@@ -6549,7 +6576,7 @@ def end_wave(db: Session, *, project_id: str | None, wave: str | None = None) ->
             it.claimed_at = None
             it.assignee = ""
             if it.status == "in_progress":
-                it.status = "next"
+                _release_to_open(db, it)
             released.append(it.id)
         reservations += len(db.scalars(
             select(AreaReservation).where(AreaReservation.agent_id == a.id)).all())
@@ -6622,7 +6649,7 @@ def retire_wave(db: Session, *, minter_id: str, project_id: str | None,
             it.claimed_at = None
             it.assignee = ""
             if it.status == "in_progress":
-                it.status = "next"
+                _release_to_open(db, it)
             released.append(it.id)
         for row in db.scalars(
                 select(AreaReservation).where(AreaReservation.agent_id == a.id)).all():
@@ -7439,7 +7466,7 @@ def _send_back_behind(db: Session, item: Item, *, branch: str, reason: str) -> N
     if item.status not in ("in_progress", "review"):
         return
     release_reservations(db, item_id=item.id)
-    item.status = "next"
+    _release_to_open(db, item)
     item.claimed_by = None
     item.claimed_at = None
     item.assignee = ""
