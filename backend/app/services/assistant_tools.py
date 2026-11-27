@@ -141,9 +141,41 @@ def _decompose_prd(ctx: ToolContext, inp: dict) -> str:
     # dispatch, which marks is_error.
     result = prd_svc.decompose(ctx.db, prd, create=True, include_prose=bool(inp.get("include_prose")))
     created = result.get("created", [])
+    leftover = _decompose_leftovers(result)
     if not created:
+        if leftover:
+            # GRPH-2005: nothing filed is not "fully tracked" when decompose said some
+            # acceptance landed on no item — that is the absence-as-clean hole.
+            return (f"{prd.id}: no new tasks created, but the PRD is NOT fully tracked — "
+                    + "; ".join(leftover))
         return f"{prd.id}: no uncovered sections to decompose (already fully tracked)"
-    return f"decomposed {prd.id}: created {len(created)} task(s): {', '.join(created)}"
+    reply = f"decomposed {prd.id}: created {len(created)} task(s): {', '.join(created)}"
+    if leftover:
+        reply += " — left over: " + "; ".join(leftover)
+    return reply
+
+
+def _decompose_leftovers(result: dict) -> list[str]:
+    """Each of decompose's answers about acceptance it did not file, rendered for a person.
+
+    `unassigned_clauses` maps to no section; `unfiled_section_clauses` names a section no
+    call will file (GRPH-2004); `unfiled_pieces` is a split piece whose clauses reached no
+    item. An empty (or null) answer adds nothing."""
+    out: list[str] = []
+    unassigned = result.get("unassigned_clauses") or []
+    if unassigned:
+        out.append(f"{len(unassigned)} acceptance clause(s) map to no section: "
+                   + " | ".join(unassigned))
+    unfiled = result.get("unfiled_section_clauses") or []
+    if unfiled:
+        out.append(f"{len(unfiled)} acceptance clause(s) name a section no task will be filed for: "
+                   + " | ".join(f"{u['clause']} ({', '.join(u.get('sections') or [])})"
+                                for u in unfiled))
+    pieces = result.get("unfiled_pieces") or []
+    if pieces:
+        out.append(f"{len(pieces)} split piece(s) reached no task: "
+                   + " | ".join(f"{p['section']} / {p['heading']}" for p in pieces))
+    return out
 
 
 def _thread_history(ctx: ToolContext) -> list[dict]:
