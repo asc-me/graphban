@@ -27,7 +27,9 @@ Neither prints a key value. The server keeps only a hash, so the key's id is rec
 the env file (`<name>.key-id`, not a secret). **A key is revoked only by that recorded id,
 never by a guess**: a drain without the record (one `create` did not make, often holding the
 person's own `gban setup` key) has its key left alive, and both commands list the person's
-live keys by id and label and send them to Settings to revoke the right one.
+live keys by id and label and send them to Settings to revoke the right one. That case exits
+`EXIT_MANUAL_REVOKE` (3) and prints `manual_revoke_needed: <ids, comma-separated>`; every
+other success exits 0.
 
 **Preflight refuses with a named reason, before anything is cut, minted or written**
 (GRPH-1975). `draft` refuses an unsupported platform, a service or env file that already
@@ -73,6 +75,12 @@ APPROVED = "approved"
 #: Exit codes. 3 matches `gban`'s EXIT_NO_SESSION.
 EXIT_REFUSED = 2
 EXIT_NO_SESSION = 3
+#: `remove` / `rekey` did their work but left an old key alive that only the person can name.
+#: The same number as EXIT_NO_SESSION (the item's spec); a script tells them apart by the
+#: `manual_revoke_needed:` line, which only this exit prints.
+EXIT_MANUAL_REVOKE = 3
+#: The machine-readable line printed with EXIT_MANUAL_REVOKE: candidate key ids, comma-separated.
+MANUAL_REVOKE_LINE = "manual_revoke_needed:"
 
 
 class Refused(RuntimeError):
@@ -639,6 +647,8 @@ def print_left_alive(lookup: KeyLookup, out: TextIO) -> None:
             print(f"    {key_id}  {label or '(no label)'}", file=out)
     print("  Revoke the one this drain used in Settings > API keys, if no one else uses it "
           "(it may be your `gban setup` key).", file=out)
+    print(f"{MANUAL_REVOKE_LINE} {','.join(key_id for key_id, _ in lookup.candidates)}",
+          file=out)
 
 
 #: The only ignored paths `remove` treats as disposable: regenerable caches and environments.
@@ -665,13 +675,24 @@ def checkout_verdict(repo: Path, name: str) -> str:
     has no linked worktree, no uncommitted change, no untracked file (whatever
     `status.showUntrackedFiles` says), no ignored file outside `DISPOSABLE_DIRS` /
     `DISPOSABLE_SUFFIXES`, no stash, no tag on an unpushed commit, and no commit on any ref
-    that no remote-tracking ref reaches. Anything unreadable is a keep, never a delete."""
+    that no remote-tracking ref reaches. Anything unreadable is a keep, never a delete.
+
+    Also kept, without trying to prove them clean: a path or marker reached through a symlink,
+    a git dir outside the checkout, any submodule, a tracked file hidden by
+    `--assume-unchanged` / `--skip-worktree`, and a commit only a reflog reaches."""
+    if _through_symlink(repo):
+        return f"its path resolves through a symlink (to {os.path.realpath(repo)})"
     if _toplevel(repo) != repo.resolve():
         return "it is not the top of a git checkout"
     code, git_dir = _git(repo, "rev-parse", "--absolute-git-dir")
     if code != 0:
         return f"cannot find its git dir: {git_dir}"
+    if Path(os.path.realpath(git_dir)) != repo.resolve() / ".git" or _through_symlink(
+            repo / ".git"):
+        return f"its git dir {git_dir} is not a plain .git directory inside it"
     marker = Path(git_dir) / MARKER
+    if _through_symlink(marker):
+        return f"its .git/{MARKER} marker is a symlink (to {os.path.realpath(marker)})"
     try:
         owner = marker.read_text(encoding="utf-8").strip()
     except FileNotFoundError:
@@ -689,6 +710,20 @@ def checkout_verdict(repo: Path, name: str) -> str:
     linked = [t for t in trees if Path(t).resolve() != repo.resolve()]
     if linked:
         return f"it has linked worktree(s): {_named(linked)}"
+    # A submodule keeps its commits in .git/modules/<sub>, which the superproject's checks
+    # cannot see. Not proved clean: any sign of one keeps the checkout.
+    subs = _submodules(repo, Path(git_dir))
+    if subs:
+        return f"it has submodule(s): {_named(subs)}"
+    # An edit `git status` is told not to see is still an edit.
+    code, tagged = _git(repo, "ls-files", "-v", "-z")
+    if code != 0:
+        return f"cannot list its tracked files: {tagged}"
+    hidden = [e[2:] for e in tagged.split("\0")
+              if len(e) > 2 and (e[0].islower() or e[0] == "S")]
+    if hidden:
+        return ("it has tracked file(s) marked --assume-unchanged or --skip-worktree, so "
+                f"their edits are hidden: {_named(hidden)}")
     # Explicit, so the repo's status.showUntrackedFiles cannot hide an untracked file.
     code, dirty = _git(repo, "status", "--porcelain", "--untracked-files=all")
     if code != 0:
@@ -726,7 +761,46 @@ def checkout_verdict(repo: Path, name: str) -> str:
         return f"cannot tell whether it has unpushed commits: {ahead}"
     if ahead:
         return f"it has {len(ahead.splitlines())} unpushed commit(s)"
+    # A commit only a reflog reaches (a `reset --hard` away from a branch) is still work.
+    code, ahead = _git(repo, "rev-list", "--reflog", "--all", "--not", "--remotes")
+    if code != 0:
+        return f"cannot read its reflogs: {ahead}"
+    if ahead:
+        return (f"it has {len(ahead.splitlines())} commit(s) only a reflog reaches, on no "
+                "remote")
     return ""
+
+
+def _through_symlink(path: Path) -> bool:
+    """True when `path`, or any directory above it, is a symlink. Never follows it to act."""
+    return os.path.realpath(path) != os.path.abspath(path)
+
+
+def _submodules(repo: Path, git_dir: Path) -> list[str]:
+    """Every sign of a submodule: `.gitmodules`, anything under `.git/modules/`, a gitlink in
+    the index. Names them when it can; an unreadable sign still counts."""
+    found: list[str] = []
+    gitmodules = repo / ".gitmodules"
+    if gitmodules.exists() or gitmodules.is_symlink():
+        code, paths = _git(repo, "config", "-f", ".gitmodules", "--get-regexp",
+                           r"^submodule\..*\.path$")
+        named = [line.split(" ", 1)[1] for line in paths.splitlines() if " " in line] \
+            if code == 0 else []
+        found += named or [".gitmodules"]
+    modules = git_dir / "modules"
+    try:
+        found += [f".git/modules/{p.name}" for p in sorted(modules.iterdir())]
+    except FileNotFoundError:
+        pass
+    except OSError:
+        found.append(".git/modules")
+    code, staged = _git(repo, "ls-files", "-s")
+    if code != 0:
+        found.append("(cannot read its index)")
+    else:
+        found += [line.split("\t", 1)[1] for line in staged.splitlines()
+                  if line.startswith("160000 ") and "\t" in line]
+    return list(dict.fromkeys(found))
 
 
 def _open(server: str, verb: str, err: TextIO) -> tuple[object | None, int]:
@@ -771,7 +845,7 @@ def remove(name: str, *, out: TextIO | None = None, err: TextIO | None = None) -
         lookup = resolve_key_id(ledger, name, key)
     key = ""
 
-    failed = False
+    failed = manual = False
     try:
         removed = service.uninstall(name, kind=kind)
     except service.Refused as exc:
@@ -794,6 +868,7 @@ def remove(name: str, *, out: TextIO | None = None, err: TextIO | None = None) -
                       "Revoke it in Settings", file=err)
         else:
             print_left_alive(lookup, out)
+            manual = True
     else:
         print(f"key: {env} held no {service.API_KEY_ENV}, so there was none to revoke",
               file=out)
@@ -812,9 +887,16 @@ def remove(name: str, *, out: TextIO | None = None, err: TextIO | None = None) -
         if verdict:
             print(f"checkout: kept {path}: {verdict}", file=out)
         else:
-            shutil.rmtree(path)
-            print(f"checkout: deleted {path}", file=out)
-    return 1 if failed else 0
+            try:
+                shutil.rmtree(path)
+            except OSError as exc:
+                print(f"checkout: kept what is left of {path}: deleting it failed: {exc}",
+                      file=out)
+            else:
+                print(f"checkout: deleted {path}", file=out)
+    if failed:
+        return 1
+    return EXIT_MANUAL_REVOKE if manual else 0
 
 
 def _env_plan(name: str, kind: str, env: Path) -> service.Plan:
@@ -942,7 +1024,7 @@ def rekey(name: str, *, out: TextIO | None = None, err: TextIO | None = None) ->
         return 0
     if not lookup.key_id:
         print_left_alive(lookup, out)
-        return 0
+        return EXIT_MANUAL_REVOKE
     old_id = lookup.key_id
     try:
         ledger.revoke_key(old_id)  # type: ignore[attr-defined]

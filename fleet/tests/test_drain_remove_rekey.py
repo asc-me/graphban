@@ -375,7 +375,7 @@ def test_rekey_of_a_shared_key_drain_leaves_the_others_running_and_names_them(wo
     assert _cli(capsys, "rekey", "b")[0] == 0
     assert ledger.call(shared)
     code, out, err = _cli(capsys, "rekey", "c")
-    assert code == 0, err
+    assert code == drain.EXIT_MANUAL_REVOKE, err
     assert ledger.call(shared)
     assert not any(e[0] == "revoke" for e in ledger.events)
     _assert_left_alive_guidance(out, ledger, shared)
@@ -392,7 +392,7 @@ def test_an_unrecorded_key_whose_prefix_is_ambiguous_is_never_revoked(world, cap
     ledger.add(twin)
     _install(world, "d7", old, marker="d7", record_id=False)
     code, out, err = _cli(capsys, "rekey", "d7")
-    assert code == 0, err
+    assert code == drain.EXIT_MANUAL_REVOKE, err
     assert ledger.call(old) and ledger.call(twin)
     assert not any(e[0] == "revoke" for e in ledger.events)
     _assert_left_alive_guidance(out, ledger, old)
@@ -407,6 +407,8 @@ def _assert_left_alive_guidance(out: str, ledger: FakeLedger, *alive: str) -> No
     as a candidate: revoking it would stop that drain."""
     assert "old key: left ALIVE, not revoked" in out
     assert "Settings" in out
+    manual = [line for line in out.splitlines() if line.startswith("manual_revoke_needed:")]
+    assert len(manual) == 1, out
     minted = {p.read_text(encoding="utf-8").strip() for p in service.CONFIG_DIR.glob("*.key-id")}
     for row in ledger.keys.values():
         line = f"    {row['id']}  {row['name']}"
@@ -431,7 +433,7 @@ def test_a_legacy_drain_holding_the_gban_setup_key_never_revokes_it(world, capsy
     repo = _install(world, "old", setup, marker="old", record_id=False)
 
     code, out, err = _cli(capsys, verb, "old")
-    assert code == 0, err
+    assert code == drain.EXIT_MANUAL_REVOKE, err
     assert not any(e[0] == "revoke" for e in ledger.events)
     assert not ledger.keys[setup_id]["revoked"]
     _assert_left_alive_guidance(out, ledger, setup)
@@ -457,7 +459,7 @@ def test_an_unrelated_live_key_sharing_the_prefix_is_never_revoked(world, capsys
     _install(world, "stray", stranger, marker="stray", record_id=False)
 
     code, out, err = _cli(capsys, verb, "stray")
-    assert code == 0, err
+    assert code == drain.EXIT_MANUAL_REVOKE, err
     assert not ledger.keys[box_id]["revoked"]
     assert not any(e[0] == "revoke" for e in ledger.events)
     _assert_left_alive_guidance(out, ledger, box)
@@ -576,6 +578,207 @@ def test_remove_deletes_a_clean_pushed_checkout_carrying_only_caches(world, caps
     assert f"checkout: deleted {repo}" in out
 
 
+# ---- the recorded id must still name the env file's key (reviewer's SD gap) -----------------
+
+@pytest.mark.parametrize("verb", ["remove", "rekey"])
+def test_a_recorded_id_that_names_a_different_key_than_the_env_file_is_never_revoked(
+        world, capsys, verb):
+    """`<name>.key-id` names key A, but the env file holds key B (the record is stale, or was
+    copied). A is someone else's live key: it is not revoked, and neither is B by a guess."""
+    ledger = world["ledger"]
+    a = _key(world)
+    a_id = ledger.id_of(a)
+    b = _key(world)
+    _install(world, "mm", b, marker="mm", record_id=False)
+    drain._record_key_id("mm", a_id)
+
+    code, out, err = _cli(capsys, verb, "mm")
+    assert code == drain.EXIT_MANUAL_REVOKE, err
+    assert not ledger.keys[a_id]["revoked"], "the recorded id was revoked though it is not " \
+                                              "the env file's key"
+    assert not any(e[0] == "revoke" for e in ledger.events)
+    assert f"the recorded key {a_id} is not the key in mm's env file" in out
+    assert ledger.call(a) and ledger.call(b)
+
+
+# ---- exit 3 and the machine-readable line when a manual revoke is needed -------------------
+
+@pytest.mark.parametrize("verb", ["remove", "rekey"])
+def test_an_unrecorded_key_left_alive_exits_3_with_a_manual_revoke_line(world, capsys, verb):
+    ledger = world["ledger"]
+    setup = "gb_test_" + secrets.token_hex(16)
+    setup_id = ledger.add(setup, "gban setup")
+    other = _key(world)
+    other_id = ledger.id_of(other)
+    _install(world, "legacy", setup, marker="legacy", record_id=False)
+
+    code, out, err = _cli(capsys, verb, "legacy")
+    assert code == 3 == drain.EXIT_MANUAL_REVOKE, (out, err)
+    lines = [line for line in out.splitlines() if line.startswith("manual_revoke_needed:")]
+    assert lines == [f"manual_revoke_needed: {setup_id},{other_id}"], out
+    assert "Settings" in out, "the line comes alongside the guidance, not instead of it"
+    assert not any(e[0] == "revoke" for e in ledger.events)
+
+
+@pytest.mark.parametrize("verb", ["remove", "rekey"])
+def test_a_recorded_revoke_exits_0_with_no_manual_revoke_line(world, capsys, verb):
+    ledger = world["ledger"]
+    key = _key(world)
+    _install(world, "ok", key, marker="ok")
+    code, out, err = _cli(capsys, verb, "ok")
+    assert code == 0, (out, err)
+    assert "manual_revoke_needed" not in out + err
+    assert ("revoke", ledger.id_of(key)) in ledger.events
+
+
+def test_a_shared_key_left_alive_for_its_other_holders_exits_0(world, capsys):
+    """Left alive because another drain still runs on it is not a manual revoke: exit 0."""
+    shared = _key(world)
+    _install(world, "a", shared, marker="a", record_id=False)
+    _install(world, "b", shared, marker="b", record_id=False)
+    for verb in ("rekey", "remove"):
+        code, out, err = _cli(capsys, verb, "a")
+        assert code == 0, (verb, out, err)
+        assert "manual_revoke_needed" not in out + err
+
+
+# ---- submodules, hidden edits, reflog-only commits, symlinks (reviewer N1, N1b, N4, N6) ----
+
+def _sub_origin(world) -> Path:
+    """A bare repo to use as a submodule's remote, with one pushed commit."""
+    origin = world["tmp"] / "sub-origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+    seed = world["tmp"] / "sub-seed"
+    seed.mkdir()
+    _git(seed, "init", "-q", "-b", "main")
+    _git(seed, "config", "user.email", "t@example.invalid")
+    _git(seed, "config", "user.name", "T")
+    (seed / "lib.txt").write_text("lib\n", encoding="utf-8")
+    _git(seed, "add", "lib.txt")
+    _git(seed, "commit", "-qm", "lib")
+    _git(seed, "push", "-q", str(origin), "main")
+    return origin
+
+
+def _with_submodule(world, repo: Path) -> Path:
+    """Add `sub` as a submodule, commit and push the superproject. Returns the submodule."""
+    origin = _sub_origin(world)
+    _git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(origin), "sub")
+    _git(repo, "commit", "-qm", "add sub")
+    _git(repo, "push", "-q", "origin", "main")
+    sub = repo / "sub"
+    _git(sub, "config", "user.email", "t@example.invalid")
+    _git(sub, "config", "user.name", "T")
+    return sub
+
+
+def _sub_commit(sub: Path, text: str) -> str:
+    (sub / "mine.txt").write_text(text, encoding="utf-8")
+    _git(sub, "add", "mine.txt")
+    _git(sub, "commit", "-qm", "only in the submodule")
+    return _git(sub, "rev-parse", "HEAD")
+
+
+def test_remove_keeps_a_checkout_whose_submodule_holds_a_commit_on_a_side_branch(world, capsys):
+    """N1: the submodule has a commit on a submodule-only branch and is checked back out to
+    its recorded commit. The superproject is clean and fully pushed."""
+    key = _key(world)
+    repo = _install(world, "s1", key, marker="s1")
+    sub = _with_submodule(world, repo)
+    recorded = _git(sub, "rev-parse", "HEAD")
+    _git(sub, "checkout", "-q", "-b", "side")
+    sha = _sub_commit(sub, "side work\n")
+    _git(sub, "checkout", "-q", recorded)
+    assert _git(repo, "status", "--porcelain", "--untracked-files=all") == ""
+    assert _git(repo, "rev-list", "--all", "--not", "--remotes") == ""
+
+    _remove_keeps(world, capsys, "s1", repo, "submodule(s): sub")
+    assert _git(sub, "cat-file", "-t", sha) == "commit"
+
+
+def test_remove_keeps_a_checkout_whose_pushed_gitlink_names_an_unpushed_submodule_commit(
+        world, capsys):
+    """N1b: the gitlink bump is pushed on the superproject; the submodule commit it names
+    was never pushed. This checkout holds the only copy."""
+    key = _key(world)
+    repo = _install(world, "s2", key, marker="s2")
+    sub = _with_submodule(world, repo)
+    sha = _sub_commit(sub, "bumped\n")
+    _git(repo, "add", "sub")
+    _git(repo, "commit", "-qm", "bump sub")
+    _git(repo, "push", "-q", "origin", "main")
+    assert _git(repo, "rev-list", "--all", "--not", "--remotes") == ""
+
+    _remove_keeps(world, capsys, "s2", repo, "submodule(s): sub")
+    assert _git(sub, "cat-file", "-t", sha) == "commit"
+
+
+def test_remove_keeps_a_checkout_with_only_a_leftover_git_modules_dir(world, capsys):
+    """Anything under .git/modules/ is a submodule's store, even with no .gitmodules."""
+    key = _key(world)
+    repo = _install(world, "s3", key, marker="s3")
+    (repo / ".git" / "modules" / "old").mkdir(parents=True)
+    (repo / ".git" / "modules" / "old" / "HEAD").write_text("ref: refs/heads/main\n",
+                                                            encoding="utf-8")
+    _remove_keeps(world, capsys, "s3", repo, "submodule(s): .git/modules/old")
+
+
+@pytest.mark.parametrize("flag,tag", [("--assume-unchanged", "h"), ("--skip-worktree", "S")])
+def test_remove_keeps_a_tracked_edit_hidden_from_status(world, capsys, flag, tag):
+    """N6: `update-index --assume-unchanged` / `--skip-worktree` hide an edit from status."""
+    key = _key(world)
+    repo = _install(world, "h1", key, marker="h1")
+    _git(repo, "update-index", flag, "README.md")
+    (repo / "README.md").write_text("edited, hidden\n", encoding="utf-8")
+    assert _git(repo, "status", "--porcelain", "--untracked-files=all") == ""
+    assert _git(repo, "ls-files", "-v").startswith(f"{tag} ")
+    _remove_keeps(world, capsys, "h1", repo,
+                  "--assume-unchanged or --skip-worktree, so their edits are hidden: README.md")
+    assert (repo / "README.md").read_text(encoding="utf-8") == "edited, hidden\n"
+
+
+def test_remove_keeps_a_commit_only_a_reflog_reaches(world, capsys):
+    """N4: commit, then `reset --hard` back to the pushed commit. No ref reaches it; the
+    reflog does."""
+    key = _key(world)
+    repo = _install(world, "r1", key, marker="r1")
+    _unpushed(repo)
+    sha = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "reset", "-q", "--hard", "origin/main")
+    assert _git(repo, "rev-list", "--all", "--not", "--remotes") == ""
+    _remove_keeps(world, capsys, "r1", repo, "1 commit(s) only a reflog reaches")
+    assert _git(repo, "cat-file", "-t", sha) == "commit"
+
+
+def test_remove_keeps_a_checkout_reached_through_a_symlinked_path(world, capsys):
+    """The unit's --repo is a symlink to the real checkout: kept with a reason, no traceback,
+    and neither the link nor its target is touched."""
+    key = _key(world)
+    repo = _install(world, "l1", key, marker="l1")
+    real = world["tmp"] / "real-l1"
+    repo.rename(real)
+    repo.symlink_to(real, target_is_directory=True)
+
+    code, out, err = _cli(capsys, "remove", "l1")
+    assert code == 0, err
+    assert repo.is_symlink() and (real / ".git" / "gbfleet-drain").exists()
+    assert f"checkout: kept {repo}: its path resolves through a symlink" in out
+    assert "Traceback" not in out + err
+
+
+def test_remove_keeps_a_checkout_whose_marker_is_a_symlink(world, capsys):
+    """The marker resolves through a symlink to a file elsewhere that names the drain."""
+    key = _key(world)
+    repo = _install(world, "l2", key, marker=None)
+    elsewhere = world["tmp"] / "elsewhere-marker"
+    elsewhere.write_text("l2\n", encoding="utf-8")
+    (repo / ".git" / "gbfleet-drain").symlink_to(elsewhere)
+
+    out = _remove_keeps(world, capsys, "l2", repo, "marker is a symlink")
+    assert elsewhere.read_text(encoding="utf-8") == "l2\n"
+    assert "Traceback" not in out
+
+
 # ---- clause 5: no key value on stdout or stderr --------------------------------------------
 
 def test_neither_command_prints_a_key_value(world, capsys):
@@ -587,10 +790,12 @@ def test_neither_command_prints_a_key_value(world, capsys):
     _install(world, "s", solo, marker="s")
 
     seen = ""
-    for argv in (("rekey", "a"), ("rekey", "b"), ("rekey", "s"), ("remove", "a"),
-                 ("remove", "s")):
+    # rekey b: a no longer shares the copied key and nothing recorded its id, so it is left
+    # alive for the person to revoke (exit 3). Every other run is a plain success.
+    for argv, want in ((("rekey", "a"), 0), (("rekey", "b"), drain.EXIT_MANUAL_REVOKE), (("rekey", "s"), 0),
+                       (("remove", "a"), 0), (("remove", "s"), 0)):
         code, out, err = _cli(capsys, *argv)
-        assert code == 0, err
+        assert code == want, (argv, out, err)
         seen += out + err
     assert len(ledger.plaintexts()) == 5
     for key in ledger.plaintexts():
