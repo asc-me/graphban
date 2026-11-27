@@ -4625,7 +4625,26 @@ def lead_owned_elsewhere(clause: str, group: str, titles: list[str],
     Such a clause is another call's — its section was filed earlier — so it is neither
     copied elsewhere nor reported as mapping to no section."""
     owners = _clause_owners(clause, group, titles, bodies, universe)
-    return bool(owners) and not any(t in titles for t in owners)
+    pool = universe or titles
+    return (bool(owners) and not any(t in titles for t in owners)
+            and any(t in pool for t in owners))
+
+
+def unfiled_owners(clause: str, group: str, titles: list[str],
+                   bodies: dict[str, str] | None,
+                   universe: list[str] | None = None) -> list[str]:
+    """The sections a clause belongs to when none of them is on offer or already filed.
+
+    A label resolves against every section of the PRD, so `**S3:**` names S3 even when
+    S3 is framing that no call will file (GRPH-2004). Such a clause is not another call's:
+    no item will ever carry it. It is neither unassigned (it names its section) nor owned
+    elsewhere, and `lead_owned_elsewhere` treating it as the latter discarded it silently.
+    Empty when the clause has an owner on offer, an owner in `universe`, or no owner."""
+    owners = _clause_owners(clause, group, titles, bodies, universe)
+    pool = universe or titles
+    if not owners or any(t in titles or t in pool for t in owners):
+        return []
+    return owners
 
 
 def assign_acceptance(body: str, titles: list[str],
@@ -5661,8 +5680,10 @@ def measure_size(body: str, clauses: list[str], touchpoints: list[str]) -> dict:
 def claim_subheading_clauses(
     body: str, titles: list[str], section_texts: dict[str, str],
     universe: list[str] | None = None,
-) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[tuple[str, str], list[str]], list[str]]:
-    """Section clauses, the ##-level ones, clauses per (section, piece), and the rest.
+) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[tuple[str, str], list[str]],
+           list[str], list[dict]]:
+    """Section clauses, the ##-level ones, clauses per (section, piece), the rest, and the
+    clauses led by a section no call will file (`unfiled_owners`, GRPH-2004).
 
     `assign_acceptance` maps a clause onto a `##` title. A clause grouped under a
     piece of a section that has two or more pieces (`### One` / `**One.**`) belongs
@@ -5695,9 +5716,17 @@ def claim_subheading_clauses(
             combined.setdefault(title, []).append(clause)
             assigned.add(i)
             break
-    unassigned = [clause for i, (clause, group) in enumerate(indexed) if i not in assigned
-                  and not lead_owned_elsewhere(clause, group, titles, section_texts, universe)]
-    return combined, section_level, per_heading, unassigned
+    unassigned: list[str] = []
+    unfiled: list[dict] = []
+    for i, (clause, group) in enumerate(indexed):
+        if i in assigned or lead_owned_elsewhere(clause, group, titles, section_texts, universe):
+            continue
+        sections = unfiled_owners(clause, group, titles, section_texts, universe)
+        if sections:
+            unfiled.append({"clause": clause, "sections": sections})
+        else:
+            unassigned.append(clause)
+    return combined, section_level, per_heading, unassigned, unfiled
 
 
 def place_level_clauses(clauses: list[str], pieces: list[tuple[str, str]]) -> dict[str, list[str]]:
@@ -6479,13 +6508,15 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
     ]
     # Every section a clause could belong to, covered or not: a clause of a section filed
     # earlier is that section's, and is not handed to the next-best one (GRPH-2003).
+    # A section that already carries items is filed, whether or not it is implementable
+    # by this call's reckoning (GRPH-2004).
     owners = [
         p["section"] for p in cov["sections"]
-        if (include_prose or p["implementable"])
+        if (include_prose or p["implementable"] or p["item_count"])
         and _section_key(p["section"]) not in _ACCEPTANCE_SECTION_KEYS
     ]
-    combined, section_level, per_heading, unassigned = claim_subheading_clauses(
-        prd.body or "", wanted, bodies, owners)
+    combined, section_level, per_heading, unassigned, unfiled_clauses = (
+        claim_subheading_clauses(prd.body or "", wanted, bodies, owners))
     no_acceptance: list[str] = []
     no_touchpoints: list[str] = []
     ui_items: list[dict] = []
@@ -6998,13 +7029,14 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
     # a stored rendering would rot the moment the project is retagged. Displayed keys render;
     # stored ids freeze — and this dict is read, not stored.
     #
-    # `links`, `link_cycles` and `links_skipped` are returned and not declared on
-    # decompose_prd's outputSchema: the manifest is at its ceiling, and the ratchet checks
+    # `links`, `link_cycles`, `links_skipped` and `unfiled_section_clauses` are returned and
+    # not declared on decompose_prd's outputSchema: the manifest is at its ceiling, and the ratchet checks
     # that declared keys are emitted, not that emitted keys are declared. An empty list
     # means looked and found none.
     _strip_split_scratch(proposals)
     return {"prd_id": prd.key, "proposals": proposals, "created": created,
-            "unassigned_clauses": unassigned, "no_acceptance": no_acceptance,
+            "unassigned_clauses": unassigned, "unfiled_section_clauses": unfiled_clauses,
+            "no_acceptance": no_acceptance,
             "no_touchpoints": no_touchpoints, "ui_items": ui_items,
             "ui_skipped": ui_skipped, "ui_without_design": ui_without_design,
             "split_remainders": split_remainders, "unfiled_pieces": unfiled_pieces,
