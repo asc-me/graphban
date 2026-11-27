@@ -36,7 +36,17 @@ other success exits 0.
 exists, a plan for another PRD, an empty captured PATH, an adapter that PATH does not
 resolve, install flags that differ from the dry run's, and an `until` already holding the
 checkout. `create` then reads the PRD's coverage through the session and refuses a PRD that
-is not approved or not shaped. Only after all of that does it clone, mint and install.
+is not approved, not shaped, or has no tasks. Only after all of that does it clone, mint and install.
+
+**The dry run is the real run's refusals (GRPH-1984).** Both open the session and refuse a PRD
+that is not approved, not shaped, or has no tasks, with the same sentence and exit code — a
+dry run that passes a create the real run would refuse promises something false. The dry run
+still mints nothing and writes nothing.
+
+**A failed create leaves no clone (GRPH-1984).** When anything after the clone fails, the
+checkout this run cut is removed — only that one, only while it still carries this drain's
+marker, and never once a unit naming it is on disk — and the removal is reported. So the
+re-run starts from the same disk the first run did.
 """
 from __future__ import annotations
 
@@ -230,6 +240,17 @@ def _usable_checkout(path: Path, remote: str) -> str:
     if out:
         return f"{path} has uncommitted changes; a drain must start from a clean checkout"
     return ""
+
+
+def _marked_by(checkout: Path) -> str:
+    """The drain named in `checkout`'s marker, or "" when it carries none."""
+    code, git_dir = _git(checkout, "rev-parse", "--absolute-git-dir")
+    if code != 0:
+        return ""
+    try:
+        return (Path(git_dir) / MARKER).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 
 def _write_marker(checkout: Path, name: str) -> None:
@@ -434,6 +455,9 @@ def check_prd(ledger: object, prd: str) -> None:
         raise Refused(
             f"prd_coverage reports {prd} shaped: {cov.get('shaped')!r}, so it has no sections "
             "for items to sit under. Give it `##` sections and decompose it first")
+    if not int(cov.get("total_items") or 0):
+        raise Refused(f"{prd} has no tasks. Decompose it (decompose_prd) before starting a "
+                      "drain")
 
 
 def print_plan(d: Draft, out: TextIO, *, dry_run: bool) -> None:
@@ -467,10 +491,6 @@ def create(opts: Options, *, out: TextIO | None = None, err: TextIO | None = Non
         print(f"gbfleet drain create: {exc}", file=err)
         return EXIT_REFUSED
 
-    if opts.dry_run:
-        print_plan(d, out, dry_run=True)
-        return 0
-
     server = service.value_of(d.until_args, "--server") or ""
     try:
         ledger = open_ledger(server)
@@ -487,14 +507,56 @@ def create(opts: Options, *, out: TextIO | None = None, err: TextIO | None = Non
         print(f"gbfleet drain create: {exc}. Nothing was written.", file=err)
         return EXIT_REFUSED
 
-    if d.clone_from:
-        d.repo.parent.mkdir(parents=True, exist_ok=True)
-        code, said = _git(d.repo.parent, "clone", "-q", d.clone_from, str(d.repo))
-        if code != 0:
-            print(f"gbfleet drain create: clone failed: {said}", file=err)
-            return EXIT_REFUSED
-        _write_marker(d.repo, d.name)
+    if opts.dry_run:
+        print_plan(d, out, dry_run=True)
+        return 0
 
+    cloned = False
+    installed = False
+    try:
+        if d.clone_from:
+            d.repo.parent.mkdir(parents=True, exist_ok=True)
+            code, said = _git(d.repo.parent, "clone", "-q", d.clone_from, str(d.repo))
+            if code != 0:
+                print(f"gbfleet drain create: clone failed: {said}", file=err)
+                return EXIT_REFUSED
+            cloned = True
+            try:
+                _write_marker(d.repo, d.name)
+            except (Refused, OSError) as exc:
+                print(f"gbfleet drain create: {exc}", file=err)
+                return EXIT_REFUSED
+        code = _install(d, ledger, out=out, err=err, show_status=show_status)
+        installed = code == 0
+        return code
+    finally:
+        if cloned and not installed:
+            _remove_clone(d, err)
+
+
+def _remove_clone(d: Draft, err: TextIO) -> None:
+    """Remove the checkout this run cloned, after a failure. Never one it did not make."""
+    if d.supplied or not d.clone_from:
+        return
+    if d.unit_path.exists():
+        print(f"gbfleet drain create: kept {d.repo}: {d.unit_path} names it", file=err)
+        return
+    owner = _marked_by(d.repo)
+    if owner != d.name:
+        print(f"gbfleet drain create: kept {d.repo}: it does not carry this drain's "
+              f"{MARKER} marker", file=err)
+        return
+    shutil.rmtree(d.repo, ignore_errors=True)
+    if d.repo.exists():
+        print(f"gbfleet drain create: could not remove the checkout it cloned, {d.repo}; "
+              "remove it before running this again", file=err)
+    else:
+        print(f"gbfleet drain create: removed {d.repo}, the checkout this run cloned",
+              file=err)
+
+
+def _install(d: Draft, ledger: object, *, out: TextIO, err: TextIO,
+             show_status: Callable[[object], None] | None) -> int:
     try:
         plan = service.make_plan(d.until_args, name=d.name, kind=d.kind, binary=d.binary,
                                  path_env=d.path_env, every=d.every)
