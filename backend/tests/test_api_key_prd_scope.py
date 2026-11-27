@@ -10,7 +10,7 @@ next to a control showing the right key let in, so a refusal cannot pass by refu
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.models import ApiKey, Event, Item
 from app.services import fleet as fleet_svc
@@ -238,7 +238,7 @@ def test_the_key_cannot_claim_as_an_agent_of_another_key(
 # ---- clause 2: no other project, whatever project_id it passes ----------------------------
 
 def test_a_prd_key_cannot_reach_another_project(
-        client, auth, drain, other_proj, proj):
+        client, auth, drain, other_proj, proj, mine):
     owner_other = client.post("/api/api-keys", json={"name": "other", "project_id": other_proj},
                               headers=auth).json()["plaintext"]
     _item(client, owner_other, "elsewhere's work", ["x.py"])
@@ -246,7 +246,7 @@ def test_a_prd_key_cannot_reach_another_project(
 
     for tool, args in (("get_backlog", {}), ("search_items", {"query": "elsewhere"}),
                        ("claim_next", {"agent_id": agent}),
-                       ("create_item", {"title": "planted", "status": "next"})):
+                       ("create_item", {"title": "planted", "status": "next", "prd_id": mine["id"]})):
         err = _err(_mcp(client, drain["plaintext"], tool, {**args, "project_id": other_proj}))
         assert other_proj in err["message"], (tool, err)
 
@@ -256,8 +256,9 @@ def test_a_prd_key_cannot_reach_another_project(
 
 # ---- clause 3: events name the key's label -------------------------------------------------
 
-def test_calls_with_the_key_are_attributed_to_its_label(client, auth, drain, owner_key, proj, db):
-    made = _item(client, drain["plaintext"], "filed by the drain", ["a.py"])
+def test_calls_with_the_key_are_attributed_to_its_label(
+        client, auth, drain, owner_key, proj, db, mine):
+    made = _item(client, drain["plaintext"], "filed by the drain", ["a.py"], prd_id=mine["id"])
     by_owner = _item(client, owner_key, "filed by the laptop", ["b.py"])
 
     db.expire_all()
@@ -496,3 +497,154 @@ def test_an_unlimited_key_still_writes_any_prds_item(client, auth, theirs, mine,
     _ok(_mcp(client, owner_key, "link_items",
              {"a": inside, "b": outside, "type": "dependency", "agent_id": agent}))
     assert _ok(_mcp(client, owner_key, "claim_next", {"agent_id": agent}))["claimed"]
+
+
+# ---- GRPH-1985: the writes that still reached outside the PRD ------------------------------
+# Each is refused with the same named refusal update_item gives, beside a control inside the
+# PRD that goes through. Sabotage: drop the tool's entry from `PRD_KEY_ITEM_WRITES` or
+# `PRD_KEY_PRD_ARGS` in app/security/authz.py and its refusal test fails.
+
+def _drain_planner(client, auth, drain, proj) -> str:
+    """A planner registered on the drain's own key, so delegate and mint reach the PRD bound."""
+    code = client.post("/api/fleet/seats",
+                       json={"project_id": proj, "roles": ["planner"], "wave": "w"},
+                       headers=auth).json()["seats"][0]["code"]
+    return _ok(_mcp(client, drain["plaintext"], "register_agent",
+                    {"label": "drain planner", "enrolment_code": code}))["agent_id"]
+
+
+def test_a_prd_key_cannot_create_an_item_in_another_prd_or_none(
+        client, auth, drain, mine, theirs, owner_key, db):
+    key = drain["plaintext"]
+    before = db.scalar(select(func.count()).select_from(Item))
+    _refused_by_prd(_mcp(client, key, "create_item",
+                         {"title": "planted", "prd_id": theirs["id"]}), mine)
+    _refused_by_prd(_mcp(client, key, "create_item", {"title": "planted"}), mine)
+    # Nor may it hang a new item off another PRD's item.
+    outside = _item(client, owner_key, "other PRD's work", ["ops/deploy.sh"], prd_id=theirs["id"])
+    _refused_by_prd(_mcp(client, key, "create_item",
+                         {"title": "planted", "prd_id": mine["id"], "kind": "fix",
+                          "blocks": outside}), mine)
+    db.expire_all()
+    assert db.scalar(select(func.count()).select_from(Item)) == before + 1  # only `outside`
+
+    # Control: an item in its own PRD.
+    made = _item(client, key, "the drain's work", ["svc/a.py"], prd_id=mine["id"])
+    assert _stored(db, made).prd_id == mine["id"]
+
+
+def test_a_prd_key_cannot_unlink_an_item_outside_its_prd_at_either_end(
+        client, auth, drain, mine, theirs, owner_key, db):
+    outside = _item(client, owner_key, "other PRD's work", ["ops/deploy.sh"], prd_id=theirs["id"])
+    inside = _item(client, owner_key, "the drain's work", ["svc/a.py"], prd_id=mine["id"])
+    other_inside = _item(client, owner_key, "more drain work", ["svc/b.py"], prd_id=mine["id"])
+    _ok(_mcp(client, owner_key, "link_items", {"a": inside, "b": outside, "type": "dependency"}))
+    _ok(_mcp(client, owner_key, "link_items",
+             {"a": inside, "b": other_inside, "type": "dependency"}))
+
+    for a, b in ((inside, outside), (outside, inside)):
+        _refused_by_prd(_mcp(client, drain["plaintext"], "unlink_items",
+                             {"a": a, "b": b, "type": "dependency"}), mine)
+    # The cross-PRD link is still there for its owner to remove.
+    assert _ok(_mcp(client, owner_key, "unlink_items",
+                    {"a": inside, "b": outside, "type": "dependency"}))["removed"]
+
+    # Control: both ends inside its PRD.
+    assert _ok(_mcp(client, drain["plaintext"], "unlink_items",
+                    {"a": inside, "b": other_inside, "type": "dependency"}))["removed"]
+
+
+def test_a_prd_key_cannot_link_code_to_an_item_outside_its_prd(
+        client, auth, drain, mine, theirs, owner_key, db):
+    outside = _item(client, owner_key, "other PRD's work", ["ops/deploy.sh"], prd_id=theirs["id"])
+    inside = _item(client, owner_key, "the drain's work", ["svc/a.py"], prd_id=mine["id"])
+
+    _refused_by_prd(_mcp(client, drain["plaintext"], "link_code",
+                         {"ref_id": outside, "path": "ops/deploy.sh"}), mine)
+    _ok(_mcp(client, drain["plaintext"], "link_code", {"ref_id": inside, "path": "svc/a.py"}))
+
+    # unlink_code: the owner links the outside item; the drain cannot remove it.
+    _ok(_mcp(client, owner_key, "link_code", {"ref_id": outside, "path": "ops/deploy.sh"}))
+    _refused_by_prd(_mcp(client, drain["plaintext"], "unlink_code",
+                         {"ref_id": outside, "path": "ops/deploy.sh"}), mine)
+    assert _ok(_mcp(client, owner_key, "unlink_code",
+                    {"ref_id": outside, "path": "ops/deploy.sh"}))["removed"]
+
+    # Control: unlinking its own PRD's item goes through.
+    assert _ok(_mcp(client, drain["plaintext"], "unlink_code",
+                    {"ref_id": inside, "path": "svc/a.py"}))["removed"]
+
+
+def test_a_prd_key_cannot_link_code_to_an_item_outside_its_prd_writes_nothing(
+        client, auth, drain, mine, theirs, owner_key, db):
+    outside = _item(client, owner_key, "other PRD's work", ["ops/deploy.sh"], prd_id=theirs["id"])
+    _refused_by_prd(_mcp(client, drain["plaintext"], "link_code",
+                         {"ref_id": outside, "path": "ops/deploy.sh"}), mine)
+    # Nothing to unlink: the refused call stored no edge.
+    assert not _ok(_mcp(client, owner_key, "unlink_code",
+                        {"ref_id": outside, "path": "ops/deploy.sh"}))["removed"]
+
+
+def test_a_prd_key_cannot_delegate_outside_its_prd(
+        client, auth, drain, mine, theirs, owner_key, proj, db):
+    from app.models import Enrolment
+
+    planner = _drain_planner(client, auth, drain, proj)
+    key = drain["plaintext"]
+    outside = _item(client, owner_key, "other PRD's work", ["ops/deploy.sh"], prd_id=theirs["id"])
+    inside = _item(client, owner_key, "the drain's work", ["svc/a.py"], prd_id=mine["id"])
+    base = {"lane": "backend", "tier": "cheap", "agent_id": planner}
+    seats = db.scalar(select(func.count()).select_from(Enrolment))
+
+    _refused_by_prd(_mcp(client, key, "delegate", {"id": outside, **base}), mine)
+    _refused_by_prd(_mcp(client, key, "delegate",
+                         {"id": inside, "seat": True, "scope": theirs["id"], **base}), mine)
+    _refused_by_prd(_mcp(client, key, "delegate", {"id": inside, "seat": True, **base}), mine)
+    db.expire_all()
+    assert db.scalar(select(func.count()).select_from(Enrolment)) == seats
+
+    # Control: its own item, a seat scoped to its own PRD.
+    got = _ok(_mcp(client, key, "delegate",
+                   {"id": inside, "seat": True, "scope": mine["id"], **base}))
+    assert got["enrolment_code"]
+
+
+def test_a_prd_key_cannot_mint_a_seat_outside_its_prd(
+        client, auth, drain, mine, theirs, owner_key, proj, db):
+    from app.models import Enrolment
+
+    planner = _drain_planner(client, auth, drain, proj)
+    key = drain["plaintext"]
+    outside = _item(client, owner_key, "other PRD's work", ["ops/deploy.sh"], prd_id=theirs["id"])
+    base = {"agent_id": planner, "role": "worker"}
+    seats = db.scalar(select(func.count()).select_from(Enrolment))
+
+    _refused_by_prd(_mcp(client, key, "mint_enrolment", {**base, "scope": theirs["id"]}), mine)
+    _refused_by_prd(_mcp(client, key, "mint_enrolment", base), mine)
+    _refused_by_prd(_mcp(client, key, "mint_enrolment",
+                         {**base, "scope": mine["id"], "bound_only": True, "item": outside}),
+                    mine)
+    db.expire_all()
+    assert db.scalar(select(func.count()).select_from(Enrolment)) == seats
+
+    # Control: a seat scoped to its own PRD.
+    assert _ok(_mcp(client, key, "mint_enrolment", {**base, "scope": mine["id"]}))["enrolment_code"]
+
+
+def test_an_unlimited_key_still_creates_links_and_mints_anywhere(
+        client, auth, theirs, mine, owner_key, proj, db):
+    outside = _item(client, owner_key, "other PRD's work", ["ops/deploy.sh"], prd_id=theirs["id"])
+    _item(client, owner_key, "no PRD at all", ["x.py"])
+    _ok(_mcp(client, owner_key, "link_code", {"ref_id": outside, "path": "ops/deploy.sh"}))
+    assert _ok(_mcp(client, owner_key, "unlink_code",
+                    {"ref_id": outside, "path": "ops/deploy.sh"}))["removed"]
+    code = client.post("/api/fleet/seats",
+                       json={"project_id": proj, "roles": ["planner"], "wave": "w"},
+                       headers=auth).json()["seats"][0]["code"]
+    planner = _ok(_mcp(client, owner_key, "register_agent",
+                       {"label": "p", "enrolment_code": code}))["agent_id"]
+    assert _ok(_mcp(client, owner_key, "mint_enrolment",
+                    {"agent_id": planner, "role": "worker"}))["enrolment_code"]
+    assert _ok(_mcp(client, owner_key, "delegate",
+                    {"id": outside, "lane": "backend", "tier": "cheap", "agent_id": planner,
+                     "seat": True}))["enrolment_code"]
