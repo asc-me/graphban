@@ -1,10 +1,13 @@
 """Typed-link service (minimal — the Links graph UI lands in Phase 4)."""
 from __future__ import annotations
 
+import uuid
+from dataclasses import dataclass, field
+
 from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Item, Link, Project
+from app.models import Item, Link, Organization, Prd, PrdLink, Project, utcnow
 from app.security.authz import Forbidden
 from app.services import keys
 
@@ -98,11 +101,6 @@ def _refused(a: str, b: str, ref: str) -> Forbidden:
 # ---- PRD links (GRPH-P104 S1) -------------------------------------------------------------
 # Two PRDs in different projects of one org, joined by request and accept. The link's messages
 # are the pair's one thread (services/threads.py).
-
-import uuid
-from dataclasses import dataclass, field
-
-from app.models import Organization, Prd, PrdLink, utcnow
 
 PRD_LINK_STATUSES = ("pending", "accepted", "declined", "unlinked")
 
