@@ -380,6 +380,12 @@ class Organization(Base):
         String(1024), default="", server_default="", nullable=False)
     publish_branch: Mapped[str] = mapped_column(
         String(255), default="", server_default="", nullable=False)
+    # GRPH-P104 S1: the ONE org-wide setting for who may accept an incoming PRD link. False
+    # (the default) means a person with write access to the receiving project; True lets a
+    # receiving agent accept too.
+    prd_link_accept_agents: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False
+    )
 
 
 class SlugRedirect(Base):
@@ -4810,4 +4816,52 @@ class DesignAcceptance(Base):
     preamble_hash: Mapped[str] = mapped_column(String, default="", server_default="")
     person: Mapped[str] = mapped_column(String)
     relayed_by: Mapped[str] = mapped_column(String, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PrdLink(Base):
+    """Two PRDs in different projects of one org, joined by request and accept (GRPH-P104 S1).
+
+    One row per UNORDERED pair — `services.links.request_prd_link` looks both directions before
+    inserting, and the unique constraint backs the same-direction case. The row's messages are
+    the pair's one thread. `prd_a_id` is the requesting side. Ids are frozen, not ForeignKeys,
+    for the reason `Prd.supersedes_prd_id` gives. Nothing is deleted: `unlinked` and `declined`
+    rows keep their thread.
+    """
+
+    __tablename__ = "prd_links"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # plk_...
+    prd_a_id: Mapped[str] = mapped_column(String, index=True)
+    prd_b_id: Mapped[str] = mapped_column(String, index=True)
+    project_a_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    project_b_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    status: Mapped[str] = mapped_column(String, default="pending")  # pending|accepted|declined|unlinked
+    reason: Mapped[str] = mapped_column(String, default="", server_default="")
+    decision_reason: Mapped[str] = mapped_column(String, default="", server_default="")
+    requested_by: Mapped[str] = mapped_column(String, default="", server_default="")
+    decided_by: Mapped[str] = mapped_column(String, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (UniqueConstraint("prd_a_id", "prd_b_id", name="uq_prd_link_pair"),)
+
+
+class PrdLinkMessage(Base):
+    """One message on a PRD link's thread (GRPH-P104 S1). Append-only; carries an author LABEL
+    and OWNER name, never an email or a seat id."""
+
+    __tablename__ = "prd_link_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    link_id: Mapped[str] = mapped_column(ForeignKey("prd_links.id"), index=True)
+    kind: Mapped[str] = mapped_column(String)  # note|question|correction|suggested_item
+    body: Mapped[str] = mapped_column(Text)
+    author_kind: Mapped[str] = mapped_column(String)  # agent|person
+    author_label: Mapped[str] = mapped_column(String, default="", server_default="")
+    author_owner: Mapped[str] = mapped_column(String, default="", server_default="")
+    # Frozen item ids this message cites; either PRD's.
+    cites: Mapped[list] = mapped_column(JSON, default=list)
+    # An answer is a reply to the question it answers.
+    reply_to_id: Mapped[int | None] = mapped_column(ForeignKey("prd_link_messages.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
