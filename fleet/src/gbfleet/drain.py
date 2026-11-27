@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import hmac
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -604,21 +605,26 @@ class KeyLookup:
     candidates: list[tuple[str, str]] = field(default_factory=list)
 
 
-def resolve_key_id(ledger: object, name: str, key: str) -> KeyLookup:
+def resolve_key_id(ledger: object, name: str, key: str, kind: str = "") -> KeyLookup:
     """The id of the key in `name`'s env file, from `<name>.key-id` only.
 
     No automatic revocation without a recorded id (the owner's decision after the GRPH-1976
     bounce): a drain `create` did not make often holds the person's own `gban setup` key, and
     a prefix match can name an unrelated live key. Without a record nothing is matched;
     the caller leaves the key alive and prints `candidates` for the person to choose from.
+
+    A recorded id is also refused when another drain's `.key-id` names the same id, or when
+    the key it names (by its display prefix) could be the key another installed drain's env
+    file holds: revoking it might stop that drain.
     """
     try:
         rows = ledger.list_keys()  # type: ignore[attr-defined]
     except (client_mod.ServerUnreachable, client_mod.ToolFailed) as exc:
         return KeyLookup(why=f"cannot list your keys: {exc}")
     # A key another drain's record names is that drain's; it is never offered for revoking.
-    owned = {_recorded_key_id(p.stem) for p in service.CONFIG_DIR.glob("*.key-id")
-             if p.stem != name} - {""}
+    records = {p.stem: _recorded_key_id(p.stem) for p in service.CONFIG_DIR.glob("*.key-id")
+               if p.stem != name}
+    owned = set(records.values()) - {""}
     live = [(str(r.get("id") or ""), str(r.get("name") or ""))
             for r in rows if not r.get("revoked") and r.get("id")
             and str(r.get("id")) not in owned]
@@ -626,6 +632,10 @@ def resolve_key_id(ledger: object, name: str, key: str) -> KeyLookup:
     if not recorded:
         return KeyLookup(why=f"no {key_id_path(name).name} records which key it is",
                          candidates=live)
+    if recorded in owned:
+        holders = sorted(other for other, kid in records.items() if kid == recorded)
+        return KeyLookup(why=f"the recorded key {recorded} is also recorded for drain(s) "
+                             f"{', '.join(holders)}", candidates=live)
     row = next((r for r in rows if str(r.get("id")) == recorded), None)
     if row is None:
         return KeyLookup(why=f"the recorded key {recorded} is not one of your keys",
@@ -633,6 +643,14 @@ def resolve_key_id(ledger: object, name: str, key: str) -> KeyLookup:
     prefix = str(row.get("prefix") or "")
     if prefix and not key.startswith(prefix):
         return KeyLookup(why=f"the recorded key {recorded} is not the key in {name}'s env file",
+                         candidates=live)
+    # The listing shows only a prefix, so a key another drain's env file holds that shares it
+    # might be the one this id names. Never revoke on that doubt.
+    alike = [other for other in service.installed_names(kind) if other != name
+             and prefix and _read_key(service.env_path_for(other)).startswith(prefix)]
+    if alike:
+        return KeyLookup(why=f"the recorded key {recorded} may be the key drain(s) "
+                             f"{', '.join(alike)} hold (same display prefix)",
                          candidates=live)
     return KeyLookup(key_id=recorded)
 
@@ -740,35 +758,189 @@ def checkout_verdict(repo: Path, name: str) -> str:
     kept = [p for p in ignored.split("\0") if p and not _disposable(p)]
     if kept:
         return f"it has ignored file(s) that are not caches: {_named(kept)}"
+    # A nested repo inside a cache dir is someone's work, not a cache: rmtree would take its
+    # commits. Any `.git` (file or directory) under the disposable set keeps the checkout.
+    nested = _nested_repos(repo, [p for p in ignored.split("\0") if p])
+    if nested:
+        return f"it has nested git repo(s) inside ignored caches: {_named(nested)}"
+    # LFS objects are not proved pushed (a `push --no-verify` skips them): any keeps it.
+    lfs = Path(git_dir) / "lfs" / "objects"
+    held = _any_file(lfs)
+    if held is None:
+        return f"cannot read {lfs}"
+    if held:
+        return f"its .git/lfs/objects holds Git LFS object(s), e.g. {held}"
     code, stashed = _git(repo, "stash", "list")
     if code != 0:
         return f"cannot read its stash: {stashed}"
     if stashed:
         return "it has stashed changes"
+    # Only refs from a remote outside this checkout prove a push: one that resolves inside it
+    # (`git remote add self .`, a file:// remote under .git/) goes when the checkout does.
+    proving, inside, why = _proving_refs(repo)
+    if why:
+        return why
+    not_on = ["--not", *proving]
+    unproven = (f"; remote(s) {_named(inside)} point inside this checkout or cannot be "
+                "resolved, so their refs prove nothing") if inside else ""
     code, tags = _git(repo, "for-each-ref", "--format=%(refname:short)", "refs/tags")
     if code != 0:
         return f"cannot list its tags: {tags}"
     for tag in tags.splitlines():
-        code, ahead = _git(repo, "rev-list", f"refs/tags/{tag}", "--not", "--remotes")
+        code, ahead = _git(repo, "rev-list", f"refs/tags/{tag}", *not_on)
         if code != 0:
             return f"cannot tell whether tag {tag} is pushed: {ahead}"
         if ahead:
-            return f"its tag {tag} points at a commit that is on no remote"
+            return f"its tag {tag} points at a commit that is on no remote{unproven}"
     # Every ref and every HEAD, not just branches: a commit only a note, a detached HEAD or an
     # odd ref reaches is still work.
-    code, ahead = _git(repo, "rev-list", "--all", "--not", "--remotes")
+    code, ahead = _git(repo, "rev-list", "--all", *not_on)
     if code != 0:
         return f"cannot tell whether it has unpushed commits: {ahead}"
     if ahead:
-        return f"it has {len(ahead.splitlines())} unpushed commit(s)"
+        return f"it has {len(ahead.splitlines())} unpushed commit(s){unproven}"
     # A commit only a reflog reaches (a `reset --hard` away from a branch) is still work.
-    code, ahead = _git(repo, "rev-list", "--reflog", "--all", "--not", "--remotes")
+    code, ahead = _git(repo, "rev-list", "--reflog", "--all", *not_on)
     if code != 0:
         return f"cannot read its reflogs: {ahead}"
     if ahead:
         return (f"it has {len(ahead.splitlines())} commit(s) only a reflog reaches, on no "
-                "remote")
+                f"remote{unproven}")
     return ""
+
+
+def _nested_repos(repo: Path, ignored: list[str]) -> list[str]:
+    """Every `.git` (file or directory) under the disposable directories the ignored list
+    names, and every entry git itself lists as a nested repo (a trailing `/`). Walks without
+    following symlinks, as rmtree deletes. An unreadable directory counts as a nested repo."""
+    found = [p.rstrip("/") for p in ignored if p.endswith("/")]
+    roots: set[str] = set()
+    for p in ignored:
+        parts = p.rstrip("/").split("/")
+        for i, part in enumerate(parts):
+            if part in DISPOSABLE_DIRS:
+                roots.add("/".join(parts[:i + 1]))
+                break
+    for root in sorted(roots):
+        if _through_symlink(repo / root):
+            continue  # rmtree unlinks a symlink; it never deletes what it points at
+        def unreadable(exc: OSError, root: str = root) -> None:
+            found.append(f"{root} (unreadable: {exc.strerror})")
+        for here, dirs, files in os.walk(repo / root, onerror=unreadable):
+            if ".git" in dirs or ".git" in files:
+                found.append(Path(here).relative_to(repo).as_posix())
+            dirs[:] = [d for d in dirs if d != ".git"]
+    return list(dict.fromkeys(found))
+
+
+def _any_file(top: Path) -> str | None:
+    """The first file under `top` (relative), "" when there is none or `top` is absent, None
+    when it cannot be read."""
+    if not top.exists() and not top.is_symlink():
+        return ""
+    broken: list[OSError] = []
+    for here, _dirs, files in os.walk(top, onerror=broken.append):
+        if files:
+            return (Path(here) / files[0]).relative_to(top).as_posix()
+    return None if broken else ""
+
+
+def _local_url_path(url: str, repo: Path) -> Path | None:
+    """The filesystem path a remote URL names, or None when it is not a local one (https,
+    ssh, `host:path`). A relative path (and `.`) resolves against the checkout, as git does."""
+    url = url.strip()
+    if url.startswith("file://"):
+        # file://[host]/path, percent-decoded. Parsed here: drain.py is not a network door.
+        rest = url[len("file://"):]
+        slash = rest.find("/")
+        path = _percent_decode(rest[slash:] if slash >= 0 else "/")
+        if os.name == "nt" and len(path) > 2 and path[0] == "/" and path[2] == ":":
+            path = path[1:]
+        return Path(path)
+    if "://" in url:
+        return None
+    colon, slash = url.find(":"), url.find("/")
+    drive = os.name == "nt" and colon == 1 and url[0].isalpha()
+    if colon > 0 and (slash == -1 or colon < slash) and not drive:
+        return None  # scp-like [user@]host:path
+    path = Path(os.path.expanduser(url))
+    return path if path.is_absolute() else repo / path
+
+
+def _percent_decode(text: str) -> str:
+    raw = re.sub(rb"%([0-9A-Fa-f]{2})", lambda m: bytes([int(m.group(1), 16)]),
+                 text.encode("utf-8", "surrogateescape"))
+    return raw.decode("utf-8", "surrogateescape")
+
+
+def _inside(path: Path, root: Path) -> bool:
+    """True when `path` is `root` or under it, by real path and by inode (case-folding file
+    systems, symlinks). Unresolvable counts as inside: when in doubt, it proves nothing."""
+    try:
+        real = Path(os.path.realpath(path))
+        top = Path(os.path.realpath(root))
+    except OSError:
+        return True
+    for candidate in (real, *real.parents):
+        if candidate == top:
+            return True
+        try:
+            if candidate.exists() and os.path.samefile(candidate, top):
+                return True
+        except OSError:
+            return True
+    return False
+
+
+def _refspec_matches(pattern: str, ref: str) -> bool:
+    if "*" not in pattern:
+        return ref == pattern
+    head, tail = pattern.split("*", 1)
+    return len(ref) >= len(head) + len(tail) and ref.startswith(head) and ref.endswith(tail)
+
+
+def _proving_refs(repo: Path) -> tuple[list[str], list[str], str]:
+    """(remote-tracking refs that prove a push, remotes that prove nothing, error).
+
+    A ref under refs/remotes/ proves a push only when a remote whose every URL (fetch and push,
+    after insteadOf) points outside this checkout writes it, and no remote that points inside
+    it (`.`, a relative path, a file:// URL under .git/) can also write it. A ref no configured
+    remote writes proves nothing either."""
+    code, names = _git(repo, "remote")
+    if code != 0:
+        return [], [], f"cannot list its remotes: {names}"
+    trusted: list[str] = []
+    untrusted: list[str] = []
+    patterns: dict[str, list[str]] = {}
+    for remote in names.splitlines():
+        urls: list[str] = []
+        ok = True
+        for push in (False, True):
+            code, got = _git(repo, "remote", "get-url", "--all", *(["--push"] if push else []),
+                             remote)
+            if code != 0:
+                ok = False
+                break
+            urls += got.splitlines()
+        code, specs = _git(repo, "config", "--get-all", f"remote.{remote}.fetch")
+        dsts = [s.lstrip("+").split(":", 1)[1] for s in specs.splitlines() if ":" in s] \
+            if code == 0 else []
+        patterns[remote] = [d if d.startswith("refs/") else f"refs/remotes/{d}" for d in dsts]
+        # The conventional namespace too: for an untrusted remote it widens what is excluded,
+        # and a trusted remote's own namespace is excluded anyway where an untrusted one maps.
+        patterns[remote].append(f"refs/remotes/{remote}/*")
+        local = [p for p in (_local_url_path(u, repo) for u in urls) if p is not None]
+        if ok and urls and not any(_inside(p, repo) for p in local):
+            trusted.append(remote)
+        else:
+            untrusted.append(remote)
+    code, refs = _git(repo, "for-each-ref", "--format=%(refname)", "refs/remotes")
+    if code != 0:
+        return [], untrusted, f"cannot list its remote-tracking refs: {refs}"
+    proving = [ref for ref in refs.splitlines()
+               if any(_refspec_matches(p, ref) for r in trusted for p in patterns[r])
+               and not any(_refspec_matches(p, ref) for r in untrusted for p in patterns[r])]
+    return proving, untrusted, ""
 
 
 def _through_symlink(path: Path) -> bool:
@@ -842,7 +1014,7 @@ def remove(name: str, *, out: TextIO | None = None, err: TextIO | None = None) -
         ledger, code = _open(server, "remove", err)
         if ledger is None:
             return code
-        lookup = resolve_key_id(ledger, name, key)
+        lookup = resolve_key_id(ledger, name, key, kind)
     key = ""
 
     failed = manual = False
@@ -864,8 +1036,8 @@ def remove(name: str, *, out: TextIO | None = None, err: TextIO | None = None) -
                 print(f"key: revoked ({lookup.key_id})", file=out)
             except (client_mod.ServerUnreachable, client_mod.ToolFailed) as exc:
                 failed = True
-                print(f"gbfleet drain remove: key {lookup.key_id} was NOT revoked: {exc}. "
-                      "Revoke it in Settings", file=err)
+                print(f"gbfleet drain remove: key {lookup.key_id} was NOT revoked and is "
+                      f"still ALIVE: {exc}. Revoke it in Settings", file=err)
         else:
             print_left_alive(lookup, out)
             manual = True
@@ -979,7 +1151,7 @@ def rekey(name: str, *, out: TextIO | None = None, err: TextIO | None = None) ->
     if ledger is None:
         return code
     # Named before the new key's id overwrites the record.
-    lookup = KeyLookup() if others else resolve_key_id(ledger, name, old)
+    lookup = KeyLookup() if others else resolve_key_id(ledger, name, old, kind)
 
     label = f"{name}@{socket.gethostname()}"
     try:
@@ -1016,7 +1188,17 @@ def rekey(name: str, *, out: TextIO | None = None, err: TextIO | None = None) ->
         print(f"gbfleet drain rekey: the restarted service has made no call with key {new_id} "
               "yet, so the old key is left alive. See `gbfleet service status --name "
               f"{name}`, then revoke the old key in Settings", file=err)
-        return 1
+        if others:
+            # Alive on purpose: other drains run on it. Nothing for the person to revoke.
+            print(f"old key: NOT revoked: the env file of {', '.join(others)} holds it too",
+                  file=out)
+            return 1
+        if lookup.key_id:
+            print(f"old key: left ALIVE, not revoked ({lookup.key_id})", file=out)
+            print(f"{MANUAL_REVOKE_LINE} {lookup.key_id}", file=out)
+        else:
+            print_left_alive(lookup, out)
+        return EXIT_MANUAL_REVOKE
     print(f"service: restarted; its first call with key {new_id} was seen", file=out)
     if others:
         print(f"old key: NOT revoked: the env file of {', '.join(others)} holds it too, and "
@@ -1029,8 +1211,8 @@ def rekey(name: str, *, out: TextIO | None = None, err: TextIO | None = None) ->
     try:
         ledger.revoke_key(old_id)  # type: ignore[attr-defined]
     except (client_mod.ServerUnreachable, client_mod.ToolFailed) as exc:
-        print(f"gbfleet drain rekey: old key {old_id} was NOT revoked: {exc}. Revoke it in "
-              "Settings", file=err)
+        print(f"gbfleet drain rekey: old key {old_id} was NOT revoked and is still ALIVE: "
+              f"{exc}. Revoke it in Settings", file=err)
         return 1
     print(f"old key: revoked ({old_id})", file=out)
     return 0

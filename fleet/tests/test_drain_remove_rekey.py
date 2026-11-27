@@ -344,11 +344,41 @@ def test_rekey_leaves_the_old_key_alive_when_the_new_one_is_never_used(world, ca
     old = _key(world)
     _install(world, "d6", old, marker="d6")
     world["fake"].calls_home = False
-    code, _out, err = _cli(capsys, "rekey", "d6")
-    assert code == 1
+    code, out, err = _cli(capsys, "rekey", "d6")
+    # The old key is alive and only the person can retire it now: exit 4 with its id.
+    assert code == drain.EXIT_MANUAL_REVOKE, (out, err)
     assert "old key is left alive" in err
+    lines = [line for line in out.splitlines() if line.startswith("manual_revoke_needed:")]
+    assert lines == [f"manual_revoke_needed: {ledger.id_of(old)}"], out
     assert ledger.call(old)
     assert not any(e[0] == "revoke" for e in ledger.events)
+
+
+class _ServerError:
+    """A revoke the server answers with an error; every other call goes to the fake ledger."""
+
+    def __init__(self, ledger: FakeLedger) -> None:
+        self.ledger = ledger
+
+    def __getattr__(self, attr):
+        return getattr(self.ledger, attr)
+
+    def revoke_key(self, key_id: str) -> None:
+        raise client_mod.ToolFailed("revoke_key", "server_error", "500 from the server")
+
+
+@pytest.mark.parametrize("verb", ["remove", "rekey"])
+def test_a_failed_revoke_exits_1_and_names_the_key_still_alive(world, capsys, monkeypatch, verb):
+    ledger = world["ledger"]
+    old = _key(world)
+    old_id = ledger.id_of(old)
+    _install(world, "f1", old, marker="f1")
+    monkeypatch.setattr(drain, "open_ledger", lambda server: _ServerError(ledger))
+    code, out, err = _cli(capsys, verb, "f1")
+    assert code == 1, (out, err)
+    assert f"{old_id} was NOT revoked and is still ALIVE" in err
+    assert "manual_revoke_needed" not in out + err
+    assert ledger.call(old)
 
 
 # ---- clause 4: a copied shared key is revoked only when no other drain holds it -----------
@@ -777,6 +807,156 @@ def test_remove_keeps_a_checkout_whose_marker_is_a_symlink(world, capsys):
     out = _remove_keeps(world, capsys, "l2", repo, "marker is a symlink")
     assert elsewhere.read_text(encoding="utf-8") == "l2\n"
     assert "Traceback" not in out
+
+
+# ---- remotes inside the checkout prove nothing (reviewer R7a / R7b / R7c) -----------------
+
+def test_remove_keeps_a_commit_whose_only_remote_ref_is_the_checkout_itself(world, capsys):
+    """R7a: `git remote add self .` + fetch gives the unpushed commit refs/remotes/self/main.
+    That remote is the checkout being deleted, so the ref proves nothing."""
+    key = _key(world)
+    repo = _install(world, "r7a", key, marker="r7a")
+    _unpushed(repo)
+    sha = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "remote", "add", "self", ".")
+    _git(repo, "fetch", "-q", "self")
+    assert _git(repo, "rev-list", "--all", "--not", "--remotes") == ""
+    out = _remove_keeps(world, capsys, "r7a", repo, "unpushed commit(s)")
+    assert "remote(s) self point inside this checkout" in out
+    assert _git(repo, "cat-file", "-t", sha) == "commit"
+
+
+@pytest.mark.parametrize("form", ["file", "relative", "absolute"])
+def test_remove_keeps_a_commit_pushed_only_to_a_remote_under_its_own_git_dir(
+        world, capsys, form):
+    """R7b: a bare remote at <checkout>/.git/backup.git, pushed to. Its copy goes with the
+    checkout. Named as a file:// URL, a relative path and an absolute path."""
+    key = _key(world)
+    repo = _install(world, "r7b", key, marker="r7b")
+    _unpushed(repo)
+    sha = _git(repo, "rev-parse", "HEAD")
+    backup = repo / ".git" / "backup.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(backup)], check=True)
+    url = {"file": backup.as_uri(), "relative": ".git/backup.git",
+           "absolute": str(backup)}[form]
+    _git(repo, "remote", "add", "backup", url)
+    _git(repo, "push", "-q", "backup", "main")
+    assert _git(repo, "rev-list", "--all", "--not", "--remotes") == ""
+    out = _remove_keeps(world, capsys, "r7b", repo, "unpushed commit(s)")
+    assert "remote(s) backup point inside this checkout" in out
+    assert _git(repo, "cat-file", "-t", sha) == "commit"
+
+
+def test_remove_keeps_a_commit_a_self_remote_maps_into_origins_namespace(world, capsys):
+    """An inside remote whose fetch refspec writes refs/remotes/origin/*: those refs are no
+    proof either, though they carry origin's name."""
+    key = _key(world)
+    repo = _install(world, "r7m", key, marker="r7m")
+    _unpushed(repo)
+    _git(repo, "remote", "add", "self", ".")
+    _git(repo, "config", "--replace-all", "remote.self.fetch",
+         "+refs/heads/*:refs/remotes/origin/*")
+    _git(repo, "fetch", "-q", "self")
+    assert _git(repo, "rev-list", "--all", "--not", "--remotes") == ""
+    _remove_keeps(world, capsys, "r7m", repo, "remote(s) self point inside")
+
+
+def test_remove_deletes_a_checkout_pushed_to_a_file_remote_outside_it(world, capsys):
+    """R7c control: a file:// remote outside the checkout is a real copy, so it still proves
+    the push, and the clean checkout is deleted."""
+    key = _key(world)
+    repo = _install(world, "r7c", key, marker="r7c")
+    _unpushed(repo)
+    mirror = world["tmp"] / "mirror.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(mirror)], check=True)
+    _git(repo, "remote", "add", "mirror", mirror.as_uri())
+    _git(repo, "push", "-q", "mirror", "main")
+    code, out, err = _cli(capsys, "remove", "r7c")
+    assert code == 0, err
+    assert not repo.exists(), out
+    assert f"checkout: deleted {repo}" in out
+
+
+# ---- never revoke a key another drain names (reviewer R9) ----------------------------------
+
+@pytest.mark.parametrize("y_recorded", [True, False], ids=["y-key-id", "y-env-only"])
+@pytest.mark.parametrize("verb", ["remove", "rekey"])
+def test_a_recorded_id_another_drain_names_is_never_revoked(world, capsys, verb, y_recorded):
+    """R9: x.key-id is edited to name drain y's key id, and x's env key shares y's display
+    prefix (forced). y-key-id: y's own record names that id. y-env-only: y has no record; only
+    its env file holds the key the id names. Either way y's key stays alive: exit 4."""
+    ledger = world["ledger"]
+    y_key = _key(world)
+    y_id = ledger.id_of(y_key)
+    x_key = y_key[:PREFIX_LEN] + secrets.token_hex(14)
+    ledger.add(x_key, "x")
+    assert x_key.startswith(ledger.keys[y_id]["prefix"])
+    _install(world, "y", y_key, marker="y", record_id=y_recorded)
+    _install(world, "x", x_key, marker="x", record_id=False)
+    drain._record_key_id("x", y_id)
+
+    code, out, err = _cli(capsys, verb, "x")
+    assert code == drain.EXIT_MANUAL_REVOKE, (out, err)
+    assert not ledger.keys[y_id]["revoked"], "drain y's key was revoked"
+    assert not any(e[0] == "revoke" for e in ledger.events)
+    assert ledger.call(y_key)
+    assert any(line.startswith("manual_revoke_needed:") for line in out.splitlines()), out
+    assert ("also recorded for drain(s) y" if y_recorded else "drain(s) y hold") in out
+    assert x_key not in out + err and y_key not in out + err
+
+
+# ---- LFS objects and nested repos in caches (reviewer R6 / R4b) ----------------------------
+
+def test_remove_keeps_a_checkout_holding_lfs_objects(world, capsys):
+    """R6: an LFS object only in .git/lfs/objects (pushed with --no-verify). Not proved pushed:
+    any object keeps the checkout."""
+    key = _key(world)
+    repo = _install(world, "lfs", key, marker="lfs")
+    obj = repo / ".git" / "lfs" / "objects" / "ab" / "cd" / ("abcd" + "0" * 60)
+    obj.parent.mkdir(parents=True)
+    obj.write_bytes(b"big binary\n")
+    out = _remove_keeps(world, capsys, "lfs", repo, ".git/lfs/objects holds Git LFS object(s)")
+    assert obj.name in out
+    assert obj.read_bytes() == b"big binary\n"
+
+
+def test_remove_deletes_a_checkout_whose_lfs_objects_dir_is_empty(world, capsys):
+    """Control for R6: an empty .git/lfs/objects tree holds nothing."""
+    key = _key(world)
+    repo = _install(world, "lfs0", key, marker="lfs0")
+    (repo / ".git" / "lfs" / "objects" / "ab").mkdir(parents=True)
+    code, out, err = _cli(capsys, "remove", "lfs0")
+    assert code == 0, err
+    assert not repo.exists(), out
+
+
+@pytest.mark.parametrize("where,as_file", [("node_modules/pkg", False), (".venv/src/dep", True),
+                                           ("pkg/__pycache__/vendored", False)])
+def test_remove_keeps_a_nested_repo_inside_an_ignored_cache(world, capsys, where, as_file):
+    """R4b: a nested git repo with an unpushed commit under an ignored cache dir is not a
+    cache. `.git` as a directory (a clone) and as a file (`gitdir:`, a worktree or submodule
+    checkout) both count."""
+    key = _key(world)
+    repo = _install(world, "r4b", key, marker="r4b")
+    (repo / ".git" / "info").mkdir(exist_ok=True)
+    (repo / ".git" / "info" / "exclude").write_text(
+        ".venv/\nnode_modules/\n__pycache__/\n", encoding="utf-8")
+    nested = repo / where
+    nested.mkdir(parents=True)
+    if as_file:
+        (nested / ".git").write_text(f"gitdir: {world['tmp'] / 'elsewhere.git'}\n",
+                                     encoding="utf-8")
+        (nested / "dep.py").write_text("x = 1\n", encoding="utf-8")
+    else:
+        _git(nested, "init", "-q", "-b", "main")
+        _git(nested, "config", "user.email", "t@example.invalid")
+        _git(nested, "config", "user.name", "T")
+        (nested / "mine.js").write_text("work\n", encoding="utf-8")
+        _git(nested, "add", "mine.js")
+        _git(nested, "commit", "-qm", "nested work nobody pushed")
+    out = _remove_keeps(world, capsys, "r4b", repo, "nested git repo(s) inside ignored caches")
+    assert where in out
+    assert (nested / ".git").exists()
 
 
 # ---- clause 5: no key value on stdout or stderr --------------------------------------------
