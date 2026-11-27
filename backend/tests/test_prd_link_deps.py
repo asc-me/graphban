@@ -48,6 +48,16 @@ def test_accepted_link_renders_real_ref_and_unlink_hides_it(world):
     assert out["links"][0]["b"] == far.key
     assert out["links"][0]["far"]["title"] == "A far" and out["links"][0]["far"]["status"] == "next"
     assert "SECRET" not in repr(out)
+    # Readiness: blocked while the far item is open, ready once it is done (GRPH-1993).
+    from app.services import prioritization as prio
+    ctx = prio.context(db, "pb")
+    assert not prio.ready(ctx, near)
+    far.status = "done"
+    db.commit()
+    ctx = prio.context(db, "pb")
+    assert prio.ready(ctx, near)
+    far.status = "next"
+    db.commit()
     # The far side sees the near item too.
     assert items_svc.render_ref(db, near.id, ["pa"]) == near.key
     # Unlink: still stored, hidden again.
@@ -55,6 +65,8 @@ def test_accepted_link_renders_real_ref_and_unlink_hides_it(world):
     out = items_svc.get_item_details(db, near.id, ["pb"])
     assert out["links"][0]["b"] == items_svc.HIDDEN_REF and "far" not in out["links"][0]
     assert db.scalar(select(Link).where(Link.a == near.id)) is not None
+    # Unlinked, the hidden far dependency still blocks.
+    assert not prio.ready(prio.context(db, "pb"), near)
 
 
 def test_link_needs_write_on_the_dependent(world):
