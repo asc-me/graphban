@@ -2193,3 +2193,24 @@ export function useSecureAddress(probe = false) {
   });
   return { onHttp, address, trusted: trust.data === "trusted", trustKnown: trust.data !== undefined };
 }
+
+export function useLinkOversight(orgId?: string) {
+  return useQuery({
+    queryKey: ["link-oversight", orgId ?? ""],
+    queryFn: () => api.linkOversight(orgId!),
+    enabled: !!orgId,
+    refetchInterval: 30_000,
+  });
+}
+
+/** One act on a link or its thread; refreshes the oversight view and the bell. */
+export function useLinkAct() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (act: () => Promise<unknown>) => act(),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["link-oversight"] });
+      qc.invalidateQueries({ queryKey: ["my-alerts"] });
+    },
+  });
+}

@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Prd, PrdLink, PrdLinkMessage
+from app.services import events as events_svc
 from app.services import links as links_svc
 from app.services import messages as messages_svc
 from app.services.links import Caller
@@ -70,4 +71,6 @@ def post(db: Session, caller: Caller, link_id: str, *, kind: str, body: str,
     db.add(msg)
     db.commit()
     db.refresh(msg)
+    events_svc.record_prd_link(db, caller, action="prd_link_message", link=link,
+                               meta={"message": msg.id, "kind": kind})
     return messages_svc.render(db, msg)

@@ -38,6 +38,7 @@ import { SettingsView } from "@/features/settings/SettingsView";
 import { UsageView } from "@/features/usage/UsageView";
 import { RequestsView } from "@/features/requests/RequestsView";
 import { TrackerView } from "@/features/tracker/TrackerView";
+import { OversightView } from "@/features/oversight/OversightView";
 import { TriageView } from "@/features/triage/TriageView";
 import { useConfig } from "@/lib/queries";
 import { ORG_BASE, lastProjectTag, projectPath } from "@/lib/routes";
@@ -79,6 +80,7 @@ const PROJECT_VIEWS: [string, React.ReactNode][] = [
   ["requests", <RequestsView />],
   ["triage", <TriageView />],
   ["links", <LinksGraphView />],
+  ["oversight", <OversightView />],
   ["code", <CodeGraphView />],
   ["stack", <StackView />],
   ["rules", <RulesView />],

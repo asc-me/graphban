@@ -1,4 +1,4 @@
-import type { HarnessRecommendations, HarnessReport, ShardClass } from "@/lib/types";
+import type { HarnessRecommendations, HarnessReport, ShardClass, LinkOversight } from "@/lib/types";
 import type { Machine, InstancePosture, Credential, CredentialIn, Onboarding, OnboardingMark, ProjectSetup, SetupConfirm, FleetOverview, FleetPolicy, FleetPresence, FleetProfile, FleetProfileRead, FleetTierMap, LiveBoard, LiveFeed, ModelLoads, OrgOverview, ReindexStatus, ScopeDefaults, ShellCounts } from "@/lib/types";
 /**
  * Typed fetch client. Access token is kept in memory; the refresh token lives in
@@ -508,6 +508,22 @@ export const api = {
     request<{ keys_revoked: number; leases_released: number; reservations_released: number }>(
       "/fleet/end-wave", { method: "POST", body: JSON.stringify({ project_id: projectId, wave }) }),
   me: () => request<User>("/auth/me"),
+  /** Every pending PRD-link request and open pair thread in the org (GRPH-P104 S5). */
+  linkOversight: (orgId: string) =>
+    request<LinkOversight>(`/orgs/${encodeURIComponent(orgId)}/link-oversight`),
+  acceptPrdLink: (id: string) =>
+    request<{ status: string }>(`/prd-links/${encodeURIComponent(id)}/accept`, { method: "POST" }),
+  declinePrdLink: (id: string, reason: string) =>
+    request<{ status: string }>(`/prd-links/${encodeURIComponent(id)}/decline`,
+      { method: "POST", body: JSON.stringify({ reason }) }),
+  answerLinkQuestion: (id: string, message: number, body: string) =>
+    request<unknown>(`/prd-links/${encodeURIComponent(id)}/messages/${message}/answer`,
+      { method: "POST", body: JSON.stringify({ body }) }),
+  fileLinkSuggestion: (id: string, message: number) =>
+    request<unknown>(`/prd-links/${encodeURIComponent(id)}/messages/${message}/file`, { method: "POST" }),
+  declineLinkSuggestion: (id: string, message: number, reason: string) =>
+    request<unknown>(`/prd-links/${encodeURIComponent(id)}/messages/${message}/decline`,
+      { method: "POST", body: JSON.stringify({ reason }) }),
   /** The signed-in user's open alerts and unread count (GRPH-1527). */
   myAlerts: () => request<AlertsFeed>("/me/alerts"),
   pushStatus: () => request<PushStatusWithOrigins>("/me/push"),

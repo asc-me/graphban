@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.errors import AppError, Refused
 from app.models import Item, Link, Organization, PrdLinkMessage, utcnow
+from app.services import events as events_svc
 from app.services import items as items_svc
 from app.services import links as links_svc
 from app.services import messages as messages_svc
@@ -84,6 +85,10 @@ def _record(db: Session, caller: Caller, link, msg: PrdLinkMessage, *, outcome: 
         author_label=caller.label, author_owner=caller.owner, project_id=_receiver(link, msg)[0]))
     db.commit()
     db.refresh(msg)
+    events_svc.record_prd_link(
+        db, caller, action="prd_link_suggestion_filed" if outcome == "filed"
+        else "prd_link_suggestion_declined", link=link,
+        meta={"message": msg.id, "outcome": outcome, "code": code, "item": item_id})
     return {"decided": True, "code": code, "outcome": messages_svc.render_outcome(msg)}
 
 

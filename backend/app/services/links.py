@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.errors import NotFound, Refused
 from app.models import Item, Link, Organization, Prd, PrdLink, Project, utcnow
 from app.security.authz import Forbidden
+from app.services import events as events_svc
 from app.services import keys
 
 LINK_TYPES = ["dependency", "code", "semantic", "tag", "found_during"]
@@ -241,6 +242,8 @@ def request_prd_link(db: Session, caller: Caller, a: str, b: str, *, reason: str
         db.add(link)
     db.commit()
     db.refresh(link)
+    events_svc.record_prd_link(db, caller, action="prd_link_request", link=link,
+                               meta={"reason": reason})
     return link
 
 
@@ -282,6 +285,7 @@ def accept_prd_link(db: Session, caller: Caller, link_id: str) -> PrdLink:
             _needs_person(f"link {link_id} is waiting for a person with write access to the "
                           "receiving project; this organization does not let an agent accept")
     _decide_once(db, link, status="accepted", decided_by=caller.who)
+    events_svc.record_prd_link(db, caller, action="prd_link_accept", link=link)
     return link
 
 
@@ -295,6 +299,8 @@ def decline_prd_link(db: Session, caller: Caller, link_id: str, *, reason: str) 
             Organization.id == _org_of(db, link.project_b_id))):
         _needs_person(f"link {link_id} is decided by a person in this organization")
     _decide_once(db, link, status="declined", decided_by=caller.who, decision_reason=reason)
+    events_svc.record_prd_link(db, caller, action="prd_link_decline", link=link,
+                               meta={"reason": reason})
     return link
 
 
@@ -313,6 +319,9 @@ def unlink_prd_link(db: Session, caller: Caller, link_id: str) -> PrdLink:
         link.status, link.decided_by, link.decided_at = "unlinked", caller.who, utcnow()
         db.commit()
         db.refresh(link)
+        events_svc.record_prd_link(db, caller, action="prd_link_unlink", link=link)
+        from app.services import oversight
+        oversight.withdraw_undecided(db, link)
     return link
 
 

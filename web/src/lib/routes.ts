@@ -101,6 +101,7 @@ const VIEW_PLACE: Record<string, Place> = {
   prds: { section: "Plan", page: "PRDs" },
   roadmap: { section: "Plan", page: "Roadmap" },
   links: { section: "Build", page: "Links" },
+  oversight: { section: "Build", page: "Link oversight" },
   code: { section: "Build", page: "Code graph" },
   "mcp-tools": { section: "Build", page: "MCP Tools" },
   fleet: { section: "Build", page: "Fleet" },

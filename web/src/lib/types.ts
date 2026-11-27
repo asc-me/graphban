@@ -4130,3 +4130,39 @@ export interface CustomRule {
   source: string;
   unmeasured_reason?: string | null;
 }
+
+/** One open PRD-link thread or pending link request in the org oversight view (GRPH-P104 S5). */
+export interface OversightSuggestion {
+  message: number;
+  title: string;
+  outcome: "undecided" | "filed" | "declined" | "conflict";
+  code: string;
+  item: string | null;
+  stale: boolean;
+}
+export interface OversightQuestion {
+  message: number;
+  body: string;
+  stale: boolean;
+}
+export interface OversightThread {
+  link: {
+    id: string;
+    status: string;
+    reason: string;
+    from: { id: string; title?: string; status?: string };
+    to: { id: string; title?: string; status?: string };
+  };
+  projects: { from: string; to: string };
+  status: "pending" | "accepted";
+  latest_kind: string | null;
+  age_seconds: number;
+  suggestions: OversightSuggestion[];
+  questions: OversightQuestion[];
+  stale: boolean;
+  can_decide: boolean;
+}
+export interface LinkOversight {
+  stale_after_hours: number;
+  threads: OversightThread[];
+}
