@@ -5,6 +5,7 @@ import pytest
 
 from app.models import Agent, Item
 from app.services import fleet as fleet_svc
+from app.services import link_delivery as D
 from app.services import threads as T
 from app.services import links as L
 from app.services import prds as prds_svc
@@ -21,41 +22,7 @@ def _holder(db, prd, project, n):
     return agent.id
 
 
-def test_message_is_a_directive_on_next_heartbeat_of_b_holder(world):
-    db, a, b, _x = world
-    holder = _holder(db, b, "pb", 1)
-    link = L.request_prd_link(db, _a(), a.id, b.id, reason="need contract")
-    # The request itself is delivered first, once.
-    d = fleet_svc.collect_directive(db, holder)
-    assert d["type"] == "prd_link_pending" and d["pending"][0]["type"] == "prd_link_request"
-    assert fleet_svc.collect_directive(db, holder) is None
-    L.accept_prd_link(db, _b(), link.id)
-    T.post(db, _a(), link.id, kind="question", body="which field?")
-    d = fleet_svc.collect_directive(db, holder)
-    assert d["pending"][0]["type"] == "prd_link_messages" and d["pending"][0]["count"] == 1
-    assert fleet_svc.collect_directive(db, holder) is None
-
-
-def test_own_side_message_and_non_workers_get_nothing_and_it_stays_pending(world):
-    db, a, b, _x = world
-    link = L.request_prd_link(db, _a(), a.id, b.id, reason="r")
-    L.accept_prd_link(db, _b(), link.id)
-    a_holder = _holder(db, a, "pa", 2)
-    idle = Agent(id="pb-idle", project_id="pb", number=3, label="idle")
-    db.add(idle)
-    db.commit()
-    T.post(db, _a(), link.id, kind="note", body="fyi")
-    assert fleet_svc.collect_directive(db, a_holder) is None  # wrote it themselves
-    assert fleet_svc.collect_directive(db, idle.id) is None
-    # Nobody on B works it: still pending, visible to get_context's source.
-    pend = T.pending_for_prds(db, [b.id])
-    assert [p["type"] for p in pend] == ["prd_link_messages"]
-    # Then a B agent claims an item and is told.
-    late = _holder(db, b, "pb", 4)
-    assert fleet_svc.collect_directive(db, late)["pending"][0]["count"] == 1
-
-
-# ---- bounce fixes: who "works" a PRD, and which side a two-project caller is on --------------
+# ---- who "works" a PRD (S3: its owner, or an agent holding or reviewing an item on it) ------
 
 def test_a_review_holder_and_the_prd_owner_are_told(world):
     from sqlalchemy import select
@@ -76,14 +43,14 @@ def test_a_review_holder_and_the_prd_owner_are_told(world):
     db.flush()
     db.add(owner_agent)
     db.commit()
-    assert set(T.prds_worked_by(db, reviewer.id)) == {b.id}
-    assert set(T.prds_worked_by(db, owner_agent.id)) == {b.id}
+    assert set(D.worked_prd_ids(db, reviewer.id)) == {b.id}
+    assert set(D.worked_prd_ids(db, owner_agent.id)) == {b.id}
     link = L.request_prd_link(db, _a(), a.id, b.id, reason="r")
-    assert fleet_svc.collect_directive(db, owner_agent.id)["pending"][0]["link"] == link.id
+    assert fleet_svc.collect_directive(db, owner_agent.id)["items"][0]["link"] == link.id
     # A closed PRD is no longer worked by its owner.
     b.close_record = {"closed": True}
     db.commit()
-    assert T.prds_worked_by(db, owner_agent.id) == []
+    assert D.worked_prd_ids(db, owner_agent.id) == []
 
 
 def test_a_caller_reading_both_projects_is_on_its_sending_side(world):
@@ -95,11 +62,11 @@ def test_a_caller_reading_both_projects_is_on_its_sending_side(world):
     both = Caller(readable=["pa", "pb"], writable=["pb"], is_agent=True, label="both", owner="Bo")
     msg = T.post(db, both, link.id, kind="note", body="from b")
     from app.models import PrdLinkMessage
-    assert db.get(PrdLinkMessage, msg["id"]).author_side == "b"
+    assert db.get(PrdLinkMessage, msg["id"]).project_id == "pb"
     b_holder = _holder(db, b, "pb", 5)
     a_holder = _holder(db, a, "pa", 6)
     assert fleet_svc.collect_directive(db, b_holder) is None  # its own side wrote it
-    assert fleet_svc.collect_directive(db, a_holder)["pending"][0]["count"] == 1
+    assert [e["body"] for e in fleet_svc.collect_directive(db, a_holder)["items"]] == ["from b"]
 
 
 # ---- the five MCP tools, end to end over /api/mcp ---------------------------------------------

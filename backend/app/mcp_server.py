@@ -57,6 +57,7 @@ from app.services import touchpoint_check
 from app.services import events as events_svc
 from app.services import fleet as fleet_svc
 from app.services import lines as lines_svc
+from app.services import link_delivery as link_delivery_svc
 from app.services import gitops
 from app.services import idempotency as idem_svc
 from app.services import insights as insights_svc
@@ -3369,11 +3370,12 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             "gitops": gitops.for_agent(view),
             # GRPH-1681. Null = the line has not been created, NOT "no bugs".
             "maintenance_line": lines_svc.context_field(db, pid),
-            # GRPH-P104 S3. Link requests and thread messages still pending on this project's
-            # PRDs; empty when nothing waits. Read-only: a directive is what marks delivery.
-            "pending_prd_links": threads_svc.pending_for_prds(
-                db, list(db.scalars(select(Prd.id).where(Prd.project_id == pid)).all()))
-            if pid else [],
+            # GRPH-P104 S3. Unread PRD-link requests and thread messages for this project's
+            # PRDs. Reading here marks nothing: the directive on heartbeat/claim does.
+            "pending_prd_links": [
+                {**e, "prd": prd_id}
+                for prd_id in (db.scalars(select(Prd.id).where(Prd.project_id == pid)).all() if pid else [])
+                for e in link_delivery_svc.pending_for_prd(db, prd_id)],
         }
     if name == "create_project":
         # An AUTHORITY gate, narrowly opened (PRD-14 D4). Both refusals below are the

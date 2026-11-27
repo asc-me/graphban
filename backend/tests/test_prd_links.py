@@ -147,6 +147,53 @@ def test_declined_link_does_not_reveal_far_side(world):
     assert out["to"] == {"id": b.key} and "B two" not in repr(out)
 
 
+def test_link_traffic_is_a_directive_to_agents_working_the_prd(world):
+    from app.models import Agent
+    from app.services import fleet as fleet_svc
+
+    db, a, b, x = world
+    it = Item(id="itb", project_id="pb", number=1, title="t", status="in_progress", claimed_by="ag-b",
+              prd_id=b.id)
+    db.add(it)
+    db.add(Agent(id="ag-b", project_id="pb", number=1))
+    db.commit()
+    link = L.request_prd_link(db, _a(), a.id, b.id, reason="need it")
+    d = fleet_svc.collect_directive(db, "ag-b")
+    assert d["type"] == "prd_link_pending" and d["items"][0]["type"] == "prd_link_request"
+    assert fleet_svc.collect_directive(db, "ag-b") is None  # read; not told twice
+    L.accept_prd_link(db, _b(), link.id)
+    T.post(db, _a(), link.id, kind="note", body="hello B")
+    d = fleet_svc.collect_directive(db, "ag-b")
+    assert d["items"][0]["body"] == "hello B"
+    from app.services import link_delivery
+    # A's own post is never delivered back to A.
+    assert link_delivery.pending_for_prd(db, a.id) == []
+    T.post(db, _b(), link.id, kind="note", body="hello A")
+    # Nobody working A's PRD: B's message stays pending there.
+    pend = link_delivery.pending_for_prd(db, a.id)
+    assert [e["body"] for e in pend if e["type"] == "prd_link_message"] == ["hello A"]
+    # ...and B's own post is not a directive for B's agent.
+    assert fleet_svc.collect_directive(db, "ag-b") is None
+
+
+def test_author_prd_gets_no_directive_for_its_own_post(world):
+    from app.models import Agent
+    from app.services import fleet as fleet_svc
+
+    db, a, b, x = world
+    db.add(Item(id="ita", project_id="pa", number=1, title="t", status="in_progress", claimed_by="ag-a",
+                prd_id=a.id))
+    db.add(Agent(id="ag-a", project_id="pa", number=1))
+    db.commit()
+    link = L.request_prd_link(db, _a(), a.id, b.id, reason="need it")
+    L.accept_prd_link(db, _b(), link.id)
+    T.post(db, _a(), link.id, kind="note", body="from A")
+    assert fleet_svc.collect_directive(db, "ag-a") is None
+    T.post(db, _b(), link.id, kind="note", body="from B")
+    d = fleet_svc.collect_directive(db, "ag-a")
+    assert [e["body"] for e in d["items"]] == ["from B"]
+
+
 # ---- S2: suggested items ----------------------------------------------------------------
 
 

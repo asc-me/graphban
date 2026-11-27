@@ -4843,13 +4843,24 @@ class PrdLink(Base):
     decided_by: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Delivery (S3): the highest thread message each side's PRD has been told about, and whether
-    # B's PRD has been told of the pending request. Per PRD, not per session.
-    seen_a_message_id: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    seen_b_message_id: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    request_seen: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
     __table_args__ = (UniqueConstraint("prd_a_id", "prd_b_id", name="uq_prd_link_pair"),)
+
+
+class PrdLinkRead(Base):
+    """What a PRD has read on one link (GRPH-P104 S3). Delivery is to the PRD, not a session:
+    the first agent working the PRD to be handed a request or message advances the PRD's cursor,
+    so the rest of that PRD's agents are not told twice. Nothing is deleted from the thread."""
+
+    __tablename__ = "prd_link_reads"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    link_id: Mapped[str] = mapped_column(ForeignKey("prd_links.id"), index=True)
+    prd_id: Mapped[str] = mapped_column(String)
+    last_message_id: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    request_read: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+
+    __table_args__ = (UniqueConstraint("link_id", "prd_id", name="uq_prd_link_read"),)
 
 
 class PrdLinkMessage(Base):
@@ -4865,8 +4876,6 @@ class PrdLinkMessage(Base):
     author_kind: Mapped[str] = mapped_column(String)  # agent|person
     author_label: Mapped[str] = mapped_column(String, default="", server_default="")
     author_owner: Mapped[str] = mapped_column(String, default="", server_default="")
-    # Which side of the link wrote it: "a", "b" or "" when the caller reads both or neither.
-    author_side: Mapped[str] = mapped_column(String, default="", server_default="")
     # Frozen item ids this message cites; either PRD's.
     cites: Mapped[list] = mapped_column(JSON, default=list)
     # An answer is a reply to the question it answers.

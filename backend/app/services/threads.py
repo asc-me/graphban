@@ -5,7 +5,7 @@ or one whose either PRD is closed, is read-only; nothing is ever deleted.
 """
 from __future__ import annotations
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Prd, PrdLink, PrdLinkMessage
@@ -66,84 +66,8 @@ def post(db: Session, caller: Caller, link_id: str, *, kind: str, body: str,
         link_id=link.id, project_id=side, kind=kind, body=body, cites=ids,
         reply_to_id=parent.id if parent else None,
         author_kind="agent" if caller.is_agent else "person",
-        author_label=caller.label, author_owner=caller.owner,
-        author_side=_side_of(link, caller))
+        author_label=caller.label, author_owner=caller.owner)
     db.add(msg)
     db.commit()
     db.refresh(msg)
     return messages_svc.render(db, msg)
-
-
-def _side_of(link: PrdLink, caller: Caller) -> str:
-    """The side a message is posted from — the same one `sender_side` picks, so a caller that
-    reads both projects is still on exactly one side and is never told about its own message."""
-    return "a" if sender_side(link, caller) == link.project_a_id else "b"
-
-
-# ---- Delivery (GRPH-P104 S3) --------------------------------------------------------------
-# Requests and messages are durable and pending for a PRD until someone working it has been
-# told. "Working" a PRD = `prds_worked_by`; get_context and the oversight view read the
-# same pending list through `pending_for_prds`.
-
-def pending_for_prds(db: Session, prd_ids: list[str]) -> list[dict]:
-    """Undelivered requests and messages for these PRDs. Read-only."""
-    if not prd_ids:
-        return []
-    links = db.scalars(select(PrdLink).where(
-        or_(PrdLink.prd_a_id.in_(prd_ids), PrdLink.prd_b_id.in_(prd_ids))
-    ).order_by(PrdLink.created_at)).all()
-    out: list[dict] = []
-    for link in links:
-        for side, prd_id in (("a", link.prd_a_id), ("b", link.prd_b_id)):
-            if prd_id not in prd_ids:
-                continue
-            if side == "b" and link.status == "pending" and not link.request_seen:
-                out.append({"type": "prd_link_request", "link": link.id, "prd": prd_id,
-                            "reason": link.reason, "from": link.requested_by})
-            seen = link.seen_a_message_id if side == "a" else link.seen_b_message_id
-            msgs = db.scalars(select(PrdLinkMessage).where(
-                PrdLinkMessage.link_id == link.id, PrdLinkMessage.id > seen,
-                PrdLinkMessage.author_side != side).order_by(PrdLinkMessage.id)).all()
-            if msgs:
-                out.append({"type": "prd_link_messages", "link": link.id, "prd": prd_id,
-                            "count": len(msgs), "latest_id": msgs[-1].id,
-                            "kinds": sorted({m.kind for m in msgs})})
-    return out
-
-
-def prds_worked_by(db: Session, agent_id: str) -> list[str]:
-    """The PRDs an agent works (PRD S3): those it holds an item on — as builder, or holding its
-    review — and, in its own project, the open PRDs its credential's person owns."""
-    from app.models import Agent, ApiKey, Item
-
-    held = set(db.scalars(select(Item.prd_id).where(
-        Item.prd_id.is_not(None),
-        or_((Item.claimed_by == agent_id) & Item.status.in_(("in_progress", "review")),
-            (Item.review_claimed_by == agent_id) & (Item.status == "review")))).all())
-    agent = db.get(Agent, agent_id)
-    key = db.get(ApiKey, agent.api_key_id) if agent is not None and agent.api_key_id else None
-    if key is not None and key.user_id:
-        held |= {p.id for p in db.scalars(select(Prd).where(
-            Prd.project_id == agent.project_id, Prd.created_by == key.user_id)).all()
-            if not p.close_record}
-    return sorted(p for p in held if p)
-
-
-def link_directive(db: Session, agent_id: str) -> dict | None:
-    """The pending link request or thread messages on PRDs this agent works, marked delivered
-    for those PRDs. None when nothing waits."""
-    pending = pending_for_prds(db, prds_worked_by(db, agent_id))
-    if not pending:
-        return None
-    for p in pending:
-        link = db.get(PrdLink, p["link"])
-        if p["type"] == "prd_link_request":
-            link.request_seen = True
-        elif p["prd"] == link.prd_a_id:
-            link.seen_a_message_id = max(link.seen_a_message_id, p["latest_id"])
-        else:
-            link.seen_b_message_id = max(link.seen_b_message_id, p["latest_id"])
-    db.commit()
-    return {"type": "prd_link_pending", "pending": pending,
-            "next": "list_threads(link=...) and post_comment to answer; decide_prd_link on a "
-                    "request; file_suggested_item on a suggested_item"}
