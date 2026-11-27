@@ -119,3 +119,27 @@ def test_decline_needs_reason_and_outsider_sees_nothing(world):
     with pytest.raises(NotFound) as missing:
         T.read_thread(db, Caller(readable=["px"], writable=[]), "plk_nope")
     assert str(hidden.value).replace(repr(link.id), "?") == str(missing.value).replace("'plk_nope'", "?")
+
+
+def test_far_side_is_id_only_until_accepted_and_after_unlink(world):
+    db, a, b, x = world
+    link = L.request_prd_link(db, _a(), a.id, b.id, reason="r")
+    # Pending: the requester names B's PRD but sees only its id.
+    assert T.read_thread(db, _a(), link.id)["link"]["to"] == {"id": b.key}
+    assert L.render_prd_link(db, _b(), link)["from"] == {"id": a.key}
+    # Each caller still sees its own side in full.
+    assert T.read_thread(db, _a(), link.id)["link"]["from"]["title"] == "A one"
+    assert "B two" not in repr(L.render_prd_link(db, _a(), L.list_prd_links(db, _a())[0]))
+    L.accept_prd_link(db, _b(), link.id)
+    assert T.read_thread(db, _a(), link.id)["link"]["to"] == {
+        "id": b.key, "title": "B two", "status": "draft"}
+    L.unlink_prd_link(db, Caller(readable=["pa"], writable=["pa"], label="Ann"), link.id)
+    assert T.read_thread(db, _a(), link.id)["link"]["to"] == {"id": b.key}
+
+
+def test_declined_link_does_not_reveal_far_side(world):
+    db, a, b, x = world
+    link = L.request_prd_link(db, _a(), a.id, b.id, reason="r")
+    L.decline_prd_link(db, _b(), link.id, reason="no")
+    out = T.read_thread(db, _a(), link.id)["link"]
+    assert out["to"] == {"id": b.key} and "B two" not in repr(out)

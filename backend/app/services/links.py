@@ -285,12 +285,23 @@ def list_prd_links(db: Session, caller: Caller, prd: str | None = None) -> list[
 
 
 def render_prd_link(db: Session, caller: Caller, link: PrdLink) -> dict:
-    """The link as the caller sees it: each side's id, title and status — never a body."""
-    def side(prd_id: str) -> dict:
+    """The link as the caller sees it — never a body. A side the caller can read shows its id,
+    title and status. The far side of an ACCEPTED link shows the same (the accepted link is the
+    visibility grant, PRD S4); on a pending, declined or unlinked link it shows its id only, so
+    requesting a link never reveals a PRD nobody on that side has agreed to share, and unlinking
+    hides it again."""
+    granted = link.status == "accepted"
+
+    def side(prd_id: str, project_id: str) -> dict:
         p = db.get(Prd, prd_id)
-        return {"id": p.key, "title": p.title, "status": p.status} if p else {"id": prd_id}
+        if p is None:
+            return {"id": prd_id}
+        if granted or project_id in caller.readable:
+            return {"id": p.key, "title": p.title, "status": p.status}
+        return {"id": p.key}
     return {"id": link.id, "status": link.status, "reason": link.reason,
             "decision_reason": link.decision_reason, "requested_by": link.requested_by,
-            "decided_by": link.decided_by, "from": side(link.prd_a_id), "to": side(link.prd_b_id),
+            "decided_by": link.decided_by, "from": side(link.prd_a_id, link.project_a_id),
+            "to": side(link.prd_b_id, link.project_b_id),
             "created_at": link.created_at.isoformat() if link.created_at else None,
             "decided_at": link.decided_at.isoformat() if link.decided_at else None}
