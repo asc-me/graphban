@@ -2426,6 +2426,8 @@ _FLEET_ONLY_ARGS = {
             "type": "string",
             "description": "Planner/supervisor: retarget. Empty is not a write.",
         },
+        # GRPH-2006. The explicit clear `branch=""` is not. Planner/supervisor only.
+        "clear_branch": {"type": "boolean", "description": "Planner: clear `branch`."},
         # GRPH-1398. The fleet tier is where touchpoints are written and narrowed, and the core
         # manifest has no headroom. The dispatcher accepts it whether or not it was advertised.
         "touchpoints_remove": {"type": "array", "items": {"type": "string"}},
@@ -3544,6 +3546,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             ack_section_drift=args.get("ack_section_drift"),
             evidence=args.get("evidence"),
             branch=args.get("branch"),
+            clear_branch=args.get("clear_branch") is True,
             severity=args.get("severity"),
             # Only when sent: a None here would read as "clear the line".
             **({"line_id": args["line_id"]} if "line_id" in args else {}),

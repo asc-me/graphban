@@ -1863,8 +1863,7 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
     required = TOOL_ROLES.get(tool)
     if role == "unidentified" and (required or (tool == "update_item"
                                                 and (args or {}).get("status") in _BEYOND_WORKER)
-                                  or (tool == "update_item"
-                                      and str((args or {}).get("branch") or "").strip())
+                                  or (tool == "update_item" and _writes_branch(args))
                                   or (tool == "release_item"
                                       and (args or {}).get("to_status", "next") in _BEYOND_WORKER)):
         # The evidence sentence is true of `update_item` only. `claim_next` and the
@@ -1909,7 +1908,9 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
     # GRPH-1031. `branch` is identity. A worker rewriting it under a live reviewer is
     # how GRPH-946's "reviewer has nothing to read" comes back. Empty is not a write,
     # so a worker sending `branch=""` must not be refused for a field it did not set.
-    if tool == "update_item" and str((args or {}).get("branch") or "").strip():
+    # GRPH-2006: `clear_branch` is the explicit clear, and the same rewrite.
+    if tool == "update_item" and (str((args or {}).get("branch") or "").strip()
+                                  or (args or {}).get("clear_branch") is True):
         if role == "worker":
             raise authz.Forbidden(
                 f"update_item(branch=…) is planner/supervisor work; "
@@ -1935,6 +1936,16 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
                 f"{who} is registered as 'worker'",
                 hint="release_item does not write `done`; the self-review ban gates sign-off",
             )
+
+
+def _writes_branch(args: dict | None) -> bool:
+    """`update_item` writes the branch: a non-empty `branch`, or `clear_branch` (GRPH-2006).
+
+    Empty `branch` is not a write. The explicit clear is, and it is the same identity
+    rewrite a retarget is, so it clears for the same roles.
+    """
+    a = args or {}
+    return bool(str(a.get("branch") or "").strip()) or a.get("clear_branch") is True
 
 
 def _identify_hint(api_key, tool: str, args: dict | None = None) -> str:
@@ -1974,7 +1985,7 @@ def _role_that_clears(tool: str, args: dict | None) -> str:
     """
     if tool == "update_item" and (
         (args or {}).get("status") in _BEYOND_WORKER
-        or str((args or {}).get("branch") or "").strip()
+        or _writes_branch(args)
     ):
         return "planner"
     required = TOOL_ROLES.get(tool) or ()
@@ -2655,6 +2666,11 @@ def _review_pr_unlinked(it: Item) -> bool:
     """
     if items_svc.recorded_pr_url(it):
         return False
+    # GRPH-2006. A ledger-only item (no touchpoints, a PRD version as its artifact) will
+    # never have a PR, and sign_off does not refuse it pr_missing. Holding it was a hold
+    # nothing could release short of linking a PR that is not its work.
+    if items_svc.is_ledger_only(it):
+        return False
     evidence = [e for e in (it.evidence or []) if isinstance(e, dict)]
     if any(items_svc.is_pr_url(str(e.get("url") or "")) for e in evidence):
         return False
@@ -2729,7 +2745,9 @@ def review_withholding(db: Session, it: Item, *, agent_id: str, me: Agent | None
     # spawned nine such children in three cycles is how this was found. With a merge commit
     # recorded the item IS offered: the reviewer reads that commit, and `claim_review` says so.
     gone = branch_gone(it)
-    if gone is not None and not gone[1]:
+    # A ledger-only item's artifact is not on the branch (GRPH-2006), so a stale one gone
+    # from the remote leaves the PRD version it names just as readable.
+    if gone is not None and not gone[1] and not items_svc.is_ledger_only(it):
         return WITHHELD_BRANCH_GONE, (
             f"its branch {gone[0]} is gone from the remote and no merge commit is recorded, "
             "so there is nothing to read. Released when a merge commit is recorded on the item "
