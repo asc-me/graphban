@@ -361,4 +361,6 @@ def test_the_rule_points_at_agents_md_instead_of_restating_it():
         "the rule has started restating AGENTS.md's invariants; two copies drift and this "
         "one is paid for on every request"
     )
-    assert len(body) < 4000, f"the always-applied rule has grown to {len(body)} chars"
+    # 4000 -> 4500 for GRPH-2007: "read status from the ledger when you report it" is a loop
+    # step every agent must carry, and the rule was already at ~3940 before it.
+    assert len(body) < 4500, f"the always-applied rule has grown to {len(body)} chars"

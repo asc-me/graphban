@@ -209,7 +209,13 @@ but exposing a tool does not say *when* to reach for it. That gap is why items s
    claim nobody is working. Prefer `blocked` with a `blocker` over `backlog` when the reason
    will still be true tomorrow — `claim_next` reads backlog, so a known-unbuildable item
    parked there is handed straight back out.
-5. **Hand work to a child through the ledger, not just the prompt.** If you spawn a subagent
+5. **Read status from the ledger when you report it.** An item's status, PR, merge and
+   release come from `get_item_details` (or `fleet_status` / `gh pr view`) called in the turn
+   you report them. Notes, a context summary, a scratchpad, a watcher's last fire or an
+   earlier report are history, not status: they say what was true then. If you cannot read
+   the ledger, say the status is unverified and when it was last seen. Never present it as
+   current.
+6. **Hand work to a child through the ledger, not just the prompt.** If you spawn a subagent
    for an item, `delegate(id=…, lane=…, tier=…)` first and paste the returned `brief.text`
    into the spawn; `get_item_details` carries the same brief with a lane and tier
    *suggestion* and its `basis`, and you type the values because the server never defaults
