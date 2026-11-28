@@ -1595,7 +1595,50 @@ def reviewable_handoff(item: Item, incoming_evidence=None) -> bool:
     if (item.branch or "").strip():
         return True
     rows = list(item.evidence or []) + list(incoming_evidence or [])
-    return any(is_pr_url(e.get("url", "")) for e in rows if isinstance(e, dict))
+    if any(is_pr_url(e.get("url", "")) for e in rows if isinstance(e, dict)):
+        return True
+    # GRPH-2006: a ledger-only item's deliverable is the PRD version it names, not a branch.
+    return is_ledger_only(item, incoming_evidence)
+
+
+#: A PRD key (`PRD-36`, `GBC-P23`) in a receipt's detail (GRPH-2006).
+_LEDGER_PRD = re.compile(r"\b(?:PRD-\d+|[A-Z][A-Z0-9]*-P\d+)\b")
+#: What pins the PRD to one state: its `body_hash` (16 hex) or a version (`v1.2`, `version 3`).
+_LEDGER_PIN = re.compile(
+    r"\b(?:[0-9a-f]{16}|v\d+(?:\.\d+)*|version\s+\d+(?:\.\d+)*)\b", re.IGNORECASE)
+
+
+def ledger_artifact(evidence) -> dict | None:
+    """The receipt naming a PRD version or body_hash as this item's artifact, or None.
+
+    GRPH-2006. A planner task whose deliverable is ledger state — a rebaseline, grill
+    answers, items filed — has no code and will never have a PR. Its artifact is the PRD
+    state it left behind, so the receipt names the PRD and pins which state: the
+    `body_hash` `get_prd` returns, or a version. A receipt naming only a PRD pins nothing.
+    """
+    for e in evidence or []:
+        if not isinstance(e, dict) or e.get("kind") == "attestation":
+            continue
+        detail = str(e.get("detail") or "")
+        if _LEDGER_PRD.search(detail) and _LEDGER_PIN.search(_LEDGER_PRD.sub(" ", detail)):
+            return e
+    return None
+
+
+def is_ledger_only(item, incoming_evidence=None) -> bool:
+    """An item with no touchpoints whose evidence names a PRD version as its artifact.
+
+    GRPH-2006. The PR gates (`pr_unlinked` at claim_review, `pr_missing` at sign_off) do
+    not apply to it: there is no code to propose. BOTH halves are required. An item with
+    touchpoints claims code, and code still needs its PR whatever a note says; an item with
+    no touchpoints and no artifact has named nothing a reviewer can check. A stale `branch`
+    inherited from the filing session does not make it code (a planner clears it with
+    `update_item(clear_branch=true)`).
+    """
+    if [t for t in (getattr(item, "touchpoints", None) or []) if str(t).strip()]:
+        return False
+    rows = list(getattr(item, "evidence", None) or []) + list(incoming_evidence or [])
+    return ledger_artifact(rows) is not None
 
 
 def _submitter_branch(db: Session, item: Item, submitted_by: str) -> str:
@@ -1953,6 +1996,9 @@ def _refuse_if_branch_has_no_pr(db, item, incoming_evidence, commit=None) -> Non
         return
     merged = append_evidence(item.evidence, incoming_evidence)
     if any(a.get("adapter") == OWNER_CLOSE_ADAPTER for a in valid_attestations(merged)):
+        return
+    # GRPH-2006: no touchpoints and a PRD version named as the artifact — nothing to propose.
+    if is_ledger_only(item, incoming_evidence):
         return
     where = f"branch {branch}" if branch else f"commit {head[:12]}"
     record_refusal(db, item, predicate="pr_missing",
@@ -2762,6 +2808,28 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
                         "pointer alone"
                     )
             item.branch = incoming
+    # GRPH-2006. The explicit clear "empty is not a write" leaves no room for: a stale
+    # pointer inherited from the filing session's checkout (GBC-299 carried one) makes a
+    # ledger-only item read as code on a branch. Planner/supervisor only (the same call
+    # gate as `branch`), refused under a live reviewer for the same reason, and noted.
+    if fields.get("clear_branch"):
+        if str(fields.get("branch") or "").strip():
+            raise ValueError("pass either branch or clear_branch, not both")
+        held = (item.branch or "").strip()
+        if held:
+            from app.services import fleet as fleet_svc
+            reviewer = fleet_svc.review_claim_holder(item) if prev_status == "review" else None
+            if reviewer:
+                raise ValueError(
+                    f"{item.key} is `{prev_status}` on `{held}` and reviewer {reviewer} "
+                    "holds it; clearing the branch would leave the reviewer with nothing "
+                    "to read. Bounce it first, or leave the pointer alone")
+            item.branch = ""
+            item.evidence = append_evidence(item.evidence, [{
+                "kind": "note",
+                "detail": f"branch cleared (was {held})"
+                          + (f" by {submitted_by}" if submitted_by else ""),
+            }])
     # THE AUTHORSHIP STAMP (GRPH-848). `built_by` was written in one place — the claim — so
     # an item built inline and sent to review here carried no author at all, and
     # `independent(reviewer, None)` read that as "human-authored": measured on 2026-09-10,
